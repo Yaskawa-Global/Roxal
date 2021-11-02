@@ -1,2 +1,3 @@
-# roxal
-Roxal - Robot Programming Language
+# Roxal
+
+Robot Programming Language
