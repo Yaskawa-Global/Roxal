@@ -7,5 +7,6 @@ INC="-I$ANTLR4_ROOT/usr/local/include/antlr4-runtime -Icpp-gen"
 LIBDIRS="-L$ANTLR4_ROOT/usr/local/lib/ -Lcpp-gen"
 LIBS="-lantlr4-runtime cpp-gen/RoxalParserBase.a -licuio -licui18n -licuuc -licudata -lpthread"
 OPTS="-std=c++17 -DDEBUG_BUILD -fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1"
-g++ ${OPTS} ${INC} ${LIBDIRS} *.cpp ${LIBS} -o roxal
+#OPTS="-std=c++17 -fPIC -Wno-attributes -Werror=return-type -O4 -fmax-errors=1"
+g++ ${OPTS} ${INC} ${LIBDIRS} *.c *.cpp ${LIBS} -o roxal
 

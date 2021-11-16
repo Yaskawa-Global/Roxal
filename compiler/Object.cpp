@@ -93,6 +93,9 @@ std::string roxal::objToString(const Value& v)
         case ObjType::Function: {
             return objFunctionToString(asFunction(v));
         }
+        case ObjType::Native: {
+            return "<native fn>";
+        }
         case ObjType::String: {
             std::string s;
             asUString(v).toUTF8String(s);
@@ -119,6 +122,21 @@ ObjFunction* roxal::functionVal()
 {
     return new ObjFunction();
 }
+
+
+
+ObjNative::ObjNative(NativeFn _function)
+    : function(_function)
+{
+    type = ObjType::Native;
+}
+
+
+ObjNative* roxal::nativeVal(NativeFn function)
+{
+    return new ObjNative(function);
+}
+
 
 
 

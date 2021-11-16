@@ -15,6 +15,7 @@ using icu::UnicodeString;
 enum class ObjType {
     None = 0,
     Function,
+    Native,
     String
 };
 
@@ -45,6 +46,16 @@ inline bool isObjType(const Value& v, ObjType type)
     { return v.isObj() && v.asObj()->type == type; }
 
 
+std::string objToString(const Value& v);
+
+bool objsEqual(const Value& l, const Value& r);
+
+
+
+
+//
+// string
+
 struct ObjString : public Obj 
 {
     ObjString(const UnicodeString& us);
@@ -68,7 +79,8 @@ ObjString* stringVal(const UnicodeString& s);
 std::string objStringToString(const ObjString* os);
 
 
-
+//
+// function
 
 enum class FunctionType {
     Function,
@@ -94,10 +106,25 @@ ObjFunction* functionVal();
 std::string objFunctionToString(const ObjFunction* of);
 
 
+//
+// native function
 
-std::string objToString(const Value& v);
+typedef Value (*NativeFn)(int argCount, Value* args);
 
-bool objsEqual(const Value& l, const Value& r);
+struct ObjNative : public Obj
+{
+    ObjNative(NativeFn function);
+
+    NativeFn function;
+};
+
+inline bool isNative(const Value& v) { return isObjType(v, ObjType::Native); }
+inline ObjNative* asNative(const Value& v) { return static_cast<ObjNative*>(v.asObj()); }
+
+ObjNative* nativeVal(NativeFn function);
+
 
 
 }
+
+

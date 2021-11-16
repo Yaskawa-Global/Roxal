@@ -1,7 +1,7 @@
 /*
  * Roxal Grammar
  *
- * Copyright (c) 2021 Yaskawa Innocation Inc.
+ * Copyright (c) 2021 Yaskawa Innovation Inc.
  *
  * Author : David Jung
  */
@@ -20,10 +20,18 @@ file_input
  : ( NEWLINE | declaration )* EOF
  ;
 
+
+single_input
+ : NEWLINE
+ | statement
+ | compound_stmt NEWLINE
+ ;
+
+
 declaration
-// : fun_decl
+ : func_decl
 //| proc_decl
- : var_decl
+ | var_decl
  | statement
  ;
 
@@ -44,7 +52,6 @@ compound_stmt
  | return_stmt
  | if_stmt 
  | while_stmt 
- | func_decl
 //  | for_stmt 
 //  | with_stmt 
 //  | procdef 

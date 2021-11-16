@@ -1,4 +1,5 @@
 #include <functional>
+#include <time.h>
 
 #include "RoxalCompiler.h"
 
@@ -9,9 +10,18 @@ using namespace roxal;
 
 
 VM::VM()
+    : lineMode(false)
 {
     resetStack();
-    inInnerScope = false;
+    defineNativeFunctions();
+}
+
+
+VM::VM(std::istream& linestream)
+    : lineMode(true), lineStream(&linestream)
+{
+    resetStack();
+    defineNativeFunctions();
 }
 
 
@@ -49,6 +59,15 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
 
     return result;
 }
+
+
+
+void VM::interpretLine()
+{
+
+}
+
+
 
 
 void VM::push(const Value& value)
@@ -119,6 +138,13 @@ bool VM::callValue(const Value& callee, int argCount)
         switch (objType(callee)) {
             case ObjType::Function:
                 return call(asFunction(callee), argCount);
+            case ObjType::Native: {
+                NativeFn native = asNative(callee)->function;
+                Value result = native(argCount, &(*stackTop) - argCount);
+                stackTop -= argCount+1;
+                push(result);
+                return true;
+            }
             default:
                 break;
         }
@@ -127,6 +153,20 @@ bool VM::callValue(const Value& callee, int argCount)
     return false;
 }
 
+
+void VM::defineNative(const std::string& name, NativeFn function)
+{
+    UnicodeString uname { toUnicodeString(name) };
+    push(objVal(stringVal(uname)));
+    push(objVal(nativeVal(function)));
+    #ifdef DEBUG_BUILD
+    globals[asString(stack.at(0))] = stack.at(1);
+    #else
+    globals[asString(stack[0])] = stack[1];
+    #endif
+    pop();
+    pop();
+}
 
 
 
@@ -568,4 +608,19 @@ void VM::runtimeError(const std::string& format, ...)
     int line = frame->function->chunk->getLine(instruction);
     fprintf(stderr, "[line %d] in script\n", line);
     resetStack();    
+}
+
+
+// native
+
+static Value clockNative(int argCount, Value* args)
+{
+    return realVal(double(clock())/CLOCKS_PER_SEC);
+}
+
+
+
+void VM::defineNativeFunctions()
+{
+    defineNative("clock", clockNative);
 }

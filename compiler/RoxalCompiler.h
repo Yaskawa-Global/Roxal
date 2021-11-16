@@ -22,6 +22,8 @@ public:
 
     virtual antlrcpp::Any visitFile_input(RoxalParser::File_inputContext *context);
 
+    virtual antlrcpp::Any visitSingle_input(RoxalParser::Single_inputContext *context);
+
     virtual antlrcpp::Any visitDeclaration(RoxalParser::DeclarationContext *context);
 
     virtual antlrcpp::Any visitStatement(RoxalParser::StatementContext *context);

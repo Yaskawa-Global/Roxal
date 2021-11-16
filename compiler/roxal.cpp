@@ -7,13 +7,53 @@
 #include "VM.h"
 
 
+extern "C" {
+    #include "linenoise.h"
+}
+
+
 using namespace antlr4;
 using namespace roxal;
 
 
 static void repl() 
 {
-    //...
+    linenoiseHistorySetMaxLen(1000);
+
+    std::stringstream stream;
+
+    VM vm { stream };
+
+    char* cline;
+    std::string line;
+    //int indent = 0;
+    bool quit=false;
+    while(!quit && ((cline = linenoise("rox> ")) != nullptr)) {
+
+        linenoiseHistoryAdd(cline);
+
+        line = std::string(cline);
+        if ((line=="end")||(line=="END"))
+            quit=true;
+        else if (!line.empty()) {
+
+            try {
+                stream << line << std::endl << std::flush;
+
+                vm.interpretLine();
+
+                //std::cout << value->repr() << std::endl;
+            } catch (std::exception& e) {
+                std::cout << std::string("error: ") << e.what() << std::endl;
+            }
+            
+        }
+        if (cline != NULL) {
+            linenoiseFree(cline);
+        }            
+
+    }
+
 }
 
 
@@ -45,34 +85,6 @@ int main(int argc, const char* argv[]) {
         std::cerr << "Usage: roxal [<jobfile.rox>]" << std::endl;
         return -1;
     }
-
-
-        // tmp testing
-
-        // VM vm {};
-
-        // auto chunk { std::make_shared<Chunk>() };
-
-        // //auto constant = chunk.addConstant(1.2);
-        // //chunk.write(OpCode::Constant, 123);
-        // //chunk.write(constant, 123);
-        // chunk->writeConsant(1.2,123);
-
-        // chunk->writeConsant(3.4, 123);
-
-        // chunk->write(OpCode::Add, 123);
-
-        // chunk->writeConsant(5.6, 123);
-
-        // chunk->write(OpCode::Divide, 123);
-
-        // chunk->write(OpCode::Negate, 123);
-
-        // chunk->write(OpCode::Return, 123);
-        // chunk->disassemble("test chunk");
-
-        // std::cout << "starting execution" << std::endl;
-        // vm.interpret(chunk);
 
     return 0;
 }

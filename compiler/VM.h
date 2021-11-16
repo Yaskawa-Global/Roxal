@@ -20,6 +20,8 @@ class VM
 {
 public:
     VM();
+    VM(std::istream& linestream); // single-line mode
+
 
     enum class InterpretResult {
         OK,
@@ -29,6 +31,8 @@ public:
 
     InterpretResult interpret(std::istream& source, const std::string& name);
 
+    void interpretLine();
+
     void push(const Value& value);
     Value pop();
     Value peek(int distance);
@@ -36,8 +40,13 @@ public:
     bool call(ObjFunction* function, int argCount);
     bool callValue(const Value& callee, int argCount);
 
+    void defineNative(const std::string& name, NativeFn function);
+
 protected:
     InterpretResult execute();
+
+    bool lineMode;
+    std::istream* lineStream;
 
     typedef std::vector<Value> ValueStack;
 
@@ -49,9 +58,6 @@ protected:
 
     std::vector<CallFrame> frames;
 
-
-    bool inInnerScope; // i.e. scopeDepth > 0
-
     std::unordered_map<ObjString*, Value> globals;
 
     void resetStack();
@@ -60,6 +66,9 @@ protected:
     void concatenate();
 
     void runtimeError(const std::string& format, ...);
+
+    void defineNativeFunctions();
+
 };
 
 

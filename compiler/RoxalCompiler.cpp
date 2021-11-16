@@ -126,12 +126,29 @@ Any RoxalCompiler::visitFile_input(RoxalParser::File_inputContext *context)
     return Any();
 }
 
+
+Any RoxalCompiler::visitSingle_input(RoxalParser::Single_inputContext *context)
+{
+    ParseTracer pt(__func__, context);
+    currentToken = context->start;
+
+    if (context->statement())
+        visitStatement(context->statement());
+    else if (context->compound_stmt())
+        visitCompound_stmt(context->compound_stmt());
+
+    return Any();
+}
+
+
 Any RoxalCompiler::visitDeclaration(RoxalParser::DeclarationContext *context) 
 {
     ParseTracer pt(__func__, context);
     currentToken = context->start;
 
-    if (context->var_decl())
+    if (context->func_decl())
+        visitFunc_decl(context->func_decl());
+    else if (context->var_decl())
         visitVar_decl(context->var_decl());
     else if (context->statement())
         visitStatement(context->statement());
@@ -210,8 +227,6 @@ Any RoxalCompiler::visitCompound_stmt(RoxalParser::Compound_stmtContext *context
         visitIf_stmt(context->if_stmt());
     else if (context->while_stmt())
         visitWhile_stmt(context->while_stmt());
-    else if (context->func_decl())
-        visitFunc_decl(context->func_decl());
     else
         throw std::runtime_error("unimplemented compound statement alternative");
 
