@@ -56,6 +56,8 @@ public:
 
     virtual antlrcpp::Any visitSuite(RoxalParser::SuiteContext *context);
 
+    virtual antlrcpp::Any visitType_decl(RoxalParser::Type_declContext *context);
+
     virtual antlrcpp::Any visitAssignment(RoxalParser::AssignmentContext *context);
 
     virtual antlrcpp::Any visitLogic_or(RoxalParser::Logic_orContext *context);
@@ -77,6 +79,8 @@ public:
     virtual antlrcpp::Any visitUnary(RoxalParser::UnaryContext *context);
 
     virtual antlrcpp::Any visitCall(RoxalParser::CallContext *context);
+
+    virtual antlrcpp::Any visitArgs_or_accessor(RoxalParser::Args_or_accessorContext *context);
 
     virtual antlrcpp::Any visitArguments(RoxalParser::ArgumentsContext *context);
 

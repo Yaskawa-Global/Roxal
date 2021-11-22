@@ -228,6 +228,10 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("CLOSE_UPVALUE", offset);
         case asByte(OpCode::Return):
             return simpleInstruction("RETURN", offset);
+        case asByte(OpCode::ObjectType):
+            return constantInstruction("OBJECT_TYPE", offset);
+        case asByte(OpCode::ActorType):
+            return constantInstruction("ACTOR_TYPE", offset);
         case asByte(OpCode::Print):
             return simpleInstruction("PRINT", offset);
         case asByte(OpCode::DefineGlobal):
@@ -246,6 +250,10 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return byteInstruction("GET_UPVALUE", offset);
         case asByte(OpCode::SetUpvalue):
             return byteInstruction("SET_UPVALUE", offset);
+        case asByte(OpCode::SetProp):
+            return constantInstruction("SET_PROP", offset);
+        case asByte(OpCode::GetProp):
+            return constantInstruction("GET_PROP", offset);
         case asByte(OpCode::Nop):
             return simpleInstruction("NOP", offset);
         default:

@@ -107,9 +107,15 @@ std::string roxal::objToString(const Value& v)
             return "<native fn>";
         }
         case ObjType::String: {
-            std::string s;
-            asUString(v).toUTF8String(s);
-            return s;
+            return toUTF8StdString(asUString(v));
+        }
+        case ObjType::ObjectType: {
+            ObjObjectType* obj = asObjectType(v);
+            return std::string("<type ")+(obj->isActor ? "actor" :"object")+" "+toUTF8StdString(obj->name)+">";
+        }
+        case ObjType::Instance: {
+            ObjInstance* inst = asInstance(v);
+            return std::string(inst->instanceType->isActor ? "actor" : "object")+" "+toUTF8StdString(inst->instanceType->name);
         }
         default: ;
     }
@@ -143,6 +149,33 @@ ObjNative* roxal::nativeVal(NativeFn function)
     return newObj<ObjNative>(__func__,function);
 }
 
+
+
+ObjObjectType* roxal::objectTypeVal(const icu::UnicodeString& typeName, bool isActor)
+{
+    return newObj<ObjObjectType>(__func__, typeName, isActor);
+}
+
+
+ObjInstance::ObjInstance(ObjObjectType* objectType) 
+{ 
+    type = ObjType::Instance; 
+    instanceType = objectType;
+    instanceType->incRef();
+}
+
+ObjInstance::~ObjInstance() 
+{
+    instanceType->decRef();
+}
+
+
+
+
+ObjInstance* roxal::objInstanceVal(ObjObjectType* objectType)
+{
+    return newObj<ObjInstance>(__func__, objectType);
+}
 
 
 
@@ -185,15 +218,20 @@ std::string roxal::objTypeName(Obj* obj)
     if (obj == nullptr) return "null";
 
     switch (obj->type) {
-    case ObjType::None: return "None";
-    case ObjType::Closure: return "Closure";
-    case ObjType::Function: return "Function";
-    case ObjType::Native: return "Native";
-    case ObjType::Upvalue: return "Upvalue";
-    case ObjType::Bool: return "Bool";
-    case ObjType::Int: return "Int";
-    case ObjType::Real: return "Real";
-    case ObjType::String: return "String";
+    case ObjType::None: return "none";
+    case ObjType::ObjectType: return static_cast<ObjObjectType*>(obj)->isActor ? "type actor" : "type object";
+    case ObjType::Instance: {
+        ObjInstance* inst = static_cast<ObjInstance*>(obj);
+        return inst->instanceType->isActor ? "actor":"object";
+    }
+    case ObjType::Closure: return "closure";
+    case ObjType::Function: return "function";
+    case ObjType::Native: return "native";
+    case ObjType::Upvalue: return "upvalue";
+    case ObjType::Bool: return "bool";
+    case ObjType::Int: return "int";
+    case ObjType::Real: return "real";
+    case ObjType::String: return "string";
     }
     return "unknown";
 }

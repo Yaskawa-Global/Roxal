@@ -37,6 +37,8 @@ enum class OpCode {
     Closure,
     CloseUpvalue,
     Return,
+    ObjectType,
+    ActorType,
     Print,
     DefineGlobal,
     GetGlobal,
@@ -45,7 +47,9 @@ enum class OpCode {
     GetUpvalue,
     SetUpvalue,
     GetLocal,
-    SetLocal
+    SetLocal,
+    SetProp,
+    GetProp
 };
 
 inline constexpr uint8_t asByte(OpCode op) { return uint8_t(op); }

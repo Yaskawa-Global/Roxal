@@ -29,7 +29,8 @@ single_input
 
 
 declaration
- : func_decl
+ : type_decl
+ | func_decl
 //| proc_decl
  | var_decl
  | statement
@@ -110,6 +111,13 @@ suite
  : NEWLINE INDENT (declaration NEWLINE?)+ DEDENT
  ;
 
+type_decl
+ : TYPE (OBJECT | ACTOR) IDENTIFIER (IMPLEMENTS IDENTIFIER+)? ':' NEWLINE
+   INDENT function* DEDENT
+ ;
+
+
+
 
 //TODO: assignment is an expression, but maybe we don't want assignments
 // in places like if conditions?
@@ -165,8 +173,13 @@ unary
  ;
 
 call
- : primary ( '(' arguments? ')' | DOT IDENTIFIER )* 
+ : primary args_or_accessor* 
  ;
+
+ args_or_accessor
+  : '(' arguments? ')' 
+  | DOT IDENTIFIER
+  ;
 
 arguments 
  : expression ( ',' expression )* 
@@ -201,6 +214,7 @@ builtin_type
  * Lexer rules
  */
 
+TYPE: 'type';
 VAR : 'var';
 LET : 'let';
 FUNC: 'func';
@@ -208,6 +222,7 @@ PROC: 'proc';
 RETURN: 'return';
 SCOPE: 'scope' ;
 WITH: 'with'; // TODO
+IMPLEMENTS: 'implements';
 
 
 // Types
@@ -226,6 +241,8 @@ MATRIX: 'matrix';
 TENSOR: 'tensor';
 ORIENT: 'orient';
 STREAM: 'stream';
+OBJECT: 'object';
+ACTOR : 'actor';
 
 
 // control

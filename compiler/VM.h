@@ -61,7 +61,9 @@ protected:
 
     std::vector<CallFrame> frames;
 
-    std::unordered_map<ObjString*, Value> globals;
+    // FIXME: use something other than UnicodeString (ObjString* or Value??)
+    // map from name ObjString.hash to <name, value> pair
+    std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> globals;
 
     std::list<ObjUpvalue*> openUpvalues;
 

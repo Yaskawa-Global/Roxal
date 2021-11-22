@@ -150,14 +150,16 @@ Any RoxalCompiler::visitDeclaration(RoxalParser::DeclarationContext *context)
     ParseTracer pt(__func__, context);
     currentToken = context->start;
 
-    if (context->func_decl())
+    if (context->type_decl())
+        visitType_decl(context->type_decl());
+    else if (context->func_decl())
         visitFunc_decl(context->func_decl());
     else if (context->var_decl())
         visitVar_decl(context->var_decl());
     else if (context->statement())
         visitStatement(context->statement());
     else
-        throw std::runtime_error("unimplemented declatation type");
+        throw std::runtime_error("unimplemented declaration type");
 
     return Any();
 }
@@ -196,15 +198,43 @@ Any RoxalCompiler::visitSuite(RoxalParser::SuiteContext *context)
     ParseTracer pt(__func__, context);
     currentToken = context->start;
 
-//!!!    beginScope(); 
-
     for(int i=0; i<context->declaration().size(); i++)
         visitDeclaration(context->declaration().at(i));
 
-//!!!    endScope(); 
+    return Any();
+}
+
+
+Any RoxalCompiler::visitType_decl(RoxalParser::Type_declContext *context)
+{
+    ParseTracer pt(__func__, context);
+    currentToken = context->start;
+
+    bool isActor = (context->ACTOR() != nullptr);
+
+    auto typeName { context->IDENTIFIER().at(0)->getText() };
+    UnicodeString uTypeName { UnicodeString::fromUTF8(typeName) };
+
+    int16_t nameConstant = identifierConstant(uTypeName);
+    declareVariable(uTypeName);    
+
+    if (context->IDENTIFIER().size()>2)
+        throw std::runtime_error("Multiple implements types unimplemented.");
+
+    emitBytes(isActor ? OpCode::ActorType : OpCode::ObjectType, nameConstant);
+    defineVariable(nameConstant);
+
+    //...
+
+    for(size_t i=0; i<context->function().size(); i++) {
+        visitFunction(context->function().at(i));
+        emitByte(OpCode::Pop, "tmp discard method");//!!!
+    }
 
     return Any();
 }
+
+
 
 Any RoxalCompiler::visitExpression(RoxalParser::ExpressionContext *context) 
 {
@@ -493,14 +523,28 @@ Any RoxalCompiler::visitAssignment(RoxalParser::AssignmentContext *context)
     ParseTracer pt(__func__, context);
     currentToken = context->start;
 
-    // TODO: visitCall
-    if (context->EQUALS()) {
-        visitAssignment(context->assignment());
+    if (context->EQUALS()) { // assignment
+
         UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
-        namedVariable(ident, /*assign=*/true);
+
+        if (context->DOT()) { // property set
+            visitCall(context->call());
+
+            int16_t propName = identifierConstant(ident);
+
+            visitAssignment(context->assignment());
+
+            emitBytes(OpCode::SetProp, propName);
+
+        }
+        else { // variable set
+            visitAssignment(context->assignment());
+            namedVariable(ident, /*assign=*/true);
+        }
     }
     else
         visitLogic_or(context->logic_or());
+
     return Any();
 }
 
@@ -706,20 +750,36 @@ Any RoxalCompiler::visitCall(RoxalParser::CallContext *context)
 
     visitPrimary(context->primary());
 
-    // FIXME: handle .id
-    for (size_t i=0; i<context->OPEN_PAREN().size(); i++) {
-                
+    for(size_t i=0; i<context->args_or_accessor().size(); i++)
+        visitArgs_or_accessor(context->args_or_accessor().at(i));
+
+    return Any();
+}
+
+
+Any RoxalCompiler::visitArgs_or_accessor(RoxalParser::Args_or_accessorContext *context)
+{
+    ParseTracer pt(__func__, context);
+    currentToken = context->start;
+
+    if (context->DOT()) {
+
+        UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
+        int16_t propName = identifierConstant(ident);
+
+        emitBytes(OpCode::GetProp, propName);
+    }
+    else {
         int argCount { 0 };
-        // FIXME: the OPEN_PAREN index might not match aguments index since they're
-        //  optional - probably need another parser rule
-        if (context->arguments().size()>0)
-            argCount = visitArguments(context->arguments().at(i)).as<int>();
+        if (context->arguments())
+            argCount = visitArguments(context->arguments()).as<int>();
 
         emitBytes(OpCode::Call, argCount);
     }
 
     return Any();
 }
+
 
 
 Any RoxalCompiler::visitArguments(RoxalParser::ArgumentsContext *context)

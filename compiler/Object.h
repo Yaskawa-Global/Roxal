@@ -2,6 +2,7 @@
 
 #include <map>
 #include <sstream>
+#include <unordered_map>
 #include <unicode/ustring.h>
 
 #include "common.h"
@@ -16,8 +17,10 @@ using icu::UnicodeString;
 
 enum class ObjType {
     None = 0,
+    ObjectType,
     Closure,
     Function,
+    Instance,
     Native,
     Upvalue,
     Bool,
@@ -271,6 +274,51 @@ ObjNative* nativeVal(NativeFn function);
 
 
 
+
+//
+// object|actor type
+
+struct ObjObjectType : public Obj
+{
+    ObjObjectType(const icu::UnicodeString& typeName, bool isactor) 
+        : name(typeName), isActor(isactor) 
+    { 
+        type = ObjType::ObjectType; 
+    }
+    virtual ~ObjObjectType() {}
+
+    icu::UnicodeString name;
+    bool isActor;
+
+    std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value> methods;
+
+};
+
+
+inline bool isObjectType(const Value& v) { return isObjType(v, ObjType::ObjectType); }
+inline ObjObjectType* asObjectType(const Value& v) { return static_cast<ObjObjectType*>(v.asObj()); }
+
+
+ObjObjectType* objectTypeVal(const icu::UnicodeString& typeName, bool isActor);
+
+
+//
+// object|actor instance
+
+struct ObjInstance : public Obj
+{
+    ObjInstance(ObjObjectType* objectType);
+    virtual ~ObjInstance();
+
+    ObjObjectType* instanceType;
+    std::unordered_map<int32_t, Value> properties;
+};
+
+inline bool isInstance(const Value& v) { return isObjType(v, ObjType::Instance); }
+inline ObjInstance* asInstance(const Value& v) { return static_cast<ObjInstance*>(v.asObj()); }
+
+ObjInstance* objInstanceVal(ObjObjectType* objectType);
+    
 }
 
 

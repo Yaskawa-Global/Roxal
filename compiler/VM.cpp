@@ -64,7 +64,7 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
     if (globals.size() > 0) {        
         std::cout << std::endl << "== globals ==" << std::endl;
         for(const auto& global : globals) 
-            std::cout << objStringToString(global.first) << " = " << toString(global.second) << std::endl;
+            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second) << std::endl;
     }
     #endif
 
@@ -150,12 +150,19 @@ bool VM::callValue(const Value& callee, int argCount)
 {
     if (callee.isObj()) {
         switch (objType(callee)) {
+            case ObjType::ObjectType: {
+                ObjObjectType* type = asObjectType(callee);
+                Value result { objVal(objInstanceVal(type)) };
+                stackTop -= argCount+1; // FIXME: does this case delayed deref for args? !!!
+                push(result);
+                return true;
+            }
             case ObjType::Closure:
                 return call(asClosure(callee), argCount);
             case ObjType::Native: {
                 NativeFn native = asNative(callee)->function;
-                Value result = native(argCount, &(*stackTop) - argCount);
-                stackTop -= argCount+1;
+                Value result { native(argCount, &(*stackTop) - argCount) };
+                stackTop -= argCount+1; // FIXME: does this case delayed deref for args? !!!
                 push(result);
                 return true;
             }
@@ -206,15 +213,8 @@ void VM::closeUpvalues(Value* last)
 void VM::defineNative(const std::string& name, NativeFn function)
 {
     UnicodeString uname { toUnicodeString(name) };
-    push(objVal(stringVal(uname)));
-    push(objVal(nativeVal(function)));
-    #ifdef DEBUG_BUILD
-    globals[asString(stack.at(0))] = stack.at(1);
-    #else
-    globals[asString(stack[0])] = stack[1];
-    #endif
-    pop();
-    pop();
+    Value funcVal { objVal(nativeVal(function)) };
+    globals[uname.hashCode()] = std::make_pair(uname,funcVal);
 }
 
 
@@ -322,6 +322,38 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::ConstFalse): {
                 push(falseVal());
+                break;
+            }
+            case asByte(OpCode::GetProp): {
+                if (!isInstance(peek(0))) {
+                    runtimeError("Only instances have properties.");
+                    return InterpretResult::RuntimeError;
+                }
+                ObjInstance* inst = asInstance(peek(0));
+                ObjString* name = readString();
+                auto it = inst->properties.find(name->hash);
+                if (it != inst->properties.end()) { // exists
+                    pop();
+                    push(it->second);
+                }
+                else {
+                    runtimeError("Undefined property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(inst->instanceType->name)+"'.");
+                    return InterpretResult::RuntimeError;
+                }
+                break;
+            }
+            case asByte(OpCode::SetProp): {
+                if (!isInstance(peek(1))) {
+                    runtimeError("Only instances have properties.");
+                    return InterpretResult::RuntimeError;
+                }
+                ObjInstance* inst = asInstance(peek(1));
+                ObjString* name = readString();
+                //std::cout << "setting prop " << toUTF8StdString(name->s) << " of " << toString(peek(1)) << " to " << toString(peek(0)) << std::endl;//!!!
+                inst->properties[name->hash] = peek(0);
+                Value value { pop() };
+                pop();
+                push(value);
                 break;
             }
             case asByte(OpCode::Equal): {
@@ -573,14 +605,14 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::DefineGlobal): {
                 ObjString* name = readString();
-                globals[name] = pop();
+                globals[name->hash] = std::make_pair(name->s,pop());
                 break;
             }
             case asByte(OpCode::GetGlobal): {
                 ObjString* name = readString();
-                auto gi = globals.find(name);
+                auto gi = globals.find(name->hash);
                 if (gi != globals.end()) { // found
-                    Value value = gi->second;
+                    Value value = gi->second.second;
                     push(value);
                 }
                 else {
@@ -591,10 +623,10 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::SetGlobal): {
                 ObjString* name = readString();
-                auto gi = globals.find(name);
+                auto gi = globals.find(name->hash);
                 if (gi != globals.end()) { // found
                     // set new value, but leave it on stack (as assignment is an expression)
-                    globals[name] = peek(0);
+                    globals[name->hash] = std::make_pair(name->s,peek(0));
                 }
                 else {
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
@@ -604,15 +636,15 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::SetNewGlobal): {
                 ObjString* name = readString();
-                auto gi = globals.find(name);
+                auto gi = globals.find(name->hash);
                 if (gi != globals.end()) { // found
                     // set new value, but leave it on stack (as assignment is an expression)
-                    globals[name] = peek(0);
+                    globals[name->hash] = std::make_pair(name->s,peek(0));
                 }
                 else {
                     // only automatic declaration of globals on assignment when
                     //   at global/module level scope
-                    globals[name] = peek(0);
+                    globals[name->hash] = std::make_pair(name->s,peek(0));
                 }
                 break;
             }
@@ -633,6 +665,16 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::Print): {
                 std::cout << toString(pop()) << std::endl;
+                break;
+            }
+            case asByte(OpCode::ObjectType): {
+                ObjString* name = readString();
+                push(objVal(objectTypeVal(name->s, /*isActor=*/false)));
+                break;
+            }
+            case asByte(OpCode::ActorType): {
+                ObjString* name = readString();
+                push(objVal(objectTypeVal(name->s, /*isActor=*/true)));
                 break;
             }
             case asByte(OpCode::Nop): {
