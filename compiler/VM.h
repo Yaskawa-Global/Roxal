@@ -9,7 +9,7 @@ namespace roxal {
 
 
 struct CallFrame {
-    ObjFunction* function;
+    ObjClosure* closure;
     Chunk::iterator ip;
     Value* slots;
 };
@@ -21,6 +21,7 @@ class VM
 public:
     VM();
     VM(std::istream& linestream); // single-line mode
+    ~VM();
 
 
     enum class InterpretResult {
@@ -37,8 +38,10 @@ public:
     Value pop();
     Value peek(int distance);
 
-    bool call(ObjFunction* function, int argCount);
-    bool callValue(const Value& callee, int argCount);
+    bool call(ObjClosure* closure, int argCount);
+    bool callValue(const Value& callee, int argCount);    
+    ObjUpvalue* captureUpvalue(Value& local);
+    void closeUpvalues(Value* last);
 
     void defineNative(const std::string& name, NativeFn function);
 
@@ -60,8 +63,11 @@ protected:
 
     std::unordered_map<ObjString*, Value> globals;
 
+    std::list<ObjUpvalue*> openUpvalues;
+
     void resetStack();
     void freeObjects();
+    void outputAllocatedObjs();
 
     void concatenate();
 

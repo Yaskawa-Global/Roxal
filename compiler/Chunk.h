@@ -10,6 +10,7 @@ namespace roxal {
 
 
 enum class OpCode {
+    Nop,
     Constant,
     Constant2, 
     ConstNil,
@@ -22,6 +23,7 @@ enum class OpCode {
     Subtract,
     Multiply,
     Divide,
+    Modulo,
     Negate,
     And,
     Or,
@@ -32,12 +34,16 @@ enum class OpCode {
     Jump,
     Loop,
     Call,
+    Closure,
+    CloseUpvalue,
     Return,
     Print,
     DefineGlobal,
     GetGlobal,
     SetGlobal,
     SetNewGlobal,
+    GetUpvalue,
+    SetUpvalue,
     GetLocal,
     SetLocal
 };
@@ -50,18 +56,23 @@ class Chunk
 {
 public:
     Chunk();
+    virtual ~Chunk() {}
 
     typedef std::vector<uint8_t> CodeType;
 
     CodeType code;
+    #ifdef DEBUG_BUILD
+    std::vector<std::string> codeComments;
+    #endif
+
     std::vector<Value> constants;
 
     using size_type = CodeType::size_type;
     using iterator = CodeType::iterator;
 
-    void write(uint8_t byte, int line);
-    void write(OpCode byte, int line) { write(uint8_t(byte), line); }
-    void writeConsant(const Value& value, int line);
+    void write(uint8_t byte, int line, const std::string& comment = "");
+    void write(OpCode byte, int line, const std::string& comment = "") { write(uint8_t(byte), line, comment); }
+    void writeConsant(const Value& value, int line, const std::string& comment = "");
 
     size_type addConstant(const Value& value);
 

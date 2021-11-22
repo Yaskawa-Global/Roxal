@@ -156,6 +156,7 @@ factor
 multdiv
  : ( MULT | STAR ) unary
  | DIV unary
+ | MOD unary
  ; 
 
 
@@ -250,6 +251,7 @@ PLUS : '+';
 MINUS : '-';
 MULT: '\u00D7'; // ×
 DIV : '/';
+MOD : '%';
 OR: 'or';
 AND: 'and';
 NOT: 'not';

@@ -23,9 +23,12 @@ enum class ValueType {
     Orient,
     Stream,
     Object,
-    Actor
+    Actor,
+    Boxed = 0xff
 };
 
+inline ValueType valueType(ValueType t) { return ValueType(int(t) & 0x7f); }
+inline bool isBoxed(ValueType t) { return (int(t) & 0x80) != 0; }
 
 struct Obj;
 struct ObjString;
@@ -72,62 +75,44 @@ public:
 
     Value(const Value& v) 
     {
-        // TODO: optimize with union copy (memcpy?)
-        _type = v._type;
-
-        switch(_type) {            
-            case ValueType::Nil: break;
-            case ValueType::Bool: as.boolean = v.as.boolean; break;
-            case ValueType::Int: as.integer = v.as.integer; break;
-            case ValueType::Real: as.real = v.as.real; break;
-            case ValueType::Object: {
-                as.obj = v.as.obj;
-                incRefObj();
-            } break;
-            default: throw std::runtime_error("unhandled Value type copy "+typeName());
-        }
+        copyFrom(v);
     }
 
 
     Value& operator=(const Value& v)
     {
-        if (isObj())
+        if (isObj() || isBoxed())
             decRefObj();
 
-        _type = v._type;
+        copyFrom(v);
 
-        switch(_type) {            
-            case ValueType::Nil: break;
-            case ValueType::Bool: as.boolean = v.as.boolean; break;
-            case ValueType::Int: as.integer = v.as.integer; break;
-            case ValueType::Real: as.real = v.as.real; break;
-            case ValueType::Object: {
-                as.obj = v.as.obj;
-                incRefObj();
-            } break;
-            default: throw std::runtime_error("unhandled Value type copy "+typeName());
-        }
         return *this;
     }
 
 
     ~Value() {
-        if (isObj())
+        if (isObj() || isBoxed())
             decRefObj();
     }
+
+
+    void box();
+    void unbox();
+    bool isBoxed() const { return roxal::isBoxed(_type); }
+    bool isBoxable() const { return !isBoxed() && (isBool() || isInt() || isReal()); }
+
 
     inline ValueType type() const { return _type; }
     std::string typeName() const;
 
     inline bool isNil() const { return _type == ValueType::Nil; }
 
-    inline bool isBool() const { return _type == ValueType::Bool; }
-    inline bool asBool() const { return _type==ValueType::Bool ? as.boolean : false; }
-
-    inline bool isInt() const { return _type == ValueType::Int; }
+    inline bool isBool() const { return valueType(_type) == ValueType::Bool; }
+    inline bool asBool() const;
+    inline bool isInt() const { return valueType(_type) == ValueType::Int; }
     int32_t asInt() const;
 
-    inline bool isReal() const { return _type==ValueType::Real; }
+    inline bool isReal() const { return valueType(_type)==ValueType::Real; }
     double asReal() const; 
 
     inline bool isNumber() const { return isInt() || isReal(); } // TODO: || isByte() || isDecimal(v)
@@ -144,6 +129,34 @@ protected:
         Obj* obj;
     } as;
 
+    void copyFrom(const Value& v) {
+
+
+        // TODO: optimize with union copy (memcpy?)
+        _type = v._type;
+
+        if (roxal::isBoxed(_type)) {
+            as.obj = v.as.obj;
+            incRefObj();
+        }
+        else {
+            switch(valueType(_type)) {            
+                case ValueType::Nil: break;
+                case ValueType::Bool: as.boolean = v.as.boolean; break;
+                case ValueType::Int: as.integer = v.as.integer; break;
+                case ValueType::Real: as.real = v.as.real; break;
+                case ValueType::Object: {
+                    #ifdef DEBUG_TRACE_MEMORY
+                    if (v.as.obj == nullptr)
+                        throw std::runtime_error("Value constructed of assigned from invalid null Obj*");
+                    #endif
+                    as.obj = v.as.obj;
+                    incRefObj();
+                } break;
+                default: throw std::runtime_error("unhandled Value type copy "+typeName());
+            }
+        }
+    }
 
     void incRefObj();
     void decRefObj();
@@ -178,6 +191,7 @@ Value add(Value l, Value r);
 Value subtract(Value l, Value r);
 Value multiply(Value l, Value r);
 Value divide(Value l, Value r);
+Value mod(Value l, Value r);
 
 Value land(Value l, Value r);
 Value lor(Value l, Value r);

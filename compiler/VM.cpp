@@ -24,6 +24,18 @@ VM::VM(std::istream& linestream)
     defineNativeFunctions();
 }
 
+VM::~VM()
+{
+    resetStack();
+    globals.clear();
+
+    freeObjects();
+
+    #ifdef DEBUG_TRACE_MEMORY
+    outputAllocatedObjs();
+    #endif
+}
+
 
 VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
 {
@@ -41,9 +53,10 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
     if (function == nullptr)
         return InterpretResult::CompileError;
 
-    push(objVal(function));
+    ObjClosure* closure = closureVal(function);
+    push(objVal(closure));
 
-    call(function,0);
+    call(closure,0);
 
     auto result = this->execute();
 
@@ -55,7 +68,8 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
     }
     #endif
 
-    delete function;
+    stack.clear();
+    freeObjects();
 
     return result;
 }
@@ -109,12 +123,12 @@ Value VM::peek(int distance)
 }
 
 
-bool VM::call(ObjFunction* function, int argCount)
+bool VM::call(ObjClosure* closure, int argCount)
 {
-    if (argCount != function->arity) {
+    if (argCount != closure->function->arity) {
         runtimeError("Passed "+std::to_string(argCount)+" arguments for function "
-                    +toUTF8StdString(function->name)+" which has "
-                    +std::to_string(function->arity)+" parameters.");
+                    +toUTF8StdString(closure->function->name)+" which has "
+                    +std::to_string(closure->function->arity)+" parameters.");
         return false;
     }
 
@@ -124,8 +138,8 @@ bool VM::call(ObjFunction* function, int argCount)
     }
 
     CallFrame callframe {};
-    callframe.function = function;
-    callframe.ip = function->chunk->code.begin();
+    callframe.closure = closure;
+    callframe.ip = closure->function->chunk->code.begin();
     callframe.slots = &(*(stackTop - argCount - 1));
     frames.push_back(callframe);
     return true;
@@ -136,8 +150,8 @@ bool VM::callValue(const Value& callee, int argCount)
 {
     if (callee.isObj()) {
         switch (objType(callee)) {
-            case ObjType::Function:
-                return call(asFunction(callee), argCount);
+            case ObjType::Closure:
+                return call(asClosure(callee), argCount);
             case ObjType::Native: {
                 NativeFn native = asNative(callee)->function;
                 Value result = native(argCount, &(*stackTop) - argCount);
@@ -151,6 +165,41 @@ bool VM::callValue(const Value& callee, int argCount)
     }
     runtimeError("Only functions, objects and actors can be called.");
     return false;
+}
+
+
+ObjUpvalue* VM::captureUpvalue(Value& local)
+{
+    auto begin = openUpvalues.begin();
+    auto end = openUpvalues.end();
+    auto it { begin };
+    while ((it != end) && ((*it)->location > &local)) {
+        ++it;
+    }
+
+    if (it != end && (*it)->location == &local)
+        return *it;
+
+    ObjUpvalue* createdUpvalue = upvalueVal(&local);
+
+    createdUpvalue->incRef();
+    openUpvalues.insert(it, createdUpvalue);
+
+    // TODO: add debug/test code to ensure openUpvalues are decreasing stack order
+
+    return createdUpvalue;
+}
+
+
+void VM::closeUpvalues(Value* last)
+{
+    while (!openUpvalues.empty() && (openUpvalues.front()->location >= last)) {
+        ObjUpvalue* upvalue = openUpvalues.front();
+        upvalue->closed = *upvalue->location;
+        upvalue->location = &upvalue->closed;
+        openUpvalues.pop_front();
+        upvalue->decRef();
+    }
 }
 
 
@@ -172,14 +221,14 @@ void VM::defineNative(const std::string& name, NativeFn function)
 
 VM::InterpretResult VM::execute()
 {
-    if (frames.empty() || frames.back().function->chunk->code.size()==0)
+    if (frames.empty() || frames.back().closure->function->chunk->code.size()==0)
         return InterpretResult::OK; // nothing to execute
 
     auto frame { frames.end()-1 };
 
     auto readByte = [&]() -> uint8_t {
         #ifdef DEBUG_BUILD
-            if (frame->ip == frame->function->chunk->code.end())
+            if (frame->ip == frame->closure->function->chunk->code.end())
                 throw std::runtime_error("Invalid IP");
         #endif
         return *frame->ip++;
@@ -187,7 +236,7 @@ VM::InterpretResult VM::execute()
 
     auto readShort = [&]() -> uint16_t {
         #ifdef DEBUG_BUILD
-            if (frame->ip == frame->function->chunk->code.end())
+            if (frame->ip == frame->closure->function->chunk->code.end())
                 throw std::runtime_error("Invalid IP");
         #endif
         frame->ip += 2;
@@ -196,17 +245,17 @@ VM::InterpretResult VM::execute()
 
     auto readConstant = [&]() -> Value {
         #ifdef DEBUG_BUILD
-            return frame->function->chunk->constants.at(Chunk::size_type(readByte()));
+            return frame->closure->function->chunk->constants.at(Chunk::size_type(readByte()));
         #else
-            return frame->function->chunk->constants[Chunk::size_type(readByte())];
+            return frame->closure->function->chunk->constants[Chunk::size_type(readByte())];
         #endif
     };
 
     auto readConstant2 = [&]() -> Value {
         #ifdef DEBUG_BUILD
-            return frame->function->chunk->constants.at(Chunk::size_type((readByte() << 8) + readByte()));
+            return frame->closure->function->chunk->constants.at(Chunk::size_type((readByte() << 8) + readByte()));
         #else
-            return frame->function->chunk->constants[Chunk::size_type((readByte() << 8) + readByte())];
+            return frame->closure->function->chunk->constants[Chunk::size_type((readByte() << 8) + readByte())];
         #endif
     };
 
@@ -250,9 +299,9 @@ VM::InterpretResult VM::execute()
                 }
                 std::cout << std::endl;
             }
-            if (frame->ip != frame->function->chunk->code.end()) {
+            if (frame->ip != frame->closure->function->chunk->code.end()) {
                 // and instruction
-                frame->function->chunk->disassembleInstruction(frame->ip - frame->function->chunk->code.begin());
+                frame->closure->function->chunk->disassembleInstruction(frame->ip - frame->closure->function->chunk->code.begin());
             }
             else {
                 std::cout << "          <end of chunk>" << std::endl;
@@ -374,6 +423,19 @@ VM::InterpretResult VM::execute()
                 }
                 break;
             }
+            case asByte(OpCode::Modulo): {
+                // TODO: support decimal
+                if (!peek(0).isInt()) {
+                    runtimeError("Operand must be an integer");
+                    return InterpretResult::RuntimeError;
+                }
+                if (!peek(1).isInt()) {
+                    runtimeError("Operand must be an integer");
+                    return InterpretResult::RuntimeError;
+                }
+                binaryOp([](Value a, Value b) -> Value { return mod(a,b); });
+                break;
+            }
             case asByte(OpCode::And): {
                 if (!peek(0).isBool()) {
                     runtimeError("Operand must be a bool");
@@ -437,14 +499,40 @@ VM::InterpretResult VM::execute()
                 frame = frames.end()-1;
                 break;
             }
+            case asByte(OpCode::Closure): {
+                ObjFunction* function = asFunction(readConstant());
+                ObjClosure* closure = closureVal(function);
+                push(objVal(closure));
+                for (int i = 0; i < closure->upvalues.size(); i++) {
+                    uint8_t isLocal = readByte();
+                    uint8_t index = readByte();
+                    ObjUpvalue* upvalue;
+                    if (isLocal) 
+                        upvalue = captureUpvalue(*(frame->slots + index));
+                    else 
+                        upvalue = frame->closure->upvalues[index];
+                    upvalue->incRef();
+                    closure->upvalues[i] = upvalue;
+                }
+                break;
+            }
+            case asByte(OpCode::CloseUpvalue): {
+                closeUpvalues(&(*(stackTop -1)));
+                pop();
+                break;
+            }
             case asByte(OpCode::Return): {
-                Value result = pop();
-
                 auto returningFrame { frames.back() };
+
+                Value result = pop();
+                closeUpvalues(returningFrame.slots);
+
                 frames.pop_back();
 
                 if (frames.empty()) {
                     pop();
+                    freeObjects();
+
                     return InterpretResult::OK;
                 }
                 else {
@@ -466,7 +554,7 @@ VM::InterpretResult VM::execute()
             case asByte(OpCode::GetLocal): {
                 uint8_t slot = readByte();
                 #ifdef DEBUG_BUILD
-                auto stackIndex = frame->slots - &stack[0];
+                auto stackIndex = (frame->slots - &stack[0]) + slot;
                 if (stackIndex >= stack.size())
                     throw std::runtime_error("Stack overflow access");
                 #endif
@@ -476,7 +564,7 @@ VM::InterpretResult VM::execute()
             case asByte(OpCode::SetLocal): {
                 uint8_t slot = readByte();
                 #ifdef DEBUG_BUILD
-                auto stackIndex = frame->slots - &stack[0];
+                auto stackIndex = (frame->slots - &stack[0]) + slot;
                 if (stackIndex >= stack.size())
                     throw std::runtime_error("Stack overflow access");
                 #endif
@@ -528,6 +616,16 @@ VM::InterpretResult VM::execute()
                 }
                 break;
             }
+            case asByte(OpCode::GetUpvalue): {
+                uint8_t slot = readByte();
+                push(*frame->closure->upvalues[slot]->location);
+                break;
+            }
+            case asByte(OpCode::SetUpvalue): {
+                uint8_t slot = readByte();
+                *(frame->closure->upvalues[slot]->location) = peek(0);
+                break;
+            }
             case asByte(OpCode::Constant2): {
                 Value constant = readConstant2();
                 push(constant);
@@ -535,7 +633,9 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::Print): {
                 std::cout << toString(pop()) << std::endl;
-                //return InterpretResult::OK;
+                break;
+            }
+            case asByte(OpCode::Nop): {
                 break;
             }
         }
@@ -555,17 +655,41 @@ void VM::resetStack()
     stack.clear();
     stack.resize(MaxStack);
     stackTop = stack.begin();
+
     frames.clear();
+
+    openUpvalues.clear(); // TODO: need to deref or delete?
 }
 
 
 void VM::freeObjects()
 {
+    if (Obj::unrefedObjs.empty()) return;
+
     // free objcts who's reference count dropped to 0
-    for(Obj* obj : Obj::unrefedObjs) 
-        delete obj;
+    while(!Obj::unrefedObjs.empty()) {
+        Obj* obj { Obj::unrefedObjs.back() };
+        Obj::unrefedObjs.pop_back();
+
+        delObj(obj);
+    }
     
     Obj::unrefedObjs.clear();
+}
+
+
+void VM::outputAllocatedObjs()
+{
+    #ifdef DEBUG_TRACE_MEMORY
+    if (Obj::allocatedObjs.size()>0) {
+        std::cout << std::hex;
+        std::cout << "== allocated Objs (" << Obj::allocatedObjs.size() << ")==" << std::endl;
+        for(const auto& p : Obj::allocatedObjs) {
+            std::cout << "  " << uint64_t(p.first) << " " << p.second << std::endl;
+        }
+        std::cout << std::dec;
+    }
+    #endif
 }
 
 
@@ -604,8 +728,8 @@ void VM::runtimeError(const std::string& format, ...)
 
     auto frame { frames.end()-1 };
 
-    size_t instruction = frame->ip - frame->function->chunk->code.begin() - 1;
-    int line = frame->function->chunk->getLine(instruction);
+    size_t instruction = frame->ip - frame->closure->function->chunk->code.begin() - 1;
+    int line = frame->closure->function->chunk->getLine(instruction);
     fprintf(stderr, "[line %d] in script\n", line);
     resetStack();    
 }

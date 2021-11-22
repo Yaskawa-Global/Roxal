@@ -22,10 +22,41 @@ roxal::Value::Value(Obj* o)
 }
 
 
+void Value::box() {
+    if (isBoxed() || !isBoxable()) return;
+    _type = ValueType(int(_type) & int(ValueType::Boxed)); // mark boxed
+    // allocate value on heap
+    if (isBool()) 
+        as.obj = newObj<ObjPrimitive>(__func__,as.boolean);
+    else if (isInt())
+        as.obj = newObj<ObjPrimitive>(__func__,as.integer);
+    else if (isReal())
+        as.obj = newObj<ObjPrimitive>(__func__,as.real);
+    else
+        throw std::runtime_error("Unsupported type for auto-boxing "+typeName());
+
+    as.obj->incRef();
+}
+
+
+void Value::unbox() {
+    if (!isBoxed()) return;
+    _type = ValueType(int(_type) & ~int(ValueType::Boxed)); // remove boxed marker
+    if (isBool())
+        as.boolean = asPrimitive(*this)->as.boolean;
+    else if (isInt())
+        as.boolean = asPrimitive(*this)->as.integer;
+    else if (isReal())
+        as.boolean = asPrimitive(*this)->as.real;
+    as.obj->decRef();
+}
+
+
+
 void roxal::Value::incRefObj()
 {
     #ifdef DEBUG_BUILD
-    if (!isObj())
+    if (!isObj() && !isBoxable())
         throw std::runtime_error("Can't incRef non-object");
     #endif
     as.obj->incRef();
@@ -34,7 +65,7 @@ void roxal::Value::incRefObj()
 void roxal::Value::decRefObj()
 {
     #ifdef DEBUG_BUILD
-    if (!isObj())
+    if (!isObj() && !isBoxable())
         throw std::runtime_error("Can't decRef non-object");
     #endif
     as.obj->decRef();
@@ -44,13 +75,23 @@ void roxal::Value::decRefObj()
 
 int32_t Value::asInt() const
 {
-    switch (_type) {
-    case ValueType::Int: return as.integer;
-    case ValueType::Real: return int32_t(as.real);
-    case ValueType::Bool: return as.boolean ? 1 : 0;
-    case ValueType::Decimal: return 0; // TODO: implement
-    //case ValueType::String ... (if non-strict)
-    default: ;
+    if (!isBoxed()) {
+        switch (_type) {
+        case ValueType::Int: return as.integer;
+        case ValueType::Real: return int32_t(as.real);
+        case ValueType::Bool: return as.boolean ? 1 : 0;
+        case ValueType::Decimal: return 0; // TODO: implement
+        //case ValueType::String ... (if non-strict)
+        default: ;
+        }
+    }
+    else {
+        switch (valueType(_type)) {
+        case ValueType::Int: return asPrimitive(*this)->as.integer;
+        case ValueType::Real: return int32_t(asPrimitive(*this)->as.real);
+        case ValueType::Bool: return asPrimitive(*this)->as.boolean ? 1 : 0;
+        default: ;
+        }
     }
     return 0;
 }
@@ -58,13 +99,23 @@ int32_t Value::asInt() const
 
 double Value::asReal() const
 { 
-    switch (_type) {
-    case ValueType::Real: return as.real;
-    case ValueType::Int: return double(as.integer);
-    case ValueType::Bool: return as.boolean ? 1.0 : 0.0;
-    case ValueType::Decimal: return 0.0; // TODO: implement
-    //case ValueType::String ... (if non-strict)
-    default: ;
+    if (!isBoxed()) {
+        switch (_type) {
+        case ValueType::Real: return as.real;
+        case ValueType::Int: return double(as.integer);
+        case ValueType::Bool: return as.boolean ? 1.0 : 0.0;
+        case ValueType::Decimal: return 0.0; // TODO: implement
+        //case ValueType::String ... (if non-strict)
+        default: ;
+        }
+    }
+    else {
+        switch (_type) {
+        case ValueType::Real: return asPrimitive(*this)->as.real;
+        case ValueType::Int: return double(asPrimitive(*this)->as.integer);
+        case ValueType::Bool: return asPrimitive(*this)->as.boolean ? 1.0 : 0.0;
+        default: ;
+        }
     }
     return 0.0;
 }
@@ -84,6 +135,14 @@ std::string roxal::Value::typeName() const
         return "object";
     //TODO: ...
     return "unknown";
+}
+
+
+bool Value::asBool() const
+{ 
+    return valueType(_type)==ValueType::Bool ? 
+              (!isBoxed() ? as.boolean : asPrimitive(*this)->as.boolean) 
+            : false; 
 }
 
 
@@ -242,6 +301,18 @@ Value roxal::divide(Value l, Value r)
         default: ;
     }
     return Value();
+}
+
+
+Value roxal::mod(Value l, Value r)
+{
+    // TODO: support Decimal
+    if (!l.isInt())
+        throw std::invalid_argument("LHS must be an integer");
+    if (!r.isInt())
+        throw std::invalid_argument("RHS must be an integer");
+
+    return intVal(l.asInt() % r.asInt());
 }
 
 

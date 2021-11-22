@@ -78,7 +78,11 @@ int main(int argc, const char* argv[]) {
     }
     else if (argc == 2) {
 
-        runFile(argv[1]);
+        try {
+            runFile(argv[1]);
+        } catch (std::exception& e) {
+            std::cerr << "Runtime error: " << e.what() << std::endl;
+        }
 
     }
     else {

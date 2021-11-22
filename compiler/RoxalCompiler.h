@@ -94,9 +94,17 @@ protected:
 
     struct Local {
         Local(const icu::UnicodeString& _name, int scopeDepth)
-            : name(_name), depth(scopeDepth) {}
+            : name(_name), depth(scopeDepth), isCaptured(false) {}
         icu::UnicodeString name;
         int depth;
+        bool isCaptured;
+    };
+
+    struct Upvalue {
+        Upvalue(uint8_t i, bool islocal) 
+            : index(i), isLocal(islocal) {}
+        uint8_t index;
+        bool isLocal;
     };
 
 
@@ -111,6 +119,7 @@ protected:
         }
 
         std::vector<Local> locals;
+        std::vector<Upvalue> upvalues;
         int scopeDepth;
 
         bool strict; 
@@ -121,11 +130,18 @@ protected:
         std::vector<uint16_t> identConsts;
     };
 
-    std::vector<CompileState> states;
+    typedef std::vector<CompileState> CompileStates;
+    CompileStates states;
 
-    CompileState& state() {
+    auto state() {
         if (!states.empty())
-            return states.back();
+            return states.end()-1;
+        throw std::runtime_error("CompilerState stack underflow");
+    }
+
+    auto enclosingState(CompileStates::iterator s) {
+        if (s != states.begin())
+            return --s;
         throw std::runtime_error("CompilerState stack underflow");
     }
 
@@ -142,17 +158,17 @@ protected:
 
     void error(const std::string& message);
 
-    void emitByte(uint8_t byte);
-    void emitByte(OpCode op);
-    void emitBytes(uint8_t byte1, uint8_t byte2);
-    void emitBytes(OpCode op, uint8_t byte2);
+    void emitByte(uint8_t byte, const std::string& comment = "");
+    void emitByte(OpCode op, const std::string& comment = "");
+    void emitBytes(uint8_t byte1, uint8_t byte2, const std::string& comment = "");
+    void emitBytes(OpCode op, uint8_t byte2, const std::string& comment = "");
 
-    void emitLoop(Chunk::size_type loopStart);
+    void emitLoop(Chunk::size_type loopStart, const std::string& comment = "");
 
-    Chunk::size_type emitJump(OpCode instruction);
+    Chunk::size_type emitJump(OpCode instruction, const std::string& comment = "");
 
-    void emitReturn();
-    void emitConstant(const Value& value);
+    void emitReturn(const std::string& comment = "");
+    void emitConstant(const Value& value, const std::string& comment = "");
 
     void patchJump(Chunk::size_type jumpInstrOffset);
 
@@ -162,7 +178,9 @@ protected:
     int16_t identifierConstant(const icu::UnicodeString& ident);
 
     void addLocal(const icu::UnicodeString& name);
-    int16_t resolveLocal(const icu::UnicodeString& name);
+    int16_t resolveLocal(CompileStates::iterator scopeState, const icu::UnicodeString& name);
+    int addUpvalue(CompileStates::iterator scopeState, uint8_t index, bool isLocal);
+    int16_t resolveUpvalue(CompileStates::iterator scopeState, const icu::UnicodeString& name);
     void declareVariable(const icu::UnicodeString& name);
     void defineVariable(uint16_t global);
     bool namedVariable(const icu::UnicodeString& ident, bool assign=false);

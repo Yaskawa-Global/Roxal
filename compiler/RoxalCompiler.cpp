@@ -78,35 +78,39 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
     // TODO: should we convert the parse tree into an AST before code generation?
     //   (to allow other passes to do rewriting, e.g. optimization)
 
+    ObjFunction* function { nullptr };
+
     if (parser.getNumberOfSyntaxErrors() == 0) {
 
         states.push_back(CompileState(toUnicodeString(name), FunctionType::Module));
 
-        state().strict = false;
-
-        Local local { "", 0 };
-        state().locals.push_back(local);
+        state()->strict = false;
 
         try {
             auto result = visitFile_input(tree);
             if (!result.isNull())
                 throw std::runtime_error("visitFile_input returned non-Value resut in context "+tree->getText());
             
+            function = state()->function;
+
             #if defined(DEBUG_OUTPUT_CHUNK)
-            state().function->chunk->disassemble(state().function->name);
+            state()->function->chunk->disassemble(state()->function->name);
             #endif
             //std::cout << "value:" << value->repr() << std::endl;
         } catch (std::exception& e) {
-
-            delete state().function;
+            states.pop_back();
+            if (function != nullptr)
+                delObj(function);
             std::cout << std::string("Exception: ") << e.what() << std::endl;
             throw e;
         } 
+
+        states.pop_back();
         
         //std::cout << "\n" << interpreter.stackAsString(false) << std::endl;
     }
-
-    return state().function;
+    
+    return function;
 }
 
 
@@ -182,7 +186,7 @@ Any RoxalCompiler::visitExpr_stmt(RoxalParser::Expr_stmtContext *context)
 
     // expressions leave their value on the stack, but statements don't
     //  have a value, so discard it
-    emitByte(OpCode::Pop);
+    emitByte(OpCode::Pop, "expr_stmt value");
 
     return Any();
 }
@@ -192,12 +196,12 @@ Any RoxalCompiler::visitSuite(RoxalParser::SuiteContext *context)
     ParseTracer pt(__func__, context);
     currentToken = context->start;
 
-    beginScope(); 
+//!!!    beginScope(); 
 
     for(int i=0; i<context->declaration().size(); i++)
         visitDeclaration(context->declaration().at(i));
 
-    endScope(); 
+//!!!    endScope(); 
 
     return Any();
 }
@@ -239,7 +243,9 @@ Any RoxalCompiler::visitBlock_stmt(RoxalParser::Block_stmtContext *context)
     ParseTracer pt(__func__, context);
     currentToken = context->start;
 
+    beginScope();
     visitSuite(context->suite());
+    endScope();
 
     return Any();
 }
@@ -286,9 +292,11 @@ Any RoxalCompiler::visitIf_stmt(RoxalParser::If_stmtContext *context)
     visitExpression(context->expression().at(0));
 
     auto jumpOverIf = emitJump(OpCode::JumpIfFalse);
-    emitByte(OpCode::Pop);
+    emitByte(OpCode::Pop, "if cond");
 
+    beginScope();
     visitSuite(context->suite().at(0));
+    endScope();
 
     auto jumpOverElse = emitJump(OpCode::Jump);
 
@@ -302,9 +310,12 @@ Any RoxalCompiler::visitIf_stmt(RoxalParser::If_stmtContext *context)
         }
     }
 
-    emitByte(OpCode::Pop);
-    if (context->ELSE()) 
+    emitByte(OpCode::Pop, "if cond");
+    if (context->ELSE()) {
+        beginScope();
         visitSuite(context->suite().at(context->suite().size()-1));
+        endScope();
+    }
     
     patchJump(jumpOverElse);
 
@@ -323,14 +334,14 @@ Any RoxalCompiler::visitWhile_stmt(RoxalParser::While_stmtContext *context)
     visitExpression(context->expression());
 
     auto jumpToExit = emitJump(OpCode::JumpIfFalse);
-    emitByte(OpCode::Pop);
+    emitByte(OpCode::Pop, "while cond");
 
     visitSuite(context->suite());
 
     emitLoop(loopStart);
 
     patchJump(jumpToExit);
-    emitByte(OpCode::Pop);
+    emitByte(OpCode::Pop, "while cond");
 
     return Any();
 }
@@ -346,7 +357,7 @@ Any RoxalCompiler::visitVar_decl(RoxalParser::Var_declContext *context)
 
     declareVariable(uident);
     uint16_t var { 0 };
-    if (state().scopeDepth == 0) // global variable
+    if (state()->scopeDepth == 0) // global variable
         var = identifierConstant(uident); // create constant table entry for name
 
     // TODO: support type spec and init with default for type
@@ -373,12 +384,12 @@ Any RoxalCompiler::visitFunc_decl(RoxalParser::Func_declContext *context)
 
     declareVariable(uident);
     uint16_t var { 0 };
-    if (state().scopeDepth == 0) // global variable
+    if (state()->scopeDepth == 0) // global variable
         var = identifierConstant(uident); // create constant table entry for name
 
-    if (state().scopeDepth > 0) {
+    if (state()->scopeDepth > 0) {
         // mark initialized
-        state().locals.back().depth = state().scopeDepth;
+        state()->locals.back().depth = state()->scopeDepth;
     }
 
     visitFunction(context->function());
@@ -399,6 +410,9 @@ Any RoxalCompiler::visitFunction(RoxalParser::FunctionContext *context)
 
     states.push_back(CompileState(uident, FunctionType::Function));
 
+    #ifdef DEBUG_BUILD
+    emitByte(OpCode::Nop, "func "+identifier);
+    #endif
     beginScope();
 
     if (context->parameters()) 
@@ -406,19 +420,32 @@ Any RoxalCompiler::visitFunction(RoxalParser::FunctionContext *context)
 
     visitSuite(context->suite());
 
-    endScope();
+ //   endScope(); // FIXME: needed? state about to be discarded
 
     emitReturn();
 
     #if defined(DEBUG_OUTPUT_CHUNK)
-    state().function->chunk->disassemble(state().function->name);
+    state()->function->chunk->disassemble(state()->function->name);
     #endif
 
-    ObjFunction* function = state().function;
+    ObjFunction* function = state()->function;
+    auto functionState { *state() };
 
     states.pop_back(); // back to surrpounding function
-
-    emitBytes(OpCode::Constant, makeConstant(objVal(function)));
+//!!!
+// std::cout << "Closure " << toUTF8StdString(function->name) << ": #" << function->upvalueCount << std::endl;//!!!
+// std::cout << "   #" << functionState.upvalues.size() << std::endl;
+//!!!
+    emitBytes(OpCode::Closure, makeConstant(objVal(function)));
+    for (int i = 0; i < function->upvalueCount; i++) {
+        #ifdef DEBUG_BUILD
+        if (i >= functionState.upvalues.size())
+            throw std::runtime_error("invalid upvalue index");
+        #endif
+//std::cout << "    - " << int(functionState.upvalues[i].index) << " " << std::string(functionState.upvalues[i].isLocal ?"local":"nonlocal") << std::endl;        
+        emitByte(functionState.upvalues[i].isLocal ? 1 : 0);
+        emitByte(functionState.upvalues[i].index);
+    }
 
     return Any();
 }
@@ -431,7 +458,7 @@ Any RoxalCompiler::visitParameters(RoxalParser::ParametersContext *context)
 
     for(size_t i=0; i<context->parameter().size(); i++) {
 
-        if (++state().function->arity > 255)
+        if (++state()->function->arity > 255)
             error("Maximum of function or procedure 255 parameters exceeded.");
 
         visitParameter(context->parameter().at(i));
@@ -650,6 +677,8 @@ antlrcpp::Any RoxalCompiler::visitMultdiv(RoxalParser::MultdivContext *context)
         emitByte(OpCode::Multiply);
     else if (context->DIV())
         emitByte(OpCode::Divide);
+    else if (context->MOD())
+        emitByte(OpCode::Modulo);
 
     return Any();
 }
@@ -762,8 +791,8 @@ Any RoxalCompiler::visitStr(RoxalParser::StrContext *context)
 
     UnicodeString ustr { UnicodeString::fromUTF8(str) };
 
-    // TODO: coalesce constant pool strings? (ensuring they're actually const)
-    auto objStr = stringVal(ustr);
+    // new ObjString or existing one if exists in strings intern map
+    auto objStr = stringVal(ustr); 
     emitConstant(objVal(objStr));
 
     return Any();
@@ -840,30 +869,53 @@ Any RoxalCompiler::visitInteger(RoxalParser::IntegerContext *context)
 
 void RoxalCompiler::beginScope()
 {
-    state().scopeDepth++;
+    state()->scopeDepth++;
+    //std::cout << "beginScope() depth=" << state()->scopeDepth << std::endl;
 }
 
 void RoxalCompiler::endScope()
 {
-    state().scopeDepth--;
+    state()->scopeDepth--;
 
     // count how many local variables in the current scope need to be poped
     //  from the stack and emit pop instruction(s)
-    int16_t count { 0 };
-    while (!state().locals.empty()
-           && state().locals.back().depth > state().scopeDepth) {
-        count++;
-        if (count == 255) {
-            emitBytes(OpCode::PopN, 255);
-            count=0;
-        }
-        state().locals.pop_back();
-    }
-    if (count > 0) {
-        if (count==1)
-            emitByte(OpCode::Pop);
+    // int16_t count { 0 };
+    // while (!state()->locals.empty()
+    //        && state()->locals.back().depth > state()->scopeDepth) {
+    //     count++;
+    //     if (count == 255) {
+    //         emitBytes(OpCode::PopN, 255);
+    //         count=0;
+    //     }
+    //     state()->locals.pop_back();
+    // }
+    // if (count > 0) {
+    //     if (count==1)
+    //         emitByte(OpCode::Pop);
+    //     else
+    //         emitBytes(OpCode::PopN, uint8_t(count));
+    // }
+
+    auto& locals { state()->locals };
+// //!!!
+// std::cout << "<endScope() depth=" << (state()->scopeDepth+1) << " local.size=" << locals.size() << ":" << std::endl;
+// for(auto li=locals.begin(); li!=locals.end(); ++li) {
+//     std::cout << "  " << int(&(*li) - &(*locals.begin())) << " " << toUTF8StdString(li->name) << " " << li->depth << " "
+//      << (li->isCaptured ? "captured":"notcaptured") << std::endl;
+// }
+// std::cout << std::endl;
+// //!!!
+    while (!locals.empty()
+           && locals.back().depth > state()->scopeDepth) {
+
+        std::string popComment { "local "+toUTF8StdString(locals.back().name)+" depth:"+std::to_string(locals.back().depth) };
+
+        if (locals.back().isCaptured)
+            emitByte(OpCode::CloseUpvalue, popComment);
         else
-            emitBytes(OpCode::PopN, uint8_t(count));
+            emitByte(OpCode::Pop, popComment);
+
+        locals.pop_back();           
     }
 }
 
@@ -876,34 +928,34 @@ void RoxalCompiler::error(const std::string& message)
 
 
 
-void RoxalCompiler::emitByte(uint8_t byte)
+void RoxalCompiler::emitByte(uint8_t byte, const std::string& comment)
 {
-    currentChunk()->write(byte, currentToken->getLine());
+    currentChunk()->write(byte, currentToken->getLine(), comment);
 }
 
 
-void RoxalCompiler::emitByte(OpCode op)
+void RoxalCompiler::emitByte(OpCode op, const std::string& comment)
 {
-    currentChunk()->write(asByte(op), currentToken->getLine());
+    currentChunk()->write(asByte(op), currentToken->getLine(), comment);
 }
 
 
-void RoxalCompiler::emitBytes(uint8_t byte1, uint8_t byte2)
+void RoxalCompiler::emitBytes(uint8_t byte1, uint8_t byte2, const std::string& comment)
 {
-    currentChunk()->write(byte1, currentToken->getLine());
+    currentChunk()->write(byte1, currentToken->getLine(), comment);
     currentChunk()->write(byte2, currentToken->getLine());
 }
 
-void RoxalCompiler::emitBytes(OpCode op, uint8_t byte2)
+void RoxalCompiler::emitBytes(OpCode op, uint8_t byte2, const std::string& comment)
 {
-    currentChunk()->write(op, currentToken->getLine());
+    currentChunk()->write(op, currentToken->getLine(), comment);
     currentChunk()->write(byte2, currentToken->getLine());
 }
 
 
-void RoxalCompiler::emitLoop(Chunk::size_type loopStart)
+void RoxalCompiler::emitLoop(Chunk::size_type loopStart, const std::string& comment)
 {
-    emitByte(OpCode::Loop);
+    emitByte(OpCode::Loop, comment);
 
     auto offset = currentChunk()->code.size() - loopStart + 2;
     if (offset > std::numeric_limits<uint16_t>::max())
@@ -914,9 +966,9 @@ void RoxalCompiler::emitLoop(Chunk::size_type loopStart)
 }
 
 
-Chunk::size_type RoxalCompiler::emitJump(OpCode instruction)
+Chunk::size_type RoxalCompiler::emitJump(OpCode instruction, const std::string& comment)
 {
-    emitByte(instruction);
+    emitByte(instruction, comment);
     emitByte(0xff);
     emitByte(0xff);
     return currentChunk()->code.size() - 2;
@@ -924,21 +976,21 @@ Chunk::size_type RoxalCompiler::emitJump(OpCode instruction)
 
 
 
-void RoxalCompiler::emitReturn()
+void RoxalCompiler::emitReturn(const std::string& comment)
 {
-    emitByte(OpCode::ConstNil);
+    emitByte(OpCode::ConstNil, comment);
     emitByte(OpCode::Return);
 }
 
 
-void RoxalCompiler::emitConstant(const Value& value)
+void RoxalCompiler::emitConstant(const Value& value, const std::string& comment)
 {
     uint16_t constant = makeConstant(value);
     if (constant <= 255)
-        emitBytes(OpCode::Constant, uint8_t(constant));
+        emitBytes(OpCode::Constant, uint8_t(constant), comment);
     else {
         emitByte(OpCode::Constant2);
-        emitBytes( uint8_t(constant >> 8), uint8_t(constant & 0xff) );
+        emitBytes( uint8_t(constant >> 8), uint8_t(constant & 0xff), comment );
     }
 }
 
@@ -972,7 +1024,7 @@ int16_t RoxalCompiler::identifierConstant(const icu::UnicodeString& ident)
     // search for existing identifier string constant to re-use first
     bool found { false };
     int16_t constant {};
-    for(auto identConst : state().identConsts) {
+    for(auto identConst : state()->identConsts) {
         if (asString(currentChunk()->constants.at(identConst))->s == ident) {
             constant = identConst;
             found = true;
@@ -984,7 +1036,7 @@ int16_t RoxalCompiler::identifierConstant(const icu::UnicodeString& ident)
         // not found, create new string constant
         //  (globals are late bound, so it may only be declared afterward)
         constant = makeConstant(objVal(stringVal(ident)));
-        state().identConsts.push_back(constant);
+        state()->identConsts.push_back(constant);
     }
     return constant;
 }
@@ -992,24 +1044,31 @@ int16_t RoxalCompiler::identifierConstant(const icu::UnicodeString& ident)
 
 void RoxalCompiler::addLocal(const icu::UnicodeString& name)
 {
-    if (state().locals.size() == 255) {
+    //std::cout << (&(*state()) - &(*states.begin())) << " addLocal(" << toUTF8StdString(name) << ")" << std::endl;//!!!
+    if (state()->locals.size() == 255) {
         error("Maximum of 255 local variables per function exceeded.");
         return;  
     }
-    state().locals.push_back(Local(name, -1)); // scopeDepth=-1 --> uninitialized
+    state()->locals.push_back(Local(name, -1)); // scopeDepth=-1 --> uninitialized
+    #ifdef DEBUG_BUILD
+    auto index { state()->locals.size()-1 };
+    emitByte(OpCode::Nop, "local "+toUTF8StdString(name)+ "("+std::to_string(index)+") depth:"+std::to_string(state()->scopeDepth));
+    #endif
+
 }
 
 
-int16_t RoxalCompiler::resolveLocal(const icu::UnicodeString& name)
+int16_t RoxalCompiler::resolveLocal(CompileStates::iterator scopeState, const icu::UnicodeString& name)
 {
-    if (!state().locals.empty())
-        for(int32_t i=state().locals.size()-1; i>=0; i--) {
+    //std::cout << (&(*scopeState) - &(*states.begin()))<< " resolveLocal(" << toUTF8StdString(name) << ")" << std::endl;//!!!
+    if (!scopeState->locals.empty())
+        for(int32_t i=scopeState->locals.size()-1; i>=0; i--) {
             #ifdef DEBUG_BUILD
-                if (state().locals.at(i).name == name) {
+                if (scopeState->locals.at(i).name == name) {
             #else
-                if (state().locals[i].name == name) {
+                if (scopeState->locals[i].name == name) {
             #endif
-                    if (state().locals[i].depth == -1)
+                    if (scopeState->locals[i].depth == -1)
                         error("Reference to local varaiable in initializer not allowed.");
                     return i;
                 }
@@ -1019,14 +1078,71 @@ int16_t RoxalCompiler::resolveLocal(const icu::UnicodeString& name)
 }
 
 
+int RoxalCompiler::addUpvalue(CompileStates::iterator scopeState, uint8_t index, bool isLocal)
+{
+    //std::cout << (&(*scopeState) - &(*states.begin())) << " addUpvalue(" << index << " " << (isLocal ? "local" : "notlocal") << ")" << std::endl;//!!!
+    int upvalueCount = scopeState->function->upvalueCount;
+    auto& upvalues { scopeState->upvalues };
+
+    for (int i=0; i<upvalueCount; i++) {
+        const Upvalue& upvalue = upvalues[i];
+        if (upvalue.index == index && upvalue.isLocal == isLocal) 
+            return i;        
+    }
+
+    if (upvalueCount == std::numeric_limits<uint8_t>::max()) {
+        error("Maximum closure variables exceeded in function.");
+        return 0;
+    }
+
+    upvalues.push_back(Upvalue(index, isLocal));
+// //!!!
+// std::cout << "Upvalues: ";
+// for(int i=0; i<upvalues.size();i++) {
+//     std:: cout << int(upvalues[i].index) << (upvalues[i].isLocal?"L":"n") << "  ";
+// }
+// std::cout << std::endl;
+// std::cout << "  function.upvalueCount="+std::to_string(upvalueCount) << std::endl;
+// //!!!
+    return scopeState->function->upvalueCount++;
+}
+
+
+int16_t RoxalCompiler::resolveUpvalue(CompileStates::iterator scopeState, const icu::UnicodeString& name)
+{
+    //std::cout << (&(*scopeState) - &(*states.begin())) << " resolveUpvalue(" << toUTF8StdString(name) << ")" << std::endl;//!!!
+    //std::string sname { toUTF8StdString(name) };//!!!
+
+    if (scopeState == states.begin()) // no enclosing function scope
+        return -1;
+
+    int local = resolveLocal(enclosingState(scopeState), name);
+    if (local != -1) {
+        #ifdef DEBUG_BUILD
+        enclosingState(scopeState)->locals.at(local).isCaptured = true;
+        #else
+        enclosingState(scopeState)->locals[local].isCaptured = true;
+        #endif
+        return addUpvalue(scopeState, uint8_t(local), true);
+    }
+
+    int upvalue = resolveUpvalue(enclosingState(scopeState), name);
+    if (upvalue != -1)
+        return addUpvalue(scopeState, uint8_t(upvalue), false);
+
+    return -1;
+}
+
+
+
 void RoxalCompiler::declareVariable(const icu::UnicodeString& name)
 {
-    if (state().scopeDepth == 0)
+    if (state()->scopeDepth == 0)
         return;
 
     // check there is no variable with the same name in this scope (an error)
-    for(auto li = state().locals.rbegin(); li != state().locals.rend(); li--) {
-        if ((li->depth != -1) && (li->depth < state().scopeDepth))
+    for(auto li = state()->locals.rbegin(); li != state()->locals.rend(); li--) {
+        if ((li->depth != -1) && (li->depth < state()->scopeDepth))
             break;
 
         if (li->name == name) {
@@ -1041,9 +1157,9 @@ void RoxalCompiler::declareVariable(const icu::UnicodeString& name)
 void RoxalCompiler::defineVariable(uint16_t var)
 {
     // local variables are already on the stack
-    if (state().scopeDepth > 0) {
+    if (state()->scopeDepth > 0) {
         // mark initialized
-        state().locals.back().depth = state().scopeDepth;
+        state()->locals.back().depth = state()->scopeDepth;
         return;
     }
 
@@ -1057,28 +1173,33 @@ void RoxalCompiler::defineVariable(uint16_t var)
 
 bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
 {
+    //std::cout << (&(*state()) - &(*states.begin())) << " namedVariable(" << toUTF8StdString(name) << ")" << std::endl;//!!!
     OpCode getOp, setOp;
 
-    int16_t arg = resolveLocal(name);
+    int16_t arg = resolveLocal(state(),name);
     if (arg != -1) { // found
         getOp = OpCode::GetLocal;
         setOp = OpCode::SetLocal;
+    }
+    else if ((arg = resolveUpvalue(state(),name)) != -1) {
+        getOp = OpCode::GetUpvalue;
+        setOp = OpCode::SetUpvalue;
     }
     else { // local, not found
         // assume global
         arg = identifierConstant(name);
         getOp = OpCode::GetGlobal;
         //  allow assigning without previously declaring, except within functions
-        if (state().functionType != FunctionType::Module)
+        if (state()->functionType != FunctionType::Module)
             setOp = OpCode::SetGlobal;
         else 
             setOp = OpCode::SetNewGlobal;
     }
 
     if (!assign)
-        emitBytes(getOp, arg);
+        emitBytes(getOp, arg, toUTF8StdString(name));
     else
-        emitBytes(setOp, arg);
+        emitBytes(setOp, arg, toUTF8StdString(name));
 
     return true;
 }

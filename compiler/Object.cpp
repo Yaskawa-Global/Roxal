@@ -8,6 +8,10 @@ using namespace roxal;
 
 std::vector<Obj*> Obj::unrefedObjs {};
 
+#ifdef DEBUG_TRACE_MEMORY
+std::map<Obj*, const char*> Obj::allocatedObjs {};
+#endif
+
 
 // interned strings table
 static std::unordered_map<int32_t, ObjString*> strings {};
@@ -62,7 +66,7 @@ ObjString* roxal::stringVal(const UnicodeString& s)
     auto si = strings.find(hash);
     if (si == strings.end()) { // not found
         // create new
-        return new ObjString(s); 
+        return newObj<ObjString>(__func__,s); 
     }
     else { // found existing string
         return si->second;
@@ -90,6 +94,12 @@ std::string roxal::objStringToString(const ObjString* os)
 std::string roxal::objToString(const Value& v)
 {
     switch(objType(v)) {
+        case ObjType::Closure: {
+            return objFunctionToString(asClosure(v)->function);
+        }
+        case ObjType::Upvalue: {
+            return "upvalue";
+        }
         case ObjType::Function: {
             return objFunctionToString(asFunction(v));
         }
@@ -110,7 +120,7 @@ std::string roxal::objToString(const Value& v)
 
 
 ObjFunction::ObjFunction()
-    : arity(0), name()
+    : arity(0), upvalueCount(0), name()
 {
     type = ObjType::Function;
     chunk = std::make_shared<Chunk>();
@@ -118,10 +128,6 @@ ObjFunction::ObjFunction()
 
 
 
-ObjFunction* roxal::functionVal()
-{
-    return new ObjFunction();
-}
 
 
 
@@ -134,7 +140,7 @@ ObjNative::ObjNative(NativeFn _function)
 
 ObjNative* roxal::nativeVal(NativeFn function)
 {
-    return new ObjNative(function);
+    return newObj<ObjNative>(__func__,function);
 }
 
 
@@ -171,4 +177,23 @@ bool roxal::objsEqual(const Value& l, const Value& r)
 
     }
     return false;
+}
+
+
+std::string roxal::objTypeName(Obj* obj)
+{
+    if (obj == nullptr) return "null";
+
+    switch (obj->type) {
+    case ObjType::None: return "None";
+    case ObjType::Closure: return "Closure";
+    case ObjType::Function: return "Function";
+    case ObjType::Native: return "Native";
+    case ObjType::Upvalue: return "Upvalue";
+    case ObjType::Bool: return "Bool";
+    case ObjType::Int: return "Int";
+    case ObjType::Real: return "Real";
+    case ObjType::String: return "String";
+    }
+    return "unknown";
 }

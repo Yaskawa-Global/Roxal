@@ -1,5 +1,7 @@
 #include <iostream>
 
+
+#include "Object.h"
 #include "Chunk.h"
 
 using namespace roxal;
@@ -11,19 +13,22 @@ Chunk::Chunk()
 }
 
 
-void Chunk::write(uint8_t byte, int line)
+void Chunk::write(uint8_t byte, int line, const std::string& comment)
 {
     code.push_back(byte);
+    #ifdef DEBUG_BUILD
+    codeComments.push_back(comment);
+    #endif
     lines.push_back(line);
 }
 
 
-void Chunk::writeConsant(const Value& value, int line)
+void Chunk::writeConsant(const Value& value, int line, const std::string& comment)
 {
     auto constant = addConstant(value);
     if (constant > 255)
         throw std::runtime_error("maximum of 256 constants exceeded");
-    write(OpCode::Constant, line);
+    write(OpCode::Constant, line, comment);
     write(constant, line);
 }
 
@@ -55,7 +60,15 @@ void Chunk::disassemble(const icu::UnicodeString& name)
 
 Chunk::size_type Chunk::simpleInstruction(const std::string& name, size_type offset) const
 {
+    #ifdef DEBUG_BUILD
+    auto comment { codeComments.at(offset) };
+    if (comment.empty())
+        std::cout << name << std::endl;
+    else
+        std::cout << format("%-16s # %s",name.c_str(),comment.c_str()) << std::endl;
+    #else
     std::cout << name << std::endl;
+    #endif
     return offset+1;
 }
 
@@ -63,7 +76,15 @@ Chunk::size_type Chunk::simpleInstruction(const std::string& name, size_type off
 Chunk::size_type Chunk::byteInstruction(const std::string& name, size_type offset) const
 {
     uint8_t arg = code.at(offset+1);
+    #ifdef DEBUG_BUILD
+    auto comment { codeComments.at(offset) };
+    if (comment.empty())
+        std::cout << format("%-16s %4d", name.c_str(), arg) << std::endl;
+    else
+        std::cout << format("%-16s %4d  # %s", name.c_str(), arg, comment.c_str()) << std::endl;
+    #else
     std::cout << format("%-16s %4d", name.c_str(), arg) << std::endl;
+    #endif
     return offset+2;
 }
 
@@ -71,7 +92,15 @@ Chunk::size_type Chunk::byteInstruction(const std::string& name, size_type offse
 Chunk::size_type Chunk::shortInstruction(const std::string& name, size_type offset) const
 {
     uint16_t arg = (code.at(offset+1) << 8) + code.at(offset+2); // LSByte last
+    #ifdef DEBUG_BUILD
+    auto comment { codeComments.at(offset) };
+    if (comment.empty())
+        std::cout << format("%-16s %4d", name.c_str(), arg) << std::endl;
+    else
+        std::cout << format("%-16s %4d  # %s ", name.c_str(), arg, comment.c_str()) << std::endl;
+    #else
     std::cout << format("%-16s %4d", name.c_str(), arg) << std::endl;
+    #endif
     return offset+3;
 }
 
@@ -80,7 +109,15 @@ Chunk::size_type Chunk::jumpInstruction(const std::string& name, int sign, size_
 {
     uint16_t arg = (code.at(offset+1) << 8) + code.at(offset+2); // LSByte last
     size_type jumpTarget = offset + 3 + sign*arg;
+    #ifdef DEBUG_BUILD
+    auto comment { codeComments.at(offset) };
+    if (comment.empty())
+        std::cout << format("%-16s %4d (-> %d)", name.c_str(), arg, jumpTarget) << std::endl;
+    else
+        std::cout << format("%-16s %4d (-> %d)  # %s", name.c_str(), arg, jumpTarget, comment.c_str()) << std::endl;
+    #else
     std::cout << format("%-16s %4d (-> %d)", name.c_str(), arg, jumpTarget) << std::endl;
+    #endif
     return offset+3;
 }
 
@@ -148,6 +185,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("MULTIPLY", offset);
         case asByte(OpCode::Divide):
             return simpleInstruction("DIVIDE", offset);
+        case asByte(OpCode::Modulo):
+            return simpleInstruction("MODULO", offset);
         case asByte(OpCode::Negate):
             return simpleInstruction("NEGATE", offset);
         case asByte(OpCode::And):
@@ -168,6 +207,25 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return jumpInstruction("LOOP", -1, offset);
         case asByte(OpCode::Call):
             return byteInstruction("CALL", offset);
+        case asByte(OpCode::Closure): {
+            offset++;
+            uint8_t constant = code.at(offset++);
+            std::cout << format("%-16s %4d ","CLOSURE", constant);
+            std::cout << toString(constants.at(constant)) << std::endl;
+
+            ObjFunction* function = asFunction(constants.at(constant));
+            for (int j=0; j < function->upvalueCount; j++) {
+                int isLocal = code.at(offset++);
+                int index = code.at(offset++);
+                std::cout << format("%04d      |                     %s %d",
+                                    offset - 2, isLocal ? "local" : "upvalue", index)
+                          << std::endl;
+            }
+
+            return offset;
+        }
+        case asByte(OpCode::CloseUpvalue): 
+            return simpleInstruction("CLOSE_UPVALUE", offset);
         case asByte(OpCode::Return):
             return simpleInstruction("RETURN", offset);
         case asByte(OpCode::Print):
@@ -184,6 +242,12 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return byteInstruction("GET_LOCAL", offset);
         case asByte(OpCode::SetLocal):
             return byteInstruction("SET_LOCAL", offset);
+        case asByte(OpCode::GetUpvalue):
+            return byteInstruction("GET_UPVALUE", offset);
+        case asByte(OpCode::SetUpvalue):
+            return byteInstruction("SET_UPVALUE", offset);
+        case asByte(OpCode::Nop):
+            return simpleInstruction("NOP", offset);
         default:
             std::cout << "Unknown opcode " << std::to_string(instruction) << std::endl;
             return offset+1;
