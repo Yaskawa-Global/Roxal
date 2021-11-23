@@ -232,6 +232,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("OBJECT_TYPE", offset);
         case asByte(OpCode::ActorType):
             return constantInstruction("ACTOR_TYPE", offset);
+        case asByte(OpCode::Method):
+            return constantInstruction("METHOD", offset);
         case asByte(OpCode::Print):
             return simpleInstruction("PRINT", offset);
         case asByte(OpCode::DefineGlobal):

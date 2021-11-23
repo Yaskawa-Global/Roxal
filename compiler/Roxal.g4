@@ -191,6 +191,7 @@ primary
  | LFALSE
  | num 
  | LNIL
+ | THIS
  | str   // str+ ?
  | IDENTIFIER 
  | OPEN_PAREN expression CLOSE_PAREN
@@ -223,7 +224,7 @@ RETURN: 'return';
 SCOPE: 'scope' ;
 WITH: 'with'; // TODO
 IMPLEMENTS: 'implements';
-
+THIS: 'this';
 
 // Types
 BOOL: 'bool';

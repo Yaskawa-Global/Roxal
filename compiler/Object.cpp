@@ -117,6 +117,9 @@ std::string roxal::objToString(const Value& v)
             ObjInstance* inst = asInstance(v);
             return std::string(inst->instanceType->isActor ? "actor" : "object")+" "+toUTF8StdString(inst->instanceType->name);
         }
+        case ObjType::BoundMethod: {
+            return objFunctionToString(asBoundMethod(v)->method->function);
+        }
         default: ;
     }
     return "";
@@ -180,6 +183,21 @@ ObjInstance* roxal::objInstanceVal(ObjObjectType* objectType)
 
 
 
+ObjBoundMethod::ObjBoundMethod(const Value& instance, ObjClosure* closure)
+    : receiver(instance), method(closure)
+{
+    type = ObjType::BoundMethod;
+    method->incRef();
+}
+
+ObjBoundMethod::~ObjBoundMethod() 
+{
+    method->decRef();
+}
+
+
+
+
 
 
 bool roxal::objsEqual(const Value& l, const Value& r)
@@ -224,6 +242,7 @@ std::string roxal::objTypeName(Obj* obj)
         ObjInstance* inst = static_cast<ObjInstance*>(obj);
         return inst->instanceType->isActor ? "actor":"object";
     }
+    case ObjType::BoundMethod: return "function";
     case ObjType::Closure: return "closure";
     case ObjType::Function: return "function";
     case ObjType::Native: return "native";

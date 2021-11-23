@@ -113,13 +113,14 @@ protected:
 
 
     // stack new states are we enter new functions to compile
-    struct CompileState {
-        CompileState(const icu::UnicodeString& funcName, FunctionType funcType) 
+    struct FunctionScope {
+        FunctionScope(const icu::UnicodeString& funcName, FunctionType funcType) 
             : scopeDepth(0), functionType(funcType), strict(true)
         {
             function = functionVal();
             function->name = funcName;
-            locals.push_back(Local(UnicodeString(),0)); // no name for funcs
+            UnicodeString localName { funcType==FunctionType::Method ? "this" : "" };
+            locals.push_back(Local(localName,0)); 
         }
 
         std::vector<Local> locals;
@@ -134,24 +135,46 @@ protected:
         std::vector<uint16_t> identConsts;
     };
 
-    typedef std::vector<CompileState> CompileStates;
-    CompileStates states;
+    typedef std::vector<FunctionScope> FunctionScopes;
+    FunctionScopes funcScopes;
 
-    auto state() {
-        if (!states.empty())
-            return states.end()-1;
-        throw std::runtime_error("CompilerState stack underflow");
+    auto funcScope() {
+        if (!funcScopes.empty())
+            return funcScopes.end()-1;
+        throw std::runtime_error("FunctionScope stack underflow");
     }
 
-    auto enclosingState(CompileStates::iterator s) {
-        if (s != states.begin())
+    auto enclosingFuncScope(FunctionScopes::iterator s) {
+        if (s != funcScopes.begin())
             return --s;
-        throw std::runtime_error("CompilerState stack underflow");
+        throw std::runtime_error("FunctionScope stack underflow");
     }
+
+
+    struct TypeScope {
+
+    };
+
+    typedef std::vector<TypeScope> TypeScopes;
+    TypeScopes typeScopes;
+
+    auto typeScope() {
+        if (!typeScopes.empty())
+            return typeScopes.end()-1;
+        throw std::runtime_error("TypeScope stack underflow");
+    }
+
+    auto enclosingTypeScope(TypeScopes::iterator s) {
+        if (s != typeScopes.begin())
+            return --s;
+        throw std::runtime_error("TypeScope stack underflow");
+    }
+
+
 
 
     ptr<Chunk> currentChunk() const {
-            return states.back().function->chunk;
+            return funcScopes.back().function->chunk;
     }
 
     antlr4::Token* currentToken;
@@ -182,9 +205,9 @@ protected:
     int16_t identifierConstant(const icu::UnicodeString& ident);
 
     void addLocal(const icu::UnicodeString& name);
-    int16_t resolveLocal(CompileStates::iterator scopeState, const icu::UnicodeString& name);
-    int addUpvalue(CompileStates::iterator scopeState, uint8_t index, bool isLocal);
-    int16_t resolveUpvalue(CompileStates::iterator scopeState, const icu::UnicodeString& name);
+    int16_t resolveLocal(FunctionScopes::iterator scopeState, const icu::UnicodeString& name);
+    int addUpvalue(FunctionScopes::iterator scopeState, uint8_t index, bool isLocal);
+    int16_t resolveUpvalue(FunctionScopes::iterator scopeState, const icu::UnicodeString& name);
     void declareVariable(const icu::UnicodeString& name);
     void defineVariable(uint16_t global);
     bool namedVariable(const icu::UnicodeString& ident, bool assign=false);

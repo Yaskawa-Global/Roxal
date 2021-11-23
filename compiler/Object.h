@@ -17,6 +17,7 @@ using icu::UnicodeString;
 
 enum class ObjType {
     None = 0,
+    BoundMethod,
     ObjectType,
     Closure,
     Function,
@@ -158,6 +159,7 @@ std::string objStringToString(const ObjString* os);
 
 enum class FunctionType {
     Function,
+    Method,
     Module
 };
 
@@ -290,7 +292,7 @@ struct ObjObjectType : public Obj
     icu::UnicodeString name;
     bool isActor;
 
-    std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value> methods;
+    std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> methods;
 
 };
 
@@ -318,7 +320,34 @@ inline bool isInstance(const Value& v) { return isObjType(v, ObjType::Instance);
 inline ObjInstance* asInstance(const Value& v) { return static_cast<ObjInstance*>(v.asObj()); }
 
 ObjInstance* objInstanceVal(ObjObjectType* objectType);
-    
+
+
+
+//
+// method closure bound to object|actor instance
+
+struct ObjBoundMethod : public Obj
+{
+    ObjBoundMethod(const Value& instance, ObjClosure* closure);
+    virtual ~ObjBoundMethod();
+
+    Value receiver;
+    ObjClosure* method;
+};
+
+inline bool isBoundMethod(const Value& v) { return isObjType(v, ObjType::BoundMethod); }
+inline ObjBoundMethod* asBoundMethod(const Value& v) { return static_cast<ObjBoundMethod*>(v.asObj()); }
+
+inline ObjBoundMethod* boundMethodVal(const Value& instance, ObjClosure* closure) {
+    return newObj<ObjBoundMethod>(__func__,instance, closure);
 }
+
+
+
+
+} // namespace
+
+
+
 
 

@@ -14,6 +14,8 @@ VM::VM()
 {
     resetStack();
     defineNativeFunctions();
+    initString = stringVal(UnicodeString("init"));
+    initString->incRef();
 }
 
 
@@ -22,12 +24,16 @@ VM::VM(std::istream& linestream)
 {
     resetStack();
     defineNativeFunctions();
+    initString = stringVal(UnicodeString("init"));
+    initString->incRef();
 }
 
 VM::~VM()
 {
     resetStack();
     globals.clear();
+
+    initString->decRef();
 
     freeObjects();
 
@@ -150,11 +156,20 @@ bool VM::callValue(const Value& callee, int argCount)
 {
     if (callee.isObj()) {
         switch (objType(callee)) {
+            case ObjType::BoundMethod: {
+                ObjBoundMethod* boundMethod { asBoundMethod(callee) };
+                *(stackTop - argCount - 1) = boundMethod->receiver;
+                return call(boundMethod->method, argCount);
+            }
             case ObjType::ObjectType: {
                 ObjObjectType* type = asObjectType(callee);
                 Value result { objVal(objInstanceVal(type)) };
-                stackTop -= argCount+1; // FIXME: does this case delayed deref for args? !!!
-                push(result);
+                *(stackTop - argCount - 1) = result;
+                auto it = type->methods.find(initString->hash);
+                if (it != type->methods.end()) {
+                    Value initializer { it->second.second };
+                    return call(asClosure(initializer), argCount);
+                }
                 return true;
             }
             case ObjType::Closure:
@@ -162,7 +177,8 @@ bool VM::callValue(const Value& callee, int argCount)
             case ObjType::Native: {
                 NativeFn native = asNative(callee)->function;
                 Value result { native(argCount, &(*stackTop) - argCount) };
-                stackTop -= argCount+1; // FIXME: does this case delayed deref for args? !!!
+                //stackTop -= argCount+1; 
+                *(stackTop - argCount - 1) = result;
                 push(result);
                 return true;
             }
@@ -173,6 +189,24 @@ bool VM::callValue(const Value& callee, int argCount)
     runtimeError("Only functions, objects and actors can be called.");
     return false;
 }
+
+
+bool VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
+{
+    auto it = instanceType->methods.find(name->hash);
+    if (it == instanceType->methods.end())
+        return false;
+
+    Value method { it->second.second };
+
+    ObjBoundMethod* boundMethod { boundMethodVal(peek(0), asClosure(method)) };
+
+    pop();
+    push(objVal(boundMethod));
+
+    return true;
+}
+
 
 
 ObjUpvalue* VM::captureUpvalue(Value& local)
@@ -208,6 +242,22 @@ void VM::closeUpvalues(Value* last)
         upvalue->decRef();
     }
 }
+
+
+void VM::defineMethod(ObjString* name)
+{
+    Value method = peek(0);
+    #ifdef DEBUG_BUILD
+    if (!isClosure(method))
+        throw std::runtime_error("Can't create method from non-closure");
+    if (!isObjectType(peek(1)))
+        throw std::runtime_error("Can't create method without object or actor type on stack");
+    #endif
+    ObjObjectType* type = asObjectType(peek(1));
+    type->methods[name->hash] = std::make_pair(name->s,method);
+    pop();
+}
+
 
 
 void VM::defineNative(const std::string& name, NativeFn function)
@@ -331,13 +381,18 @@ VM::InterpretResult VM::execute()
                 }
                 ObjInstance* inst = asInstance(peek(0));
                 ObjString* name = readString();
+                // is it an instance property?
                 auto it = inst->properties.find(name->hash);
                 if (it != inst->properties.end()) { // exists
                     pop();
                     push(it->second);
                 }
-                else {
-                    runtimeError("Undefined property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(inst->instanceType->name)+"'.");
+                else { // no
+                    // check if it is a method name
+                    if (bindMethod(inst->instanceType, name))
+                        break;
+
+                    runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(inst->instanceType->name)+"'.");
                     return InterpretResult::RuntimeError;
                 }
                 break;
@@ -675,6 +730,10 @@ VM::InterpretResult VM::execute()
             case asByte(OpCode::ActorType): {
                 ObjString* name = readString();
                 push(objVal(objectTypeVal(name->s, /*isActor=*/true)));
+                break;
+            }
+            case asByte(OpCode::Method): {
+                defineMethod(readString());
                 break;
             }
             case asByte(OpCode::Nop): {

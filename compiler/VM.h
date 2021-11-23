@@ -40,9 +40,11 @@ public:
 
     bool call(ObjClosure* closure, int argCount);
     bool callValue(const Value& callee, int argCount);    
+    bool bindMethod(ObjObjectType* instanceType, ObjString* name);
     ObjUpvalue* captureUpvalue(Value& local);
     void closeUpvalues(Value* last);
 
+    void defineMethod(ObjString* name);
     void defineNative(const std::string& name, NativeFn function);
 
 protected:
@@ -66,6 +68,8 @@ protected:
     std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> globals;
 
     std::list<ObjUpvalue*> openUpvalues;
+
+    ObjString* initString;
 
     void resetStack();
     void freeObjects();
