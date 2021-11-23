@@ -34,6 +34,7 @@ enum class OpCode {
     Jump,
     Loop,
     Call,
+    Invoke,
     Closure,
     CloseUpvalue,
     Return,
@@ -91,6 +92,7 @@ protected:
 
     size_type constantInstruction(const std::string& name, size_type offset) const;
     size_type constantInstruction2(const std::string& name, size_type offset) const;
+    size_type invokeInstruction(const std::string& name, size_type offset) const;
     size_type simpleInstruction(const std::string& name, size_type offset) const;
     size_type byteInstruction(const std::string& name, size_type offset) const;
     size_type shortInstruction(const std::string& name, size_type offset) const;

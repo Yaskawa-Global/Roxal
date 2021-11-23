@@ -160,6 +160,7 @@ std::string objStringToString(const ObjString* os);
 enum class FunctionType {
     Function,
     Method,
+    Initializer,
     Module
 };
 

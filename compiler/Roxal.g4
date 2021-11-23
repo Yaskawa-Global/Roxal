@@ -31,7 +31,6 @@ single_input
 declaration
  : type_decl
  | func_decl
-//| proc_decl
  | var_decl
  | statement
  ;
@@ -93,7 +92,7 @@ func_decl
  ;
 
 function
- : FUNC IDENTIFIER '(' parameters? ')' ':' 
+ : (FUNC | PROC) IDENTIFIER '(' parameters? ')' ':' 
    suite
  ;
 
@@ -176,9 +175,12 @@ call
  : primary args_or_accessor* 
  ;
 
+// accessor or args for callable
+//  special case for common obj.method(args) syntax for
+//  optimizing method calls
  args_or_accessor
   : '(' arguments? ')' 
-  | DOT IDENTIFIER
+  | DOT IDENTIFIER ('(' arguments? ')')?
   ;
 
 arguments 

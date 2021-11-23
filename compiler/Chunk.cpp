@@ -144,6 +144,17 @@ Chunk::size_type Chunk::constantInstruction2(const std::string& name, size_type 
 }
 
 
+Chunk::size_type Chunk::invokeInstruction(const std::string& name, size_type offset) const
+{
+    uint8_t constant = code.at(offset+1);
+    uint8_t argCount = code.at(offset+2);
+    std::cout << format("%-16s (%d args) %4d '",name.c_str(),argCount,constant);
+    auto value = constants.at(constant);
+    std::cout << toString(value) << "'" << std::endl;
+    return offset+3;
+}
+
+
 
 Chunk::size_type Chunk::disassembleInstruction(size_type offset)
 {
@@ -207,6 +218,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return jumpInstruction("LOOP", -1, offset);
         case asByte(OpCode::Call):
             return byteInstruction("CALL", offset);
+        case asByte(OpCode::Invoke):
+            return invokeInstruction("INVOKE", offset);
         case asByte(OpCode::Closure): {
             offset++;
             uint8_t constant = code.at(offset++);

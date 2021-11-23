@@ -39,7 +39,9 @@ public:
     Value peek(int distance);
 
     bool call(ObjClosure* closure, int argCount);
-    bool callValue(const Value& callee, int argCount);    
+    bool callValue(const Value& callee, int argCount);   
+    bool invokeFromType(ObjObjectType* type, ObjString* name, int argCount);
+    bool invoke(ObjString* name, int argCount);
     bool bindMethod(ObjObjectType* instanceType, ObjString* name);
     ObjUpvalue* captureUpvalue(Value& local);
     void closeUpvalues(Value* last);

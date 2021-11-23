@@ -170,6 +170,12 @@ bool VM::callValue(const Value& callee, int argCount)
                     Value initializer { it->second.second };
                     return call(asClosure(initializer), argCount);
                 }
+                else {
+                    if (argCount != 0) {
+                        runtimeError("Expected 0 arguments for type instantiation, provided "+std::to_string(argCount));
+                        return false;
+                    }
+                }
                 return true;
             }
             case ObjType::Closure:
@@ -188,6 +194,41 @@ bool VM::callValue(const Value& callee, int argCount)
     }
     runtimeError("Only functions, objects and actors can be called.");
     return false;
+}
+
+
+bool VM::invokeFromType(ObjObjectType* type, ObjString* name, int argCount)
+{
+    auto it = type->methods.find(name->hash);
+    if (it == type->methods.end()) {
+        runtimeError("Undefined property '%s'",toUTF8StdString(name->s).c_str());
+        return false;
+    }
+    Value method { it->second.second };
+    return call(asClosure(method), argCount);
+}
+
+
+
+bool VM::invoke(ObjString* name, int argCount)
+{
+    Value receiver { peek(argCount) };
+    if (!isInstance(receiver)) {
+        runtimeError("Only instances have method.");
+        return false;
+    }
+
+    ObjInstance* instance = asInstance(receiver);
+
+    // check to ensure name isn't a prop with a func in it
+    auto it = instance->properties.find(name->hash);
+    if (it != instance->properties.end()) { // it is a prop
+        Value value { it->second };
+        *(stackTop - argCount - 1) = value;
+        return callValue(value, argCount);
+    }
+
+    return invokeFromType(instance->instanceType, name, argCount);
 }
 
 
@@ -586,6 +627,14 @@ VM::InterpretResult VM::execute()
                 frame = frames.end()-1;
                 break;
             }
+            case asByte(OpCode::Invoke): {
+                ObjString* method = readString();
+                int argCount = readByte();
+                if (!invoke(method, argCount))
+                    return InterpretResult::RuntimeError;
+                frame = frames.end()-1;
+                break;
+            }
             case asByte(OpCode::Closure): {
                 ObjFunction* function = asFunction(readConstant());
                 ObjClosure* closure = closureVal(function);
@@ -801,8 +850,8 @@ void VM::concatenate()
             throw std::runtime_error("concatenate called with non-String LHS");
     #endif
 
-    Value rhs { pop() };
-    Value lhs { pop() };
+    Value rhs { peek(0) };
+    Value lhs { peek(1) };
 
     UnicodeString lhsString { asUString(lhs) };
     UnicodeString rhsString {};
@@ -813,8 +862,12 @@ void VM::concatenate()
         //  of 'internal' toString()
         rhsString = toUnicodeString(toString(rhs));
     }
+    else
+        rhsString = asUString(rhs);
 
     UnicodeString combined { lhsString + rhsString };
+    pop();
+    pop();
     push( objVal(stringVal(combined)) );
 }
 

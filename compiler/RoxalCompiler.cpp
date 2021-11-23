@@ -82,7 +82,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 
     if (parser.getNumberOfSyntaxErrors() == 0) {
 
-        funcScopes.push_back(FunctionScope(toUnicodeString(name), FunctionType::Module));
+        funcScopes.push_back(FunctionScope(toUnicodeString(name), FunctionType::Module, false));
 
         funcScope()->strict = false;
 
@@ -102,7 +102,6 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
             if (function != nullptr)
                 delObj(function);
             std::cout << std::string("Compile error: ") << e.what() << std::endl;
-            funcScopes.pop_back();
             return nullptr;
         } catch (std::exception& e) {
             funcScopes.pop_back();
@@ -321,6 +320,12 @@ Any RoxalCompiler::visitReturn_stmt(RoxalParser::Return_stmtContext *context)
     currentToken = context->start;
 
     if (context->expression()) {
+
+        if (funcScope()->functionType == FunctionType::Initializer)
+            error("A value cannot be returned from an 'init' method.");
+        if (funcScope()->isProc)
+            error("A value cannot be returned from an proc method.");
+
         visitExpression(context->expression());
 
         // TODO: check the return type
@@ -458,13 +463,23 @@ Any RoxalCompiler::visitFunction(RoxalParser::FunctionContext *context)
     ParseTracer pt(__func__, context);
     currentToken = context->start;
 
-    //bool isMethod = dynamic_cast<RoxalParser::Type_declContext *>(context->parent) != nullptr;
+    bool isProc = (context->PROC() != nullptr);
     bool isMethod = !typeScopes.empty();
 
     auto identifier { context->IDENTIFIER()->getText() };
     UnicodeString uident { UnicodeString::fromUTF8(identifier) };
 
-    funcScopes.push_back(FunctionScope(uident, isMethod ? FunctionType::Method : FunctionType::Function));
+    bool isInitializer = isMethod && (identifier == "init");
+
+    if (isInitializer && !isProc)
+        error("object or actor type 'init' method must be a proc.");
+
+    FunctionType ftype = isMethod ? 
+                              (isInitializer ? FunctionType::Initializer : FunctionType::Method)
+                            : FunctionType::Function;
+    
+
+    funcScopes.push_back(FunctionScope(uident, ftype, isProc));
 
     #ifdef DEBUG_BUILD
     emitByte(OpCode::Nop, "func "+identifier);
@@ -791,9 +806,21 @@ Any RoxalCompiler::visitArgs_or_accessor(RoxalParser::Args_or_accessorContext *c
     if (context->DOT()) {
 
         UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
-        int16_t propName = identifierConstant(ident);
+        int16_t identConstant = identifierConstant(ident);
 
-        emitBytes(OpCode::GetProp, propName);
+        // since object.method() is so common, detect it as a special case
+        //  to use optimized Invoke opcode
+        if (context->OPEN_PAREN()) {
+
+            int argCount { 0 };
+            if (context->arguments())
+                argCount = visitArguments(context->arguments()).as<int>();
+
+            emitBytes(OpCode::Invoke, identConstant);
+            emitByte(argCount);
+        }
+        else
+            emitBytes(OpCode::GetProp, identConstant);
     }
     else {
         int argCount { 0 };
@@ -1069,7 +1096,11 @@ Chunk::size_type RoxalCompiler::emitJump(OpCode instruction, const std::string& 
 
 void RoxalCompiler::emitReturn(const std::string& comment)
 {
-    emitByte(OpCode::ConstNil, comment);
+    if (funcScope()->functionType == FunctionType::Initializer)
+        emitBytes(OpCode::GetLocal, 0);
+    else 
+        emitByte(OpCode::ConstNil, comment);
+
     emitByte(OpCode::Return);
 }
 
