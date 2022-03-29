@@ -2,6 +2,7 @@
 
 #include <map>
 #include <sstream>
+#include <algorithm>
 #include <unordered_map>
 #include <unicode/ustring.h>
 
@@ -32,18 +33,30 @@ enum class ObjType {
 
 
 struct Obj {
-    Obj() : type(ObjType::None), refCount(0) {}
+    Obj() 
+      : type(ObjType::None), refCount(0)
+    #ifdef DEBUG_BUILD
+        , addedToUnrefdObjs(false)
+    #endif 
+      {}
     virtual ~Obj() {}
 
     ObjType type;
     int32_t refCount;
+    #ifdef DEBUG_BUILD
+    bool addedToUnrefdObjs;
+    #endif
 
+    #ifdef DEBUG_BUILD
+    void incRef();
+    void decRef();
+    #else
     inline void incRef() { ++refCount; }
     inline void decRef() { 
-        if (--refCount <= 0) {
+        if (--refCount <= 0) 
             unrefedObjs.push_back(this);
-        }
     }
+    #endif
 
     static std::vector<Obj*> unrefedObjs;
 
@@ -51,6 +64,8 @@ struct Obj {
     static std::map<Obj*, const char*> allocatedObjs;
     #endif
 };
+
+
 
 
 template<typename T, typename... Args>
@@ -77,9 +92,11 @@ inline void delObj(T* o) {
     delete o;
 }
 
+std::string objTypeName(const Obj* obj);
+
 inline std::ostream& operator<<(std::ostream& out, const Obj* obj)
 {
-    out << std::hex << uint64_t(obj) << std::dec;
+    out << objTypeName(obj) << ":" << std::hex << uint64_t(obj) << std::dec;
     return out;
 }
 
@@ -103,7 +120,6 @@ inline bool isObjType(const Value& v, ObjType type)
 std::string objToString(const Value& v);
 
 bool objsEqual(const Value& l, const Value& r);
-std::string objTypeName(Obj* obj);
 
 
 // 
@@ -197,12 +213,16 @@ std::string objFunctionToString(const ObjFunction* of);
 // Upvalue
 
 struct ObjUpvalue : public Obj {
-    ObjUpvalue(Value* v) 
+    ObjUpvalue(Value& v) 
     {
         type = ObjType::Upvalue;
-        location = v;
+        location = &v;
     }
-    virtual ~ObjUpvalue() {}
+    virtual ~ObjUpvalue() {
+        #ifdef DEBUG_BUILD 
+        location=nullptr;
+        #endif
+    }
 
     Value* location;
     Value closed;
@@ -211,7 +231,7 @@ struct ObjUpvalue : public Obj {
 inline bool isUpvalue(const Value& v) { return isObjType(v, ObjType::Upvalue); }
 inline ObjUpvalue* asUpvalue(const Value& v) { return static_cast<ObjUpvalue*>(v.asObj()); }
 
-inline ObjUpvalue* upvalueVal(Value* v) {
+inline ObjUpvalue* upvalueVal(Value& v) {
     return newObj<ObjUpvalue>(__func__,v);
 }
 
@@ -284,7 +304,7 @@ ObjNative* nativeVal(NativeFn function);
 struct ObjObjectType : public Obj
 {
     ObjObjectType(const icu::UnicodeString& typeName, bool isactor) 
-        : name(typeName), isActor(isactor) 
+        : name(typeName), isActor(isactor)
     { 
         type = ObjType::ObjectType; 
     }

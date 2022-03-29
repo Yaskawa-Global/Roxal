@@ -13,6 +13,41 @@ std::map<Obj*, const char*> Obj::allocatedObjs {};
 #endif
 
 
+#ifdef DEBUG_BUILD
+// inline for release build
+
+void Obj::incRef()
+{
+    if (addedToUnrefdObjs) {
+        //!!!throw std::runtime_error("Can't incRef object already decRef()'d to 0");
+        std::cout << "re-incRefing object already decRef()'d to 0:" << objTypeName(this) << std::endl;
+        if (type == ObjType::String)
+            std::cout << "  " << objStringToString(static_cast<ObjString*>(this)) << std::endl;//!!!
+        auto it = std::find(unrefedObjs.begin(), unrefedObjs.end(), this);
+        *it = nullptr;
+        addedToUnrefdObjs = false;
+        ++refCount;
+    }
+    ++refCount;
+}
+
+void Obj::decRef() 
+{     
+    if (--refCount <= 0) {
+        if (std::find(unrefedObjs.cbegin(), unrefedObjs.cend(), this) != unrefedObjs.cend()) {
+            if (this->type == ObjType::String)
+                std::cout << "refCount=" << refCount << " obj=" << objStringToString(static_cast<ObjString*>(this)) << std::endl;//!!!
+            ; //!!!throw std::runtime_error("Obj::decRef() - can't add object to unrefd list more than once. Obj:"+toString(this));
+        }
+        else {
+            unrefedObjs.push_back(this);
+            addedToUnrefdObjs = true;
+        }
+    }
+}
+#endif
+
+
 // interned strings table
 static std::unordered_map<int32_t, ObjString*> strings {};
 
@@ -231,15 +266,15 @@ bool roxal::objsEqual(const Value& l, const Value& r)
 }
 
 
-std::string roxal::objTypeName(Obj* obj)
+std::string roxal::objTypeName(const Obj* obj)
 {
     if (obj == nullptr) return "null";
 
     switch (obj->type) {
     case ObjType::None: return "none";
-    case ObjType::ObjectType: return static_cast<ObjObjectType*>(obj)->isActor ? "type actor" : "type object";
+    case ObjType::ObjectType: return static_cast<const ObjObjectType*>(obj)->isActor ? "type actor" : "type object";
     case ObjType::Instance: {
-        ObjInstance* inst = static_cast<ObjInstance*>(obj);
+        const ObjInstance* inst = static_cast<const ObjInstance*>(obj);
         return inst->instanceType->isActor ? "actor":"object";
     }
     case ObjType::BoundMethod: return "function";

@@ -154,7 +154,8 @@ protected:
 
 
     struct TypeScope {
-
+        TypeScope() : hasSuperType(false) {}
+        bool hasSuperType;
     };
 
     typedef std::vector<TypeScope> TypeScopes;

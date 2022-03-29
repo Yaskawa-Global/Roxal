@@ -58,6 +58,8 @@ void roxal::Value::incRefObj()
     #ifdef DEBUG_BUILD
     if (!isObj() && !isBoxable())
         throw std::runtime_error("Can't incRef non-object");
+    if (as.obj == nullptr)
+        throw std::runtime_error("Can't incRef null object");
     #endif
     as.obj->incRef();
 }
@@ -69,6 +71,7 @@ void roxal::Value::decRefObj()
         throw std::runtime_error("Can't decRef non-object");
     #endif
     as.obj->decRef();
+    as.obj == nullptr;
 }
 
 

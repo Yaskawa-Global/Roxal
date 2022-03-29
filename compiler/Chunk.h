@@ -40,6 +40,8 @@ enum class OpCode {
     Return,
     ObjectType,
     ActorType,
+    Extend,
+    GetSuper,
     Method,
     Print,
     DefineGlobal,

@@ -218,7 +218,8 @@ Any RoxalCompiler::visitType_decl(RoxalParser::Type_declContext *context)
 
     bool isActor = (context->ACTOR() != nullptr);
 
-    auto typeName { context->IDENTIFIER().at(0)->getText() };
+    int nextIdentIndex { 0 };
+    auto typeName { context->IDENTIFIER().at(nextIdentIndex++)->getText() };
     UnicodeString uTypeName { UnicodeString::fromUTF8(typeName) };
 
     int16_t typeNameConstant = identifierConstant(uTypeName);
@@ -233,6 +234,28 @@ Any RoxalCompiler::visitType_decl(RoxalParser::Type_declContext *context)
     namedVariable(uTypeName, false); // make type accessible on the stack
 
     typeScopes.push_back(TypeScope());
+    auto& typeScope { typeScopes.back() };
+
+    typeScope.hasSuperType = (context->EXTENDS() != nullptr);
+    if (typeScope.hasSuperType) {
+        auto superName { context->IDENTIFIER().at(nextIdentIndex++)->getText() };
+        UnicodeString uSuperName { UnicodeString::fromUTF8(superName) };
+
+        if (uSuperName == uTypeName) 
+            error("An actor or object type cannot extend itself.");        
+
+        namedVariable(uSuperName, false);
+
+        beginScope();
+        addLocal("super");
+        defineVariable(0);
+
+        namedVariable(uTypeName, false);
+        emitByte(OpCode::Extend);
+    }
+    if (context->IMPLEMENTS()) {
+        throw std::runtime_error("interface implements not implemented");
+    }
 
     for(size_t i=0; i<context->function().size(); i++) {
 
@@ -250,6 +273,9 @@ Any RoxalCompiler::visitType_decl(RoxalParser::Type_declContext *context)
     }
 
     emitByte(OpCode::Pop, "type name");
+
+    if (typeScope.hasSuperType)
+        endScope();
 
     typeScopes.pop_back();
 
@@ -871,6 +897,19 @@ Any RoxalCompiler::visitPrimary(RoxalParser::PrimaryContext *context)
         else
             namedVariable(toUnicodeString(context->THIS()->getText()),false);
     }
+    else if (context->SUPER()) {
+        UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
+        int16_t identConstant = identifierConstant(ident);
+
+        if (typeScopes.empty()) 
+            error("Can't use 'super' outside of an actor or object.");
+        else if (!typeScopes.back().hasSuperType) 
+            error("Can't use 'super' in an actor or object that doesn't extend a super type.");
+
+        namedVariable("this", false);
+        namedVariable("super", false);
+        emitBytes(OpCode::GetSuper, identConstant);
+    }
     else if (context->IDENTIFIER()) {
         UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
         namedVariable(ident);
@@ -1016,14 +1055,14 @@ void RoxalCompiler::endScope()
     // }
 
     auto& locals { funcScope()->locals };
-// //!!!
-// std::cout << "<endScope() depth=" << (state()->scopeDepth+1) << " local.size=" << locals.size() << ":" << std::endl;
-// for(auto li=locals.begin(); li!=locals.end(); ++li) {
-//     std::cout << "  " << int(&(*li) - &(*locals.begin())) << " " << toUTF8StdString(li->name) << " " << li->depth << " "
-//      << (li->isCaptured ? "captured":"notcaptured") << std::endl;
-// }
-// std::cout << std::endl;
-// //!!!
+//!!!
+std::cout << "<endScope() depth=" << (funcScope()->scopeDepth+1) << " local.size=" << locals.size() << ":" << std::endl;
+for(auto li=locals.begin(); li!=locals.end(); ++li) {
+    std::cout << "  " << int(&(*li) - &(*locals.begin())) << " " << toUTF8StdString(li->name) << " " << li->depth << " "
+     << (li->isCaptured ? "captured":"notcaptured") << std::endl;
+}
+std::cout << std::endl;
+//!!!
     while (!locals.empty()
            && locals.back().depth > funcScope()->scopeDepth) {
 
@@ -1191,7 +1230,7 @@ int16_t RoxalCompiler::resolveLocal(FunctionScopes::iterator scopeState, const i
                 if (scopeState->locals[i].name == name) {
             #endif
                     if (scopeState->locals[i].depth == -1)
-                        error("Reference to local varaiable in initializer not allowed.");
+                        error("Reference to local variable in initializer not allowed.");
                     return i;
                 }
         }
@@ -1232,8 +1271,8 @@ int RoxalCompiler::addUpvalue(FunctionScopes::iterator scopeState, uint8_t index
 
 int16_t RoxalCompiler::resolveUpvalue(FunctionScopes::iterator scopeState, const icu::UnicodeString& name)
 {
-    //std::cout << (&(*scopeState) - &(*states.begin())) << " resolveUpvalue(" << toUTF8StdString(name) << ")" << std::endl;//!!!
-    //std::string sname { toUTF8StdString(name) };//!!!
+    std::cout << (&(*scopeState) - &(*funcScopes.begin())) << " resolveUpvalue(" << toUTF8StdString(name) << ")" << std::endl;//!!!
+    std::string sname { toUTF8StdString(name) };//!!!
 
     if (scopeState == funcScopes.begin()) // no enclosing function scope
         return -1;

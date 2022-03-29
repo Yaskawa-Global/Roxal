@@ -92,6 +92,11 @@ void VM::interpretLine()
 
 void VM::push(const Value& value)
 {
+    #ifdef DEBUG_BUILD
+    if (value.isObj() && value.asObj() == nullptr)
+        throw std::runtime_error("Can't push Value with null Obj*");
+    #endif
+
     *stackTop = value;
     stackTop++;
 
@@ -262,7 +267,7 @@ ObjUpvalue* VM::captureUpvalue(Value& local)
     if (it != end && (*it)->location == &local)
         return *it;
 
-    ObjUpvalue* createdUpvalue = upvalueVal(&local);
+    ObjUpvalue* createdUpvalue = upvalueVal(local);
 
     createdUpvalue->incRef();
     openUpvalues.insert(it, createdUpvalue);
@@ -390,7 +395,7 @@ VM::InterpretResult VM::execute()
                 }
                 std::cout << std::endl;
             }
-            if (frame->ip != frame->closure->function->chunk->code.end()) {
+            if (!frames.empty() && (frame->ip != frame->closure->function->chunk->code.end())) {
                 // and instruction
                 frame->closure->function->chunk->disassembleInstruction(frame->ip - frame->closure->function->chunk->code.begin());
             }
@@ -709,14 +714,15 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::DefineGlobal): {
                 ObjString* name = readString();
-                globals[name->hash] = std::make_pair(name->s,pop());
+                globals[name->hash] = std::make_pair(name->s,peek(0));
+                pop();
                 break;
             }
             case asByte(OpCode::GetGlobal): {
                 ObjString* name = readString();
                 auto gi = globals.find(name->hash);
                 if (gi != globals.end()) { // found
-                    Value value = gi->second.second;
+                    Value value { gi->second.second };
                     push(value);
                 }
                 else {
@@ -781,6 +787,38 @@ VM::InterpretResult VM::execute()
                 push(objVal(objectTypeVal(name->s, /*isActor=*/true)));
                 break;
             }
+            case asByte(OpCode::Extend): {
+                if (!isObjectType(peek(1))) {
+                    runtimeError("Can only extend another actor or object type.");
+                    return InterpretResult::RuntimeError;
+                }
+                ObjObjectType* supertype = asObjectType(peek(1));
+                ObjObjectType* subtype = asObjectType(peek(0));
+// std::cout << "supertype:" << objToString(peek(1)) << " subtype:" << objToString(peek(0)) << std::endl;//!!!                
+// std::cout << "supertype methods:" << std::endl;
+// for(auto mi=supertype->methods.begin(); mi!=supertype->methods.end();++mi)
+//   std::cout << "  " << toUTF8StdString(mi->second.first) << "=" << toString(mi->second.second) << std::endl;
+// std::cout << "subtype methods:" << std::endl;
+// for(auto mi=subtype->methods.begin(); mi!=subtype->methods.end();++mi)
+//   std::cout << "  " << toUTF8StdString(mi->second.first) << "=" << toString(mi->second.second) << std::endl;
+                // TODO: nicer STL way to do this? append?
+                for(auto it = supertype->methods.cbegin(); it != supertype->methods.cend(); ++it)
+                    subtype->methods[it->first] = it->second;
+// std::cout << "subtype methods:" << std::endl;
+// for(auto mi=subtype->methods.begin(); mi!=subtype->methods.end();++mi)
+//   std::cout << "  " << toUTF8StdString(mi->second.first) << "=" << toString(mi->second.second) << std::endl;
+                pop(); // subclass
+                pop(); // superclass?  TODO: want this??
+                break;
+            }
+            case asByte(OpCode::GetSuper): {
+                ObjString* name = readString();
+                ObjObjectType* superType = asObjectType(pop());
+
+                if (!bindMethod(superType, name)) 
+                    return InterpretResult::RuntimeError;
+                break;
+            }
             case asByte(OpCode::Method): {
                 defineMethod(readString());
                 break;
@@ -821,7 +859,8 @@ void VM::freeObjects()
         Obj* obj { Obj::unrefedObjs.back() };
         Obj::unrefedObjs.pop_back();
 
-        delObj(obj);
+        if (obj != nullptr)
+            delObj(obj);
     }
     
     Obj::unrefedObjs.clear();
@@ -833,7 +872,7 @@ void VM::outputAllocatedObjs()
     #ifdef DEBUG_TRACE_MEMORY
     if (Obj::allocatedObjs.size()>0) {
         std::cout << std::hex;
-        std::cout << "== allocated Objs (" << Obj::allocatedObjs.size() << ")==" << std::endl;
+        std::cout << "== allocated Objs (" << std::to_string(Obj::allocatedObjs.size()) << ") ==" << std::endl;
         for(const auto& p : Obj::allocatedObjs) {
             std::cout << "  " << uint64_t(p.first) << " " << p.second << std::endl;
         }

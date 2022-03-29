@@ -131,6 +131,10 @@ protected:
 
     void copyFrom(const Value& v) {
 
+        #ifdef DEBUG_BUILD
+        if (v.isObj() && v.asObj() == nullptr)
+            throw std::runtime_error("Can't copy construct Value from null Obj*");
+        #endif
 
         // TODO: optimize with union copy (memcpy?)
         _type = v._type;

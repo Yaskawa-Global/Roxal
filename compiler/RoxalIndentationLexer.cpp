@@ -58,6 +58,9 @@ std::unique_ptr<antlr4::Token> RoxalIndentationLexer::nextToken()
                         case '\f':
                         case '#':                                  //*** https://docs.python.org/3/reference/lexical_analysis.html#blank-lines
                             continue;  // We're on a blank line or before a comment, skip the NEWLINE token
+                        case '/':
+                            if (_input->LA(2) == '/') // before // comment
+                              continue;
                         default:
                             this->pendingTokens.push_back(std::move(currentToken)); // insert the current NEWLINE token
                             this->insertIndentDedentTokens();       //*** https://docs.python.org/3/reference/lexical_analysis.html#indentation

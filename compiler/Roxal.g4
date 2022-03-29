@@ -111,7 +111,8 @@ suite
  ;
 
 type_decl
- : TYPE (OBJECT | ACTOR) IDENTIFIER (IMPLEMENTS IDENTIFIER+)? ':' NEWLINE
+ : TYPE (OBJECT | ACTOR) IDENTIFIER 
+    (EXTENDS IDENTIFIER)? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)? ':' NEWLINE
    INDENT function* DEDENT
  ;
 
@@ -197,7 +198,7 @@ primary
  | str   // str+ ?
  | IDENTIFIER 
  | OPEN_PAREN expression CLOSE_PAREN
-// | "super" "." IDENTIFIER 
+ | SUPER '.' IDENTIFIER 
  ;
 
 
@@ -226,7 +227,10 @@ RETURN: 'return';
 SCOPE: 'scope' ;
 WITH: 'with'; // TODO
 IMPLEMENTS: 'implements';
+EXTENDS: 'extends';
 THIS: 'this';
+SUPER: 'super';
+
 
 // Types
 BOOL: 'bool';
