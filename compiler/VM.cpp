@@ -1,6 +1,8 @@
 #include <functional>
 #include <time.h>
 
+#include "ASTGenerator.h"
+#include "ASTGraphviz.h"
 #include "RoxalCompiler.h"
 
 #include "VM.h"
@@ -46,7 +48,7 @@ VM::~VM()
 VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
 {
     ObjFunction* function { nullptr };
-
+    // FIXME: compile from the AST not the source
     try {
         RoxalCompiler compiler {};
 

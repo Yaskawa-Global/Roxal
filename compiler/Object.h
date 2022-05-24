@@ -5,7 +5,7 @@
 #include <unordered_map>
 #include <unicode/ustring.h>
 
-#include "common.h"
+#include <core/common.h>
 #include "Chunk.h"
 #include "Value.h"
 
