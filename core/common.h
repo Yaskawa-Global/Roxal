@@ -61,4 +61,12 @@ inline icu::UnicodeString toUnicodeString(const std::string& s) {
 }
 
 
+// demangle typeid(T).name() strings to be more human readable
+std::string demangle(const char* name);
+
+
+inline std::string spaces(int n) {
+    return std::string( n, ' ' );
+}
+
 }
