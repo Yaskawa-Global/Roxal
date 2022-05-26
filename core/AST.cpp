@@ -60,9 +60,19 @@ void File::accept(ASTVisitor& v)
 }
 
 
+// #define sourceOut() \
+//     os << spaces(indent) << "(" << interval.first.line << ":" << interval.first.pos << ".." << interval.second.line << ":" << interval.second.pos << ")" << std::endl;\
+// if (source != nullptr) { \
+//     os << "\"" << fullSource << "\"" << std::endl;\
+// }\
+// else \
+//     os << spaces(indent) << "no-source" << std::endl;
+
+
 void File::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"File" << std::endl;
+    //sourceOut();
     for(auto& declOrStmt : declsOrStmts ) 
         if (std::holds_alternative<ptr<Declaration>>(declOrStmt))
             std::get<ptr<Declaration>>(declOrStmt)->output(os,indent+1);
@@ -137,6 +147,7 @@ void Suite::accept(ASTVisitor& v)
 void Suite::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Suite" << std::endl;
+    //sourceOut();
 
     for(auto& declOrStmt :declsOrStmts ) {
 
@@ -161,6 +172,7 @@ void ExpressionStatement::accept(ASTVisitor& v)
 void ExpressionStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"ExprStmt" << std::endl;
+    //sourceOut();
     expr->output(os,indent+1);
 }
 
@@ -176,6 +188,7 @@ void PrintStatement::accept(ASTVisitor& v)
 void PrintStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Print" << std::endl;
+    //sourceOut();
     expr->output(os,indent+1);
 }
 
@@ -190,6 +203,7 @@ void ReturnStatement::accept(ASTVisitor& v)
 void ReturnStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Return" << std::endl;
+    //sourceOut();
     if (expr.has_value())
         expr.value()->output(os,indent+1);
 }
@@ -212,6 +226,7 @@ void IfStatement::accept(ASTVisitor& v)
 void IfStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"If" << std::endl;
+    //sourceOut();
     for(auto& condSuite :conditionalSuites ) {
         os << spaces(indent+1) << "if cond:" << std::endl;
         condSuite.first->output(os,indent+2);
@@ -237,6 +252,7 @@ void WhileStatement::accept(ASTVisitor& v)
 void WhileStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"While" << std::endl;
+    //sourceOut();
     os << spaces(indent)+" cond:" << std::endl;
     condition->output(os,indent+2);
     os << spaces(indent)+" body:" << std::endl;
@@ -257,6 +273,7 @@ void VarDecl::accept(ASTVisitor& v)
 void VarDecl::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"VarDecl " << toUTF8StdString(name) << std::endl;
+    //sourceOut();
     if (initializer.has_value())
         initializer.value()->output(os,indent+1);
 }
@@ -271,6 +288,7 @@ void FuncDecl::accept(ASTVisitor& v)
 void FuncDecl::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"FuncDecl" << std::endl;
+    //sourceOut();
     func->output(os,indent+1);
 }
 
@@ -287,6 +305,7 @@ void Function::accept(ASTVisitor& v)
 void Function::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Function " << (isProc? "(proc)" : "") << std::endl;
+    //sourceOut();
     if (params.size()>0) {
         os << spaces(indent)+" params:" << std::endl;
         for(auto& param : params)
@@ -306,6 +325,7 @@ void Parameter::accept(ASTVisitor& v)
 void Parameter::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Parameter " << toUTF8StdString(name);
+    //sourceOut();
     if (type.has_value()) {
         os << " : ";
         if (std::holds_alternative<BuiltinType>(type.value()))
@@ -329,6 +349,7 @@ void TypeDecl::accept(ASTVisitor& v)
 void TypeDecl::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"TypeDecl (unimplemented)" << std::endl;
+    //sourceOut();
 }
 
 
@@ -387,6 +408,7 @@ void BinaryOp::accept(ASTVisitor& v)
 void BinaryOp::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"BinaryOp " << opString() << std::endl;
+    //sourceOut();
     lhs->output(os,indent+1);
     rhs->output(os,indent+1);
 }
@@ -423,6 +445,7 @@ void UnaryOp::accept(ASTVisitor& v)
 void UnaryOp::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"UnaryOp " << opString() << std::endl;
+    //sourceOut();
     arg->output(os,indent+1);
 }
 
@@ -438,6 +461,7 @@ void Assignment::accept(ASTVisitor& v)
 void Assignment::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Assignment" << std::endl;
+    //sourceOut();
     lhs->output(os,indent+1);
     rhs->output(os,indent+1);
 }
@@ -451,6 +475,7 @@ void Variable::accept(ASTVisitor& v)
 void Variable::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Variable " << toUTF8StdString(name) << std::endl;
+    //sourceOut();
 }
 
 
@@ -467,6 +492,7 @@ void Call::accept(ASTVisitor& v)
 void Call::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Call" << std::endl;
+    //sourceOut();
     callable->output(os,indent+1);
     os << spaces(indent)+" args:" << std::endl;
     for(auto& arg : args)
@@ -490,6 +516,7 @@ void Literal::accept(ASTVisitor& v)
 void Literal::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Literal " << (type==Nil ? std::string("nil") : std::to_string(int(type))) << std::endl;    
+    //sourceOut();
 }
 
 
@@ -501,6 +528,7 @@ void Bool::accept(ASTVisitor& v)
 void Bool::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Bool " << (value ? "true":"false") << std::endl;
+    //sourceOut();
 }
 
 
@@ -520,6 +548,7 @@ void Num::output(std::ostream& os, int indent) const
     else
         os << "?";
     os << std::endl;
+    //sourceOut();
 }
 
 
@@ -532,4 +561,5 @@ void Str::accept(ASTVisitor& v)
 void Str::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Str \"" << toUTF8StdString(str) << "\"" << std::endl;
+    //sourceOut();
 }

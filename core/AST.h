@@ -4,7 +4,7 @@
 #include <optional>
 #include <any>
 
-#include "common.h"
+#include <core/common.h>
 
 namespace roxal::ast {
 
@@ -77,6 +77,13 @@ public:
 };
 
 
+struct LinePos { 
+    LinePos() : line(0), pos(0) {}
+    LinePos(size_t l, size_t p) : line(l), pos(p) {}
+    size_t line; size_t pos; 
+};
+
+
 struct AST : public std::enable_shared_from_this<AST>
 {
     AST() {}
@@ -87,15 +94,19 @@ struct AST : public std::enable_shared_from_this<AST>
 
     // text from source corresponding to this AST subtree
     std::string sourceText() const {
-        return source->substr(start, end-start);
+        #if DEBUG_BUILD
+        return fullSource;
+        #else
+        return stringInterval(*source,interval.first.line,interval.first.pos,interval.second.line,interval.second.pos);
+        #endif
     }
 
 
     // source for this translation unit
     ptr<std::string> source;
     // interval in source string corresponding to this subtree
-    long start;
-    long end;
+    //  (lines start from 1, position within line starts from 0)
+    std::pair<LinePos,LinePos> interval;
 
     #ifdef DEBUG_BUILD
     // source for this node and all below

@@ -1,6 +1,7 @@
 
 #include <typeinfo>
 #include <vector>
+#include <sstream>//!!!
 
 #include "ASTGenerator.h"
 
@@ -42,14 +43,35 @@ protected:
 };
 
 
+
 void ASTGenerator::setSourceInfo(ptr<AST> ast, antlr4::ParserRuleContext* context)
 {
     ast->source = source;
-    const auto& interval { context->getSourceInterval() }; 
-    ast->start = interval.a;
-    ast->end = interval.b;
+
+    LinePos start { context->start->getLine(), context->start->getCharPositionInLine() };
+    LinePos end { context->stop->getLine(),  context->stop->getCharPositionInLine() };
+
+    ast->interval = std::make_pair(start, end);
+
     #ifdef DEBUG_BUILD
-    ast->fullSource = context->getText();
+    ast->fullSource = stringInterval(*source,ast->interval.first.line, ast->interval.first.pos, ast->interval.second.line, ast->interval.second.pos);
+    #endif
+}
+
+void ASTGenerator::setSourceInfo(ptr<AST> ast, antlr4::tree::TerminalNode* terminal)
+{
+    ast->source = source;
+
+    auto symbol = terminal->getSymbol();
+    auto symbolLength = symbol->getStopIndex() - symbol->getStartIndex();
+
+    LinePos start { size_t(symbol->getLine()), size_t(symbol->getCharPositionInLine()) };
+
+    ast->interval = std::make_pair(start,
+                                   LinePos(start.line,  start.pos + symbolLength) );
+
+    #ifdef DEBUG_BUILD
+    ast->fullSource = stringInterval(*source,ast->interval.first.line, ast->interval.first.pos, ast->interval.second.line, ast->interval.second.pos);
     #endif
 }
 
@@ -446,6 +468,7 @@ antlrcpp::Any ASTGenerator::visitReturn_stmt(RoxalParser::Return_stmtContext *co
     visitStart();
 
     auto returnStmt = std::make_shared<ReturnStatement>();
+    setSourceInfo(returnStmt, context);
     if (context->expression())
         returnStmt->expr = as<Expression>(visitExpression(context->expression()));
         
@@ -460,6 +483,7 @@ antlrcpp::Any ASTGenerator::visitIf_stmt(RoxalParser::If_stmtContext *context)
     visitStart();
 
     auto ifStmt = std::make_shared<IfStatement>();
+    setSourceInfo(ifStmt,context);
 
     // at least one condition & body required
     auto cond = as<Expression>(visitExpression(context->expression().at(0)));
@@ -494,6 +518,7 @@ antlrcpp::Any ASTGenerator::visitWhile_stmt(RoxalParser::While_stmtContext *cont
     auto body = visitSuite(context->suite());
 
     auto whileStmt = std::make_shared<WhileStatement>();
+    setSourceInfo(whileStmt, context);
     whileStmt->condition = as<Expression>(condition);
     whileStmt->body = as<Suite>(body);
 
@@ -510,6 +535,7 @@ antlrcpp::Any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
     UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
 
     auto vardecl = std::make_shared<VarDecl>();
+    setSourceInfo(vardecl,context);
     vardecl->name = ident;
 
     if (context->EQUALS()) 
@@ -528,6 +554,7 @@ antlrcpp::Any ASTGenerator::visitFunc_decl(RoxalParser::Func_declContext *contex
     auto ident { UnicodeString::fromUTF8(context->function()->IDENTIFIER()->getText()) };
 
     auto funcdecl = std::make_shared<FuncDecl>();
+    setSourceInfo(funcdecl,context);
     auto func = visitFunction(context->function());
     funcdecl->func = as<Function>(func);
 
@@ -544,6 +571,7 @@ antlrcpp::Any ASTGenerator::visitFunction(RoxalParser::FunctionContext *context)
     auto ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
 
     auto func = std::make_shared<Function>();
+    setSourceInfo(func,context);
     func->isProc = (context->PROC() != nullptr);
     func->name = ident;
 
@@ -582,6 +610,7 @@ antlrcpp::Any ASTGenerator::visitParameter(RoxalParser::ParameterContext *contex
     auto ident { UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText()) };
 
     auto param = std::make_shared<Parameter>();
+    setSourceInfo(param,context->IDENTIFIER().at(0));
     param->name = ident;
 
     if (context->builtin_type()) {
@@ -605,6 +634,7 @@ antlrcpp::Any ASTGenerator::visitSuite(RoxalParser::SuiteContext *context)
     visitStart();
 
     auto suite = std::make_shared<Suite>();
+    setSourceInfo(suite,context);
     for(int i=0; i<context->declaration().size();i++) {
         auto declOrStmt = visitDeclaration(context->declaration().at(i));
         if (isa<Declaration>(declOrStmt))
@@ -655,7 +685,9 @@ antlrcpp::Any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *cont
         else { // variable set
 
             auto assign = std::make_shared<Assignment>();
+            setSourceInfo(assign,context);
             assign->lhs = std::make_shared<Variable>(ident);
+            setSourceInfo(assign->lhs,context->IDENTIFIER());
             assign->rhs = as<Expression>(visitAssignment(context->assignment()));
             return typeValue(assign);
         }
@@ -684,6 +716,7 @@ antlrcpp::Any ASTGenerator::visitLogic_or(RoxalParser::Logic_orContext *context)
 
         for(auto i=1; i<context->logic_and().size(); i++) {
             orOp = std::make_shared<BinaryOp>(BinaryOp::Or);
+            setSourceInfo(orOp,context);//!!!
             orOp->lhs = lhs;
 
             auto rhs = visitLogic_and(context->logic_and().at(i));
@@ -715,6 +748,7 @@ antlrcpp::Any ASTGenerator::visitLogic_and(RoxalParser::Logic_andContext *contex
 
         for(auto i=1; i<context->equality().size(); i++) {
             andOp = std::make_shared<BinaryOp>(BinaryOp::And);
+            setSourceInfo(andOp,context);//!!!
             andOp->lhs = lhs;
 
             auto rhs = visitEquality(context->equality().at(i));
@@ -1110,6 +1144,7 @@ antlrcpp::Any ASTGenerator::visitStr(RoxalParser::StrContext *context)
     text = text.substr(1,text.size()-2);
 
     auto str = std::make_shared<Str>();
+    setSourceInfo(str,context);
     str->str = toUnicodeString(text);
     return typeValue(str);
     visitEnd();
@@ -1134,6 +1169,7 @@ antlrcpp::Any ASTGenerator::visitNum(RoxalParser::NumContext *context)
         throw std::runtime_error("invalid number \""+realStr+"\"");
     }
     auto num = std::make_shared<Num>();
+    setSourceInfo(num,context->FLOAT_NUMBER());
     num->num = real;
     return typeValue(num);
     visitEnd();
@@ -1155,6 +1191,7 @@ antlrcpp::Any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
             throw std::runtime_error("Invalid integer literal");
         }
         num->num = integer;
+        setSourceInfo(num,context->DECIMAL_INTEGER());
     }
     else if (context->HEX_INTEGER()) {
         char *p_end;
@@ -1162,6 +1199,7 @@ antlrcpp::Any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
         if (errno == ERANGE)
             throw std::runtime_error("Invalid hexadecimal integer literal");
         num->num = integer;
+        setSourceInfo(num,context->HEX_INTEGER());
     }
     else if (context->OCT_INTEGER()) {
         char *p_end;
@@ -1169,6 +1207,7 @@ antlrcpp::Any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
         if (errno == ERANGE)
             throw std::runtime_error("Invalid octal integer literal");
         num->num = integer;
+        setSourceInfo(num,context->OCT_INTEGER());
     }
     else if (context->BIN_INTEGER()) {
         char *p_end;
@@ -1176,6 +1215,7 @@ antlrcpp::Any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
         if (errno == ERANGE)
             throw std::runtime_error("Invalid binary integer literal");
         num->num = integer;
+        setSourceInfo(num,context->BIN_INTEGER());
     }
     else
         throw std::runtime_error("unimplemented integer literal:"+context->getText());

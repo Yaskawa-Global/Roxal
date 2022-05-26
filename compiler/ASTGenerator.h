@@ -94,6 +94,7 @@ public:
 
 protected:
     void setSourceInfo(ptr<ast::AST> ast, antlr4::ParserRuleContext* context);
+    void setSourceInfo(ptr<ast::AST> ast, antlr4::tree::TerminalNode* terminal);
 
     antlr4::Token* currentToken;
     ptr<std::string> source;

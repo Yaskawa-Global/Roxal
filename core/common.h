@@ -69,4 +69,11 @@ inline std::string spaces(int n) {
     return std::string( n, ' ' );
 }
 
+
+
+// inefficient
+std::string stringInterval(const std::string s, size_t startLine, size_t startPos, size_t endLine, size_t endPos);
+
+std::string replace(const std::string& str, const std::string& from, const std::string& to);
+
 }
