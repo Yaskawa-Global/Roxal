@@ -647,8 +647,36 @@ antlrcpp::Any ASTGenerator::visitSuite(RoxalParser::SuiteContext *context)
 antlrcpp::Any ASTGenerator::visitType_decl(RoxalParser::Type_declContext *context)
 {
     visitStart();
-    throw std::runtime_error("unimplemented");
-    return typeValue(std::make_shared<AST>());
+
+    auto typedecl = std::make_shared<TypeDecl>();
+    setSourceInfo(typedecl,context);
+
+    bool isActor = (context->ACTOR() != nullptr);
+    typedecl->kind = isActor ? TypeDecl::Actor : TypeDecl::Object;
+
+    size_t identIndex = 0;
+    typedecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
+
+    if (context->EXTENDS())
+        typedecl->extends = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
+
+    while(identIndex < context->IDENTIFIER().size())
+        typedecl->implements.push_back(UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText()));
+
+    if (context->function().size() > 255) // TODO: revise
+        throw std::runtime_error("Too many methods for one actor or object type.");
+
+    for(size_t i=0; i<context->function().size(); i++) {
+
+        auto funcContext { context->function().at(i) };
+
+        auto func = visitFunction(funcContext);
+        if (!isa<Function>(func))
+            throw std::runtime_error("Expected Function for methods of object or actor type");
+        typedecl->methods.push_back(as<Function>(func));
+    }
+
+    return typeValue(typedecl);
     visitEnd();
 }
 
@@ -664,26 +692,28 @@ antlrcpp::Any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *cont
     else if (context->EQUALS()) { // assignment
         icu::UnicodeString ident { icu::UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
 
+        auto assign = std::make_shared<Assignment>();
+        setSourceInfo(assign, context);
+
         if (context->DOT()) { // property set
-            throw std::runtime_error("assignment property set unimplemented");//!!!
-            visitCall(context->call());
+            
+            auto callable = visitCall(context->call());
 
-            //int16_t propName = identifierConstant(ident);
+            auto access = std::make_shared<UnaryOp>(UnaryOp::Accessor);
+            setSourceInfo(access,context->DOT());
+            access->arg = as<Expression>(callable);
+            access->member = ident;
 
-            visitAssignment(context->assignment());
-
-            //emitBytes(OpCode::SetProp, propName);
-
+            assign->lhs = access;
         }
         else { // variable set
-
-            auto assign = std::make_shared<Assignment>();
-            setSourceInfo(assign,context);
             assign->lhs = std::make_shared<Variable>(ident);
             setSourceInfo(assign->lhs,context->IDENTIFIER());
-            assign->rhs = as<Expression>(visitAssignment(context->assignment()));
-            return typeValue(assign);
         }
+
+        assign->rhs = as<Expression>(visitAssignment(context->assignment()));
+
+        return typeValue(assign);
     }
     else
         throw std::runtime_error("unhandled assignment alternative");

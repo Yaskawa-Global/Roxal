@@ -139,7 +139,39 @@ void RoxalCompiler::visit(ptr<ast::SingleInput> ast)
 void RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 {
     currentNode = ast;
-    ast->acceptChildren(*this);
+
+    bool isActor = ast->kind==TypeDecl::Actor;
+
+    int16_t typeNameConstant = identifierConstant(ast->name);
+    declareVariable(ast->name);    
+
+    if (ast->implements.size()>2)
+        throw std::runtime_error("Multiple implements types unimplemented.");
+
+    emitBytes(isActor ? OpCode::ActorType : OpCode::ObjectType, typeNameConstant);
+    defineVariable(typeNameConstant);
+
+    namedVariable(ast->name, false); // make type accessible on the stack
+
+    typeScopes.push_back(TypeScope());
+
+    for(size_t i=0; i<ast->methods.size(); i++) {
+
+        auto func { ast->methods.at(i) };
+
+        auto methodName { func->name };
+        int16_t methodNameConstant = identifierConstant(methodName);
+        if (methodNameConstant >= 255) 
+            error("Too many methods for one actor or object type.");
+
+        func->accept(*this);
+
+        emitBytes(OpCode::Method, uint8_t(methodNameConstant), "method "+toUTF8StdString(methodName));
+    }
+
+    emitByte(OpCode::Pop, "type name");
+
+    typeScopes.pop_back();
 }
 
 
@@ -372,9 +404,9 @@ void RoxalCompiler::visit(ptr<ast::Assignment> ast)
 {
     currentNode = ast;
     
-    ast->rhs->accept(*this);
-
     if (isa<Variable>(ast->lhs)) {
+
+        ast->rhs->accept(*this);
 
         // we don't visit the LHS Variable, since that will emit code to evaluate it
 
@@ -382,8 +414,22 @@ void RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
         namedVariable(name, /*assign=*/true);
     }
+    else if (isa<UnaryOp>(ast->lhs) && as<UnaryOp>(ast->lhs)->op==UnaryOp::Accessor) {
+        auto accessor = as<UnaryOp>(ast->lhs);
+        // visit the lhs of the accessor operator to generate code to evaluate it 
+        //  (so we don't evaluate the access, since we want to set the member, not get it)
+        accessor->arg->accept(*this);
+
+        if (!accessor->member.has_value())
+            throw std::runtime_error("accessor unary operator expects member name");
+        int16_t propName = identifierConstant(accessor->member.value());
+
+        ast->rhs->accept(*this);
+
+        emitBytes(OpCode::SetProp, propName);
+    }
     else
-        throw std::runtime_error("Only assignment to variables is implemented");
+        throw std::runtime_error("Unimplemented kind of LHS for assignment");
 }
 
 
@@ -391,19 +437,45 @@ void RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
 {
     currentNode = ast;
 
-    ast->acceptChildren(*this);
+    // Logical And and Or operators have short-circuit semantics, so may not need to evaluate all
+    //  children, so handle them differently
+    if (ast->op == BinaryOp::Or) {
+        ast->lhs->accept(*this);
 
-    switch (ast->op) {
-        case BinaryOp::Add: emitByte(OpCode::Add); break;
-        case BinaryOp::Multiply: emitByte(OpCode::Multiply); break;
-        case BinaryOp::Divide: emitByte(OpCode::Divide); break;
-        case BinaryOp::Modulo: emitByte(OpCode::Modulo); break;
-        case BinaryOp::LessThan: emitByte(OpCode::Less); break;
-        case BinaryOp::GreaterThan: emitByte(OpCode::Greater); break;
-        case BinaryOp::LessOrEqual: emitByte(OpCode::Greater); emitByte(OpCode::Negate); break;
-        case BinaryOp::GreaterOrEqual: emitByte(OpCode::Less); emitByte(OpCode::Negate); break;
-        default:
-            throw std::runtime_error("unimplemented binary opertor:"+ast->opString());
+        Chunk::size_type jumpToEnd = emitJump(OpCode::JumpIfTrue);
+        emitByte(OpCode::Pop);
+
+        ast->rhs->accept(*this);
+
+        patchJump(jumpToEnd);
+    }
+    else if (ast->op == BinaryOp::And) {
+        ast->lhs->accept(*this);
+        Chunk::size_type jumpToEnd = emitJump(OpCode::JumpIfFalse);
+        emitByte(OpCode::Pop);
+
+        ast->rhs->accept(*this);
+
+        patchJump(jumpToEnd);
+    }
+    else {
+        ast->acceptChildren(*this);
+
+        switch (ast->op) {
+            case BinaryOp::Add: emitByte(OpCode::Add); break;
+            case BinaryOp::Subtract: emitByte(OpCode::Subtract); break;
+            case BinaryOp::Multiply: emitByte(OpCode::Multiply); break;
+            case BinaryOp::Divide: emitByte(OpCode::Divide); break;
+            case BinaryOp::Equal: emitByte(OpCode::Equal); break;
+            case BinaryOp::NotEqual: emitByte(OpCode::Equal); emitByte(OpCode::Negate); break;
+            case BinaryOp::Modulo: emitByte(OpCode::Modulo); break;
+            case BinaryOp::LessThan: emitByte(OpCode::Less); break;
+            case BinaryOp::GreaterThan: emitByte(OpCode::Greater); break;
+            case BinaryOp::LessOrEqual: emitByte(OpCode::Greater); emitByte(OpCode::Negate); break;
+            case BinaryOp::GreaterOrEqual: emitByte(OpCode::Less); emitByte(OpCode::Negate); break;
+            default:
+                throw std::runtime_error("unimplemented binary opertor:"+ast->opString());
+        }
     }
 }
 
@@ -416,7 +488,13 @@ void RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
     switch (ast->op) {
         case UnaryOp::Negate: emitByte(OpCode::Negate); break;
         case UnaryOp::Not: emitByte(OpCode::Negate); break;
-        //case UnaryOp::Accessor: emitByte(OpCode::Greater); break;
+        case UnaryOp::Accessor: {
+            if (!ast->member.has_value())
+                throw std::runtime_error("Accessor . required member name");
+
+            int16_t identConstant = identifierConstant(ast->member.value());
+            emitBytes(OpCode::GetProp, identConstant);
+        } break;
         default:
             throw std::runtime_error("unimplemented unary opertor:"+ast->opString());
     }

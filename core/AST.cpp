@@ -433,8 +433,7 @@ void Function::acceptChildren(ASTVisitor& v)
 
 void Function::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"Function " << (isProc? "(proc)" : "") << std::endl;
-    //sourceOut();
+    os << spaces(indent)+"Function" << (isProc? " (proc)" : "") << " " << toUTF8StdString(name) << std::endl;
     if (params.size()>0) {
         os << spaces(indent)+" params:" << std::endl;
         for(auto& param : params)
@@ -490,8 +489,18 @@ void TypeDecl::acceptChildren(ASTVisitor& v)
 
 void TypeDecl::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"TypeDecl (unimplemented)" << std::endl;
-    //sourceOut();
+    os << spaces(indent)+"TypeDecl " 
+       << (kind==Object ? "object" : (kind==Actor?"actor":"?")) << " " << toUTF8StdString(name)
+       << (extends.has_value() ? " "+toUTF8StdString(extends.value()) :"")
+       << std::endl;
+    if (!implements.empty()) {
+        os << spaces(indent)
+           << " implements " << toUTF8StdString(implements.at(0));
+        for(int i=1; i<implements.size();i++)
+            os << ", " << toUTF8StdString(implements.at(i));
+    }
+    for(auto& method : methods)
+        method->output(os, indent+1);
 }
 
 
@@ -610,7 +619,9 @@ void UnaryOp::acceptChildren(ASTVisitor& v)
 
 void UnaryOp::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"UnaryOp " << opString() << std::endl;
+    os << spaces(indent)+"UnaryOp " << opString() 
+       << ((op==Accessor) ? (member.has_value() ? toUTF8StdString(member.value()) : "?") : "") 
+       << std::endl;
     //sourceOut();
     arg->output(os,indent+1);
 }

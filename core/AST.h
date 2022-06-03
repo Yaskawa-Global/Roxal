@@ -57,7 +57,7 @@ public:
         Postorder,  // AST will visit chidren, then node
         // AST will visit node, but not children
         //  - concrete visitor visit() method should explicity call
-        //    visit on children to control visit order
+        //    accept on children to control visit order
         VisitorDetermined 
     };
 
