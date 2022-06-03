@@ -106,7 +106,6 @@ static void generateAST(const std::string& inputPath, bool graph, const std::str
 
 int main(int argc, const char* argv[]) 
 {
-
     po::options_description desc("Allowed options");
     desc.add_options()
         ("help,h", "options help")

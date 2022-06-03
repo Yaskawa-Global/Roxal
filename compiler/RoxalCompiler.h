@@ -2,97 +2,48 @@
 
 #include <stack>
 
-#include "antlr4-runtime.h"
+#include <core/AST.h>
 
 #include "Chunk.h"
 #include "Object.h"
 
-#include "RoxalVisitor.h"
 
 namespace roxal {
 
 
-class RoxalCompiler : public RoxalVisitor
+class RoxalCompiler : public ast::ASTVisitor
 {
 public:
     RoxalCompiler() {}
 
     ObjFunction* compile(std::istream& source, const std::string& name);
 
+    virtual TraversalOrder traversalOrder() const;
 
-    virtual antlrcpp::Any visitFile_input(RoxalParser::File_inputContext *context);
+    virtual void visit(ptr<ast::File> ast);
+    virtual void visit(ptr<ast::SingleInput> ast);
+    virtual void visit(ptr<ast::TypeDecl> ast);
+    virtual void visit(ptr<ast::FuncDecl> ast);
+    virtual void visit(ptr<ast::VarDecl> ast);
+    virtual void visit(ptr<ast::Suite> ast);
+    virtual void visit(ptr<ast::ExpressionStatement> ast);
+    virtual void visit(ptr<ast::PrintStatement> ast);
+    virtual void visit(ptr<ast::ReturnStatement> ast);
+    virtual void visit(ptr<ast::IfStatement> ast);
+    virtual void visit(ptr<ast::WhileStatement> ast);
+    virtual void visit(ptr<ast::Function> ast);
+    virtual void visit(ptr<ast::Parameter> ast);
+    virtual void visit(ptr<ast::Assignment> ast);
+    virtual void visit(ptr<ast::BinaryOp> ast);
+    virtual void visit(ptr<ast::UnaryOp> ast);
+    virtual void visit(ptr<ast::Variable> ast);
+    virtual void visit(ptr<ast::Call> ast);
+    virtual void visit(ptr<ast::Literal> ast);
+    virtual void visit(ptr<ast::Bool> ast);
+    virtual void visit(ptr<ast::Str> ast);
+    virtual void visit(ptr<ast::Num> ast);
 
-    virtual antlrcpp::Any visitSingle_input(RoxalParser::Single_inputContext *context);
-
-    virtual antlrcpp::Any visitDeclaration(RoxalParser::DeclarationContext *context);
-
-    virtual antlrcpp::Any visitStatement(RoxalParser::StatementContext *context);
-
-    virtual antlrcpp::Any visitExpr_stmt(RoxalParser::Expr_stmtContext *context);
-
-    virtual antlrcpp::Any visitExpression(RoxalParser::ExpressionContext *context);
-
-    virtual antlrcpp::Any visitCompound_stmt(RoxalParser::Compound_stmtContext *context);
-
-    virtual antlrcpp::Any visitBlock_stmt(RoxalParser::Block_stmtContext *context);
-
-    virtual antlrcpp::Any visitPrint_stmt(RoxalParser::Print_stmtContext *context);
-
-    virtual antlrcpp::Any visitReturn_stmt(RoxalParser::Return_stmtContext *context);
-
-    virtual antlrcpp::Any visitIf_stmt(RoxalParser::If_stmtContext *context);
-
-    virtual antlrcpp::Any visitWhile_stmt(RoxalParser::While_stmtContext *context);
-
-    virtual antlrcpp::Any visitVar_decl(RoxalParser::Var_declContext *context);
-
-    virtual antlrcpp::Any visitFunc_decl(RoxalParser::Func_declContext *context);
-
-    virtual antlrcpp::Any visitFunction(RoxalParser::FunctionContext *context);
-
-    virtual antlrcpp::Any visitParameters(RoxalParser::ParametersContext *context);
-
-    virtual antlrcpp::Any visitParameter(RoxalParser::ParameterContext *context);
-
-    virtual antlrcpp::Any visitSuite(RoxalParser::SuiteContext *context);
-
-    virtual antlrcpp::Any visitType_decl(RoxalParser::Type_declContext *context);
-
-    virtual antlrcpp::Any visitAssignment(RoxalParser::AssignmentContext *context);
-
-    virtual antlrcpp::Any visitLogic_or(RoxalParser::Logic_orContext *context);
-
-    virtual antlrcpp::Any visitLogic_and(RoxalParser::Logic_andContext *context);
-
-    virtual antlrcpp::Any visitEquality(RoxalParser::EqualityContext *context);
-
-    virtual antlrcpp::Any visitEqualnotequal(RoxalParser::EqualnotequalContext *context);
-
-    virtual antlrcpp::Any visitComparison(RoxalParser::ComparisonContext *context);
-
-    virtual antlrcpp::Any visitTerm(RoxalParser::TermContext *context);
-
-    virtual antlrcpp::Any visitFactor(RoxalParser::FactorContext *context);
-
-    virtual antlrcpp::Any visitMultdiv(RoxalParser::MultdivContext *context);
-
-    virtual antlrcpp::Any visitUnary(RoxalParser::UnaryContext *context);
-
-    virtual antlrcpp::Any visitCall(RoxalParser::CallContext *context);
-
-    virtual antlrcpp::Any visitArgs_or_accessor(RoxalParser::Args_or_accessorContext *context);
-
-    virtual antlrcpp::Any visitArguments(RoxalParser::ArgumentsContext *context);
-
-    virtual antlrcpp::Any visitPrimary(RoxalParser::PrimaryContext *context);
-
-    virtual antlrcpp::Any visitBuiltin_type(RoxalParser::Builtin_typeContext *context);
-
-    virtual antlrcpp::Any visitStr(RoxalParser::StrContext *context);
-
-    virtual antlrcpp::Any visitNum(RoxalParser::NumContext *context);
-
-    virtual antlrcpp::Any visitInteger(RoxalParser::IntegerContext *context);
+    
    
 protected:
 
@@ -176,10 +127,14 @@ protected:
 
 
     ptr<Chunk> currentChunk() const {
-            return funcScopes.back().function->chunk;
+        #ifdef DEBUG_BUILD
+        if (funcScopes.empty())
+            throw std::runtime_error("currentChunk() - funcScopes is empty");
+        #endif
+        return funcScopes.back().function->chunk;
     }
 
-    antlr4::Token* currentToken;
+    ptr<ast::AST> currentNode;
 
 
     void beginScope();

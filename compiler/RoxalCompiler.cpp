@@ -2,94 +2,83 @@
 
 #include <boost/algorithm/string/replace.hpp>
 
+#include <core/common.h>
+
 #include "Object.h"
 
-#include "RoxalIndentationLexer.h"
+#include "ASTGenerator.h"
 
 #include "RoxalCompiler.h"
 
 using namespace roxal;
-using antlrcpp::Any;
+using namespace roxal::ast;
 
 
 
-class ParseTracer {
-public:
-    ParseTracer(std::string method, antlr4::ParserRuleContext* context)
-    {
-        #if defined(DEBUG_TRACE_PARSE)
-        auto pair { std::make_pair(method,context->getText()) };
-        boost::replace_all(pair.second, "\n", "\\n");
-        std::string spaces(parseStack.size(),' ');
-        std::cout << spaces << std::to_string(context->start->getLine()) << ":" << pair.first << ":" << pair.second << std::endl;
-        parseStack.push(pair);
-        #endif
-    }
-
-    ~ParseTracer()
-    {
-        #if defined(DEBUG_TRACE_PARSE)
-        parseStack.pop();
-        #endif
-    }
-
-protected:
-    static std::stack<std::pair<std::string,std::string>> parseStack;
-};
-
-std::stack<std::pair<std::string,std::string>> ParseTracer::parseStack {};
 
 
-void traceContext(std::string method, antlr4::ParserRuleContext* context)
-{
-    std::cout << method << ":" << context->getText() << std::endl;
+// is ptr<P> p down-castable to ptr<C> where C is a subclass of P (or the same class)?
+template<typename P, typename C>
+bool isa(ptr<P> p) {
+    if (p==nullptr) return false;
+    return std::dynamic_pointer_cast<C>(p)!=nullptr;
+}
+
+template<typename C>
+bool isa(ptr<AST> p) {
+    if (p==nullptr) return false;
+    return std::dynamic_pointer_cast<C>(p)!=nullptr;
+}
+
+// down-cast ptr<P> p to ptr<C> where C is a subclass of P (or the same class)
+template<typename P, typename C>
+ptr<C> as(ptr<P> p) {
+    if (!isa<P,C>(p))
+        throw std::runtime_error("Can't cast ptr<"+demangle(typeid(*p).name())+"> to ptr<"+demangle(typeid(C).name())+">");
+    return std::dynamic_pointer_cast<C>(p);
+}
+
+template<typename C>
+ptr<C> as(ptr<AST> p) {
+    if (!isa<AST,C>(p))
+        throw std::runtime_error("Can't cast ptr<"+demangle(typeid(*p).name())+"> to ptr<"+demangle(typeid(C).name())+">");
+    return std::dynamic_pointer_cast<C>(p);
 }
 
 
 
 ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& name)
 {
-    using namespace antlr4;
-
-    ANTLRInputStream input(source);
-    RoxalIndentationLexer lexer(&input);
-    CommonTokenStream tokens(&lexer);
-
-    #if defined(DEBUG_OUTPUT_LEXER_TOKENS)
-    std::cout << "== tokens ==" << std::endl;
-    tokens.fill();
-    auto vocab = lexer.getVocabulary();
-    auto tokenvec { tokens.getTokens() };
-    for(size_t i=0; i<tokenvec.size(); i++) {
-        auto token { tokenvec[i] };
-        std::cout << token->toString() << " " << vocab.getDisplayName(token->getType()) << std::endl;
-    }
-    std::cout << std::endl;
-    #endif
-
-    RoxalParser parser(&tokens);    
-    
-    auto tree = parser.file_input();
-
-    #if defined(DEBUG_OUTPUT_PARSE_TREE)
-    std::cout << "== parse tree ==" << std::endl << tree::Trees::toStringTree(tree,&parser,true) << std::endl;
-    #endif
-
-    // TODO: should we convert the parse tree into an AST before code generation?
-    //   (to allow other passes to do rewriting, e.g. optimization)
-
     ObjFunction* function { nullptr };
 
-    if (parser.getNumberOfSyntaxErrors() == 0) {
+    ptr<ast::AST> ast {};
+    try {
+        ASTGenerator astGenerator {};
+        ast = astGenerator.ast(source, name);
+    } catch (std::exception& e) {
+        std::cout << "Exception in parsing - " << std::string(e.what()) << std::endl; 
+        return function;
+    }
+
+    if (!isa<File>(ast))
+        throw std::runtime_error("ASTGenerator root node is not a File");
+
+
+    #if defined(DEBUG_OUTPUT_PARSE_TREE)
+    std::cout << "== parse tree ==" << std::endl << ast << std::endl;
+    #endif
+
+
+    if (ast != nullptr) {
 
         funcScopes.push_back(FunctionScope(toUnicodeString(name), FunctionType::Module, false));
 
         funcScope()->strict = false;
 
         try {
-            auto result = visitFile_input(tree);
-            if (!result.isNull())
-                throw std::runtime_error("visitFile_input returned non-Value resut in context "+tree->getText());
+            auto file = as<File>(ast);
+
+            file->accept(*this);
             
             function = funcScope()->function;
 
@@ -120,8 +109,384 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 }
 
 
+ASTVisitor::TraversalOrder RoxalCompiler::traversalOrder() const
+{
+    // we don't want AST implemented pre- or post-order tree traversal.
+    //  instead, we'll dictate the traversal order by explicitly calling visit() on children
+    return TraversalOrder::VisitorDetermined;
+}
 
 
+
+
+
+
+void RoxalCompiler::visit(ptr<ast::File> ast)
+{
+    currentNode = ast;
+    ast->acceptChildren(*this);
+    emitReturn();
+}
+
+
+void RoxalCompiler::visit(ptr<ast::SingleInput> ast)
+{
+    currentNode = ast;
+    ast->acceptChildren(*this);
+}
+
+
+void RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
+{
+    currentNode = ast;
+    ast->acceptChildren(*this);
+}
+
+
+void RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
+{
+    currentNode = ast;    
+
+    auto name { as<Function>(ast->func)->name };
+
+    declareVariable(name);
+
+    uint16_t var { 0 };
+    if (funcScope()->scopeDepth == 0) // global variable
+        var = identifierConstant(name); // create constant table entry for name
+
+    if (funcScope()->scopeDepth > 0) {
+        // mark initialized
+        funcScope()->locals.back().depth = funcScope()->scopeDepth;
+    }
+
+    ast->acceptChildren(*this);
+
+    defineVariable(var);
+}
+
+
+void RoxalCompiler::visit(ptr<ast::VarDecl> ast)
+{
+    currentNode = ast;
+
+    declareVariable(ast->name);
+    uint16_t var { 0 };
+    if (funcScope()->scopeDepth == 0) // global variable
+        var = identifierConstant(ast->name); // create constant table entry for name
+
+    // TODO: support type spec 
+
+    if (ast->initializer.has_value()) {
+        ast->initializer.value()->accept(*this);
+    }
+    else
+        emitByte(OpCode::ConstNil);
+
+    defineVariable(var);
+}
+
+
+void RoxalCompiler::visit(ptr<ast::Suite> ast)
+{
+    currentNode = ast;
+
+    beginScope();
+    ast->acceptChildren(*this);
+    endScope();
+}
+
+
+void RoxalCompiler::visit(ptr<ast::ExpressionStatement> ast)
+{
+    currentNode = ast;
+    ast->acceptChildren(*this);
+
+    // expressions leave their value on the stack, but statements don't
+    //  have a value, so discard it
+    emitByte(OpCode::Pop, "expr_stmt value");
+}
+
+
+void RoxalCompiler::visit(ptr<ast::PrintStatement> ast)
+{
+    currentNode = ast;
+
+    ast->acceptChildren(*this);
+
+    emitByte(OpCode::Print);
+}
+
+
+void RoxalCompiler::visit(ptr<ast::ReturnStatement> ast)
+{
+    currentNode = ast;
+
+    ast->acceptChildren(*this);
+
+    if (ast->expr.has_value()) {
+
+        if (funcScope()->functionType == FunctionType::Initializer)
+            error("A value cannot be returned from an 'init' method.");
+        if (funcScope()->isProc)
+            error("A value cannot be returned from an proc method.");
+
+        emitByte(OpCode::Return);
+    }
+    else        
+        emitReturn();
+}
+
+
+void RoxalCompiler::visit(ptr<ast::IfStatement> ast)
+{
+    currentNode = ast;
+
+    // (first) if condition 
+    ast->conditionalSuites.at(0).first->accept(*this);
+
+    auto jumpOverIf = emitJump(OpCode::JumpIfFalse);
+    emitByte(OpCode::Pop, "if cond");
+
+    beginScope();
+    ast->conditionalSuites.at(0).second->accept(*this);
+    endScope();
+
+    auto jumpOverElse = emitJump(OpCode::Jump);
+
+    patchJump(jumpOverIf);
+
+    if (ast->conditionalSuites.size()>1) {
+        throw std::runtime_error("elseif unimplemented");
+        // for(int i=1; i<context->expression().size();i++) {
+        //     visitExpression(context->expression().at(i));
+        //     visitSuite(context->suite().at(i));
+        // }
+    }
+
+    emitByte(OpCode::Pop, "if cond");
+    if (ast->elseSuite.has_value()) {
+        beginScope();
+        ast->elseSuite.value()->accept(*this);
+        endScope();
+    }
+    
+    patchJump(jumpOverElse);
+}
+
+
+void RoxalCompiler::visit(ptr<ast::WhileStatement> ast)
+{
+    currentNode = ast;
+
+    auto loopStart = currentChunk()->code.size();
+
+    // while condition 
+    ast->condition->accept(*this);
+
+    auto jumpToExit = emitJump(OpCode::JumpIfFalse);
+    emitByte(OpCode::Pop, "while cond");
+
+    ast->body->accept(*this);
+
+    emitLoop(loopStart);
+
+    patchJump(jumpToExit);
+    emitByte(OpCode::Pop, "while cond");
+}
+
+
+void RoxalCompiler::visit(ptr<ast::Function> ast)
+{
+    currentNode = ast;
+    
+    bool isProc = ast->isProc;
+    bool isMethod = !typeScopes.empty();
+
+    bool isInitializer = isMethod && (ast->name == "init");
+
+    if (isInitializer && !isProc)
+        error("object or actor type 'init' method must be a proc.");
+
+    FunctionType ftype = isMethod ? 
+                              (isInitializer ? FunctionType::Initializer : FunctionType::Method)
+                            : FunctionType::Function;
+
+    funcScopes.push_back(FunctionScope(ast->name, ftype, isProc));
+
+    #ifdef DEBUG_BUILD
+    emitByte(OpCode::Nop, "func "+toUTF8StdString(ast->name));
+    #endif
+    beginScope();
+
+    funcScope()->function->arity = ast->params.size();
+    if (funcScope()->function->arity > 255)
+        error("Maximum of function or procedure 255 parameters exceeded.");
+
+    ast->acceptChildren(*this);
+
+    //endScope(); // state scope about to be discarded, not needed
+
+    emitReturn();
+
+    #if defined(DEBUG_OUTPUT_CHUNK)
+    funcScope()->function->chunk->disassemble(funcScope()->function->name);
+    #endif
+
+    ObjFunction* function = funcScope()->function;
+    auto functionScope { *funcScope() };
+
+    funcScopes.pop_back(); // back to surrpounding function
+
+//!!!
+// std::cout << "Closure " << toUTF8StdString(function->name) << ": #" << function->upvalueCount << std::endl;//!!!
+// std::cout << "   #" << functionState.upvalues.size() << std::endl;
+//!!!
+    emitBytes(OpCode::Closure, makeConstant(objVal(function)));
+    for (int i = 0; i < function->upvalueCount; i++) {
+        #ifdef DEBUG_BUILD
+        if (i >= functionScope.upvalues.size())
+            throw std::runtime_error("invalid upvalue index");
+        #endif
+//std::cout << "    - " << int(functionState.upvalues[i].index) << " " << std::string(functionState.upvalues[i].isLocal ?"local":"nonlocal") << std::endl;        
+        emitByte(functionScope.upvalues[i].isLocal ? 1 : 0);
+        emitByte(functionScope.upvalues[i].index);
+    }
+}
+
+
+void RoxalCompiler::visit(ptr<ast::Parameter> ast)
+{
+    currentNode = ast;
+
+    // TODO: handle optional type
+
+    declareVariable(ast->name);
+    uint16_t var = identifierConstant(ast->name); // create constant table entry for name
+
+    defineVariable(var);
+}
+
+
+void RoxalCompiler::visit(ptr<ast::Assignment> ast)
+{
+    currentNode = ast;
+    
+    ast->rhs->accept(*this);
+
+    if (isa<Variable>(ast->lhs)) {
+
+        // we don't visit the LHS Variable, since that will emit code to evaluate it
+
+        auto name { as<Variable>(ast->lhs)->name };
+
+        namedVariable(name, /*assign=*/true);
+    }
+    else
+        throw std::runtime_error("Only assignment to variables is implemented");
+}
+
+
+void RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
+{
+    currentNode = ast;
+
+    ast->acceptChildren(*this);
+
+    switch (ast->op) {
+        case BinaryOp::Add: emitByte(OpCode::Add); break;
+        case BinaryOp::Multiply: emitByte(OpCode::Multiply); break;
+        case BinaryOp::Divide: emitByte(OpCode::Divide); break;
+        case BinaryOp::Modulo: emitByte(OpCode::Modulo); break;
+        case BinaryOp::LessThan: emitByte(OpCode::Less); break;
+        case BinaryOp::GreaterThan: emitByte(OpCode::Greater); break;
+        case BinaryOp::LessOrEqual: emitByte(OpCode::Greater); emitByte(OpCode::Negate); break;
+        case BinaryOp::GreaterOrEqual: emitByte(OpCode::Less); emitByte(OpCode::Negate); break;
+        default:
+            throw std::runtime_error("unimplemented binary opertor:"+ast->opString());
+    }
+}
+
+
+void RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
+{
+    currentNode = ast;
+    ast->acceptChildren(*this);
+
+    switch (ast->op) {
+        case UnaryOp::Negate: emitByte(OpCode::Negate); break;
+        case UnaryOp::Not: emitByte(OpCode::Negate); break;
+        //case UnaryOp::Accessor: emitByte(OpCode::Greater); break;
+        default:
+            throw std::runtime_error("unimplemented unary opertor:"+ast->opString());
+    }
+}
+
+
+void RoxalCompiler::visit(ptr<ast::Variable> ast)
+{
+    currentNode = ast;
+    namedVariable(ast->name);
+}
+
+
+void RoxalCompiler::visit(ptr<ast::Call> ast)
+{
+    currentNode = ast;
+    ast->acceptChildren(*this);
+
+    auto argCount = ast->args.size();
+    if (argCount > 255)
+        error("Number of call parameters is limited to 255");
+    emitBytes(OpCode::Call, argCount);
+}
+
+
+void RoxalCompiler::visit(ptr<ast::Literal> ast)
+{
+    currentNode = ast;
+    // non-Nil typed literals handled by specialized visit methods
+    if (ast->type==Literal::Nil)
+        emitByte(OpCode::ConstNil);
+}
+
+
+void RoxalCompiler::visit(ptr<ast::Bool> ast)
+{
+    currentNode = ast;
+    emitByte( ast->value ? OpCode::ConstTrue : OpCode::ConstFalse );
+}
+
+
+void RoxalCompiler::visit(ptr<ast::Str> ast)
+{
+    currentNode = ast;
+
+    // new ObjString or existing one if exists in strings intern map
+    auto objStr = stringVal(ast->str); 
+    emitConstant(objVal(objStr));
+}
+
+
+void RoxalCompiler::visit(ptr<ast::Num> ast)
+{
+    currentNode = ast;
+
+    if (std::holds_alternative<double>(ast->num)) {
+        emitConstant(realVal(std::get<double>(ast->num)));
+    }
+    else if (std::holds_alternative<int32_t>(ast->num)) {
+        emitConstant(intVal(std::get<int32_t>(ast->num)));
+    }
+    else 
+        throw std::runtime_error("unhandled Num type");
+}
+
+
+
+
+
+#ifdef NOTHING
 
 Any RoxalCompiler::visitFile_input(RoxalParser::File_inputContext *context) 
 {
@@ -982,7 +1347,7 @@ Any RoxalCompiler::visitInteger(RoxalParser::IntegerContext *context)
 }
 
 
-
+#endif
 
 
 
@@ -1038,36 +1403,41 @@ void RoxalCompiler::endScope()
     }
 }
 
+static std::string linePos(ptr<AST> node)
+{
+    return std::to_string(node->interval.first.line)+":"+std::to_string(node->interval.first.pos);
+}
+
 
 void RoxalCompiler::error(const std::string& message)
 {
-    throw std::logic_error(std::to_string(currentToken->getLine()) + ":" + message);
+    throw std::logic_error(linePos(currentNode) + " - " + message);
 }
 
 
 
 void RoxalCompiler::emitByte(uint8_t byte, const std::string& comment)
 {
-    currentChunk()->write(byte, currentToken->getLine(), comment);
+    currentChunk()->write(byte, currentNode->interval.first.line, comment);
 }
 
 
 void RoxalCompiler::emitByte(OpCode op, const std::string& comment)
 {
-    currentChunk()->write(asByte(op), currentToken->getLine(), comment);
+    currentChunk()->write(asByte(op), currentNode->interval.first.line, comment);
 }
 
 
 void RoxalCompiler::emitBytes(uint8_t byte1, uint8_t byte2, const std::string& comment)
 {
-    currentChunk()->write(byte1, currentToken->getLine(), comment);
-    currentChunk()->write(byte2, currentToken->getLine());
+    currentChunk()->write(byte1, currentNode->interval.first.line, comment);
+    currentChunk()->write(byte2, currentNode->interval.first.line);
 }
 
 void RoxalCompiler::emitBytes(OpCode op, uint8_t byte2, const std::string& comment)
 {
-    currentChunk()->write(op, currentToken->getLine(), comment);
-    currentChunk()->write(byte2, currentToken->getLine());
+    currentChunk()->write(op, currentNode->interval.first.line, comment);
+    currentChunk()->write(byte2, currentNode->interval.first.line);
 }
 
 

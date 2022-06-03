@@ -48,7 +48,7 @@ VM::~VM()
 VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
 {
     ObjFunction* function { nullptr };
-    // FIXME: compile from the AST not the source
+
     try {
         RoxalCompiler compiler {};
 
@@ -462,11 +462,11 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::Greater): {
                 if (!peek(0).isNumber()) {
-                    runtimeError("Operand must be a number");
+                    runtimeError("Operand to > must be a number");
                     return InterpretResult::RuntimeError;
                 }
                 if (!peek(1).isNumber()) {
-                    runtimeError("Operand must be a number");
+                    runtimeError("Operand to > must be a number");
                     return InterpretResult::RuntimeError;
                 }
                 binaryOp([](Value a, Value b) -> Value { return greater(a,b); });
@@ -474,11 +474,11 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::Less): {
                 if (!peek(0).isNumber()) {
-                    runtimeError("Operand must be a number");
+                    runtimeError("Operand to < must be a number");
                     return InterpretResult::RuntimeError;
                 }
                 if (!peek(1).isNumber()) {
-                    runtimeError("Operand must be a number");
+                    runtimeError("Operand to < must be a number");
                     return InterpretResult::RuntimeError;
                 }
                 binaryOp([](Value a, Value b) -> Value { return less(a,b); });
@@ -492,18 +492,18 @@ VM::InterpretResult VM::execute()
                     concatenate();
                 }
                 else {
-                    runtimeError("Operands must be two numbers or a strings LHS");
+                    runtimeError("Operands of + must be two numbers or a strings LHS");
                     return InterpretResult::RuntimeError;
                 }
                 break;
             }
             case asByte(OpCode::Subtract): {
                 if (!peek(0).isNumber()) {
-                    runtimeError("Operand must be a number");
+                    runtimeError("Operand of - must be a number");
                     return InterpretResult::RuntimeError;
                 }
                 if (!peek(1).isNumber()) {
-                    runtimeError("Operand must be a number");
+                    runtimeError("Operand of - must be a number");
                     return InterpretResult::RuntimeError;
                 }
                 binaryOp([](Value a, Value b) -> Value { return subtract(a,b); });
@@ -511,11 +511,11 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::Multiply): {
                 if (!peek(0).isNumber()) {
-                    runtimeError("Operand must be a number");
+                    runtimeError("Operand of * must be a number");
                     return InterpretResult::RuntimeError;
                 }
                 if (!peek(1).isNumber()) {
-                    runtimeError("Operand must be a number");
+                    runtimeError("Operand of * must be a number");
                     return InterpretResult::RuntimeError;
                 }
                 binaryOp([](Value a, Value b) -> Value { return multiply(a,b); });
@@ -523,11 +523,11 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::Divide): {
                 if (!peek(0).isNumber()) {
-                    runtimeError("Operand must be a number");
+                    runtimeError("Operand of / must be a number");
                     return InterpretResult::RuntimeError;
                 }
                 if (!peek(1).isNumber()) {
-                    runtimeError("Operand must be a number");
+                    runtimeError("Operand of / must be a number");
                     return InterpretResult::RuntimeError;
                 }
                 if (peek(0).asReal() == 0.0) {
@@ -548,7 +548,7 @@ VM::InterpretResult VM::execute()
                     push(boolVal(isFalsey(operand)));
                 }
                 else {
-                    runtimeError("Operand must be a number, bool or nil");
+                    runtimeError("Operand of not or negation must be a number, bool or nil");
                     return InterpretResult::RuntimeError;
                 }
                 break;
@@ -556,11 +556,11 @@ VM::InterpretResult VM::execute()
             case asByte(OpCode::Modulo): {
                 // TODO: support decimal
                 if (!peek(0).isInt()) {
-                    runtimeError("Operand must be an integer");
+                    runtimeError("Operand of % must be an integer");
                     return InterpretResult::RuntimeError;
                 }
                 if (!peek(1).isInt()) {
-                    runtimeError("Operand must be an integer");
+                    runtimeError("Operand of % must be an integer");
                     return InterpretResult::RuntimeError;
                 }
                 binaryOp([](Value a, Value b) -> Value { return mod(a,b); });
@@ -568,11 +568,11 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::And): {
                 if (!peek(0).isBool()) {
-                    runtimeError("Operand must be a bool");
+                    runtimeError("Operand and must be a bool");
                     return InterpretResult::RuntimeError;
                 }
                 if (!peek(1).isBool()) {
-                    runtimeError("Operand must be a bool");
+                    runtimeError("Operand and must be a bool");
                     return InterpretResult::RuntimeError;
                 }
                 binaryOp([](Value a, Value b) -> Value { return land(a,b); });
@@ -580,11 +580,11 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::Or): {
                 if (!peek(0).isBool()) {
-                    runtimeError("Operand must be a bool");
+                    runtimeError("Operand or must be a bool");
                     return InterpretResult::RuntimeError;
                 }
                 if (!peek(0).isBool()) {
-                    runtimeError("Operand must be a bool");
+                    runtimeError("Operand or must be a bool");
                     return InterpretResult::RuntimeError;
                 }
                 binaryOp([](Value a, Value b) -> Value { return lor(a,b); });
