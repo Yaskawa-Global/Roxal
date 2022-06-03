@@ -52,6 +52,18 @@ class Num;
 class ASTVisitor 
 {
 public:
+    enum class TraversalOrder {
+        Preorder,   // AST will visit node, then children
+        Postorder,  // AST will visit chidren, then node
+        // AST will visit node, but not children
+        //  - concrete visitor visit() method should explicity call
+        //    visit on children to control visit order
+        VisitorDetermined 
+    };
+
+    virtual TraversalOrder traversalOrder() const 
+      { return TraversalOrder::Postorder; }
+
     virtual void visit(ptr<File> ast) = 0;
     virtual void visit(ptr<SingleInput> ast) = 0;
     virtual void visit(ptr<TypeDecl> ast) = 0;
@@ -74,6 +86,19 @@ public:
     virtual void visit(ptr<Bool> ast) = 0;
     virtual void visit(ptr<Str> ast) = 0;
     virtual void visit(ptr<Num> ast) = 0;
+
+    inline bool visitFirst() const {
+        auto order { traversalOrder() };
+        return (order==TraversalOrder::VisitorDetermined || order==TraversalOrder::Preorder);
+    }
+    inline bool visitLast() const {
+        return traversalOrder()==TraversalOrder::Postorder;
+    }
+    inline bool visitChildren() const {
+        return traversalOrder()!=TraversalOrder::VisitorDetermined;
+    }
+
+
 };
 
 
@@ -87,7 +112,6 @@ struct LinePos {
 struct AST : public std::enable_shared_from_this<AST>
 {
     AST() {}
-    //AST(const AST&) = delete;
     virtual ~AST() {}
 
     AST& operator=(const AST&) = delete;
@@ -128,6 +152,9 @@ struct File : public AST {
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    // convenience for visitors when using VisitorDetermined traversal
+    void acceptChildren(ASTVisitor& v);
 };
 
 
@@ -136,6 +163,8 @@ struct SingleInput : public AST {
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
 };
 
 
@@ -171,6 +200,8 @@ struct Suite : public Statement {
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
 };
 
 
@@ -179,6 +210,8 @@ struct ExpressionStatement : public Statement {
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
 };
 
 struct PrintStatement : public Statement {
@@ -186,6 +219,8 @@ struct PrintStatement : public Statement {
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
 };
 
 struct ReturnStatement : public Statement {
@@ -193,6 +228,8 @@ struct ReturnStatement : public Statement {
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
 };
 
 
@@ -203,6 +240,8 @@ struct IfStatement : public Statement {
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
 };
 
 
@@ -212,6 +251,8 @@ struct WhileStatement : public Statement {
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
 };
 
 
@@ -221,6 +262,8 @@ struct VarDecl : public Declaration {
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
 };
 
 
@@ -229,6 +272,8 @@ struct FuncDecl : public Declaration {
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
 };
 
 
@@ -240,6 +285,8 @@ struct Function : public AST {
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
 };
 
 
@@ -263,6 +310,8 @@ struct TypeDecl : public Declaration {
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
 };
 
 
@@ -301,6 +350,8 @@ struct BinaryOp : public Expression {
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
 };
 
 
@@ -321,6 +372,8 @@ struct UnaryOp : public Expression {
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
 };
 
 
@@ -330,6 +383,8 @@ struct Assignment : public Expression {
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
 };
 
 
@@ -350,6 +405,8 @@ struct Call : public Expression {
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
 };
 
 

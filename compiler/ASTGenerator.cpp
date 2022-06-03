@@ -76,19 +76,12 @@ void ASTGenerator::setSourceInfo(ptr<AST> ast, antlr4::tree::TerminalNode* termi
 }
 
 
+
 // is ptr<P> p down-castable to ptr<C> where C is a subclass of P (or the same class)?
 template<typename P, typename C>
 bool isa(ptr<P> p) {
     if (p==nullptr) return false;
     return std::dynamic_pointer_cast<C>(p)!=nullptr;
-}
-
-// down-cast ptr<P> p to ptr<C> where C is a subclass of P (or the same class)
-template<typename P, typename C>
-bool as(ptr<P> p) {
-    if (!isa<C>(p))
-        throw std::runtime_error("Can't cast ptr<"+typeName(p)+"> to ptr<"+demangle(typeid(C).name())+">");
-    return std::dynamic_pointer_cast<C>(p);
 }
 
 

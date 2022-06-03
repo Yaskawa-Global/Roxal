@@ -72,6 +72,11 @@ void ASTGraphviz::addLink(const std::string& fromNodeName, const std::string& to
 }
 
 
+ASTVisitor::TraversalOrder ASTGraphviz::traversalOrder() const
+{
+    return TraversalOrder::Postorder;
+}
+
 
 
 std::string ASTGraphviz::generateGraphText(ptr<ast::AST> ast)

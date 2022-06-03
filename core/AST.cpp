@@ -43,9 +43,19 @@ std::ostream& roxal::ast::operator<<(std::ostream& os, const AST& ast)
 { ast.output(os,0); return os; }
 
 
-
-
 void File::accept(ASTVisitor& v) 
+{
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<File>(shared_from_this()));
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<File>(shared_from_this()));
+}
+
+void File::acceptChildren(ASTVisitor& v)
 {
     for(auto& declOrStmt : declsOrStmts ) {
 
@@ -56,8 +66,8 @@ void File::accept(ASTVisitor& v)
         else
             throw std::runtime_error("unimplemented accept() alternative");
     }
-    v.visit(std::dynamic_pointer_cast<File>(shared_from_this()));
 }
+
 
 
 // #define sourceOut() \
@@ -85,9 +95,21 @@ void File::output(std::ostream& os, int indent) const
 
 void SingleInput::accept(ASTVisitor& v) 
 { 
-    stmt->accept(v);
-    v.visit(std::dynamic_pointer_cast<SingleInput>(shared_from_this()));
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<SingleInput>(shared_from_this()));
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<SingleInput>(shared_from_this()));
 }
+
+void SingleInput::acceptChildren(ASTVisitor& v)
+{
+    stmt->accept(v);
+}
+
 
 void SingleInput::output(std::ostream& os, int indent) const
 {
@@ -131,6 +153,18 @@ void Statement::accept(ASTVisitor& v)
 
 void Suite::accept(ASTVisitor& v) 
 {
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<Suite>(shared_from_this()));
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<Suite>(shared_from_this()));
+}
+
+void Suite::acceptChildren(ASTVisitor& v)
+{
     for(auto& declOrStmt :declsOrStmts ) {
 
         if (std::holds_alternative<ptr<Declaration>>(declOrStmt))
@@ -140,8 +174,8 @@ void Suite::accept(ASTVisitor& v)
         else
             throw std::runtime_error("unimplemented accept() alternative");
     }
-    v.visit(std::dynamic_pointer_cast<Suite>(shared_from_this()));
 }
+
 
 
 void Suite::output(std::ostream& os, int indent) const
@@ -164,9 +198,21 @@ void Suite::output(std::ostream& os, int indent) const
 
 void ExpressionStatement::accept(ASTVisitor& v)
 {
-    expr->accept(v);
-    v.visit(std::dynamic_pointer_cast<ExpressionStatement>(shared_from_this())); 
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<ExpressionStatement>(shared_from_this())); 
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<ExpressionStatement>(shared_from_this())); 
 }
+
+void ExpressionStatement::acceptChildren(ASTVisitor& v)
+{
+    expr->accept(v);
+}
+
 
 
 void ExpressionStatement::output(std::ostream& os, int indent) const
@@ -180,9 +226,21 @@ void ExpressionStatement::output(std::ostream& os, int indent) const
 
 void PrintStatement::accept(ASTVisitor& v) 
 { 
-    expr->accept(v);
-    v.visit(std::dynamic_pointer_cast<PrintStatement>(shared_from_this())); 
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<PrintStatement>(shared_from_this())); 
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<PrintStatement>(shared_from_this())); 
 }
+
+void PrintStatement::acceptChildren(ASTVisitor& v)
+{
+    expr->accept(v);
+}
+
 
 
 void PrintStatement::output(std::ostream& os, int indent) const
@@ -195,10 +253,22 @@ void PrintStatement::output(std::ostream& os, int indent) const
 
 void ReturnStatement::accept(ASTVisitor& v) 
 { 
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<ReturnStatement>(shared_from_this())); 
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<ReturnStatement>(shared_from_this())); 
+}
+
+void ReturnStatement::acceptChildren(ASTVisitor& v)
+{
     if (expr.has_value())
         expr.value()->accept(v);
-    v.visit(std::dynamic_pointer_cast<ReturnStatement>(shared_from_this())); 
 }
+
 
 void ReturnStatement::output(std::ostream& os, int indent) const
 {
@@ -213,14 +283,26 @@ void ReturnStatement::output(std::ostream& os, int indent) const
 
 void IfStatement::accept(ASTVisitor& v) 
 {
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<IfStatement>(shared_from_this())); 
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<IfStatement>(shared_from_this())); 
+}
+
+void IfStatement::acceptChildren(ASTVisitor& v)
+{
     for(auto& condSuite :conditionalSuites ) {
         condSuite.first->accept(v);
         condSuite.second->accept(v);
     }
     if (elseSuite.has_value())
         elseSuite.value()->accept(v);
-    v.visit(std::dynamic_pointer_cast<IfStatement>(shared_from_this())); 
 }
+
 
 
 void IfStatement::output(std::ostream& os, int indent) const
@@ -243,10 +325,22 @@ void IfStatement::output(std::ostream& os, int indent) const
 
 void WhileStatement::accept(ASTVisitor& v)
 {
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<WhileStatement>(shared_from_this())); 
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<WhileStatement>(shared_from_this())); 
+}
+
+void WhileStatement::acceptChildren(ASTVisitor& v)
+{
     condition->accept(v);
     body->accept(v);
-    v.visit(std::dynamic_pointer_cast<WhileStatement>(shared_from_this())); 
 }
+
 
 
 void WhileStatement::output(std::ostream& os, int indent) const
@@ -264,9 +358,20 @@ void WhileStatement::output(std::ostream& os, int indent) const
 
 void VarDecl::accept(ASTVisitor& v) 
 {
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<VarDecl>(shared_from_this())); 
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<VarDecl>(shared_from_this())); 
+}
+
+void VarDecl::acceptChildren(ASTVisitor& v)
+{
     if (initializer.has_value())
         initializer.value()->accept(v);
-    v.visit(std::dynamic_pointer_cast<VarDecl>(shared_from_this())); 
 }
 
 
@@ -281,9 +386,21 @@ void VarDecl::output(std::ostream& os, int indent) const
 
 void FuncDecl::accept(ASTVisitor& v)
 {
-    func->accept(v);
-    v.visit(std::dynamic_pointer_cast<FuncDecl>(shared_from_this())); 
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<FuncDecl>(shared_from_this())); 
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<FuncDecl>(shared_from_this())); 
 }
+
+void FuncDecl::acceptChildren(ASTVisitor& v)
+{
+    func->accept(v);
+}
+
 
 void FuncDecl::output(std::ostream& os, int indent) const
 {
@@ -296,11 +413,23 @@ void FuncDecl::output(std::ostream& os, int indent) const
 
 void Function::accept(ASTVisitor& v)
 {
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<Function>(shared_from_this())); 
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<Function>(shared_from_this())); 
+}
+
+void Function::acceptChildren(ASTVisitor& v)
+{
     for(auto& param : params)
         param->accept(v);
     body->accept(v);
-    v.visit(std::dynamic_pointer_cast<Function>(shared_from_this())); 
 }
+
 
 void Function::output(std::ostream& os, int indent) const
 {
@@ -319,7 +448,8 @@ void Function::output(std::ostream& os, int indent) const
 
 void Parameter::accept(ASTVisitor& v)
 {
-    v.visit(std::dynamic_pointer_cast<Parameter>(shared_from_this())); 
+    if (v.visitFirst() || v.visitLast())
+        v.visit(std::dynamic_pointer_cast<Parameter>(shared_from_this())); 
 }
 
 void Parameter::output(std::ostream& os, int indent) const
@@ -340,10 +470,22 @@ void Parameter::output(std::ostream& os, int indent) const
 
 void TypeDecl::accept(ASTVisitor& v)
 {
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<TypeDecl>(shared_from_this())); 
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<TypeDecl>(shared_from_this())); 
+}
+
+void TypeDecl::acceptChildren(ASTVisitor& v)
+{
     for(auto& method : methods)
         method->accept(v);
-    v.visit(std::dynamic_pointer_cast<TypeDecl>(shared_from_this())); 
 }
+
 
 
 void TypeDecl::output(std::ostream& os, int indent) const
@@ -400,10 +542,22 @@ std::string BinaryOp::opString() const
 
 void BinaryOp::accept(ASTVisitor& v)
 {
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<BinaryOp>(shared_from_this()));
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<BinaryOp>(shared_from_this()));
+}
+
+void BinaryOp::acceptChildren(ASTVisitor& v)
+{
     lhs->accept(v);
     rhs->accept(v);
-    v.visit(std::dynamic_pointer_cast<BinaryOp>(shared_from_this()));
 }
+
 
 void BinaryOp::output(std::ostream& os, int indent) const
 {
@@ -438,9 +592,21 @@ std::string UnaryOp::opString() const
 
 void UnaryOp::accept(ASTVisitor& v)
 {
-    arg->accept(v);
-    v.visit(std::dynamic_pointer_cast<UnaryOp>(shared_from_this()));
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<UnaryOp>(shared_from_this()));
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<UnaryOp>(shared_from_this()));
 }
+
+void UnaryOp::acceptChildren(ASTVisitor& v)
+{
+    arg->accept(v);
+}
+
 
 void UnaryOp::output(std::ostream& os, int indent) const
 {
@@ -453,10 +619,22 @@ void UnaryOp::output(std::ostream& os, int indent) const
 
 void Assignment::accept(ASTVisitor& v)
 {
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<Assignment>(shared_from_this()));
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<Assignment>(shared_from_this()));
+}
+
+void Assignment::acceptChildren(ASTVisitor& v)
+{
     lhs->accept(v);
     rhs->accept(v);
-    v.visit(std::dynamic_pointer_cast<Assignment>(shared_from_this()));
 }
+
 
 void Assignment::output(std::ostream& os, int indent) const
 {
@@ -469,7 +647,8 @@ void Assignment::output(std::ostream& os, int indent) const
 
 void Variable::accept(ASTVisitor& v)
 {
-    v.visit(std::dynamic_pointer_cast<Variable>(shared_from_this()));
+    if (v.visitFirst() || v.visitLast())
+        v.visit(std::dynamic_pointer_cast<Variable>(shared_from_this()));
 }
 
 void Variable::output(std::ostream& os, int indent) const
@@ -483,11 +662,23 @@ void Variable::output(std::ostream& os, int indent) const
 
 void Call::accept(ASTVisitor& v)
 {
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<Call>(shared_from_this()));
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<Call>(shared_from_this()));
+}
+
+void Call::acceptChildren(ASTVisitor& v)
+{
     callable->accept(v);
     for(auto& arg : args)
         arg->accept(v);
-    v.visit(std::dynamic_pointer_cast<Call>(shared_from_this()));
 }
+
 
 void Call::output(std::ostream& os, int indent) const
 {
@@ -522,7 +713,8 @@ void Literal::output(std::ostream& os, int indent) const
 
 void Bool::accept(ASTVisitor& v)
 {
-    v.visit(std::dynamic_pointer_cast<Bool>(shared_from_this()));
+    if (v.visitFirst() || v.visitLast())
+        v.visit(std::dynamic_pointer_cast<Bool>(shared_from_this()));
 }
 
 void Bool::output(std::ostream& os, int indent) const
@@ -535,7 +727,8 @@ void Bool::output(std::ostream& os, int indent) const
 
 void Num::accept(ASTVisitor& v)
 {
-    v.visit(std::dynamic_pointer_cast<Num>(shared_from_this()));
+    if (v.visitFirst() || v.visitLast())
+        v.visit(std::dynamic_pointer_cast<Num>(shared_from_this()));
 }
 
 void Num::output(std::ostream& os, int indent) const
@@ -555,7 +748,8 @@ void Num::output(std::ostream& os, int indent) const
 
 void Str::accept(ASTVisitor& v)
 {
-    v.visit(std::dynamic_pointer_cast<Str>(shared_from_this()));
+    if (v.visitFirst() || v.visitLast())
+        v.visit(std::dynamic_pointer_cast<Str>(shared_from_this()));
 }
 
 void Str::output(std::ostream& os, int indent) const

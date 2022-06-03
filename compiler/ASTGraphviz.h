@@ -14,6 +14,8 @@ public:
 
     std::string generateGraphText(ptr<ast::AST> ast);
 
+    virtual TraversalOrder traversalOrder() const;
+
     virtual void visit(ptr<ast::File> ast);
     virtual void visit(ptr<ast::SingleInput> ast);
     virtual void visit(ptr<ast::TypeDecl> ast);
