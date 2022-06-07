@@ -44,7 +44,7 @@ public:
     virtual void visit(ptr<ast::Str> ast);
     virtual void visit(ptr<ast::Num> ast);
     virtual void visit(ptr<ast::List> ast);
-
+    virtual void visit(ptr<ast::Dict> ast);
     
    
 protected:

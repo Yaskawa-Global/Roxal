@@ -73,6 +73,24 @@ void roxal::Value::decRefObj()
 
 
 
+bool Value::asBool() const
+{
+    if (!isBoxed()) {
+        return as.boolean;
+    }
+    else {
+        switch (valueType(_type)) {
+        case ValueType::Bool: return asPrimitive(*this)->as.boolean;
+        default: ;
+        }
+    }
+    return false;
+}
+
+
+
+
+
 int32_t Value::asInt() const
 {
     if (!isBoxed()) {
@@ -138,13 +156,6 @@ std::string roxal::Value::typeName() const
 }
 
 
-bool Value::asBool() const
-{ 
-    return valueType(_type)==ValueType::Bool ? 
-              (!isBoxed() ? as.boolean : asPrimitive(*this)->as.boolean) 
-            : false; 
-}
-
 
 
 
@@ -171,7 +182,7 @@ ValueType roxal::binaryOpType(Value l, Value r)
     else if (l.isReal() || r.isReal())
         resultType = ValueType::Real;
     else if (l.isInt() || r.isInt())
-        resultType = ValueType::Int;
+        resultType = ValueType::Int;        
     // TODO: ... byte, decimal
     return resultType;
 }
@@ -341,37 +352,55 @@ Value roxal::lor(Value l, Value r)
 
 Value roxal::greater(Value l, Value r)
 {
-    if (!l.isNumber())
-        throw std::invalid_argument("LHS must be a number");
-    if (!r.isNumber())
-        throw std::invalid_argument("RHS must be a number");
-
-    ValueType resultType(binaryOpType(l,r));
-    switch (resultType) {
-        case ValueType::Int: return boolVal(l.asInt() > r.asInt());
-        case ValueType::Real: return boolVal(l.asReal() > r.asReal());
-        //... decimal, byte
-        default: ;
+    if (l.isNumber() && r.isNumber()) {
+        ValueType resultType(binaryOpType(l,r));
+        switch (resultType) {
+            case ValueType::Int: return boolVal(l.asInt() > r.asInt());
+            case ValueType::Real: return boolVal(l.asReal() > r.asReal());
+            //... decimal, byte
+            default: return falseVal();
+        }
     }
-    return falseVal();
+    else if (l.isObj() && r.isObj()) {
+        if (isString(l) && isString(r)) {
+            auto lstr = asString(l);
+            auto rstr = asString(r);
+
+            // if lhs & rhs are the same string, one is not greater than the other
+            if (lstr->hash == rstr->hash)
+                return falseVal();
+
+            return boolVal(lstr->s.compareCodePointOrder(rstr->s) > 0);
+        }
+    }
+    throw std::invalid_argument("Invalid arguments to greater operator - "+l.typeName()+" and "+r.typeName());
 }
 
 
 Value roxal::less(Value l, Value r)
 {
-    if (!l.isNumber())
-        throw std::invalid_argument("LHS must be a number");
-    if (!r.isNumber())
-        throw std::invalid_argument("RHS must be a number");
-
-    ValueType resultType(binaryOpType(l,r));
-    switch (resultType) {
-        case ValueType::Int: return boolVal(l.asInt() < r.asInt());
-        case ValueType::Real: return boolVal(l.asReal() < r.asReal());
-        //... decimal, byte
-        default: ;
+    if (l.isNumber() && r.isNumber()) {
+        ValueType resultType(binaryOpType(l,r));
+        switch (resultType) {
+            case ValueType::Int: return boolVal(l.asInt() < r.asInt());
+            case ValueType::Real: return boolVal(l.asReal() < r.asReal());
+            //... decimal, byte
+            default: return falseVal();
+        }
     }
-    return falseVal();
+    else if (l.isObj() && r.isObj()) {
+        if (isString(l) && isString(r)) {
+            auto lstr = asString(l);
+            auto rstr = asString(r);
+
+            // if lhs & rhs are the same string, one is not less than the other
+            if (lstr->hash == rstr->hash)
+                return falseVal();
+
+            return boolVal(lstr->s.compareCodePointOrder(rstr->s) < 0);
+        }
+    }
+    throw std::invalid_argument("Invalid arguments to less operator - "+l.typeName()+" and "+r.typeName());
 }
 
 

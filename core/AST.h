@@ -48,7 +48,7 @@ class Bool;
 class Str;
 class Num;
 class List;
-
+class Dict;
 
 
 class ASTVisitor 
@@ -90,6 +90,8 @@ public:
     virtual void visit(ptr<Str> ast) = 0;
     virtual void visit(ptr<Num> ast) = 0;
     virtual void visit(ptr<List> ast) = 0;
+    virtual void visit(ptr<Dict> ast) = 0;
+
 
     inline bool visitFirst() const {
         auto order { traversalOrder() };
@@ -466,6 +468,16 @@ struct Str : public Literal {
 
 struct List : public Literal {
     std::vector<ptr<Expression>> elements;
+
+    virtual void accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
+};
+
+struct Dict : public Literal {
+    // key -> value pairs
+    std::vector<std::pair<ptr<Expression>,ptr<Expression>>> entries;
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

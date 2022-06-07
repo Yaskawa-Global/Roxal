@@ -53,7 +53,8 @@ enum class OpCode {
     SetLocal,
     SetProp,
     GetProp,
-    NewList
+    NewList,
+    NewDict
 };
 
 inline constexpr uint8_t asByte(OpCode op) { return uint8_t(op); }

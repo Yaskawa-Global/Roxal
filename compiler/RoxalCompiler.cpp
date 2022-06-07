@@ -589,6 +589,21 @@ void RoxalCompiler::visit(ptr<ast::List> ast)
 }
 
 
+void RoxalCompiler::visit(ptr<ast::Dict> ast)
+{
+    currentNode = ast;
+
+    // generate code to eval each key & value and leave on stack
+    ast->acceptChildren(*this);
+
+    if (ast->entries.size() > 255)
+        error("Number of literal dict entries is limited to 255");
+
+    // arg is entry count, so 2x as many stack values (key & value for each entry)
+    emitBytes(OpCode::NewDict, ast->entries.size());
+}
+
+
 
 
 

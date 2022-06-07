@@ -107,6 +107,21 @@ std::string roxal::objListToString(const ObjList* ol)
 }
 
 
+ObjDict* roxal::dictVal(const std::vector<std::pair<Value,Value>>& entries)
+{
+    auto d = newObj<ObjDict>(__func__);
+    for(const auto& entry : entries)
+        d->entries[entry.first] = entry.second;
+    return d;
+}
+
+std::string roxal::objDictToString(const ObjDict* od)
+{
+    throw std::runtime_error(std::string("unimplemented ")+__func__);
+}
+
+
+
 
 
 
@@ -128,6 +143,41 @@ std::string roxal::objToString(const Value& v)
         }
         case ObjType::String: {
             return toUTF8StdString(asUString(v));
+        }
+        case ObjType::List: {
+            auto l = asList(v);
+            std::ostringstream os;
+            os << "[";
+            for(auto it = l->elts.begin(); it != l->elts.end(); ++it) {
+                const auto& value { *it };
+                auto valStr { toString(value) };
+                if (isString(value)) valStr = "\""+valStr+"\"";
+                os << valStr;
+                if (it != l->elts.end()-1)
+                    os << ", ";                
+            }
+            os << "]";
+            return os.str();
+        }
+        case ObjType::Dict: {
+            auto d = asDict(v);
+            std::ostringstream os;
+            os << "{";
+            size_t i=0;
+            for(auto it = d->entries.begin(); it != d->entries.end(); ++it) {
+                const auto& key { it->first };
+                const auto& value { it->second };
+                auto keyStr { toString(key) };
+                auto valStr { toString(value) };
+                if (isString(key)) keyStr = "\""+keyStr+"\"";
+                if (isString(value)) valStr = "\""+valStr+"\"";
+                os << keyStr << ": " << valStr;
+                if (i != d->entries.size()-1)
+                    os << ", ";
+                i++;
+            }
+            os << "}";
+            return os.str();
         }
         case ObjType::ObjectType: {
             ObjObjectType* obj = asObjectType(v);

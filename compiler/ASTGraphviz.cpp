@@ -470,3 +470,20 @@ void ASTGraphviz::visit(ptr<ast::List> ast)
     stackPush(name);
     endVisit();
 }
+
+
+void ASTGraphviz::visit(ptr<ast::Dict> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+
+    auto n = ast->entries.size();
+    for(int i=0; i<n;i+=2) {
+        addLink(name, stackPop(), "k"+std::to_string(n-i-1));
+        addLink(name, stackPop(), "v"+std::to_string(n-i-1));
+    }
+
+    nodes[name] = node(name,"dict");
+    stackPush(name);
+    endVisit();
+}

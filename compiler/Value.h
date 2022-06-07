@@ -107,7 +107,7 @@ public:
     inline bool isNil() const { return _type == ValueType::Nil; }
 
     inline bool isBool() const { return valueType(_type) == ValueType::Bool; }
-    inline bool asBool() const;
+    bool asBool() const;
     inline bool isInt() const { return valueType(_type) == ValueType::Int; }
     int32_t asInt() const;
 

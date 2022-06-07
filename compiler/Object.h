@@ -29,7 +29,8 @@ enum class ObjType {
     Int,
     Real,
     String,
-    List
+    List,
+    Dict
 };
 
 
@@ -176,6 +177,36 @@ ObjList* listVal(const std::vector<Value>& elts);
 
 std::string objListToString(const ObjList* ol);
 
+
+
+//
+// dict
+
+struct ObjDict : public Obj
+{
+    ObjDict() { type = ObjType::Dict; }
+    virtual ~ObjDict() {}
+
+    // TODO: replace with a map that preserves insertion order
+    //  (e.g. impl a vector for values and a map of key->vec-index)
+
+    struct ValueComparitor
+    {
+        using is_transparent = std::true_type;
+
+        // standard comparison (between two instances of Type)
+        bool operator()(const Value& lhs, const Value& rhs) const { return less(lhs, rhs).asBool(); }
+    };
+    std::map<Value,Value,ValueComparitor> entries;
+};
+
+
+inline bool isDict(const Value& v) { return isObjType(v, ObjType::Dict); }
+inline ObjDict* asDict(const Value& v) { return static_cast<ObjDict*>(v.asObj()); }
+
+ObjDict* dictVal(const std::vector<std::pair<Value,Value>>& entries); 
+
+std::string objDictToString(const ObjDict* od);
 
 
 

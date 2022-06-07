@@ -87,6 +87,8 @@ public:
 
     virtual antlrcpp::Any visitList(RoxalParser::ListContext *context);
 
+    virtual antlrcpp::Any visitDict(RoxalParser::DictContext *context);
+
     virtual antlrcpp::Any visitStr(RoxalParser::StrContext *context);
 
     virtual antlrcpp::Any visitNum(RoxalParser::NumContext *context);

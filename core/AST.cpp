@@ -827,3 +827,38 @@ void List::acceptChildren(ASTVisitor& v)
         element->accept(v);
 }
 
+
+
+
+void Dict::accept(ASTVisitor& v)
+{
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<Dict>(shared_from_this()));
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<Dict>(shared_from_this()));
+}
+
+void Dict::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"Dict" << std::endl;
+    for(auto& entry : entries) {
+        os << spaces(indent+1) << "key:" << std::endl;
+        entry.first->output(os,indent+2);
+        os << spaces(indent+1) << "value:" << std::endl;
+        entry.second->output(os,indent+2);
+    }
+}
+
+void Dict::acceptChildren(ASTVisitor& v)
+{
+    for(auto& entry : entries) {
+        entry.first->accept(v);
+        entry.second->accept(v);
+    }
+}
+
+

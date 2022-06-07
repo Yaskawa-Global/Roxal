@@ -237,7 +237,7 @@ bool VM::invoke(ObjString* name, int argCount)
 bool VM::indexValue(const Value& indexable, int subscriptCount)
 {
     if (indexable.isObj()) {
-        
+        // TODO: move some per-type indexing code into Object or Value 
         switch (objType(indexable)) {
             case ObjType::String: {
                 if (subscriptCount != 1) {
@@ -271,6 +271,17 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                 }
                 // TODO: bounds check
                 push(list->elts.at(index.asInt()));
+                return true;
+            }
+            case ObjType::Dict: {
+                if (subscriptCount != 1) {
+                    runtimeError("Dict lookup requires a single key index.");
+                    return false;
+                }
+                ObjDict* dict = asDict(indexable);
+                Value index = pop();
+                // TODO: bounds check
+                push(dict->entries.at(index));
                 return true;
             }
             default:
@@ -831,9 +842,24 @@ VM::InterpretResult VM::execute()
                 int eltCount = readByte();
                 std::vector<Value> elts {};
                 elts.reserve(eltCount);
+                // top of stack is last list elt by index
                 for(int i=0; i<eltCount;i++)
-                    elts.push_back(pop());
+                    elts.push_back(peek(eltCount-i-1));
+                for(int i=0; i<eltCount;i++) pop();
                 push(objVal(listVal(elts)));
+                break;
+            }
+            case asByte(OpCode::NewDict): {
+                int entryCount = readByte();
+                std::vector<std::pair<Value,Value>> entries {};
+                entries.reserve(entryCount);
+                // top of stack is last dict entry (the value)
+                for(int i=0; i<entryCount;i++) {
+                    entries.push_back(std::make_pair(peek(2*(entryCount-1-i)+1),
+                                                     peek(2*(entryCount-1-i))));
+                }
+                for(int i=0; i<entryCount*2;i++) pop();
+                push(objVal(dictVal(entries)));
                 break;
             }
             case asByte(OpCode::ObjectType): {

@@ -197,6 +197,7 @@ primary
  | THIS
  | str   // str+ ?
  | list
+ | dict
  | IDENTIFIER 
  | OPEN_PAREN expression CLOSE_PAREN
  | SUPER '.' IDENTIFIER 
@@ -214,11 +215,15 @@ builtin_type
 
 
 list
- : '[' expression ( ',' expression )* ']'
+ : '[' (expression ( ',' expression )*)? ']'
  ;
 
 
+dict
+ : '{' ((expression ':' expression) (',' expression ':' expression)*)? '}'
+ ;
 
+ 
 
 /*
  * Lexer rules

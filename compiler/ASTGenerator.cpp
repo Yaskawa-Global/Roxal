@@ -1149,6 +1149,8 @@ antlrcpp::Any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
         return visitStr(context->str());
     else if (context->list())
         return visitList(context->list());
+    else if (context->dict())
+        return visitDict(context->dict());
     else
         throw std::runtime_error("unimplemented primary alternative");
 
@@ -1211,6 +1213,25 @@ antlrcpp::Any ASTGenerator::visitList(RoxalParser::ListContext *context)
         list->elements.push_back(as<Expression>(visitExpression(context->expression().at(i))));
 
     return typeValue(list);
+    visitEnd();
+}
+
+
+antlrcpp::Any ASTGenerator::visitDict(RoxalParser::DictContext *context)
+{
+    visitStart();
+
+    auto dict = std::make_shared<Dict>();
+    setSourceInfo(dict,context);
+    for(int i=0; i<context->expression().size();i+=2) {
+        auto keyVal = std::make_pair<ptr<Expression>,ptr<Expression>>(
+            as<Expression>(visitExpression(context->expression().at(i))),
+            as<Expression>(visitExpression(context->expression().at(i+1)))
+        );
+        dict->entries.push_back(keyVal);
+    }
+
+    return typeValue(dict);
     visitEnd();
 }
 
