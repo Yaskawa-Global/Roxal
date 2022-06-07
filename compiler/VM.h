@@ -42,6 +42,7 @@ public:
     bool callValue(const Value& callee, int argCount);   
     bool invokeFromType(ObjObjectType* type, ObjString* name, int argCount);
     bool invoke(ObjString* name, int argCount);
+    bool indexValue(const Value& indexable, int subscriptCount);
     bool bindMethod(ObjObjectType* instanceType, ObjString* name);
     ObjUpvalue* captureUpvalue(Value& local);
     void closeUpvalues(Value* last);

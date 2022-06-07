@@ -12,7 +12,7 @@ namespace roxal::ast {
 enum class BuiltinType {
     Nil, 
     Bool, Byte, Number, Int, Real, Decimal, 
-    Char, String, 
+    String, 
     List, Dict, 
     Vector, Matrix, Tensor, 
     Orient, Stream 
@@ -42,6 +42,7 @@ class BinaryOp;
 class UnaryOp;
 class Variable;
 class Call;
+class Index;
 class Literal;
 class Bool;
 class Str;
@@ -82,6 +83,7 @@ public:
     virtual void visit(ptr<UnaryOp> ast) = 0;
     virtual void visit(ptr<Variable> ast) = 0;
     virtual void visit(ptr<Call> ast) = 0;
+    virtual void visit(ptr<Index> ast) = 0;
     virtual void visit(ptr<Literal> ast) = 0;
     virtual void visit(ptr<Bool> ast) = 0;
     virtual void visit(ptr<Str> ast) = 0;
@@ -401,6 +403,17 @@ struct Variable : public Expression {
 
 struct Call : public Expression {
     ptr<Expression> callable;
+    std::vector<ptr<Expression>> args;
+
+    virtual void accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
+};
+
+
+struct Index : public Expression {
+    ptr<Expression> indexable;
     std::vector<ptr<Expression>> args;
 
     virtual void accept(ASTVisitor& v);

@@ -379,6 +379,22 @@ void ASTGraphviz::visit(ptr<ast::Call> ast)
 }
 
 
+void ASTGraphviz::visit(ptr<ast::Index> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+
+    for(int i=0; i<ast->args.size();i++)
+        addLink(name, stackPop(), std::to_string(i));
+
+    addLink(name, stackPop());
+
+    nodes[name] = node(name,"[]");
+    stackPush(name);
+    endVisit();
+}
+
+
 void ASTGraphviz::visit(ptr<ast::Literal> ast)
 {
     startVisit();

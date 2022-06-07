@@ -218,6 +218,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return jumpInstruction("LOOP", -1, offset);
         case asByte(OpCode::Call):
             return byteInstruction("CALL", offset);
+        case asByte(OpCode::Index):
+            return byteInstruction("INDEX", offset);
         case asByte(OpCode::Invoke):
             return invokeInstruction("INVOKE", offset);
         case asByte(OpCode::Closure): {

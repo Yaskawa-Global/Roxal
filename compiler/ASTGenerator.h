@@ -79,6 +79,8 @@ public:
 
     virtual antlrcpp::Any visitArgs_or_accessor(RoxalParser::Args_or_accessorContext *context);
 
+    virtual antlrcpp::Any visitIndex(RoxalParser::IndexContext *context);
+
     virtual antlrcpp::Any visitArguments(RoxalParser::ArgumentsContext *context);
 
     virtual antlrcpp::Any visitPrimary(RoxalParser::PrimaryContext *context);

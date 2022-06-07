@@ -34,6 +34,7 @@ enum class OpCode {
     Jump,
     Loop,
     Call,
+    Index,
     Invoke,
     Closure,
     CloseUpvalue,

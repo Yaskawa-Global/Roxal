@@ -169,7 +169,7 @@ multdiv
 
 
 unary
- : ( NOT | MINUS ) unary | call 
+ : ( NOT | MINUS ) unary | call | index
  ;
 
 call
@@ -177,12 +177,16 @@ call
  ;
 
 // accessor or args for callable
-//  special case for common obj.method(args) syntax for
-//  optimizing method calls
- args_or_accessor
+args_or_accessor
   : '(' arguments? ')' 
   | DOT IDENTIFIER ('(' arguments? ')')?
   ;
+ 
+// args for indexing
+index
+  : primary '[' arguments ']'
+  ;
+
 
 arguments 
  : expression ( ',' expression )* 
@@ -205,7 +209,7 @@ primary
 builtin_type
  : LNIL 
  | BOOL | BYTE | NUMBER | INT | REAL | DECIMAL
- | CHAR | STRING 
+ | STRING 
  | LIST | DICT 
  | VECTOR | MATRIX | TENSOR
  | ORIENT | STREAM
@@ -239,7 +243,6 @@ NUMBER: 'number';
 INT: 'int';
 REAL: 'real';
 DECIMAL: 'decimal';  // dec?
-CHAR : 'char';
 STRING: 'string';
 LIST: 'list';
 DICT: 'dict';

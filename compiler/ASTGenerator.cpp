@@ -1,7 +1,6 @@
 
 #include <typeinfo>
 #include <vector>
-#include <sstream>//!!!
 
 #include "ASTGenerator.h"
 
@@ -976,6 +975,9 @@ antlrcpp::Any ASTGenerator::visitUnary(RoxalParser::UnaryContext *context)
     else if (context->call()) {
         return visitCall(context->call());
     }
+    else if (context->index()) {
+        return visitIndex(context->index());
+    }
     else
         throw std::runtime_error("unimplemented unary alternative");
 
@@ -986,10 +988,12 @@ antlrcpp::Any ASTGenerator::visitUnary(RoxalParser::UnaryContext *context)
 // info to represent cases:
 //  .access - accessor only (accessor==true)
 //  .access(arg*) - accessor and call (with 0 or more args) (accessor=true && call==true)
-//  (args*) - call only with 0 or more args - (call==true)
+//  (arg*) - call only with 0 or more args - (call==true)
+//  [arg+] - indexer only with 0 or more args - (indexer==true)
 struct ArgsOrAccessorInfo {
     bool call;
     bool accessor;
+    bool indexer;
     UnicodeString accessed;
     ptr<std::vector<ptr<Expression>>> args;
 };
@@ -1019,6 +1023,12 @@ antlrcpp::Any ASTGenerator::visitCall(RoxalParser::CallContext *context)
             call->args = *argsOrAccessorInfo->args;
             callable = call;
         }
+        if (argsOrAccessorInfo->indexer) {
+            auto call = std::make_shared<Call>();
+            call->callable = callable;
+            call->args = *argsOrAccessorInfo->args;
+            callable = call;
+        }
     }
 
     return typeValue(callable);
@@ -1032,8 +1042,9 @@ antlrcpp::Any ASTGenerator::visitArgs_or_accessor(RoxalParser::Args_or_accessorC
     visitStart();
 
     auto info = std::make_shared<ArgsOrAccessorInfo>();
+    info->accessor = info->indexer = info->call = false;
 
-    if (context->DOT()) { // accessor, possibly call
+    if (context->DOT()) { // accessor, possibly call or indexer
         info->accessor = true;
         UnicodeString ident = context->IDENTIFIER() ? UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) : "";
         info->accessed = ident;
@@ -1048,7 +1059,7 @@ antlrcpp::Any ASTGenerator::visitArgs_or_accessor(RoxalParser::Args_or_accessorC
                 info->args = std::make_shared<std::vector<ptr<Expression>>>();
         }
     }
-    else { // call
+    else if (context->OPEN_PAREN()) { // call
         info->call = true;
         if (context->arguments()) {
             auto args = visitArguments(context->arguments()).as<ptr<std::vector<ptr<Expression>>>>();
@@ -1057,10 +1068,31 @@ antlrcpp::Any ASTGenerator::visitArgs_or_accessor(RoxalParser::Args_or_accessorC
         else
             info->args = std::make_shared<std::vector<ptr<Expression>>>();
     }
+    else
+        throw std::runtime_error("unimplemented args_or_accessor alternative");
 
     return info;
     visitEnd();
 }
+
+
+antlrcpp::Any ASTGenerator::visitIndex(RoxalParser::IndexContext *context)
+{
+    visitStart();
+
+    auto indexable = as<Expression>(visitPrimary(context->primary()));
+
+    auto index = std::make_shared<Index>();
+    setSourceInfo(index,context);
+    index->indexable = indexable;
+    
+    auto args = visitArguments(context->arguments()).as<ptr<std::vector<ptr<Expression>>>>();
+    index->args = *args;
+
+    return typeValue(index);
+    visitEnd();
+}
+
 
 
 // returns ptr<std::vector<ptr<Expression>>> of argument expressions
@@ -1088,8 +1120,11 @@ antlrcpp::Any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
         return typeValue(std::make_shared<Bool>(false));    
     else if (context->LNIL())
         return typeValue(std::make_shared<Literal>());
-    else if (context->THIS())
-        throw std::runtime_error("this unimplemented");
+    else if (context->THIS()) {
+        auto var = std::make_shared<Variable>("this");
+        setSourceInfo(var,context);
+        return typeValue(var);
+    }
     else if (context->IDENTIFIER()) {
         UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
         auto var = std::make_shared<Variable>(ident);
@@ -1098,8 +1133,11 @@ antlrcpp::Any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
     }
     else if (context->OPEN_PAREN())
         return visitExpression(context->expression());
-    else if (context->SUPER())
-        throw std::runtime_error("super unimplemented");
+    else if (context->SUPER()) {
+        auto var = std::make_shared<Variable>("super");
+        setSourceInfo(var,context);
+        return typeValue(var);
+    }
     else if (context->num())
         return visitNum(context->num());
     else if (context->str())
@@ -1131,8 +1169,6 @@ antlrcpp::Any ASTGenerator::visitBuiltin_type(RoxalParser::Builtin_typeContext *
         type = BuiltinType::Real;
     else if (context->DECIMAL())
         type = BuiltinType::Decimal;
-    else if (context->CHAR())
-        type = BuiltinType::Char;
     else if (context->STRING())
         type = BuiltinType::String;
     else if (context->LIST())
@@ -1168,7 +1204,9 @@ antlrcpp::Any ASTGenerator::visitStr(RoxalParser::StrContext *context)
 
     auto str = std::make_shared<Str>();
     setSourceInfo(str,context);
-    str->str = toUnicodeString(text);
+    // convert to UnicodeString assuming UTF-8 encoding and unescape escape sequences
+    //  (see ICU UnicodeString::unescape() docs for details)
+    str->str = toUnicodeString(text).unescape();
     return typeValue(str);
     visitEnd();
 }

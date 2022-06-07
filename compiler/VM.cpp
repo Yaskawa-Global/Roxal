@@ -234,6 +234,38 @@ bool VM::invoke(ObjString* name, int argCount)
 }
 
 
+bool VM::indexValue(const Value& indexable, int subscriptCount)
+{
+    if (indexable.isObj()) {
+        switch (objType(indexable)) {
+            case ObjType::String: {
+                if (subscriptCount != 1) {
+                    runtimeError("String indexing requires a single subscript.");
+                    return false;
+                }
+                ObjString* str = asString(indexable);
+                Value index = pop();
+                if (!index.isNumber()) {
+                    runtimeError("String indexing subscript must be a number.");
+                    return false;
+                }
+                const UnicodeString& ustr { str->s };
+                UnicodeString substr {};
+                // TODO: bounds check
+                ustr.extract(int32_t(index.asInt()),1,substr);
+                auto newStrValue { objVal(stringVal(substr)) };
+                push(newStrValue);
+                return true;
+            }
+            default:
+                break;
+        }
+    }
+    runtimeError("Only strings, [lists, vectors, dicts, matrices and tensors - unimplemented] can be indexed.");
+    return false;
+}
+
+
 bool VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
 {
     auto it = instanceType->methods.find(name->hash);
@@ -627,6 +659,12 @@ VM::InterpretResult VM::execute()
                 if (!callValue(peek(argCount), argCount))
                     return InterpretResult::RuntimeError;
                 frame = frames.end()-1;
+                break;
+            }
+            case asByte(OpCode::Index): {
+                uint8_t argCount = readByte();
+                if (!indexValue(peek(argCount), argCount))
+                    return InterpretResult::RuntimeError;
                 break;
             }
             case asByte(OpCode::Invoke): {

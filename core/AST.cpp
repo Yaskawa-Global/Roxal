@@ -17,7 +17,6 @@ std::string roxal::ast::to_string(BuiltinType t)
         case BuiltinType::Int : return "int";
         case BuiltinType::Real : return "real";
         case BuiltinType::Decimal : return "decimal";
-        case BuiltinType::Char : return "char";
         case BuiltinType::String : return "string";
         case BuiltinType::List : return "list";
         case BuiltinType::Dict : return "dict";
@@ -700,6 +699,38 @@ void Call::output(std::ostream& os, int indent) const
     for(auto& arg : args)
         arg->output(os,indent+2);
 }
+
+
+
+void Index::accept(ASTVisitor& v)
+{
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<Index>(shared_from_this()));
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<Index>(shared_from_this()));
+}
+
+void Index::acceptChildren(ASTVisitor& v)
+{
+    indexable->accept(v);
+    for(auto& arg : args)
+        arg->accept(v);
+}
+
+
+void Index::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"[]" << std::endl;
+    indexable->output(os,indent+1);
+    os << spaces(indent)+" indices:" << std::endl;
+    for(auto& arg : args)
+        arg->output(os,indent+2);
+}
+
 
 
 

@@ -38,6 +38,7 @@ public:
     virtual void visit(ptr<ast::UnaryOp> ast);
     virtual void visit(ptr<ast::Variable> ast);
     virtual void visit(ptr<ast::Call> ast);
+    virtual void visit(ptr<ast::Index> ast);
     virtual void visit(ptr<ast::Literal> ast);
     virtual void visit(ptr<ast::Bool> ast);
     virtual void visit(ptr<ast::Str> ast);

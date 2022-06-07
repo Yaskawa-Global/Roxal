@@ -520,6 +520,18 @@ void RoxalCompiler::visit(ptr<ast::Call> ast)
 }
 
 
+void RoxalCompiler::visit(ptr<ast::Index> ast)
+{
+    currentNode = ast;
+    ast->acceptChildren(*this);
+
+    auto argCount = ast->args.size();
+    if (argCount > 255)
+        error("Number of indices is limited to 255");
+    emitBytes(OpCode::Index, argCount);
+}
+
+
 void RoxalCompiler::visit(ptr<ast::Literal> ast)
 {
     currentNode = ast;
