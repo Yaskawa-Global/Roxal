@@ -853,32 +853,46 @@ antlrcpp::Any ASTGenerator::visitTerm(RoxalParser::TermContext *context)
 {
     visitStart();
 
-    auto factor = visitFactor(context->factor().at(0));
-    if (context->factor().size()==1) // just passing through
+    auto factor = visitFactor(context->factor());
+    if (context->plusminus().size() == 0)
         return factor;
 
     auto lhs = as<Expression>(factor);
 
-    // in grammar there is only (optional) "+" to seperate terms, since
-    //  a source string like "2-1" is actually (term + (negate term))
-    ptr<BinaryOp> plusOp;
+    ptr<BinaryOp> op;
 
-    for(auto i=1; i<context->factor().size(); i++) {
-        plusOp = std::make_shared<BinaryOp>(BinaryOp::Add);
-        setSourceInfo(plusOp,context);
-        plusOp->lhs = lhs;
+    for(auto i=0; i<context->plusminus().size(); i++) {
 
-        auto rhs = visitFactor(context->factor().at(i));
-        assertType<Expression>(rhs);
-        plusOp->rhs = as<Expression>(rhs);
+        auto plusminus = visitPlusminus(context->plusminus().at(i));
+        assertType<BinaryOp>(plusminus);
+        op = as<BinaryOp>(plusminus);
+        op->lhs = lhs;
 
-        // TODO: if the rhs is just (UniaryOp::Negate -> Term, 
-        //  delete the UnaryOp node and conver plusOp to subtractOp)
-
-        lhs = plusOp;
+        lhs = op;
     }
 
-    return typeValue(plusOp);
+    return typeValue(op);
+    visitEnd();
+}
+
+
+// returns a BinaryOp with rhs set and lhs null
+antlrcpp::Any ASTGenerator::visitPlusminus(RoxalParser::PlusminusContext *context)
+{
+    visitStart();
+    auto op = std::make_shared<BinaryOp>();
+    setSourceInfo(op,context);
+    if (context->PLUS())
+        op->op = BinaryOp::Add;
+    else if (context->MINUS())
+        op->op = BinaryOp::Subtract;
+    else
+        throw std::runtime_error("unhandled plusminus alternative");
+
+    auto factor = visitFactor(context->factor());
+    op->rhs = as<Expression>(factor);
+
+    return typeValue(op);
     visitEnd();
 }
 

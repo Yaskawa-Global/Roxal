@@ -69,6 +69,8 @@ public:
 
     virtual antlrcpp::Any visitTerm(RoxalParser::TermContext *context);
 
+    virtual antlrcpp::Any visitPlusminus(RoxalParser::PlusminusContext *context);
+
     virtual antlrcpp::Any visitFactor(RoxalParser::FactorContext *context);
 
     virtual antlrcpp::Any visitMultdiv(RoxalParser::MultdivContext *context);

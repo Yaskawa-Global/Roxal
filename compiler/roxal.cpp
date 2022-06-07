@@ -90,6 +90,8 @@ static void generateAST(const std::string& inputPath, bool graph, const std::str
         std::cout << "Exception in parsing - " << std::string(e.what()) << std::endl; 
         return;
     }
+    if (ast == nullptr) // must have been a parse or AST gen error (already reported?)
+        return;
 
     if (!graph) {
         std::cout << ast << std::endl;

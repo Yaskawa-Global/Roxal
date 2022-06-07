@@ -151,11 +151,15 @@ comparison
  : term ( ( GREATER_THAN | GT_EQ | LESS_THAN | LT_EQ ) term )? 
  ;
 
-// NB: we don't need MINUS as 1-1 is (factor factor(negate 1))
-//     (and hence the PLUS is optional so we don't need to write 1+-1)
+
 term
- : factor (PLUS? factor)* 
+ : factor plusminus* 
  ;
+
+plusminus
+ : (PLUS | MINUS) factor
+ ;
+
 
 factor
  : unary multdiv*
@@ -223,7 +227,7 @@ dict
  : '{' ((expression ':' expression) (',' expression ':' expression)*)? '}'
  ;
 
- 
+
 
 /*
  * Lexer rules
