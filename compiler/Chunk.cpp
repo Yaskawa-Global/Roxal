@@ -271,6 +271,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("SET_PROP", offset);
         case asByte(OpCode::GetProp):
             return constantInstruction("GET_PROP", offset);
+        case asByte(OpCode::NewList):
+            return byteInstruction("NEWLIST", offset);
         case asByte(OpCode::Nop):
             return simpleInstruction("NOP", offset);
         default:

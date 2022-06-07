@@ -538,6 +538,8 @@ void RoxalCompiler::visit(ptr<ast::Literal> ast)
     // non-Nil typed literals handled by specialized visit methods
     if (ast->type==Literal::Nil)
         emitByte(OpCode::ConstNil);
+    else
+        throw std::runtime_error("Literal type unhandled");
 }
 
 
@@ -571,6 +573,21 @@ void RoxalCompiler::visit(ptr<ast::Num> ast)
     else 
         throw std::runtime_error("unhandled Num type");
 }
+
+
+void RoxalCompiler::visit(ptr<ast::List> ast)
+{
+    currentNode = ast;
+
+    // generate code to eval each elements and leave on stack
+    ast->acceptChildren(*this);
+
+    if (ast->elements.size() > 255)
+        error("Number of literal list elements is limited to 255");
+
+    emitBytes(OpCode::NewList, ast->elements.size());
+}
+
 
 
 

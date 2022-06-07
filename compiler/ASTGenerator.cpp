@@ -975,9 +975,6 @@ antlrcpp::Any ASTGenerator::visitUnary(RoxalParser::UnaryContext *context)
     else if (context->call()) {
         return visitCall(context->call());
     }
-    else if (context->index()) {
-        return visitIndex(context->index());
-    }
     else
         throw std::runtime_error("unimplemented unary alternative");
 
@@ -986,10 +983,10 @@ antlrcpp::Any ASTGenerator::visitUnary(RoxalParser::UnaryContext *context)
 
 
 // info to represent cases:
-//  .access - accessor only (accessor==true)
-//  .access(arg*) - accessor and call (with 0 or more args) (accessor=true && call==true)
 //  (arg*) - call only with 0 or more args - (call==true)
 //  [arg+] - indexer only with 0 or more args - (indexer==true)
+//  .access - accessor only (accessor==true)
+//  .access(arg*) - accessor and call (with 0 or more args) (accessor=true && call==true)
 struct ArgsOrAccessorInfo {
     bool call;
     bool accessor;
@@ -1004,40 +1001,43 @@ antlrcpp::Any ASTGenerator::visitCall(RoxalParser::CallContext *context)
     visitStart();
 
     auto primary = visitPrimary(context->primary());
-    if (context->args_or_accessor().size() == 0)
+    if (context->args_or_index_or_accessor().size() == 0)
         return primary;
 
-    auto callable = as<Expression>(primary);
+    auto callable_or_indexable = as<Expression>(primary);
 
-    for(int i=0; i<context->args_or_accessor().size();i++) {
-        auto argsOrAccessorInfo = visitArgs_or_accessor(context->args_or_accessor().at(i)).as<ptr<ArgsOrAccessorInfo>>();
+    for(int i=0; i<context->args_or_index_or_accessor().size();i++) {
+        auto argsOrAccessorInfo = visitArgs_or_index_or_accessor(context->args_or_index_or_accessor().at(i)).as<ptr<ArgsOrAccessorInfo>>();
         if (argsOrAccessorInfo->accessor) {
             auto accessOp = std::make_shared<UnaryOp>(UnaryOp::Accessor);
-            accessOp->arg = callable;
+            setSourceInfo(accessOp,context->args_or_index_or_accessor().at(i));
+            accessOp->arg = callable_or_indexable;
             accessOp->member = argsOrAccessorInfo->accessed;
-            callable = accessOp;
+            callable_or_indexable = accessOp;
         }
         if (argsOrAccessorInfo->call) {
             auto call = std::make_shared<Call>();
-            call->callable = callable;
+            setSourceInfo(call,context->args_or_index_or_accessor().at(i));
+            call->callable = callable_or_indexable;
             call->args = *argsOrAccessorInfo->args;
-            callable = call;
+            callable_or_indexable = call;
         }
         if (argsOrAccessorInfo->indexer) {
-            auto call = std::make_shared<Call>();
-            call->callable = callable;
-            call->args = *argsOrAccessorInfo->args;
-            callable = call;
+            auto index = std::make_shared<Index>();
+            setSourceInfo(index,context->args_or_index_or_accessor().at(i));
+            index->indexable = callable_or_indexable;
+            index->args = *argsOrAccessorInfo->args;
+            callable_or_indexable = index;
         }
     }
 
-    return typeValue(callable);
+    return typeValue(callable_or_indexable);
     visitEnd();
 }
 
 
 // return ptr<ArgsOrAccessorInfo> 
-antlrcpp::Any ASTGenerator::visitArgs_or_accessor(RoxalParser::Args_or_accessorContext *context)
+antlrcpp::Any ASTGenerator::visitArgs_or_index_or_accessor(RoxalParser::Args_or_index_or_accessorContext *context)
 {
     visitStart();
 
@@ -1059,6 +1059,11 @@ antlrcpp::Any ASTGenerator::visitArgs_or_accessor(RoxalParser::Args_or_accessorC
                 info->args = std::make_shared<std::vector<ptr<Expression>>>();
         }
     }
+    else if (context->OPEN_BRACK()) { // indexing
+        info->indexer = true;
+        auto args = visitArguments(context->arguments()).as<ptr<std::vector<ptr<Expression>>>>();
+        info->args = args;
+    }
     else if (context->OPEN_PAREN()) { // call
         info->call = true;
         if (context->arguments()) {
@@ -1076,22 +1081,22 @@ antlrcpp::Any ASTGenerator::visitArgs_or_accessor(RoxalParser::Args_or_accessorC
 }
 
 
-antlrcpp::Any ASTGenerator::visitIndex(RoxalParser::IndexContext *context)
-{
-    visitStart();
+// antlrcpp::Any ASTGenerator::visitIndex(RoxalParser::IndexContext *context)
+// {
+//     visitStart();
 
-    auto indexable = as<Expression>(visitPrimary(context->primary()));
+//     auto indexable = as<Expression>(visitPrimary(context->primary()));
 
-    auto index = std::make_shared<Index>();
-    setSourceInfo(index,context);
-    index->indexable = indexable;
+//     auto index = std::make_shared<Index>();
+//     setSourceInfo(index,context);
+//     index->indexable = indexable;
     
-    auto args = visitArguments(context->arguments()).as<ptr<std::vector<ptr<Expression>>>>();
-    index->args = *args;
+//     auto args = visitArguments(context->arguments()).as<ptr<std::vector<ptr<Expression>>>>();
+//     index->args = *args;
 
-    return typeValue(index);
-    visitEnd();
-}
+//     return typeValue(index);
+//     visitEnd();
+// }
 
 
 
@@ -1142,6 +1147,8 @@ antlrcpp::Any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
         return visitNum(context->num());
     else if (context->str())
         return visitStr(context->str());
+    else if (context->list())
+        return visitList(context->list());
     else
         throw std::runtime_error("unimplemented primary alternative");
 
@@ -1189,6 +1196,21 @@ antlrcpp::Any ASTGenerator::visitBuiltin_type(RoxalParser::Builtin_typeContext *
         throw std::runtime_error("unhandled BuiltinType alternative");
 
     return type;    
+    visitEnd();
+}
+
+
+
+antlrcpp::Any ASTGenerator::visitList(RoxalParser::ListContext *context)
+{
+    visitStart();
+
+    auto list = std::make_shared<List>();
+    setSourceInfo(list,context);
+    for(int i=0; i<context->expression().size();i++)
+        list->elements.push_back(as<Expression>(visitExpression(context->expression().at(i))));
+
+    return typeValue(list);
     visitEnd();
 }
 

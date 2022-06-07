@@ -77,15 +77,15 @@ public:
 
     virtual antlrcpp::Any visitCall(RoxalParser::CallContext *context);
 
-    virtual antlrcpp::Any visitArgs_or_accessor(RoxalParser::Args_or_accessorContext *context);
-
-    virtual antlrcpp::Any visitIndex(RoxalParser::IndexContext *context);
+    virtual antlrcpp::Any visitArgs_or_index_or_accessor(RoxalParser::Args_or_index_or_accessorContext *context);
 
     virtual antlrcpp::Any visitArguments(RoxalParser::ArgumentsContext *context);
 
     virtual antlrcpp::Any visitPrimary(RoxalParser::PrimaryContext *context);
 
     virtual antlrcpp::Any visitBuiltin_type(RoxalParser::Builtin_typeContext *context);
+
+    virtual antlrcpp::Any visitList(RoxalParser::ListContext *context);
 
     virtual antlrcpp::Any visitStr(RoxalParser::StrContext *context);
 

@@ -47,6 +47,7 @@ class Literal;
 class Bool;
 class Str;
 class Num;
+class List;
 
 
 
@@ -88,6 +89,7 @@ public:
     virtual void visit(ptr<Bool> ast) = 0;
     virtual void visit(ptr<Str> ast) = 0;
     virtual void visit(ptr<Num> ast) = 0;
+    virtual void visit(ptr<List> ast) = 0;
 
     inline bool visitFirst() const {
         auto order { traversalOrder() };
@@ -429,7 +431,8 @@ struct Literal : public Expression {
         Nil,
         Bool,
         Num,
-        Str
+        Str,
+        List
     };
     LiteralType type;
 
@@ -461,6 +464,14 @@ struct Str : public Literal {
     virtual void output(std::ostream& os, int indent) const;
 };
 
+struct List : public Literal {
+    std::vector<ptr<Expression>> elements;
+
+    virtual void accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
+};
 
 
 

@@ -39,6 +39,7 @@ public:
     virtual void visit(ptr<ast::Bool> ast);
     virtual void visit(ptr<ast::Str> ast);
     virtual void visit(ptr<ast::Num> ast);
+    virtual void visit(ptr<ast::List> ast);
 
 protected:
     // during visit traversal, children of each pushes then popped to create links

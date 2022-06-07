@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <vector>
 #include <sstream>
 #include <unordered_map>
 #include <unicode/ustring.h>
@@ -27,7 +28,8 @@ enum class ObjType {
     Bool,
     Int,
     Real,
-    String
+    String,
+    List
 };
 
 
@@ -152,6 +154,29 @@ inline UnicodeString asUString(const Value& v) { return asString(v)->s; }
 ObjString* stringVal(const UnicodeString& s); 
 
 std::string objStringToString(const ObjString* os);
+
+
+
+//
+// list
+
+struct ObjList : public Obj
+{
+    ObjList() { type = ObjType::List; }
+    virtual ~ObjList() {}
+
+    std::vector<Value> elts;
+};
+
+
+inline bool isList(const Value& v) { return isObjType(v, ObjType::List); }
+inline ObjList* asList(const Value& v) { return static_cast<ObjList*>(v.asObj()); }
+
+ObjList* listVal(const std::vector<Value>& elts); 
+
+std::string objListToString(const ObjList* ol);
+
+
 
 
 //

@@ -237,6 +237,7 @@ bool VM::invoke(ObjString* name, int argCount)
 bool VM::indexValue(const Value& indexable, int subscriptCount)
 {
     if (indexable.isObj()) {
+        
         switch (objType(indexable)) {
             case ObjType::String: {
                 if (subscriptCount != 1) {
@@ -257,11 +258,26 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                 push(newStrValue);
                 return true;
             }
+            case ObjType::List: {
+                if (subscriptCount != 1) {
+                    runtimeError("List indexing requires a single subscript.");
+                    return false;
+                }
+                ObjList* list = asList(indexable);
+                Value index = pop();
+                if (!index.isNumber()) {
+                    runtimeError("List indexing subscript must be a number.");
+                    return false;
+                }
+                // TODO: bounds check
+                push(list->elts.at(index.asInt()));
+                return true;
+            }
             default:
                 break;
         }
     }
-    runtimeError("Only strings, [lists, vectors, dicts, matrices and tensors - unimplemented] can be indexed.");
+    runtimeError("Only strings, lists, [vectors, dicts, matrices and tensors - unimplemented] can be indexed.");
     return false;
 }
 
@@ -809,6 +825,15 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::Print): {
                 std::cout << toString(pop()) << std::endl;
+                break;
+            }
+            case asByte(OpCode::NewList): {
+                int eltCount = readByte();
+                std::vector<Value> elts {};
+                elts.reserve(eltCount);
+                for(int i=0; i<eltCount;i++)
+                    elts.push_back(pop());
+                push(objVal(listVal(elts)));
                 break;
             }
             case asByte(OpCode::ObjectType): {

@@ -143,8 +143,17 @@ void ASTGraphviz::visit(ptr<ast::SingleInput> ast)
 void ASTGraphviz::visit(ptr<ast::TypeDecl> ast)
 {
     startVisit();
-    throw std::runtime_error(__PRETTY_FUNCTION__+std::string("unimplemented"));
 
+    auto name { uname(ast) };
+
+    for(int i=0; i<ast->methods.size();i++)
+        addLink(name, stackPop());
+
+    nodes[name] = node(name,
+                       std::string("TypeDecl ")
+                       +(ast->kind==TypeDecl::Object?"object":(ast->kind==TypeDecl::Actor?"actor":"?")),
+                       toUTF8StdString(ast->name));
+    stackPush(name);
     endVisit();
 }
 
@@ -448,3 +457,16 @@ void ASTGraphviz::visit(ptr<ast::Num> ast)
 }
 
 
+void ASTGraphviz::visit(ptr<ast::List> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+
+    auto n = ast->elements.size();
+    for(int i=0; i<n;i++)
+        addLink(name, stackPop(), std::to_string(n-i-1));
+
+    nodes[name] = node(name,"list");
+    stackPush(name);
+    endVisit();
+}

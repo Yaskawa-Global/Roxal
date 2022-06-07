@@ -13,7 +13,6 @@ enum class ValueType {
     Int,
     Real,
     Decimal,
-    Char,
     String,
     List,
     Dict,

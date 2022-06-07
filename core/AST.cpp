@@ -799,3 +799,31 @@ void Str::output(std::ostream& os, int indent) const
     os << spaces(indent)+"Str \"" << toUTF8StdString(str) << "\"" << std::endl;
     //sourceOut();
 }
+
+
+
+void List::accept(ASTVisitor& v)
+{
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<List>(shared_from_this()));
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<List>(shared_from_this()));
+}
+
+void List::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"List" << std::endl;
+    for(auto& element : elements)
+        element->output(os,indent+2);
+}
+
+void List::acceptChildren(ASTVisitor& v)
+{
+    for(auto& element : elements)
+        element->accept(v);
+}
+

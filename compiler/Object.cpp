@@ -91,6 +91,26 @@ std::string roxal::objStringToString(const ObjString* os)
 }
 
 
+
+ObjList* roxal::listVal(const std::vector<Value>& elts)
+{
+    auto l = newObj<ObjList>(__func__);
+    for(const auto& elt : elts)
+        l->elts.push_back(elt);
+    return l;
+}
+
+
+std::string roxal::objListToString(const ObjList* ol)
+{
+    throw std::runtime_error(std::string("unimplemented ")+__func__);
+}
+
+
+
+
+
+
 std::string roxal::objToString(const Value& v)
 {
     switch(objType(v)) {
@@ -251,6 +271,7 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::Int: return "int";
     case ObjType::Real: return "real";
     case ObjType::String: return "string";
+    case ObjType::List: return "list";
     }
     return "unknown";
 }

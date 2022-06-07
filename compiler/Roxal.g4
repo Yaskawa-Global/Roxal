@@ -169,22 +169,18 @@ multdiv
 
 
 unary
- : ( NOT | MINUS ) unary | call | index
+ : ( NOT | MINUS ) unary | call 
  ;
 
 call
- : primary args_or_accessor* 
+ : primary args_or_index_or_accessor* 
  ;
 
-// accessor or args for callable
-args_or_accessor
+
+args_or_index_or_accessor
   : '(' arguments? ')' 
+  | '[' arguments ']' 
   | DOT IDENTIFIER ('(' arguments? ')')?
-  ;
- 
-// args for indexing
-index
-  : primary '[' arguments ']'
   ;
 
 
@@ -200,6 +196,7 @@ primary
  | LNIL
  | THIS
  | str   // str+ ?
+ | list
  | IDENTIFIER 
  | OPEN_PAREN expression CLOSE_PAREN
  | SUPER '.' IDENTIFIER 
@@ -213,6 +210,11 @@ builtin_type
  | LIST | DICT 
  | VECTOR | MATRIX | TENSOR
  | ORIENT | STREAM
+ ;
+
+
+list
+ : '[' expression ( ',' expression )* ']'
  ;
 
 
