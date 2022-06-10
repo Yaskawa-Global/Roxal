@@ -1165,6 +1165,13 @@ antlrcpp::Any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
         return visitList(context->list());
     else if (context->dict())
         return visitDict(context->dict());
+    else if (context->builtin_type()) {
+        auto builtinType = visitBuiltin_type(context->builtin_type()).as<ast::BuiltinType>(); 
+        auto type = std::make_shared<Type>();
+        setSourceInfo(type,context);
+        type->t = builtinType;
+        return typeValue(type);
+    }
     else
         throw std::runtime_error("unimplemented primary alternative");
 

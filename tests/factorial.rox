@@ -1,0 +1,9 @@
+
+func fact(n):
+  if n > 1:
+    return n×fact(n-1)
+  return 1
+
+print( "5! is "+fact(5) ) // should output 120
+
+

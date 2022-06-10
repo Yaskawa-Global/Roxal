@@ -1,0 +1,25 @@
+var globalOne
+var globalTwo
+
+func main():
+  scope:
+    var a = "one"
+    func one():
+      print(a)
+    
+    globalOne = one
+  
+
+  scope:
+    var a = "two"
+    func two():
+      print(a)
+    
+    globalTwo = two
+  
+
+
+main()
+globalOne()
+globalTwo()
+

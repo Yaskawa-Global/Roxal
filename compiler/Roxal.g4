@@ -54,8 +54,6 @@ compound_stmt
  | while_stmt 
 //  | for_stmt 
 //  | with_stmt 
-//  | procdef 
-// /// | classdef 
  ;
 
 block_stmt
@@ -205,6 +203,7 @@ primary
  | IDENTIFIER 
  | OPEN_PAREN expression CLOSE_PAREN
  | SUPER '.' IDENTIFIER 
+ | builtin_type
  ;
 
 

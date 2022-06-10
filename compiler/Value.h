@@ -14,6 +14,7 @@ enum class ValueType {
     Real,
     Decimal,
     String,
+    Type,
     List,
     Dict,
     Vector,
@@ -25,6 +26,8 @@ enum class ValueType {
     Actor,
     Boxed = 0xff
 };
+
+std::string to_string(ValueType t);
 
 inline ValueType valueType(ValueType t) { return ValueType(int(t) & 0x7f); }
 inline bool isBoxed(ValueType t) { return (int(t) & 0x80) != 0; }
@@ -70,6 +73,7 @@ public:
     explicit Value(bool b) : _type(ValueType::Bool) { as.boolean = b; }
     explicit Value(double r) : _type(ValueType::Real) { as.real=r; }
     explicit Value(int32_t i) : _type(ValueType::Int) { as.integer=i; }
+    explicit Value(ValueType bt) : _type(ValueType::Type) { as.btype=bt; }
     explicit Value(Obj* o);
 
     Value(const Value& v) 
@@ -107,14 +111,17 @@ public:
     inline bool isNil() const { return _type == ValueType::Nil; }
 
     inline bool isBool() const { return valueType(_type) == ValueType::Bool; }
-    bool asBool() const;
+    bool asBool(bool strict=true) const;
     inline bool isInt() const { return valueType(_type) == ValueType::Int; }
-    int32_t asInt() const;
+    int32_t asInt(bool strict=true) const;
 
     inline bool isReal() const { return valueType(_type)==ValueType::Real; }
-    double asReal() const; 
+    double asReal(bool strict=true) const; 
 
     inline bool isNumber() const { return isInt() || isReal(); } // TODO: || isByte() || isDecimal(v)
+
+    inline bool isType() const { return valueType(_type)==ValueType::Type; }
+    ValueType asType(bool strict=true) const;
 
     inline bool isObj() const { return _type == ValueType::Object; }
     inline Obj* asObj() const { return as.obj; }
@@ -125,6 +132,7 @@ protected:
         bool boolean;
         double real;
         int32_t integer;
+        ValueType btype; // Value is a type (builtins only)
         Obj* obj;
     } as;
 
@@ -144,6 +152,7 @@ protected:
                 case ValueType::Bool: as.boolean = v.as.boolean; break;
                 case ValueType::Int: as.integer = v.as.integer; break;
                 case ValueType::Real: as.real = v.as.real; break;
+                case ValueType::Type: as.btype = v.as.btype; break;
                 case ValueType::Object: {
                     #ifdef DEBUG_TRACE_MEMORY
                     if (v.as.obj == nullptr)
@@ -173,11 +182,18 @@ inline Value intVal(int32_t i) { return Value(i); }
 
 inline Value realVal(double r) { return Value(r); }
 
+inline Value typeVal(ValueType bt) { return Value(bt); }
 
 
 #endif
 
-Value toType(ValueType t, Value v);
+Value toType(ValueType t, Value v, bool strict=true);
+
+// construct / convert from values (e.g. 'constructor' args) a value of the specified builtin type
+//  (for single arg, same as toType(*begin)) - TODO: use C++20 range?
+Value construct(ValueType type, std::vector<Value>::const_iterator begin, std::vector<Value>::const_iterator end);
+
+
 ValueType binaryOpType(Value l, Value r);
 
 bool isFalsey(const Value& v);

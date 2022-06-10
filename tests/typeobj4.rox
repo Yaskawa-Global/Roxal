@@ -1,0 +1,20 @@
+type object CoffeeMaker:
+
+  proc init(coffee):
+    this.coffee = coffee
+
+
+  func brew():
+    print("Enjoy your cup of " + this.coffee)
+
+    this.coffee = nil
+
+
+
+var maker = CoffeeMaker("coffee with milk")
+maker.brew()
+
+makerbrew = maker.brew
+maker.coffee = 'expresso'
+makerbrew()
+

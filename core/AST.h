@@ -46,6 +46,7 @@ class Index;
 class Literal;
 class Bool;
 class Str;
+class Type;
 class Num;
 class List;
 class Dict;
@@ -88,6 +89,7 @@ public:
     virtual void visit(ptr<Literal> ast) = 0;
     virtual void visit(ptr<Bool> ast) = 0;
     virtual void visit(ptr<Str> ast) = 0;
+    virtual void visit(ptr<Type> ast) = 0;
     virtual void visit(ptr<Num> ast) = 0;
     virtual void visit(ptr<List> ast) = 0;
     virtual void visit(ptr<Dict> ast) = 0;
@@ -434,7 +436,9 @@ struct Literal : public Expression {
         Bool,
         Num,
         Str,
-        List
+        Type,
+        List,
+        Dict
     };
     LiteralType type;
 
@@ -453,6 +457,8 @@ struct Bool : public Literal {
 };
 
 struct Num : public Literal {
+    Num() { type = LiteralType::Num; }
+
     std::variant<int32_t,double> num;
 
     virtual void accept(ASTVisitor& v);
@@ -460,13 +466,26 @@ struct Num : public Literal {
 };
 
 struct Str : public Literal {
+    Str() { type = LiteralType::Str; }
+
     icu::UnicodeString str;
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 };
 
+struct Type : public Literal {
+    Type() { type = LiteralType::Type; }
+
+    BuiltinType t;
+
+    virtual void accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+};
+
 struct List : public Literal {
+    List() { type = LiteralType::List; }
+
     std::vector<ptr<Expression>> elements;
 
     virtual void accept(ASTVisitor& v);
@@ -476,6 +495,8 @@ struct List : public Literal {
 };
 
 struct Dict : public Literal {
+    Dict() { type = LiteralType::Dict; }
+
     // key -> value pairs
     std::vector<std::pair<ptr<Expression>,ptr<Expression>>> entries;
 
@@ -484,8 +505,6 @@ struct Dict : public Literal {
 
     void acceptChildren(ASTVisitor& v);
 };
-
-
 
 
 }

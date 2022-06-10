@@ -1,0 +1,9 @@
+var d = { 0: 'zero', 1: 'one', 2:'two' }
+
+print(d[1])
+
+var d2 = { 'hello' : 'HELLO', 'goodbye' : 'GOODBYE' }
+print(d2['goodbye'])
+
+print(d2)
+

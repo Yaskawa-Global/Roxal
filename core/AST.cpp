@@ -797,7 +797,18 @@ void Str::accept(ASTVisitor& v)
 void Str::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Str \"" << toUTF8StdString(str) << "\"" << std::endl;
-    //sourceOut();
+}
+
+
+void Type::accept(ASTVisitor& v)
+{
+    if (v.visitFirst() || v.visitLast())
+        v.visit(std::dynamic_pointer_cast<Type>(shared_from_this()));
+}
+
+void Type::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"Type " << to_string(t) << std::endl;
 }
 
 

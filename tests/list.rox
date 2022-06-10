@@ -1,0 +1,24 @@
+var s = "01234"
+
+print(s[2])
+
+type object Obj:
+
+  func sm():
+    return "A"
+
+  func fm():
+    func sm2():
+      return "B"
+    return sm2
+
+var o = Obj()
+print(o.sm()[0])
+print(o.fm()()[0])
+
+
+var l = [0,1,2,3,4,5]
+print(l[2])
+
+print(l)
+print(["hello","world"])

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <map>
 #include <vector>
 #include <sstream>
@@ -29,8 +30,10 @@ enum class ObjType {
     Int,
     Real,
     String,
+    Type,
     List,
-    Dict
+    Dict,
+    Stream
 };
 
 
@@ -110,22 +113,24 @@ std::string objTypeName(Obj* obj);
 
 
 // 
-// Boxed built-in primitives (bool, byte, int, real)
+// Boxed built-in primitives (bool, byte, int, real, type)
 
 struct ObjPrimitive : public Obj 
 {
     ObjPrimitive(bool b) { type=ObjType::Bool; as.boolean = b; }
     ObjPrimitive(double r) { type=ObjType::Real; as.real = r; }
     ObjPrimitive(int32_t i) { type=ObjType::Int; as.integer = i; }
+    ObjPrimitive(ValueType bt) { type=ObjType::Type; as.btype = bt; }
 
     union {
         bool boolean;
         double real;
         int32_t integer;
+        ValueType btype;
     } as;
 };
 
-inline bool isPrimitive(const Value& v) { return isObjType(v, ObjType::Bool) || isObjType(v, ObjType::Int) || isObjType(v, ObjType::Real); }
+inline bool isPrimitive(const Value& v) { return isObjType(v, ObjType::Bool) || isObjType(v, ObjType::Int) || isObjType(v, ObjType::Real) || isObjType(v,ObjType::Type); }
 inline ObjPrimitive* asPrimitive(const Value& v) { return static_cast<ObjPrimitive*>(v.asObj()); }
 
 
@@ -316,7 +321,10 @@ inline ObjClosure* closureVal(ObjFunction* function) {
 //
 // native function
 
-typedef Value (*NativeFn)(int argCount, Value* args);
+//typedef Value (*NativeFn)(int argCount, Value* args);
+//typedef std::function<Value(int argCount, Value* args)> NativeFn;
+class VM;
+typedef Value (VM::*NativeFn)(int,Value*);
 
 struct ObjNative : public Obj
 {

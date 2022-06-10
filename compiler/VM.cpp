@@ -1,5 +1,7 @@
 #include <functional>
 #include <time.h>
+#include <chrono>
+#include <thread>
 
 #include "ASTGenerator.h"
 #include "ASTGraphviz.h"
@@ -7,6 +9,7 @@
 
 #include "VM.h"
 #include "Object.h"
+#include "Stream.h"
 
 using namespace roxal;
 
@@ -18,6 +21,8 @@ VM::VM()
     defineNativeFunctions();
     initString = stringVal(UnicodeString("init"));
     initString->incRef();
+    sengine = std::make_shared<StreamEngine>();
+    auto stream = sengine->newStream(1,intVal(42));//!!!
 }
 
 
@@ -28,6 +33,7 @@ VM::VM(std::istream& linestream)
     defineNativeFunctions();
     initString = stringVal(UnicodeString("init"));
     initString->incRef();
+    sengine = std::make_shared<StreamEngine>();
 }
 
 VM::~VM()
@@ -120,6 +126,12 @@ Value VM::pop()
     return retValue;
 }
 
+void VM::popN(size_t n)
+{
+    for(auto i=0; i<n; i++) pop();
+}
+
+
 
 Value VM::peek(int distance)
 {
@@ -154,6 +166,17 @@ bool VM::call(ObjClosure* closure, int argCount)
 }
 
 
+bool VM::call(ValueType builtinType, int argCount)
+{
+    auto argBegin = stackTop - argCount;
+    auto argEnd = stackTop;
+
+    *(stackTop - argCount - 1) = construct(builtinType, argBegin, argEnd);
+    popN(argCount);
+    return true;
+}
+
+
 bool VM::callValue(const Value& callee, int argCount)
 {
     if (callee.isObj()) {
@@ -184,17 +207,20 @@ bool VM::callValue(const Value& callee, int argCount)
                 return call(asClosure(callee), argCount);
             case ObjType::Native: {
                 NativeFn native = asNative(callee)->function;
-                Value result { native(argCount, &(*stackTop) - argCount) };
-                //stackTop -= argCount+1; 
+                Value result { (this->*native)(argCount, &(*stackTop) - argCount) };
                 *(stackTop - argCount - 1) = result;
-                push(result);
+                popN(argCount);
                 return true;
             }
             default:
                 break;
         }
     }
-    runtimeError("Only functions, objects and actors can be called.");
+    else if (callee.isType()) {
+        auto type { callee.asType() };
+        return call(type, argCount);
+    }
+    runtimeError("Only functions, builtin-types, objects and actors can be called.");
     return false;
 }
 
@@ -216,7 +242,7 @@ bool VM::invoke(ObjString* name, int argCount)
 {
     Value receiver { peek(argCount) };
     if (!isInstance(receiver)) {
-        runtimeError("Only instances have method.");
+        runtimeError("Only instances have methods.");
         return false;
     }
 
@@ -460,6 +486,8 @@ VM::InterpretResult VM::execute()
                 return InterpretResult::RuntimeError;
             }
         #endif
+
+        sengine->updateStreamStates();
 
         uint8_t instruction { readByte() };
         switch(instruction) {
@@ -982,14 +1010,47 @@ void VM::runtimeError(const std::string& format, ...)
 
 // native
 
-static Value clockNative(int argCount, Value* args)
+Value VM::clock_native(int argCount, Value* args)
 {
     return realVal(double(clock())/CLOCKS_PER_SEC);
+}
+
+Value VM::usSleep_native(int argCount, Value* args)
+{
+    if ((argCount != 1) || !args[0].isNumber()) 
+        throw std::invalid_argument("ussleep expects single numeric argument");
+
+    std::this_thread::sleep_for(std::chrono::microseconds(args[0].asInt()));
+
+    return nilVal();
+}
+
+Value VM::msSleep_native(int argCount, Value* args)
+{
+    if ((argCount != 1) || !args[0].isNumber()) 
+        throw std::invalid_argument("mssleep expects single numeric argument");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(args[0].asInt()));
+
+    return nilVal();
+}
+
+Value VM::sleep_native(int argCount, Value* args)
+{
+    if ((argCount != 1) || !args[0].isNumber()) 
+        throw std::invalid_argument("sleep expects single numeric argument");
+
+    std::this_thread::sleep_for(std::chrono::seconds(args[0].asInt()));
+
+    return nilVal();
 }
 
 
 
 void VM::defineNativeFunctions()
 {
-    defineNative("clock", clockNative);
+    defineNative("_clock", &VM::clock_native);
+    defineNative("_ussleep", &VM::usSleep_native);
+    defineNative("_mssleep", &VM::msSleep_native);
+    defineNative("_sleep", &VM::sleep_native);
 }

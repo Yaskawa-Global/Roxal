@@ -15,6 +15,33 @@ namespace roxal {
 using namespace roxal;
 
 
+std::string roxal::to_string(ValueType t)
+{
+    auto type = valueType(t);
+    switch (type) {
+    case ValueType::Nil: return "nil"; break; 
+    case ValueType::Bool: return "bool"; break; 
+    case ValueType::Byte: return "byte"; break;  
+    case ValueType::Int: return "int"; break;
+    case ValueType::Real: return "real"; break;
+    case ValueType::Decimal: return "decimal"; break;
+    case ValueType::String: return "string"; break;
+    case ValueType::Type: return "type"; break;
+    case ValueType::List: return "list"; break;
+    case ValueType::Dict: return "dict"; break;
+    case ValueType::Vector: return "vector"; break;
+    case ValueType::Matrix: return "matrix"; break;
+    case ValueType::Tensor: return "tensor"; break;
+    case ValueType::Orient: return "orient"; break;
+    case ValueType::Stream: return "stream"; break;
+    case ValueType::Object: return "object"; break;
+    case ValueType::Actor: return "actor"; break;
+    default:
+        throw std::runtime_error("Unhandled type for to_string "+std::to_string(int(type)));
+    }
+}
+
+
 roxal::Value::Value(Obj* o) 
     : _type(ValueType::Object) 
 { 
@@ -32,6 +59,8 @@ void Value::box() {
         as.obj = newObj<ObjPrimitive>(__func__,as.integer);
     else if (isReal())
         as.obj = newObj<ObjPrimitive>(__func__,as.real);
+    else if (isType())
+        as.obj = newObj<ObjPrimitive>(__func__,as.btype);
     else
         throw std::runtime_error("Unsupported type for auto-boxing "+typeName());
 
@@ -48,6 +77,10 @@ void Value::unbox() {
         as.boolean = asPrimitive(*this)->as.integer;
     else if (isReal())
         as.boolean = asPrimitive(*this)->as.real;
+    else if (isType())
+        as.btype = asPrimitive(*this)->as.btype;
+    else
+        throw std::runtime_error("Unsupported type for auto-unboxing "+typeName());
     as.obj->decRef();
 }
 
@@ -57,7 +90,7 @@ void roxal::Value::incRefObj()
 {
     #ifdef DEBUG_BUILD
     if (!isObj() && !isBoxable())
-        throw std::runtime_error("Can't incRef non-object");
+        throw std::runtime_error("Can't incRef non-object type "+typeName());
     #endif
     as.obj->incRef();
 }
@@ -66,14 +99,14 @@ void roxal::Value::decRefObj()
 {
     #ifdef DEBUG_BUILD
     if (!isObj() && !isBoxable())
-        throw std::runtime_error("Can't decRef non-object");
+        throw std::runtime_error("Can't decRef non-object type "+typeName());
     #endif
     as.obj->decRef();
 }
 
 
 
-bool Value::asBool() const
+bool Value::asBool(bool strict) const
 {
     if (!isBoxed()) {
         return as.boolean;
@@ -91,52 +124,88 @@ bool Value::asBool() const
 
 
 
-int32_t Value::asInt() const
+int32_t Value::asInt(bool strict) const
 {
-    if (!isBoxed()) {
-        switch (_type) {
-        case ValueType::Int: return as.integer;
-        case ValueType::Real: return int32_t(as.real);
-        case ValueType::Bool: return as.boolean ? 1 : 0;
+    Value unboxed;
+    Value const* v { this };
+    if (isBoxed()) {
+        unboxed = *this;
+        unboxed.unbox();
+        v = &unboxed;
+    }
+
+    if (!v->isObj()) {
+        switch (v->_type) {
+        case ValueType::Int: return v->as.integer;
+        case ValueType::Real: return int32_t(v->as.real);
+        case ValueType::Bool: return v->as.boolean ? 1 : 0;
         case ValueType::Decimal: return 0; // TODO: implement
-        //case ValueType::String ... (if non-strict)
         default: ;
         }
-    }
-    else {
-        switch (valueType(_type)) {
-        case ValueType::Int: return asPrimitive(*this)->as.integer;
-        case ValueType::Real: return int32_t(asPrimitive(*this)->as.real);
-        case ValueType::Bool: return asPrimitive(*this)->as.boolean ? 1 : 0;
-        default: ;
+    } else {
+        if (isString(*v) && !strict) {
+            try {
+                auto str { toUTF8StdString(asString(*v)->s) };
+                if ((str.size() > 2) && (str[0] == '0')) {
+                    if (str[1] == 'x' || str[1]=='X')
+                        return std::stol(str.substr(2),nullptr,16);
+                    else if (str[1] == 'b' || str[1]=='B')
+                        return std::stol(str.substr(2),nullptr,2);
+                    else if (str[1] == 'o' || str[1]=='O')
+                        return std::stol(str.substr(2),nullptr,8);
+                }
+                return std::stol(str,nullptr,10);
+            } catch(...) { return 0; }
         }
     }
     return 0;
 }
 
 
-double Value::asReal() const
+double Value::asReal(bool strict) const
 { 
-    if (!isBoxed()) {
-        switch (_type) {
-        case ValueType::Real: return as.real;
-        case ValueType::Int: return double(as.integer);
-        case ValueType::Bool: return as.boolean ? 1.0 : 0.0;
+    Value unboxed;
+    Value const* v { this };
+    if (isBoxed()) {
+        unboxed = *this;
+        unboxed.unbox();
+        v = &unboxed;
+    }
+
+    if (!v->isObj()) {
+        switch (v->_type) {
+        case ValueType::Real: return v->as.real;
+        case ValueType::Int: return double(v->as.integer);
+        case ValueType::Bool: return v->as.boolean ? 1.0 : 0.0;
         case ValueType::Decimal: return 0.0; // TODO: implement
-        //case ValueType::String ... (if non-strict)
         default: ;
         }
     }
     else {
-        switch (_type) {
-        case ValueType::Real: return asPrimitive(*this)->as.real;
-        case ValueType::Int: return double(asPrimitive(*this)->as.integer);
-        case ValueType::Bool: return asPrimitive(*this)->as.boolean ? 1.0 : 0.0;
-        default: ;
+        if (isString(*v) && !strict) {
+            try {
+                auto str { toUTF8StdString(asString(*v)->s) };
+                return std::stod(str);
+            } catch(...) { return 0.0; }
         }
     }
     return 0.0;
 }
+
+
+ValueType Value::asType(bool strict) const
+{
+    if (!isBoxed()) {
+        if (_type==ValueType::Type)
+            return as.btype;
+    }
+    else {
+        if (valueType(_type)==ValueType::Type)
+            return asPrimitive(*this)->as.btype;
+    }
+    return ValueType::Nil;
+}
+
 
 
 std::string roxal::Value::typeName() const
@@ -146,31 +215,46 @@ std::string roxal::Value::typeName() const
     else if (isBool())
         return "bool";
     else if (isInt())
-        return "integer";
+        return "int";
     else if (isReal())
         return "real";
+    else if (isType())
+        return "type";
     else if (isObj())
         return "object";
     //TODO: ...
-    return "unknown";
+    return (_type >= ValueType::Boxed ? "boxed ":"")+std::string("unknown");
 }
 
 
 
 
 
-Value toType(ValueType t, Value v)
+Value roxal::toType(ValueType t, Value v, bool strict)
 {
-    if (v.type() == t)
+    if (valueType(v.type()) == t)
         return v;
 
     switch (t) {
-        case ValueType::Real: return realVal(v.asReal());
-        case ValueType::Int: return intVal(v.asInt());
+        case ValueType::Real: return realVal(v.asReal(strict));
+        case ValueType::Int: return intVal(v.asInt(strict));
+        case ValueType::String: {
+
+        }
         //...
     }
-    return Value(); // nil
+    return nilVal(); 
 }
+
+
+Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin, std::vector<Value>::const_iterator end)
+{
+    if (end - 1 == begin)
+        return toType(type, *begin, false);
+    throw std::runtime_error("type constructors with >1 arg unimplemented");
+    return nilVal();
+}
+
 
 
 
@@ -412,6 +496,8 @@ std::string roxal::toString(const Value& v)
         return format("%g", v.asReal());
     else if (v.isBool())
         return v.asBool() ? "true" : "false";
+    else if (v.isType())
+        return to_string(v.asType());
     else if (v.isNil())
         return "nil";
     else if (v.isObj()) 

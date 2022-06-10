@@ -560,6 +560,35 @@ void RoxalCompiler::visit(ptr<ast::Str> ast)
 }
 
 
+void RoxalCompiler::visit(ptr<ast::Type> ast)
+{
+    currentNode = ast;
+    ValueType type { ValueType::Nil };
+
+    switch(ast->t) {
+        case ast::BuiltinType::Nil: type = ValueType::Nil; break;
+        case ast::BuiltinType::Bool: type = ValueType::Bool; break;
+        case ast::BuiltinType::Byte: type = ValueType::Byte; break;
+        //case ast::BuiltinType::Number:  // not concrete
+        case ast::BuiltinType::Int: type = ValueType::Int; break;
+        case ast::BuiltinType::Real: type = ValueType::Real; break;
+        case ast::BuiltinType::Decimal: type = ValueType::Decimal; break;
+        case ast::BuiltinType::String: type = ValueType::String; break;
+        case ast::BuiltinType::List: type = ValueType::List; break;
+        case ast::BuiltinType::Dict: type = ValueType::Dict; break;
+        case ast::BuiltinType::Vector: type = ValueType::Vector; break;
+        case ast::BuiltinType::Matrix: type = ValueType::Matrix; break;
+        case ast::BuiltinType::Tensor: type = ValueType::Tensor; break;
+        case ast::BuiltinType::Orient: type = ValueType::Orient; break;
+        case ast::BuiltinType::Stream: type = ValueType::Stream; break;
+        default:
+            throw std::runtime_error("unhandled builtin type "+ast::to_string(ast->t));
+    }
+
+    emitConstant(typeVal(type));
+}
+
+
 void RoxalCompiler::visit(ptr<ast::Num> ast)
 {
     currentNode = ast;

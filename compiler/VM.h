@@ -14,6 +14,8 @@ struct CallFrame {
     Value* slots;
 };
 
+class StreamEngine;
+
 
 
 class VM
@@ -36,9 +38,11 @@ public:
 
     void push(const Value& value);
     Value pop();
+    void popN(size_t n); // call pop() n times
     Value peek(int distance);
 
     bool call(ObjClosure* closure, int argCount);
+    bool call(ValueType builtinType, int argCount);
     bool callValue(const Value& callee, int argCount);   
     bool invokeFromType(ObjObjectType* type, ObjString* name, int argCount);
     bool invoke(ObjString* name, int argCount);
@@ -72,6 +76,8 @@ protected:
 
     std::list<ObjUpvalue*> openUpvalues;
 
+    ptr<StreamEngine> sengine;
+
     ObjString* initString;
 
     void resetStack();
@@ -83,6 +89,12 @@ protected:
     void runtimeError(const std::string& format, ...);
 
     void defineNativeFunctions();
+
+    // Native functions
+    Value clock_native(int argCount, Value* args);
+    Value usSleep_native(int argCount, Value* args);
+    Value msSleep_native(int argCount, Value* args);
+    Value sleep_native(int argCount, Value* args);
 
 };
 

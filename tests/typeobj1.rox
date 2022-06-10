@@ -1,0 +1,19 @@
+type object Class1:
+  func method():
+    print("hi from class1")
+
+type object Class2:
+  func method():
+    print('hi from class2')
+
+//scope:
+var o1 = Class1()
+var o2 = Class2()
+
+o1.prop = o2
+o1.prop.prop = 2
+
+print(o1.prop)
+print(o2.prop)
+
+

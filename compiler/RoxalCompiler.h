@@ -42,6 +42,7 @@ public:
     virtual void visit(ptr<ast::Literal> ast);
     virtual void visit(ptr<ast::Bool> ast);
     virtual void visit(ptr<ast::Str> ast);
+    virtual void visit(ptr<ast::Type> ast);
     virtual void visit(ptr<ast::Num> ast);
     virtual void visit(ptr<ast::List> ast);
     virtual void visit(ptr<ast::Dict> ast);

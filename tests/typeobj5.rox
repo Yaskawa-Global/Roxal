@@ -1,0 +1,15 @@
+// test calling a non-method
+type object MyObject:
+  proc init():
+    func f():
+      print("not a method called correctly")
+    
+
+    this.field = f
+  
+
+
+var obj = MyObject()
+obj.field()
+
+
