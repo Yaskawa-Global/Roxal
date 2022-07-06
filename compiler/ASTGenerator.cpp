@@ -543,8 +543,6 @@ antlrcpp::Any ASTGenerator::visitFunc_decl(RoxalParser::Func_declContext *contex
 {
     visitStart();
 
-    auto ident { UnicodeString::fromUTF8(context->function()->IDENTIFIER()->getText()) };
-
     auto funcdecl = std::make_shared<FuncDecl>();
     setSourceInfo(funcdecl,context);
     auto func = visitFunction(context->function());
@@ -560,7 +558,7 @@ antlrcpp::Any ASTGenerator::visitFunction(RoxalParser::FunctionContext *context)
 {
     visitStart();
 
-    auto ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
+    auto ident { UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText()) };
 
     auto func = std::make_shared<Function>();
     setSourceInfo(func,context);
@@ -571,6 +569,20 @@ antlrcpp::Any ASTGenerator::visitFunction(RoxalParser::FunctionContext *context)
         auto params = visitParameters(context->parameters());
         func->params = *params.as<ptr<std::vector<ptr<Parameter>>>>();
     }
+
+    // return type (optional)
+    if (context->builtin_type()) {
+        auto builtinType = visitBuiltin_type(context->builtin_type()).as<BuiltinType>();
+        func->returnType = builtinType;
+    }
+    else if (context->IDENTIFIER().size()>1) {
+        auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
+        func->returnType = typeIdent;
+    }
+
+    if (func->returnType.has_value() && func->isProc)
+        throw std::runtime_error("Proc "+toUTF8StdString(ident)+" cannot specify a return type.");
+
 
     auto body = visitSuite(context->suite());
     func->body = as<Suite>(body);

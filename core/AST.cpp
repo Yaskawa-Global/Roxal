@@ -432,7 +432,15 @@ void Function::acceptChildren(ASTVisitor& v)
 
 void Function::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"Function" << (isProc? " (proc)" : "") << " " << toUTF8StdString(name) << std::endl;
+    os << spaces(indent)+"Function" << (isProc? " (proc)" : "") << " " << toUTF8StdString(name);
+    if (returnType.has_value()) {
+        os << " → ";
+        if (std::holds_alternative<BuiltinType>(returnType.value()))
+            os << to_string(std::get<BuiltinType>(returnType.value()));
+        else if (std::holds_alternative<icu::UnicodeString>(returnType.value()))
+            os << toUTF8StdString(std::get<icu::UnicodeString>(returnType.value()));
+    }
+    os << std::endl;
     if (params.size()>0) {
         os << spaces(indent)+" params:" << std::endl;
         for(auto& param : params)
@@ -457,7 +465,7 @@ void Parameter::output(std::ostream& os, int indent) const
     if (type.has_value()) {
         os << " : ";
         if (std::holds_alternative<BuiltinType>(type.value()))
-            os << int(std::get<BuiltinType>(type.value()));
+            os << to_string(std::get<BuiltinType>(type.value()));
         else if (std::holds_alternative<icu::UnicodeString>(type.value()))
             os << toUTF8StdString(std::get<icu::UnicodeString>(type.value()));
     }

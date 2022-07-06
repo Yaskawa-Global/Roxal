@@ -290,10 +290,21 @@ void ASTGraphviz::visit(ptr<ast::Function> ast)
 
     addLink(name, stackPop(), "body"); // body
 
+    auto nameReturn = toUTF8StdString(ast->name);
+
+    if (ast->returnType.has_value()) {
+        if (std::holds_alternative<BuiltinType>(ast->returnType.value())) {
+            nameReturn += " → "+to_string(std::get<BuiltinType>(ast->returnType.value()));
+        }
+        else if (std::holds_alternative<icu::UnicodeString>(ast->returnType.value())){
+            nameReturn += " → "+toUTF8StdString(std::get<icu::UnicodeString>(ast->returnType.value()));
+        }
+     }
+
     for(int i=0; i<ast->params.size();i++)
         addLink(name, stackPop(), std::to_string(i));
 
-    nodes[name] = node(name, "Function "+toUTF8StdString(ast->name));
+    nodes[name] = node(name, "Function "+nameReturn);
     stackPush(name);
     endVisit();
 }

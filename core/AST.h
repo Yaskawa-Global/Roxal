@@ -289,6 +289,7 @@ struct Function : public AST {
     bool isProc;
     icu::UnicodeString name;
     std::vector<ptr<Parameter>> params;
+    std::optional<std::variant<BuiltinType,icu::UnicodeString>> returnType;
     ptr<Suite> body;
 
     virtual void accept(ASTVisitor& v);
