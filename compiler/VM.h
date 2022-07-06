@@ -12,6 +12,8 @@ struct CallFrame {
     ObjClosure* closure;
     Chunk::iterator ip;
     Value* slots;
+    // TODO: optimized this for common case where it is empty (ptr?)
+    std::map<UnicodeString,Value> forwardStreamRefs;
 };
 
 class StreamEngine;
@@ -75,8 +77,6 @@ protected:
     std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> globals;
 
     std::list<ObjUpvalue*> openUpvalues;
-
-    ptr<StreamEngine> sengine;
 
     ObjString* initString;
 

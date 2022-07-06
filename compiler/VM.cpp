@@ -21,8 +21,8 @@ VM::VM()
     defineNativeFunctions();
     initString = stringVal(UnicodeString("init"));
     initString->incRef();
-    sengine = std::make_shared<StreamEngine>();
-    auto stream = sengine->newStream(1,intVal(42));//!!!
+
+    auto engine = StreamEngine::instance();
 }
 
 
@@ -33,7 +33,7 @@ VM::VM(std::istream& linestream)
     defineNativeFunctions();
     initString = stringVal(UnicodeString("init"));
     initString->incRef();
-    sengine = std::make_shared<StreamEngine>();
+    StreamEngine::instance();
 }
 
 VM::~VM()
@@ -281,6 +281,7 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                 // TODO: bounds check
                 ustr.extract(int32_t(index.asInt()),1,substr);
                 auto newStrValue { objVal(stringVal(substr)) };
+                pop(); // discard indexable
                 push(newStrValue);
                 return true;
             }
@@ -296,7 +297,9 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                     return false;
                 }
                 // TODO: bounds check
-                push(list->elts.at(index.asInt()));
+                Value result { list->elts.at(index.asInt()) };
+                pop(); // discard indexable
+                push(result);
                 return true;
             }
             case ObjType::Dict: {
@@ -307,14 +310,83 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                 ObjDict* dict = asDict(indexable);
                 Value index = pop();
                 // TODO: bounds check
-                push(dict->entries.at(index));
+                Value result { dict->entries.at(index) };
+                pop(); // discard indexable
+                push(result);
+                return true;
+            }
+            case ObjType::Stream: {
+                if (subscriptCount != 1) {
+                    runtimeError("Stream indexing requires a single numeric index <= 0.");
+                    return false;
+                }
+                Value index = pop();
+                if (!index.isNumber() || index.asInt() > 0) {
+                    runtimeError("Stream indexing requires a single numeric index <= 0.");
+                    return false;
+                }
+                auto n = index.asInt();
+                Stream* stream = asStream(indexable);
+                Value result;
+                if (n==0)
+                    result = indexable;
+                else if (n==-1) 
+                    result = Stream::prev(n,indexable);
+                else {
+                    runtimeError("Stream index "+std::to_string(n)+" out of range.");
+                    return false;
+                }
+                pop(); // discard indexable
+                push(result);
+                return true;
+            }
+            // indexing a closure occurs in special case of a function that returns a stream,
+            //  where the function name is used to refer to the returned stream (e.g. f[-1] is prev value)
+            case ObjType::Closure: {
+                if (subscriptCount != 1) {
+                    runtimeError("Stream indexing requires a single numeric index <= 0.");
+                    return false;
+                }
+                Value index = pop();
+                if (!index.isNumber() || index.asInt() > 0) {
+                    runtimeError("Stream indexing requires a single numeric index <= 0.");
+                    return false;
+                }
+                auto n = index.asInt();
+                if (n==0) {
+                    runtimeError("Can't access the current value of a stream func in its evaluation (only previous values).");
+                    return false;
+                }
+
+                // since the returned stream doesn't exist yet, create a named stream proxy
+                //  using the function name
+                auto frame { frames.end()-1 };
+                auto func { frame->closure->function };
+                // TODO: check this is a func not a proc
+
+                // string name var/placeholder for stream as it doesn't exist yet
+                Value indexable { stringVal(func->name) };
+
+                if (n==-1) {
+                    Value stream { Stream::prev(n,indexable) };
+                    frame->forwardStreamRefs[func->name] = stream;
+                    //std::cout << "Added forward stream ref " << toUTF8StdString(func->name) << std::endl;//!!!
+                    pop(); // discard indexable
+                    push(stream);
+                }
+                else {
+                    runtimeError("Stream index "+std::to_string(n)+" out of range.");
+                    return false;
+                }
                 return true;
             }
             default:
                 break;
         }
+        runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed, not type "+objTypeName(indexable.asObj())+".");
+        return false;
     }
-    runtimeError("Only strings, lists, [vectors, dicts, matrices and tensors - unimplemented] can be indexed.");
+    runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed, not type "+indexable.typeName()+".");
     return false;
 }
 
@@ -461,13 +533,18 @@ VM::InterpretResult VM::execute()
                 std::cout << "          ";
                 for(auto vi = stack.begin(); vi < stackTop; vi++) {
                     bool aString = vi->isObj() && isString(*vi);
+                    bool aStream = vi->isObj() && isStream(*vi);
                     std::cout << "[";
                     if (frame->slots == &(*vi) )
                         std::cout << "F^"; // show frame pointer
                     std::cout << " ";
+                    if (aStream)
+                        std::cout << "<stream ";
                     if (aString)
                         std::cout << "'"; // quote strings
                     std::cout << toString(*vi);
+                    if (aStream)
+                        std::cout << ">";
                     if (aString)
                         std::cout << "'";
                     if (vi->isNumber()) // show numeric type
@@ -487,7 +564,7 @@ VM::InterpretResult VM::execute()
             }
         #endif
 
-        sengine->updateStreamStates();
+        StreamEngine::instance()->updateStreamStates();
 
         uint8_t instruction { readByte() };
         switch(instruction) {
@@ -578,6 +655,8 @@ VM::InterpretResult VM::execute()
                 else if (isString(peek(1))) {
                     concatenate();
                 }
+                else if (isStream(peek(0)) || isStream(peek(1)))
+                    binaryOp([](Value a, Value b) -> Value { return add(a,b); });
                 else {
                     runtimeError("Operands of + must be two numbers or a strings LHS");
                     return InterpretResult::RuntimeError;
@@ -635,7 +714,7 @@ VM::InterpretResult VM::execute()
                     push(boolVal(isFalsey(operand)));
                 }
                 else {
-                    runtimeError("Operand of not or negation must be a number, bool or nil");
+                    runtimeError("Operand of 'not' or negation must be a number, bool or nil");
                     return InterpretResult::RuntimeError;
                 }
                 break;
@@ -643,11 +722,11 @@ VM::InterpretResult VM::execute()
             case asByte(OpCode::Modulo): {
                 // TODO: support decimal
                 if (!peek(0).isInt()) {
-                    runtimeError("Operand of % must be an integer");
+                    runtimeError("Operand of '%' must be an integer");
                     return InterpretResult::RuntimeError;
                 }
                 if (!peek(1).isInt()) {
-                    runtimeError("Operand of % must be an integer");
+                    runtimeError("Operand of '%' must be an integer");
                     return InterpretResult::RuntimeError;
                 }
                 binaryOp([](Value a, Value b) -> Value { return mod(a,b); });
@@ -655,11 +734,11 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::And): {
                 if (!peek(0).isBool()) {
-                    runtimeError("Operand and must be a bool");
+                    runtimeError("Operand of 'and' must be a bool");
                     return InterpretResult::RuntimeError;
                 }
                 if (!peek(1).isBool()) {
-                    runtimeError("Operand and must be a bool");
+                    runtimeError("Operand of 'and' must be a bool");
                     return InterpretResult::RuntimeError;
                 }
                 binaryOp([](Value a, Value b) -> Value { return land(a,b); });
@@ -667,14 +746,18 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::Or): {
                 if (!peek(0).isBool()) {
-                    runtimeError("Operand or must be a bool");
+                    runtimeError("Operand of 'or' must be a bool");
                     return InterpretResult::RuntimeError;
                 }
-                if (!peek(0).isBool()) {
-                    runtimeError("Operand or must be a bool");
+                if (!peek(1).isBool()) {
+                    runtimeError("Operand of 'or' must be a bool");
                     return InterpretResult::RuntimeError;
                 }
                 binaryOp([](Value a, Value b) -> Value { return lor(a,b); });
+                break;
+            }
+            case asByte(OpCode::FollowedBy): {
+                binaryOp([](Value a, Value b) -> Value { return followedBy(a,b); });
                 break;
             }
             case asByte(OpCode::Pop): {
@@ -757,6 +840,25 @@ VM::InterpretResult VM::execute()
 
                 Value result = pop();
                 closeUpvalues(returningFrame.slots);
+
+                if (!returningFrame.forwardStreamRefs.empty()) {
+                    auto funcName { returningFrame.closure->function->name };
+                    //std::cout << "returning frame "+toUTF8StdString(funcName)+" has forward stream refs" << std::endl;//!!!                    
+                    for(auto& forwardStreamRef : returningFrame.forwardStreamRefs) {
+                        const auto& name { forwardStreamRef.first };
+                        auto& stream { forwardStreamRef.second };
+                        #ifdef DEBUG_BUILD
+                        assert(isStream(stream));
+                        if (name != funcName) // shouldn't happen
+                            throw std::runtime_error("invalid forward stream reference "+toUTF8StdString(name)+" in func "+toUTF8StdString(funcName));
+                        #endif
+                        if (!isStream(result)) {
+                            runtimeError("Func '"+toUTF8StdString(funcName)+"' must return a stream (not type "+result.typeName()+")");
+                            return InterpretResult::RuntimeError;
+                        }
+                        asStream(stream)->patch(name,result);
+                    }
+                }
 
                 frames.pop_back();
 

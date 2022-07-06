@@ -543,7 +543,8 @@ std::string BinaryOp::opString() const
         case GreaterThan: return ">";
         case LessOrEqual: return "\u2A7D";
         case GreaterOrEqual: return "\u2A7E";
-        default: return "";
+        case FollowedBy: return "\u21A6";
+        default: return "?";
     }
 }
 

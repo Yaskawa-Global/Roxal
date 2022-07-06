@@ -12,7 +12,7 @@ tests = [
     'arith', 'factorial',
     'dict', 'list',
     'unicode',
-    'closure', 'closure2', 'closure3', 'closure4',
+    'closure', 'closure2', 'closure3', 'closure4', 'closure5',
     'conversion1',
     'linkedlist',
     'if'

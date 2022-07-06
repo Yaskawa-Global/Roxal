@@ -3,6 +3,7 @@
 #include "Value.h"
 
 #include "Object.h"
+#include "Stream.h"
 
 
 namespace roxal {
@@ -207,6 +208,25 @@ ValueType Value::asType(bool strict) const
 }
 
 
+bool Value::operator==(const Value& rhs) const
+{
+    if (isNil() && rhs.isNil()) return true;
+    if (isBool())
+        return  asBool() == rhs.asBool();
+    else if (isInt())
+        return asInt() == rhs.asInt();
+    else if (isReal())
+        return asReal() == rhs.asReal();
+    else if (isType())
+        return asType() == rhs.asType();
+    else if (isString(*this))
+        return objsEqual(*this,rhs); // compares strings intelligently (e.g. using immutability & hash)
+    else if (isObj())
+        return asObj() == rhs.asObj(); // identity (by ptr/address)
+    return false;
+}
+
+
 
 std::string roxal::Value::typeName() const
 {
@@ -249,6 +269,20 @@ Value roxal::toType(ValueType t, Value v, bool strict)
 
 Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin, std::vector<Value>::const_iterator end)
 {
+    auto argCount = end - begin;
+    if (type == ValueType::Stream) {
+        Value stream;
+        if (argCount == 0)
+            stream = objVal(streamVal(1.0,intVal(0)));
+        else if (argCount == 1)
+            stream = objVal(streamVal(1.0,*begin));
+        else if (argCount == 2)
+            stream = objVal(streamVal((begin+1)->asReal(false),*begin));
+        else
+            throw std::runtime_error("stream(initial=0,freq=1) constructor requires 0,1 or 2 arguments");
+        return stream;
+    }
+
     if (end - 1 == begin)
         return toType(type, *begin, false);
     throw std::runtime_error("type constructors with >1 arg unimplemented");
@@ -329,19 +363,20 @@ Value roxal::negate(Value v)
 
 Value roxal::add(Value l, Value r)
 {
-    if (!l.isNumber())
-        throw std::invalid_argument("LHS must be a number");
-    if (!r.isNumber())
-        throw std::invalid_argument("RHS must be a number");
+    if (l.isNumber() && r.isNumber()) {
 
-    ValueType resultType(binaryOpType(l,r));
-    switch (resultType) {
-        case ValueType::Int: return intVal(l.asInt()+r.asInt());
-        case ValueType::Real: return realVal(l.asReal()+r.asReal());
-        //... decimal, byte
-        default: ;
+        ValueType resultType(binaryOpType(l,r));
+        switch (resultType) {
+            case ValueType::Int: return intVal(l.asInt()+r.asInt());
+            case ValueType::Real: return realVal(l.asReal()+r.asReal());
+            //... decimal, byte
+            default: ;
+        }
     }
-    return Value();
+    else if (isStream(l) || isStream(r)) {
+        return Stream::add(l,r);
+    }
+    throw std::invalid_argument("unsupported operand types to add() - "+l.typeName()+" and "+r.typeName());
 }
 
 

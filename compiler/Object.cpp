@@ -2,6 +2,7 @@
 #include <unordered_map>
 
 #include "Object.h"
+#include "Stream.h"
 
 using namespace roxal;
 
@@ -11,6 +12,25 @@ std::vector<Obj*> Obj::unrefedObjs {};
 #ifdef DEBUG_TRACE_MEMORY
 std::map<Obj*, const char*> Obj::allocatedObjs {};
 #endif
+
+
+void Obj::registerStream()
+{
+    if (type==ObjType::Stream)
+        StreamEngine::instance()->registerStream(static_cast<Stream*>(this));
+    else
+        throw std::runtime_error("can't call registerStream on non-stream object "+objTypeName(this));
+}
+
+void Obj::unregisterStream()
+{
+    if (type==ObjType::Stream)
+        StreamEngine::instance()->unregisterStream(static_cast<Stream*>(this));
+    else
+        throw std::runtime_error("can't call unregisterStream on non-stream object "+objTypeName(this));
+}
+
+
 
 
 // interned strings table
@@ -178,6 +198,10 @@ std::string roxal::objToString(const Value& v)
             }
             os << "}";
             return os.str();
+        }
+        case ObjType::Stream: {
+            // converting a stream to a string actually converts its current value to a string
+            return toString(asStream(v)->currentValue());
         }
         case ObjType::ObjectType: {
             ObjObjectType* obj = asObjectType(v);

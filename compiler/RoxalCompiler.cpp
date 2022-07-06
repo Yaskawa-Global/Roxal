@@ -473,6 +473,7 @@ void RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
             case BinaryOp::GreaterThan: emitByte(OpCode::Greater); break;
             case BinaryOp::LessOrEqual: emitByte(OpCode::Greater); emitByte(OpCode::Negate); break;
             case BinaryOp::GreaterOrEqual: emitByte(OpCode::Less); emitByte(OpCode::Negate); break;
+            case BinaryOp::FollowedBy: emitByte(OpCode::FollowedBy); break;
             default:
                 throw std::runtime_error("unimplemented binary opertor:"+ast->opString());
         }

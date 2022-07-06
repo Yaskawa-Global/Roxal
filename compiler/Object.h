@@ -44,12 +44,24 @@ struct Obj {
     ObjType type;
     int32_t refCount;
 
-    inline void incRef() { ++refCount; }
-    inline void decRef() { 
+    inline void incRef() 
+    {
+        if (refCount==0 && type==ObjType::Stream)
+            registerStream(); 
+        ++refCount; 
+    }
+
+    inline void decRef() 
+    { 
         if (--refCount <= 0) {
+            if (type==ObjType::Stream)
+                unregisterStream();
             unrefedObjs.push_back(this);
         }
     }
+
+    void registerStream();
+    void unregisterStream();
 
     static std::vector<Obj*> unrefedObjs;
 

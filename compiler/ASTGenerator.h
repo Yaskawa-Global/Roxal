@@ -57,6 +57,8 @@ public:
 
     virtual antlrcpp::Any visitAssignment(RoxalParser::AssignmentContext *context);
 
+    virtual antlrcpp::Any visitFollowed_by(RoxalParser::Followed_byContext *context);
+
     virtual antlrcpp::Any visitLogic_or(RoxalParser::Logic_orContext *context);
 
     virtual antlrcpp::Any visitLogic_and(RoxalParser::Logic_andContext *context);

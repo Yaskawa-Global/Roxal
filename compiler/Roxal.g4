@@ -125,8 +125,13 @@ expression
 
 assignment
  : ( call DOT )? IDENTIFIER EQUALS assignment
- | logic_or 
+ | followed_by 
  ;
+
+followed_by
+ : logic_or ( FOLLOWEDBY logic_or )*
+ ; 
+
 
 logic_or
  : logic_and ( OR logic_and )* 
@@ -299,6 +304,7 @@ GT_EQ : '>=' | '\u2265' | '\u2A7E'; // ≥ ⩾
 ISEQUAL: '==' | '\u225F'; // ≟
 EQUALS: '=';
 ISNOTEQUALS: '!=' | '<>' | '\u2260'; // ≠
+FOLLOWEDBY: '|>' | '\u21A6'; // ↦
 
 
 OPEN_PAREN : '(';

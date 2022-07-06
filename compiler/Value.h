@@ -34,6 +34,7 @@ inline bool isBoxed(ValueType t) { return (int(t) & 0x80) != 0; }
 
 struct Obj;
 struct ObjString;
+class StreamEngine;
 
 
 #if defined(NAN_TAGGING)
@@ -125,6 +126,9 @@ public:
 
     inline bool isObj() const { return _type == ValueType::Object; }
     inline Obj* asObj() const { return as.obj; }
+
+
+    bool operator==(const Value& rhs) const;
 
 protected:
     ValueType _type;

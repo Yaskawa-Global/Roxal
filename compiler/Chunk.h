@@ -27,6 +27,7 @@ enum class OpCode {
     Negate,
     And,
     Or,
+    FollowedBy,
     Pop,
     PopN,
     JumpIfFalse,

@@ -344,7 +344,8 @@ struct BinaryOp : public Expression {
         Add, Subtract, Multiply, Divide, Modulo,
         And, Or, 
         Equal, NotEqual,
-        LessThan, GreaterThan, LessOrEqual, GreaterOrEqual
+        LessThan, GreaterThan, LessOrEqual, GreaterOrEqual,
+        FollowedBy
     };
 
     BinaryOp() : op(None) {}

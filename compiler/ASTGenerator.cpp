@@ -685,8 +685,8 @@ antlrcpp::Any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *cont
 {
     visitStart();
 
-    if (context->logic_or()) {
-        return visitLogic_or(context->logic_or());
+    if (context->followed_by()) {
+        return visitFollowed_by(context->followed_by());
     }
     else if (context->EQUALS()) { // assignment
         icu::UnicodeString ident { icu::UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
@@ -720,6 +720,38 @@ antlrcpp::Any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *cont
     visitEnd();
 }
 
+
+
+antlrcpp::Any ASTGenerator::visitFollowed_by(RoxalParser::Followed_byContext *context)
+{
+    visitStart();
+
+    auto logicOr = visitLogic_or(context->logic_or().at(0));
+    if (context->FOLLOWEDBY().size() == 0)
+        return logicOr;
+
+    auto lhs = as<Expression>(logicOr);
+
+    ptr<BinaryOp> followOp;
+
+    if (context->logic_or().size() > 1) {
+
+        for(auto i=1; i<context->logic_or().size(); i++) {
+            followOp = std::make_shared<BinaryOp>(BinaryOp::FollowedBy);
+            setSourceInfo(followOp,context);//!!!
+            followOp->lhs = lhs;
+
+            auto rhs = visitLogic_or(context->logic_or().at(i));
+            followOp->rhs = as<Expression>(rhs);
+
+            lhs = followOp;
+        }
+    }
+
+    return typeValue(followOp);
+
+    visitEnd();
+}
 
 
 antlrcpp::Any ASTGenerator::visitLogic_or(RoxalParser::Logic_orContext *context)
