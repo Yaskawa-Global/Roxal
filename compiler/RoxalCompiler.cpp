@@ -387,6 +387,40 @@ void RoxalCompiler::visit(ptr<ast::Parameter> ast)
     uint16_t var = identifierConstant(ast->name); // create constant table entry for name
 
     defineVariable(var);
+
+    // output code for evaluating default value (if any)
+    // TODO: somehow get this code to the chunk in FunctionScope::paramDefaultValue
+    if (ast->defaultValue.has_value()) {
+
+
+        // TEST treat like another func decl
+        funcScopes.push_back(FunctionScope(ast->name, FunctionType::Function, false));
+
+        #ifdef DEBUG_BUILD
+        emitByte(OpCode::Nop, "param_def "+toUTF8StdString(ast->name));
+        #endif
+        beginScope();
+
+        funcScope()->function->arity = 0;
+
+
+        ast->acceptChildren(*this);
+
+        //endScope(); // state scope about to be discarded, not needed
+
+        emitByte(OpCode::Return);
+
+        #if defined(DEBUG_OUTPUT_CHUNK)
+        funcScope()->function->chunk->disassemble(funcScope()->function->name);
+        #endif
+
+        ObjFunction* function = funcScope()->function;
+        auto functionScope { *funcScope() };
+
+        funcScopes.pop_back(); // back to surrpounding function
+
+        funcScope()->paramDefaultValue[ast->name] = function;
+    }
 }
 
 
@@ -502,6 +536,7 @@ void RoxalCompiler::visit(ptr<ast::Variable> ast)
 void RoxalCompiler::visit(ptr<ast::Call> ast)
 {
     currentNode = ast;
+
     ast->acceptChildren(*this);
 
     auto argCount = ast->args.size();

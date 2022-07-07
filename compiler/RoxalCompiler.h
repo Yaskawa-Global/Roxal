@@ -88,6 +88,7 @@ protected:
         bool isProc;
 
         std::vector<uint16_t> identConsts;
+        std::map<UnicodeString, ObjFunction*> paramDefaultValue;
     };
 
     typedef std::vector<FunctionScope> FunctionScopes;

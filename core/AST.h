@@ -2,21 +2,15 @@
 
 #include <variant>
 #include <optional>
+#include <map>
 #include <any>
 
 #include <core/common.h>
+#include <core/types.h>
 
 namespace roxal::ast {
 
-
-enum class BuiltinType {
-    Nil, 
-    Bool, Byte, Number, Int, Real, Decimal, 
-    String, 
-    List, Dict, 
-    Vector, Matrix, Tensor, 
-    Orient, Stream 
-};
+using roxal::type::BuiltinType;
 
 std::string to_string(BuiltinType t);
 
@@ -145,6 +139,11 @@ struct AST : public std::enable_shared_from_this<AST>
 
     virtual void accept(ASTVisitor& v) {}
     virtual void output(std::ostream& os, int indent) const;
+
+    // user-defined attributes
+    //  (e.g. allow client code to annotate the AST)
+    std::map<std::string, std::any> attrs;
+    bool existsAttr(const std::string& attr) const { return attrs.find(attr)!=attrs.cend(); }
 };
 
 
