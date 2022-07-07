@@ -1775,7 +1775,7 @@ void RoxalCompiler::declareVariable(const icu::UnicodeString& name)
         return;
 
     // check there is no variable with the same name in this scope (an error)
-    for(auto li = funcScope()->locals.rbegin(); li != funcScope()->locals.rend(); li--) {
+    for(auto li = funcScope()->locals.rbegin(); li != funcScope()->locals.rend(); ++li) {
         if ((li->depth != -1) && (li->depth < funcScope()->scopeDepth))
             break;
 
