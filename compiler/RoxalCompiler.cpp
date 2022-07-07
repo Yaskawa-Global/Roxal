@@ -240,16 +240,6 @@ void RoxalCompiler::visit(ptr<ast::ExpressionStatement> ast)
 }
 
 
-void RoxalCompiler::visit(ptr<ast::PrintStatement> ast)
-{
-    currentNode = ast;
-
-    ast->acceptChildren(*this);
-
-    emitByte(OpCode::Print);
-}
-
-
 void RoxalCompiler::visit(ptr<ast::ReturnStatement> ast)
 {
     currentNode = ast;

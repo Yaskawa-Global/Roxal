@@ -43,7 +43,6 @@ enum class OpCode {
     ObjectType,
     ActorType,
     Method,
-    Print,
     DefineGlobal,
     GetGlobal,
     SetGlobal,

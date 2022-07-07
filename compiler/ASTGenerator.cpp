@@ -348,14 +348,9 @@ antlrcpp::Any ASTGenerator::visitStatement(RoxalParser::StatementContext *contex
         exprStmt->expr = as<Expression>(expr);
         stmt = exprStmt;
     }
-    //if (context->simple_stmt())
-    //    visitSimple_stmt(context->simple_stmt());
     else if (context->compound_stmt()) {
         auto compound = visitCompound_stmt(context->compound_stmt());
-        if (is<PrintStatement>(compound)) {
-            stmt = as<PrintStatement>(compound);
-        }
-        else if (is<ReturnStatement>(compound)) {
+        if (is<ReturnStatement>(compound)) {
             stmt = as<ReturnStatement>(compound);
         }
         else if (is<WhileStatement>(compound)) {
@@ -367,8 +362,10 @@ antlrcpp::Any ASTGenerator::visitStatement(RoxalParser::StatementContext *contex
         else if (is<Suite>(compound)) {
             stmt = as<Suite>(compound);
         }
+        else if (is<ExpressionStatement>(compound))
+            stmt = as<ExpressionStatement>(compound);
         else
-            throw std::runtime_error(std::string("unimplemented compound statement type:")+typeName(compound));
+            throw std::runtime_error(std::string("unimplemented compound statement type: ")+typeName(compound));
 
     }
     else
@@ -411,9 +408,7 @@ antlrcpp::Any ASTGenerator::visitCompound_stmt(RoxalParser::Compound_stmtContext
 {
     visitStart();
 
-    if (context->print_stmt())
-        return visitPrint_stmt(context->print_stmt());
-    else if (context->return_stmt())
+    if (context->return_stmt())
         return visitReturn_stmt(context->return_stmt());
     else if (context->block_stmt())
         return visitBlock_stmt(context->block_stmt());
@@ -433,23 +428,6 @@ antlrcpp::Any ASTGenerator::visitBlock_stmt(RoxalParser::Block_stmtContext *cont
 {
     visitStart();
     return visitSuite(context->suite());
-    visitEnd();
-}
-
-
-
-antlrcpp::Any ASTGenerator::visitPrint_stmt(RoxalParser::Print_stmtContext *context)
-{
-    visitStart();
-
-    auto printStmt = std::make_shared<PrintStatement>();
-
-    auto expr = visitExpression(context->expression());
-    assertType<Expression>(expr);
-
-    printStmt->expr = as<Expression>(expr);
-
-    return typeValue(printStmt);
     visitEnd();
 }
 
@@ -1352,14 +1330,16 @@ antlrcpp::Any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
 
     auto num = std::make_shared<Num>();
 
-    int32_t integer {0};
+    long long integer {0};
     if (context->DECIMAL_INTEGER()) {
         try {
             integer = std::stoll(context->getText());
         } catch (...) {
             throw std::runtime_error("Invalid integer literal");
         }
-        num->num = integer;
+        if ((integer > std::numeric_limits<int32_t>::max()) || (integer < std::numeric_limits<int32_t>::min()))
+            throw std::runtime_error("Invalid integer literal (out-of-range)");
+        num->num = int32_t(integer);
         setSourceInfo(num,context->DECIMAL_INTEGER());
     }
     else if (context->HEX_INTEGER()) {
@@ -1367,7 +1347,10 @@ antlrcpp::Any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
         integer = std::strtoll(context->getText().c_str()+2, &p_end, 16);
         if (errno == ERANGE)
             throw std::runtime_error("Invalid hexadecimal integer literal");
-        num->num = integer;
+        // TODO: accept unsigned range and convert to twos-compliment 
+        if ((integer > std::numeric_limits<int32_t>::max()) || (integer < std::numeric_limits<int32_t>::min()))
+            throw std::runtime_error("Invalid hexadecimal integer literal (out-of-range)");
+        num->num = int32_t(integer);
         setSourceInfo(num,context->HEX_INTEGER());
     }
     else if (context->OCT_INTEGER()) {
@@ -1375,7 +1358,10 @@ antlrcpp::Any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
         integer = std::strtoll(context->getText().c_str()+2, &p_end, 8);
         if (errno == ERANGE)
             throw std::runtime_error("Invalid octal integer literal");
-        num->num = integer;
+        // TODO: accept unsigned range and convert to twos-compliment 
+        if ((integer > std::numeric_limits<int32_t>::max()) || (integer < std::numeric_limits<int32_t>::min()))
+            throw std::runtime_error("Invalid octal integer literal (out-of-range)");
+        num->num = int32_t(integer);
         setSourceInfo(num,context->OCT_INTEGER());
     }
     else if (context->BIN_INTEGER()) {
@@ -1383,7 +1369,10 @@ antlrcpp::Any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
         integer = std::strtoll(context->getText().c_str()+2, &p_end, 2);
         if (errno == ERANGE)
             throw std::runtime_error("Invalid binary integer literal");
-        num->num = integer;
+        // TODO: accept unsigned range and convert to twos-compliment 
+        if ((integer > std::numeric_limits<int32_t>::max()) || (integer < std::numeric_limits<int32_t>::min()))
+            throw std::runtime_error("Invalid binary integer literal (out-of-range)");
+        num->num = int32_t(integer);
         setSourceInfo(num,context->BIN_INTEGER());
     }
     else

@@ -33,8 +33,6 @@ public:
 
     virtual antlrcpp::Any visitBlock_stmt(RoxalParser::Block_stmtContext *context);
 
-    virtual antlrcpp::Any visitPrint_stmt(RoxalParser::Print_stmtContext *context);
-
     virtual antlrcpp::Any visitReturn_stmt(RoxalParser::Return_stmtContext *context);
 
     virtual antlrcpp::Any visitIf_stmt(RoxalParser::If_stmtContext *context);

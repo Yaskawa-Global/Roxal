@@ -48,7 +48,6 @@ expr_stmt
 
 compound_stmt
  : block_stmt
- | print_stmt
  | return_stmt
  | if_stmt 
  | while_stmt 
@@ -58,11 +57,6 @@ compound_stmt
 
 block_stmt
  : SCOPE ':' suite 
- ;
-
-
-print_stmt
- : PRINT OPEN_PAREN expression CLOSE_PAREN
  ;
 
 
@@ -90,7 +84,7 @@ func_decl
  ;
 
 function
- : (FUNC | PROC) IDENTIFIER '(' parameters? ')' ':' 
+ : (FUNC | PROC) IDENTIFIER '(' parameters? ')' (YIELDS (builtin_type | IDENTIFIER))? ':' 
    suite
  ;
 
@@ -278,8 +272,6 @@ WHILE: 'while';
 FOR : 'for';
 IN : 'in';
 
-PRINT : 'print';
-
 
 NEWLINE : ( '\r'? '\n' | '\r' | '\f' ) SPACES?;
 
@@ -305,7 +297,7 @@ ISEQUAL: '==' | '\u225F'; // ≟
 EQUALS: '=';
 ISNOTEQUALS: '!=' | '<>' | '\u2260'; // ≠
 FOLLOWEDBY: '|>' | '\u21A6'; // ↦
-
+YIELDS: '->' | '\u2192'; // →
 
 OPEN_PAREN : '(';
 CLOSE_PAREN : ')';

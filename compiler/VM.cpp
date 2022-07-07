@@ -15,9 +15,10 @@ using namespace roxal;
 
 
 VM::VM()
-    : lineMode(false)
+    : lineMode(false), threadSleep(false)
 {
     resetStack();
+    defineBuiltinFunctions();
     defineNativeFunctions();
     initString = stringVal(UnicodeString("init"));
     initString->incRef();
@@ -30,6 +31,7 @@ VM::VM(std::istream& linestream)
     : lineMode(true), lineStream(&linestream)
 {
     resetStack();
+    defineBuiltinFunctions();
     defineNativeFunctions();
     initString = stringVal(UnicodeString("init"));
     initString->incRef();
@@ -526,6 +528,9 @@ VM::InterpretResult VM::execute()
 
     //
     //  main dispatch loop
+
+    uint8_t instruction {};
+
     for(;;) {
         #if defined(DEBUG_TRACE_EXECUTION)
             // output stack
@@ -566,7 +571,16 @@ VM::InterpretResult VM::execute()
 
         StreamEngine::instance()->updateStreamStates();
 
-        uint8_t instruction { readByte() };
+
+        if (threadSleep) {
+            if (StreamEngine::instance()->currentTime() >= threadSleepUntil) {
+                threadSleep = false;
+            }
+            else
+                goto postInstructionDispatch;
+        }
+
+        instruction = readByte();
         switch(instruction) {
             case asByte(OpCode::Constant): {
                 Value constant = readConstant();
@@ -964,10 +978,6 @@ VM::InterpretResult VM::execute()
                 push(constant);
                 break;
             }
-            case asByte(OpCode::Print): {
-                std::cout << toString(pop()) << std::endl;
-                break;
-            }
             case asByte(OpCode::NewList): {
                 int eltCount = readByte();
                 std::vector<Value> elts {};
@@ -1010,6 +1020,8 @@ VM::InterpretResult VM::execute()
                 break;
             }
         }
+
+        postInstructionDispatch:
 
         freeObjects();
 
@@ -1110,7 +1122,54 @@ void VM::runtimeError(const std::string& format, ...)
 }
 
 
+
+//
+// builtins
+
+void VM::defineBuiltinFunctions()
+{
+    defineNative("print", &VM::print_builtin);
+    defineNative("sleep", &VM::sleep_builtin);
+}
+
+
+Value VM::print_builtin(int argCount, Value* args)
+{
+    if (argCount != 1) 
+        throw std::invalid_argument("print expects single argument (convertable to a string)");
+
+    auto str = toString(args[0]);
+    std::cout << str << std::endl;
+    return nilVal();
+}
+
+
+Value VM::sleep_builtin(int argCount, Value* args)
+{
+    if ((argCount != 1) || !args[0].isNumber()) 
+        throw std::invalid_argument("sleep expects single numeric argument (microsecs)");
+
+    uint64_t nanosecs = uint64_t(args[0].asInt()) * 1000;
+
+    threadSleep = true;
+    threadSleepUntil = StreamEngine::instance()->currentTime() + nanosecs;
+
+    return nilVal();
+}
+
+
+
+//
 // native
+
+void VM::defineNativeFunctions()
+{
+    defineNative("_clock", &VM::clock_native);
+    defineNative("_ussleep", &VM::usSleep_native);
+    defineNative("_mssleep", &VM::msSleep_native);
+    //defineNative("_sleep", &VM::sleep_native);
+}
+
 
 Value VM::clock_native(int argCount, Value* args)
 {
@@ -1147,12 +1206,3 @@ Value VM::sleep_native(int argCount, Value* args)
     return nilVal();
 }
 
-
-
-void VM::defineNativeFunctions()
-{
-    defineNative("_clock", &VM::clock_native);
-    defineNative("_ussleep", &VM::usSleep_native);
-    defineNative("_mssleep", &VM::msSleep_native);
-    defineNative("_sleep", &VM::sleep_native);
-}

@@ -221,19 +221,6 @@ void ASTGraphviz::visit(ptr<ast::ExpressionStatement> ast)
 }
 
 
-void ASTGraphviz::visit(ptr<ast::PrintStatement> ast)
-{
-    startVisit();
-    auto name { uname(ast) };
-
-    addLink(name, stackPop());
-
-    nodes[name] = node(name,"Print");
-    stackPush(name);
-    endVisit();
-}
-
-
 void ASTGraphviz::visit(ptr<ast::ReturnStatement> ast)
 {
     startVisit();

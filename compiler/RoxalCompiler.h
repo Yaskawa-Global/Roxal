@@ -27,7 +27,6 @@ public:
     virtual void visit(ptr<ast::VarDecl> ast);
     virtual void visit(ptr<ast::Suite> ast);
     virtual void visit(ptr<ast::ExpressionStatement> ast);
-    virtual void visit(ptr<ast::PrintStatement> ast);
     virtual void visit(ptr<ast::ReturnStatement> ast);
     virtual void visit(ptr<ast::IfStatement> ast);
     virtual void visit(ptr<ast::WhileStatement> ast);

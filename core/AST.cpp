@@ -138,7 +138,6 @@ void Statement::accept(ASTVisitor& v)
     switch (type) {
         case Suite: { std::dynamic_pointer_cast<ast::Suite>(shared_from_this())->accept(v); break; }
         case Expression: { std::dynamic_pointer_cast<ast::Expression>(shared_from_this())->accept(v); break; }
-        case Print: { std::dynamic_pointer_cast<ast::PrintStatement>(shared_from_this())->accept(v); break; }
         case Return: { std::dynamic_pointer_cast<ast::Literal>(shared_from_this())->accept(v); break; }
         case If: { std::dynamic_pointer_cast<ast::IfStatement>(shared_from_this())->accept(v); break; }
         case While: { std::dynamic_pointer_cast<ast::WhileStatement>(shared_from_this())->accept(v); break; }
@@ -221,33 +220,6 @@ void ExpressionStatement::output(std::ostream& os, int indent) const
     expr->output(os,indent+1);
 }
 
-
-
-void PrintStatement::accept(ASTVisitor& v) 
-{ 
-    if (v.visitFirst())
-        v.visit(std::dynamic_pointer_cast<PrintStatement>(shared_from_this())); 
-
-    if (v.visitChildren())
-        acceptChildren(v);
-
-    if (v.visitLast())
-        v.visit(std::dynamic_pointer_cast<PrintStatement>(shared_from_this())); 
-}
-
-void PrintStatement::acceptChildren(ASTVisitor& v)
-{
-    expr->accept(v);
-}
-
-
-
-void PrintStatement::output(std::ostream& os, int indent) const
-{
-    os << spaces(indent)+"Print" << std::endl;
-    //sourceOut();
-    expr->output(os,indent+1);
-}
 
 
 void ReturnStatement::accept(ASTVisitor& v) 

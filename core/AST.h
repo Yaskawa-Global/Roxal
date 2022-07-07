@@ -31,7 +31,6 @@ class VarDecl;
 class Expression;
 class Suite;
 class ExpressionStatement;
-class PrintStatement;
 class ReturnStatement;
 class IfStatement;
 class WhileStatement;
@@ -74,7 +73,6 @@ public:
     virtual void visit(ptr<VarDecl> ast) = 0;
     virtual void visit(ptr<Suite> ast) = 0;
     virtual void visit(ptr<ExpressionStatement> ast) = 0;
-    virtual void visit(ptr<PrintStatement> ast) = 0;
     virtual void visit(ptr<ReturnStatement> ast) = 0;
     virtual void visit(ptr<IfStatement> ast) = 0;
     virtual void visit(ptr<WhileStatement> ast) = 0;
@@ -192,7 +190,6 @@ struct Statement : public AST {
     enum StmtType {
         Suite,
         Expression,
-        Print,
         Return,
         If,
         While
@@ -222,14 +219,6 @@ struct ExpressionStatement : public Statement {
     void acceptChildren(ASTVisitor& v);
 };
 
-struct PrintStatement : public Statement {
-    ptr<ast::Expression> expr;
-
-    virtual void accept(ASTVisitor& v);
-    virtual void output(std::ostream& os, int indent) const;
-
-    void acceptChildren(ASTVisitor& v);
-};
 
 struct ReturnStatement : public Statement {
     std::optional<ptr<ast::Expression>> expr;

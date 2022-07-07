@@ -80,6 +80,9 @@ protected:
 
     ObjString* initString;
 
+    bool threadSleep;
+    uint64_t threadSleepUntil;
+
     void resetStack();
     void freeObjects();
     void outputAllocatedObjs();
@@ -88,9 +91,18 @@ protected:
 
     void runtimeError(const std::string& format, ...);
 
-    void defineNativeFunctions();
+
+    // Builtin functions
+    void defineBuiltinFunctions();
+
+    Value print_builtin(int argCount, Value* args);
+    Value sleep_builtin(int argCount, Value* args);
+
+
 
     // Native functions
+    void defineNativeFunctions();
+
     Value clock_native(int argCount, Value* args);
     Value usSleep_native(int argCount, Value* args);
     Value msSleep_native(int argCount, Value* args);
