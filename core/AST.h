@@ -291,9 +291,12 @@ struct Function : public AST {
 struct Parameter : public AST {
     icu::UnicodeString name;
     std::optional<std::variant<BuiltinType,icu::UnicodeString>> type;
+    std::optional<ptr<Expression>> defaultValue;
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
 };
 
 

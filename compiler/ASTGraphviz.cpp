@@ -288,8 +288,9 @@ void ASTGraphviz::visit(ptr<ast::Function> ast)
         }
      }
 
-    for(int i=0; i<ast->params.size();i++)
-        addLink(name, stackPop(), std::to_string(i));
+    auto n = ast->params.size();
+    for(int i=0; i<n;i++)
+        addLink(name, stackPop(), std::to_string(n-i-1));
 
     nodes[name] = node(name, "Function "+nameReturn);
     stackPush(name);
@@ -311,6 +312,9 @@ void ASTGraphviz::visit(ptr<ast::Parameter> ast)
             nametype += " : "+toUTF8StdString(std::get<icu::UnicodeString>(ast->type.value()));
         }
      }
+
+    if (ast->defaultValue.has_value())
+        addLink(name, stackPop(), "=");
 
     nodes[name] = node(name, "Param "+nametype);
     stackPush(name);

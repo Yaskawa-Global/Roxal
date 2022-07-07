@@ -605,6 +605,11 @@ antlrcpp::Any ASTGenerator::visitParameter(RoxalParser::ParameterContext *contex
     }
     else {} // type is optional
 
+    if (context->expression()) {
+        auto expr = visitExpression(context->expression());
+        param->defaultValue = as<Expression>(expr);
+    }
+
     return typeValue(param);
     visitEnd();
 }

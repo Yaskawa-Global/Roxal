@@ -93,7 +93,7 @@ parameters
  ;
 
 parameter
- : IDENTIFIER (':' (builtin_type | IDENTIFIER) )?
+ : IDENTIFIER (':' (builtin_type | IDENTIFIER) )? (EQUALS expression)?
  ;
 
 

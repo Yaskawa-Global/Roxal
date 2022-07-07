@@ -426,7 +426,13 @@ void Function::output(std::ostream& os, int indent) const
 
 void Parameter::accept(ASTVisitor& v)
 {
-    if (v.visitFirst() || v.visitLast())
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<Parameter>(shared_from_this())); 
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
         v.visit(std::dynamic_pointer_cast<Parameter>(shared_from_this())); 
 }
 
@@ -442,6 +448,17 @@ void Parameter::output(std::ostream& os, int indent) const
             os << toUTF8StdString(std::get<icu::UnicodeString>(type.value()));
     }
     os << std::endl;
+    if (defaultValue.has_value()) {
+        os << spaces(indent) << " = " << std::endl;
+        defaultValue.value()->output(os,indent+2);
+    }
+}
+
+
+void Parameter::acceptChildren(ASTVisitor& v)
+{
+    if (defaultValue.has_value())
+        defaultValue.value()->accept(v);
 }
 
 
@@ -758,9 +775,9 @@ void Num::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Num ";
     if (std::holds_alternative<int32_t>(num)) 
-        os << "int:" << std::to_string(std::get<int32_t>(num));
+        os << std::to_string(std::get<int32_t>(num)) << ":int";
     else if (std::holds_alternative<double>(num)) 
-        os << "real:" << std::to_string(std::get<double>(num));
+        os << std::to_string(std::get<double>(num)) << ":real";
     else
         os << "?";
     os << std::endl;
