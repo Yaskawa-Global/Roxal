@@ -502,11 +502,23 @@ antlrcpp::Any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
 {
     visitStart();
 
-    UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
+    UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText()) };
 
     auto vardecl = std::make_shared<VarDecl>();
     setSourceInfo(vardecl,context);
     vardecl->name = ident;
+
+    if (context->COLON()) { // type specified
+        if (context->builtin_type())
+            if (context->builtin_type()) {
+                auto builtinType = visitBuiltin_type(context->builtin_type()).as<BuiltinType>();
+                vardecl->varType = builtinType;
+            }
+            else if (context->IDENTIFIER().size()>1) {
+                auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
+                vardecl->varType = typeIdent;
+            }
+    }
 
     if (context->EQUALS()) 
         vardecl->initializer = as<Expression>(visitExpression(context->expression()));

@@ -29,7 +29,7 @@ enum class BuiltinType {
 
 struct Type {
     Type() {}
-    Type(BuiltinType t) : type(t) {}
+    Type(BuiltinType bt) : builtin(bt) {}
 
     struct FuncType {
 
@@ -40,7 +40,7 @@ struct Type {
         };
 
         bool isProc; // proc or func?
-        std::vector<ptr<Parameter>> params;
+        std::vector<std::optional<ptr<Type>>> params;
         std::optional<ptr<Type>> returnType; // if specified and not a proc
     };
 
@@ -53,7 +53,7 @@ struct Type {
     };
 
 
-    BuiltinType type;
+    BuiltinType builtin;
 
     std::optional<FuncType> func;   // if Func
     std::optional<ObjectType> obj;  // if Object or Actor

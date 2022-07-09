@@ -411,8 +411,8 @@ void ASTGraphviz::visit(ptr<ast::Literal> ast)
     startVisit();
 
     auto name { uname(ast) };
-    nodes[name] = node(name,ast->type == Literal::Nil ? "nil" : "Literal",
-                       ast->type == Literal::Nil ? "nil" : "?");
+    nodes[name] = node(name,ast->literalType == Literal::Nil ? "nil" : "Literal",
+                       ast->literalType == Literal::Nil ? "nil" : "?");
     stackPush(name);
     endVisit();
 }

@@ -76,7 +76,7 @@ while_stmt
 
 
 var_decl
- : VAR IDENTIFIER (EQUALS expression)?
+ : VAR IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)?
  ;
 
 func_decl

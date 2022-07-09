@@ -7,6 +7,7 @@
 #include "Object.h"
 
 #include "ASTGenerator.h"
+#include "TypeDeducer.h"
 
 #include "RoxalCompiler.h"
 
@@ -62,6 +63,14 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 
     if (!isa<File>(ast))
         throw std::runtime_error("ASTGenerator root node is not a File");
+
+    try {
+        TypeDeducer typeDeducer {};
+        typeDeducer.visit(as<File>(ast));
+    } catch (std::exception& e) {
+        std::cout << "Exception during type inference - " << std::string(e.what()) << std::endl; 
+        return function;
+    }
 
 
     #if defined(DEBUG_OUTPUT_PARSE_TREE)
@@ -562,7 +571,7 @@ void RoxalCompiler::visit(ptr<ast::Literal> ast)
 {
     currentNode = ast;
     // non-Nil typed literals handled by specialized visit methods
-    if (ast->type==Literal::Nil)
+    if (ast->literalType==Literal::Nil)
         emitByte(OpCode::ConstNil);
     else
         throw std::runtime_error("Literal type unhandled");

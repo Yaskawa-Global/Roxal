@@ -121,7 +121,7 @@ void SingleInput::output(std::ostream& os, int indent) const
 void Declaration::accept(ASTVisitor& v) 
 {
     // downcast and pass-through (Declaration is abstract base)
-    switch (type) {
+    switch (declType) {
         case Type: { std::dynamic_pointer_cast<ast::TypeDecl>(shared_from_this())->accept(v); break; }
         case Func: { std::dynamic_pointer_cast<ast::FuncDecl>(shared_from_this())->accept(v); break; }
         case Var: { std::dynamic_pointer_cast<ast::VarDecl>(shared_from_this())->accept(v); break; }
@@ -135,7 +135,7 @@ void Declaration::accept(ASTVisitor& v)
 void Statement::accept(ASTVisitor& v) 
 {
     // downcast and pass-through (Statement is abstract base)
-    switch (type) {
+    switch (stmtType) {
         case Suite: { std::dynamic_pointer_cast<ast::Suite>(shared_from_this())->accept(v); break; }
         case Expression: { std::dynamic_pointer_cast<ast::Expression>(shared_from_this())->accept(v); break; }
         case Return: { std::dynamic_pointer_cast<ast::Literal>(shared_from_this())->accept(v); break; }
@@ -503,7 +503,7 @@ void TypeDecl::output(std::ostream& os, int indent) const
 void Expression::accept(ASTVisitor& v)
 {
     // downcast and pass-through (Expression is abstract base)
-    switch (type) {
+    switch (exprType) {
         case Assignment: { std::dynamic_pointer_cast<ast::Assignment>(shared_from_this())->accept(v); break; }
         case BinaryOp: { std::dynamic_pointer_cast<ast::BinaryOp>(shared_from_this())->accept(v); break; }
         case UnaryOp: { std::dynamic_pointer_cast<ast::UnaryOp>(shared_from_this())->accept(v); break; }
@@ -516,7 +516,7 @@ void Expression::accept(ASTVisitor& v)
 
 
 BinaryOp::BinaryOp(Op _op) 
-: op(_op) 
+: Expression(ExprType::BinaryOp), op(_op) 
 {
     if (op == None)
          throw std::runtime_error("Invalid null/none operator");
@@ -577,7 +577,7 @@ void BinaryOp::output(std::ostream& os, int indent) const
 
 
 UnaryOp::UnaryOp(Op _op) 
-: op(_op) 
+: Expression(ExprType::UnaryOp), op(_op) 
 {
     if (op == None)
          throw std::runtime_error("Invalid null/none operator");
@@ -735,7 +735,7 @@ void Index::output(std::ostream& os, int indent) const
 
 void Literal::accept(ASTVisitor& v)
 {
-    switch (type) {
+    switch (literalType) {
         case Nil: { v.visit(std::dynamic_pointer_cast<Literal>(shared_from_this())); break; }
         case Bool: { std::dynamic_pointer_cast<ast::Bool>(shared_from_this())->accept(v); break; }
         case Num: { std::dynamic_pointer_cast<ast::Num>(shared_from_this())->accept(v); break; }
@@ -746,7 +746,7 @@ void Literal::accept(ASTVisitor& v)
 
 void Literal::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"Literal " << (type==Nil ? std::string("nil") : std::to_string(int(type))) << std::endl;    
+    os << spaces(indent)+"Literal " << (literalType==Nil ? std::string("nil") : std::to_string(int(literalType))) << std::endl;
     //sourceOut();
 }
 

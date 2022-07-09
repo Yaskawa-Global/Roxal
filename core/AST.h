@@ -8,6 +8,7 @@
 #include <core/common.h>
 #include <core/types.h>
 
+
 namespace roxal::ast {
 
 using roxal::type::BuiltinType;
@@ -140,6 +141,8 @@ struct AST : public std::enable_shared_from_this<AST>
     virtual void accept(ASTVisitor& v) {}
     virtual void output(std::ostream& os, int indent) const;
 
+    std::optional<ptr<type::Type>> type; // type information, if known
+
     // user-defined attributes
     //  (e.g. allow client code to annotate the AST)
     std::map<std::string, std::any> attrs;
@@ -179,7 +182,10 @@ struct Declaration : public AST {
         Func,
         Var
     };
-    DeclType type;
+
+    Declaration(DeclType dt) : declType(dt) {}
+
+    DeclType declType;
 
     virtual void accept(ASTVisitor& v);
 };
@@ -193,13 +199,18 @@ struct Statement : public AST {
         If,
         While
     };
-    StmtType type;
+
+    Statement(StmtType st) : stmtType(st) {}
+
+    StmtType stmtType;
 
     virtual void accept(ASTVisitor& v);
 };
 
 
 struct Suite : public Statement {
+    Suite() : Statement(StmtType::Suite) {}
+
     std::vector<std::variant<ptr<Declaration>, ptr<Statement>>> declsOrStmts;
 
     virtual void accept(ASTVisitor& v);
@@ -210,6 +221,8 @@ struct Suite : public Statement {
 
 
 struct ExpressionStatement : public Statement {
+    ExpressionStatement() : Statement(StmtType::Expression) {}
+
     ptr<ast::Expression> expr;
 
     virtual void accept(ASTVisitor& v);
@@ -220,6 +233,8 @@ struct ExpressionStatement : public Statement {
 
 
 struct ReturnStatement : public Statement {
+    ReturnStatement() : Statement(StmtType::Return) {}
+
     std::optional<ptr<ast::Expression>> expr;
 
     virtual void accept(ASTVisitor& v);
@@ -231,6 +246,8 @@ struct ReturnStatement : public Statement {
 
 
 struct IfStatement : public Statement {
+    IfStatement() : Statement(StmtType::If) {}
+
     std::vector<std::pair<ptr<ast::Expression>, ptr<ast::Suite>>> conditionalSuites;
     std::optional<ptr<ast::Suite>> elseSuite;
 
@@ -242,6 +259,8 @@ struct IfStatement : public Statement {
 
 
 struct WhileStatement : public Statement {
+    WhileStatement() : Statement(StmtType::While) {}
+
     ptr<ast::Expression> condition;
     ptr<ast::Suite> body;
 
@@ -253,8 +272,11 @@ struct WhileStatement : public Statement {
 
 
 struct VarDecl : public Declaration {
+    VarDecl() : Declaration(DeclType::Var) {}
+
     icu::UnicodeString name;
     std::optional<ptr<Expression>> initializer;
+    std::optional<std::variant<BuiltinType,icu::UnicodeString>> varType;
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -264,6 +286,8 @@ struct VarDecl : public Declaration {
 
 
 struct FuncDecl : public Declaration {
+    FuncDecl() : Declaration(DeclType::Func) {}
+
     ptr<Function> func;
 
     virtual void accept(ASTVisitor& v);
@@ -300,6 +324,8 @@ struct Parameter : public AST {
 
 
 struct TypeDecl : public Declaration {
+    TypeDecl() : Declaration(DeclType::Type) {}
+
     enum Kind { Object, Actor };
     Kind kind;
 
@@ -322,9 +348,12 @@ struct Expression : public AST {
         UnaryOp,
         Literal,
         Variable,
-        Call
+        Call,
+        Index
     };
-    ExprType type;
+    Expression(ExprType et) : exprType(et) {}
+
+    ExprType exprType;
 
     virtual void accept(ASTVisitor& v); // needed?
 };
@@ -340,7 +369,7 @@ struct BinaryOp : public Expression {
         FollowedBy
     };
 
-    BinaryOp() : op(None) {}
+    BinaryOp() : Expression(ExprType::BinaryOp), op(None) {}
     BinaryOp(Op _op);
 
     Op op;
@@ -379,6 +408,8 @@ struct UnaryOp : public Expression {
 
 
 struct Assignment : public Expression {
+    Assignment() : Expression(ExprType::Assignment) {}
+
     ptr<Expression> lhs;
     ptr<Expression> rhs;
 
@@ -390,8 +421,8 @@ struct Assignment : public Expression {
 
 
 struct Variable : public Expression {
-    Variable() {}
-    Variable(const icu::UnicodeString& s) : name(s) {}
+    Variable() : Expression(ExprType::Variable) {}
+    Variable(const icu::UnicodeString& s) : Expression(ExprType::Variable), name(s) {}
 
     icu::UnicodeString name;
 
@@ -401,6 +432,8 @@ struct Variable : public Expression {
 
 
 struct Call : public Expression {
+    Call() : Expression(ExprType::Call) {}
+
     ptr<Expression> callable;
     std::vector<ptr<Expression>> args;
 
@@ -412,6 +445,8 @@ struct Call : public Expression {
 
 
 struct Index : public Expression {
+    Index() : Expression(ExprType::Index) {}
+
     ptr<Expression> indexable;
     std::vector<ptr<Expression>> args;
 
@@ -423,7 +458,6 @@ struct Index : public Expression {
 
 
 struct Literal : public Expression {
-    Literal() : type(Nil) {}
     enum LiteralType {
         Nil,
         Bool,
@@ -433,7 +467,9 @@ struct Literal : public Expression {
         List,
         Dict
     };
-    LiteralType type;
+    Literal() : Expression(ExprType::Literal), literalType(Nil) {}
+
+    LiteralType literalType;
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -441,8 +477,8 @@ struct Literal : public Expression {
 
 
 struct Bool : public Literal {
-    Bool() { type = LiteralType::Bool; }
-    Bool(bool b) : value(b) { type = LiteralType::Bool; }
+    Bool() { literalType = LiteralType::Bool; }
+    Bool(bool b) : value(b) { literalType = LiteralType::Bool; }
     bool value;
 
     virtual void accept(ASTVisitor& v);
@@ -450,7 +486,7 @@ struct Bool : public Literal {
 };
 
 struct Num : public Literal {
-    Num() { type = LiteralType::Num; }
+    Num() { literalType = LiteralType::Num; }
 
     std::variant<int32_t,double> num;
 
@@ -459,7 +495,7 @@ struct Num : public Literal {
 };
 
 struct Str : public Literal {
-    Str() { type = LiteralType::Str; }
+    Str() { literalType = LiteralType::Str; }
 
     icu::UnicodeString str;
 
@@ -468,7 +504,7 @@ struct Str : public Literal {
 };
 
 struct Type : public Literal {
-    Type() { type = LiteralType::Type; }
+    Type() { literalType = LiteralType::Type; }
 
     BuiltinType t;
 
@@ -477,7 +513,7 @@ struct Type : public Literal {
 };
 
 struct List : public Literal {
-    List() { type = LiteralType::List; }
+    List() { literalType = LiteralType::List; }
 
     std::vector<ptr<Expression>> elements;
 
@@ -488,7 +524,7 @@ struct List : public Literal {
 };
 
 struct Dict : public Literal {
-    Dict() { type = LiteralType::Dict; }
+    Dict() { literalType = LiteralType::Dict; }
 
     // key -> value pairs
     std::vector<std::pair<ptr<Expression>,ptr<Expression>>> entries;
