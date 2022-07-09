@@ -80,7 +80,10 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 
     if (ast != nullptr) {
 
-        funcScopes.push_back(FunctionScope(toUnicodeString(name), FunctionType::Module, false));
+        auto moduleType { std::make_shared<type::Type>(BuiltinType::Func) };
+        moduleType->func = type::Type::FuncType();
+
+        funcScopes.push_back(FunctionScope(toUnicodeString(name), FunctionType::Module, moduleType));
 
         funcScope()->strict = false;
 
@@ -259,8 +262,8 @@ void RoxalCompiler::visit(ptr<ast::ReturnStatement> ast)
 
         if (funcScope()->functionType == FunctionType::Initializer)
             error("A value cannot be returned from an 'init' method.");
-        if (funcScope()->isProc)
-            error("A value cannot be returned from an proc method.");
+        if (funcScope()->type->func.has_value() && funcScope()->type->func.value().isProc)
+            error("A value cannot be returned from a proc method.");
 
         emitByte(OpCode::Return);
     }
@@ -343,7 +346,8 @@ void RoxalCompiler::visit(ptr<ast::Function> ast)
                               (isInitializer ? FunctionType::Initializer : FunctionType::Method)
                             : FunctionType::Function;
 
-    funcScopes.push_back(FunctionScope(ast->name, ftype, isProc));
+    assert(ast->type.has_value());
+    funcScopes.push_back(FunctionScope(ast->name, ftype, ast->type.value()));
 
     #ifdef DEBUG_BUILD
     emitByte(OpCode::Nop, "func "+toUTF8StdString(ast->name));
@@ -401,9 +405,12 @@ void RoxalCompiler::visit(ptr<ast::Parameter> ast)
     // TODO: somehow get this code to the chunk in FunctionScope::paramDefaultValue
     if (ast->defaultValue.has_value()) {
 
-
         // TEST treat like another func decl
-        funcScopes.push_back(FunctionScope(ast->name, FunctionType::Function, false));
+        auto defFuncType { std::make_shared<type::Type>(BuiltinType::Func) };
+        defFuncType->func = type::Type::FuncType();
+        // TODO: specify return type? (necessary?)
+
+        funcScopes.push_back(FunctionScope(ast->name, FunctionType::Function, defFuncType));
 
         #ifdef DEBUG_BUILD
         emitByte(OpCode::Nop, "param_def "+toUTF8StdString(ast->name));
@@ -424,11 +431,12 @@ void RoxalCompiler::visit(ptr<ast::Parameter> ast)
         #endif
 
         ObjFunction* function = funcScope()->function;
-        auto functionScope { *funcScope() };
 
         funcScopes.pop_back(); // back to surrpounding function
 
-        funcScope()->paramDefaultValue[ast->name] = function;
+        // store the func that evaluates the default param value in the function
+        //  for which it is a param
+        funcScope()->function->paramDefaultFunc[ast->name.hashCode()] = function;
     }
 }
 

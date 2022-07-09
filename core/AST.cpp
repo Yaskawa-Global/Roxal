@@ -7,33 +7,22 @@ using namespace roxal::ast;
 
 
 
-std::string roxal::ast::to_string(BuiltinType t)
-{
-    switch (t) {
-        case BuiltinType::Nil: return "nil";
-        case BuiltinType::Bool : return "bool";
-        case BuiltinType::Byte : return "byte";
-        case BuiltinType::Number : return "number";
-        case BuiltinType::Int : return "int";
-        case BuiltinType::Real : return "real";
-        case BuiltinType::Decimal : return "decimal";
-        case BuiltinType::String : return "string";
-        case BuiltinType::List : return "list";
-        case BuiltinType::Dict : return "dict";
-        case BuiltinType::Vector : return "vector";
-        case BuiltinType::Matrix : return "matrix";
-        case BuiltinType::Tensor : return "tensor";
-        case BuiltinType::Orient : return "stream";
-        case BuiltinType::Stream : return "orient";
-        default: throw std::runtime_error("to_string(BuiltinType) unhandled alternative");
-    }
-}
-
-
 void AST::output(std::ostream& os, int indent) const 
 { 
     os << spaces(indent) << "AST" << std::endl; 
 }
+
+void AST::outputType(std::ostream& os, int indent) const
+{
+    if (type.has_value()) {
+        if (indent > 0)
+            os << spaces(indent+1) << "type: " << type.value()->toString() << std::endl;
+        else
+            os << " →" << type.value()->toString();
+    }
+}
+
+
 
 std::ostream& roxal::ast::operator<<(std::ostream& os, std::shared_ptr<AST> ast)
 { ast->output(os,0); return os; }
@@ -376,6 +365,7 @@ void FuncDecl::acceptChildren(ASTVisitor& v)
 void FuncDecl::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"FuncDecl" << std::endl;
+    outputType(os,indent);
     //sourceOut();
     func->output(os,indent+1);
 }
@@ -567,7 +557,9 @@ void BinaryOp::acceptChildren(ASTVisitor& v)
 
 void BinaryOp::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"BinaryOp " << opString() << std::endl;
+    os << spaces(indent)+"BinaryOp " << opString() << " ";
+    outputType(os,-1);
+    os << std::endl;
     //sourceOut();
     lhs->output(os,indent+1);
     rhs->output(os,indent+1);
@@ -617,8 +609,10 @@ void UnaryOp::acceptChildren(ASTVisitor& v)
 void UnaryOp::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"UnaryOp " << opString() 
-       << ((op==Accessor) ? (member.has_value() ? toUTF8StdString(member.value()) : "?") : "") 
-       << std::endl;
+       << ((op==Accessor) ? (member.has_value() ? toUTF8StdString(member.value()) : "?") : "")
+       << " ";
+    outputType(os,-1);
+    os << std::endl;
     //sourceOut();
     arg->output(os,indent+1);
 }

@@ -12,8 +12,8 @@
 namespace roxal::ast {
 
 using roxal::type::BuiltinType;
+using roxal::type::to_string;
 
-std::string to_string(BuiltinType t);
 
 
 class File;
@@ -142,6 +142,7 @@ struct AST : public std::enable_shared_from_this<AST>
     virtual void output(std::ostream& os, int indent) const;
 
     std::optional<ptr<type::Type>> type; // type information, if known
+    void outputType(std::ostream& os, int indent) const;
 
     // user-defined attributes
     //  (e.g. allow client code to annotate the AST)

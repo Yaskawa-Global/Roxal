@@ -65,13 +65,14 @@ protected:
     };
 
 
-    // stack new states are we enter new functions to compile
+    // stack new states when we enter new functions to compile
     struct FunctionScope {
-        FunctionScope(const icu::UnicodeString& funcName, FunctionType funcType, bool isproc) 
-            : scopeDepth(0), strict(true), functionType(funcType), isProc(isproc)
+        FunctionScope(const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> type) 
+            : scopeDepth(0), strict(true), functionType(funcType), type(type)
         {
             function = functionVal();
             function->name = funcName;
+            function->funcType = type; // store type for runtime
             UnicodeString localName { (funcType==FunctionType::Method || funcType==FunctionType::Initializer) ? 
                                         "this" : "" };
             locals.push_back(Local(localName,0)); 
@@ -83,12 +84,11 @@ protected:
 
         bool strict; 
 
-        ObjFunction* function;
-        FunctionType functionType;
-        bool isProc;
+        ObjFunction*    function;
+        FunctionType    functionType;
+        ptr<type::Type> type;
 
         std::vector<uint16_t> identConsts;
-        std::map<UnicodeString, ObjFunction*> paramDefaultValue;
     };
 
     typedef std::vector<FunctionScope> FunctionScopes;

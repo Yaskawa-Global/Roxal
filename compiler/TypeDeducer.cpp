@@ -37,35 +37,8 @@ void TypeDeducer::visit(ptr<ast::FuncDecl> ast)
 {
     ast->acceptChildren(*this);
 
-    auto type = std::make_shared<Type>();
-    type->builtin = BuiltinType::Func;
-    type->func = Type::FuncType();
-    type->func->isProc = ast->func->isProc;
-    if (ast->func->returnType.has_value()) {
-        if (std::holds_alternative<BuiltinType>(ast->func->returnType.value())) {
-            type->func->returnType = std::make_shared<Type>(std::get<BuiltinType>(ast->func->returnType.value()));
-        }
-        else if (std::holds_alternative<icu::UnicodeString>(ast->func->returnType.value())) {
-            // lookup name
-            //...
-        }
-    }
-
-    type->func->params.resize(ast->func->params.size());
-    for(size_t i=0; i<ast->func->params.size();i++) {
-        auto param { ast->func->params[i] };
-        if (param->type.has_value()) {
-            if (std::holds_alternative<BuiltinType>(param->type.value()))
-                type->func->params[i] = std::make_shared<Type>(std::get<BuiltinType>(param->type.value()));
-            else if (std::holds_alternative<icu::UnicodeString>(param->type.value())) {
-                // lookup name
-                //...
-            }
-        }
-    }
-
-
-    ast->type = type;
+    // for completeness/convenience, set function type here too
+    ast->type = ast->func->type;
 }
 
 
@@ -114,6 +87,40 @@ void TypeDeducer::visit(ptr<ast::Function> ast)
 {
     ast->acceptChildren(*this);
 
+  auto type = std::make_shared<Type>();
+    type->builtin = BuiltinType::Func;
+    type->func = Type::FuncType();
+    type->func->isProc = ast->isProc;
+    if (ast->returnType.has_value()) {
+        if (std::holds_alternative<BuiltinType>(ast->returnType.value())) {
+            type->func->returnType = std::make_shared<Type>(std::get<BuiltinType>(ast->returnType.value()));
+        }
+        else if (std::holds_alternative<icu::UnicodeString>(ast->returnType.value())) {
+            // lookup name
+            //...
+        }
+    }
+
+    type->func->params.resize(ast->params.size());
+    for(size_t i=0; i<ast->params.size();i++) {
+        auto param { ast->params[i] };
+        if (param->type.has_value()) {
+            if (std::holds_alternative<BuiltinType>(param->type.value())) {
+                Type::FuncType::ParamType paramType {};
+                paramType.name = param->name;
+                paramType.nameHashCode = param->name.hashCode();
+                paramType.type = std::make_shared<Type>(std::get<BuiltinType>(param->type.value()));
+                paramType.hasDefault = param->defaultValue.has_value();
+                type->func.value().params[i] = paramType;
+            }
+            else if (std::holds_alternative<icu::UnicodeString>(param->type.value())) {
+                // lookup name
+                //...
+            }
+        }
+    }
+
+    ast->type = type;
 }
 
 

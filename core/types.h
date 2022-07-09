@@ -2,6 +2,7 @@
 
 #include <variant>
 #include <optional>
+#include <map>
 
 #include <core/common.h>
 
@@ -25,6 +26,8 @@ enum class BuiltinType {
     Type
 };
 
+std::string to_string(BuiltinType t);
+
 
 
 struct Type {
@@ -32,16 +35,20 @@ struct Type {
     Type(BuiltinType bt) : builtin(bt) {}
 
     struct FuncType {
+        FuncType() : isProc(false) {}
 
-        struct Parameter {
+        struct ParamType {
             icu::UnicodeString name;
+            int32_t nameHashCode; // hashCode() of above (for use at runtime)
             std::optional<ptr<Type>> type;
             bool hasDefault;
         };
 
         bool isProc; // proc or func?
-        std::vector<std::optional<ptr<Type>>> params;
+        std::vector<std::optional<ParamType>> params;
         std::optional<ptr<Type>> returnType; // if specified and not a proc
+
+        std::string toString() const;
     };
 
     struct ObjectType { // Object or Actor type
@@ -50,6 +57,8 @@ struct Type {
         std::vector<ptr<Type>> implements;
 
         std::vector<std::pair<icu::UnicodeString, ptr<FuncType>>> methods;
+
+        std::string toString() const;
     };
 
 
@@ -57,8 +66,18 @@ struct Type {
 
     std::optional<FuncType> func;   // if Func
     std::optional<ObjectType> obj;  // if Object or Actor
+
+    std::string toString() const;
 };
 
+
+struct LexicalScope {
+    // func name for func scope, object/actor type name for object/actor type decl scope
+    icu::UnicodeString name; 
+
+    // symbols declared in this scope (and type if known)
+    std::map<icu::UnicodeString, std::optional<ptr<Type>>> symbols;
+};
 
 
 }

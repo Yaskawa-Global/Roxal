@@ -1,0 +1,10 @@
+func add(a :int, b :int = 1, c:int=2) -> int:
+  return a+b+c
+
+print(add(5)) // 8
+
+func line(x: int, m: int=1, c:int=2):
+  return m*x+c
+
+print(line(10)) // 12
+

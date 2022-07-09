@@ -12,6 +12,12 @@
 #include "Value.h"
 
 
+// forward decl
+namespace roxal::type {
+    struct Type;
+}
+
+
 namespace roxal {
 
 using icu::UnicodeString;
@@ -243,10 +249,16 @@ struct ObjFunction : public Obj
     ObjFunction();
     virtual ~ObjFunction() {}
 
+    UnicodeString name;
+    std::optional<ptr<roxal::type::Type>> funcType;
     int arity;
     int upvalueCount;
     ptr<Chunk> chunk;
-    UnicodeString name;
+
+    // for parameters with default values that must be re-evaluated on each call
+    //  this is map from param name UnicodeString::hashCode() -> ObjFunction
+    //  (where ObjFunction is a function that takes no params and returns the default value)
+    std::map<int32_t, ObjFunction*> paramDefaultFunc;
 };
 
 inline bool isFunction(const Value& v) { return isObjType(v, ObjType::Function); }

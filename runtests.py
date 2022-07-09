@@ -15,7 +15,8 @@ tests = [
     'closure', 'closure2', 'closure3', 'closure4', 'closure5',
     'conversion1',
     'linkedlist',
-    'if'
+    'if',
+    'func_param_default', 'func_param_default2'
 ]
 
 test_dir='../tests'

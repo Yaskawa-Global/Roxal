@@ -147,12 +147,53 @@ Value VM::peek(int distance)
 
 bool VM::call(ObjClosure* closure, int argCount)
 {
-    if (argCount != closure->function->arity) {
+    std::vector<CallFrame> defValFrames {};
+
+    // handle execution of default param expression 'func' for params not supplied
+    if (argCount < closure->function->arity) {
+        assert(closure->function->funcType.has_value());
+        ptr<type::Type> funcType { closure->function->funcType.value() };
+        auto paramTypes { funcType->func.value().params };
+        // for each missing arg
+        for(size_t paramIndex = argCount; paramIndex < closure->function->arity; paramIndex++) {
+            auto param { paramTypes.at(paramIndex) };
+            assert(param.has_value());
+            auto paramName = param.value().name;
+            if (param.value().hasDefault) {
+                auto funcIt = closure->function->paramDefaultFunc.find(param.value().nameHashCode);
+                assert(funcIt != closure->function->paramDefaultFunc.cend());
+
+                ObjFunction* defValFunc = funcIt->second;
+
+                // call it, which will leave the returned default val on the stack as an arg for this call
+                ObjClosure* defValClosure = closureVal(defValFunc);
+                if (defValClosure->upvalues.size() > 0) {
+                    runtimeError("Captured variables in default parameter '"+toUTF8StdString(paramName)+"' value expressions are not allowed"
+                                +" in declaration of function '"+toUTF8StdString(closure->function->name)+"'.");
+                    return false;
+                }
+
+                call(defValClosure,0);
+                defValFrames.push_back(*(frames.end()-1));
+                frames.pop_back();
+
+                argCount++;
+            }
+            else {
+                runtimeError("Call to function '"+toUTF8StdString(closure->function->name)+"'"
+                             +" is missing argument for parameter '"+toUTF8StdString(paramName)+"'"
+                             +" (and no default is specified)");
+                return false;
+            }
+        }
+    }
+    else if (argCount > closure->function->arity) {
         runtimeError("Passed "+std::to_string(argCount)+" arguments for function "
                     +toUTF8StdString(closure->function->name)+" which has "
                     +std::to_string(closure->function->arity)+" parameters.");
         return false;
     }
+    assert(argCount == closure->function->arity);
 
     if (frames.size() > 128) {
         runtimeError("Stack overflow.");
@@ -162,8 +203,19 @@ bool VM::call(ObjClosure* closure, int argCount)
     CallFrame callframe {};
     callframe.closure = closure;
     callframe.ip = closure->function->chunk->code.begin();
-    callframe.slots = &(*(stackTop - argCount - 1));
+    callframe.slots = &(*(stackTop - argCount - 1 + defValFrames.size()));
     frames.push_back(callframe);
+
+    // the closures for default arg values must be executed before this closure call, so put
+    //  them above it on the frame stack
+    int f=defValFrames.size();
+    for(auto fi = defValFrames.rbegin(); fi != defValFrames.rend(); fi++) {
+        auto& frame { *fi };
+        frame.slots = &(*(stackTop - 1 + f));
+        frames.push_back(frame);
+        f--;
+    }
+
     return true;
 }
 

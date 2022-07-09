@@ -5,6 +5,7 @@
 #include <core/AST.h>
 #include "RoxalIndentationLexer.h"
 #include "ASTGenerator.h"
+#include "TypeDeducer.h"
 #include "ASTGraphviz.h"
 #include "RoxalCompiler.h"
 
@@ -92,6 +93,15 @@ static void generateAST(const std::string& inputPath, bool graph, const std::str
     }
     if (ast == nullptr) // must have been a parse or AST gen error (already reported?)
         return;
+
+     try {
+        TypeDeducer typeDeducer {};
+        typeDeducer.visit(std::dynamic_pointer_cast<ast::File>(ast));
+    } catch (std::exception& e) {
+        std::cout << "Exception during type inference - " << std::string(e.what()) << std::endl; 
+        return;
+    }
+
 
     if (!graph) {
         std::cout << ast << std::endl;
