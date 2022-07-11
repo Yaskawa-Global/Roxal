@@ -55,9 +55,14 @@ std::string Type::toString() const
                         if (paramType.hasDefault)
                             tspec += "=";
                     }
+                    else {
+                        if (paramType.hasDefault)
+                            tspec += "=";
+                    }
                 }
-                else
+                else 
                     tspec += ".";
+                
                 if (i != funcType.params.size()-1)
                     tspec += ", ";
             }

@@ -45,6 +45,22 @@ void TypeDeducer::visit(ptr<ast::FuncDecl> ast)
 void TypeDeducer::visit(ptr<ast::VarDecl> ast)
 {
     ast->acceptChildren(*this);
+    if (ast->varType.has_value()) {
+        if (std::holds_alternative<BuiltinType>(ast->varType.value())) {
+            ast->type = std::make_shared<type::Type>(std::get<BuiltinType>(ast->varType.value()));
+        }
+        else {
+            // lookup name..
+        }
+    }
+    else { // type wasn't explicitly specified, so type will be that of initializer
+        if (ast->initializer.has_value()) { // if given
+            if (ast->initializer.value()->type.has_value()) { // and type known
+                ast->type = ast->initializer.value()->type.value();
+            }
+        }
+
+    }
 }
 
 
@@ -87,7 +103,7 @@ void TypeDeducer::visit(ptr<ast::Function> ast)
 {
     ast->acceptChildren(*this);
 
-  auto type = std::make_shared<Type>();
+    auto type = std::make_shared<Type>();
     type->builtin = BuiltinType::Func;
     type->func = Type::FuncType();
     type->func->isProc = ast->isProc;
@@ -118,6 +134,13 @@ void TypeDeducer::visit(ptr<ast::Function> ast)
                 //...
             }
         }
+        else {
+            Type::FuncType::ParamType paramType {};
+            paramType.name = param->name;
+            paramType.nameHashCode = param->name.hashCode();
+            paramType.hasDefault = param->defaultValue.has_value();
+            type->func.value().params[i] = paramType;
+        }
     }
 
     ast->type = type;
@@ -135,6 +158,12 @@ void TypeDeducer::visit(ptr<ast::Assignment> ast)
 {
     ast->acceptChildren(*this);
 
+    // assignment has type of rhs
+
+    //  TODO: when assigning to lhs vars of explicitly declared type,
+    //  rhs will be converted to lhs type
+    if (ast->rhs->type.has_value())
+        ast->type = ast->rhs->type.value();
 }
 
 
@@ -154,6 +183,7 @@ void TypeDeducer::visit(ptr<ast::UnaryOp> ast)
 
 void TypeDeducer::visit(ptr<ast::Variable> ast)
 {
+    // TODO: lookup name
 }
 
 

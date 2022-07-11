@@ -379,8 +379,13 @@ void ASTGraphviz::visit(ptr<ast::Call> ast)
     startVisit();
     auto name { uname(ast) };
 
-    for(int i=0; i<ast->args.size();i++)
-        addLink(name, stackPop(), std::to_string(ast->args.size()-i-1));
+    for(int i=0; i<ast->args.size();i++) {
+        size_t argIndex = ast->args.size()-i-1;
+        std::string label = ast->args.at(argIndex).first.isEmpty() ? 
+                                    std::to_string(argIndex)
+                                  : toUTF8StdString(ast->args.at(argIndex).first)+"=";
+        addLink(name, stackPop(), label);
+    }
 
     addLink(name, stackPop());
 

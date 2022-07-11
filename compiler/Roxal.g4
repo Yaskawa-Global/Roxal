@@ -186,7 +186,11 @@ args_or_index_or_accessor
 
 
 arguments 
- : expression ( ',' expression )* 
+ : argument ( ',' argument )* 
+ ;
+
+argument
+ : (IDENTIFIER '=')? expression
  ;
 
 

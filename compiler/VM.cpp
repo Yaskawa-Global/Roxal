@@ -149,6 +149,10 @@ bool VM::call(ObjClosure* closure, int argCount)
 {
     std::vector<CallFrame> defValFrames {};
 
+    // TODO: implement re-ordering of stack args so that caller order matches
+    //  callee order
+
+
     // handle execution of default param expression 'func' for params not supplied
     if (argCount < closure->function->arity) {
         assert(closure->function->funcType.has_value());
@@ -167,6 +171,26 @@ bool VM::call(ObjClosure* closure, int argCount)
 
                 // call it, which will leave the returned default val on the stack as an arg for this call
                 ObjClosure* defValClosure = closureVal(defValFunc);
+
+                // normal after emit Op Closure in compiler
+                // for (int i = 0; i < function->upvalueCount; i++) {
+                //         emitByte(functionScope.upvalues[i].isLocal ? 1 : 0);
+                //         emitByte(functionScope.upvalues[i].index);
+                //     }
+
+                // normal on exec Closure Op in VM
+                // for (int i = 0; i < closure->upvalues.size(); i++) {
+                //     uint8_t isLocal = readByte();
+                //     uint8_t index = readByte();
+                //     ObjUpvalue* upvalue;
+                //     if (isLocal) 
+                //         upvalue = captureUpvalue(*(frame->slots + index));
+                //     else 
+                //         upvalue = frame->closure->upvalues[index];
+                //     upvalue->incRef();
+                //     closure->upvalues[i] = upvalue;
+                // }
+
                 if (defValClosure->upvalues.size() > 0) {
                     runtimeError("Captured variables in default parameter '"+toUTF8StdString(paramName)+"' value expressions are not allowed"
                                 +" in declaration of function '"+toUTF8StdString(closure->function->name)+"'.");
@@ -211,9 +235,14 @@ bool VM::call(ObjClosure* closure, int argCount)
     int f=defValFrames.size();
     for(auto fi = defValFrames.rbegin(); fi != defValFrames.rend(); fi++) {
         auto& frame { *fi };
-        frame.slots = &(*(stackTop - 1 + f));
+        frame.slots = &(*(stackTop - 1 + f));        
         frames.push_back(frame);
         f--;
+    }
+
+    if (frames.size() > 128) {
+        runtimeError("Stack overflow.");
+        return false;
     }
 
     return true;

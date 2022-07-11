@@ -1,0 +1,6 @@
+var c = 1
+
+func f(a,b=c):
+  return a+b
+
+print(f(2)) // 3

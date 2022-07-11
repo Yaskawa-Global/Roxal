@@ -436,7 +436,9 @@ struct Call : public Expression {
     Call() : Expression(ExprType::Call) {}
 
     ptr<Expression> callable;
-    std::vector<ptr<Expression>> args;
+
+    typedef std::pair<icu::UnicodeString, ptr<Expression>> ArgNameExpr;
+    std::vector<ArgNameExpr> args;
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

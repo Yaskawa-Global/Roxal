@@ -1045,7 +1045,9 @@ struct ArgsOrAccessorInfo {
     bool accessor;
     bool indexer;
     UnicodeString accessed;
-    ptr<std::vector<ptr<Expression>>> args;
+    // calls can include param names, indexers cannot (empty string if no name given)
+    typedef std::vector<Call::ArgNameExpr> ArgNameExprVec;
+    ptr<ArgNameExprVec> args;
 };
 
 // return will be either ptr<Call> or ptr<UnaryOp(Accessor)>
@@ -1079,7 +1081,8 @@ antlrcpp::Any ASTGenerator::visitCall(RoxalParser::CallContext *context)
             auto index = std::make_shared<Index>();
             setSourceInfo(index,context->args_or_index_or_accessor().at(i));
             index->indexable = callable_or_indexable;
-            index->args = *argsOrAccessorInfo->args;
+            for(auto& arg : *argsOrAccessorInfo->args)
+                index->args.push_back(arg.second);
             callable_or_indexable = index;
         }
     }
@@ -1105,26 +1108,26 @@ antlrcpp::Any ASTGenerator::visitArgs_or_index_or_accessor(RoxalParser::Args_or_
         if (context->OPEN_PAREN()) {
             info->call = true;
             if (context->arguments()) {
-                auto args = visitArguments(context->arguments()).as<ptr<std::vector<ptr<Expression>>>>();
+                auto args = visitArguments(context->arguments()).as<ptr<ArgsOrAccessorInfo::ArgNameExprVec>>();
                 info->args = args;
             }
             else
-                info->args = std::make_shared<std::vector<ptr<Expression>>>();
+                info->args = std::make_shared<ArgsOrAccessorInfo::ArgNameExprVec>();
         }
     }
     else if (context->OPEN_BRACK()) { // indexing
         info->indexer = true;
-        auto args = visitArguments(context->arguments()).as<ptr<std::vector<ptr<Expression>>>>();
+        auto args = visitArguments(context->arguments()).as<ptr<ArgsOrAccessorInfo::ArgNameExprVec>>();
         info->args = args;
     }
     else if (context->OPEN_PAREN()) { // call
         info->call = true;
         if (context->arguments()) {
-            auto args = visitArguments(context->arguments()).as<ptr<std::vector<ptr<Expression>>>>();
+            auto args = visitArguments(context->arguments()).as<ptr<ArgsOrAccessorInfo::ArgNameExprVec>>();
             info->args = args;
         }
         else
-            info->args = std::make_shared<std::vector<ptr<Expression>>>();
+            info->args = std::make_shared<ArgsOrAccessorInfo::ArgNameExprVec>();
     }
     else
         throw std::runtime_error("unimplemented args_or_accessor alternative");
@@ -1134,37 +1137,36 @@ antlrcpp::Any ASTGenerator::visitArgs_or_index_or_accessor(RoxalParser::Args_or_
 }
 
 
-// antlrcpp::Any ASTGenerator::visitIndex(RoxalParser::IndexContext *context)
-// {
-//     visitStart();
 
-//     auto indexable = as<Expression>(visitPrimary(context->primary()));
-
-//     auto index = std::make_shared<Index>();
-//     setSourceInfo(index,context);
-//     index->indexable = indexable;
-    
-//     auto args = visitArguments(context->arguments()).as<ptr<std::vector<ptr<Expression>>>>();
-//     index->args = *args;
-
-//     return typeValue(index);
-//     visitEnd();
-// }
-
-
-
-// returns ptr<std::vector<ptr<Expression>>> of argument expressions
+// returns ptr<std::vector<std::pair<UnicodeString,ptr<Expression>>> of argument expressions
+//  string is param name or empty
 antlrcpp::Any ASTGenerator::visitArguments(RoxalParser::ArgumentsContext *context)
 {
     visitStart();
 
-    auto argexprs = std::make_shared<std::vector<ptr<Expression>>>();
-    for(int i=0; i<context->expression().size(); i++)
-        argexprs->push_back(as<Expression>(visitExpression(context->expression().at(i))));
+    auto argexprs = std::make_shared<ArgsOrAccessorInfo::ArgNameExprVec>();
+    for(int i=0; i<context->argument().size(); i++) {
+        auto argNameExpr = visitArgument(context->argument().at(i)).as<Call::ArgNameExpr>();
+        argexprs->push_back(argNameExpr);
+    }
 
     return argexprs;
     visitEnd();
 }
+
+
+
+antlrcpp::Any ASTGenerator::visitArgument(RoxalParser::ArgumentContext *context)
+{
+    visitStart();
+
+    UnicodeString argName { context->IDENTIFIER()? UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) : UnicodeString() };
+    ptr<Expression> expr = as<Expression>(visitExpression(context->expression()));
+
+    return std::make_pair(argName, expr);
+    visitEnd();
+}
+
 
 
 

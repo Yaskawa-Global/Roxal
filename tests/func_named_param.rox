@@ -1,0 +1,6 @@
+func f(a:int, b, c, d:int=1):
+  return a*b+c+d
+
+print(f(5,c=2,b=3)) // 18
+
+

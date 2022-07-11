@@ -678,7 +678,7 @@ void Call::acceptChildren(ASTVisitor& v)
 {
     callable->accept(v);
     for(auto& arg : args)
-        arg->accept(v);
+        arg.second->accept(v);
 }
 
 
@@ -688,8 +688,12 @@ void Call::output(std::ostream& os, int indent) const
     //sourceOut();
     callable->output(os,indent+1);
     os << spaces(indent)+" args:" << std::endl;
-    for(auto& arg : args)
-        arg->output(os,indent+2);
+    for(auto& arg : args) {
+        auto argName { arg.first };
+        if (!argName.isEmpty())
+            os << spaces(indent+2) << toUTF8StdString(argName) << " =" << std::endl;
+        arg.second->output(os,indent+2);
+    }
 }
 
 
