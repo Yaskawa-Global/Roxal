@@ -63,7 +63,7 @@ static void repl()
 }
 
 
-static void runFile(const std::string& path) 
+static void runFile(const std::string& path, bool outputBytecodeDissasembly=false) 
 {
 
     std::ifstream sourcestream(path); // assumed UTF-8
@@ -72,6 +72,7 @@ static void runFile(const std::string& path)
     std::string name { fileAndPath.stem().filename().string() };
 
     VM vm {};
+    vm.setDissasemblyOutput(outputBytecodeDissasembly);
     vm.interpret(sourcestream, name);
 }
 
@@ -122,6 +123,7 @@ int main(int argc, const char* argv[])
     desc.add_options()
         ("help,h", "options help")
         ("input-file,f", po::value< std::vector<std::string> >(), "input .rox file to execute (run)")
+        ("dis", "output dissasembly of VM bytecodes during compilation")
         ("ast", "parse only and output text Abstract Syntax Tree (AST)")
         ("astgraph", po::value< std::vector<std::string> >(), "parse only and output GraphViz dot file")
     ;
@@ -129,29 +131,31 @@ int main(int argc, const char* argv[])
     po::positional_options_description pos;
     pos.add("input-file", -1);
 
-    po::variables_map vm;
-    po::store(po::command_line_parser(argc, argv).options(desc).positional(pos).run(), vm);
-    po::notify(vm);    
+    po::variables_map vmap;
+    po::store(po::command_line_parser(argc, argv).options(desc).positional(pos).run(), vmap);
+    po::notify(vmap);    
 
-    if (vm.count("help")) {
+    if (vmap.count("help")) {
         std::cout << desc << std::endl;
         return 1;
     }
 
-    if (vm.count("input-file")==0) {
+    if (vmap.count("input-file")==0) {
         repl();
     }
-    else if (vm.count("input-file")) {
+    else if (vmap.count("input-file")) {
 
         try {
-            auto filename = vm["input-file"].as<std::vector<std::string>>().at(0);
+            auto filename = vmap["input-file"].as<std::vector<std::string>>().at(0);
 
-            if (vm.count("ast"))
+            if (vmap.count("ast"))
                 generateAST(filename, false);
-            else if (vm.count("astgraph"))
-                generateAST(filename, true, vm["astgraph"].as<std::vector<std::string>>().at(0));
-            else 
-                runFile(filename);
+            else if (vmap.count("astgraph"))
+                generateAST(filename, true, vmap["astgraph"].as<std::vector<std::string>>().at(0));
+            else {
+                bool outputBytecodeDissasembly = (vmap.count("dis") > 0);
+                runFile(filename, outputBytecodeDissasembly);
+            }
         } catch (std::exception& e) {
             std::cerr << "Runtime error: " << e.what() << std::endl;
         }

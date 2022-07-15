@@ -38,6 +38,10 @@ struct Type {
         FuncType() : isProc(false) {}
 
         struct ParamType {
+            ParamType() {}
+            ParamType(const icu::UnicodeString& n) : name(n) {
+                nameHashCode = name.hashCode();
+            }
             icu::UnicodeString name;
             int32_t nameHashCode; // hashCode() of above (for use at runtime)
             std::optional<ptr<Type>> type;

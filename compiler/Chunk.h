@@ -40,6 +40,7 @@ enum class OpCode {
     Closure,
     CloseUpvalue,
     Return,
+    ReturnStore,
     ObjectType,
     ActorType,
     Method,
@@ -102,6 +103,55 @@ protected:
     size_type jumpInstruction(const std::string& name, int sign, size_type offset) const;
 
 
+};
+
+
+// forward decl.
+namespace type {
+    struct Type;
+};
+
+
+// CallSpec for OpCode::Call
+
+// Since functions are a first-class type in the language and dynamic typing
+//  can be used, at point of generating the Call OpCode, the compiler may not
+//  know the type of the function being called.  Hence, if named arguments are
+//  used, the argument name ordering must be encoded in the instruction stream
+//  so that runtime the VM can compare the arg ordering with the called function
+//  paramter ordering.
+// The CallSpec encodes this (and for common case of all-positional arguments,
+//  only takes a single byte indicating the argument count (7bits))
+
+struct CallSpec {
+    CallSpec() {}
+    explicit CallSpec(uint16_t argCount) : allPositional(true), argCount(argCount) {}
+    explicit CallSpec(Chunk::iterator& ci);
+
+    uint16_t argCount;
+    bool allPositional;
+    struct ArgSpec {
+        bool positional;
+        uint16_t paramNameHash; // lower 15bits of UnicodeString::hashCode()
+    };
+    std::vector<ArgSpec> args; // only used if !allPositional
+
+    std::vector<uint8_t> toBytes() const;
+
+    bool namedArgs() const; // any named args?
+
+    // given the type of the callee (e.g. for func this specifies the parameter name/order)
+    //  for this caller CallSpec, return vector in param order of arg positions (or -1 
+    //   if arg value for param not supplied)
+    //  (e.g. is [0]=3 -> first callee param is 4th arg pushed onto stack by caller)
+    // if throwOnMissing is true and an argument is not supplied and not defaulted by the callee,
+    //  throw an exception
+    // throws exceptions on other errors (e.g. missing type information)
+    std::vector<int8_t> paramPositions(ptr<type::Type> calleeType, bool throwOnMissing=true) const;
+
+    #ifdef DEBUG_BUILD
+    static void testParamPositions();
+    #endif
 };
 
 

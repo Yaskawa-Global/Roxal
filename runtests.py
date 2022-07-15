@@ -16,7 +16,7 @@ tests = [
     'conversion1',
     'linkedlist',
     'if',
-    'func_param_default', 'func_param_default2'
+    'func_param_default', 'func_param_default2', 'func_param_default3','func_param_default4'
 ]
 
 test_dir='../tests'

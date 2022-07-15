@@ -440,6 +440,8 @@ struct Call : public Expression {
     typedef std::pair<icu::UnicodeString, ptr<Expression>> ArgNameExpr;
     std::vector<ArgNameExpr> args;
 
+    bool namedArgs() const; // any args named?
+
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 

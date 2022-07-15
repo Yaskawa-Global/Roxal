@@ -14,9 +14,11 @@ namespace roxal {
 class RoxalCompiler : public ast::ASTVisitor
 {
 public:
-    RoxalCompiler() {}
+    RoxalCompiler();
 
     ObjFunction* compile(std::istream& source, const std::string& name);
+
+    void setOutputBytecodeDissasembly(bool outputBytecodeDissasembly);
 
     virtual TraversalOrder traversalOrder() const;
 
@@ -48,6 +50,7 @@ public:
     
    
 protected:
+    bool outputBytecodeDissasembly;
 
     struct Local {
         Local(const icu::UnicodeString& _name, int scopeDepth)

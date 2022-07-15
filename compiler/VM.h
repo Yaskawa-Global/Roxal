@@ -7,11 +7,29 @@
 
 namespace roxal {
 
+struct CallFrame; // forward
+
+
+typedef std::vector<CallFrame> CallFrames;
 
 struct CallFrame {
+    #ifdef DEBUG_BUILD
+    CallFrame() : closure(nullptr), slots(nullptr), parent(nullptr) {}
+    #endif
     ObjClosure* closure;
+    Chunk::iterator startIp;
     Chunk::iterator ip;
     Value* slots;
+
+    CallFrames::iterator parent;
+
+    // on frame start, move argument Value (second) to end of the frame's
+    //  argument list (in existing stack arg placeholder slots)
+    std::vector<Value> tailArgValues;
+
+    // if not empty, used to reorder call arguments on the stack
+    std::vector<int8_t> reorderArgs; // reordering
+
     // TODO: optimized this for common case where it is empty (ptr?)
     std::map<UnicodeString,Value> forwardStreamRefs;
 };
@@ -26,6 +44,8 @@ public:
     VM();
     VM(std::istream& linestream); // single-line mode
     ~VM();
+
+    void setDissasemblyOutput(bool outputBytecodeDissasembly);
 
 
     enum class InterpretResult {
@@ -43,15 +63,16 @@ public:
     void popN(size_t n); // call pop() n times
     Value peek(int distance);
 
-    bool call(ObjClosure* closure, int argCount);
-    bool call(ValueType builtinType, int argCount);
-    bool callValue(const Value& callee, int argCount);   
-    bool invokeFromType(ObjObjectType* type, ObjString* name, int argCount);
-    bool invoke(ObjString* name, int argCount);
+    bool call(ObjClosure* closure, const CallSpec& callSpec);
+    bool call(ValueType builtinType, const CallSpec& callSpec);
+    bool callValue(const Value& callee, const CallSpec& callSpec);   
+    bool invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec);
+    bool invoke(ObjString* name, const CallSpec& callSpec);
     bool indexValue(const Value& indexable, int subscriptCount);
     bool bindMethod(ObjObjectType* instanceType, ObjString* name);
     ObjUpvalue* captureUpvalue(Value& local);
     void closeUpvalues(Value* last);
+    Value opReturn();
 
     void defineMethod(ObjString* name);
     void defineNative(const std::string& name, NativeFn function);
@@ -59,6 +80,7 @@ public:
 protected:
     InterpretResult execute();
 
+    bool outputBytecodeDissasembly;
     bool lineMode;
     std::istream* lineStream;
 
@@ -70,7 +92,13 @@ protected:
     ValueStack stack;
     ValueStack::iterator stackTop;
 
-    std::vector<CallFrame> frames;
+    CallFrames frames;
+    bool frameStart; // true for one iteration when ip is at initial ip for frame
+    void pushFrame(CallFrame& frame) {
+        frame.parent = frames.end()-1;
+        frames.push_back(frame);
+    }
+    void popFrame() { frames.pop_back(); }
 
     // FIXME: use something other than UnicodeString (ObjString* or Value??)
     // map from name ObjString.hash to <name, value> pair

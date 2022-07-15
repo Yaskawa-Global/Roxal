@@ -1,6 +1,7 @@
 #include <iostream>
+#include <cassert>
 
-
+#include <core/types.h>
 #include "Object.h"
 #include "Chunk.h"
 
@@ -218,8 +219,22 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return jumpInstruction("JUMP", 1, offset);
         case asByte(OpCode::Loop):
             return jumpInstruction("LOOP", -1, offset);
-        case asByte(OpCode::Call):
-            return byteInstruction("CALL", offset);
+        case asByte(OpCode::Call): {
+            byteInstruction("CALL", offset);
+            // compute num of bytes to skip over CallSpec            
+            auto ip = code.begin()+offset+1;
+            CallSpec callSpec{ip};
+            if (!callSpec.allPositional) {
+                std::cout << format("%04d      |                 %3d  ",offset+2,callSpec.argCount);
+                for(auto arg : callSpec.args)
+                    if (arg.positional)
+                        std::cout << "p ";
+                    else
+                        std::cout << "n ";
+                std::cout << std::endl;
+            }
+            return offset+1+callSpec.toBytes().size();
+        }
         case asByte(OpCode::Index):
             return byteInstruction("INDEX", offset);
         case asByte(OpCode::Invoke):
@@ -245,6 +260,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("CLOSE_UPVALUE", offset);
         case asByte(OpCode::Return):
             return simpleInstruction("RETURN", offset);
+        case asByte(OpCode::ReturnStore):
+            return simpleInstruction("RETURN_STORE", offset);
         case asByte(OpCode::ObjectType):
             return constantInstruction("OBJECT_TYPE", offset);
         case asByte(OpCode::ActorType):
@@ -282,3 +299,272 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return offset+1;
     }
 }
+
+
+
+
+CallSpec::CallSpec(Chunk::iterator& ci)
+{
+    allPositional = ( *ci & 0x80) == 0;
+    argCount = *ci & 0x7f;
+    #ifdef DEBUG_BUILD
+    if (argCount>127)
+        throw std::runtime_error("Invalid byte codes - Call cannot specify > 127 args");
+    #endif
+    ci++;
+    if (!allPositional) {
+        for(auto i=0; i<argCount; i++) {
+            ArgSpec aspec {};
+            if (*ci == 0) {
+                aspec.positional = true;
+                ci++;
+            }
+            else {
+                aspec.paramNameHash = (uint16_t(*ci++) << 8) | uint16_t(*ci++);
+            }
+            args.push_back(aspec);
+        }
+    }
+}
+
+
+std::vector<uint8_t> CallSpec::toBytes() const
+{
+    std::vector<uint8_t> bytes {};
+
+    #ifdef DEBUG_BUILD
+    assert(allPositional == !namedArgs());
+    if (!allPositional)
+        assert(argCount == args.size());
+    #endif
+
+    if (allPositional) { 
+        // common (optimized) case of all-positional args
+        if (argCount>127)
+            throw std::runtime_error("Maximum of 127 call arguments exceeded");
+        // 0 MSB -> only position & 7bit arg count
+        bytes.push_back(0x7f & uint8_t(argCount));
+    }
+    else {
+        // 1 MSB -> 1,2 byte arg spec (one per arg) follows
+        bytes.push_back(0x80 | (0x7f & uint8_t(argCount)));
+        for(const auto& arg : args) {
+            if (arg.positional)
+                bytes.push_back(0);
+            else {
+                uint16_t argNameHash = 0x8000 | (arg.paramNameHash & 0x7fff);
+                bytes.push_back((argNameHash & 0xff00)>>8);
+                bytes.push_back(argNameHash & 0xff);
+            }
+
+        }
+    }
+    return bytes;
+}
+
+
+bool CallSpec::namedArgs() const
+{
+    for(auto& arg : args)
+        if (!arg.positional)
+            return true;
+    return false;
+}
+
+
+std::vector<int8_t> CallSpec::paramPositions(ptr<type::Type> calleeType, bool throwOnMissing) const
+{
+    std::vector<int8_t> argPositions {};
+
+    // check that all uunspecified arguments have defaults declared (thow if any missing)
+    auto checkRequiredArgumentsSpecified = [&](const type::Type::FuncType& funcType) {
+        #ifdef DEBUG_BUILD
+        assert(argPositions.size() == funcType.params.size());
+        #endif
+        for(int pi=0; pi<funcType.params.size();pi++) {
+            if (argPositions[pi] == -1) {
+                if (funcType.params[pi].has_value()) {
+                    if (!funcType.params[pi].value().hasDefault)
+                        throw std::runtime_error("Argument for parameter "+toUTF8StdString(funcType.params[pi].value().name)+" in call to "+calleeType->toString()+" not provided.");
+                }
+                else
+                    throw std::runtime_error("Argument for parameter "+std::to_string(pi+1)+" in call to "+calleeType->toString()+" not provided.");
+            }
+        }
+    };
+
+
+    if (allPositional) {
+        // just in-order
+        if (argCount > 2)
+            argPositions.reserve(argCount+2);
+        for(auto i=0; i<argCount; i++)
+            argPositions.push_back(i);
+
+        if (calleeType->builtin == type::BuiltinType::Func) {
+            if (calleeType->func.has_value()) {
+                const type::Type::FuncType& funcType { calleeType->func.value() };
+                for(auto i=argCount; i<funcType.params.size(); i++)
+                    argPositions.push_back(-1); // not supplied
+                if (throwOnMissing)
+                    checkRequiredArgumentsSpecified(funcType);
+            }
+        }
+        else // TODO: handle other callables (e.g. by listing & comparing their func signature)
+            throw std::runtime_error("Unable to determine paramters from arguments in call to type "+calleeType->toString());
+    }
+    else {
+        if (calleeType->builtin == type::BuiltinType::Func) {
+
+            if (calleeType->func.has_value()) {
+                const type::Type::FuncType& funcType { calleeType->func.value() };
+
+                auto paramIndex = [&](uint16_t nameHashCode) -> int8_t {
+                    int8_t index=0;
+                    for(const auto& param : funcType.params) {
+                        if (param.has_value()) {
+                            if ((param.value().nameHashCode & 0x7fff) == (nameHashCode & 0x7fff))
+                                return index;
+                        }
+                        index++;
+                    }
+                    return -1;
+                };
+
+                argPositions = std::vector<int8_t>(funcType.params.size(),int8_t(-1));
+                bool callerOutOfOrderParamSeen = false;
+                size_t argIndex = 0;
+                for(const auto& arg : args) {
+                    if (arg.positional) {
+                        if (!callerOutOfOrderParamSeen)
+                            argPositions[argIndex] = argIndex;
+                        else // TODO: runtime error? (or handle in caller?)
+                            throw std::runtime_error("Can't use positional arguments after named arguments in call to "+calleeType->toString());
+                    }
+                    else {
+                        // if the arg is named but is in position, treat like positional
+                        auto pindex = paramIndex(arg.paramNameHash);
+                        if (pindex >= 0) {
+                            if (pindex == argIndex) { // named, but in correct position
+                                argPositions[pindex] = argIndex;
+                            }
+                            else { // named, out of position
+                                argPositions[pindex] = argIndex;
+                                callerOutOfOrderParamSeen = true;
+                            }
+                        }
+                        else // FIXME: should this be runtime error (and how can we list the call arg name?)
+                            throw std::runtime_error("Function call parameter "+std::to_string(argIndex)+" in call to "+calleeType->toString());
+
+                    }
+                    argIndex++;
+                }
+
+                if (throwOnMissing)
+                    checkRequiredArgumentsSpecified(funcType);
+            }
+            else {
+                throw std::runtime_error("Callee func type not specified");
+            }
+        }
+        else {
+            throw std::runtime_error("Unable to determine paramters from arguments in call to type "+calleeType->toString());
+            //throw std::runtime_error(std::string(__FUNCTION__)+" unimplemented for type: "+to_string(calleeType->builtin));
+        }
+    }
+    return argPositions;
+}
+
+
+#ifdef DEBUG_BUILD
+void CallSpec::testParamPositions()
+{
+    // create type for func (p0,p1,p2:real,p3,p4=,p5:real=) -> int
+    auto type { std::make_shared<type::Type>(type::BuiltinType::Func) };
+    type->func = type::Type::FuncType();
+    type->func.value().returnType = std::make_shared<type::Type>(type::BuiltinType::Int);
+    auto& params { type->func.value().params };
+    for(int i=0; i<6; i++) {
+        auto param {type::Type::FuncType::ParamType{UnicodeString::fromUTF8("p"+std::to_string(i))}};
+        if (i>=4)
+            param.hasDefault=true;
+        if (i==2 || i == 5)
+            param.type = std::make_shared<type::Type>(type::BuiltinType::Real);
+        params.push_back(param);
+    }
+
+
+    // all positional
+    CallSpec callSpec {};
+    callSpec.allPositional = true;
+    callSpec.argCount=6;
+
+    auto pp = callSpec.paramPositions(type);
+    assert((pp == std::vector<int8_t>{0,1,2,3,4,5}));
+
+    auto argNameHash = [](const std::string& p) {
+        return uint16_t(toUnicodeString(p).hashCode() & 0x7fff);
+    };
+
+    // f(a0,p1=,p2=,p3=) - in order, p4,p5 omitted
+    callSpec.allPositional=false;
+    callSpec.argCount=4;
+    callSpec.args.resize(4);
+    callSpec.args[0] = {true,0};
+    callSpec.args[1] = {false,argNameHash("p1")};
+    callSpec.args[2] = {false,argNameHash("p2")};
+    callSpec.args[3] = {false,argNameHash("p3")};
+    try {
+        pp = callSpec.paramPositions(type);
+        assert((pp == std::vector<int8_t>{0,1,2,3,-1,-1}));
+    } catch (std::exception& e) {
+        std::cout << "Exception in test call f(a0,p1=,p2=,p3=) - "+std::string(e.what()) << std::endl;
+    }
+
+    // f(a0,p2=,p1=,p3=) - out of order, p4,p5 omitted
+    callSpec.args[1] = {false,argNameHash("p2")};
+    callSpec.args[2] = {false,argNameHash("p1")};
+    pp = callSpec.paramPositions(type);
+    assert((pp == std::vector<int8_t>{0,2,1,3,-1,-1}));
+
+    // f(a0,p1=,p2,p3=) - in-order, p4,p5 omitted, p2 unnamed 
+    callSpec.args[1] = {false,argNameHash("p1")};
+    callSpec.args[2] = {true,0};
+    callSpec.args[3] = {false,argNameHash("p3")};
+    try {
+        pp = callSpec.paramPositions(type);
+        assert((pp == std::vector<int8_t>{0,1,2,3,-1,-1}));
+    } catch (std::exception& e) {
+        std::cout << "Exception in test call f(a0,p1=,p2,p3=) - "+std::string(e.what()) << std::endl;
+    }
+
+
+    // f(p1=,p0=,p2=,p5=,p4=) - out-of-order, p3 omitted
+    callSpec.argCount=5;
+    callSpec.args.resize(5);
+    callSpec.args[0] = {false,argNameHash("p1")};;
+    callSpec.args[1] = {false,argNameHash("p0")};
+    callSpec.args[2] = {false,argNameHash("p2")};
+    callSpec.args[3] = {false,argNameHash("p5")};
+    callSpec.args[4] = {false,argNameHash("p4")};
+    try {
+        pp = callSpec.paramPositions(type, false);
+        assert((pp == std::vector<int8_t>{1,0,2,-1,4,3}));
+    } catch (std::exception& e) {
+        std::cout << "Exception in test call f(p1=,p0=,p2=,p5=,p4=) - "+std::string(e.what()) << std::endl;
+    }
+
+
+    // f(p0,p2=,p1=,p3) - out-of-order, p3 unnamed, p4,p5 omitted (error)
+    callSpec.argCount=4;
+    callSpec.args.resize(4);
+    callSpec.args[0] = {true,0};;
+    callSpec.args[1] = {false,argNameHash("p2")};
+    callSpec.args[2] = {false,argNameHash("p1")};
+    callSpec.args[3] = {true,0};
+    try {
+        pp = callSpec.paramPositions(type);
+        assert(false); // should have thrown above
+    } catch (...) {}
+}
+#endif

@@ -47,6 +47,11 @@ ptr<C> as(ptr<AST> p) {
 }
 
 
+RoxalCompiler::RoxalCompiler() 
+    : outputBytecodeDissasembly(false) 
+{}
+
+
 
 ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& name)
 {
@@ -94,9 +99,9 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
             
             function = funcScope()->function;
 
-            #if defined(DEBUG_OUTPUT_CHUNK)
-            funcScope()->function->chunk->disassemble(funcScope()->function->name);
-            #endif
+            if (outputBytecodeDissasembly)
+                funcScope()->function->chunk->disassemble(funcScope()->function->name);
+
             //std::cout << "value:" << value->repr() << std::endl;
         } catch (std::logic_error& e) {
             funcScopes.pop_back();
@@ -118,6 +123,12 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
     }
     
     return function;
+}
+
+
+void RoxalCompiler::setOutputBytecodeDissasembly(bool outputBytecodeDissasembly)
+{
+    this->outputBytecodeDissasembly = outputBytecodeDissasembly;
 }
 
 
@@ -364,9 +375,8 @@ void RoxalCompiler::visit(ptr<ast::Function> ast)
 
     emitReturn();
 
-    #if defined(DEBUG_OUTPUT_CHUNK)
-    funcScope()->function->chunk->disassemble(funcScope()->function->name);
-    #endif
+    if (outputBytecodeDissasembly)
+        funcScope()->function->chunk->disassemble(funcScope()->function->name);
 
     ObjFunction* function = funcScope()->function;
     auto functionScope { *funcScope() };
@@ -402,10 +412,9 @@ void RoxalCompiler::visit(ptr<ast::Parameter> ast)
     defineVariable(var);
 
     // output code for evaluating default value (if any)
-    // TODO: somehow get this code to the chunk in FunctionScope::paramDefaultValue
     if (ast->defaultValue.has_value()) {
 
-        // TEST treat like another func decl
+        // treat like another func decl
         auto defFuncType { std::make_shared<type::Type>(BuiltinType::Func) };
         defFuncType->func = type::Type::FuncType();
         // TODO: specify return type? (necessary?)
@@ -424,11 +433,14 @@ void RoxalCompiler::visit(ptr<ast::Parameter> ast)
 
         //endScope(); // state scope about to be discarded, not needed
 
-        emitByte(OpCode::Return);
+        // since this closure was called directly by being queued by OpCode::Call
+        //  rather than through byte code pushing the callable/closure, we
+        //  need get the return value copied into the placeholder arg slots in the parent frame
+        //  rather than leaving it on the stack
+        emitByte(OpCode::ReturnStore);
 
-        #if defined(DEBUG_OUTPUT_CHUNK)
-        funcScope()->function->chunk->disassemble(funcScope()->function->name);
-        #endif
+        if (outputBytecodeDissasembly)
+            funcScope()->function->chunk->disassemble(funcScope()->function->name);
 
         ObjFunction* function = funcScope()->function;
 
@@ -557,9 +569,59 @@ void RoxalCompiler::visit(ptr<ast::Call> ast)
     ast->acceptChildren(*this);
 
     auto argCount = ast->args.size();
-    if (argCount > 255)
-        error("Number of call parameters is limited to 255");
-    emitBytes(OpCode::Call, argCount);
+    if (argCount > 127)
+        error("Number of call parameters is limited to 127");
+
+    //
+    // create call param spec
+    CallSpec callSpec {};
+
+    if (!ast->namedArgs()) {
+        // only positional arguments
+        callSpec.allPositional = true;
+        callSpec.argCount = ast->args.size();
+    }
+    else {
+        #ifdef DEBUG_BUILD
+        // keep track of hashes to check for collisions
+        std::map<UnicodeString,uint16_t> hashes {};
+        #endif
+        // mix of positional & named args
+        callSpec.allPositional = false;
+        callSpec.argCount = ast->args.size();
+        for(const auto& arg : ast->args) {
+            CallSpec::ArgSpec aspec {};
+            if (arg.first.isEmpty())
+                aspec.positional = true;
+            else {
+                aspec.positional = false;
+                // 15bits of param name string hash
+                aspec.paramNameHash =0x8000 | (arg.first.hashCode() & 0x7fff);
+                #ifdef DEBUG_BUILD
+                hashes[arg.first] = aspec.paramNameHash; 
+                #endif
+            }
+            callSpec.args.push_back(aspec);
+        }
+        #ifdef DEBUG_BUILD
+        // if any hash collisions occurs, the size of the set of hashes
+        //  won't match the arg count
+        std::set<uint16_t> hashSet;
+        for(auto const& hash: hashes)
+            hashSet.insert(hash.second);
+        if (hashSet.size() != hashes.size())
+            throw std::runtime_error("Hash collision occured between two argument names");
+        #endif
+    }
+
+    auto bytes = callSpec.toBytes();
+    if (bytes.size()==1)
+        emitBytes(OpCode::Call, bytes[0]);
+    else {
+        emitByte(OpCode::Call);
+        for(auto i=0; i<bytes.size();i++)
+            emitByte(bytes[i]);
+    }
 }
 
 
@@ -675,873 +737,6 @@ void RoxalCompiler::visit(ptr<ast::Dict> ast)
     emitBytes(OpCode::NewDict, ast->entries.size());
 }
 
-
-
-
-
-
-#ifdef NOTHING
-
-Any RoxalCompiler::visitFile_input(RoxalParser::File_inputContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    for(auto& declaration : context->declaration())
-        visitDeclaration(declaration);
-
-    emitReturn();
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitSingle_input(RoxalParser::Single_inputContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    if (context->statement())
-        visitStatement(context->statement());
-    else if (context->compound_stmt())
-        visitCompound_stmt(context->compound_stmt());
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitDeclaration(RoxalParser::DeclarationContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    if (context->type_decl())
-        visitType_decl(context->type_decl());
-    else if (context->func_decl())
-        visitFunc_decl(context->func_decl());
-    else if (context->var_decl())
-        visitVar_decl(context->var_decl());
-    else if (context->statement())
-        visitStatement(context->statement());
-    else
-        throw std::runtime_error("unimplemented declaration type");
-
-    return Any();
-}
-
-Any RoxalCompiler::visitStatement(RoxalParser::StatementContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    if (context->expr_stmt())
-        visitExpr_stmt(context->expr_stmt());
-    //if (context->simple_stmt())
-    //    visitSimple_stmt(context->simple_stmt());
-    else if (context->compound_stmt())
-        visitCompound_stmt(context->compound_stmt());
-    return Any();
-}
-
-
-Any RoxalCompiler::visitExpr_stmt(RoxalParser::Expr_stmtContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    visitExpression(context->expression());
-
-    // expressions leave their value on the stack, but statements don't
-    //  have a value, so discard it
-    emitByte(OpCode::Pop, "expr_stmt value");
-
-    return Any();
-}
-
-Any RoxalCompiler::visitSuite(RoxalParser::SuiteContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    for(int i=0; i<context->declaration().size(); i++)
-        visitDeclaration(context->declaration().at(i));
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitType_decl(RoxalParser::Type_declContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    bool isActor = (context->ACTOR() != nullptr);
-
-    auto typeName { context->IDENTIFIER().at(0)->getText() };
-    UnicodeString uTypeName { UnicodeString::fromUTF8(typeName) };
-
-    int16_t typeNameConstant = identifierConstant(uTypeName);
-    declareVariable(uTypeName);    
-
-    if (context->IDENTIFIER().size()>2)
-        throw std::runtime_error("Multiple implements types unimplemented.");
-
-    emitBytes(isActor ? OpCode::ActorType : OpCode::ObjectType, typeNameConstant);
-    defineVariable(typeNameConstant);
-
-    namedVariable(uTypeName, false); // make type accessible on the stack
-
-    typeScopes.push_back(TypeScope());
-
-    for(size_t i=0; i<context->function().size(); i++) {
-
-        auto funcContext { context->function().at(i) };
-
-        auto methodName { funcContext->IDENTIFIER()->getText() };
-        UnicodeString uMethodName { UnicodeString::fromUTF8(methodName) };
-        int16_t methodNameConstant = identifierConstant(uMethodName);
-        if (methodNameConstant >= 255) 
-            error("Too many methods for one actor or object type.");
-
-        visitFunction(funcContext);
-
-        emitBytes(OpCode::Method, uint8_t(methodNameConstant), "method "+methodName);
-    }
-
-    emitByte(OpCode::Pop, "type name");
-
-    typeScopes.pop_back();
-
-    return Any();
-}
-
-
-
-Any RoxalCompiler::visitExpression(RoxalParser::ExpressionContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    visitAssignment(context->assignment());
-    return Any();
-}
-
-
-Any RoxalCompiler::visitCompound_stmt(RoxalParser::Compound_stmtContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    if (context->print_stmt())
-        visitPrint_stmt(context->print_stmt());
-    else if (context->return_stmt())
-        visitReturn_stmt(context->return_stmt());
-    else if (context->block_stmt())
-        visitBlock_stmt(context->block_stmt());
-    else if (context->if_stmt())
-        visitIf_stmt(context->if_stmt());
-    else if (context->while_stmt())
-        visitWhile_stmt(context->while_stmt());
-    else
-        throw std::runtime_error("unimplemented compound statement alternative");
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitBlock_stmt(RoxalParser::Block_stmtContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    beginScope();
-    visitSuite(context->suite());
-    endScope();
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitPrint_stmt(RoxalParser::Print_stmtContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    visitExpression(context->expression());
-    emitByte(OpCode::Print);
-    return Any();
-}
-
-
-Any RoxalCompiler::visitReturn_stmt(RoxalParser::Return_stmtContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    if (context->expression()) {
-
-        if (funcScope()->functionType == FunctionType::Initializer)
-            error("A value cannot be returned from an 'init' method.");
-        if (funcScope()->isProc)
-            error("A value cannot be returned from an proc method.");
-
-        visitExpression(context->expression());
-
-        // TODO: check the return type
-
-        emitByte(OpCode::Return);
-
-    }
-    else
-        emitReturn();
-
-    return Any();
-}
-
-
-
-Any RoxalCompiler::visitIf_stmt(RoxalParser::If_stmtContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    // if condition 
-    visitExpression(context->expression().at(0));
-
-    auto jumpOverIf = emitJump(OpCode::JumpIfFalse);
-    emitByte(OpCode::Pop, "if cond");
-
-    beginScope();
-    visitSuite(context->suite().at(0));
-    endScope();
-
-    auto jumpOverElse = emitJump(OpCode::Jump);
-
-    patchJump(jumpOverIf);
-
-    if (context->ELSEIF().size()>0) {
-        throw std::runtime_error("elseif unimplemented");
-        for(int i=1; i<context->expression().size();i++) {
-            visitExpression(context->expression().at(i));
-            visitSuite(context->suite().at(i));
-        }
-    }
-
-    emitByte(OpCode::Pop, "if cond");
-    if (context->ELSE()) {
-        beginScope();
-        visitSuite(context->suite().at(context->suite().size()-1));
-        endScope();
-    }
-    
-    patchJump(jumpOverElse);
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitWhile_stmt(RoxalParser::While_stmtContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    auto loopStart = currentChunk()->code.size();
-
-    // while condition 
-    visitExpression(context->expression());
-
-    auto jumpToExit = emitJump(OpCode::JumpIfFalse);
-    emitByte(OpCode::Pop, "while cond");
-
-    visitSuite(context->suite());
-
-    emitLoop(loopStart);
-
-    patchJump(jumpToExit);
-    emitByte(OpCode::Pop, "while cond");
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitVar_decl(RoxalParser::Var_declContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    auto identifier { context->IDENTIFIER()->getText() };
-    UnicodeString uident { UnicodeString::fromUTF8(identifier) };
-
-    declareVariable(uident);
-    uint16_t var { 0 };
-    if (funcScope()->scopeDepth == 0) // global variable
-        var = identifierConstant(uident); // create constant table entry for name
-
-    // TODO: support type spec and init with default for type
-
-    if (context->EQUALS()) {
-        visitExpression(context->expression());
-    }
-    else
-        emitByte(OpCode::ConstNil);
-
-    defineVariable(var);
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitFunc_decl(RoxalParser::Func_declContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    auto identifier { context->function()->IDENTIFIER()->getText() };
-    UnicodeString uident { UnicodeString::fromUTF8(identifier) };
-
-    declareVariable(uident);
-    uint16_t var { 0 };
-    if (funcScope()->scopeDepth == 0) // global variable
-        var = identifierConstant(uident); // create constant table entry for name
-
-    if (funcScope()->scopeDepth > 0) {
-        // mark initialized
-        funcScope()->locals.back().depth = funcScope()->scopeDepth;
-    }
-
-    visitFunction(context->function());
-
-    defineVariable(var);
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitFunction(RoxalParser::FunctionContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    bool isProc = (context->PROC() != nullptr);
-    bool isMethod = !typeScopes.empty();
-
-    auto identifier { context->IDENTIFIER()->getText() };
-    UnicodeString uident { UnicodeString::fromUTF8(identifier) };
-
-    bool isInitializer = isMethod && (identifier == "init");
-
-    if (isInitializer && !isProc)
-        error("object or actor type 'init' method must be a proc.");
-
-    FunctionType ftype = isMethod ? 
-                              (isInitializer ? FunctionType::Initializer : FunctionType::Method)
-                            : FunctionType::Function;
-    
-
-    funcScopes.push_back(FunctionScope(uident, ftype, isProc));
-
-    #ifdef DEBUG_BUILD
-    emitByte(OpCode::Nop, "func "+identifier);
-    #endif
-    beginScope();
-
-    if (context->parameters()) 
-        visitParameters(context->parameters());
-
-    visitSuite(context->suite());
-
-    //endScope(); // state scope about to be discarded, not needed
-
-    emitReturn();
-
-    #if defined(DEBUG_OUTPUT_CHUNK)
-    funcScope()->function->chunk->disassemble(funcScope()->function->name);
-    #endif
-
-    ObjFunction* function = funcScope()->function;
-    auto functionScope { *funcScope() };
-
-    funcScopes.pop_back(); // back to surrpounding function
-//!!!
-// std::cout << "Closure " << toUTF8StdString(function->name) << ": #" << function->upvalueCount << std::endl;//!!!
-// std::cout << "   #" << functionState.upvalues.size() << std::endl;
-//!!!
-    emitBytes(OpCode::Closure, makeConstant(objVal(function)));
-    for (int i = 0; i < function->upvalueCount; i++) {
-        #ifdef DEBUG_BUILD
-        if (i >= functionScope.upvalues.size())
-            throw std::runtime_error("invalid upvalue index");
-        #endif
-//std::cout << "    - " << int(functionState.upvalues[i].index) << " " << std::string(functionState.upvalues[i].isLocal ?"local":"nonlocal") << std::endl;        
-        emitByte(functionScope.upvalues[i].isLocal ? 1 : 0);
-        emitByte(functionScope.upvalues[i].index);
-    }
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitParameters(RoxalParser::ParametersContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    for(size_t i=0; i<context->parameter().size(); i++) {
-
-        if (++funcScope()->function->arity > 255)
-            error("Maximum of function or procedure 255 parameters exceeded.");
-
-        visitParameter(context->parameter().at(i));
-
-    }
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitParameter(RoxalParser::ParameterContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    auto name { context->IDENTIFIER().at(0)->getText() };
-    UnicodeString uname { UnicodeString::fromUTF8(name) };
-
-    // TODO: handle optional type
-
-    declareVariable(uname);
-    uint16_t var = identifierConstant(uname); // create constant table entry for name
-
-    defineVariable(var);
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitAssignment(RoxalParser::AssignmentContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    if (context->EQUALS()) { // assignment
-
-        UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
-
-        if (context->DOT()) { // property set
-            visitCall(context->call());
-
-            int16_t propName = identifierConstant(ident);
-
-            visitAssignment(context->assignment());
-
-            emitBytes(OpCode::SetProp, propName);
-
-        }
-        else { // variable set
-            visitAssignment(context->assignment());
-            namedVariable(ident, /*assign=*/true);
-        }
-    }
-    else
-        visitLogic_or(context->logic_or());
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitLogic_or(RoxalParser::Logic_orContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    visitLogic_and(context->logic_and().at(0));
-
-    if (context->OR().size()==0) // just passing through
-        return Any();
-
-    std::vector<Chunk::size_type> jumpsToEnd {};
-
-    jumpsToEnd.push_back(emitJump(OpCode::JumpIfTrue));
-    emitByte(OpCode::Pop);
-
-    if (context->logic_and().size() > 1) {
-        for(auto i=1; i<context->logic_and().size(); i++) {
-            visitLogic_and(context->logic_and().at(i));
-
-            if (i < context->logic_and().size()-1) {
-                jumpsToEnd.push_back(emitJump(OpCode::JumpIfTrue));
-                emitByte(OpCode::Pop);            
-            }
-        }
-    }
-
-    for(auto jumpToEnd : jumpsToEnd)
-    patchJump(jumpToEnd);
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitLogic_and(RoxalParser::Logic_andContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    visitEquality(context->equality().at(0));
-
-    if (context->AND().size()==0) // just passing through
-        return Any();
-
-    std::vector<Chunk::size_type> jumpsToEnd {};
-
-    jumpsToEnd.push_back(emitJump(OpCode::JumpIfFalse));
-    emitByte(OpCode::Pop);
-
-    if (context->equality().size() > 1) {
-        for(auto i=1; i<context->equality().size(); i++) {
-            visitEquality(context->equality().at(i));
-
-            if (i < context->equality().size()-1) {
-                jumpsToEnd.push_back(emitJump(OpCode::JumpIfFalse));
-                emitByte(OpCode::Pop);
-            }
-        }
-    }
-
-    for(auto jumpToEnd : jumpsToEnd)
-        patchJump(jumpToEnd);
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitEquality(RoxalParser::EqualityContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    visitComparison(context->comparison());
-
-    for(auto i=0; i<context->equalnotequal().size(); i++) 
-        visitEqualnotequal(context->equalnotequal().at(i));            
-        
-    return Any();
-}
-
-
-Any RoxalCompiler::visitEqualnotequal(RoxalParser::EqualnotequalContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    visitComparison(context->comparison());
-    if (context->ISEQUAL())
-        emitByte(OpCode::Equal);
-    else if (context->ISNOTEQUALS()) {
-        emitByte(OpCode::Equal);
-        emitByte(OpCode::Negate);
-    }
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitComparison(RoxalParser::ComparisonContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    visitTerm(context->term().at(0));
-
-    if (context->term().size() > 1) {
-        visitTerm(context->term().at(1));
-
-        if (context->GREATER_THAN())
-            emitByte(OpCode::Greater);
-        else if (context->GT_EQ()) {
-            emitByte(OpCode::Less);
-            emitByte(OpCode::Negate);
-        }
-        else if (context->LESS_THAN())
-            emitByte(OpCode::Less);
-        else if (context->LT_EQ()) {
-            emitByte(OpCode::Greater);
-            emitByte(OpCode::Negate);
-        }
-        else
-            throw std::runtime_error("unimplemented comparison operator "+context->getText());
-
-    }
-    return Any();
-}
-
-
-Any RoxalCompiler::visitTerm(RoxalParser::TermContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    visitFactor(context->factor().at(0));
-
-    if (context->factor().size()>1) {
-        for(int i=1; i<context->factor().size(); i++) {
-            visitFactor(context->factor().at(i));
-            emitByte(OpCode::Add);
-            //visitAddsub(context->addsub(i));
-        }
-    }
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitFactor(RoxalParser::FactorContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    visitUnary(context->unary());
-
-    for (int i=0; i<context->multdiv().size(); i++) {
-        visitMultdiv(context->multdiv().at(i));
-    }
-
-    return Any();
-}
-
-
-antlrcpp::Any RoxalCompiler::visitMultdiv(RoxalParser::MultdivContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    visitUnary(context->unary());
-
-    if (context->MULT() || context->STAR())
-        emitByte(OpCode::Multiply);
-    else if (context->DIV())
-        emitByte(OpCode::Divide);
-    else if (context->MOD())
-        emitByte(OpCode::Modulo);
-
-    return Any();
-}
-
-
-
-Any RoxalCompiler::visitUnary(RoxalParser::UnaryContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    if (context->MINUS() || context->NOT()) {
-        visitUnary(context->unary());
-        emitByte(OpCode::Negate);
-    }
-    else
-        visitCall(context->call()); 
-    return Any();
-}
-
-Any RoxalCompiler::visitCall(RoxalParser::CallContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    visitPrimary(context->primary());
-
-    for(size_t i=0; i<context->args_or_accessor().size(); i++)
-        visitArgs_or_accessor(context->args_or_accessor().at(i));
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitArgs_or_accessor(RoxalParser::Args_or_accessorContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    if (context->DOT()) {
-
-        UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
-        int16_t identConstant = identifierConstant(ident);
-
-        // since object.method() is so common, detect it as a special case
-        //  to use optimized Invoke opcode
-        if (context->OPEN_PAREN()) {
-
-            int argCount { 0 };
-            if (context->arguments())
-                argCount = visitArguments(context->arguments()).as<int>();
-
-            emitBytes(OpCode::Invoke, identConstant);
-            emitByte(argCount);
-        }
-        else
-            emitBytes(OpCode::GetProp, identConstant);
-    }
-    else {
-        int argCount { 0 };
-        if (context->arguments())
-            argCount = visitArguments(context->arguments()).as<int>();
-
-        emitBytes(OpCode::Call, argCount);
-    }
-
-    return Any();
-}
-
-
-
-Any RoxalCompiler::visitArguments(RoxalParser::ArgumentsContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    int argCount { 0 };
-    for(size_t i=0; i<context->expression().size(); i++) {
-        visitExpression(context->expression().at(i));
-        argCount++;
-
-        if (argCount == 255) 
-            error("Maximum of 255 call arguments exceeded.");
-        
-    }
-
-    return Any(argCount);
-}
-
-
-Any RoxalCompiler::visitPrimary(RoxalParser::PrimaryContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    if (context->OPEN_PAREN()) 
-        visitExpression(context->expression());
-    else if (context->LTRUE())
-        emitByte(OpCode::ConstTrue);        
-    else if (context->LFALSE())
-        emitByte(OpCode::ConstFalse);
-    else if (context->THIS()) {
-        if (typeScopes.empty()) 
-            error("Can't reference 'this' outside of an actor or object method");        
-        else
-            namedVariable(toUnicodeString(context->THIS()->getText()),false);
-    }
-    else if (context->IDENTIFIER()) {
-        UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
-        namedVariable(ident);
-    }
-    else if (context->num())
-        visitNum(context->num());
-    else if (context->LNIL())
-        emitByte(OpCode::ConstNil);
-    else if (context->str())
-        visitStr(context->str());
-    else
-        throw std::runtime_error("unimplemented primary alterntive");
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitBuiltin_type(RoxalParser::Builtin_typeContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    //...
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitStr(RoxalParser::StrContext *context)
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    auto str = context->STRING_LITERAL()->getText();
-    // drop enclosing quotes (only one-char single or double quotes)
-    str = str.substr(1,str.size()-2); 
-
-    UnicodeString ustr { UnicodeString::fromUTF8(str) };
-
-    // new ObjString or existing one if exists in strings intern map
-    auto objStr = stringVal(ustr); 
-    emitConstant(objVal(objStr));
-
-    return Any();
-}
-
-
-Any RoxalCompiler::visitNum(RoxalParser::NumContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    if (context->integer())
-        return visitInteger(context->integer());
-    
-    // real/float
-    // TODO: do we need to consider Unicoe here?
-    std::string realStr = context->FLOAT_NUMBER()->getText();
-    double real {0.0};
-    try {
-        real = std::stod(realStr);
-    } catch (std::invalid_argument&) {
-        error("Invalid real literal");
-    }
-    emitConstant(realVal(real));
-
-    return Any();
-}
-
-Any RoxalCompiler::visitInteger(RoxalParser::IntegerContext *context) 
-{
-    ParseTracer pt(__func__, context);
-    currentToken = context->start;
-
-    int32_t integer {0};
-    if (context->DECIMAL_INTEGER()) {
-        try {
-            integer = std::stoll(context->getText());
-        } catch (...) {
-            error("Invalid integer literal");
-        }
-        emitConstant(intVal(integer));
-    }
-    else if (context->HEX_INTEGER()) {
-        char *p_end;
-        integer = std::strtoll(context->getText().c_str()+2, &p_end, 16);
-        if (errno == ERANGE)
-            error("Invalid hexadecimal integer literal");
-        emitConstant(intVal(integer));
-    }
-    else if (context->OCT_INTEGER()) {
-        char *p_end;
-        integer = std::strtoll(context->getText().c_str()+2, &p_end, 8);
-        if (errno == ERANGE)
-            error("Invalid octal integer literal");
-        emitConstant(intVal(integer));
-    }
-    else if (context->BIN_INTEGER()) {
-        char *p_end;
-        integer = std::strtoll(context->getText().c_str()+2, &p_end, 2);
-        if (errno == ERANGE)
-            error("Invalid binary integer literal");
-        emitConstant(intVal(integer));
-    }
-    else
-        throw std::runtime_error("unimplemented integer literal:"+context->getText());
-
-    return Any();
-}
-
-
-#endif
 
 
 

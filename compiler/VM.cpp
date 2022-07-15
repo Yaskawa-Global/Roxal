@@ -24,6 +24,7 @@ VM::VM()
     initString->incRef();
 
     auto engine = StreamEngine::instance();
+    //CallSpec::testParamPositions();
 }
 
 
@@ -53,12 +54,21 @@ VM::~VM()
 }
 
 
+void VM::setDissasemblyOutput(bool outputBytecodeDissasembly)
+{
+    this->outputBytecodeDissasembly = outputBytecodeDissasembly;
+}
+
+
+
+
 VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
 {
     ObjFunction* function { nullptr };
 
     try {
         RoxalCompiler compiler {};
+        compiler.setOutputBytecodeDissasembly(outputBytecodeDissasembly);
 
         function = compiler.compile(source, name);
 
@@ -72,7 +82,7 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
     ObjClosure* closure = closureVal(function);
     push(objVal(closure));
 
-    call(closure,0);
+    call(closure,CallSpec(0));
 
     auto result = this->execute();
 
@@ -145,154 +155,205 @@ Value VM::peek(int distance)
 }
 
 
-bool VM::call(ObjClosure* closure, int argCount)
+
+bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
 {
-    std::vector<CallFrame> defValFrames {};
+    // closure,frame pair for any param default value 'func' calls
+    std::vector<std::pair<Value,CallFrame>> defValFrames {};
 
-    // TODO: implement re-ordering of stack args so that caller order matches
-    //  callee order
+    // fast-path: if callee supplied all all arguments by position and none are missing,
+    //  nothing special to do
+    bool paramDefaultAndArgsReorderNeeded = !(callSpec.allPositional && callSpec.argCount == closure->function->arity);
 
+    CallFrame callframe {};
+    auto argCount = callSpec.argCount;
 
-    // handle execution of default param expression 'func' for params not supplied
-    if (argCount < closure->function->arity) {
+    if (paramDefaultAndArgsReorderNeeded) {
+
         assert(closure->function->funcType.has_value());
-        ptr<type::Type> funcType { closure->function->funcType.value() };
-        auto paramTypes { funcType->func.value().params };
-        // for each missing arg
-        for(size_t paramIndex = argCount; paramIndex < closure->function->arity; paramIndex++) {
-            auto param { paramTypes.at(paramIndex) };
-            assert(param.has_value());
-            auto paramName = param.value().name;
-            if (param.value().hasDefault) {
-                auto funcIt = closure->function->paramDefaultFunc.find(param.value().nameHashCode);
-                assert(funcIt != closure->function->paramDefaultFunc.cend());
+        ptr<type::Type> calleeType { closure->function->funcType.value() };
 
-                ObjFunction* defValFunc = funcIt->second;
+        callframe.reorderArgs = callSpec.paramPositions(calleeType, true);        
 
-                // call it, which will leave the returned default val on the stack as an arg for this call
-                ObjClosure* defValClosure = closureVal(defValFunc);
+        // handle execution of default param expression 'func' for params not supplied
+        if (argCount < closure->function->arity) {
+            auto paramTypes { calleeType->func.value().params };
+            // for each missing arg
+            for(int16_t paramIndex = 0; paramIndex < callframe.reorderArgs.size(); paramIndex++) {
+                if (callframe.reorderArgs[paramIndex] == -1) { // -1 -> not supplied in callSpec
 
-                // normal after emit Op Closure in compiler
-                // for (int i = 0; i < function->upvalueCount; i++) {
-                //         emitByte(functionScope.upvalues[i].isLocal ? 1 : 0);
-                //         emitByte(functionScope.upvalues[i].index);
-                //     }
+                    // lookup param name hash
+                    auto param { paramTypes.at(paramIndex) };
+                    #ifdef DEBUG_BUILD
+                    assert(param.has_value());
+                    #endif
+                    //auto paramName = param.value().name;
 
-                // normal on exec Closure Op in VM
-                // for (int i = 0; i < closure->upvalues.size(); i++) {
-                //     uint8_t isLocal = readByte();
-                //     uint8_t index = readByte();
-                //     ObjUpvalue* upvalue;
-                //     if (isLocal) 
-                //         upvalue = captureUpvalue(*(frame->slots + index));
-                //     else 
-                //         upvalue = frame->closure->upvalues[index];
-                //     upvalue->incRef();
-                //     closure->upvalues[i] = upvalue;
-                // }
+                    auto funcIt = closure->function->paramDefaultFunc.find(param.value().nameHashCode);
+                    #ifdef DEBUG_BUILD
+                    assert(funcIt != closure->function->paramDefaultFunc.cend());
+                    #endif
 
-                if (defValClosure->upvalues.size() > 0) {
-                    runtimeError("Captured variables in default parameter '"+toUTF8StdString(paramName)+"' value expressions are not allowed"
-                                +" in declaration of function '"+toUTF8StdString(closure->function->name)+"'.");
-                    return false;
+                    ObjFunction* defValFunc = funcIt->second;
+
+                    // call it, which will leave the returned default val on the stack as an arg for this call
+                    ObjClosure* defValClosure = closureVal(defValFunc);
+
+                    // normal after emit Op Closure in compiler
+                    // for (int i = 0; i < function->upvalueCount; i++) {
+                    //         emitByte(functionScope.upvalues[i].isLocal ? 1 : 0);
+                    //         emitByte(functionScope.upvalues[i].index);
+                    //     }
+
+                    // normal on exec Closure Op in VM
+                    // for (int i = 0; i < closure->upvalues.size(); i++) {
+                    //     uint8_t isLocal = readByte();
+                    //     uint8_t index = readByte();
+                    //     ObjUpvalue* upvalue;
+                    //     if (isLocal) 
+                    //         upvalue = captureUpvalue(*(frame->slots + index));
+                    //     else 
+                    //         upvalue = frame->closure->upvalues[index];
+                    //     upvalue->incRef();
+                    //     closure->upvalues[i] = upvalue;
+                    // }
+
+                    if (defValClosure->upvalues.size() > 0) {
+                        auto paramName = param.value().name;
+                        runtimeError("Captured variables in default parameter '"+toUTF8StdString(paramName)+"' value expressions are not allowed"
+                                    +" in declaration of function '"+toUTF8StdString(closure->function->name)+"'.");
+                        return false;
+                    }
+
+                    call(defValClosure,CallSpec(0));
+                    defValFrames.push_back(std::make_pair(objVal(defValClosure) ,*(frames.end()-1)) );
+                    popFrame();
+
+                    // push a place-holder (nil) value onto the stack for the value
+                    //  (since caller didn't push it before the call)
+                    push(nilVal());
+
+                    // record ...
+
+
+                    // now add the map from param index to arg where it will be on the stack
+                    //  once the default value func returns
+                    callframe.reorderArgs[paramIndex] = argCount;
+                    argCount++;
+
                 }
-
-                call(defValClosure,0);
-                defValFrames.push_back(*(frames.end()-1));
-                frames.pop_back();
-
-                argCount++;
             }
-            else {
-                runtimeError("Call to function '"+toUTF8StdString(closure->function->name)+"'"
-                             +" is missing argument for parameter '"+toUTF8StdString(paramName)+"'"
-                             +" (and no default is specified)");
-                return false;
-            }
+
+            // if the final arg ordering matches parameter ordering (i.e. in-order)
+            //  then no need to reorder stack later
+            bool argsInOrder = true;
+            for(int16_t i=0; i<callframe.reorderArgs.size();i++)
+                if (callframe.reorderArgs[i] != i) {
+                    argsInOrder=false;
+                    break;
+                }
+            if (argsInOrder)
+                callframe.reorderArgs.clear();
         }
+        else if (argCount > closure->function->arity) {
+            runtimeError("Passed "+std::to_string(argCount)+" arguments for function "
+                        +toUTF8StdString(closure->function->name)+" which has "
+                        +std::to_string(closure->function->arity)+" parameters.");
+            return false;
+        }
+        assert(argCount == closure->function->arity);
     }
-    else if (argCount > closure->function->arity) {
-        runtimeError("Passed "+std::to_string(argCount)+" arguments for function "
-                    +toUTF8StdString(closure->function->name)+" which has "
-                    +std::to_string(closure->function->arity)+" parameters.");
-        return false;
-    }
-    assert(argCount == closure->function->arity);
 
     if (frames.size() > 128) {
         runtimeError("Stack overflow.");
         return false;
     }
 
-    CallFrame callframe {};
+
     callframe.closure = closure;
-    callframe.ip = closure->function->chunk->code.begin();
-    callframe.slots = &(*(stackTop - argCount - 1 + defValFrames.size()));
-    frames.push_back(callframe);
+    callframe.startIp = callframe.ip = closure->function->chunk->code.begin();
+    callframe.slots = &(*(stackTop - argCount - 1));
+    pushFrame(callframe);
+    frameStart = true;
 
     // the closures for default arg values must be executed before this closure call, so put
     //  them above it on the frame stack
-    int f=defValFrames.size();
-    for(auto fi = defValFrames.rbegin(); fi != defValFrames.rend(); fi++) {
-        auto& frame { *fi };
-        frame.slots = &(*(stackTop - 1 + f));        
-        frames.push_back(frame);
-        f--;
-    }
+    // NB: although these default value call frames are all stacked one upon another, they
+    //     logically have the main callframe as their parent (so we set it as such)
+    auto numDefaultValueFrames = defValFrames.size();
+    if (numDefaultValueFrames>0) {
+        CallFrames::iterator parentCallFrame = frames.end()-1;
+        for(auto fi = defValFrames.rbegin(); fi != defValFrames.rend(); fi++) {
+            auto& closureFrame { *fi };
+            push(closureFrame.first); // push closure value for def val func
+            auto& frame { closureFrame.second };
+            frame.parent = parentCallFrame;
+            frame.slots = &(*(stackTop - 1));    
+            pushFrame(frame); 
+            // reset parent
+            (frames.end()-1)->parent = parentCallFrame;
 
-    if (frames.size() > 128) {
-        runtimeError("Stack overflow.");
-        return false;
+            frameStart = true;
+            numDefaultValueFrames--;
+        }
+
+        if (frames.size() > 128) {
+            runtimeError("Stack overflow.");
+            return false;
+        }
     }
 
     return true;
 }
 
 
-bool VM::call(ValueType builtinType, int argCount)
+
+bool VM::call(ValueType builtinType, const CallSpec& callSpec)
 {
-    auto argBegin = stackTop - argCount;
+    if (!callSpec.allPositional)
+        throw std::runtime_error("Named parameters unsupported in constructor for "+to_string(builtinType));
+    auto argBegin = stackTop - callSpec.argCount;
     auto argEnd = stackTop;
 
-    *(stackTop - argCount - 1) = construct(builtinType, argBegin, argEnd);
-    popN(argCount);
+    *(stackTop - callSpec.argCount - 1) = construct(builtinType, argBegin, argEnd);
+    popN(callSpec.argCount);
     return true;
 }
 
 
-bool VM::callValue(const Value& callee, int argCount)
+bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 {
     if (callee.isObj()) {
         switch (objType(callee)) {
             case ObjType::BoundMethod: {
                 ObjBoundMethod* boundMethod { asBoundMethod(callee) };
-                *(stackTop - argCount - 1) = boundMethod->receiver;
-                return call(boundMethod->method, argCount);
+                *(stackTop - callSpec.argCount - 1) = boundMethod->receiver;
+                return call(boundMethod->method, callSpec);
             }
             case ObjType::ObjectType: {
                 ObjObjectType* type = asObjectType(callee);
                 Value result { objVal(objInstanceVal(type)) };
-                *(stackTop - argCount - 1) = result;
+                *(stackTop - callSpec.argCount - 1) = result;
                 auto it = type->methods.find(initString->hash);
                 if (it != type->methods.end()) {
                     Value initializer { it->second.second };
-                    return call(asClosure(initializer), argCount);
+                    return call(asClosure(initializer), callSpec);
                 }
                 else {
-                    if (argCount != 0) {
-                        runtimeError("Expected 0 arguments for type instantiation, provided "+std::to_string(argCount));
+                    if (callSpec.argCount != 0) {
+                        runtimeError("Expected 0 arguments for type instantiation, provided "+std::to_string(callSpec.argCount));
                         return false;
                     }
                 }
                 return true;
             }
             case ObjType::Closure:
-                return call(asClosure(callee), argCount);
+                return call(asClosure(callee), callSpec);
             case ObjType::Native: {
                 NativeFn native = asNative(callee)->function;
-                Value result { (this->*native)(argCount, &(*stackTop) - argCount) };
-                *(stackTop - argCount - 1) = result;
-                popN(argCount);
+                Value result { (this->*native)(callSpec.argCount, &(*stackTop) - callSpec.argCount) };
+                *(stackTop - callSpec.argCount - 1) = result;
+                popN(callSpec.argCount);
                 return true;
             }
             default:
@@ -301,14 +362,15 @@ bool VM::callValue(const Value& callee, int argCount)
     }
     else if (callee.isType()) {
         auto type { callee.asType() };
-        return call(type, argCount);
+        return call(type, callSpec);
     }
     runtimeError("Only functions, builtin-types, objects and actors can be called.");
     return false;
 }
 
 
-bool VM::invokeFromType(ObjObjectType* type, ObjString* name, int argCount)
+
+bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec)
 {
     auto it = type->methods.find(name->hash);
     if (it == type->methods.end()) {
@@ -316,14 +378,14 @@ bool VM::invokeFromType(ObjObjectType* type, ObjString* name, int argCount)
         return false;
     }
     Value method { it->second.second };
-    return call(asClosure(method), argCount);
+    return call(asClosure(method), callSpec);
 }
 
 
 
-bool VM::invoke(ObjString* name, int argCount)
+bool VM::invoke(ObjString* name, const CallSpec& callSpec)
 {
-    Value receiver { peek(argCount) };
+    Value receiver { peek(callSpec.argCount) };
     if (!isInstance(receiver)) {
         runtimeError("Only instances have methods.");
         return false;
@@ -335,11 +397,11 @@ bool VM::invoke(ObjString* name, int argCount)
     auto it = instance->properties.find(name->hash);
     if (it != instance->properties.end()) { // it is a prop
         Value value { it->second };
-        *(stackTop - argCount - 1) = value;
-        return callValue(value, argCount);
+        *(stackTop - callSpec.argCount - 1) = value;
+        return callValue(value, callSpec);
     }
 
-    return invokeFromType(instance->instanceType, name, argCount);
+    return invokeFromType(instance->instanceType, name, callSpec);
 }
 
 
@@ -527,6 +589,48 @@ void VM::closeUpvalues(Value* last)
 }
 
 
+// execute OpCode::Return 
+//  returns the call frame's result Value (doesn't push on stack, or update current frame)
+Value VM::opReturn()
+{
+    auto returningFrame { frames.back() };
+
+    Value result = pop();
+    closeUpvalues(returningFrame.slots);
+
+    if (!returningFrame.forwardStreamRefs.empty()) {
+        auto funcName { returningFrame.closure->function->name };
+        //std::cout << "returning frame "+toUTF8StdString(funcName)+" has forward stream refs" << std::endl;//!!!                    
+        for(auto& forwardStreamRef : returningFrame.forwardStreamRefs) {
+            const auto& name { forwardStreamRef.first };
+            auto& stream { forwardStreamRef.second };
+            #ifdef DEBUG_BUILD
+            assert(isStream(stream));
+            if (name != funcName) // shouldn't happen
+                throw std::runtime_error("invalid forward stream reference "+toUTF8StdString(name)+" in func "+toUTF8StdString(funcName));
+            #endif
+            if (!isStream(result)) 
+                throw std::runtime_error("Func '"+toUTF8StdString(funcName)+"' must return a stream (not type "+result.typeName()+")");            
+            asStream(stream)->patch(name,result);
+        }
+    }
+
+    popFrame();
+
+    if (!frames.empty()) {
+        auto popCount = &(*stackTop) - returningFrame.slots;
+        //stackTop -= popCount;
+        // loop to ensure stack Values unref'd
+        // TODO: could make popn(n) method
+        for(auto i=0; i<popCount; i++)
+            pop();
+    }
+
+    return result;
+}
+
+
+
 void VM::defineMethod(ObjString* name)
 {
     Value method = peek(0);
@@ -661,7 +765,47 @@ VM::InterpretResult VM::execute()
                 goto postInstructionDispatch;
         }
 
+
+        if (frameStart) {
+            // handle assignment of default param values to tail of args slots
+            //  (hence, this must happen before reordering below)
+            if (!frame->tailArgValues.empty()) {
+                int16_t argIndex = frame->closure->function->arity - frame->tailArgValues.size();
+                for(const auto& argValue : frame->tailArgValues) {
+                    *(frame->slots + 1 + argIndex) = argValue;
+                    argIndex++;
+                }
+                frame->tailArgValues.clear();
+            }
+
+            // handle re-ordering arguments on top of stack 
+            //  (to reorder from caller argument order to callee parameter order)
+            if (!frame->reorderArgs.empty()) {
+
+                const auto& reorder { frame->reorderArgs };
+                auto argCount { reorder.size() };
+                Value args[argCount];
+                // pop args from stack (they're in reverse order from top)
+                for(int16_t ai=argCount-1;ai>=0;ai--) 
+                    args[ai] = pop();            
+                // re-push in callee parameter order
+                for(auto pi=0; pi<argCount;pi++) {
+                    #ifdef DEBUG_BUILD
+                    assert(reorder[pi] != -1);
+                    #endif
+                    push(args[reorder[pi]]);
+                }
+                
+                frame->reorderArgs.clear();
+            }
+
+
+        }
+
+
         instruction = readByte();
+        frameStart = false;
+
         switch(instruction) {
             case asByte(OpCode::Constant): {
                 Value constant = readConstant();
@@ -888,8 +1032,8 @@ VM::InterpretResult VM::execute()
                 break;
             }
             case asByte(OpCode::Call): {
-                uint8_t argCount = readByte();
-                if (!callValue(peek(argCount), argCount))
+                CallSpec callSpec{frame->ip};
+                if (!callValue(peek(callSpec.argCount), callSpec))
                     return InterpretResult::RuntimeError;
                 frame = frames.end()-1;
                 break;
@@ -900,10 +1044,12 @@ VM::InterpretResult VM::execute()
                     return InterpretResult::RuntimeError;
                 break;
             }
+            // TODO: reimplement optimization to use Invoke as single step for object.method()
+            //  instead of current two step push & call (see original Antlr visitor compiler impl)
             case asByte(OpCode::Invoke): {
                 ObjString* method = readString();
-                int argCount = readByte();
-                if (!invoke(method, argCount))
+                CallSpec callSpec{frame->ip};
+                if (!invoke(method, callSpec))
                     return InterpretResult::RuntimeError;
                 frame = frames.end()-1;
                 break;
@@ -931,48 +1077,56 @@ VM::InterpretResult VM::execute()
                 break;
             }
             case asByte(OpCode::Return): {
-                auto returningFrame { frames.back() };
 
-                Value result = pop();
-                closeUpvalues(returningFrame.slots);
+                try {
+                    Value result = opReturn();
 
-                if (!returningFrame.forwardStreamRefs.empty()) {
-                    auto funcName { returningFrame.closure->function->name };
-                    //std::cout << "returning frame "+toUTF8StdString(funcName)+" has forward stream refs" << std::endl;//!!!                    
-                    for(auto& forwardStreamRef : returningFrame.forwardStreamRefs) {
-                        const auto& name { forwardStreamRef.first };
-                        auto& stream { forwardStreamRef.second };
-                        #ifdef DEBUG_BUILD
-                        assert(isStream(stream));
-                        if (name != funcName) // shouldn't happen
-                            throw std::runtime_error("invalid forward stream reference "+toUTF8StdString(name)+" in func "+toUTF8StdString(funcName));
-                        #endif
-                        if (!isStream(result)) {
-                            runtimeError("Func '"+toUTF8StdString(funcName)+"' must return a stream (not type "+result.typeName()+")");
-                            return InterpretResult::RuntimeError;
-                        }
-                        asStream(stream)->patch(name,result);
-                    }
-                }
-
-                frames.pop_back();
-
-                if (frames.empty()) {
-                    pop();
-                    freeObjects();
-
-                    return InterpretResult::OK;
-                }
-                else {
-                    auto popCount = &(*stackTop) - returningFrame.slots;
-                    //stackTop -= popCount;
-                    // loop to ensure stack Values unref'd
-                    // TODO: could make popn(n) method
-                    for(auto i=0; i<popCount; i++)
-                        pop();
                     push(result);
+
+                    if (frames.empty()) {
+                        pop();
+                        freeObjects();
+
+                        return InterpretResult::OK;
+                    }
+
                     frame = frames.end() -1;
+                    if (frame->ip == frame->startIp)
+                        frameStart = true;
+
+                } catch (std::runtime_error& e) {
+                    runtimeError(std::string(e.what()));
+                    return InterpretResult::RuntimeError;
                 }
+
+                break;
+            }
+            case asByte(OpCode::ReturnStore): {
+
+                try {
+                    Value result = opReturn();
+                
+                    if (frames.empty()) {
+                        freeObjects();
+
+                        return InterpretResult::OK;
+                    }
+
+                    CallFrames::iterator parentFrame = frame->parent;        
+                    #ifdef DEBUG_BUILD
+                    assert(parentFrame != frames.end());
+                    #endif            
+                    parentFrame->tailArgValues.push_back(result);
+
+                    frame = frames.end() -1;
+                    if (frame->ip == frame->startIp)
+                        frameStart = true;
+
+                } catch (std::runtime_error& e) {
+                    runtimeError(std::string(e.what()));
+                    return InterpretResult::RuntimeError;
+                }
+
                 break;
             }
             case asByte(OpCode::ConstNil): {
@@ -1121,6 +1275,8 @@ void VM::resetStack()
     stackTop = stack.begin();
 
     frames.clear();
+    frames.reserve(128);
+    frameStart = false;
 
     openUpvalues.clear(); // TODO: need to deref or delete?
 }

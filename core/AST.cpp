@@ -662,6 +662,15 @@ void Variable::output(std::ostream& os, int indent) const
 
 
 
+bool Call::namedArgs() const
+{
+    for(const auto& arg : args)
+        if (!arg.first.isEmpty())
+            return true;
+    return false;
+}
+
+
 void Call::accept(ASTVisitor& v)
 {
     if (v.visitFirst())
