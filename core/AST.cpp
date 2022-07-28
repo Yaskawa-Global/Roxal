@@ -45,6 +45,9 @@ void File::accept(ASTVisitor& v)
 
 void File::acceptChildren(ASTVisitor& v)
 {
+    for(auto& annot : annotations)
+        annot->accept(v);
+
     for(auto& declOrStmt : declsOrStmts ) {
 
         if (std::holds_alternative<ptr<Declaration>>(declOrStmt))
@@ -70,7 +73,10 @@ void File::acceptChildren(ASTVisitor& v)
 void File::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"File" << std::endl;
-    //sourceOut();
+
+    for(auto& annot : annotations)
+        annot->output(os,indent+1);
+
     for(auto& declOrStmt : declsOrStmts ) 
         if (std::holds_alternative<ptr<Declaration>>(declOrStmt))
             std::get<ptr<Declaration>>(declOrStmt)->output(os,indent+1);
@@ -104,6 +110,50 @@ void SingleInput::output(std::ostream& os, int indent) const
     os << spaces(indent)+"SingleInput" << std::endl;
     stmt->output(os,indent+1);
 }
+
+
+
+bool Annotation::namedArgs() const
+{
+    for(const auto& arg : args)
+        if (!arg.first.isEmpty())
+            return true;
+    return false;
+}
+
+
+void Annotation::accept(ASTVisitor& v)
+{
+    if (v.visitFirst())
+        v.visit(std::dynamic_pointer_cast<Annotation>(shared_from_this()));
+
+    if (v.visitChildren())
+        acceptChildren(v);
+
+    if (v.visitLast())
+        v.visit(std::dynamic_pointer_cast<Annotation>(shared_from_this()));
+}
+
+void Annotation::acceptChildren(ASTVisitor& v)
+{
+    for(auto& arg : args)
+        arg.second->accept(v);
+}
+
+
+
+void Annotation::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"@" << toUTF8StdString(name) << std::endl;
+    for(auto& arg : args) {
+        auto argName { arg.first };
+        if (!argName.isEmpty())
+            os << spaces(indent+2) << toUTF8StdString(argName) << " =" << std::endl;
+        arg.second->output(os,indent+3);
+    }
+}
+
+
 
 
 
@@ -321,7 +371,7 @@ void VarDecl::accept(ASTVisitor& v)
     if (v.visitFirst())
         v.visit(std::dynamic_pointer_cast<VarDecl>(shared_from_this())); 
 
-    if (v.visitChildren())
+    if (v.visitChildren()) 
         acceptChildren(v);
 
     if (v.visitLast())
@@ -338,7 +388,10 @@ void VarDecl::acceptChildren(ASTVisitor& v)
 void VarDecl::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"VarDecl " << toUTF8StdString(name) << std::endl;
-    //sourceOut();
+
+    for(auto& annot : annotations)
+        annot->output(os,indent+1);
+
     if (initializer.has_value())
         initializer.value()->output(os,indent+1);
 }
@@ -366,7 +419,8 @@ void FuncDecl::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"FuncDecl" << std::endl;
     outputType(os,indent);
-    //sourceOut();
+    for(auto& annot : annotations)
+        annot->output(os,indent+1);
     func->output(os,indent+1);
 }
 
@@ -403,6 +457,8 @@ void Function::output(std::ostream& os, int indent) const
             os << toUTF8StdString(std::get<icu::UnicodeString>(returnType.value()));
     }
     os << std::endl;
+    for(auto& annot : annotations)
+        annot->output(os,indent+1);
     if (params.size()>0) {
         os << spaces(indent)+" params:" << std::endl;
         for(auto& param : params)
@@ -442,6 +498,8 @@ void Parameter::output(std::ostream& os, int indent) const
         os << spaces(indent) << " = " << std::endl;
         defaultValue.value()->output(os,indent+2);
     }
+    for(auto& annot : annotations)
+        annot->output(os,indent+1);
 }
 
 
@@ -485,6 +543,8 @@ void TypeDecl::output(std::ostream& os, int indent) const
         for(int i=1; i<implements.size();i++)
             os << ", " << toUTF8StdString(implements.at(i));
     }
+    for(auto& annot : annotations)
+        annot->output(os, indent+1);
     for(auto& method : methods)
         method->output(os, indent+1);
 }

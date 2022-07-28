@@ -264,12 +264,43 @@ ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
 
 
 
+// info to represent cases:
+//  (arg*) - call only with 0 or more args - (call==true)
+//  [arg+] - indexer only with 0 or more args - (indexer==true)
+//  .access - accessor only (accessor==true)
+//  .access(arg*) - accessor and call (with 0 or more args) (accessor=true && call==true)
+struct ArgsOrAccessorInfo {
+    bool call;
+    bool accessor;
+    bool indexer;
+    UnicodeString accessed; // for accessor (or annotation identifier)
+    // calls can include param names, indexers cannot (empty string if no name given)
+    typedef std::vector<ArgNameExpr> ArgNameExprVec;
+    ptr<ArgNameExprVec> args;
+};
+
+
+
 antlrcpp::Any ASTGenerator::visitFile_input(RoxalParser::File_inputContext *context)
 {
     visitStart();
 
     auto file = std::make_shared<File>();
     setSourceInfo(file, context);
+
+    if (context->annotation().size() > 0) {
+
+        for(size_t i=0; i< context->annotation().size();i++) {
+
+            auto annotInfo = visitAnnotation(context->annotation().at(i)).as<ptr<ArgsOrAccessorInfo>>();
+
+            auto annotation = std::make_shared<Annotation>();
+            annotation->name = annotInfo->accessed;
+            annotation->args = *annotInfo->args;
+
+            file->annotations.push_back(annotation);
+        }
+    }
 
     for(auto& declaration : context->declaration()) {
         auto declOrStmt { visitDeclaration(declaration) };
@@ -508,6 +539,20 @@ antlrcpp::Any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
     setSourceInfo(vardecl,context);
     vardecl->name = ident;
 
+    if (context->annotation().size() > 0) {
+
+        for(size_t i=0; i< context->annotation().size();i++) {
+
+            auto annotInfo = visitAnnotation(context->annotation().at(i)).as<ptr<ArgsOrAccessorInfo>>();
+
+            auto annotation = std::make_shared<Annotation>();
+            annotation->name = annotInfo->accessed;
+            annotation->args = *annotInfo->args;
+
+            vardecl->annotations.push_back(annotation);
+        }
+    }
+
     if (context->COLON()) { // type specified
         if (context->builtin_type())
             if (context->builtin_type()) {
@@ -535,6 +580,21 @@ antlrcpp::Any ASTGenerator::visitFunc_decl(RoxalParser::Func_declContext *contex
 
     auto funcdecl = std::make_shared<FuncDecl>();
     setSourceInfo(funcdecl,context);
+
+    if (context->annotation().size() > 0) {
+
+        for(size_t i=0; i< context->annotation().size();i++) {
+
+            auto annotInfo = visitAnnotation(context->annotation().at(i)).as<ptr<ArgsOrAccessorInfo>>();
+
+            auto annotation = std::make_shared<Annotation>();
+            annotation->name = annotInfo->accessed;
+            annotation->args = *annotInfo->args;
+
+            funcdecl->annotations.push_back(annotation);
+        }
+    }
+
     auto func = visitFunction(context->function());
     funcdecl->func = as<Function>(func);
 
@@ -607,6 +667,20 @@ antlrcpp::Any ASTGenerator::visitParameter(RoxalParser::ParameterContext *contex
     setSourceInfo(param,context->IDENTIFIER().at(0));
     param->name = ident;
 
+   if (context->annotation().size() > 0) {
+
+        for(size_t i=0; i< context->annotation().size();i++) {
+
+            auto annotInfo = visitAnnotation(context->annotation().at(i)).as<ptr<ArgsOrAccessorInfo>>();
+
+            auto annotation = std::make_shared<Annotation>();
+            annotation->name = annotInfo->accessed;
+            annotation->args = *annotInfo->args;
+
+            param->annotations.push_back(annotation);
+        }
+    }
+
     if (context->builtin_type()) {
         auto builtinType = visitBuiltin_type(context->builtin_type()).as<BuiltinType>();
         param->type = builtinType;
@@ -663,26 +737,110 @@ antlrcpp::Any ASTGenerator::visitType_decl(RoxalParser::Type_declContext *contex
     size_t identIndex = 0;
     typedecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
 
+   if (context->annotation().size() > 0) {
+
+        for(size_t i=0; i< context->annotation().size();i++) {
+
+            auto annotInfo = visitAnnotation(context->annotation().at(i)).as<ptr<ArgsOrAccessorInfo>>();
+
+            auto annotation = std::make_shared<Annotation>();
+            annotation->name = annotInfo->accessed;
+            annotation->args = *annotInfo->args;
+
+            typedecl->annotations.push_back(annotation);
+        }
+    }
+
     if (context->EXTENDS())
         typedecl->extends = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
 
     while(identIndex < context->IDENTIFIER().size())
         typedecl->implements.push_back(UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText()));
 
-    if (context->function().size() > 255) // TODO: revise
+    if (context->method().size() > 255) // TODO: revise
         throw std::runtime_error("Too many methods for one actor or object type.");
 
-    for(size_t i=0; i<context->function().size(); i++) {
+    for(size_t i=0; i<context->method().size(); i++) {
 
-        auto funcContext { context->function().at(i) };
+        auto methodContext { context->method().at(i) };
 
-        auto func = visitFunction(funcContext);
-        if (!isa<Function>(func))
-            throw std::runtime_error("Expected Function for methods of object or actor type");
+        auto func = visitMethod(methodContext);
+
         typedecl->methods.push_back(as<Function>(func));
     }
 
     return typeValue(typedecl);
+    visitEnd();
+}
+
+
+
+antlrcpp::Any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
+{
+    visitStart();
+
+    auto func = visitFunction(context->function());
+    if (!isa<Function>(func))
+        throw std::runtime_error("Expected Function for methods of object or actor type");
+
+    auto function = as<Function>(func);
+
+    // TODO: should visitAnnotation before visitFunction?
+    if (context->annotation().size() > 0) {
+
+        for(size_t i=0; i< context->annotation().size();i++) {
+
+            auto annotInfo = visitAnnotation(context->annotation().at(i)).as<ptr<ArgsOrAccessorInfo>>();
+
+            auto annotation = std::make_shared<Annotation>();
+            annotation->name = annotInfo->accessed;
+            annotation->args = *annotInfo->args;
+
+            function->annotations.push_back(annotation);
+        }
+    }
+    
+    return typeValue(function);
+    visitEnd();
+}
+
+
+
+
+// returns ptr<ArgsOrAccessorInfo>
+antlrcpp::Any ASTGenerator::visitAnnotation(RoxalParser::AnnotationContext *context)
+{
+    visitStart();
+
+    UnicodeString annotName { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
+
+    auto info = std::make_shared<ArgsOrAccessorInfo>();
+    info->accessor = info->indexer = false;
+    info->call = true;
+    info->accessed = annotName;
+
+    auto argexprs = std::make_shared<ArgsOrAccessorInfo::ArgNameExprVec>();
+    for(int i=0; i<context->annot_argument().size(); i++) {
+        auto argNameExpr = visitAnnot_argument(context->annot_argument().at(i)).as<ArgNameExpr>();
+        argexprs->push_back(argNameExpr);
+    }
+
+    info->args = argexprs;
+
+    return info;
+    visitEnd();
+}
+
+
+
+antlrcpp::Any ASTGenerator::visitAnnot_argument(RoxalParser::Annot_argumentContext *context)
+{
+    visitStart();
+
+    UnicodeString argName { context->IDENTIFIER()? UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) : UnicodeString() };
+    ptr<Expression> expr = as<Expression>(visitExpression(context->expression()));
+
+    return std::make_pair(argName, expr);
     visitEnd();
 }
 
@@ -1035,20 +1193,6 @@ antlrcpp::Any ASTGenerator::visitUnary(RoxalParser::UnaryContext *context)
 }
 
 
-// info to represent cases:
-//  (arg*) - call only with 0 or more args - (call==true)
-//  [arg+] - indexer only with 0 or more args - (indexer==true)
-//  .access - accessor only (accessor==true)
-//  .access(arg*) - accessor and call (with 0 or more args) (accessor=true && call==true)
-struct ArgsOrAccessorInfo {
-    bool call;
-    bool accessor;
-    bool indexer;
-    UnicodeString accessed;
-    // calls can include param names, indexers cannot (empty string if no name given)
-    typedef std::vector<Call::ArgNameExpr> ArgNameExprVec;
-    ptr<ArgNameExprVec> args;
-};
 
 // return will be either ptr<Call> or ptr<UnaryOp(Accessor)>
 antlrcpp::Any ASTGenerator::visitCall(RoxalParser::CallContext *context)
@@ -1146,7 +1290,7 @@ antlrcpp::Any ASTGenerator::visitArguments(RoxalParser::ArgumentsContext *contex
 
     auto argexprs = std::make_shared<ArgsOrAccessorInfo::ArgNameExprVec>();
     for(int i=0; i<context->argument().size(); i++) {
-        auto argNameExpr = visitArgument(context->argument().at(i)).as<Call::ArgNameExpr>();
+        auto argNameExpr = visitArgument(context->argument().at(i)).as<ArgNameExpr>();
         argexprs->push_back(argNameExpr);
     }
 

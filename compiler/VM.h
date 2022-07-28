@@ -14,7 +14,7 @@ typedef std::vector<CallFrame> CallFrames;
 
 struct CallFrame {
     #ifdef DEBUG_BUILD
-    CallFrame() : closure(nullptr), slots(nullptr), parent(nullptr) {}
+    CallFrame() : closure(nullptr), slots(nullptr) {}
     #endif
     ObjClosure* closure;
     Chunk::iterator startIp;

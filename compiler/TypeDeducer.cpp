@@ -27,6 +27,12 @@ void TypeDeducer::visit(ptr<ast::SingleInput> ast)
 }
 
 
+void TypeDeducer::visit(ptr<ast::Annotation> ast)
+{
+    ast->acceptChildren(*this);
+}
+
+
 void TypeDeducer::visit(ptr<ast::TypeDecl> ast)
 {
     ast->acceptChildren(*this);

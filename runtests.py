@@ -18,7 +18,8 @@ tests = [
     'if',
     'func_param_default', 'func_param_default2', 'func_param_default3','func_param_default4',
     'typeobj1', 'typeobj2', 'typeobj3', 'typeobj4', 'typeobj5',
-    'method_named_param'
+    'method_named_param',
+    'annot1'
 ]
 
 test_dir='../tests'

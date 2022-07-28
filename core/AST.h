@@ -18,6 +18,7 @@ using roxal::type::to_string;
 
 class File;
 class SingleInput;
+class Annotation;
 class Declaration;
 class Statement;
 class TypeDecl;
@@ -63,6 +64,7 @@ public:
 
     virtual void visit(ptr<File> ast) = 0;
     virtual void visit(ptr<SingleInput> ast) = 0;
+    virtual void visit(ptr<Annotation> ast) = 0;
     virtual void visit(ptr<TypeDecl> ast) = 0;
     virtual void visit(ptr<FuncDecl> ast) = 0;
     virtual void visit(ptr<VarDecl> ast) = 0;
@@ -110,6 +112,10 @@ struct LinePos {
 };
 
 
+typedef std::pair<icu::UnicodeString, ptr<Expression>> ArgNameExpr;
+
+
+
 struct AST : public std::enable_shared_from_this<AST>
 {
     AST() {}
@@ -144,6 +150,10 @@ struct AST : public std::enable_shared_from_this<AST>
     std::optional<ptr<type::Type>> type; // type information, if known
     void outputType(std::ostream& os, int indent) const;
 
+    // annotations (select AST node types)
+    std::vector<ptr<Annotation>> annotations;
+
+
     // user-defined attributes
     //  (e.g. allow client code to annotate the AST)
     std::map<std::string, std::any> attrs;
@@ -169,6 +179,21 @@ struct File : public AST {
 
 struct SingleInput : public AST {
     ptr<Statement> stmt;
+
+    virtual void accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v);
+};
+
+
+struct Annotation : public AST {
+
+    icu::UnicodeString name;
+
+    std::vector<ArgNameExpr> args;
+
+    bool namedArgs() const; // any args named?
 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -437,7 +462,6 @@ struct Call : public Expression {
 
     ptr<Expression> callable;
 
-    typedef std::pair<icu::UnicodeString, ptr<Expression>> ArgNameExpr;
     std::vector<ArgNameExpr> args;
 
     bool namedArgs() const; // any args named?
@@ -447,6 +471,7 @@ struct Call : public Expression {
 
     void acceptChildren(ASTVisitor& v);
 };
+
 
 
 struct Index : public Expression {

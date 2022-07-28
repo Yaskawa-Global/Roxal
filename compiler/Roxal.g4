@@ -17,7 +17,7 @@ tokens { INDENT, DEDENT }
  */
 
 file_input
- : ( NEWLINE | declaration )* EOF
+ : annotation* ( NEWLINE | declaration )* EOF
  ;
 
 
@@ -76,11 +76,11 @@ while_stmt
 
 
 var_decl
- : VAR IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)?
+ : annotation* VAR IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)?
  ;
 
 func_decl
- : function
+ : annotation* function
  ;
 
 function
@@ -93,7 +93,7 @@ parameters
  ;
 
 parameter
- : IDENTIFIER (':' (builtin_type | IDENTIFIER) )? (EQUALS expression)?
+ : annotation* IDENTIFIER (':' (builtin_type | IDENTIFIER) )? (EQUALS expression)?
  ;
 
 
@@ -103,12 +103,24 @@ suite
  ;
 
 type_decl
- : TYPE (OBJECT | ACTOR) IDENTIFIER 
+ : annotation* TYPE (OBJECT | ACTOR) IDENTIFIER 
     (EXTENDS IDENTIFIER)? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)? ':' NEWLINE
-   INDENT function* DEDENT
+   INDENT method* DEDENT
  ;
 
+method
+ : annotation* function
+ ;
 
+annotation
+ : AT IDENTIFIER 
+   ( OPEN_PAREN (annot_argument (COMMA annot_argument)* COMMA?)? CLOSE_PAREN )?
+   NEWLINE 
+ ;
+
+annot_argument
+ : (IDENTIFIER '=')? expression
+ ; 
 
 
 //TODO: assignment is an expression, but maybe we don't want assignments
@@ -290,6 +302,7 @@ MINUS : '-';
 MULT: '\u00D7'; // ×
 DIV : '/';
 MOD : '%';
+AT: '@';
 OR: 'or';
 AND: 'and';
 NOT: 'not';

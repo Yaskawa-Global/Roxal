@@ -159,6 +159,14 @@ void RoxalCompiler::visit(ptr<ast::SingleInput> ast)
 }
 
 
+void RoxalCompiler::visit(ptr<ast::Annotation> ast)
+{
+    currentNode = ast;
+    // currently, we don't generate any code for annotations
+    //ast->acceptChildren(*this);
+}
+
+
 void RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 {
     currentNode = ast;

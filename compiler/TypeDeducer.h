@@ -17,6 +17,7 @@ public:
 
     virtual void visit(ptr<ast::File> ast);
     virtual void visit(ptr<ast::SingleInput> ast);
+    virtual void visit(ptr<ast::Annotation> ast);
     virtual void visit(ptr<ast::TypeDecl> ast);
     virtual void visit(ptr<ast::FuncDecl> ast);
     virtual void visit(ptr<ast::VarDecl> ast);
