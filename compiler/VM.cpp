@@ -15,9 +15,9 @@ using namespace roxal;
 
 
 VM::VM()
-    : lineMode(false), threadSleep(false)
+    : lineMode(false)
 {
-    resetStack();
+    thread = nullptr;
     defineBuiltinFunctions();
     defineNativeFunctions();
     initString = stringVal(UnicodeString("init"));
@@ -28,20 +28,9 @@ VM::VM()
 }
 
 
-VM::VM(std::istream& linestream)
-    : lineMode(true), lineStream(&linestream)
-{
-    resetStack();
-    defineBuiltinFunctions();
-    defineNativeFunctions();
-    initString = stringVal(UnicodeString("init"));
-    initString->incRef();
-    StreamEngine::instance();
-}
 
 VM::~VM()
 {
-    resetStack();
     globals.clear();
 
     initString->decRef();
@@ -80,11 +69,24 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
         return InterpretResult::CompileError;
 
     ObjClosure* closure = closureVal(function);
-    push(objVal(closure));
+    Value closureValue { objVal(closure) };
 
-    call(closure,CallSpec(0));
+    auto firstThread = std::make_shared<Thread>();     
+    threads.store(firstThread->id(), firstThread);
+    firstThread->spawn(closureValue);
 
-    auto result = this->execute();
+    // join all threads 
+    //  (note: threads being waited on may create additional threads)
+    while (threads.size() > 0) {
+        for(auto thread : threads.get()) {
+            thread.second->join();
+            threads.erase(thread.first);
+        }
+    }
+
+    threads.clear();
+
+    InterpretResult result = firstThread->result; 
 
     #if defined(DEBUG_TRACE_EXECUTION)
     if (globals.size() > 0) {        
@@ -94,23 +96,73 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
     }
     #endif
 
-    stack.clear();
     freeObjects();
 
     return result;
 }
 
 
-
-void VM::interpretLine()
+VM::InterpretResult VM::interpretLine(std::istream& linestream)
 {
+    lineMode = true;
+    lineStream = &linestream;
+    //...
+    return InterpretResult::OK;
+}
 
+
+
+thread_local ptr<VM::Thread> VM::thread;
+
+
+void VM::Thread::spawn(Value closure)
+{
+    assert(isClosure(closure));
+
+    state = State::Spawned;
+    osthread = std::make_shared<std::thread>([this,closure]() { 
+        auto& vm { VM::instance() };
+
+        vm.thread = shared_from_this(); // set thread local storage member
+
+        vm.resetStack();
+        push(closure);
+        vm.call(asClosure(closure),CallSpec(0));
+
+        result = vm.execute();
+
+        stack.clear();
+
+        state = State::Completed;
+    });
+}
+
+void VM::Thread::join()
+{
+    if (state == State::Constructed)
+        throw std::runtime_error("Can't join Thread that hasn't completed spawning yet. id:"+std::to_string(thisid));
+
+    if ((osthread == nullptr) || !osthread->joinable())
+        throw std::runtime_error("Can't join Thread that hasn't isn't joinable. id:"+std::to_string(thisid));
+
+    osthread->join();
+    osthread = nullptr;
+
+    state = State::Completed;
+}
+
+void VM::Thread::detach()
+{
+    assert(state != State::Constructed);
+
+    if (osthread != nullptr)
+        osthread->detach();
 }
 
 
 
 
-void VM::push(const Value& value)
+void VM::Thread::push(const Value& value)
 {
     *stackTop = value;
     stackTop++;
@@ -122,7 +174,7 @@ void VM::push(const Value& value)
 }
 
 
-Value VM::pop()
+Value VM::Thread::pop()
 {    
     #ifdef DEBUG_BUILD
     if (stackTop == stack.begin())
@@ -138,14 +190,14 @@ Value VM::pop()
     return retValue;
 }
 
-void VM::popN(size_t n)
+void VM::Thread::popN(size_t n)
 {
     for(auto i=0; i<n; i++) pop();
 }
 
 
 
-Value VM::peek(int distance)
+Value VM::Thread::peek(int distance)
 {
     #ifdef DEBUG_BUILD
     if (stackTop - stack.begin() <= distance)
@@ -153,6 +205,12 @@ Value VM::peek(int distance)
     #endif
     return *(stackTop - 1 - distance);
 }
+
+
+std::atomic<uint64_t> VM::Thread::nextId = 1;
+
+
+
 
 
 
@@ -226,8 +284,8 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
                     }
 
                     call(defValClosure,CallSpec(0));
-                    defValFrames.push_back(std::make_pair(objVal(defValClosure) ,*(frames.end()-1)) );
-                    popFrame();
+                    defValFrames.push_back(std::make_pair(objVal(defValClosure) ,*(thread->frames.end()-1)) );
+                    thread->popFrame();
 
                     // push a place-holder (nil) value onto the stack for the value
                     //  (since caller didn't push it before the call)
@@ -264,7 +322,7 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
         assert(argCount == closure->function->arity);
     }
 
-    if (frames.size() > 128) {
+    if (thread->frames.size() > 128) {
         runtimeError("Stack overflow.");
         return false;
     }
@@ -272,9 +330,9 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
 
     callframe.closure = closure;
     callframe.startIp = callframe.ip = closure->function->chunk->code.begin();
-    callframe.slots = &(*(stackTop - argCount - 1));
-    pushFrame(callframe);
-    frameStart = true;
+    callframe.slots = &(*(thread->stackTop - argCount - 1));
+    thread->pushFrame(callframe);
+    thread->frameStart = true;
 
     // the closures for default arg values must be executed before this closure call, so put
     //  them above it on the frame stack
@@ -282,22 +340,22 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
     //     logically have the main callframe as their parent (so we set it as such)
     auto numDefaultValueFrames = defValFrames.size();
     if (numDefaultValueFrames>0) {
-        CallFrames::iterator parentCallFrame = frames.end()-1;
+        CallFrames::iterator parentCallFrame = thread->frames.end()-1;
         for(auto fi = defValFrames.rbegin(); fi != defValFrames.rend(); fi++) {
             auto& closureFrame { *fi };
             push(closureFrame.first); // push closure value for def val func
             auto& frame { closureFrame.second };
             frame.parent = parentCallFrame;
-            frame.slots = &(*(stackTop - 1));    
-            pushFrame(frame); 
+            frame.slots = &(*(thread->stackTop - 1));    
+            thread->pushFrame(frame); 
             // reset parent
-            (frames.end()-1)->parent = parentCallFrame;
+            (thread->frames.end()-1)->parent = parentCallFrame;
 
-            frameStart = true;
+            thread->frameStart = true;
             numDefaultValueFrames--;
         }
 
-        if (frames.size() > 128) {
+        if (thread->frames.size() > 128) {
             runtimeError("Stack overflow.");
             return false;
         }
@@ -312,10 +370,10 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
 {
     if (!callSpec.allPositional)
         throw std::runtime_error("Named parameters unsupported in constructor for "+to_string(builtinType));
-    auto argBegin = stackTop - callSpec.argCount;
-    auto argEnd = stackTop;
+    auto argBegin = thread->stackTop - callSpec.argCount;
+    auto argEnd = thread->stackTop;
 
-    *(stackTop - callSpec.argCount - 1) = construct(builtinType, argBegin, argEnd);
+    *(thread->stackTop - callSpec.argCount - 1) = construct(builtinType, argBegin, argEnd);
     popN(callSpec.argCount);
     return true;
 }
@@ -327,13 +385,13 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
         switch (objType(callee)) {
             case ObjType::BoundMethod: {
                 ObjBoundMethod* boundMethod { asBoundMethod(callee) };
-                *(stackTop - callSpec.argCount - 1) = boundMethod->receiver;
+                *(thread->stackTop - callSpec.argCount - 1) = boundMethod->receiver;
                 return call(boundMethod->method, callSpec);
             }
             case ObjType::ObjectType: {
                 ObjObjectType* type = asObjectType(callee);
                 Value result { objVal(objInstanceVal(type)) };
-                *(stackTop - callSpec.argCount - 1) = result;
+                *(thread->stackTop - callSpec.argCount - 1) = result;
                 auto it = type->methods.find(initString->hash);
                 if (it != type->methods.end()) {
                     Value initializer { it->second.second };
@@ -351,8 +409,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 return call(asClosure(callee), callSpec);
             case ObjType::Native: {
                 NativeFn native = asNative(callee)->function;
-                Value result { (this->*native)(callSpec.argCount, &(*stackTop) - callSpec.argCount) };
-                *(stackTop - callSpec.argCount - 1) = result;
+                Value result { (this->*native)(callSpec.argCount, &(*thread->stackTop) - callSpec.argCount) };
+                *(thread->stackTop - callSpec.argCount - 1) = result;
                 popN(callSpec.argCount);
                 return true;
             }
@@ -397,7 +455,7 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
     auto it = instance->properties.find(name->hash);
     if (it != instance->properties.end()) { // it is a prop
         Value value { it->second };
-        *(stackTop - callSpec.argCount - 1) = value;
+        *(thread->stackTop - callSpec.argCount - 1) = value;
         return callValue(value, callSpec);
     }
 
@@ -505,7 +563,7 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
 
                 // since the returned stream doesn't exist yet, create a named stream proxy
                 //  using the function name
-                auto frame { frames.end()-1 };
+                auto frame { thread->frames.end()-1 };
                 auto func { frame->closure->function };
                 // TODO: check this is a func not a proc
 
@@ -593,7 +651,7 @@ void VM::closeUpvalues(Value* last)
 //  returns the call frame's result Value (doesn't push on stack, or update current frame)
 Value VM::opReturn()
 {
-    auto returningFrame { frames.back() };
+    auto returningFrame { thread->frames.back() };
 
     Value result = pop();
     closeUpvalues(returningFrame.slots);
@@ -615,10 +673,10 @@ Value VM::opReturn()
         }
     }
 
-    popFrame();
+    thread->popFrame();
 
-    if (!frames.empty()) {
-        auto popCount = &(*stackTop) - returningFrame.slots;
+    if (!thread->frames.empty()) {
+        auto popCount = &(*thread->stackTop) - returningFrame.slots;
         //stackTop -= popCount;
         // loop to ensure stack Values unref'd
         // TODO: could make popn(n) method
@@ -651,17 +709,17 @@ void VM::defineNative(const std::string& name, NativeFn function)
 {
     UnicodeString uname { toUnicodeString(name) };
     Value funcVal { objVal(nativeVal(function)) };
-    globals[uname.hashCode()] = std::make_pair(uname,funcVal);
+    globals.store(uname.hashCode(), std::make_pair(uname,funcVal));
 }
 
 
 
 VM::InterpretResult VM::execute()
 {
-    if (frames.empty() || frames.back().closure->function->chunk->code.size()==0)
+    if (thread->frames.empty() || thread->frames.back().closure->function->chunk->code.size()==0)
         return InterpretResult::OK; // nothing to execute
 
-    auto frame { frames.end()-1 };
+    auto frame { thread->frames.end()-1 };
 
     auto readByte = [&]() -> uint8_t {
         #ifdef DEBUG_BUILD
@@ -757,16 +815,16 @@ VM::InterpretResult VM::execute()
         StreamEngine::instance()->updateStreamStates();
 
 
-        if (threadSleep) {
-            if (StreamEngine::instance()->currentTime() >= threadSleepUntil) {
-                threadSleep = false;
+        if (thread->threadSleep) {
+            if (StreamEngine::instance()->currentTime() >= thread->threadSleepUntil) {
+                thread->threadSleep = false;
             }
             else
                 goto postInstructionDispatch;
         }
 
 
-        if (frameStart) {
+        if (thread->frameStart) {
             // handle assignment of default param values to tail of args slots
             //  (hence, this must happen before reordering below)
             if (!frame->tailArgValues.empty()) {
@@ -804,8 +862,10 @@ VM::InterpretResult VM::execute()
 
 
         instruction = readByte();
-        frameStart = false;
+        thread->frameStart = false;
 
+        // TODO: consider if using gcc/clang extension will help performance:
+        //   https://stackoverflow.com/questions/8019849/labels-as-values-vs-switch-statement
         switch(instruction) {
             case asByte(OpCode::Constant): {
                 Value constant = readConstant();
@@ -1035,7 +1095,7 @@ VM::InterpretResult VM::execute()
                 CallSpec callSpec{frame->ip};
                 if (!callValue(peek(callSpec.argCount), callSpec))
                     return InterpretResult::RuntimeError;
-                frame = frames.end()-1;
+                frame = thread->frames.end()-1;
                 break;
             }
             case asByte(OpCode::Index): {
@@ -1051,7 +1111,7 @@ VM::InterpretResult VM::execute()
                 CallSpec callSpec{frame->ip};
                 if (!invoke(method, callSpec))
                     return InterpretResult::RuntimeError;
-                frame = frames.end()-1;
+                frame = thread->frames.end()-1;
                 break;
             }
             case asByte(OpCode::Closure): {
@@ -1072,7 +1132,7 @@ VM::InterpretResult VM::execute()
                 break;
             }
             case asByte(OpCode::CloseUpvalue): {
-                closeUpvalues(&(*(stackTop -1)));
+                closeUpvalues(&(*(thread->stackTop -1)));
                 pop();
                 break;
             }
@@ -1083,16 +1143,17 @@ VM::InterpretResult VM::execute()
 
                     push(result);
 
-                    if (frames.empty()) {
+                    if (thread->frames.empty()) {
                         pop();
+
                         freeObjects();
 
                         return InterpretResult::OK;
                     }
 
-                    frame = frames.end() -1;
+                    frame = thread->frames.end() -1;
                     if (frame->ip == frame->startIp)
-                        frameStart = true;
+                        thread->frameStart = true;
 
                 } catch (std::runtime_error& e) {
                     runtimeError(std::string(e.what()));
@@ -1106,7 +1167,7 @@ VM::InterpretResult VM::execute()
                 try {
                     Value result = opReturn();
                 
-                    if (frames.empty()) {
+                    if (thread->frames.empty()) {
                         freeObjects();
 
                         return InterpretResult::OK;
@@ -1114,13 +1175,13 @@ VM::InterpretResult VM::execute()
 
                     CallFrames::iterator parentFrame = frame->parent;        
                     #ifdef DEBUG_BUILD
-                    assert(parentFrame != frames.end());
+                    assert(parentFrame != thread->frames.end());
                     #endif            
                     parentFrame->tailArgValues.push_back(result);
 
-                    frame = frames.end() -1;
+                    frame = thread->frames.end() -1;
                     if (frame->ip == frame->startIp)
-                        frameStart = true;
+                        thread->frameStart = true;
 
                 } catch (std::runtime_error& e) {
                     runtimeError(std::string(e.what()));
@@ -1136,8 +1197,8 @@ VM::InterpretResult VM::execute()
             case asByte(OpCode::GetLocal): {
                 uint8_t slot = readByte();
                 #ifdef DEBUG_BUILD
-                auto stackIndex = (frame->slots - &stack[0]) + slot;
-                if (stackIndex >= stack.size())
+                auto stackIndex = (frame->slots - &thread->stack[0]) + slot;
+                if (stackIndex >= thread->stack.size())
                     throw std::runtime_error("Stack overflow access");
                 #endif
                 push(frame->slots[slot]);
@@ -1146,8 +1207,8 @@ VM::InterpretResult VM::execute()
             case asByte(OpCode::SetLocal): {
                 uint8_t slot = readByte();
                 #ifdef DEBUG_BUILD
-                auto stackIndex = (frame->slots - &stack[0]) + slot;
-                if (stackIndex >= stack.size())
+                auto stackIndex = (frame->slots - &thread->stack[0]) + slot;
+                if (stackIndex >= thread->stack.size())
                     throw std::runtime_error("Stack overflow access");
                 #endif
                 frame->slots[slot] = peek(0);
@@ -1155,14 +1216,13 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::DefineGlobal): {
                 ObjString* name = readString();
-                globals[name->hash] = std::make_pair(name->s,pop());
+                globals.store(name->hash, std::make_pair(name->s,pop()));
                 break;
             }
             case asByte(OpCode::GetGlobal): {
                 ObjString* name = readString();
-                auto gi = globals.find(name->hash);
-                if (gi != globals.end()) { // found
-                    Value value = gi->second.second;
+                if (globals.containsKey(name->hash)) {
+                    Value value = globals.at(name->hash).second;
                     push(value);
                 }
                 else {
@@ -1173,10 +1233,9 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::SetGlobal): {
                 ObjString* name = readString();
-                auto gi = globals.find(name->hash);
-                if (gi != globals.end()) { // found
+                if (globals.containsKey(name->hash)) { // found
                     // set new value, but leave it on stack (as assignment is an expression)
-                    globals[name->hash] = std::make_pair(name->s,peek(0));
+                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
                 }
                 else {
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
@@ -1186,15 +1245,14 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::SetNewGlobal): {
                 ObjString* name = readString();
-                auto gi = globals.find(name->hash);
-                if (gi != globals.end()) { // found
+                if (globals.containsKey(name->hash)) { // found
                     // set new value, but leave it on stack (as assignment is an expression)
-                    globals[name->hash] = std::make_pair(name->s,peek(0));
+                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
                 }
                 else {
                     // only automatic declaration of globals on assignment when
                     //   at global/module level scope
-                    globals[name->hash] = std::make_pair(name->s,peek(0));
+                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
                 }
                 break;
             }
@@ -1270,13 +1328,13 @@ VM::InterpretResult VM::execute()
 
 void VM::resetStack()
 {
-    stack.clear();
-    stack.resize(MaxStack);
-    stackTop = stack.begin();
+    thread->stack.clear();
+    thread->stack.resize(MaxStack);
+    thread->stackTop = thread->stack.begin();
 
-    frames.clear();
-    frames.reserve(128);
-    frameStart = false;
+    thread->frames.clear();
+    thread->frames.reserve(128);
+    thread->frameStart = false;
 
     openUpvalues.clear(); // TODO: need to deref or delete?
 }
@@ -1288,13 +1346,10 @@ void VM::freeObjects()
 
     // free objcts who's reference count dropped to 0
     while(!Obj::unrefedObjs.empty()) {
-        Obj* obj { Obj::unrefedObjs.back() };
-        Obj::unrefedObjs.pop_back();
-
-        delObj(obj);
-    }
-    
-    Obj::unrefedObjs.clear();
+        Obj::unrefedObjs.pop_back_and_apply([](Obj* obj) {
+            delObj(obj);
+        });
+    }    
 }
 
 
@@ -1304,7 +1359,7 @@ void VM::outputAllocatedObjs()
     if (Obj::allocatedObjs.size()>0) {
         std::cout << std::hex;
         std::cout << "== allocated Objs (" << Obj::allocatedObjs.size() << ")==" << std::endl;
-        for(const auto& p : Obj::allocatedObjs) {
+        for(const auto& p : Obj::allocatedObjs.get()) {
             std::cout << "  " << uint64_t(p.first) << " " << p.second << std::endl;
         }
         std::cout << std::dec;
@@ -1350,7 +1405,7 @@ void VM::runtimeError(const std::string& format, ...)
     va_end(args);
     fputs("\n", stderr);
 
-    auto frame { frames.end()-1 };
+    auto frame { thread->frames.end()-1 };
 
     size_t instruction = frame->ip - frame->closure->function->chunk->code.begin() - 1;
     int line = frame->closure->function->chunk->getLine(instruction);
@@ -1367,6 +1422,9 @@ void VM::defineBuiltinFunctions()
 {
     defineNative("print", &VM::print_builtin);
     defineNative("sleep", &VM::sleep_builtin);
+    defineNative("fork", &VM::fork_builtin);
+    defineNative("join", &VM::join_builtin);
+    defineNative("_threadid", &VM::threadid_builtin);
 }
 
 
@@ -1388,11 +1446,52 @@ Value VM::sleep_builtin(int argCount, Value* args)
 
     uint64_t nanosecs = uint64_t(args[0].asInt()) * 1000;
 
-    threadSleep = true;
-    threadSleepUntil = StreamEngine::instance()->currentTime() + nanosecs;
+    thread->threadSleep = true;
+    thread->threadSleepUntil = StreamEngine::instance()->currentTime() + nanosecs;
 
     return nilVal();
 }
+
+
+Value VM::fork_builtin(int argCount, Value* args)
+{
+    if ((argCount != 1) || !isClosure(args[0])) 
+        throw std::invalid_argument("fork expects single callable argument (e.g. func or proc)");
+
+    auto newThread = std::make_shared<Thread>();
+    threads.store(newThread->id(), newThread);
+    newThread->spawn(args[0]);
+
+    int32_t id = int32_t(newThread->id()); // FIXME: id is uint64
+
+    return intVal(id);
+}
+
+
+Value VM::join_builtin(int argCount, Value* args)
+{
+    if ((argCount != 1) || !args[0].isNumber())
+        throw std::invalid_argument("join expects single numeric argument (thread id)");
+
+    uint64_t id = args[0].asInt(); // FIXME
+
+    auto count = threads.erase_and_apply(id, [](ptr<Thread> t){
+        t->join();
+    });
+
+    return count > 0 ? trueVal() : falseVal();
+}
+
+
+Value VM::threadid_builtin(int argCount, Value* args)
+{
+    if (argCount != 0) 
+        throw std::invalid_argument("_threadid takes no arguments");
+
+    int32_t id = int32_t(thread->id()); // FIXME: id is uint64
+    return intVal(id);
+}
+
 
 
 

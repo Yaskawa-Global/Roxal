@@ -7,10 +7,10 @@
 using namespace roxal;
 
 
-std::vector<Obj*> Obj::unrefedObjs {};
+atomic_vector<Obj*> Obj::unrefedObjs {};
 
 #ifdef DEBUG_TRACE_MEMORY
-std::map<Obj*, const char*> Obj::allocatedObjs {};
+atomic_map<Obj*, const char*> Obj::allocatedObjs {};
 #endif
 
 
@@ -34,7 +34,7 @@ void Obj::unregisterStream()
 
 
 // interned strings table
-static std::unordered_map<int32_t, ObjString*> strings {};
+static atomic_unordered_map<int32_t, ObjString*> strings {};
 
 
 ObjString::ObjString(const UnicodeString& us)
@@ -46,19 +46,17 @@ ObjString::ObjString(const UnicodeString& us)
 
     // add ourself to the string intern table
     #ifdef DEBUG_BUILD
-    if (strings.find(hash) != strings.end())
+    if (strings.containsKey(hash))
         throw std::runtime_error("Duplicate ObjString creation");
     #endif
-    strings[hash] = this;
+    strings.store(hash, this);
 }
 
 
 ObjString::~ObjString()
 {
     // remove ourself from the strings intern table
-    auto si = strings.find(hash);
-    if (si != strings.end())
-        strings.erase(si);
+    strings.erase(hash);
 }
 
 
@@ -83,13 +81,13 @@ static uint32_t fnv1a32(const UnicodeString& s)
 ObjString* roxal::stringVal(const UnicodeString& s) 
 { 
     int32_t hash = s.hashCode();
-    auto si = strings.find(hash);
-    if (si == strings.end()) { // not found
+    auto objStr = strings.lookup(hash);
+    if (!objStr.has_value()) { // not found
         // create new
         return newObj<ObjString>(__func__,s); 
     }
     else { // found existing string
-        return si->second;
+        return objStr.value();
     }
 } 
 

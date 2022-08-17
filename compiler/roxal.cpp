@@ -28,7 +28,7 @@ static void repl()
 
     std::stringstream stream;
 
-    VM vm { stream };
+    VM& vm { VM::instance() };
 
     char* cline;
     std::string line;
@@ -46,7 +46,7 @@ static void repl()
             try {
                 stream << line << std::endl << std::flush;
 
-                vm.interpretLine();
+                vm.interpretLine(stream);
 
                 //std::cout << value->repr() << std::endl;
             } catch (std::exception& e) {
@@ -71,7 +71,7 @@ static void runFile(const std::string& path, bool outputBytecodeDissasembly=fals
     std::filesystem::path fileAndPath(path);
     std::string name { fileAndPath.stem().filename().string() };
 
-    VM vm {};
+    VM& vm { VM::instance() };
     vm.setDissasemblyOutput(outputBytecodeDissasembly);
     vm.interpret(sourcestream, name);
 }

@@ -8,6 +8,7 @@
 #include <unicode/ustring.h>
 
 #include <core/common.h>
+#include <core/atomic.h>
 #include "Chunk.h"
 #include "Value.h"
 
@@ -69,10 +70,10 @@ struct Obj {
     void registerStream();
     void unregisterStream();
 
-    static std::vector<Obj*> unrefedObjs;
+    static atomic_vector<Obj*> unrefedObjs;
 
     #ifdef DEBUG_TRACE_MEMORY
-    static std::map<Obj*, const char*> allocatedObjs;
+    static atomic_map<Obj*, const char*> allocatedObjs;
     #endif
 };
 
@@ -81,9 +82,9 @@ template<typename T, typename... Args>
 inline T* newObj(const char* comment, Args&&... args) {
     #ifdef DEBUG_TRACE_MEMORY
     T* o = new T(std::forward<Args>(args)...);
-    if (Obj::allocatedObjs.find(o) != Obj::allocatedObjs.end())
+    if (Obj::allocatedObjs.containsKey(o))
         throw std::runtime_error("new Obj* yielded address already allocated: "+toString(o));
-    Obj::allocatedObjs[o] = comment;
+    Obj::allocatedObjs.store(o, comment);
     return o;
     #else
     return new T(std::forward<Args>(args)...);
@@ -93,10 +94,9 @@ inline T* newObj(const char* comment, Args&&... args) {
 template<typename T>
 inline void delObj(T* o) {
     #ifdef DEBUG_TRACE_MEMORY
-    auto it = Obj::allocatedObjs.find(o);
-    if (it == Obj::allocatedObjs.end())
+    if (!Obj::allocatedObjs.containsKey(o))
         throw std::runtime_error("delete for unallocated Obj* "+toString(o)+" :"+objTypeName(o));
-    Obj::allocatedObjs.erase(it);
+    Obj::allocatedObjs.erase(o);
     #endif
     delete o;
 }
