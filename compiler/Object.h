@@ -5,6 +5,7 @@
 #include <vector>
 #include <sstream>
 #include <unordered_map>
+#include <atomic>
 #include <unicode/ustring.h>
 
 #include <core/common.h>
@@ -49,18 +50,19 @@ struct Obj {
     virtual ~Obj() {}
 
     ObjType type;
-    int32_t refCount;
+    std::atomic_int32_t refCount;
 
     inline void incRef() 
     {
-        if (refCount==0 && type==ObjType::Stream)
-            registerStream(); 
-        ++refCount; 
+        auto prevCount = refCount.fetch_add(1,std::memory_order_relaxed); 
+        if (prevCount==0 && type==ObjType::Stream)
+            registerStream();         
     }
 
     inline void decRef() 
     { 
-        if (--refCount <= 0) {
+        auto prevCount = refCount.fetch_sub(1,std::memory_order_relaxed);
+        if (prevCount <= 1) {
             if (type==ObjType::Stream)
                 unregisterStream();
             unrefedObjs.push_back(this);
