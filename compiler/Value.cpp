@@ -1,3 +1,5 @@
+#include <cassert>
+#include <bitset>
 #include <core/common.h>
 
 #include "Value.h"
@@ -18,8 +20,7 @@ using namespace roxal;
 
 std::string roxal::to_string(ValueType t)
 {
-    auto type = valueType(t);
-    switch (type) {
+    switch (t) {
     case ValueType::Nil: return "nil"; break; 
     case ValueType::Bool: return "bool"; break; 
     case ValueType::Byte: return "byte"; break;  
@@ -38,10 +39,227 @@ std::string roxal::to_string(ValueType t)
     case ValueType::Object: return "object"; break;
     case ValueType::Actor: return "actor"; break;
     default:
-        throw std::runtime_error("Unhandled type for to_string "+std::to_string(int(type)));
+        throw std::runtime_error("Unhandled type for to_string "+std::to_string(int(t)));
     }
 }
 
+
+#if defined(NAN_TAGGING)
+
+
+Value::Value(Obj* o) 
+{ 
+    o->incRef(); 
+    val = SignBit | QNAN | uint64_t(uintptr_t(o)); 
+}
+
+
+void Value::box() {
+    if (isBoxed() || !isBoxable()) return;
+    // allocate value on heap
+    Obj* obj;
+    if (isBool()) 
+        obj = newObj<ObjPrimitive>(__func__,asBool());
+    else if (isInt())
+        obj = newObj<ObjPrimitive>(__func__,asInt());
+    else if (isReal())
+        obj = newObj<ObjPrimitive>(__func__,asReal());
+    else if (isType())
+        obj = newObj<ObjPrimitive>(__func__,asType());
+    else
+        throw std::runtime_error("Unsupported type for auto-boxing "+typeName());
+
+    obj->incRef();
+    val = SignBit | QNAN | uint64_t(uintptr_t(obj));
+}
+
+
+void Value::unbox() {
+    if (!isBoxed()) return;
+
+    Obj* obj = asObj();
+
+    if (isBool())
+        *this = Value(asPrimitive(*this)->as.boolean);
+    else if (isInt())
+        *this = Value(asPrimitive(*this)->as.integer);
+    else if (isReal())
+        *this = Value(asPrimitive(*this)->as.real);
+    else if (isType())
+        *this = Value(asPrimitive(*this)->as.btype);
+    else
+        throw std::runtime_error("Unsupported type for auto-unboxing "+typeName());
+
+    obj->decRef();
+}
+
+
+void roxal::Value::incRefObj()
+{
+    #ifdef DEBUG_BUILD
+    if (!isObj() && !isBoxable())
+        throw std::runtime_error("Can't incRef non-object type "+typeName());
+    #endif
+    asObj()->incRef();
+}
+
+void roxal::Value::decRefObj()
+{
+    #ifdef DEBUG_BUILD
+    if (!isObj() && !isBoxable())
+        throw std::runtime_error("Can't decRef non-object type "+typeName());
+    #endif
+    asObj()->decRef();
+}
+
+
+
+bool Value::asBool(bool strict) const
+{
+    if (!isBoxed()) {
+        return val == (QNAN | TagTrue);
+    }
+    else {        
+        switch (asObj()->type) {
+        case ObjType::Bool: return asPrimitive(*this)->as.boolean;
+        default: ;
+        }
+    }
+    return false;
+}
+
+
+
+int32_t Value::asInt(bool strict) const
+{
+    Value unboxed;
+    Value const* v { this };
+    if (isBoxed()) {
+        unboxed = *this;
+        unboxed.unbox();
+        v = &unboxed;
+    }
+
+    if (!v->isObj()) {
+        switch (v->type()) {
+        case ValueType::Int: { uint64_t i {v->val & ~(QNAN | TypeTag)} ; return *reinterpret_cast<int32_t*>(&i); }
+        case ValueType::Real: return int32_t(*reinterpret_cast<const double*>(&val));
+        case ValueType::Bool: return (val == (QNAN | TagTrue)) ? 1 : 0;
+        case ValueType::Decimal: return 0; // TODO: implement
+        default: ;
+        }
+    } else {
+        if (isString(*v) && !strict) {
+            try {
+                auto str { toUTF8StdString(asString(*v)->s) };
+                if ((str.size() > 2) && (str[0] == '0')) {
+                    if (str[1] == 'x' || str[1]=='X')
+                        return std::stol(str.substr(2),nullptr,16);
+                    else if (str[1] == 'b' || str[1]=='B')
+                        return std::stol(str.substr(2),nullptr,2);
+                    else if (str[1] == 'o' || str[1]=='O')
+                        return std::stol(str.substr(2),nullptr,8);
+                }
+                return std::stol(str,nullptr,10);
+            } catch(...) { return 0; }
+        }
+    }
+    return 0;
+}
+
+
+
+double Value::asReal(bool strict) const
+{ 
+    Value unboxed;
+    Value const* v { this };
+    if (isBoxed()) {
+        unboxed = *this;
+        unboxed.unbox();
+        v = &unboxed;
+    }
+
+    if (!v->isObj()) {
+        switch (v->type()) {
+        case ValueType::Real: return *reinterpret_cast<const double*>(&val);
+        case ValueType::Int: { uint64_t i {v->val & ~(QNAN | TypeTag)}; return double(*reinterpret_cast<int32_t*>(&i)); }
+        case ValueType::Bool: return (val == (QNAN | TagTrue)) ? 1.0 : 0.0;
+        case ValueType::Decimal: return 0.0; // TODO: implement
+        default: ;
+        }
+    }
+    else {
+        if (isString(*v) && !strict) {
+            try {
+                auto str { toUTF8StdString(asString(*v)->s) };
+                return std::stod(str);
+            } catch(...) { return 0.0; }
+        }
+    }
+    return 0.0;
+}
+
+
+
+ValueType Value::asType(bool strict) const
+{
+    if (!isBoxed()) {
+        if (type()==ValueType::Type) {
+            uint64_t t {val & ~(QNAN | TypeTag)};
+            return ValueType(*reinterpret_cast<uint64_t*>(&t));
+        }
+    }
+    else {
+        if (asObj()->type==ObjType::Type)
+            return asPrimitive(*this)->as.btype;
+    }
+    return ValueType::Nil;
+}
+
+
+
+ValueType Value::type() const { 
+    return isNil() ? ValueType::Nil 
+                    : (isBool() ? ValueType::Bool 
+                                : (isReal() ? ValueType::Real 
+                                            : (isObj() ? asObj()->valueType()
+                                                        : ValueType((val & TypeTag) >> TypeTagOffset) ) ) ); 
+}
+
+
+std::string Value::typeName() const
+{
+    if (isNil())
+        return "nil";
+    else if (isBool())
+        return "bool";
+    else if (isInt())
+        return "int";
+    else if (isReal())
+        return "real";
+    else if (isType())
+        return "type";
+
+    if (isBoxed()) {
+        auto pobj = asPrimitive(*this);
+        if (pobj->isBool())
+            return "bool";
+        else if (pobj->isInt())
+            return "int";
+        else if (pobj->isReal())
+            return "real";
+        else if (pobj->isType())
+            return "type";
+        else
+            return "unknown";
+    }
+    else if (isObj())
+        return "object";
+    return "unknown";
+}
+
+
+#else
 
 roxal::Value::Value(Obj* o) 
     : _type(ValueType::Object) 
@@ -75,9 +293,9 @@ void Value::unbox() {
     if (isBool())
         as.boolean = asPrimitive(*this)->as.boolean;
     else if (isInt())
-        as.boolean = asPrimitive(*this)->as.integer;
+        as.integer = asPrimitive(*this)->as.integer;
     else if (isReal())
-        as.boolean = asPrimitive(*this)->as.real;
+        as.real = asPrimitive(*this)->as.real;
     else if (isType())
         as.btype = asPrimitive(*this)->as.btype;
     else
@@ -110,7 +328,7 @@ void roxal::Value::decRefObj()
 bool Value::asBool(bool strict) const
 {
     if (!isBoxed()) {
-        return as.boolean;
+        return as.boolean; // TODO: should this convert?
     }
     else {
         switch (valueType(_type)) {
@@ -208,25 +426,6 @@ ValueType Value::asType(bool strict) const
 }
 
 
-bool Value::operator==(const Value& rhs) const
-{
-    if (isNil() && rhs.isNil()) return true;
-    if (isBool())
-        return  asBool() == rhs.asBool();
-    else if (isInt())
-        return asInt() == rhs.asInt();
-    else if (isReal())
-        return asReal() == rhs.asReal();
-    else if (isType())
-        return asType() == rhs.asType();
-    else if (isString(*this))
-        return objsEqual(*this,rhs); // compares strings intelligently (e.g. using immutability & hash)
-    else if (isObj())
-        return asObj() == rhs.asObj(); // identity (by ptr/address)
-    return false;
-}
-
-
 
 std::string roxal::Value::typeName() const
 {
@@ -246,14 +445,52 @@ std::string roxal::Value::typeName() const
     return (_type >= ValueType::Boxed ? "boxed ":"")+std::string("unknown");
 }
 
+#endif
+
+
+
+
+bool Value::operator==(const Value& rhs) const
+{
+    // TODO: handle unboxing
+
+    if (isNil()) 
+        return rhs.isNil();
+    if (rhs.isNil())
+        return isNil();
+
+    if (isBool())
+        return asBool() == rhs.asBool();
+    else if (isInt())
+        return asInt() == rhs.asInt();
+    else if (isReal())
+        return asReal() == rhs.asReal();
+    else if (isType())
+        return asType() == rhs.asType();
+    else if (isString(*this))
+        return objsEqual(*this,rhs); // compares strings intelligently (e.g. using immutability & hash)
+    else if (isObj())
+        return rhs.isObj() && (asObj() == rhs.asObj()); // identity (by ptr/address)
+    return false;
+}
 
 
 
 
 Value roxal::toType(ValueType t, Value v, bool strict)
 {
-    if (valueType(v.type()) == t)
-        return v;
+    if (!v.isBoxed()) {
+        if (v.type() == t)
+            return v;
+    }
+    else {
+        auto pobj = asPrimitive(v);
+        if (pobj->valueType() == t)
+            return v;
+        Value unboxedv { v };
+        unboxedv.unbox();
+        return toType(t, unboxedv, strict); 
+    }
 
     switch (t) {
         case ValueType::Real: return realVal(v.asReal(strict));
@@ -546,4 +783,58 @@ std::ostream& roxal::operator<<(std::ostream& out, const Value& v)
     out << toString(v);
     return out;
 }
+
+
+
+
+
+#ifdef DEBUG_BUILD
+void Value::testPrimitiveValues()
+{
+    #define bin64(v) std::bitset<64>(v)
+    #define bin64v(v) std::bitset<64>(v.getVal())
+
+    #ifdef NAN_TAGGING
+    assert(sizeof(Value) == 64/8);
+    #endif
+
+    Value n {};
+    assert(n.isNil());
+    assert(!n.isBool());
+    assert(!n.isInt());
+    assert(!n.isReal());
+    assert(!n.isObj());
+
+    Value t(true);
+    assert(t.isBool());
+    assert(!t.isNil());
+    assert(!t.isInt());
+    assert(!t.isReal());
+    assert(!t.isObj());
+    assert(t.asBool() == true);
+    Value f(false);
+    assert(f.isBool());
+    assert(!f.isNil());
+    assert(!f.isInt());
+    assert(!f.isReal());
+    assert(!f.isObj());
+    assert(f.asBool() == false);
+
+    Value i1(1);
+    assert(i1.isInt());
+    assert(!i1.isNil());
+    assert(!i1.isBool());
+    assert(!i1.isReal());
+    assert(!i1.isObj());
+    assert(i1.asInt() == 1);
+
+    i1 = Value(7);
+    assert(i1.isInt());
+    assert(i1.asInt() == 7);
+
+    #undef bin64
+    #undef bin64v
+}
+#endif
+
 

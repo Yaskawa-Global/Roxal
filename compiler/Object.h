@@ -52,6 +52,9 @@ struct Obj {
     ObjType type;
     std::atomic_int32_t refCount;
 
+
+    ValueType valueType() const;
+
     inline void incRef() 
     {
         auto prevCount = refCount.fetch_add(1,std::memory_order_relaxed); 
@@ -141,6 +144,26 @@ struct ObjPrimitive : public Obj
     ObjPrimitive(double r) { type=ObjType::Real; as.real = r; }
     ObjPrimitive(int32_t i) { type=ObjType::Int; as.integer = i; }
     ObjPrimitive(ValueType bt) { type=ObjType::Type; as.btype = bt; }
+
+    ValueType valueType() const {
+        switch (type) {
+            case ObjType::Bool: return ValueType::Bool;
+            case ObjType::Int: return ValueType::Int;
+            case ObjType::Real: return ValueType::Real;
+            case ObjType::Type: return ValueType::Type;
+            default: 
+            #ifdef DEBUG_BUILD
+              throw std::runtime_error("Unsupported ObjPrimitive Type "+std::to_string(int(type)));
+            #else
+              return ValueType::Nil;
+            #endif
+        }
+    }
+
+    bool isBool() const { return type==ObjType::Bool; }
+    bool isInt() const { return type==ObjType::Int; }
+    bool isReal() const { return type==ObjType::Real; }
+    bool isType() const { return type==ObjType::Type; }
 
     union {
         bool boolean;
@@ -433,6 +456,12 @@ inline ObjBoundMethod* boundMethodVal(const Value& instance, ObjClosure* closure
     return newObj<ObjBoundMethod>(__func__,instance, closure);
 }
 
+
+
+
+#ifdef DEBUG_BUILD
+void testObjectValues();
+#endif
 
 
 

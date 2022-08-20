@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <optional>
 #include <core/common.h>
 
@@ -7,14 +8,19 @@ namespace roxal {
 
 
 enum class ValueType {
+    // Values used for NAN type tag:
     Nil   = 1, // 0001 (both a type and singular value)
+    // Bool False 0010
+    // Bool True  0011
     Bool  = 4, // 0100
-    Byte,  
-    Int,
-    Real,
-    Decimal,
+    Byte,      // 0101
+    Int,       // 0110
+    Real,      // 0111
+    Decimal,   // 1000
+    Type,      // 1011
+
+    // Obj (pointer) types 
     String,
-    Type,
     List,
     Dict,
     Vector,
@@ -24,13 +30,11 @@ enum class ValueType {
     Stream,
     Object,
     Actor,
-    Boxed = 0xff
+    Boxed = 0xff // not used with NAN tagging 
 };
 
 std::string to_string(ValueType t);
 
-inline ValueType valueType(ValueType t) { return ValueType(int(t) & 0x7f); }
-inline bool isBoxed(ValueType t) { return (int(t) & 0x80) != 0; }
 
 struct Obj;
 struct ObjString;
@@ -39,32 +43,125 @@ class StreamEngine;
 
 #if defined(NAN_TAGGING)
 
+// If Values are real (IEEE C++ double), then no bit conversions necessary
+//  IEEE Quiet NAN values are used to place type tag in mantissa (bits 46..49) 
+//  If type is nil or bool tag is also literal value
+//  If type is other value types, value is stored in lower bits (max 32bits)
+//  If type if object, sign bit is set and pointer is stored in lower 48 bits
+
+// All IEEE doubles are Quiet NANs if these bits are all 1:
 const uint64_t QNAN = ((uint64_t)0x7ffc000000000000);
+const uint64_t SignBit = ((uint64_t)0x8000000000000000);
 
-const uint8_t TagNil   = int(ValueType::Nil); 
-const uint8_t TagFalse = 2; // 0010
-const uint8_t TagTrue  = 3; // 0011
+const int TypeTagOffset = 46;
+const uint64_t TypeTag = uint64_t(0xf) << TypeTagOffset;
 
-typedef uint64_t Value;
 
-inline Value nilVal() { return ((Value)(uint64_t)(QNAN | TagNil)); }
-inline bool isNil(Value v) { return v==nilVal(); }
+// Use type-tag as literal value for nil, true and false
+const uint64_t TagNil   = uint64_t(ValueType::Nil) << TypeTagOffset; // 0001
+const uint64_t TagFalse = uint64_t(2) << TypeTagOffset; // 0010
+const uint64_t TagTrue  = uint64_t(3) << TypeTagOffset; // 0011
+const uint64_t TagByte  = uint64_t(ValueType::Byte) << TypeTagOffset;
+const uint64_t TagInt   = uint64_t(ValueType::Int) << TypeTagOffset;
+const uint64_t TagDecimal = uint64_t(ValueType::Decimal) << TypeTagOffset;
+const uint64_t TagType   = uint64_t(ValueType::Type) << TypeTagOffset;
 
-inline Value trueVal() { return ((Value)(uint64_t)(QNAN | TagTrue )); }
-inline Value falseVal() { return ((Value)(uint64_t)(QNAN | TagFalse )); }
-inline Value boolVal(bool b) { return b ? trueVal() : falseVal(); }
-inline bool isBool(Value v) { return (v|1) == trueVal(); }
-inline bool asBool(Value v) { return v == trueVal(); }
 
-inline Value realVal(double v) { return *reinterpret_cast<uint64_t*>(&v); }
-inline bool isReal(Value v) { return (v&QNAN) != QNAN; }
-inline double asReal(Value v) { return *reinterpret_cast<double*>(&v); }
+//ValueType valueType(ValueType t); // value type (ignoring boxing - so primitive type if boxed)
 
-//inline Value objVal()
+class Value;
+bool isPrimitive(const Value& v); // forward from Object.h
 
+
+class Value {
+public:
+    Value() : val(QNAN | TagNil) {}  
+
+    explicit Value(bool b) { val = b ? (QNAN | TagTrue) : (QNAN | TagFalse); }
+    explicit Value(double r) { val = (*reinterpret_cast<uint64_t*>(&r)); }
+    explicit Value(int32_t i) { val = QNAN | TagInt | (0xffffffff & *reinterpret_cast<uint64_t*>(&i)); }
+    explicit Value(ValueType bt) { val = QNAN | TagType | uint64_t(bt); }
+    explicit Value(Obj* o);
+
+
+    Value(const Value& v) 
+    {
+        val.store(v.val.load());
+        if (isObj() || isBoxed())
+            incRefObj();    
+    }
+
+
+    Value& operator=(const Value& v)
+    {
+        if (isObj() || isBoxed())
+            decRefObj();
+
+        val.store(v.val.load());
+        if (isObj() || isBoxed())
+            incRefObj();
+
+        return *this;
+    }
+
+
+    ~Value() {
+        if (isObj() || isBoxed())
+            decRefObj();
+    }
+
+
+    void box();
+    void unbox();
+    bool isBoxed() const { return isObj() && isPrimitive(*this); }
+    bool isBoxable() const { return !isBoxed() && (isBool() || isInt() || isReal()); }
+
+    ValueType type() const;
+    std::string typeName() const;
+
+    inline bool isNil() const { return val == (QNAN | TagNil); }
+
+    inline bool isBool() const { return (val|uint64_t(1)<<TypeTagOffset) == (QNAN | TagTrue); }
+    bool asBool(bool strict=true) const;
+
+    inline bool isInt() const { return (val & (QNAN | TypeTag)) == (QNAN | TagInt); }
+    int32_t asInt(bool strict=true) const;
+
+    inline bool isReal() const { return (val&QNAN) != QNAN; }
+    double asReal(bool strict=true) const; 
+
+    inline bool isNumber() const { return isInt() || isReal(); } // TODO: || isByte() || isDecimal(v)
+
+    inline bool isType() const { return (val & (QNAN | TypeTag)) == (QNAN | TagType); }
+    ValueType asType(bool strict=true) const;
+
+    inline bool isObj() const { return (val & (QNAN | SignBit)) == (QNAN | SignBit); }
+    inline Obj* asObj() const { 
+        #ifdef DEBUG_BUILD
+        assert(isObj());
+        #endif
+        return (Obj*)(uintptr_t)(val & ~(SignBit | QNAN)); 
+    }
+
+    bool operator==(const Value& rhs) const;
+
+    #ifdef DEBUG_BUILD
+    uint64_t getVal() const { return val; }
+    static void testPrimitiveValues();
+    #endif
+
+protected:
+    std::atomic_uint64_t val;
+
+    void incRefObj();
+    void decRefObj();
+};
 
 
 #else
+
+inline ValueType valueType(ValueType t) { return ValueType(int(t) & 0x7f); }
+inline bool isBoxed(ValueType t) { return (int(t) & 0x80) != 0; }
 
 
 class Value {
@@ -113,6 +210,7 @@ public:
 
     inline bool isBool() const { return valueType(_type) == ValueType::Bool; }
     bool asBool(bool strict=true) const;
+
     inline bool isInt() const { return valueType(_type) == ValueType::Int; }
     int32_t asInt(bool strict=true) const;
 
@@ -175,6 +273,9 @@ protected:
 };
 
 
+#endif
+
+
 // value factories
 inline Value nilVal() { return Value(); }
 
@@ -188,8 +289,6 @@ inline Value realVal(double r) { return Value(r); }
 
 inline Value typeVal(ValueType bt) { return Value(bt); }
 
-
-#endif
 
 Value toType(ValueType t, Value v, bool strict=true);
 

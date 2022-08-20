@@ -25,6 +25,8 @@ VM::VM()
 
     auto engine = StreamEngine::instance();
     //CallSpec::testParamPositions();
+    //Value::testPrimitiveValues();
+    //testObjectValues();
 }
 
 
@@ -91,7 +93,7 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
     #if defined(DEBUG_TRACE_EXECUTION)
     if (globals.size() > 0) {        
         std::cout << std::endl << "== globals ==" << std::endl;
-        for(const auto& global : globals) 
+        for(const auto& global : globals.get()) 
             std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second) << std::endl;
     }
     #endif
@@ -777,9 +779,9 @@ VM::InterpretResult VM::execute()
     for(;;) {
         #if defined(DEBUG_TRACE_EXECUTION)
             // output stack
-            if (stack.size() > 0) {
+            if (thread->stack.size() > 0) {
                 std::cout << "          ";
-                for(auto vi = stack.begin(); vi < stackTop; vi++) {
+                for(auto vi = thread->stack.begin(); vi < thread->stackTop; vi++) {
                     bool aString = vi->isObj() && isString(*vi);
                     bool aStream = vi->isObj() && isStream(*vi);
                     std::cout << "[";

@@ -1,4 +1,5 @@
 #include <stdexcept>
+#include <cassert>
 #include <unordered_map>
 
 #include "Object.h"
@@ -12,6 +13,25 @@ atomic_vector<Obj*> Obj::unrefedObjs {};
 #ifdef DEBUG_TRACE_MEMORY
 atomic_map<Obj*, const char*> Obj::allocatedObjs {};
 #endif
+
+
+ValueType Obj::valueType() const
+{
+    switch (type) {
+        case ObjType::Bool: return ValueType::Bool;
+        // TODO: Byte, Decimal
+        case ObjType::Int: return ValueType::Int;
+        case ObjType::Real: return ValueType::Real;
+        case ObjType::String: return ValueType::String;
+        case ObjType::Type: return ValueType::Type;
+        case ObjType::List: return ValueType::List;
+        case ObjType::Dict: return ValueType::Dict;
+        case ObjType::Stream: return ValueType::Stream;
+        case ObjType::Instance: return static_cast<const ObjObjectType*>(this)->isActor ? ValueType::Actor : ValueType::Object;
+        case ObjType::ObjectType: return ValueType::Type;
+        default: return ValueType::Nil;
+    }
+}
 
 
 void Obj::registerStream()
@@ -347,3 +367,28 @@ std::string roxal::objTypeName(Obj* obj)
     }
     return "unknown";
 }
+
+
+
+#ifdef DEBUG_BUILD
+void roxal::testObjectValues()
+{
+    Value i0 { 4 };
+    Value i1 { 6 };
+    Value i2 { 8 };
+
+    Value l1 { listVal(std::vector<Value>{i0,i1,i2}) };
+
+    assert(isList(l1));
+    assert(!l1.isNil());
+    ObjList* lp = static_cast<ObjList*>(l1.asObj());
+    assert(lp->elts.size() == 3);
+
+    Value l2 = l1;
+    assert(isList(l2));
+    assert(!l2.isNil());
+
+    assert(l1 == l2);
+    assert(!(l2 == nilVal()));
+}
+#endif
