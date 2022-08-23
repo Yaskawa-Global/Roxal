@@ -6,6 +6,7 @@
 #include <sstream>
 #include <unordered_map>
 #include <atomic>
+#include <condition_variable>
 #include <unicode/ustring.h>
 
 #include <core/common.h>
@@ -32,6 +33,7 @@ enum class ObjType {
     Closure,
     Function,
     Instance,
+    Actor,
     Native,
     Upvalue,
     Bool,
@@ -419,21 +421,58 @@ ObjObjectType* objectTypeVal(const icu::UnicodeString& typeName, bool isActor);
 
 
 //
-// object|actor instance
+// object instance
 
-struct ObjInstance : public Obj
+struct ObjectInstance : public Obj
 {
-    ObjInstance(ObjObjectType* objectType);
-    virtual ~ObjInstance();
+    ObjectInstance(ObjObjectType* objectType);
+    virtual ~ObjectInstance();
 
     ObjObjectType* instanceType;
     std::unordered_map<int32_t, Value> properties;
 };
 
-inline bool isInstance(const Value& v) { return isObjType(v, ObjType::Instance); }
-inline ObjInstance* asInstance(const Value& v) { return static_cast<ObjInstance*>(v.asObj()); }
+inline bool isObjectInstance(const Value& v) { return isObjType(v, ObjType::Instance); }
+inline ObjectInstance* asObjectInstance(const Value& v) { return static_cast<ObjectInstance*>(v.asObj()); }
 
-ObjInstance* objInstanceVal(ObjObjectType* objectType);
+ObjectInstance* objectInstanceVal(ObjObjectType* objectType);
+
+
+
+//
+// actor instance
+
+struct ActorInstance : public Obj
+{
+    ActorInstance(ObjObjectType* objectType);
+    virtual ~ActorInstance();
+
+    ObjObjectType* instanceType;
+    std::unordered_map<int32_t, Value> properties;
+
+    void queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop);
+
+
+    // queue of actor method calls
+    //  each is a callee and parameters
+    // (serviced in thread created by Thread::act() )
+    struct MethodCallInfo {
+        Value callee;
+        std::vector<Value> args;
+        CallSpec callSpec;
+
+        bool valid() const { return !callee.isNil(); }
+    };
+    atomic_queue<MethodCallInfo> callQueue;
+
+    std::mutex queueMutex;
+    std::condition_variable queueConditionVar;
+};
+
+inline bool isActorInstance(const Value& v) { return isObjType(v, ObjType::Actor); }
+inline ActorInstance* asActorInstance(const Value& v) { return static_cast<ActorInstance*>(v.asObj()); }
+
+ActorInstance* actorInstanceVal(ObjObjectType* objectType);
 
 
 

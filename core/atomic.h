@@ -19,6 +19,7 @@
 #include <map>
 #include <mutex>
 #include <stack>
+#include <queue>
 
 
 namespace roxal {
@@ -623,6 +624,76 @@ private:
 };
 
 
+
+
+
+
+
+
+
+
+template<typename T>
+class atomic_queue
+{
+public:
+
+    typedef T value_type;
+
+    atomic_queue() {}
+    ~atomic_queue()
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+    }
+
+    std::stack<T> get() const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return q;
+    }
+
+    void push(const T& value)
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        q.push(value);
+    }
+
+    T pop()
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        T f { q.front() };
+        q.pop();
+        return f;
+    }
+
+    T front() const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return q.front();
+    }
+
+    void clear()
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        q.clear();
+    }
+
+    size_t size() const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return q.size();
+    }
+
+    bool empty() const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return q.empty();
+    }
+
+private:
+    mutable std::mutex m_lock;
+
+    std::queue<T> q;
+};
 
 
 } // ns

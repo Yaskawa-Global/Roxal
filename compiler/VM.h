@@ -97,6 +97,8 @@ public:
         Thread() 
           : threadSleep(false), osthread(nullptr), state(State::Constructed) {
             thisid = nextId.fetch_add(1);
+            actor=false;
+            quit=false;
           }
         Thread(Thread&) = delete;
         virtual ~Thread() {}
@@ -113,6 +115,7 @@ public:
 
         void spawn(Value closure);
         void join();
+        void act(Value actorInstance);
         void detach();
 
         void push(const Value& value);
@@ -138,6 +141,10 @@ public:
 
     private:
         ptr<std::thread> osthread;
+
+        Value actorInstance;
+        std::atomic<bool> actor;
+        std::atomic<bool> quit;
 
         uint64_t thisid;
         static std::atomic_uint64_t nextId;

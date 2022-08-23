@@ -226,8 +226,12 @@ std::string roxal::objToString(const Value& v)
             return std::string("<type ")+(obj->isActor ? "actor" :"object")+" "+toUTF8StdString(obj->name)+">";
         }
         case ObjType::Instance: {
-            ObjInstance* inst = asInstance(v);
-            return std::string(inst->instanceType->isActor ? "actor" : "object")+" "+toUTF8StdString(inst->instanceType->name);
+            ObjectInstance* inst = asObjectInstance(v);
+            return std::string("object "+toUTF8StdString(inst->instanceType->name));
+        }
+        case ObjType::Actor: {
+            ActorInstance* inst = asActorInstance(v);
+            return std::string("actor "+toUTF8StdString(inst->instanceType->name));
         }
         case ObjType::BoundMethod: {
             return objFunctionToString(asBoundMethod(v)->method->function);
@@ -272,26 +276,63 @@ ObjObjectType* roxal::objectTypeVal(const icu::UnicodeString& typeName, bool isA
 }
 
 
-ObjInstance::ObjInstance(ObjObjectType* objectType) 
+ObjectInstance::ObjectInstance(ObjObjectType* objectType) 
 { 
     type = ObjType::Instance; 
     instanceType = objectType;
     instanceType->incRef();
 }
 
-ObjInstance::~ObjInstance() 
+ObjectInstance::~ObjectInstance() 
 {
     instanceType->decRef();
 }
 
 
-
-
-ObjInstance* roxal::objInstanceVal(ObjObjectType* objectType)
+ObjectInstance* roxal::objectInstanceVal(ObjObjectType* objectType)
 {
-    return newObj<ObjInstance>(__func__, objectType);
+    return newObj<ObjectInstance>(__func__, objectType);
 }
 
+
+
+ActorInstance::ActorInstance(ObjObjectType* objectType) 
+{ 
+    type = ObjType::Actor; 
+    instanceType = objectType;
+    instanceType->incRef();
+}
+
+ActorInstance::~ActorInstance() 
+{
+    instanceType->decRef();
+}
+
+
+void ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop)
+{
+    // queue producer for consumer Thread::act()
+    #ifdef DEBUG_BUILD
+    assert(isBoundMethod(callee));
+    assert(isActorInstance(asBoundMethod(callee)->receiver));
+    #endif
+    std::lock_guard<std::mutex> lock { queueMutex };
+
+    MethodCallInfo callInfo {};
+    callInfo.callee = callee;
+    callInfo.callSpec = callSpec;
+    for(auto i=0; i<callSpec.argCount; i++)
+        callInfo.args.push_back( *(argsStackTop - i - 1) );
+    callQueue.push(callInfo);
+
+    queueConditionVar.notify_one();
+}
+
+
+ActorInstance* roxal::actorInstanceVal(ObjObjectType* objectType)
+{
+    return newObj<ActorInstance>(__func__, objectType);
+}
 
 
 
@@ -350,10 +391,8 @@ std::string roxal::objTypeName(Obj* obj)
     switch (obj->type) {
     case ObjType::None: return "none";
     case ObjType::ObjectType: return static_cast<ObjObjectType*>(obj)->isActor ? "type actor" : "type object";
-    case ObjType::Instance: {
-        ObjInstance* inst = static_cast<ObjInstance*>(obj);
-        return inst->instanceType->isActor ? "actor":"object";
-    }
+    case ObjType::Instance: return "object";
+    case ObjType::Actor: return "actor";
     case ObjType::BoundMethod: return "function";
     case ObjType::Closure: return "closure";
     case ObjType::Function: return "function";

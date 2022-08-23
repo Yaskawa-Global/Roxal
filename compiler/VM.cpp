@@ -147,11 +147,79 @@ void VM::Thread::join()
     if ((osthread == nullptr) || !osthread->joinable())
         throw std::runtime_error("Can't join Thread that hasn't isn't joinable. id:"+std::to_string(thisid));
 
+    if (actor) {
+        auto inst { asActorInstance(actorInstance) };
+        std::lock_guard<std::mutex> lock { inst->queueMutex };
+        quit = true;
+        inst->queueConditionVar.notify_one();
+    }
+
     osthread->join();
     osthread = nullptr;
+    actorInstance = nilVal();
 
     state = State::Completed;
 }
+
+
+void VM::Thread::act(Value actorInstance)
+{
+    assert(isActorInstance(actorInstance));
+    this->actorInstance = actorInstance;
+
+    actor = true;
+    state = State::Spawned;
+
+    osthread = std::make_shared<std::thread>([this,actorInstance]() { 
+        auto& vm { VM::instance() };
+
+        vm.thread = shared_from_this(); // set thread local storage member
+
+        ActorInstance* actorInst = asActorInstance(actorInstance);
+
+        vm.resetStack();
+
+        do {
+
+            ActorInstance::MethodCallInfo callInfo {};
+            {
+                std::unique_lock<std::mutex> lock { actorInst->queueMutex };
+                actorInst->queueConditionVar.wait(lock,[&]()
+                {
+                    // Acquire the lock only if we should quit or the queue has pending calls
+                    return quit || !actorInst->callQueue.empty();
+                });
+                if (!actorInst->callQueue.empty()) {
+                    callInfo = actorInst->callQueue.pop();
+                }
+                if (quit)
+                    break;
+            }
+
+            if (callInfo.valid()) {
+                
+                auto closure = asBoundMethod(callInfo.callee)->method;
+
+                push(callInfo.callee);
+                for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it) 
+                    push(*it);
+                
+                vm.call(closure,callInfo.callSpec);
+
+                result = vm.execute();
+            }
+
+        } while (true);
+
+        stack.clear();
+
+        state = State::Completed;
+    });
+
+    //... queue call to init if it exists
+    // block on queue
+}
+
 
 void VM::Thread::detach()
 {
@@ -387,17 +455,49 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
         switch (objType(callee)) {
             case ObjType::BoundMethod: {
                 ObjBoundMethod* boundMethod { asBoundMethod(callee) };
-                *(thread->stackTop - callSpec.argCount - 1) = boundMethod->receiver;
-                return call(boundMethod->method, callSpec);
+
+                if (!isActorInstance(boundMethod->receiver)) {
+                    *(thread->stackTop - callSpec.argCount - 1) = boundMethod->receiver;
+                    return call(boundMethod->method, callSpec);
+                }
+                else {
+                    // call to actor method.  Instead of calling on this thread,
+                    //  queue the call for the actor thread to handle
+
+                    ActorInstance* inst = asActorInstance(boundMethod->receiver);
+                    inst->queueCall(callee, callSpec, &(*thread->stackTop) );
+
+                    popN(callSpec.argCount + 1); // args & callee
+
+                    //FIXME!!!: handle blocking, or not, for the return value
+                    push(nilVal());
+
+                    return true;
+                }
             }
             case ObjType::ObjectType: {
                 ObjObjectType* type = asObjectType(callee);
-                Value result { objVal(objInstanceVal(type)) };
-                *(thread->stackTop - callSpec.argCount - 1) = result;
+                if (!type->isActor) {
+                    Value inst { objectInstanceVal(type) };
+                    *(thread->stackTop - callSpec.argCount - 1) = inst;
+                }
+                else {
+                    Value inst { actorInstanceVal(type) };
+
+                    // spawn Thread to handle actor method calls
+                    auto newThread = std::make_shared<Thread>();
+                    threads.store(newThread->id(), newThread);
+                    newThread->act(inst);
+
+                    *(thread->stackTop - callSpec.argCount - 1) = inst;
+                }
                 auto it = type->methods.find(initString->hash);
                 if (it != type->methods.end()) {
                     Value initializer { it->second.second };
-                    return call(asClosure(initializer), callSpec);
+                    if (!type->isActor)
+                        return call(asClosure(initializer), callSpec);
+                    else
+                        throw std::runtime_error("queueing actor init params unimplemented");//!!!
                 }
                 else {
                     if (callSpec.argCount != 0) {
@@ -415,6 +515,14 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 *(thread->stackTop - callSpec.argCount - 1) = result;
                 popN(callSpec.argCount);
                 return true;
+            }
+            case ObjType::Instance: {
+                runtimeError("object instances are not callable.");
+                return false;
+            }
+            case ObjType::Actor: {
+                runtimeError("actor instances are not callable.");
+                return false;
             }
             default:
                 break;
@@ -446,22 +554,28 @@ bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& ca
 bool VM::invoke(ObjString* name, const CallSpec& callSpec)
 {
     Value receiver { peek(callSpec.argCount) };
-    if (!isInstance(receiver)) {
-        runtimeError("Only instances have methods.");
+
+    if (isObjectInstance(receiver)) {
+
+        ObjectInstance* instance = asObjectInstance(receiver);
+
+        // check to ensure name isn't a prop with a func in it
+        auto it = instance->properties.find(name->hash);
+        if (it != instance->properties.end()) { // it is a prop
+            Value value { it->second };
+            *(thread->stackTop - callSpec.argCount - 1) = value;
+            return callValue(value, callSpec);
+        }
+
+        return invokeFromType(instance->instanceType, name, callSpec);
+    }
+    else if (isActorInstance(receiver)) {
+        throw std::runtime_error("invoke() for actor instance unimplemented");//!!!
+    }
+    else {
+        runtimeError("Only object or actor instances have methods.");
         return false;
     }
-
-    ObjInstance* instance = asInstance(receiver);
-
-    // check to ensure name isn't a prop with a func in it
-    auto it = instance->properties.find(name->hash);
-    if (it != instance->properties.end()) { // it is a prop
-        Value value { it->second };
-        *(thread->stackTop - callSpec.argCount - 1) = value;
-        return callValue(value, callSpec);
-    }
-
-    return invokeFromType(instance->instanceType, name, callSpec);
 }
 
 
@@ -883,34 +997,46 @@ VM::InterpretResult VM::execute()
                 break;
             }
             case asByte(OpCode::GetProp): {
-                if (!isInstance(peek(0))) {
-                    runtimeError("Only instances have properties.");
-                    return InterpretResult::RuntimeError;
-                }
-                ObjInstance* inst = asInstance(peek(0));
-                ObjString* name = readString();
-                // is it an instance property?
-                auto it = inst->properties.find(name->hash);
-                if (it != inst->properties.end()) { // exists
-                    pop();
-                    push(it->second);
-                }
-                else { // no
+                if (isObjectInstance(peek(0))) {
+                    ObjectInstance* inst = asObjectInstance(peek(0));
+                    ObjString* name = readString();
+                    // is it an instance property?
+                    auto it = inst->properties.find(name->hash);
+                    if (it != inst->properties.end()) { // exists
+                        pop();
+                        push(it->second);
+                        break;
+                    }
+                    else { // no
+                        // check if it is a method name
+                        if (bindMethod(inst->instanceType, name))
+                            break;
+
+                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(inst->instanceType->name)+"'.");
+                        return InterpretResult::RuntimeError;
+                    }
+                } else if (isActorInstance(peek(0))) {
+                    ActorInstance* inst = asActorInstance(peek(0));
+                    ObjString* name = readString();
                     // check if it is a method name
                     if (bindMethod(inst->instanceType, name))
                         break;
 
-                    runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(inst->instanceType->name)+"'.");
+                    runtimeError("Undefined method '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(inst->instanceType->name)+"'.");
                     return InterpretResult::RuntimeError;
+
                 }
+
+                runtimeError("Only object and actor instances have methods and only objects instances have properties.");
+                return InterpretResult::RuntimeError;                    
                 break;
             }
             case asByte(OpCode::SetProp): {
-                if (!isInstance(peek(1))) {
+                if (!isObjectInstance(peek(1))) {
                     runtimeError("Only instances have properties.");
                     return InterpretResult::RuntimeError;
                 }
-                ObjInstance* inst = asInstance(peek(1));
+                ObjectInstance* inst = asObjectInstance(peek(1));
                 ObjString* name = readString();
                 //std::cout << "setting prop " << toUTF8StdString(name->s) << " of " << toString(peek(1)) << " to " << toString(peek(0)) << std::endl;//!!!
                 inst->properties[name->hash] = peek(0);
@@ -1095,7 +1221,8 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::Call): {
                 CallSpec callSpec{frame->ip};
-                if (!callValue(peek(callSpec.argCount), callSpec))
+                Value callee { peek(callSpec.argCount) };
+                if (!callValue(callee, callSpec))
                     return InterpretResult::RuntimeError;
                 frame = thread->frames.end()-1;
                 break;
