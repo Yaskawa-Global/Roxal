@@ -1,0 +1,13 @@
+var g = false
+
+type actor A:
+  func f():
+    return 'retval'
+
+var a = A()
+var f = a.f
+var fut = f()
+var fut2 = fut
+
+print('returned: '+fut2)
+

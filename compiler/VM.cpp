@@ -131,7 +131,8 @@ void VM::Thread::spawn(Value closure)
         push(closure);
         vm.call(asClosure(closure),CallSpec(0));
 
-        result = vm.execute();
+        vm.execute();
+        // (ignoring result, as thread is terminating anyway)
 
         stack.clear();
 
@@ -145,7 +146,7 @@ void VM::Thread::join()
         throw std::runtime_error("Can't join Thread that hasn't completed spawning yet. id:"+std::to_string(thisid));
 
     if ((osthread == nullptr) || !osthread->joinable())
-        throw std::runtime_error("Can't join Thread that hasn't isn't joinable. id:"+std::to_string(thisid));
+        throw std::runtime_error("Can't join Thread that isn't joinable. id:"+std::to_string(thisid));
 
     if (actor) {
         auto inst { asActorInstance(actorInstance) };
@@ -206,7 +207,23 @@ void VM::Thread::act(Value actorInstance)
                 
                 vm.call(closure,callInfo.callSpec);
 
-                result = vm.execute();
+                auto result = vm.execute();
+
+                if (result.first == InterpretResult::OK) {
+
+                    if (callInfo.returnPromise != nullptr) 
+                        callInfo.returnPromise->set_value(result.second);
+
+                }
+                else {
+                    // error occured, terminate actor (thread)
+                    if (callInfo.returnPromise != nullptr)
+                        callInfo.returnPromise->set_value(nilVal());
+                    quit = true;
+                    break;
+                }
+
+                    
             }
 
         } while (true);
@@ -216,8 +233,6 @@ void VM::Thread::act(Value actorInstance)
         state = State::Completed;
     });
 
-    //... queue call to init if it exists
-    // block on queue
 }
 
 
@@ -267,7 +282,7 @@ void VM::Thread::popN(size_t n)
 
 
 
-Value VM::Thread::peek(int distance)
+Value& VM::Thread::peek(int distance)
 {
     #ifdef DEBUG_BUILD
     if (stackTop - stack.begin() <= distance)
@@ -279,6 +294,37 @@ Value VM::Thread::peek(int distance)
 
 std::atomic<uint64_t> VM::Thread::nextId = 1;
 
+
+void VM::Thread::outputStack()
+{
+    // output stack
+    if (stack.size() > 0) {
+
+        std::cout << "          ";
+        for(auto vi = stack.begin(); vi < stackTop; vi++) {
+            bool aString = vi->isObj() && isString(*vi);
+            bool aStream = vi->isObj() && isStream(*vi);
+            std::cout << "[";
+            if (!frames.empty() && (frames.end()-1)->slots == &(*vi) )
+                std::cout << "F^"; // show frame pointer
+            std::cout << " ";
+            if (aStream)
+                std::cout << "<stream ";
+            if (aString)
+                std::cout << "'"; // quote strings
+            std::cout << toString(*vi);
+            if (aStream)
+                std::cout << ">";
+            if (aString)
+                std::cout << "'";
+            if (vi->isNumber()) // show numeric type
+                std::cout << ":" << vi->typeName().at(0);
+
+            std::cout << " ]";
+        }
+        std::cout << std::endl;
+    }
+}
 
 
 
@@ -465,12 +511,11 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     //  queue the call for the actor thread to handle
 
                     ActorInstance* inst = asActorInstance(boundMethod->receiver);
-                    inst->queueCall(callee, callSpec, &(*thread->stackTop) );
+                    Value future = inst->queueCall(callee, callSpec, &(*thread->stackTop) );
 
                     popN(callSpec.argCount + 1); // args & callee
 
-                    //FIXME!!!: handle blocking, or not, for the return value
-                    push(nilVal());
+                    push(future);
 
                     return true;
                 }
@@ -830,10 +875,10 @@ void VM::defineNative(const std::string& name, NativeFn function)
 
 
 
-VM::InterpretResult VM::execute()
+std::pair<VM::InterpretResult,Value> VM::execute()
 {
     if (thread->frames.empty() || thread->frames.back().closure->function->chunk->code.size()==0)
-        return InterpretResult::OK; // nothing to execute
+        return std::make_pair(InterpretResult::OK,nilVal()); // nothing to execute
 
     auto frame { thread->frames.end()-1 };
 
@@ -884,6 +929,8 @@ VM::InterpretResult VM::execute()
     std::cout << std::endl << "== executing ==" << std::endl;
     #endif
 
+    auto errorReturn = std::make_pair(InterpretResult::RuntimeError,nilVal());
+
 
     //
     //  main dispatch loop
@@ -893,31 +940,7 @@ VM::InterpretResult VM::execute()
     for(;;) {
         #if defined(DEBUG_TRACE_EXECUTION)
             // output stack
-            if (thread->stack.size() > 0) {
-                std::cout << "          ";
-                for(auto vi = thread->stack.begin(); vi < thread->stackTop; vi++) {
-                    bool aString = vi->isObj() && isString(*vi);
-                    bool aStream = vi->isObj() && isStream(*vi);
-                    std::cout << "[";
-                    if (frame->slots == &(*vi) )
-                        std::cout << "F^"; // show frame pointer
-                    std::cout << " ";
-                    if (aStream)
-                        std::cout << "<stream ";
-                    if (aString)
-                        std::cout << "'"; // quote strings
-                    std::cout << toString(*vi);
-                    if (aStream)
-                        std::cout << ">";
-                    if (aString)
-                        std::cout << "'";
-                    if (vi->isNumber()) // show numeric type
-                        std::cout << ":" << vi->typeName().at(0);
-
-                    std::cout << " ]";
-                }
-                std::cout << std::endl;
-            }
+            thread->outputStack();
             if (frame->ip != frame->closure->function->chunk->code.end()) {
                 // and instruction
                 frame->closure->function->chunk->disassembleInstruction(frame->ip - frame->closure->function->chunk->code.begin());
@@ -997,85 +1020,97 @@ VM::InterpretResult VM::execute()
                 break;
             }
             case asByte(OpCode::GetProp): {
-                if (isObjectInstance(peek(0))) {
-                    ObjectInstance* inst = asObjectInstance(peek(0));
+                Value& inst { peek(0) };
+                inst.resolveFuture();
+                if (isObjectInstance(inst)) {
+                    ObjectInstance* objInst = asObjectInstance(inst);
                     ObjString* name = readString();
                     // is it an instance property?
-                    auto it = inst->properties.find(name->hash);
-                    if (it != inst->properties.end()) { // exists
+                    auto it = objInst->properties.find(name->hash);
+                    if (it != objInst->properties.end()) { // exists
                         pop();
                         push(it->second);
                         break;
                     }
                     else { // no
                         // check if it is a method name
-                        if (bindMethod(inst->instanceType, name))
+                        if (bindMethod(objInst->instanceType, name))
                             break;
 
-                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(inst->instanceType->name)+"'.");
-                        return InterpretResult::RuntimeError;
+                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(objInst->instanceType->name)+"'.");
+                        return errorReturn;
                     }
-                } else if (isActorInstance(peek(0))) {
-                    ActorInstance* inst = asActorInstance(peek(0));
+                } else if (isActorInstance(inst)) {
+                    ActorInstance* actorInst = asActorInstance(inst);
                     ObjString* name = readString();
                     // check if it is a method name
-                    if (bindMethod(inst->instanceType, name))
+                    if (bindMethod(actorInst->instanceType, name))
                         break;
 
-                    runtimeError("Undefined method '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(inst->instanceType->name)+"'.");
-                    return InterpretResult::RuntimeError;
+                    runtimeError("Undefined method '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(actorInst->instanceType->name)+"'.");
+                    return errorReturn;
 
                 }
 
                 runtimeError("Only object and actor instances have methods and only objects instances have properties.");
-                return InterpretResult::RuntimeError;                    
+                return errorReturn;
                 break;
             }
             case asByte(OpCode::SetProp): {
-                if (!isObjectInstance(peek(1))) {
+                Value& inst { peek(1) };
+                inst.resolveFuture();
+                if (!isObjectInstance(inst)) {
                     runtimeError("Only instances have properties.");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
-                ObjectInstance* inst = asObjectInstance(peek(1));
+                ObjectInstance* objInst = asObjectInstance(inst);
                 ObjString* name = readString();
-                //std::cout << "setting prop " << toUTF8StdString(name->s) << " of " << toString(peek(1)) << " to " << toString(peek(0)) << std::endl;//!!!
-                inst->properties[name->hash] = peek(0);
+                //std::cout << "setting prop " << toUTF8StdString(name->s) << " of " << toString(inst) << " to " << toString(peek(0)) << std::endl;//!!!
+                objInst->properties[name->hash] = peek(0);
                 Value value { pop() };
-                pop();
+                pop(); // instance
                 push(value);
                 break;
             }
             case asByte(OpCode::Equal): {
                 Value b = pop();
                 Value a = pop();
+                a.resolveFuture();
+                b.resolveFuture();
                 push(boolVal(valuesEqual(a,b)));
                 break;
             }
             case asByte(OpCode::Greater): {
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
                 if (!peek(0).isNumber()) {
                     runtimeError("Operand to > must be a number");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 if (!peek(1).isNumber()) {
                     runtimeError("Operand to > must be a number");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 binaryOp([](Value a, Value b) -> Value { return greater(a,b); });
                 break;
             }
             case asByte(OpCode::Less): {
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
                 if (!peek(0).isNumber()) {
                     runtimeError("Operand to < must be a number");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 if (!peek(1).isNumber()) {
                     runtimeError("Operand to < must be a number");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 binaryOp([](Value a, Value b) -> Value { return less(a,b); });
                 break;
             }
             case asByte(OpCode::Add): {
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
                 if (peek(0).isNumber() && peek(1).isNumber()) {
                     binaryOp([](Value a, Value b) -> Value { return add(a,b); });
                 }
@@ -1086,52 +1121,59 @@ VM::InterpretResult VM::execute()
                     binaryOp([](Value a, Value b) -> Value { return add(a,b); });
                 else {
                     runtimeError("Operands of + must be two numbers or a strings LHS");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 break;
             }
             case asByte(OpCode::Subtract): {
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
                 if (!peek(0).isNumber()) {
                     runtimeError("Operand of - must be a number");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 if (!peek(1).isNumber()) {
                     runtimeError("Operand of - must be a number");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 binaryOp([](Value a, Value b) -> Value { return subtract(a,b); });
                 break;
             }
             case asByte(OpCode::Multiply): {
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
                 if (!peek(0).isNumber()) {
                     runtimeError("Operand of * must be a number");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 if (!peek(1).isNumber()) {
                     runtimeError("Operand of * must be a number");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 binaryOp([](Value a, Value b) -> Value { return multiply(a,b); });
                 break;
             }
             case asByte(OpCode::Divide): {
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
                 if (!peek(0).isNumber()) {
                     runtimeError("Operand of / must be a number");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 if (!peek(1).isNumber()) {
                     runtimeError("Operand of / must be a number");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 if (peek(0).asReal() == 0.0) {
                     runtimeError("Divide by 0");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 binaryOp([](Value a, Value b) -> Value { return divide(a,b); });
                 break;
             }
             case asByte(OpCode::Negate): {
-                Value operand { peek(0) };
+                Value& operand { peek(0) };
+                operand.resolveFuture();
 
                 if (operand.isNumber() || operand.isBool())
                     push(negate(pop()));
@@ -1142,48 +1184,56 @@ VM::InterpretResult VM::execute()
                 }
                 else {
                     runtimeError("Operand of 'not' or negation must be a number, bool or nil");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 break;
             }
             case asByte(OpCode::Modulo): {
                 // TODO: support decimal
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
                 if (!peek(0).isInt()) {
                     runtimeError("Operand of '%' must be an integer");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 if (!peek(1).isInt()) {
                     runtimeError("Operand of '%' must be an integer");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 binaryOp([](Value a, Value b) -> Value { return mod(a,b); });
                 break;
             }
             case asByte(OpCode::And): {
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
                 if (!peek(0).isBool()) {
                     runtimeError("Operand of 'and' must be a bool");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 if (!peek(1).isBool()) {
                     runtimeError("Operand of 'and' must be a bool");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 binaryOp([](Value a, Value b) -> Value { return land(a,b); });
                 break;
             }
             case asByte(OpCode::Or): {
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
                 if (!peek(0).isBool()) {
                     runtimeError("Operand of 'or' must be a bool");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 if (!peek(1).isBool()) {
                     runtimeError("Operand of 'or' must be a bool");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 binaryOp([](Value a, Value b) -> Value { return lor(a,b); });
                 break;
             }
             case asByte(OpCode::FollowedBy): {
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
                 binaryOp([](Value a, Value b) -> Value { return followedBy(a,b); });
                 break;
             }
@@ -1199,12 +1249,14 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::JumpIfFalse): {
                 uint16_t jumpDist = readShort();
+                peek(0).resolveFuture();
                 if (isFalsey(peek(0)))
                     frame->ip += jumpDist;
                 break;
             }
             case asByte(OpCode::JumpIfTrue): {
                 uint16_t jumpDist = readShort();
+                peek(0).resolveFuture();
                 if (isTruthy(peek(0)))
                     frame->ip += jumpDist;
                 break;
@@ -1221,16 +1273,18 @@ VM::InterpretResult VM::execute()
             }
             case asByte(OpCode::Call): {
                 CallSpec callSpec{frame->ip};
-                Value callee { peek(callSpec.argCount) };
+                Value& callee { peek(callSpec.argCount) };
+                callee.resolveFuture();
                 if (!callValue(callee, callSpec))
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 frame = thread->frames.end()-1;
                 break;
             }
             case asByte(OpCode::Index): {
                 uint8_t argCount = readByte();
+                peek(argCount).resolveFuture();
                 if (!indexValue(peek(argCount), argCount))
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 break;
             }
             // TODO: reimplement optimization to use Invoke as single step for object.method()
@@ -1239,7 +1293,7 @@ VM::InterpretResult VM::execute()
                 ObjString* method = readString();
                 CallSpec callSpec{frame->ip};
                 if (!invoke(method, callSpec))
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 frame = thread->frames.end()-1;
                 break;
             }
@@ -1273,11 +1327,11 @@ VM::InterpretResult VM::execute()
                     push(result);
 
                     if (thread->frames.empty()) {
-                        pop();
+                        Value returnVal = pop();
 
                         freeObjects();
 
-                        return InterpretResult::OK;
+                        return std::make_pair(InterpretResult::OK,returnVal);
                     }
 
                     frame = thread->frames.end() -1;
@@ -1286,7 +1340,7 @@ VM::InterpretResult VM::execute()
 
                 } catch (std::runtime_error& e) {
                     runtimeError(std::string(e.what()));
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
 
                 break;
@@ -1299,7 +1353,7 @@ VM::InterpretResult VM::execute()
                     if (thread->frames.empty()) {
                         freeObjects();
 
-                        return InterpretResult::OK;
+                        return std::make_pair(InterpretResult::OK,result);
                     }
 
                     CallFrames::iterator parentFrame = frame->parent;        
@@ -1314,7 +1368,7 @@ VM::InterpretResult VM::execute()
 
                 } catch (std::runtime_error& e) {
                     runtimeError(std::string(e.what()));
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
 
                 break;
@@ -1356,7 +1410,7 @@ VM::InterpretResult VM::execute()
                 }
                 else {
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 break;
             }
@@ -1368,7 +1422,7 @@ VM::InterpretResult VM::execute()
                 }
                 else {
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
-                    return InterpretResult::RuntimeError;
+                    return errorReturn;
                 }
                 break;
             }
@@ -1450,7 +1504,7 @@ VM::InterpretResult VM::execute()
     } // for
 
 
-    return InterpretResult::OK;
+    return std::make_pair(InterpretResult::OK,nilVal());
 
 }
 

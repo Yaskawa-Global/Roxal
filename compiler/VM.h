@@ -89,7 +89,7 @@ public:
     inline void push(const Value& value) { thread->push(value); }
     inline Value pop() { return thread->pop(); }
     inline void popN(size_t n) { thread->popN(n); } // call pop() n times
-    inline Value peek(int distance) { return thread->peek(distance); }
+    inline Value& peek(int distance) { return thread->peek(distance); }
 
 
     class Thread : public std::enable_shared_from_this<Thread> {
@@ -121,7 +121,7 @@ public:
         void push(const Value& value);
         Value pop();
         void popN(size_t n); // call pop() n times
-        Value peek(int distance);
+        Value& peek(int distance);
 
         ValueStack stack;
         ValueStack::iterator stackTop;
@@ -133,6 +133,10 @@ public:
             frames.push_back(frame);
         }
         void popFrame() { frames.pop_back(); }
+
+        // dump stack to std::cout
+        void outputStack();
+
 
         bool threadSleep;
         uint64_t threadSleepUntil;
@@ -157,7 +161,7 @@ protected:
     VM();
     ~VM();
 
-    InterpretResult execute();
+    std::pair<InterpretResult,Value> execute();
 
     bool outputBytecodeDissasembly;
     bool lineMode;

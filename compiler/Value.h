@@ -143,6 +143,10 @@ public:
         return (Obj*)(uintptr_t)(val & ~(SignBit | QNAN)); 
     }
 
+
+    // if is ObjFuture, block waiting for value (and replace this with value) 
+    void resolveFuture();
+
     bool operator==(const Value& rhs) const;
 
     #ifdef DEBUG_BUILD

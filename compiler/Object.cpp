@@ -2,6 +2,7 @@
 #include <cassert>
 #include <unordered_map>
 
+#include <core/types.h>
 #include "Object.h"
 #include "Stream.h"
 
@@ -236,6 +237,11 @@ std::string roxal::objToString(const Value& v)
         case ObjType::BoundMethod: {
             return objFunctionToString(asBoundMethod(v)->method->function);
         }
+        case ObjType::Future: {
+            ObjFuture* fut = asFuture(v);
+            Value v = fut->future.get(); // will block if promise not fulfilled
+            return toString(v);
+        }
         default: ;
     }
     return "";
@@ -309,23 +315,43 @@ ActorInstance::~ActorInstance()
 }
 
 
-void ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop)
+Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop)
 {
     // queue producer for consumer Thread::act()
     #ifdef DEBUG_BUILD
     assert(isBoundMethod(callee));
     assert(isActorInstance(asBoundMethod(callee)->receiver));
     #endif
+    
     std::lock_guard<std::mutex> lock { queueMutex };
 
+    // TODO: arrange for push to move to queue to avoid copy
     MethodCallInfo callInfo {};
     callInfo.callee = callee;
     callInfo.callSpec = callSpec;
     for(auto i=0; i<callSpec.argCount; i++)
         callInfo.args.push_back( *(argsStackTop - i - 1) );
+    callInfo.returnPromise = nullptr;
+
+    // if method is a func, create promise for return value
+    auto funcObj = asBoundMethod(callee)->method->function;
+    if (funcObj->funcType.has_value()) {
+        ptr<roxal::type::Type> funcType { funcObj->funcType.value() };
+        assert(funcType->func.has_value());
+        if (!funcType->func.value().isProc) {
+            callInfo.returnPromise = std::make_shared<std::promise<Value>>();
+        }
+    }
+
     callQueue.push(callInfo);
 
     queueConditionVar.notify_one();
+
+    Value futureReturn {}; // nil by default
+    if (callInfo.returnPromise != nullptr)
+        futureReturn = Value(futureVal(callInfo.returnPromise->get_future()));
+
+    return futureReturn;
 }
 
 
@@ -398,6 +424,7 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::Function: return "function";
     case ObjType::Native: return "native";
     case ObjType::Upvalue: return "upvalue";
+    case ObjType::Future: return "future";
     case ObjType::Bool: return "bool";
     case ObjType::Int: return "int";
     case ObjType::Real: return "real";

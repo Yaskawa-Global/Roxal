@@ -475,6 +475,13 @@ bool Value::operator==(const Value& rhs) const
 }
 
 
+void Value::resolveFuture()
+{
+    if (isFuture(*this))
+        *this = asFuture(*this)->asValue();
+}
+
+
 
 
 Value roxal::toType(ValueType t, Value v, bool strict)

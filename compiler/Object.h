@@ -6,6 +6,7 @@
 #include <sstream>
 #include <unordered_map>
 #include <atomic>
+#include <future>
 #include <condition_variable>
 #include <unicode/ustring.h>
 
@@ -36,6 +37,7 @@ enum class ObjType {
     Actor,
     Native,
     Upvalue,
+    Future,
     Bool,
     Int,
     Real,
@@ -367,6 +369,37 @@ inline ObjClosure* closureVal(ObjFunction* function) {
 
 
 
+// future
+
+struct ObjFuture : public Obj
+{
+    ObjFuture(const std::shared_future<Value>& fv) 
+        : future(fv)
+    {
+        type = ObjType::Future;
+    }
+    virtual ~ObjFuture() {}
+
+    Value asValue() { return future.valid() ? future.get() : nilVal(); }
+
+    std::shared_future<Value> future;
+};
+
+inline bool isFuture(const Value& v) { return isObjType(v, ObjType::Future); }
+inline ObjFuture* asFuture(const Value& v) {
+    #ifdef DEBUG_BUILD
+    if (!isFuture(v))
+        throw std::runtime_error("Value is not an ObjFuture");
+    #endif
+    return static_cast<ObjFuture*>(v.asObj());
+}
+
+inline ObjFuture* futureVal(const std::shared_future<Value>& fv) {
+    return newObj<ObjFuture>(__func__, fv);
+}
+
+
+
 
 
 //
@@ -450,7 +483,8 @@ struct ActorInstance : public Obj
     ObjObjectType* instanceType;
     std::unordered_map<int32_t, Value> properties;
 
-    void queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop);
+    // returns Value of ObjFuture or nil
+    Value queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop);
 
 
     // queue of actor method calls
@@ -459,6 +493,7 @@ struct ActorInstance : public Obj
     struct MethodCallInfo {
         Value callee;
         std::vector<Value> args;
+        ptr<std::promise<Value>> returnPromise; 
         CallSpec callSpec;
 
         bool valid() const { return !callee.isNil(); }
