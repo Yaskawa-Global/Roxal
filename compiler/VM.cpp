@@ -179,6 +179,8 @@ void VM::Thread::act(Value actorInstance)
         ActorInstance* actorInst = asActorInstance(actorInstance);
 
         vm.resetStack();
+        // frame local 0 is actor 'this' instance for actor method (as for object methods)
+        push(actorInstance);
 
         do {
 
@@ -201,7 +203,7 @@ void VM::Thread::act(Value actorInstance)
                 
                 auto closure = asBoundMethod(callInfo.callee)->method;
 
-                push(callInfo.callee);
+
                 for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it) 
                     push(*it);
                 
@@ -1608,6 +1610,7 @@ void VM::defineBuiltinFunctions()
     defineNative("fork", &VM::fork_builtin);
     defineNative("join", &VM::join_builtin);
     defineNative("_threadid", &VM::threadid_builtin);
+    defineNative("_wait", &VM::wait_builtin);
 }
 
 
@@ -1675,6 +1678,42 @@ Value VM::threadid_builtin(int argCount, Value* args)
     return intVal(id);
 }
 
+
+
+
+Value VM::wait_builtin(int argCount, Value* args)
+{
+    // iterate over all the argumens, and for each if it is an ObjFuture,
+    //  resolve it (which wil block until the promise is fulfilled unless it was already)
+
+    // as special case, if a single arg and it is a list, iterate over the list elements and resolve them
+
+    int32_t numFuturesResolved { 0 };
+    if (argCount == 1) {
+        if (isFuture(args[0])) {
+            args[0].resolveFuture();
+            numFuturesResolved++;
+        }
+        else if (isList(args[0])) {
+
+            ObjList* l = asList(args[0]);
+            for(auto& v : l->elts) {
+                v.resolveFuture();
+                numFuturesResolved++;
+            }
+        }
+    }
+    else {
+        for(auto i=0; i<argCount; i++) {
+            if (isFuture(args[i])) {
+                args[i].resolveFuture(); // may block
+                numFuturesResolved++;
+            }
+        }
+    }
+
+    return intVal(numFuturesResolved);
+}
 
 
 

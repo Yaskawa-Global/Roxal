@@ -1,0 +1,24 @@
+var gl = false
+
+type actor A:
+  proc f():
+    print('from actor A.f()')
+
+  func g():
+    sleep(100000)
+    gl = true
+    return 2
+
+  func h():
+    return 5
+
+var a = A()
+l = [a.g(), a.h()]
+print('wait')
+_wait(l)
+if not gl:
+  print('expected true')
+print('done')
+
+print(l)
+

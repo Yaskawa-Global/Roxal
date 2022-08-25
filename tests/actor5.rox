@@ -1,0 +1,16 @@
+type actor A:
+  func f():
+    sleep(100000)
+    print('f id:'+_threadid())
+    return true
+
+  func g():
+    print('g id:'+_threadid())
+    return this.f()
+    
+var a = A()
+var f1 = a.f()
+var f2 = a.g()
+
+_wait(f1,f2)
+
