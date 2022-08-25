@@ -177,6 +177,7 @@ void VM::Thread::act(Value actorInstance)
         vm.thread = shared_from_this(); // set thread local storage member
 
         ActorInstance* actorInst = asActorInstance(actorInstance);
+        actorInst->thread_id = std::this_thread::get_id(); // store actor's thread in instance
 
         vm.resetStack();
         // frame local 0 is actor 'this' instance for actor method (as for object methods)
@@ -509,15 +510,25 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     return call(boundMethod->method, callSpec);
                 }
                 else {
-                    // call to actor method.  Instead of calling on this thread,
+                    // call to actor method.  
+                    //  If the caller is the same actor, treat like regular method call
+                    //  otherwise, instead of calling on this thread,
                     //  queue the call for the actor thread to handle
 
                     ActorInstance* inst = asActorInstance(boundMethod->receiver);
-                    Value future = inst->queueCall(callee, callSpec, &(*thread->stackTop) );
 
-                    popN(callSpec.argCount + 1); // args & callee
+                    if (std::this_thread::get_id() == inst->thread_id) { 
+                        // actor to this/self method call
+                        *(thread->stackTop - callSpec.argCount - 1) = boundMethod->receiver; // FIXME: or inst??
+                        return call(boundMethod->method, callSpec);
+                    } else {
+                        // call to other actor
+                        Value future = inst->queueCall(callee, callSpec, &(*thread->stackTop) );
 
-                    push(future);
+                        popN(callSpec.argCount + 1); // args & callee
+
+                        push(future);
+                    }
 
                     return true;
                 }

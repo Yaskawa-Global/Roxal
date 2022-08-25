@@ -502,6 +502,8 @@ struct ActorInstance : public Obj
 
     std::mutex queueMutex;
     std::condition_variable queueConditionVar;
+
+    std::thread::id thread_id;
 };
 
 inline bool isActorInstance(const Value& v) { return isObjType(v, ObjType::Actor); }
