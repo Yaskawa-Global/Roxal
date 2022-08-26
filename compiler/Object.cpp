@@ -150,7 +150,7 @@ ObjDict* roxal::dictVal(const std::vector<std::pair<Value,Value>>& entries)
 {
     auto d = newObj<ObjDict>(__func__);
     for(const auto& entry : entries)
-        d->entries[entry.first] = entry.second;
+        d->store(entry.first, entry.second);
     return d;
 }
 
@@ -187,12 +187,13 @@ std::string roxal::objToString(const Value& v)
             auto l = asList(v);
             std::ostringstream os;
             os << "[";
-            for(auto it = l->elts.begin(); it != l->elts.end(); ++it) {
+            auto list { l->elts.get() };
+            for(auto it = list.begin(); it != list.end(); ++it) {
                 const auto& value { *it };
                 auto valStr { toString(value) };
                 if (isString(value)) valStr = "\""+valStr+"\"";
                 os << valStr;
-                if (it != l->elts.end()-1)
+                if (it != list.end()-1)
                     os << ", ";                
             }
             os << "]";
@@ -203,15 +204,15 @@ std::string roxal::objToString(const Value& v)
             std::ostringstream os;
             os << "{";
             size_t i=0;
-            for(auto it = d->entries.begin(); it != d->entries.end(); ++it) {
-                const auto& key { it->first };
-                const auto& value { it->second };
+            auto keys { d->keys() };
+            for(const auto& key : keys) {
+                const auto value { d->at(key) };
                 auto keyStr { toString(key) };
                 auto valStr { toString(value) };
                 if (isString(key)) keyStr = "\""+keyStr+"\"";
                 if (isString(value)) valStr = "\""+valStr+"\"";
                 os << keyStr << ": " << valStr;
-                if (i != d->entries.size()-1)
+                if (i != keys.size()-1)
                     os << ", ";
                 i++;
             }

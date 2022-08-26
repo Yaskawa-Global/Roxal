@@ -149,6 +149,12 @@ public:
 
     bool operator==(const Value& rhs) const;
 
+    static_assert(sizeof(size_t) >= sizeof(uint64_t), "size_t is not big enough for uint64_t val as hash");
+
+    size_t hash() const {
+        return size_t(val.load());
+    }
+
     #ifdef DEBUG_BUILD
     uint64_t getVal() const { return val; }
     static void testPrimitiveValues();

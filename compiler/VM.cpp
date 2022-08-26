@@ -687,7 +687,7 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                 ObjDict* dict = asDict(indexable);
                 Value index = pop();
                 // TODO: bounds check
-                Value result { dict->entries.at(index) };
+                Value result { dict->at(index) };
                 pop(); // discard indexable
                 push(result);
                 return true;
@@ -1708,7 +1708,7 @@ Value VM::wait_builtin(int argCount, Value* args)
         else if (isList(args[0])) {
 
             ObjList* l = asList(args[0]);
-            for(auto& v : l->elts) {
+            for(auto& v : l->elts.get()) {
                 v.resolveFuture();
                 numFuturesResolved++;
             }

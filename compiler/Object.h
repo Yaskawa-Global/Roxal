@@ -218,7 +218,7 @@ struct ObjList : public Obj
     ObjList() { type = ObjType::List; }
     virtual ~ObjList() {}
 
-    std::vector<Value> elts;
+    atomic_vector<Value> elts;
 };
 
 
@@ -239,8 +239,30 @@ struct ObjDict : public Obj
     ObjDict() { type = ObjType::Dict; }
     virtual ~ObjDict() {}
 
-    // TODO: replace with a map that preserves insertion order
-    //  (e.g. impl a vector for values and a map of key->vec-index)
+    bool contains(const Value& key) const {
+        std::lock_guard<std::mutex> lock(m);
+        return (entries.find(key) != entries.end());
+    }
+
+    Value at(const Value& key) const {
+        std::lock_guard<std::mutex> lock(m);
+        auto it = entries.find(key);
+        if (it != entries.end())
+            return it->second;
+        return nilVal();
+    }
+
+    std::vector<Value> keys() const {
+        std::lock_guard<std::mutex> lock(m);
+        return m_keys;
+    }
+
+    void store(const Value& key, const Value& val) {
+        std::lock_guard<std::mutex> lock(m);
+        if (entries.find(key) == entries.end()) // key exists?
+            m_keys.push_back(key); // no, add to keys list
+        entries[key] = val; // insert or replace 
+    }
 
     struct ValueComparitor
     {
@@ -249,6 +271,11 @@ struct ObjDict : public Obj
         // standard comparison (between two instances of Type)
         bool operator()(const Value& lhs, const Value& rhs) const { return less(lhs, rhs).asBool(); }
     };
+
+private:
+    mutable std::mutex m;
+    std::vector<Value> m_keys;
+    // TODO: transition to unordered_map by defining Value hash
     std::map<Value,Value,ValueComparitor> entries;
 };
 
