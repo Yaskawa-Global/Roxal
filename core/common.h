@@ -79,8 +79,10 @@ std::string stringInterval(const std::string s, size_t startLine, size_t startPo
 
 std::string replace(const std::string& str, const std::string& from, const std::string& to);
 
-std::string deleteStringAtInterval(const std::string& s, size_t startLine, size_t startPos, size_t endLine, size_t endPos);
+//insert new lines (not substrings)
+std::string deleteStringLinesAtInterval(const std::string& s, size_t startLine, size_t startPos, size_t endLine, size_t endPos);
 
-std::string insertStringAtInterval(const std::string& s, const std::string& insertS, size_t startLine, size_t startPos);
+//delete lines (not substrings)
+std::string insertStringLinesAtInterval(const std::string& s, const std::string& insertS, size_t startLine, size_t startPos);
 
 }

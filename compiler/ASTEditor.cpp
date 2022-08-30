@@ -84,17 +84,17 @@ void ASTEditor::deleteFromSuite(std::vector<std::variant<ptr<Declaration>, ptr<S
     //delete
     if (found)
     {
+        //delete from source member of ast
+        std::string newSource = deleteStringLinesAtInterval(*(m_tree->source),
+            m_removed->interval.first.line, m_removed->interval.first.pos,
+            m_removed->interval.second.line, m_removed->interval.second.pos);
+
         //update line positions
         int linedelta = m_removed->interval.second.line - m_removed->interval.first.line + 1;
         updateAstLinePositions(m_tree, m_removed->interval.first.line, 0, -1*linedelta, 0);
         
         //erase the ast node
         vec.erase(vec.begin() + position);
-
-        //delete from source member of ast
-        std::string newSource = deleteStringAtInterval(*(m_tree->source), 
-            m_removed->interval.first.line, m_removed->interval.first.pos,
-            m_removed->interval.second.line, m_removed->interval.second.pos);
 
         *m_tree->source = newSource;
     }
@@ -131,6 +131,7 @@ void ASTEditor::insertBeforeOrAfterIntoSuite(std::vector<std::variant<ptr<Declar
         else
         {
             //fix up the nodes in the inserted subtree
+            int delta = m_sibling->interval.second.line + 1 - m_inserted->interval.first.line;
             updateAstLinePositions(m_inserted, 0, 0, m_sibling->interval.second.line + 1 - m_inserted->interval.first.line, m_sibling->interval.first.pos);
 
             //fix the main tree before inserting the new node
@@ -149,7 +150,7 @@ void ASTEditor::insertBeforeOrAfterIntoSuite(std::vector<std::variant<ptr<Declar
         }
 
         //insert new text code into the main tree's source
-        std::string newSource = insertStringAtInterval(*(m_tree->source), 
+        std::string newSource = insertStringLinesAtInterval(*(m_tree->source),
             *(m_inserted->source), m_inserted->interval.first.line, m_inserted->interval.first.pos);
 
         //update the inserted node's source to point to the main tree's

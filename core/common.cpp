@@ -71,7 +71,7 @@ std::string roxal::stringInterval(const std::string s, size_t startLine, size_t 
     return s.substr(starti,s.size()-starti);
 }
 
-std::string roxal::deleteStringAtInterval(const std::string& s, size_t startLine, size_t startPos, size_t endLine, size_t endPos)
+std::string roxal::deleteStringLinesAtInterval(const std::string& s, size_t startLine, size_t startPos, size_t endLine, size_t endPos)
 {
     // TODO: handle non-\n line endings
     long linenum=1;
@@ -81,60 +81,52 @@ std::string roxal::deleteStringAtInterval(const std::string& s, size_t startLine
     //copy
     std::string cs = s;
 
-    //find the start and end
+    //find the new lines
     int index = 0;
-    do
+    std::vector<int> newLines;
+    newLines.push_back(0);//start of first line is at newLines(0)
+    while((index = cs.find('\n', index)) != std::string::npos)
     {
-        if(linenum == (int)startLine)
-        {
-            startidx = index;
-            //startidx += (int)startPos;//also erase the new line
-        }
-
-        if(linenum == (int)endLine)
-        {
-            endidx = index;
-            endidx += (int)endPos;
-            break;
-        }
-        linenum++;
+        index++;
+        newLines.push_back(index);
+        std::string g = cs.substr(index);
     }
-    while ((index = cs.find('\n', index+1)) != std::string::npos);
 
-    //delete
-    if(endidx > startidx)
-        cs.erase(startidx, endidx-startidx);
+    //delete the lines
+    if(newLines.size() >= endLine)
+        cs.erase(newLines.at(startLine-1), newLines.at(endLine) - newLines.at(startLine-1));
+    else
+        //handle last line, no linefeed
+        cs.erase(newLines.at(startLine-1), (int)endPos+1 - (int)startPos);
 
     return cs;
 }
 
-std::string roxal::insertStringAtInterval(const std::string& s, const std::string& insertS, size_t startLine, size_t startPos)
+std::string roxal::insertStringLinesAtInterval(const std::string& s, const std::string& insertS, size_t startLine, size_t startPos)
 {
-      // TODO: handle non-\n line endings
+     // TODO: handle non-\n line endings
     long linenum=1;
-    long startidx = -1;
 
     //copy
     std::string cs = s;
 
-    //find the start
+    //find the new lines
     int index = 0;
-    do
+    std::vector<int> newLines;
+    newLines.push_back(0);//start of first line is at newLines(0)
+    while((index = cs.find('\n', index)) != std::string::npos)
     {
-        if(linenum == (int)startLine)
-        {
-            startidx = index;
-            //add space to insertS based on startPOs
-            break;
-        }
-        linenum++;
-        std::string g = cs.substr(index);
+        index++;
+        newLines.push_back(index);
+        //std::string g = cs.substr(index);
     }
-    while((index = cs.find('\n', index+1)) != std::string::npos);
 
     //insert
-    if(startidx != -1)
-        cs.insert(startidx, spaces(startPos) + insertS + "\n");
+    if(startLine < newLines.size())
+        cs.insert(newLines.at(startLine - 1), spaces(startPos) + insertS + "\n");
+    //append
+    else if(startLine == newLines.size())
+        cs += (spaces(startPos) + insertS + "\n");
 
     return cs;
 }

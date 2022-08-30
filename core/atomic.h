@@ -20,6 +20,7 @@
 #include <mutex>
 #include <stack>
 #include <queue>
+#include <optional>
 
 
 namespace roxal {
