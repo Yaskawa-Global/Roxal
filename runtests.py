@@ -17,9 +17,10 @@ tests = [
     'linkedlist',
     'if',
     'func_param_default', 'func_param_default2', 'func_param_default3','func_param_default4',
-    'typeobj1', 'typeobj2', 'typeobj3', 'typeobj4', 'typeobj5',
+    'typeobj1', 'typeobj2', 'typeobj3', 'typeobj4', 'typeobj5', 'typeobj6',
     'method_named_param',
-    'annot1'
+    'annot1',
+    'threads1', 'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6'
 ]
 
 test_dir='../tests'

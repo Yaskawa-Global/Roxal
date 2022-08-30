@@ -1,17 +1,38 @@
 #include <stdexcept>
+#include <cassert>
 #include <unordered_map>
 
+#include <core/types.h>
 #include "Object.h"
 #include "Stream.h"
 
 using namespace roxal;
 
 
-std::vector<Obj*> Obj::unrefedObjs {};
+atomic_vector<Obj*> Obj::unrefedObjs {};
 
 #ifdef DEBUG_TRACE_MEMORY
-std::map<Obj*, const char*> Obj::allocatedObjs {};
+atomic_map<Obj*, const char*> Obj::allocatedObjs {};
 #endif
+
+
+ValueType Obj::valueType() const
+{
+    switch (type) {
+        case ObjType::Bool: return ValueType::Bool;
+        // TODO: Byte, Decimal
+        case ObjType::Int: return ValueType::Int;
+        case ObjType::Real: return ValueType::Real;
+        case ObjType::String: return ValueType::String;
+        case ObjType::Type: return ValueType::Type;
+        case ObjType::List: return ValueType::List;
+        case ObjType::Dict: return ValueType::Dict;
+        case ObjType::Stream: return ValueType::Stream;
+        case ObjType::Instance: return static_cast<const ObjObjectType*>(this)->isActor ? ValueType::Actor : ValueType::Object;
+        case ObjType::ObjectType: return ValueType::Type;
+        default: return ValueType::Nil;
+    }
+}
 
 
 void Obj::registerStream()
@@ -34,7 +55,7 @@ void Obj::unregisterStream()
 
 
 // interned strings table
-static std::unordered_map<int32_t, ObjString*> strings {};
+static atomic_unordered_map<int32_t, ObjString*> strings {};
 
 
 ObjString::ObjString(const UnicodeString& us)
@@ -46,19 +67,17 @@ ObjString::ObjString(const UnicodeString& us)
 
     // add ourself to the string intern table
     #ifdef DEBUG_BUILD
-    if (strings.find(hash) != strings.end())
+    if (strings.containsKey(hash))
         throw std::runtime_error("Duplicate ObjString creation");
     #endif
-    strings[hash] = this;
+    strings.store(hash, this);
 }
 
 
 ObjString::~ObjString()
 {
     // remove ourself from the strings intern table
-    auto si = strings.find(hash);
-    if (si != strings.end())
-        strings.erase(si);
+    strings.erase(hash);
 }
 
 
@@ -83,13 +102,13 @@ static uint32_t fnv1a32(const UnicodeString& s)
 ObjString* roxal::stringVal(const UnicodeString& s) 
 { 
     int32_t hash = s.hashCode();
-    auto si = strings.find(hash);
-    if (si == strings.end()) { // not found
+    auto objStr = strings.lookup(hash);
+    if (!objStr.has_value()) { // not found
         // create new
         return newObj<ObjString>(__func__,s); 
     }
     else { // found existing string
-        return si->second;
+        return objStr.value();
     }
 } 
 
@@ -131,7 +150,7 @@ ObjDict* roxal::dictVal(const std::vector<std::pair<Value,Value>>& entries)
 {
     auto d = newObj<ObjDict>(__func__);
     for(const auto& entry : entries)
-        d->entries[entry.first] = entry.second;
+        d->store(entry.first, entry.second);
     return d;
 }
 
@@ -168,12 +187,13 @@ std::string roxal::objToString(const Value& v)
             auto l = asList(v);
             std::ostringstream os;
             os << "[";
-            for(auto it = l->elts.begin(); it != l->elts.end(); ++it) {
+            auto list { l->elts.get() };
+            for(auto it = list.begin(); it != list.end(); ++it) {
                 const auto& value { *it };
                 auto valStr { toString(value) };
                 if (isString(value)) valStr = "\""+valStr+"\"";
                 os << valStr;
-                if (it != l->elts.end()-1)
+                if (it != list.end()-1)
                     os << ", ";                
             }
             os << "]";
@@ -184,15 +204,15 @@ std::string roxal::objToString(const Value& v)
             std::ostringstream os;
             os << "{";
             size_t i=0;
-            for(auto it = d->entries.begin(); it != d->entries.end(); ++it) {
-                const auto& key { it->first };
-                const auto& value { it->second };
+            auto keys { d->keys() };
+            for(const auto& key : keys) {
+                const auto value { d->at(key) };
                 auto keyStr { toString(key) };
                 auto valStr { toString(value) };
                 if (isString(key)) keyStr = "\""+keyStr+"\"";
                 if (isString(value)) valStr = "\""+valStr+"\"";
                 os << keyStr << ": " << valStr;
-                if (i != d->entries.size()-1)
+                if (i != keys.size()-1)
                     os << ", ";
                 i++;
             }
@@ -208,11 +228,20 @@ std::string roxal::objToString(const Value& v)
             return std::string("<type ")+(obj->isActor ? "actor" :"object")+" "+toUTF8StdString(obj->name)+">";
         }
         case ObjType::Instance: {
-            ObjInstance* inst = asInstance(v);
-            return std::string(inst->instanceType->isActor ? "actor" : "object")+" "+toUTF8StdString(inst->instanceType->name);
+            ObjectInstance* inst = asObjectInstance(v);
+            return std::string("object "+toUTF8StdString(inst->instanceType->name));
+        }
+        case ObjType::Actor: {
+            ActorInstance* inst = asActorInstance(v);
+            return std::string("actor "+toUTF8StdString(inst->instanceType->name));
         }
         case ObjType::BoundMethod: {
             return objFunctionToString(asBoundMethod(v)->method->function);
+        }
+        case ObjType::Future: {
+            ObjFuture* fut = asFuture(v);
+            Value v = fut->future.get(); // will block if promise not fulfilled
+            return toString(v);
         }
         default: ;
     }
@@ -254,26 +283,83 @@ ObjObjectType* roxal::objectTypeVal(const icu::UnicodeString& typeName, bool isA
 }
 
 
-ObjInstance::ObjInstance(ObjObjectType* objectType) 
+ObjectInstance::ObjectInstance(ObjObjectType* objectType) 
 { 
     type = ObjType::Instance; 
     instanceType = objectType;
     instanceType->incRef();
 }
 
-ObjInstance::~ObjInstance() 
+ObjectInstance::~ObjectInstance() 
 {
     instanceType->decRef();
 }
 
 
-
-
-ObjInstance* roxal::objInstanceVal(ObjObjectType* objectType)
+ObjectInstance* roxal::objectInstanceVal(ObjObjectType* objectType)
 {
-    return newObj<ObjInstance>(__func__, objectType);
+    return newObj<ObjectInstance>(__func__, objectType);
 }
 
+
+
+ActorInstance::ActorInstance(ObjObjectType* objectType) 
+{ 
+    type = ObjType::Actor; 
+    instanceType = objectType;
+    instanceType->incRef();
+}
+
+ActorInstance::~ActorInstance() 
+{
+    instanceType->decRef();
+}
+
+
+Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop)
+{
+    // queue producer for consumer Thread::act()
+    #ifdef DEBUG_BUILD
+    assert(isBoundMethod(callee));
+    assert(isActorInstance(asBoundMethod(callee)->receiver));
+    #endif
+    
+    std::lock_guard<std::mutex> lock { queueMutex };
+
+    // TODO: arrange for push to move to queue to avoid copy
+    MethodCallInfo callInfo {};
+    callInfo.callee = callee;
+    callInfo.callSpec = callSpec;
+    for(auto i=0; i<callSpec.argCount; i++)
+        callInfo.args.push_back( *(argsStackTop - i - 1) );
+    callInfo.returnPromise = nullptr;
+
+    // if method is a func, create promise for return value
+    auto funcObj = asBoundMethod(callee)->method->function;
+    if (funcObj->funcType.has_value()) {
+        ptr<roxal::type::Type> funcType { funcObj->funcType.value() };
+        assert(funcType->func.has_value());
+        if (!funcType->func.value().isProc) {
+            callInfo.returnPromise = std::make_shared<std::promise<Value>>();
+        }
+    }
+
+    callQueue.push(callInfo);
+
+    queueConditionVar.notify_one();
+
+    Value futureReturn {}; // nil by default
+    if (callInfo.returnPromise != nullptr)
+        futureReturn = Value(futureVal(callInfo.returnPromise->get_future()));
+
+    return futureReturn;
+}
+
+
+ActorInstance* roxal::actorInstanceVal(ObjObjectType* objectType)
+{
+    return newObj<ActorInstance>(__func__, objectType);
+}
 
 
 
@@ -332,15 +418,14 @@ std::string roxal::objTypeName(Obj* obj)
     switch (obj->type) {
     case ObjType::None: return "none";
     case ObjType::ObjectType: return static_cast<ObjObjectType*>(obj)->isActor ? "type actor" : "type object";
-    case ObjType::Instance: {
-        ObjInstance* inst = static_cast<ObjInstance*>(obj);
-        return inst->instanceType->isActor ? "actor":"object";
-    }
+    case ObjType::Instance: return "object";
+    case ObjType::Actor: return "actor";
     case ObjType::BoundMethod: return "function";
     case ObjType::Closure: return "closure";
     case ObjType::Function: return "function";
     case ObjType::Native: return "native";
     case ObjType::Upvalue: return "upvalue";
+    case ObjType::Future: return "future";
     case ObjType::Bool: return "bool";
     case ObjType::Int: return "int";
     case ObjType::Real: return "real";
@@ -349,3 +434,28 @@ std::string roxal::objTypeName(Obj* obj)
     }
     return "unknown";
 }
+
+
+
+#ifdef DEBUG_BUILD
+void roxal::testObjectValues()
+{
+    Value i0 { 4 };
+    Value i1 { 6 };
+    Value i2 { 8 };
+
+    Value l1 { listVal(std::vector<Value>{i0,i1,i2}) };
+
+    assert(isList(l1));
+    assert(!l1.isNil());
+    ObjList* lp = static_cast<ObjList*>(l1.asObj());
+    assert(lp->elts.size() == 3);
+
+    Value l2 = l1;
+    assert(isList(l2));
+    assert(!l2.isNil());
+
+    assert(l1 == l2);
+    assert(!(l2 == nilVal()));
+}
+#endif

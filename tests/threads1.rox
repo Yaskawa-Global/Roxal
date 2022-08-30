@@ -1,0 +1,19 @@
+func f1():
+  print("hello from f1() thread id:"+_threadid())
+
+func f2():
+  sleep(500)
+  print("hello from f2() thread id:"+_threadid())
+
+
+var f1id = fork(f1)
+var f2id = fork(f2)
+
+join(f2id)
+
+print("f2 exited")
+
+join(f1id)
+print("f1 exited")
+
+

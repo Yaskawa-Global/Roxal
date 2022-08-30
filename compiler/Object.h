@@ -5,9 +5,13 @@
 #include <vector>
 #include <sstream>
 #include <unordered_map>
+#include <atomic>
+#include <future>
+#include <condition_variable>
 #include <unicode/ustring.h>
 
 #include <core/common.h>
+#include <core/atomic.h>
 #include "Chunk.h"
 #include "Value.h"
 
@@ -30,8 +34,10 @@ enum class ObjType {
     Closure,
     Function,
     Instance,
+    Actor,
     Native,
     Upvalue,
+    Future,
     Bool,
     Int,
     Real,
@@ -48,18 +54,22 @@ struct Obj {
     virtual ~Obj() {}
 
     ObjType type;
-    int32_t refCount;
+    std::atomic_int32_t refCount;
+
+
+    ValueType valueType() const;
 
     inline void incRef() 
     {
-        if (refCount==0 && type==ObjType::Stream)
-            registerStream(); 
-        ++refCount; 
+        auto prevCount = refCount.fetch_add(1,std::memory_order_relaxed); 
+        if (prevCount==0 && type==ObjType::Stream)
+            registerStream();         
     }
 
     inline void decRef() 
     { 
-        if (--refCount <= 0) {
+        auto prevCount = refCount.fetch_sub(1,std::memory_order_relaxed);
+        if (prevCount <= 1) {
             if (type==ObjType::Stream)
                 unregisterStream();
             unrefedObjs.push_back(this);
@@ -69,10 +79,10 @@ struct Obj {
     void registerStream();
     void unregisterStream();
 
-    static std::vector<Obj*> unrefedObjs;
+    static atomic_vector<Obj*> unrefedObjs;
 
     #ifdef DEBUG_TRACE_MEMORY
-    static std::map<Obj*, const char*> allocatedObjs;
+    static atomic_map<Obj*, const char*> allocatedObjs;
     #endif
 };
 
@@ -81,9 +91,9 @@ template<typename T, typename... Args>
 inline T* newObj(const char* comment, Args&&... args) {
     #ifdef DEBUG_TRACE_MEMORY
     T* o = new T(std::forward<Args>(args)...);
-    if (Obj::allocatedObjs.find(o) != Obj::allocatedObjs.end())
+    if (Obj::allocatedObjs.containsKey(o))
         throw std::runtime_error("new Obj* yielded address already allocated: "+toString(o));
-    Obj::allocatedObjs[o] = comment;
+    Obj::allocatedObjs.store(o, comment);
     return o;
     #else
     return new T(std::forward<Args>(args)...);
@@ -93,10 +103,9 @@ inline T* newObj(const char* comment, Args&&... args) {
 template<typename T>
 inline void delObj(T* o) {
     #ifdef DEBUG_TRACE_MEMORY
-    auto it = Obj::allocatedObjs.find(o);
-    if (it == Obj::allocatedObjs.end())
+    if (!Obj::allocatedObjs.containsKey(o))
         throw std::runtime_error("delete for unallocated Obj* "+toString(o)+" :"+objTypeName(o));
-    Obj::allocatedObjs.erase(it);
+    Obj::allocatedObjs.erase(o);
     #endif
     delete o;
 }
@@ -139,6 +148,26 @@ struct ObjPrimitive : public Obj
     ObjPrimitive(double r) { type=ObjType::Real; as.real = r; }
     ObjPrimitive(int32_t i) { type=ObjType::Int; as.integer = i; }
     ObjPrimitive(ValueType bt) { type=ObjType::Type; as.btype = bt; }
+
+    ValueType valueType() const {
+        switch (type) {
+            case ObjType::Bool: return ValueType::Bool;
+            case ObjType::Int: return ValueType::Int;
+            case ObjType::Real: return ValueType::Real;
+            case ObjType::Type: return ValueType::Type;
+            default: 
+            #ifdef DEBUG_BUILD
+              throw std::runtime_error("Unsupported ObjPrimitive Type "+std::to_string(int(type)));
+            #else
+              return ValueType::Nil;
+            #endif
+        }
+    }
+
+    bool isBool() const { return type==ObjType::Bool; }
+    bool isInt() const { return type==ObjType::Int; }
+    bool isReal() const { return type==ObjType::Real; }
+    bool isType() const { return type==ObjType::Type; }
 
     union {
         bool boolean;
@@ -189,7 +218,7 @@ struct ObjList : public Obj
     ObjList() { type = ObjType::List; }
     virtual ~ObjList() {}
 
-    std::vector<Value> elts;
+    atomic_vector<Value> elts;
 };
 
 
@@ -210,8 +239,30 @@ struct ObjDict : public Obj
     ObjDict() { type = ObjType::Dict; }
     virtual ~ObjDict() {}
 
-    // TODO: replace with a map that preserves insertion order
-    //  (e.g. impl a vector for values and a map of key->vec-index)
+    bool contains(const Value& key) const {
+        std::lock_guard<std::mutex> lock(m);
+        return (entries.find(key) != entries.end());
+    }
+
+    Value at(const Value& key) const {
+        std::lock_guard<std::mutex> lock(m);
+        auto it = entries.find(key);
+        if (it != entries.end())
+            return it->second;
+        return nilVal();
+    }
+
+    std::vector<Value> keys() const {
+        std::lock_guard<std::mutex> lock(m);
+        return m_keys;
+    }
+
+    void store(const Value& key, const Value& val) {
+        std::lock_guard<std::mutex> lock(m);
+        if (entries.find(key) == entries.end()) // key exists?
+            m_keys.push_back(key); // no, add to keys list
+        entries[key] = val; // insert or replace 
+    }
 
     struct ValueComparitor
     {
@@ -220,6 +271,11 @@ struct ObjDict : public Obj
         // standard comparison (between two instances of Type)
         bool operator()(const Value& lhs, const Value& rhs) const { return less(lhs, rhs).asBool(); }
     };
+
+private:
+    mutable std::mutex m;
+    std::vector<Value> m_keys;
+    // TODO: transition to unordered_map by defining Value hash
     std::map<Value,Value,ValueComparitor> entries;
 };
 
@@ -340,6 +396,37 @@ inline ObjClosure* closureVal(ObjFunction* function) {
 
 
 
+// future
+
+struct ObjFuture : public Obj
+{
+    ObjFuture(const std::shared_future<Value>& fv) 
+        : future(fv)
+    {
+        type = ObjType::Future;
+    }
+    virtual ~ObjFuture() {}
+
+    Value asValue() { return future.valid() ? future.get() : nilVal(); }
+
+    std::shared_future<Value> future;
+};
+
+inline bool isFuture(const Value& v) { return isObjType(v, ObjType::Future); }
+inline ObjFuture* asFuture(const Value& v) {
+    #ifdef DEBUG_BUILD
+    if (!isFuture(v))
+        throw std::runtime_error("Value is not an ObjFuture");
+    #endif
+    return static_cast<ObjFuture*>(v.asObj());
+}
+
+inline ObjFuture* futureVal(const std::shared_future<Value>& fv) {
+    return newObj<ObjFuture>(__func__, fv);
+}
+
+
+
 
 
 //
@@ -394,21 +481,62 @@ ObjObjectType* objectTypeVal(const icu::UnicodeString& typeName, bool isActor);
 
 
 //
-// object|actor instance
+// object instance
 
-struct ObjInstance : public Obj
+struct ObjectInstance : public Obj
 {
-    ObjInstance(ObjObjectType* objectType);
-    virtual ~ObjInstance();
+    ObjectInstance(ObjObjectType* objectType);
+    virtual ~ObjectInstance();
 
     ObjObjectType* instanceType;
     std::unordered_map<int32_t, Value> properties;
 };
 
-inline bool isInstance(const Value& v) { return isObjType(v, ObjType::Instance); }
-inline ObjInstance* asInstance(const Value& v) { return static_cast<ObjInstance*>(v.asObj()); }
+inline bool isObjectInstance(const Value& v) { return isObjType(v, ObjType::Instance); }
+inline ObjectInstance* asObjectInstance(const Value& v) { return static_cast<ObjectInstance*>(v.asObj()); }
 
-ObjInstance* objInstanceVal(ObjObjectType* objectType);
+ObjectInstance* objectInstanceVal(ObjObjectType* objectType);
+
+
+
+//
+// actor instance
+
+struct ActorInstance : public Obj
+{
+    ActorInstance(ObjObjectType* objectType);
+    virtual ~ActorInstance();
+
+    ObjObjectType* instanceType;
+    std::unordered_map<int32_t, Value> properties;
+
+    // returns Value of ObjFuture or nil
+    Value queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop);
+
+
+    // queue of actor method calls
+    //  each is a callee and parameters
+    // (serviced in thread created by Thread::act() )
+    struct MethodCallInfo {
+        Value callee;
+        std::vector<Value> args;
+        ptr<std::promise<Value>> returnPromise; 
+        CallSpec callSpec;
+
+        bool valid() const { return !callee.isNil(); }
+    };
+    atomic_queue<MethodCallInfo> callQueue;
+
+    std::mutex queueMutex;
+    std::condition_variable queueConditionVar;
+
+    std::thread::id thread_id;
+};
+
+inline bool isActorInstance(const Value& v) { return isObjType(v, ObjType::Actor); }
+inline ActorInstance* asActorInstance(const Value& v) { return static_cast<ActorInstance*>(v.asObj()); }
+
+ActorInstance* actorInstanceVal(ObjObjectType* objectType);
 
 
 
@@ -431,6 +559,12 @@ inline ObjBoundMethod* boundMethodVal(const Value& instance, ObjClosure* closure
     return newObj<ObjBoundMethod>(__func__,instance, closure);
 }
 
+
+
+
+#ifdef DEBUG_BUILD
+void testObjectValues();
+#endif
 
 
 

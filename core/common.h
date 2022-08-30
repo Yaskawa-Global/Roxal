@@ -20,7 +20,7 @@
 //#define DEBUG_TRACE_EXECUTION
 
 
-//#define NAN_TAGGING
+#define NAN_TAGGING
 
 
 namespace roxal {
