@@ -38,8 +38,6 @@ std::string roxal::demangle(const char* name) {
 #endif
 
 
-
-
 std::string roxal::stringInterval(const std::string s, size_t startLine, size_t startPos, size_t endLine, size_t endPos)
 {
     // TODO: handle non-\n line endings
@@ -73,6 +71,73 @@ std::string roxal::stringInterval(const std::string s, size_t startLine, size_t 
     return s.substr(starti,s.size()-starti);
 }
 
+std::string roxal::deleteStringAtInterval(const std::string& s, size_t startLine, size_t startPos, size_t endLine, size_t endPos)
+{
+    // TODO: handle non-\n line endings
+    long linenum=1;
+    long startidx = -1;
+    long endidx = -1;
+
+    //copy
+    std::string cs = s;
+
+    //find the start and end
+    int index = 0;
+    do
+    {
+        if(linenum == (int)startLine)
+        {
+            startidx = index;
+            //startidx += (int)startPos;//also erase the new line
+        }
+
+        if(linenum == (int)endLine)
+        {
+            endidx = index;
+            endidx += (int)endPos;
+            break;
+        }
+        linenum++;
+    }
+    while ((index = cs.find('\n', index+1)) != std::string::npos);
+
+    //delete
+    if(endidx > startidx)
+        cs.erase(startidx, endidx-startidx);
+
+    return cs;
+}
+
+std::string roxal::insertStringAtInterval(const std::string& s, const std::string& insertS, size_t startLine, size_t startPos)
+{
+      // TODO: handle non-\n line endings
+    long linenum=1;
+    long startidx = -1;
+
+    //copy
+    std::string cs = s;
+
+    //find the start
+    int index = 0;
+    do
+    {
+        if(linenum == (int)startLine)
+        {
+            startidx = index;
+            //add space to insertS based on startPOs
+            break;
+        }
+        linenum++;
+        std::string g = cs.substr(index);
+    }
+    while((index = cs.find('\n', index+1)) != std::string::npos);
+
+    //insert
+    if(startidx != -1)
+        cs.insert(startidx, spaces(startPos) + insertS + "\n");
+
+    return cs;
+}
 
 std::string roxal::replace(const std::string& str, const std::string& from, const std::string& to) 
 {

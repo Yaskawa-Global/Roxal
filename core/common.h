@@ -64,6 +64,9 @@ inline icu::UnicodeString toUnicodeString(const std::string& s) {
 // demangle typeid(T).name() strings to be more human readable
 std::string demangle(const char* name);
 
+inline std::string newlines(int n) {
+    return std::string( n, '\n' );
+}
 
 inline std::string spaces(int n) {
     return std::string( n, ' ' );
@@ -76,5 +79,8 @@ std::string stringInterval(const std::string s, size_t startLine, size_t startPo
 
 std::string replace(const std::string& str, const std::string& from, const std::string& to);
 
+std::string deleteStringAtInterval(const std::string& s, size_t startLine, size_t startPos, size_t endLine, size_t endPos);
+
+std::string insertStringAtInterval(const std::string& s, const std::string& insertS, size_t startLine, size_t startPos);
 
 }
