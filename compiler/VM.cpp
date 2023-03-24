@@ -1736,6 +1736,7 @@ void VM::defineNativeFunctions()
     defineNative("_clock", &VM::clock_native);
     defineNative("_ussleep", &VM::usSleep_native);
     defineNative("_mssleep", &VM::msSleep_native);
+    defineNative("_import", &VM::import_native);
     //defineNative("_sleep", &VM::sleep_native);
 }
 
@@ -1773,5 +1774,56 @@ Value VM::sleep_native(int argCount, Value* args)
     std::this_thread::sleep_for(std::chrono::seconds(args[0].asInt()));
 
     return nilVal();
+}
+
+Value VM::import_native(int argCount, Value *args)
+{
+    // if (argCount == 0 || !args[0].isString())
+    //     throw std::invalid_argument("import expects a single string argument");
+
+    std::string protoPath = "../protos"; //Update proto path later
+    std::vector<std::string> protoFiles;
+    for (int i = 0; i < argCount; i++)
+        protoFiles.push_back(protoPath + "/" + roxal::toString(args[i])); //Convert args to strings
+
+    protoHandler = std::unique_ptr<ProtoAdapter>(new ProtoAdapter(protoPath, protoFiles));
+    std::vector<std::string> methodList = protoHandler->methodList();
+    
+    for (int i = 0; i < methodList.size(); i++) //Create native function for each RPC Method
+    {
+        defineNative("_" + methodList[i], &VM::call_RPC);
+    }
+
+    std::shared_ptr<grpc::Channel> channel = grpc::CreateChannel("0.0.0.0:50051", grpc::InsecureChannelCredentials());
+    clientHandler = std::unique_ptr<ClientCall>(new ClientCall(channel));
+
+    return nilVal();
+
+}
+
+Value VM::call_RPC(int argCount, Value *args)
+{
+    std::string protocRequest;
+    std::string protocResponse;
+    std::string methodName = "Add"; //Get Name from Function Call (How to do?)
+    Value result;
+
+    //1) Validate arguments for RPC Call -- Add Later
+    if (!protoHandler->validateArguments(methodName, args))
+        return nilVal();
+        
+    //2) Convert arguments to protobuf type & Create protoc request
+    protocRequest = protoHandler->generateProtocRequestByMethod(methodName, args);
+
+    //3) Call Service Method and Fill Response
+    clientHandler->InitializeCall(protoHandler->getFormattedMethodName(methodName));
+    //clientHandler->Call(protocRequest, &protocResponse);
+
+    //4) Convert protobuf response to Roxal
+    result = protoHandler->generateRoxalResponse(methodName, protocResponse);
+
+
+    //5) Return response
+    return result;
 }
 

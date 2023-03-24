@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package arithstream;
+
+message NumRequest {
+    int32 arg1 = 1;
+    optional int32 arg2 = 2;
+}
+
+message NumResponse {
+    int32 ans = 1;
+}
+
+service Operations {
+    rpc CliStream(stream NumRequest) returns (NumResponse); //Add all streamed numbers
+    rpc ServStreamRandom(NumRequest) returns (stream NumResponse); //Returns a number of random numbers equal to the request
+    rpc BiStream(stream NumRequest) returns (stream NumResponse); //Returns the sum of the supplied numbers
+}

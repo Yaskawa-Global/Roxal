@@ -300,6 +300,7 @@ inline Value realVal(double r) { return Value(r); }
 inline Value typeVal(ValueType bt) { return Value(bt); }
 
 
+
 Value toType(ValueType t, Value v, bool strict=true);
 
 // construct / convert from values (e.g. 'constructor' args) a value of the specified builtin type

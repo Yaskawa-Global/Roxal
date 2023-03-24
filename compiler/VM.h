@@ -3,10 +3,13 @@
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <list>
 
 #include "core/atomic.h"
 #include "Chunk.h"
 #include "Value.h"
+#include "ProtoAdapter.h"
+#include "ClientCall.h"
 
 namespace roxal {
 
@@ -209,6 +212,11 @@ protected:
     Value usSleep_native(int argCount, Value* args);
     Value msSleep_native(int argCount, Value* args);
     Value sleep_native(int argCount, Value* args);
+    Value import_native(int argCount, Value* args);
+    Value call_RPC(int argCount, Value* args); //Used for RPC Calls
+
+    std::unique_ptr<ProtoAdapter> protoHandler; //Parser that will connect roxal to protobuf
+    std::unique_ptr<ClientCall> clientHandler; //Establishes connection to server
 
 };
 
