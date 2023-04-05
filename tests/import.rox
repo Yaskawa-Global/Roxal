@@ -1,0 +1,3 @@
+_import('arithematic.proto')
+_import('arithstream.proto')
+print("Successfully Added Proto Files!")

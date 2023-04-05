@@ -3,12 +3,12 @@ syntax = "proto3";
 package arithematic;
 
 message NumRequest {
-  double arg1 = 1;
-  double arg2 = 2;
+  int32 arg1 = 1;
+  int32 arg2 = 2;
 }
 
 message NumResponse {
-  double ans = 1;
+  int32 ans = 1;
 }
 
 service Arithematic {

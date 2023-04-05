@@ -1,0 +1,13 @@
+_import("arithematic.proto")
+
+print(_Add(3,8))
+print(11)
+
+print(_Subtract(3,8))
+print(-5)
+
+print(_Multiply(3,8))
+print(24)
+
+print(_Divide(4,2))
+print(2)

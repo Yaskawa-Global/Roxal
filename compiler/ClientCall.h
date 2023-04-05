@@ -17,7 +17,7 @@ using namespace grpc;
 
 //TODO: Add Timeouts
 
-class ClientCall final
+class ClientCall
 {
     typedef std::multimap<std::string, std::string> OutgoingMetaData;
     typedef std::multimap<string_ref, string_ref> IncomingMetaData;
@@ -26,11 +26,11 @@ class ClientCall final
         ClientCall();
         ClientCall(std::shared_ptr<Channel> channel);
         ~ClientCall();
-        void Write(const std::string &request);
+        void Write(const grpc_slice &request);
         void InitializeCall(const std::string &methodName, OutgoingMetaData *initialMetaData = nullptr);
         void WritesDone();
-        void ReadResponse(std::string &response, IncomingMetaData *server_meta = nullptr);
-        Status Finish(IncomingMetaData *server_trailing_data);
+        void ReadResponse(grpc_slice &response, IncomingMetaData *server_meta = nullptr);
+        Status Finish(IncomingMetaData *server_trailing_data = nullptr);
         
 
     private:

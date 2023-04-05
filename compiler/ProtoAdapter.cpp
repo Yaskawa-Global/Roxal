@@ -22,7 +22,7 @@ class ErrorPrinter : public MultiFileErrorCollector {
 
 using namespace roxal;
 
-ProtoAdapter::ProtoAdapter(const std::string &proto_path, const std::vector<std::string> &protoFiles)
+ProtoAdapter::ProtoAdapter(const std::string &proto_path)
 {
 
     //Add the proto path to the source tree
@@ -37,12 +37,6 @@ ProtoAdapter::ProtoAdapter(const std::string &proto_path, const std::vector<std:
     //Create a message factory to create messages on the fly
     m_dynfactory = std::unique_ptr<DynamicMessageFactory>(new DynamicMessageFactory());
  
-
-
-   initializeServiceList(protoFiles);
-   initializeMessageList(protoFiles); 
-   initializeConversionTables();
-
 }
 
 ProtoAdapter::~ProtoAdapter()
@@ -85,24 +79,6 @@ std::string ProtoAdapter::getFullMessageName(const std::string &message)
     return "";
 }
 
-std::string ProtoAdapter::getFullEnumName(const std::string &enumName)
-{
-    for (int i = 0; i < m_serviceList.size(); i++)
-    {
-        const auto *fileDesc = m_serviceList[i]->file();
-
-        for (int j = 0; j < fileDesc->enum_type_count(); j++)
-        {
-            const auto *enumDesc = fileDesc->enum_type(j);
-
-            if (nameMatch(enumDesc->full_name(), enumName))
-                return enumDesc->full_name();
-        }
-    }
-
-    logError("Cannot find full enum name");
-    return "";
-}
 
 std::string ProtoAdapter::getFormattedMethodName(const std::string &methodName)
 {
@@ -132,351 +108,253 @@ std::string ProtoAdapter::getMessageNameFromMethod(const std::string &methodName
     
 }
 
+// int ProtoAdapter::validateArguments(const std::string &methodName, const Value *arg)
+// {
+//     std::string messageName = getMessageNameFromMethod(methodName, true);
 
-std::string ProtoAdapter::serializeProtoFromMethod(const std::string &methodName, const std::string &message, bool isRequest)
-{
-    std::string msgName = getMessageNameFromMethod(methodName, isRequest);
-    
-    if (msgName.empty())
-    {
-        logError("Could not find a matching message for method. Please check proto files");
-        return "";
-    }
+//     if (!validateArgumentCount(messageName, arg))
+//         return 1; //Add Error Message
 
-    return serializeProtoFromMessage(msgName, message);
+//     if (!validateArgumentTypes(messageName, arg))
+//         return 2; //Add Error Message
 
-}
-
-std::string ProtoAdapter::serializeProtoFromMessage(const std::string &messageName, const std::string &message)
-{
-    std::string serial;
-    std::string fullMsg = getFullMessageName(messageName);
-    const auto *descPool = m_importer->pool();
-    const auto *descriptor = descPool->FindMessageTypeByName(fullMsg);
-
-    if (!descriptor)
-    {
-        logError("Cannot find message type");
-        return "";
-    }
-
-    auto *msg = m_dynfactory->GetPrototype(descriptor)->New();
-
-    //Input the message to be serialized
-    if (!TextFormat::ParseFromString(message, msg))
-    {
-        logError("Cannot Parse Message");
-        return "";   
-    }
-
-    //Serialize the message into the protobuf wire format.
-    if (!msg->SerializeToString(&serial))
-    {
-        logError("Cannot Serialize Message");
-        return "";
-    }
-
-    return serial;
-
-}
+//     return -1;
+// }
 
 
-std::string ProtoAdapter::deserializeProtoFromMessage(const std::string &messageName, const std::string &serial)
-{
-    std::string formattedMessage;
-    std::string fullMsg = getFullMessageName(messageName);
-    const auto *descPool = m_importer->pool();
-    const auto *desc = descPool->FindMessageTypeByName(fullMsg);
+// bool ProtoAdapter::validateArgumentCount(const std::string &messageName, const Value *arg)
+// {
+//     int counter = 0;
+//     ObjectInstance *object = asObjectInstance(*arg);
+//     std::string fullName = getFullMessageName(messageName);
+//     return (minrequiredFieldCount(fullName, counter) <= object->properties.size());
+// }
 
-    if (!desc)
-    {
-        logError("Cannot find message type");
-        return "";
-    }
+// bool ProtoAdapter::validateArgumentTypes(const std::string &messageName, const Value *arg)
+// {
+//     std::string fullName = getFullMessageName(messageName);
+//     auto *msg = m_importer->pool()->FindMessageTypeByName(messageName);
 
-    auto *msg = m_dynfactory->GetPrototype(desc)->New();
-
-    if(!msg->ParseFromString(serial))
-    {
-        logError("Cannot Deserialize Message");
-        return "";
-    }
-
-    if (!TextFormat::PrintToString(*msg, &formattedMessage))
-    {
-        logError("Cannot format message");
-        return "";
-    }   
-    
-
-    return formattedMessage;
+//     for (int i = 0; i < msg->field_count(); i++)
+//     {
+//         auto *field = msg->field(i);
+//         if (field->cpp_type() == FieldDescriptor::CPPTYPE_MESSAGE)
+//             return validateArgumentTypes(field->message_type()->full_name(), arg);       
 
 
-}
+//         else if (m_stringConversion[field->type_name()] != arg[i].type())
+//             return false;
+//     }
 
-std::string ProtoAdapter::deserializeProtoFromMethod(const std::string &methodName, const std::string &serial, bool isRequest)
-{
-    std::string msgName = getMessageNameFromMethod(methodName, isRequest);
-
-    if (msgName.empty())
-    {
-        logError("Could not find a matching message for method. Please check proto files");
-        return "";
-    }
-
-    return deserializeProtoFromMessage(msgName, serial);
-
-}
+//     return true;
+// }
 
 
-
-// ---- Roxal and Protobuf Type Conversions ---- //
-void ProtoAdapter::initializeConversionTables()
-{
-    
-    m_stringConversion.insert({"double", ValueType::Real});
-    m_stringConversion.insert({"float", ValueType::Decimal});
-    m_stringConversion.insert({"int32", ValueType::Int});
-    m_stringConversion.insert({"int64", ValueType::Int});
-    m_stringConversion.insert({"uint32", ValueType::Int});
-    m_stringConversion.insert({"uint64", ValueType::Int});
-    m_stringConversion.insert({"sint32", ValueType::Int});
-    m_stringConversion.insert({"sint64", ValueType::Int});
-    m_stringConversion.insert({"fixed32", ValueType::Int});
-    m_stringConversion.insert({"fixed64", ValueType::Int});
-    m_stringConversion.insert({"sfixed32", ValueType::Int});
-    m_stringConversion.insert({"sfixed64", ValueType::Int});
-    m_stringConversion.insert({"enum", ValueType::Int});
-    m_stringConversion.insert({"bool", ValueType::Bool});
-    m_stringConversion.insert({"string", ValueType::String});
-    m_stringConversion.insert({"bytes", ValueType::Byte});
-    m_stringConversion.insert({"", ValueType::Nil}); //Empty String Returns Nil Type
-}
-
-bool ProtoAdapter::validateArguments(const std::string &methodName, const Value *arg)
-{
-    std::string messageName = getMessageNameFromMethod(methodName, true);
-
-    if (!validateArgumentCount(messageName, arg))
-        return false; //Add Error Message
-
-    if (!validateArgumentTypes(messageName, arg))
-        return false; //Add Error Message
-
-    return true;
-}
-
-
-bool ProtoAdapter::validateArgumentCount(const std::string &messageName, const Value *arg)
-{
-    int counter = 0;
-    ObjectInstance *object = asObjectInstance(*arg);
-    std::string fullName = getFullMessageName(messageName);
-    return (minrequiredFieldCount(fullName, counter) <= object->properties.size());
-}
-
-bool ProtoAdapter::validateArgumentTypes(const std::string &messageName, const Value *arg)
-{
-    std::string fullName = getFullMessageName(messageName);
-    auto *msg = m_importer->pool()->FindMessageTypeByName(messageName);
-
-    for (int i = 0; i < msg->field_count(); i++)
-    {
-        auto *field = msg->field(i);
-        if (std::strcmp(field->type_name(), "message") == 0)
-            return validateArgumentTypes(field->message_type()->full_name(), arg);       
-
-
-        else if (m_stringConversion[field->type_name()] != arg[i].type())
-            return false;
-    }
-
-    return true;
-}
-
-Value ProtoAdapter::convertToRoxal(ValueType type, const std::string &value)
-{
-    Value *v;
-
-    switch(type)
-    {
-        case ValueType::Int:
-            v = new Value(atoi(value.c_str()));
-        break;
-
-        case ValueType::Real:
-            v = new Value(atof(value.c_str()));
-        break;
-
-        case ValueType::Bool:
-            if(std::strcmp(value.c_str(), "true"))
-                v = new Value(true);
-            else
-                v = new Value(false);
-        break;
-
-        default:
-            std::cout << "Unsupported data type" << std::endl;
-        break;
-
-    }
-
-    return *v;
-}
-
-std::string ProtoAdapter::generateProtocRequestByMethod(const std::string &methodName, const Value *arg)
+grpc_slice ProtoAdapter::generateProtocRequestByMethod(const std::string &methodName, const int &argCount, const Value *arg)
 {
     std::string msg = getMessageNameFromMethod(methodName, true);
-    ObjectInstance *object = asObjectInstance(*arg);
-    return generateProtocRequest(msg, object);
+    return generateProtocRequest(msg, argCount, arg);
 }
 
 
-std::string ProtoAdapter::generateProtocRequest(const std::string &messageName, const ObjectInstance *arg)
+grpc_slice ProtoAdapter::generateProtocRequest(const std::string &messageName, const int &argCount, const Value *arg)
 {
-    // auto primitives = getMessagePrimitives(messageName);
-    // auto prime = primitives.begin();
     std::string fullMsg = getFullMessageName(messageName);
-    const auto *msg = m_importer->pool()->FindMessageTypeByName(fullMsg);
-    std::string request;
-    unsigned int size = arg->properties.size();
+    auto *desc = m_importer->pool()->FindMessageTypeByName(fullMsg);
+    auto *msg = m_dynfactory->GetPrototype(desc)->New();
     unsigned int index = 0;
+    Value v;
 
-    //Add [] for repeated types. Ex: parameters: [{a: x, b: y, c: z, d: lol, e: loser, f: funny}] - > Repeated Twice
+    //TODO: Consider repeated types
 
-    while (index < size)
+    while (index < argCount)
     {
-        auto *field = msg->field(index);
+        auto *field = desc->field(index);
 
-        if (std::strcmp(field->type_name(), "string") == 0)
-            request.append(field->name() + ": " + "'" + toString(arg->properties.at(index)) + "'");
-
-        else if (std::strcmp(field->type_name(), "message") == 0)
+        switch (field->cpp_type())
         {
-            request.append(field->name() + ": ");
-            request.append("{");
-            request.append(generateProtocSubRequest(field->message_type()->full_name(), arg, index));
-            request.append("}");
+            case FieldDescriptor::CPPTYPE_BOOL:
+                msg->GetReflection()->SetBool(msg, field, arg[index].asBool());
+            break;
 
-            if (index < size-1)
-                request.append(", ");
+            case FieldDescriptor::CPPTYPE_DOUBLE:
+                msg->GetReflection()->SetDouble(msg, field, arg[index].asReal());
+            break;
 
-            continue;
-        }
+            case FieldDescriptor::CPPTYPE_ENUM:
+                msg->GetReflection()->SetEnumValue(msg, field, arg[index].asInt());
+            break;
 
-        else
-            request.append(field->name() + ": " + toString(arg->properties.at(index)));
-        
-        if (index < size-1)
-            request.append(", ");
+            case FieldDescriptor::CPPTYPE_FLOAT:
+               msg->GetReflection()->SetFloat(msg, field, arg[index].asReal());
+            break;
 
-        index++;
-    }
+            case FieldDescriptor::CPPTYPE_INT32:
+                msg->GetReflection()->SetInt32(msg, field, arg[index].asInt());
+            break;
 
-    return serializeProtoFromMessage(fullMsg, request);
-}
+            case FieldDescriptor::CPPTYPE_INT64:
+                msg->GetReflection()->SetInt32(msg, field, arg[index].asInt());
+            break;
 
-std::string ProtoAdapter::generateProtocSubRequest(const std::string &messageName, const ObjectInstance *arg, unsigned int &index)
-{
-    auto *msg = m_importer->pool()->FindMessageTypeByName(messageName);
-    std::string request;
+            case FieldDescriptor::CPPTYPE_UINT32:
+                msg->GetReflection()->SetInt32(msg, field, arg[index].asInt());
+            break;
 
-    //Add [] for repeated types. Ex: parameters: [{a: x, b: y, c: z, d: lol, e: loser, f: funny}] - > Two instances of the parameters field
-    //Alternatively, specify as parameters: {a: x, b: y, c: z}, parameters: {d: i, e: j; f: k}
+            case FieldDescriptor::CPPTYPE_UINT64:
+                msg->GetReflection()->SetInt32(msg, field, arg[index].asInt());
+            break;
 
-    for (int i = 0; i < msg->field_count(); i++)
-    {
-        auto *field = msg->field(i);
-
-        if (std::strcmp(field->type_name(), "string") == 0)
-            request.append(field->name() + ": " + "'" + toString(arg->properties.at(index)) + "'");
-
-        else if (std::strcmp(field->type_name(), "message") == 0)
-        {
-            request.append(field->name() + ": ");
-            request.append("{");
-            request.append(generateProtocSubRequest(field->message_type()->name(), arg, index));
-            request.append("} ");
-        }
-
-        else
-            request.append(field->name() + ": " + toString(arg->properties.at(index)));
-        
-        if (index < msg->field_count()-1)
-            request.append(", ");
-
-        index++;
-    }
-
-    return request;
-}
-
-
-Value ProtoAdapter::generateRoxalResponse(const std::string &methodName, const std::string &response)
-{
-    std::string message = getMessageNameFromMethod(methodName, false);
-    auto *msg = m_importer->pool()->FindMessageTypeByName(message);
-    std::vector<std::string> fields = getValues(message, response);
-    ObjObjectType *type = objectTypeVal(toUnicodeString(msg->name()), false);
-    ObjectInstance *instance = objectInstanceVal(type);
-    
-    for (int i = 0; i < fields.size(); i++)
-    {
-        Value v = convertToRoxal(m_stringConversion[msg->field(i)->type_name()], fields[i]);
-        instance->properties.emplace(i, v);
-    }
-
-    return Value(instance);
-}
-
-
-
-
-std::unordered_map<std::string, std::string> ProtoAdapter::getMessagePrimitives(const std::string &messageName) 
-{
-    //Key = Primitive ID
-    //Value = Primitive Type (Protobuf)
-    std::unordered_map<std::string, std::string> msgPrimitives;
-    std::string fullMsgName = getFullMessageName(messageName);
-
-    for (int i = 0; i < m_messageList.size(); i++)
-    {
-        if (m_messageList[i]->full_name().compare(fullMsgName) == 0)
-        {
-            for (int j = m_messageList[i]->field_count()-1; j > -1; j--)
+            case FieldDescriptor::CPPTYPE_MESSAGE:
             {
-                const auto *field_desc = m_messageList[i]->field(j);
-                msgPrimitives.emplace(field_desc->name(), field_desc->type_name());
+                auto *innerMsg = m_dynfactory->GetPrototype(field->message_type())->New();
+                generateProtocSubRequest(field->message_type()->full_name(), argCount, arg, innerMsg, index);
+                msg->GetReflection()->SetAllocatedMessage(msg, innerMsg, field);
             }
             break;
+
+            default:
+                throw("Unimplemented/Unsupported data type");
+            break;
         }
+
+        index++;
     }
-     
-    return msgPrimitives;
+
+    size_t size = msg->ByteSizeLong();
+    uint8_t *buffer = new uint8_t[size];
+
+    if(!msg->SerializeToArray(buffer, size))
+        throw("Unable to serialize message");
+
+    return grpc_slice_from_static_buffer(buffer, size);
 }
 
-std::unordered_map<std::string, std::string> ProtoAdapter::getMessagePrimitivesFromMethod(const std::string &methodName, bool isRequest)
+void ProtoAdapter::generateProtocSubRequest(const std::string &messageName, const int &argCount, const Value *arg, Message *innerMsg, unsigned int &index)
 {
-    std::string message = getMessageNameFromMethod(methodName, isRequest);
-    return getMessagePrimitives(message);
+    auto *desc = m_importer->pool()->FindMessageTypeByName(messageName);
+    std::string request;
+
+    for (int i = 0; i < desc->field_count(); i++)
+    {
+        auto *field = desc->field(i);
+
+        switch (field->cpp_type())
+        {
+            case FieldDescriptor::CPPTYPE_BOOL:
+                innerMsg->GetReflection()->SetBool(innerMsg, field, arg[index].asBool());
+            break;
+
+            case FieldDescriptor::CPPTYPE_DOUBLE:
+                innerMsg->GetReflection()->SetDouble(innerMsg, field, arg[index].asReal());
+            break;
+
+            case FieldDescriptor::CPPTYPE_ENUM:
+                innerMsg->GetReflection()->SetEnumValue(innerMsg, field, arg[index].asInt());
+            break;
+
+            case FieldDescriptor::CPPTYPE_FLOAT:
+               innerMsg->GetReflection()->SetFloat(innerMsg, field, arg[index].asReal());
+            break;
+
+            case FieldDescriptor::CPPTYPE_INT32:
+                innerMsg->GetReflection()->SetInt32(innerMsg, field, arg[index].asInt());
+            break;
+            case FieldDescriptor::CPPTYPE_INT64:
+                innerMsg->GetReflection()->SetInt32(innerMsg, field, arg[index].asInt());
+            break;
+
+            case FieldDescriptor::CPPTYPE_UINT32:
+                innerMsg->GetReflection()->SetInt32(innerMsg, field, arg[index].asInt());
+            break;
+
+            case FieldDescriptor::CPPTYPE_UINT64:
+                innerMsg->GetReflection()->SetInt32(innerMsg, field, arg[index].asInt());
+            break;
+
+            case FieldDescriptor::CPPTYPE_MESSAGE:
+                auto *anotherMsg = m_dynfactory->GetPrototype(field->message_type())->New();
+                generateProtocSubRequest(field->message_type()->full_name(), argCount, arg, anotherMsg, index);
+                innerMsg->GetReflection()->SetAllocatedMessage(innerMsg, anotherMsg, field);
+            break;
+        }
+        index++;
+    }
+
+}
+
+
+
+Value ProtoAdapter::generateRoxalResponse(const std::string &methodName, const grpc_slice &response)
+{
+    std::string message = getMessageNameFromMethod(methodName, false);
+    auto *desc = m_importer->pool()->FindMessageTypeByName(message);
+    auto *msg = m_dynfactory->GetPrototype(desc)->New();
+    
+    //Note: Need to divide by two to eliminate extra characters added in the message
+    if(!msg->ParseFromArray(response.data.inlined.bytes, response.data.inlined.length))
+    {
+        std::cout << "Could not parse response" << std::endl;
+        return nilVal();
+    }
+
+    auto *refl = msg->GetReflection();
+
+    for (int i = 0; i < desc->field_count(); i++)
+    {
+        auto *field = desc->field(i);
+        
+        switch (field->cpp_type())
+        {
+            case FieldDescriptor::CPPTYPE_INT32:
+                return Value(refl->GetInt32(*msg, field));
+            break;
+
+            case FieldDescriptor::CPPTYPE_INT64:
+               return Value((int32)refl->GetInt64(*msg, field)); //Use 32 bit integers for now
+            break;
+
+            case FieldDescriptor::CPPTYPE_UINT64:
+                return Value((int32)refl->GetUInt64(*msg, field));
+            break;
+
+            case FieldDescriptor::CPPTYPE_UINT32:
+                return Value((int32_t)refl->GetUInt32(*msg, field));
+            break;
+
+            case FieldDescriptor::CPPTYPE_DOUBLE:
+                return Value(refl->GetDouble(*msg, field));
+            break;
+
+            case FieldDescriptor::CPPTYPE_FLOAT:
+                return Value(refl->GetFloat(*msg, field));
+            break;
+
+            case FieldDescriptor::CPPTYPE_BOOL:
+                return Value(refl->GetBool(*msg, field));
+            break;
+
+            case FieldDescriptor::CPPTYPE_ENUM:
+                return Value(refl->GetEnum(*msg, field));
+            break;
+
+            //TODO: Revisit later (nested messages)
+            // case FieldDescriptor::CPPTYPE_MESSAGE:
+            //     instance->properties.emplace(i, Value(refl->GetMessage(*msg, field)));
+            // break;
+
+            default:
+                std::cout << "Undefined type" << std::endl;
+                return nilVal();
+            break;
+        }
+    }    
+
+    return nilVal();
 }
 
 // ---- Auxiliary Methods ---- //
-std::vector <std::string> ProtoAdapter::methodList()
-{
-    std::vector<std::string> methods;
 
-    for (int i = 0; i < m_serviceList.size(); i++)
-    {
-        for (int j = 0; j < m_serviceList[i]->method_count(); j++)
-        {
-            const auto *method = m_serviceList[i]->method(j);
-            methods.push_back(method->name());
-        }
-    }
-
-    return methods;
-}
 
 bool ProtoAdapter::nameMatch(const std::string &fullName, const std::string &name)
 {
@@ -487,87 +365,28 @@ bool ProtoAdapter::nameMatch(const std::string &fullName, const std::string &nam
                            name.size(), name) == 0;
 }
 
-std::vector<std::string> ProtoAdapter::getValues(const std::string &messageName, const std::string &message)
+
+std::vector<std::string> ProtoAdapter::addService(const std::string &protoFile)
 {
-    std::string fullMsg = getFullMessageName(messageName);
-    std::vector<std::string> values;
-    const auto *descPool = m_importer->pool();
-    const auto *desc = descPool->FindMessageTypeByName(fullMsg);
-    std::string value;
-    auto *msg = m_dynfactory->GetPrototype(desc)->New();
-    msg->ParseFromString(message);
 
-    for(int i = 0; i < msg->GetDescriptor()->field_count(); i++)
+    auto *file_desc = m_importer->Import(protoFile);
+    std::vector<std::string> methods;
+
+    for (int i = 0; i < file_desc->service_count(); i++)
     {
-        const auto *field = msg->GetDescriptor()->field(i);
-        TextFormat::PrintFieldValueToString(*msg, field, -1, &value);
-        values.push_back(value);
-    }
+        auto *service = file_desc->service(i);
+        m_serviceList.push_back(service);
 
-    return values;
-    
-}
-
-void ProtoAdapter::initializeServiceList(const std::vector<std::string> &protoFiles)
-{
-    for (int i = 0; i < protoFiles.size(); i++)
-    {
-        const auto *file_desc = m_importer->Import(protoFiles[i]);
-
-        for (int j = 0; j < file_desc->service_count(); j++)
-        {   
-            m_serviceList.push_back(file_desc->service(j));
-        }
-
-    }
-}
-
-void ProtoAdapter::initializeMessageList(const std::vector<std::string> &protoFiles)
-{
-    const auto *descPool = m_importer->pool();
-    
-    for (int i = 0; i < protoFiles.size(); i++)
-    {
-        auto *fileDesc = descPool->FindFileByName(protoFiles[i]);
-
-        for (int j = 0; j < fileDesc->message_type_count(); j++)
-        {
-            m_messageList.push_back(fileDesc->message_type(j));
-            addInnerMessages(fileDesc->message_type(j));
-        }
-
-    }
-}
-
-void ProtoAdapter::addInnerMessages(const Descriptor *outerMessage)
-{
-    for (int i = 0; i < outerMessage->field_count(); i++)
-    {
-        std::string field = outerMessage->field(i)->type_name();
-        if (field.compare("message") == 0)
-        {
-            auto *desc = outerMessage->field(i)->message_type();
-            m_messageList.push_back(desc);
-            addInnerMessages(desc);
+        for (int j = 0; j < service->method_count(); j++)
+        {    
+            methods.push_back(service->method(j)->name());
         }
     }
+
+    return methods; 
 }
 
-// int ProtoAdapter::totalFieldCount(const std::string &messageName, int &count)
-// {
 
-//     const auto *desc = m_importer->pool()->FindMessageTypeByName(messageName);
-
-//     for (int i = 0; i < desc->field_count(); i++)
-//     {
-//         if (std::strcmp(desc->field(i)->type_name(), "message") == 0)
-//             return totalFieldCount(desc->field(i)->message_type()->full_name(), count);
-
-//         count++;
-//     }
-    
-//     return count;
-// }
 
 int ProtoAdapter::minrequiredFieldCount(const std::string &messageName, int &count)
 {
@@ -592,16 +411,7 @@ int ProtoAdapter::minrequiredFieldCount(const std::string &messageName, int &cou
     return count;
 }
 
-std::string ProtoAdapter::findProtobufType(ValueType type)
-{
-    for (auto it : m_stringConversion)
-    {
-        if (it.second == type)
-            return it.first;
-    }
 
-    return "";
-}
 
 
 void ProtoAdapter::logError(const std::string &errormsg)

@@ -18,24 +18,7 @@ ClientCall::~ClientCall()
     delete m_clicontext;
 }
 
-void ClientCall::Write(const std::string &request)
-{
-    void *got_tag;
-    bool ok;
-    
 
-    //Slice request and build buffer
-    grpc_slice slice = SliceFromCopiedString(request);
-    Slice reqSlice(slice, Slice::STEAL_REF);
-    ByteBuffer buff(&reqSlice, 1);
-
-    m_communicator->Write(buff, tag(2));
-    m_cliqueue.Next(&got_tag, &ok);
-
-    GPR_ASSERT(ok);
-    
-
-}
 
 void ClientCall::InitializeCall(const std::string &methodName, OutgoingMetaData *metadata)
 {
@@ -58,11 +41,25 @@ void ClientCall::InitializeCall(const std::string &methodName, OutgoingMetaData 
        
 }
 
-void ClientCall::ReadResponse(std::string &response, IncomingMetaData *server_meta)
+void ClientCall::Write(const grpc_slice &request)
 {
     void *got_tag;
     bool ok;
-    response.clear();
+
+    Slice slice(request, Slice::STEAL_REF);
+    ByteBuffer buff(&slice, 1);
+
+    m_communicator->Write(buff, tag(2));
+    m_cliqueue.Next(&got_tag, &ok);
+    GPR_ASSERT(ok);
+    
+
+}
+
+void ClientCall::ReadResponse(grpc_slice &response, IncomingMetaData *server_meta)
+{
+    void *got_tag;
+    bool ok;
 
     ByteBuffer recv_buffer;
     m_communicator->Read(&recv_buffer, tag(3));
@@ -70,14 +67,11 @@ void ClientCall::ReadResponse(std::string &response, IncomingMetaData *server_me
     m_cliqueue.Next(&got_tag, &ok);
     GPR_ASSERT(ok);
     
-    std::vector<Slice> slices;
-    recv_buffer.Dump(&slices);
+    
+    Slice slice;
+    recv_buffer.DumpToSingleSlice(&slice);
 
-    //Fill Response
-    for (int i = 0; i < slices.size(); i++)
-    {
-        response.append(reinterpret_cast<const char*>(slices[i].begin()),slices[i].size());
-    }
+    response = slice.c_slice();
 
     if (server_meta)
         *server_meta = m_clicontext->GetServerInitialMetadata();

@@ -12,12 +12,22 @@
 #include "Stream.h"
 
 using namespace roxal;
+using namespace std::placeholders;
 
 
 VM::VM()
     : lineMode(false)
 {
     thread = nullptr;
+
+    //Modify Proto Path and Channel as Needed
+    std::string protoPath = "/home/mandyda/Desktop/roxal/compiler/protos";
+    std::string address = "0.0.0.0:50051";
+
+    std::shared_ptr<Channel> channel = CreateChannel(address, InsecureChannelCredentials());
+    protoHandler = std::unique_ptr<ProtoAdapter>(new ProtoAdapter(protoPath));
+    communion = std::unique_ptr<ACUCommunicator>(new ACUCommunicator(channel, protoHandler.get()));
+    
     defineBuiltinFunctions();
     defineNativeFunctions();
     initString = stringVal(UnicodeString("init"));
@@ -27,6 +37,8 @@ VM::VM()
     //CallSpec::testParamPositions();
     //Value::testPrimitiveValues();
     //testObjectValues();
+
+
 }
 
 
@@ -569,7 +581,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 return call(asClosure(callee), callSpec);
             case ObjType::Native: {
                 NativeFn native = asNative(callee)->function;
-                Value result { (this->*native)(callSpec.argCount, &(*thread->stackTop) - callSpec.argCount) };
+                Value result { (native)(callSpec.argCount, &(*thread->stackTop) - callSpec.argCount) };
                 *(thread->stackTop - callSpec.argCount - 1) = result;
                 popN(callSpec.argCount);
                 return true;
@@ -1616,12 +1628,14 @@ void VM::runtimeError(const std::string& format, ...)
 
 void VM::defineBuiltinFunctions()
 {
-    defineNative("print", &VM::print_builtin);
-    defineNative("sleep", &VM::sleep_builtin);
-    defineNative("fork", &VM::fork_builtin);
-    defineNative("join", &VM::join_builtin);
-    defineNative("_threadid", &VM::threadid_builtin);
-    defineNative("_wait", &VM::wait_builtin);
+    defineNative("print", std::bind(&VM::print_builtin, this, _1, _2));
+    defineNative("sleep", std::bind(&VM::sleep_builtin, this, _1, _2));
+    defineNative("fork", std::bind(&VM::fork_builtin, this, _1, _2));
+    defineNative("join", std::bind(&VM::join_builtin, this, _1, _2));
+    defineNative("_threadid", std::bind(&VM::threadid_builtin, this, _1, _2));
+    defineNative("_wait", std::bind(&VM::wait_builtin, this, _1, _2));
+
+
 }
 
 
@@ -1733,10 +1747,10 @@ Value VM::wait_builtin(int argCount, Value* args)
 
 void VM::defineNativeFunctions()
 {
-    defineNative("_clock", &VM::clock_native);
-    defineNative("_ussleep", &VM::usSleep_native);
-    defineNative("_mssleep", &VM::msSleep_native);
-    defineNative("_import", &VM::import_native);
+    defineNative("_clock", std::bind(&VM::clock_native, this, _1, _2));
+    defineNative("_ussleep", std::bind(&VM::usSleep_native, this, _1, _2));
+    defineNative("_mssleep", std::bind(&VM::msSleep_native, this, _1, _2));
+    defineNative("_import", std::bind(&VM::import_native, this, _1, _2));
     //defineNative("_sleep", &VM::sleep_native);
 }
 
@@ -1778,52 +1792,30 @@ Value VM::sleep_native(int argCount, Value* args)
 
 Value VM::import_native(int argCount, Value *args)
 {
-    // if (argCount == 0 || !args[0].isString())
-    //     throw std::invalid_argument("import expects a single string argument");
+     if (argCount == 0)
+         throw std::invalid_argument("import expects a single string argument");
 
-    std::string protoPath = "../protos"; //Update proto path later
-    std::vector<std::string> protoFiles;
-    for (int i = 0; i < argCount; i++)
-        protoFiles.push_back(protoPath + "/" + roxal::toString(args[i])); //Convert args to strings
 
-    protoHandler = std::unique_ptr<ProtoAdapter>(new ProtoAdapter(protoPath, protoFiles));
-    std::vector<std::string> methodList = protoHandler->methodList();
-    
-    for (int i = 0; i < methodList.size(); i++) //Create native function for each RPC Method
+    for(int i = 0; i < argCount; i++)
     {
-        defineNative("_" + methodList[i], &VM::call_RPC);
-    }
+        std::vector<std::string> methods = protoHandler->addService(toString(args[i]));
 
-    std::shared_ptr<grpc::Channel> channel = grpc::CreateChannel("0.0.0.0:50051", grpc::InsecureChannelCredentials());
-    clientHandler = std::unique_ptr<ClientCall>(new ClientCall(channel));
+        for (int j = 0; j < methods.size(); j++)
+        {
+            auto nativeFcn = std::bind(&VM::call_RPC, this, methods[j], _1, _2);
+            defineNative("_" + methods[j], nativeFcn);
+        }
+
+    }    
 
     return nilVal();
 
 }
 
-Value VM::call_RPC(int argCount, Value *args)
+Value VM::call_RPC(std::string &methodName, int argCount, Value *args)
 {
-    std::string protocRequest;
-    std::string protocResponse;
-    std::string methodName = "Add"; //Get Name from Function Call (How to do?)
-    Value result;
+   //1) Validate Arguments TODO:
 
-    //1) Validate arguments for RPC Call -- Add Later
-    if (!protoHandler->validateArguments(methodName, args))
-        return nilVal();
-        
-    //2) Convert arguments to protobuf type & Create protoc request
-    protocRequest = protoHandler->generateProtocRequestByMethod(methodName, args);
-
-    //3) Call Service Method and Fill Response
-    clientHandler->InitializeCall(protoHandler->getFormattedMethodName(methodName));
-    //clientHandler->Call(protocRequest, &protocResponse);
-
-    //4) Convert protobuf response to Roxal
-    result = protoHandler->generateRoxalResponse(methodName, protocResponse);
-
-
-    //5) Return response
-    return result;
+   //2) Perform the call
+   return communion->call(methodName, argCount, args);
 }
-
