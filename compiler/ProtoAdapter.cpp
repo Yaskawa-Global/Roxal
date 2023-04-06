@@ -366,7 +366,7 @@ bool ProtoAdapter::nameMatch(const std::string &fullName, const std::string &nam
 }
 
 
-std::vector<std::string> ProtoAdapter::addService(const std::string &protoFile)
+std::vector<std::string> ProtoAdapter::addServices(const std::string &protoFile)
 {
 
     auto *file_desc = m_importer->Import(protoFile);
@@ -411,6 +411,28 @@ int ProtoAdapter::minrequiredFieldCount(const std::string &messageName, int &cou
     return count;
 }
 
+std::vector<ObjObjectType*> ProtoAdapter::allocateObjects(const std::string &protoFile)
+{
+    auto *file_desc = m_importer->Import(protoFile);
+    std::vector<ObjObjectType*> objects; 
+
+    for (int i = 0; i < file_desc->message_type_count(); i++)
+    {
+        auto *msg = file_desc->message_type(i);
+        ObjObjectType *obj = objectTypeVal(toUnicodeString(msg->name()), false);
+        
+        for (int j = 0; j < msg->field_count(); j++)
+        {
+            auto *field = msg->field(j);
+            obj->properties.emplace(toUnicodeString(field->name()).hashCode(), toUnicodeString(field->name()));
+        }
+        
+
+        objects.push_back(obj);
+    }
+
+    return objects;
+}
 
 
 

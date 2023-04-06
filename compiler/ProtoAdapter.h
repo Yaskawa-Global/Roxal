@@ -50,7 +50,8 @@ namespace roxal {
             // bool validateArgumentTypes(const std::string &messageName, const Value *arg);
 
             // --- Auxiliary Methods --- //
-            std::vector<std::string> addService(const std::string &protoFile);
+            std::vector<std::string> addServices(const std::string &protoFile);
+            std::vector<ObjObjectType*> allocateObjects(const std::string &protoFile);
             int minrequiredFieldCount(const std::string &messageName, int &count);
             bool nameMatch(const std::string &fullName, const std::string &name);
             void logError(const std::string &errormsg);

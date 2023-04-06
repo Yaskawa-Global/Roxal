@@ -21,7 +21,7 @@ VM::VM()
     thread = nullptr;
 
     //Modify Proto Path and Channel as Needed
-    std::string protoPath = "/home/mandyda/Desktop/roxal/compiler/protos";
+    std::string protoPath = "/home/dave/Desktop/roxal/compiler/protos";
     std::string address = "0.0.0.0:50051";
 
     std::shared_ptr<Channel> channel = CreateChannel(address, InsecureChannelCredentials());
@@ -907,6 +907,25 @@ void VM::defineNative(const std::string& name, NativeFn function)
     UnicodeString uname { toUnicodeString(name) };
     Value funcVal { objVal(nativeVal(function)) };
     globals.store(uname.hashCode(), std::make_pair(uname,funcVal));
+}
+
+void VM::defineNativeProtoObjects(const std::string &protoFile)
+{
+    std::vector<ObjObjectType*> objs = protoHandler->allocateObjects(protoFile);
+
+    for (int i = 0; i < objs.size(); i++)
+        globals.store((objs[i]->name).hashCode(), std::make_pair((objs[i]->name), objVal(objs[i])));
+}
+
+void VM::defineNativeServices(const std::string &protoFile)
+{
+    std::vector<std::string> methods = protoHandler->addServices(protoFile);
+
+        for (int j = 0; j < methods.size(); j++)
+        {
+            auto nativeFcn = std::bind(&VM::call_RPC, this, methods[j], _1, _2);
+            defineNative("_" + methods[j], nativeFcn);
+        }
 }
 
 
@@ -1813,13 +1832,8 @@ Value VM::import_native(int argCount, Value *args)
 
     for(int i = 0; i < argCount; i++)
     {
-        std::vector<std::string> methods = protoHandler->addService(toString(args[i]));
-
-        for (int j = 0; j < methods.size(); j++)
-        {
-            auto nativeFcn = std::bind(&VM::call_RPC, this, methods[j], _1, _2);
-            defineNative("_" + methods[j], nativeFcn);
-        }
+        defineNativeProtoObjects(toString(args[i]));
+        defineNativeServices(toString(args[i]));
 
     }    
 

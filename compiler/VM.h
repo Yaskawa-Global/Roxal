@@ -220,6 +220,8 @@ protected:
     std::unique_ptr<ProtoAdapter> protoHandler; //Parser that will connect roxal to protobuf
     std::unique_ptr<ACUCommunicator> communion; //Communication manager
 
+    void defineNativeProtoObjects(const std::string &protoFile);
+    void defineNativeServices(const std::string &protoFile);
     
 
 };
