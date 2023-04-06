@@ -1,0 +1,13 @@
+type object Class1:
+  var p :int = 1
+
+  func method():
+    print("hi from class1")
+
+
+o1 = Class1()
+print(o1.p)
+o1.p = 3
+print(o1.p)
+
+

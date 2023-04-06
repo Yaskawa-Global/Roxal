@@ -468,8 +468,8 @@ struct ObjObjectType : public Obj
     icu::UnicodeString name;
     bool isActor;
 
+    std::unordered_map<int32_t, icu::UnicodeString> properties;
     std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> methods;
-
 };
 
 

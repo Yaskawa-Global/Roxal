@@ -60,6 +60,18 @@ struct Type {
         std::optional<ptr<Type>> extends;
         std::vector<ptr<Type>> implements;
 
+       struct PropType {
+            PropType() {}
+            PropType(const icu::UnicodeString& n) : name(n) {
+                nameHashCode = name.hashCode();
+            }
+            icu::UnicodeString name;
+            int32_t nameHashCode; // hashCode() of above (for use at runtime)
+            std::optional<ptr<Type>> type;
+            bool hasDefault;
+        };
+
+        std::vector<PropType> properties;
         std::vector<std::pair<icu::UnicodeString, ptr<FuncType>>> methods;
 
         std::string toString() const;

@@ -186,6 +186,25 @@ void RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     typeScopes.push_back(TypeScope());
 
+
+    for(size_t i=0; i<ast->properties.size(); i++) {
+        if (isActor) {
+            // TODO: once we have private properties, allow those and allow them
+            //  to be accessible by the actor's methods, but not from other threads
+            error("Actors cannot declare shared properties");
+            break;
+        }
+
+        auto prop { ast->properties.at(i) };
+
+        auto propName { prop->name };
+        int16_t propNameConstant = identifierConstant(propName);
+        if (propNameConstant >= 255) 
+            error("Too many properties for one actor or object type.");
+
+        emitBytes(OpCode::Property, uint8_t(propNameConstant), "property "+toUTF8StdString(propName));
+    }
+
     for(size_t i=0; i<ast->methods.size(); i++) {
 
         auto func { ast->methods.at(i) };

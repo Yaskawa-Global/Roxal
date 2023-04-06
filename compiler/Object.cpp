@@ -288,6 +288,17 @@ ObjectInstance::ObjectInstance(ObjObjectType* objectType)
     type = ObjType::Instance; 
     instanceType = objectType;
     instanceType->incRef();
+
+    // if type has properties, create them
+    //  TODO: this this be here, in objectInstanceVal or at the call site? (and for actors?)
+    //  FIXME: assign them to defaults according to type
+    //  (& consider if object/reference types should default to nil or
+    //   be recursively constructed)
+
+    for(const auto& property : objectType->properties) {
+        auto propName { property.second };
+        properties[propName.hashCode()] = Value();
+    }
 }
 
 ObjectInstance::~ObjectInstance() 

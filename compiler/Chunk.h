@@ -43,6 +43,7 @@ enum class OpCode {
     ReturnStore,
     ObjectType,
     ActorType,
+    Property,
     Method,
     DefineGlobal,
     GetGlobal,

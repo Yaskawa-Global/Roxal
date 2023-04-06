@@ -105,12 +105,17 @@ suite
 type_decl
  : annotation* TYPE (OBJECT | ACTOR) IDENTIFIER 
     (EXTENDS IDENTIFIER)? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)? ':' NEWLINE
-   INDENT method* DEDENT
+   INDENT (property|method)* DEDENT
  ;
 
 method
  : annotation* function
  ;
+
+property
+ : annotation* VAR IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)? NEWLINE
+ ;
+
 
 annotation
  : AT IDENTIFIER 

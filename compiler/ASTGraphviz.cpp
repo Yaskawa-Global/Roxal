@@ -168,6 +168,9 @@ void ASTGraphviz::visit(ptr<ast::TypeDecl> ast)
 
     auto name { uname(ast) };
 
+    for(int i=0; i<ast->properties.size();i++)
+        addLink(name, stackPop());
+
     for(int i=0; i<ast->methods.size();i++)
         addLink(name, stackPop());
 
@@ -379,7 +382,8 @@ void ASTGraphviz::visit(ptr<ast::UnaryOp> ast)
 
     addLink(name, stackPop());
 
-    nodes[name] = node(name,ast->opString());
+    nodes[name] = node(name,ast->opString() 
+                   + ((ast->op == UnaryOp::Op::Accessor) && ast->member.has_value() ? toUTF8StdString(ast->member.value()) : "?"));
     stackPush(name);
     endVisit();
 }
