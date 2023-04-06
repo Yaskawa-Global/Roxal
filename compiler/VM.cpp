@@ -863,6 +863,17 @@ Value VM::opReturn()
 
 
 
+void VM::defineProperty(ObjString* name)
+{
+    #ifdef DEBUG_BUILD
+    if (!isObjectType(peek(0)))
+        throw std::runtime_error("Can't create property without object or actor type on stack");
+    #endif
+    ObjObjectType* type = asObjectType(peek(0));
+    type->properties[name->hash] = name->s;
+}
+
+
 void VM::defineMethod(ObjString* name)
 {
     Value method = peek(0);
@@ -1499,6 +1510,10 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::ActorType): {
                 ObjString* name = readString();
                 push(objVal(objectTypeVal(name->s, /*isActor=*/true)));
+                break;
+            }
+            case asByte(OpCode::Property): {
+                defineProperty(readString());
                 break;
             }
             case asByte(OpCode::Method): {

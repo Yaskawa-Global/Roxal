@@ -79,6 +79,7 @@ public:
     void closeUpvalues(Value* last);
     Value opReturn();
 
+    void defineProperty(ObjString* name);
     void defineMethod(ObjString* name);
     void defineNative(const std::string& name, NativeFn function);
 

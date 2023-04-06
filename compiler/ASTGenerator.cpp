@@ -726,16 +726,16 @@ antlrcpp::Any ASTGenerator::visitSuite(RoxalParser::SuiteContext *context)
 
 antlrcpp::Any ASTGenerator::visitType_decl(RoxalParser::Type_declContext *context)
 {
-    visitStart();
+   visitStart();
 
-    auto typedecl = std::make_shared<TypeDecl>();
-    setSourceInfo(typedecl,context);
+   auto typedecl = std::make_shared<TypeDecl>();
+   setSourceInfo(typedecl,context);
 
-    bool isActor = (context->ACTOR() != nullptr);
-    typedecl->kind = isActor ? TypeDecl::Actor : TypeDecl::Object;
+   bool isActor = (context->ACTOR() != nullptr);
+   typedecl->kind = isActor ? TypeDecl::Actor : TypeDecl::Object;
 
-    size_t identIndex = 0;
-    typedecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
+   size_t identIndex = 0;
+   typedecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
 
    if (context->annotation().size() > 0) {
 
@@ -767,6 +767,14 @@ antlrcpp::Any ASTGenerator::visitType_decl(RoxalParser::Type_declContext *contex
         auto func = visitMethod(methodContext);
 
         typedecl->methods.push_back(as<Function>(func));
+    }
+
+    for(size_t i=0; i<context->property().size(); i++) {
+        auto propertyContext { context->property().at(i) };
+
+        auto varDecl = visitProperty(propertyContext);
+
+        typedecl->properties.push_back(as<VarDecl>(varDecl));
     }
 
     return typeValue(typedecl);
@@ -801,6 +809,38 @@ antlrcpp::Any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
     }
     
     return typeValue(function);
+    visitEnd();
+}
+
+
+
+antlrcpp::Any ASTGenerator::visitProperty(RoxalParser::PropertyContext *context)
+{
+    visitStart();
+
+    // a property looks like a variable declaration
+    auto varDecl = std::make_shared<VarDecl>();
+
+    varDecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText());
+
+    // FIXME: visit annotations
+
+    if (context->builtin_type()) {
+        auto builtinType = visitBuiltin_type(context->builtin_type()).as<BuiltinType>();
+        varDecl->varType = builtinType;
+    }
+    else if (context->IDENTIFIER().size()>1) {
+        auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
+        varDecl->varType = typeIdent;
+    }
+    else {} // type is optional
+
+    if (context->expression()) {
+        auto expr = visitExpression(context->expression());
+        varDecl->initializer = as<Expression>(expr);
+    }
+
+    return typeValue(varDecl);
     visitEnd();
 }
 

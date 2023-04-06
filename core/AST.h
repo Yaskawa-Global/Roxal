@@ -358,8 +358,12 @@ struct TypeDecl : public Declaration {
     icu::UnicodeString name;
     std::optional<icu::UnicodeString> extends;
     std::vector<icu::UnicodeString> implements;
+
     std::vector<ptr<Function>> methods;
 
+    // pre-declared properties (same syntax as variable declarations)
+    std::vector<ptr<VarDecl>> properties;
+ 
     virtual void accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 

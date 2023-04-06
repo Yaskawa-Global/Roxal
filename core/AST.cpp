@@ -525,6 +525,9 @@ void TypeDecl::accept(ASTVisitor& v)
 
 void TypeDecl::acceptChildren(ASTVisitor& v)
 {
+    for(auto& property : properties)
+        property->accept(v);
+
     for(auto& method : methods)
         method->accept(v);
 }
@@ -545,6 +548,8 @@ void TypeDecl::output(std::ostream& os, int indent) const
     }
     for(auto& annot : annotations)
         annot->output(os, indent+1);
+    for(auto& property : properties)
+        property->output(os, indent+1);
     for(auto& method : methods)
         method->output(os, indent+1);
 }
