@@ -532,9 +532,33 @@ Value roxal::toType(ValueType t, Value v, bool strict)
         case ValueType::Real: return realVal(v.asReal(strict));
         case ValueType::Int: return intVal(v.asInt(strict));
         case ValueType::String: {
+            //TODO
+        } break;
+        case ValueType::Dict: {
+            // can convert objects to dict of property, value pairs (non-strict only)
 
+            // FIXME: current object instances don't store property names for properties
+            //  added by assignment at runtime (the properties map keys are property name string hashes only)
+            //  Hence, currently, only the properties declared in the type object declaration are
+            //  included in the dict!
+
+            if (isObjectInstance(v) && !strict) {
+                ObjDict* dictValue = dictVal({});
+  
+                ObjectInstance* vObj = asObjectInstance(v);
+                ObjObjectType* vObjType = vObj->instanceType;
+                for(const auto& property : vObjType->properties) {
+                    auto propName { stringVal(std::get<0>(property.second)) };
+                    #ifdef DEBUG_BUILD
+                    assert(vObj->properties.find(propName->hash) != vObj->properties.end());
+                    #endif
+                    dictValue->store(Value(propName),
+                                     vObj->properties[propName->hash]);
+                }
+                return Value(dictValue);
+            }
         }
-        //...
+        //... TODO
     }
     return nilVal(); 
 }
