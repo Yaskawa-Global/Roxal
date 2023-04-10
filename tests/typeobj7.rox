@@ -10,4 +10,7 @@ print(o1.p)
 o1.p = 3
 print(o1.p)
 
+d = dict(o1)
+print(d)
+
 
