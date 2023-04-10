@@ -533,37 +533,44 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     return true;
                 }
             }
-            case ObjType::ObjectType: {
-                ObjObjectType* type = asObjectType(callee);
-                if (!type->isActor) {
-                    Value inst { objectInstanceVal(type) };
-                    *(thread->stackTop - callSpec.argCount - 1) = inst;
+            case ObjType::Type: {
+                ObjTypeSpec* ts = asTypeSpec(callee);
+                if ((ts->typeValue != ValueType::Object) && (ts->typeValue != ValueType::Actor)) {
+                    //!!! FIXME:primitive...
+                    throw std::runtime_error("unimplemented");
                 }
                 else {
-                    Value inst { actorInstanceVal(type) };
-
-                    // spawn Thread to handle actor method calls
-                    auto newThread = std::make_shared<Thread>();
-                    threads.store(newThread->id(), newThread);
-                    newThread->act(inst);
-
-                    *(thread->stackTop - callSpec.argCount - 1) = inst;
-                }
-                auto it = type->methods.find(initString->hash);
-                if (it != type->methods.end()) {
-                    Value initializer { it->second.second };
-                    if (!type->isActor)
-                        return call(asClosure(initializer), callSpec);
-                    else
-                        throw std::runtime_error("queueing actor init params unimplemented");//!!!
-                }
-                else {
-                    if (callSpec.argCount != 0) {
-                        runtimeError("Expected 0 arguments for type instantiation, provided "+std::to_string(callSpec.argCount));
-                        return false;
+                    ObjObjectType* type = asObjectType(callee);
+                    if (!type->isActor) {
+                        Value inst { objectInstanceVal(type) };
+                        *(thread->stackTop - callSpec.argCount - 1) = inst;
                     }
-                }
-                return true;
+                    else {
+                        Value inst { actorInstanceVal(type) };
+
+                        // spawn Thread to handle actor method calls
+                        auto newThread = std::make_shared<Thread>();
+                        threads.store(newThread->id(), newThread);
+                        newThread->act(inst);
+
+                        *(thread->stackTop - callSpec.argCount - 1) = inst;
+                    }
+                    auto it = type->methods.find(initString->hash);
+                    if (it != type->methods.end()) {
+                        Value initializer { it->second.second };
+                        if (!type->isActor)
+                            return call(asClosure(initializer), callSpec);
+                        else
+                            throw std::runtime_error("queueing actor init params unimplemented");//!!!
+                    }
+                    else {
+                        if (callSpec.argCount != 0) {
+                            runtimeError("Expected 0 arguments for type instantiation, provided "+std::to_string(callSpec.argCount));
+                            return false;
+                        }
+                    }
+                    return true;
+                } 
             }
             case ObjType::Closure:
                 return call(asClosure(callee), callSpec);
@@ -866,11 +873,26 @@ Value VM::opReturn()
 void VM::defineProperty(ObjString* name)
 {
     #ifdef DEBUG_BUILD
-    if (!isObjectType(peek(0)))
+    if (!isObjectType(peek(2)))
         throw std::runtime_error("Can't create property without object or actor type on stack");
     #endif
-    ObjObjectType* type = asObjectType(peek(0));
-    type->properties[name->hash] = name->s;
+    ObjObjectType* objType = asObjectType(peek(2));
+
+    const Value& propertyType { peek(1) };
+    Value propertyInitial { peek(0) };
+
+    if (!propertyInitial.isNil()) {
+        // if the property type is specified, convert the initial value (if given) to the declared propType
+        if (!propertyType.isNil() && isTypeSpec(propertyType)) {
+            ObjTypeSpec* typeSpec = asTypeSpec(propertyType);
+            if (typeSpec->typeValue != ValueType::Nil)
+                // TODO: implement & use a canConvertToType()
+                propertyInitial = toType(typeSpec->typeValue,propertyInitial,/*strict=*/false);
+        }
+    }
+
+    objType->properties[name->hash] = std::make_tuple(name->s,propertyType,propertyInitial);
+    popN(2);
 }
 
 
@@ -1090,10 +1112,28 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 ObjectInstance* objInst = asObjectInstance(inst);
                 ObjString* name = readString();
                 //std::cout << "setting prop " << toUTF8StdString(name->s) << " of " << toString(inst) << " to " << toString(peek(0)) << std::endl;//!!!
-                objInst->properties[name->hash] = peek(0);
-                Value value { pop() };
-                pop(); // instance
-                push(value);
+
+                Value value { peek(0) };
+
+                if (!value.isNil()) {
+                    // if type object specified the property type in the declaration,
+                    //  convert the value to that type (if possible)
+                    const auto& properties { objInst->instanceType->properties };
+                    const auto& property = properties.find(name->hash);
+                    if (property != properties.end()) {
+                        const auto& propertyType { std::get<1>(property->second) };
+                        if (!propertyType.isNil() && isTypeSpec(propertyType)) {
+                            ObjTypeSpec* typeSpec = asTypeSpec(propertyType);
+                            if (typeSpec->typeValue != ValueType::Nil)
+                                // TODO: implement & use a canConvertToType()
+                                value = toType(typeSpec->typeValue,value,/*strict=*/false);
+                        }
+                    }
+                }
+
+                objInst->properties[name->hash] = value;
+                popN(2); // pop original value & instance
+                push(value); // value (possibly converted)
                 break;
             }
             case asByte(OpCode::Equal): {

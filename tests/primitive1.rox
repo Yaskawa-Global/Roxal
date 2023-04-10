@@ -1,0 +1,11 @@
+var a = int(5)
+print(a)
+
+var intype = int
+var b = intype(6)
+print(b)
+
+var realtype = real
+var r = realtype(1.2)
+print(r)
+

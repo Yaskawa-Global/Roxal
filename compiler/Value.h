@@ -73,11 +73,13 @@ class Value;
 bool isPrimitive(const Value& v); // forward from Object.h
 
 
+
 class Value {
 public:
     Value() : val(QNAN | TagNil) {}  
 
     explicit Value(bool b) { val = b ? (QNAN | TagTrue) : (QNAN | TagFalse); }
+    explicit Value(uint8_t b) { val = QNAN | TagByte | (0xff & *reinterpret_cast<uint8_t*>(&b)); }
     explicit Value(double r) { val = (*reinterpret_cast<uint64_t*>(&r)); }
     explicit Value(int32_t i) { val = QNAN | TagInt | (0xffffffff & *reinterpret_cast<uint64_t*>(&i)); }
     explicit Value(ValueType bt) { val = QNAN | TagType | uint64_t(bt); }
@@ -293,11 +295,18 @@ inline Value trueVal() { return Value(true); }
 inline Value falseVal() { return Value(false); }
 inline Value boolVal(bool b) { return Value(b); }
 
+inline Value byteVal(uint8_t b) { return Value(b); }
+
 inline Value intVal(int32_t i) { return Value(i); }
 
 inline Value realVal(double r) { return Value(r); }
 
 inline Value typeVal(ValueType bt) { return Value(bt); }
+
+
+// create default value for given primitive or builtin
+//  (e.g. false:bool. 0:int, 0,0:real, '':string, []:list, {}:dict, nil:object etc )
+Value defaultValue(ValueType t);
 
 
 Value toType(ValueType t, Value v, bool strict=true);
