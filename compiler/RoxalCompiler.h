@@ -149,6 +149,8 @@ protected:
 
     void error(const std::string& message);
 
+    ValueType builtinToValueType(ast::BuiltinType bt);
+
     void emitByte(uint8_t byte, const std::string& comment = "");
     void emitByte(OpCode op, const std::string& comment = "");
     void emitBytes(uint8_t byte1, uint8_t byte2, const std::string& comment = "");

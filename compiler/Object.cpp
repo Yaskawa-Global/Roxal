@@ -24,12 +24,11 @@ ValueType Obj::valueType() const
         case ObjType::Int: return ValueType::Int;
         case ObjType::Real: return ValueType::Real;
         case ObjType::String: return ValueType::String;
-        case ObjType::Type: return ValueType::Type;
+        case ObjType::Type: return ValueType::Type; // TODO: need to return more specific ObjectType for type object & type actor?
         case ObjType::List: return ValueType::List;
         case ObjType::Dict: return ValueType::Dict;
         case ObjType::Stream: return ValueType::Stream;
         case ObjType::Instance: return static_cast<const ObjObjectType*>(this)->isActor ? ValueType::Actor : ValueType::Object;
-        case ObjType::ObjectType: return ValueType::Type;
         default: return ValueType::Nil;
     }
 }
@@ -111,6 +110,24 @@ ObjString* roxal::stringVal(const UnicodeString& s)
         return objStr.value();
     }
 } 
+
+
+// runtime types
+
+ObjTypeSpec* roxal::typeSpecVal(ValueType t)
+{
+    #ifdef DEBUG_BUILD
+    assert(t != ValueType::Object && t != ValueType::Actor);
+    #endif
+    auto ts = newObj<ObjTypeSpec>(__func__);
+    ts->typeValue = t;
+    return ts;
+}
+
+
+
+
+
 
 
 
@@ -223,9 +240,15 @@ std::string roxal::objToString(const Value& v)
             // converting a stream to a string actually converts its current value to a string
             return toString(asStream(v)->currentValue());
         }
-        case ObjType::ObjectType: {
-            ObjObjectType* obj = asObjectType(v);
-            return std::string("<type ")+(obj->isActor ? "actor" :"object")+" "+toUTF8StdString(obj->name)+">";
+        case ObjType::Type: {
+            ObjTypeSpec* ts = asTypeSpec(v);
+            if ((ts->typeValue != ValueType::Object) && (ts->typeValue != ValueType::Actor)) {
+                return "<type "+to_string(ts->typeValue)+">";
+            }
+            else {
+                ObjObjectType* obj = asObjectType(v);
+                return std::string("<type ")+(obj->isActor ? "actor" :"object")+" "+toUTF8StdString(obj->name)+">";
+            }
         }
         case ObjType::Instance: {
             ObjectInstance* inst = asObjectInstance(v);
@@ -289,15 +312,12 @@ ObjectInstance::ObjectInstance(ObjObjectType* objectType)
     instanceType = objectType;
     instanceType->incRef();
 
-    // if type has properties, create them
-    //  TODO: this this be here, in objectInstanceVal or at the call site? (and for actors?)
-    //  FIXME: assign them to defaults according to type
-    //  (& consider if object/reference types should default to nil or
-    //   be recursively constructed)
-
     for(const auto& property : objectType->properties) {
-        auto propName { property.second };
-        properties[propName.hashCode()] = Value();
+        auto propNameTypeInitial { property.second };
+        auto propName { std::get<0>(propNameTypeInitial) };
+        //auto propType { std::get<1>(propNameTypeInitial) };
+        auto propInitialvalue { std::get<2>(propNameTypeInitial) };
+        properties[propName.hashCode()] = propInitialvalue;
     }
 }
 
@@ -428,7 +448,7 @@ std::string roxal::objTypeName(Obj* obj)
 
     switch (obj->type) {
     case ObjType::None: return "none";
-    case ObjType::ObjectType: return static_cast<ObjObjectType*>(obj)->isActor ? "type actor" : "type object";
+    case ObjType::Type: return "type";
     case ObjType::Instance: return "object";
     case ObjType::Actor: return "actor";
     case ObjType::BoundMethod: return "function";

@@ -30,7 +30,6 @@ using icu::UnicodeString;
 enum class ObjType {
     None = 0,
     BoundMethod,
-    ObjectType,
     Closure,
     Function,
     Instance,
@@ -179,6 +178,7 @@ struct ObjPrimitive : public Obj
 
 inline bool isPrimitive(const Value& v) { return isObjType(v, ObjType::Bool) || isObjType(v, ObjType::Int) || isObjType(v, ObjType::Real) || isObjType(v,ObjType::Type); }
 inline ObjPrimitive* asPrimitive(const Value& v) { return static_cast<ObjPrimitive*>(v.asObj()); }
+
 
 
 
@@ -454,26 +454,52 @@ ObjNative* nativeVal(NativeFn function);
 
 
 //
+// runtime type 
+
+struct ObjTypeSpec : public Obj
+{
+    ObjTypeSpec() {
+        type = ObjType::Type;
+        refCount = 0;
+        typeValue = ValueType::Nil;
+    }
+    virtual ~ObjTypeSpec() {}
+
+    ValueType typeValue;
+};
+
+inline bool isTypeSpec(const Value& v) { return isObjType(v,ObjType::Type); }
+inline ObjTypeSpec* asTypeSpec(const Value& v) { return static_cast<ObjTypeSpec*>(v.asObj()); }
+
+ObjTypeSpec* typeSpecVal(ValueType t); // primitive
+
+std::string objTypeSpecToString(const ObjTypeSpec* ots);
+
+
+//
 // object|actor type
 
-struct ObjObjectType : public Obj
+struct ObjObjectType : public ObjTypeSpec
 {
     ObjObjectType(const icu::UnicodeString& typeName, bool isactor) 
         : name(typeName), isActor(isactor) 
     { 
-        type = ObjType::ObjectType; 
+        typeValue = isactor ? ValueType::Actor : ValueType::Object;
     }
     virtual ~ObjObjectType() {}
 
     icu::UnicodeString name;
     bool isActor;
 
-    std::unordered_map<int32_t, icu::UnicodeString> properties;
+    // name -> type, initial value
+    std::unordered_map<int32_t, std::tuple<icu::UnicodeString, Value, Value>> properties;
+
+    // name -> closure
     std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> methods;
 };
 
 
-inline bool isObjectType(const Value& v) { return isObjType(v, ObjType::ObjectType); }
+inline bool isObjectType(const Value& v) { return isObjType(v, ObjType::Type) && ((asTypeSpec(v)->typeValue == ValueType::Object) || (asTypeSpec(v)->typeValue == ValueType::Actor)); }
 inline ObjObjectType* asObjectType(const Value& v) { return static_cast<ObjObjectType*>(v.asObj()); }
 
 

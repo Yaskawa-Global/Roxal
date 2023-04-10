@@ -195,12 +195,45 @@ void RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             break;
         }
 
-        auto prop { ast->properties.at(i) };
+        // emit code to push type & initial value (if any) on stack, then OpCode::Property
+
+        ptr<VarDecl> prop { ast->properties.at(i) }; 
 
         auto propName { prop->name };
         int16_t propNameConstant = identifierConstant(propName);
         if (propNameConstant >= 255) 
             error("Too many properties for one actor or object type.");
+        
+        // type
+        if (prop->varType.has_value()) {
+            auto varType { prop->varType.value() };
+
+            if (std::holds_alternative<BuiltinType>(varType)) {
+                auto builtinType { std::get<BuiltinType>(varType) };
+                Value typeValue { typeSpecVal(builtinToValueType(builtinType)) };
+
+                emitConstant(typeValue, "prop "+toUTF8StdString(propName)+" type");
+            }
+            else {
+                throw std::runtime_error("unimplemented: non-builtin types for properties");//TODO
+            }
+
+        }
+        else {
+            emitByte(OpCode::ConstNil, "prop "+toUTF8StdString(propName)+" (no type)"); // nil value will be interpreted as no type (or any type)
+        }
+
+        // initial value
+        if (prop->initializer.has_value()) {
+            prop->initializer.value()->accept(*this);
+        }
+        else { // no initializer
+            bool declaredBuiltinType = prop->varType.has_value() && std::holds_alternative<BuiltinType>(prop->varType.value());
+            if (declaredBuiltinType)
+                emitConstant(defaultValue(builtinToValueType(std::get<BuiltinType>(prop->varType.value()))));
+            else
+                emitByte(OpCode::ConstNil);
+        }
 
         emitBytes(OpCode::Property, uint8_t(propNameConstant), "property "+toUTF8StdString(propName));
     }
@@ -695,27 +728,7 @@ void RoxalCompiler::visit(ptr<ast::Str> ast)
 void RoxalCompiler::visit(ptr<ast::Type> ast)
 {
     currentNode = ast;
-    ValueType type { ValueType::Nil };
-
-    switch(ast->t) {
-        case ast::BuiltinType::Nil: type = ValueType::Nil; break;
-        case ast::BuiltinType::Bool: type = ValueType::Bool; break;
-        case ast::BuiltinType::Byte: type = ValueType::Byte; break;
-        //case ast::BuiltinType::Number:  // not concrete
-        case ast::BuiltinType::Int: type = ValueType::Int; break;
-        case ast::BuiltinType::Real: type = ValueType::Real; break;
-        case ast::BuiltinType::Decimal: type = ValueType::Decimal; break;
-        case ast::BuiltinType::String: type = ValueType::String; break;
-        case ast::BuiltinType::List: type = ValueType::List; break;
-        case ast::BuiltinType::Dict: type = ValueType::Dict; break;
-        case ast::BuiltinType::Vector: type = ValueType::Vector; break;
-        case ast::BuiltinType::Matrix: type = ValueType::Matrix; break;
-        case ast::BuiltinType::Tensor: type = ValueType::Tensor; break;
-        case ast::BuiltinType::Orient: type = ValueType::Orient; break;
-        case ast::BuiltinType::Stream: type = ValueType::Stream; break;
-        default:
-            throw std::runtime_error("unhandled builtin type "+ast::to_string(ast->t));
-    }
+    ValueType type { builtinToValueType(ast->t) };
 
     emitConstant(typeVal(type));
 }
@@ -830,6 +843,31 @@ void RoxalCompiler::error(const std::string& message)
     throw std::logic_error(linePos(currentNode) + " - " + message);
 }
 
+
+ValueType RoxalCompiler::builtinToValueType(ast::BuiltinType bt)
+{
+    ValueType type {};
+    switch(bt) {
+        case ast::BuiltinType::Nil: type = ValueType::Nil; break;
+        case ast::BuiltinType::Bool: type = ValueType::Bool; break;
+        case ast::BuiltinType::Byte: type = ValueType::Byte; break;
+        //case ast::BuiltinType::Number:  // not concrete
+        case ast::BuiltinType::Int: type = ValueType::Int; break;
+        case ast::BuiltinType::Real: type = ValueType::Real; break;
+        case ast::BuiltinType::Decimal: type = ValueType::Decimal; break;
+        case ast::BuiltinType::String: type = ValueType::String; break;
+        case ast::BuiltinType::List: type = ValueType::List; break;
+        case ast::BuiltinType::Dict: type = ValueType::Dict; break;
+        case ast::BuiltinType::Vector: type = ValueType::Vector; break;
+        case ast::BuiltinType::Matrix: type = ValueType::Matrix; break;
+        case ast::BuiltinType::Tensor: type = ValueType::Tensor; break;
+        case ast::BuiltinType::Orient: type = ValueType::Orient; break;
+        case ast::BuiltinType::Stream: type = ValueType::Stream; break;
+        default:
+            throw std::runtime_error("unhandled builtin type "+ast::to_string(bt));
+    }
+    return type;
+}
 
 
 void RoxalCompiler::emitByte(uint8_t byte, const std::string& comment)

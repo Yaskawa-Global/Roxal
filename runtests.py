@@ -7,7 +7,7 @@ import subprocess
 #  and compare its output with <test>.out and issue error on mismatch
 
 tests = [
-    'comments',
+    'comments', 'primitive1',
     'andtest', 'ortest', 'not',
     'arith', 'factorial',
     'dict', 'list',

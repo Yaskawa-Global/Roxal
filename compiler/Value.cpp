@@ -483,6 +483,35 @@ void Value::resolveFuture()
 
 
 
+Value roxal::defaultValue(ValueType t)
+{
+    switch (t) {
+        case ValueType::Nil: return nilVal();
+        case ValueType::Bool: return falseVal();
+        case ValueType::Byte: return byteVal(0);
+        case ValueType::Int: return intVal(0);
+        case ValueType::Real: return realVal(0.0);
+        case ValueType::Decimal: throw std::runtime_error("decimal unimplemented");
+        case ValueType::Type: return typeVal(ValueType::Nil);
+        case ValueType::String: return Value(stringVal(UnicodeString()));
+        case ValueType::List: return Value(listVal({}));
+        case ValueType::Dict: return Value(dictVal({}));
+        case ValueType::Vector:
+        case ValueType::Matrix:
+        case ValueType::Tensor:
+        case ValueType::Orient:
+        case ValueType::Stream:
+        case ValueType::Object:
+        case ValueType::Actor:
+        default:
+            throw std::runtime_error("default value unimplemented for type "+to_string(t));
+    }
+    return nilVal();
+}
+
+
+
+
 
 Value roxal::toType(ValueType t, Value v, bool strict)
 {
