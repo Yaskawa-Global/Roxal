@@ -1,0 +1,21 @@
+//Requires Arithematic Server//
+_import("arithematic.proto")
+
+var req = NumRequest()
+var resp1 = NumResponse()
+var resp2 = NumResponse()
+var resp3 = NumResponse()
+var resp4 = NumResponse()
+
+req.arg1 = 10
+req.arg2 = 7
+
+resp1 = _Add(req)
+resp2 = _Subtract(req)
+resp3 = _Multiply(req)
+resp4 = _Divide(req)
+
+print(resp1.ans) //Expected 17
+print(resp2.poop) //Expected 3
+print(resp3.ans) //Expected 70
+print(resp4.ans) //Expected 1

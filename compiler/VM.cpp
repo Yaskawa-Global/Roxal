@@ -21,7 +21,7 @@ VM::VM()
     thread = nullptr;
 
     //Modify Proto Path and Channel as Needed
-    std::string protoPath = "/home/dave/Desktop/roxal/compiler/protos";
+    std::string protoPath = "/home/mandyda/Desktop/roxal/compiler/protos";
     std::string address = "0.0.0.0:50051";
 
     std::shared_ptr<Channel> channel = CreateChannel(address, InsecureChannelCredentials());
@@ -1886,5 +1886,6 @@ Value VM::call_RPC(std::string &methodName, int argCount, Value *args)
    //1) Validate Arguments TODO:
 
    //2) Perform the call
-   return communion->call(methodName, argCount, args);
+
+   return communion->call(methodName, args);
 }

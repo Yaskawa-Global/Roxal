@@ -18,7 +18,7 @@ using namespace roxal;
 class Connector 
 {
     public:
-        virtual Value call(const std::string &methodName, const int &argCount, const Value *args) = 0;
+        virtual Value call(const std::string &methodName, const Value *args) = 0;
     
     protected:
         std::unique_ptr<ClientCall> m_caller;
@@ -30,6 +30,6 @@ class ACUCommunicator : public Connector
 {
     public:
         ACUCommunicator(std::shared_ptr<Channel> channel, ProtoAdapter *adapter);
-        Value call(const std::string &methodName, const int &argCount, const Value *args);
+        Value call(const std::string &methodName, const Value *args);
 
 };

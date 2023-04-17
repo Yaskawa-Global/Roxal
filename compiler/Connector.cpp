@@ -6,9 +6,9 @@ ACUCommunicator::ACUCommunicator(std::shared_ptr<Channel> channel, ProtoAdapter 
     m_adapter = adapter;
 }
 
-Value ACUCommunicator::call(const std::string &methodName, const int &argCount, const Value *args)
+Value ACUCommunicator::call(const std::string &methodName, const Value *args)
 {
-    grpc_slice request = m_adapter->generateProtocRequestByMethod(methodName, argCount, args);
+    grpc_slice request = m_adapter->generateProtocRequestByMethod(methodName, args);
     grpc_slice response;
     m_caller->InitializeCall(m_adapter->getFormattedMethodName(methodName)); //IMPORTANT: ALWAYS USE FORMATTED METHOD NAME WHEN INITIALIZING THE SERVICE CALL
     m_caller->Write(request);
@@ -16,5 +16,5 @@ Value ACUCommunicator::call(const std::string &methodName, const int &argCount, 
     m_caller->ReadResponse(response);
     m_caller->Finish();
 
-    return m_adapter->generateRoxalResponse(methodName, response);
+    return (m_adapter->generateRoxalResponse(methodName, response));
 }

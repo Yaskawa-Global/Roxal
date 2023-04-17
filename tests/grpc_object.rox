@@ -1,11 +1,12 @@
-_import("arithematic.proto")
+//Requires Arithematic Server//
+
+_import('arithematic.proto')
 
 var req = NumRequest() //Request Object from "arithematic.proto"
 var resp = NumResponse() //Response Object from "arithematic.proto"
 
-print(req) //Expected answer: object NumRequest
+print(req)
 print('object NumRequest')
 
-
 print(resp)
-print('object NumResponse') //Expected answer: object NumResponseobject NumRequest
+print('object NumResponse')

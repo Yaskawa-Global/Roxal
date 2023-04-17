@@ -41,9 +41,9 @@ namespace roxal {
             std::string getMessageNameFromMethod(const std::string &methodName, bool isRequest);
 
             // --- Roxal and Protobuf Type Conversions --- //
-            grpc_slice generateProtocRequestByMethod(const std::string &methodName, const int &argCount, const Value *arg);
-            grpc_slice generateProtocRequest(const std::string &messageName, const int &argCount, const Value *arg);
-            void generateProtocSubRequest(const std::string &messageName, const int &argCount, const Value *arg, Message *inner, unsigned int &index);
+            grpc_slice generateProtocRequestByMethod(const std::string &methodName, const Value *arg);
+            grpc_slice generateProtocRequest(const std::string &messageName,  const Value *arg);
+            void generateProtocSubRequest(const std::string &messageName, const Value *arg, Message *inner, unsigned int &index);
             Value generateRoxalResponse(const std::string &methodName, const grpc_slice &response);
             // int validateArguments(const std::string &methodName, const Value *arg);
             // bool validateArgumentCount(const std::string &messageName, const Value *arg);
@@ -52,6 +52,7 @@ namespace roxal {
             // --- Auxiliary Methods --- //
             std::vector<std::string> addServices(const std::string &protoFile);
             std::vector<ObjObjectType*> allocateObjects(const std::string &protoFile);
+            ObjObjectType *buildObjectDeclaration(const std::string &messageName);
             int minrequiredFieldCount(const std::string &messageName, int &count);
             bool nameMatch(const std::string &fullName, const std::string &name);
             void logError(const std::string &errormsg);
