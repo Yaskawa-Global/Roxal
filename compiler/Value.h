@@ -304,6 +304,11 @@ inline Value realVal(double r) { return Value(r); }
 inline Value typeVal(ValueType bt) { return Value(bt); }
 
 
+// create default value for given primitive or builtin
+//  (e.g. false:bool. 0:int, 0,0:real, '':string, []:list, {}:dict, nil:object etc )
+Value defaultValue(ValueType t);
+
+
 <<<<<<< HEAD
 =======
 // create default value for given primitive or builtin
