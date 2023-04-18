@@ -531,8 +531,9 @@ Value roxal::toType(ValueType t, Value v, bool strict)
     switch (t) {
         case ValueType::Real: return realVal(v.asReal(strict));
         case ValueType::Int: return intVal(v.asInt(strict));
-        case ValueType::String: {
-            //TODO
+        case ValueType::String: {            
+            // TODO: use alternate 'non-debug' string conversion only utilizing UnicodeString
+            return Value(stringVal(toUnicodeString(toString(v))));
         } break;
         case ValueType::Dict: {
             // can convert objects to dict of property, value pairs (non-strict only)
