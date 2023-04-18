@@ -214,8 +214,9 @@ void RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
                 emitConstant(typeValue, "prop "+toUTF8StdString(propName)+" type");
             }
-            else {
-                throw std::runtime_error("unimplemented: non-builtin types for properties");//TODO
+            else { // assume string names global (local?) type var
+                // will emit GetLocal or GetGlobal (or GetUpValue)
+                namedVariable( std::get<icu::UnicodeString>(varType), false );
             }
 
         }
