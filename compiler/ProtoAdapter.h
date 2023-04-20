@@ -41,10 +41,12 @@ namespace roxal {
             std::string getMessageNameFromMethod(const std::string &methodName, bool isRequest);
 
             // --- Roxal and Protobuf Type Conversions --- //
-            grpc_slice generateProtocRequestByMethod(const std::string &methodName, const Value *arg);
-            grpc_slice generateProtocRequest(const std::string &messageName,  const Value *arg);
-            void generateProtocSubRequest(const std::string &messageName, const Value *arg, Message *inner, unsigned int &index);
+            grpc_slice generateProtocRequest(const std::string &methodName, const Value *arg);
+            void generateProtocSubRequest(Message *msg, ObjectInstance *instance);
+            
+
             Value generateRoxalResponse(const std::string &methodName, const grpc_slice &response);
+            void generateSubResponse(Message *msg, ObjectInstance *instance);
             // int validateArguments(const std::string &methodName, const Value *arg);
             // bool validateArgumentCount(const std::string &messageName, const Value *arg);
             // bool validateArgumentTypes(const std::string &messageName, const Value *arg);
@@ -63,6 +65,8 @@ namespace roxal {
             std::unique_ptr<Importer> m_importer;
             std::unique_ptr<DynamicMessageFactory> m_dynfactory;
             std::vector<const ServiceDescriptor*> m_serviceList;
+            std::unordered_map<int32_t, ObjObjectType*> m_decls;
+
     };
 }
 

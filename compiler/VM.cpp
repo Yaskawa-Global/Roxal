@@ -933,10 +933,9 @@ void VM::defineNative(const std::string& name, NativeFn function)
 
 void VM::defineNativeProtoObjects(const std::string &protoFile)
 {
-    std::vector<ObjObjectType*> objs = protoHandler->allocateObjects(protoFile);
-
-    for (int i = 0; i < objs.size(); i++)
-        globals.store((objs[i]->name).hashCode(), std::make_pair((objs[i]->name), objVal(objs[i])));
+    std::vector<ObjObjectType*> decls = protoHandler->allocateObjects(protoFile);
+    for (int i = 0; i < decls.size(); i++)
+        globals.store(decls[i]->name.hashCode(), std::make_pair(decls[i]->name, objVal(decls[i])));
 }
 
 void VM::defineNativeServices(const std::string &protoFile)
@@ -1874,7 +1873,6 @@ Value VM::import_native(int argCount, Value *args)
     {
         defineNativeProtoObjects(toString(args[i]));
         defineNativeServices(toString(args[i]));
-
     }    
 
     return nilVal();
@@ -1886,6 +1884,5 @@ Value VM::call_RPC(std::string &methodName, int argCount, Value *args)
    //1) Validate Arguments TODO:
 
    //2) Perform the call
-
    return communion->call(methodName, args);
 }

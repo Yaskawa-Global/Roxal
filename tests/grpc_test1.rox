@@ -16,6 +16,6 @@ resp3 = _Multiply(req)
 resp4 = _Divide(req)
 
 print(resp1.ans) //Expected 17
-print(resp2.poop) //Expected 3
+print(resp2.ans) //Expected 3
 print(resp3.ans) //Expected 70
 print(resp4.ans) //Expected 1

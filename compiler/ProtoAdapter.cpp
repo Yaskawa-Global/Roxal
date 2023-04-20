@@ -36,6 +36,8 @@ ProtoAdapter::ProtoAdapter(const std::string &proto_path)
 
     //Create a message factory to create messages on the fly
     m_dynfactory = std::unique_ptr<DynamicMessageFactory>(new DynamicMessageFactory());
+
+    //Add a pointer to the globals variable
  
 }
 
@@ -150,31 +152,35 @@ std::string ProtoAdapter::getMessageNameFromMethod(const std::string &methodName
 // }
 
 
-grpc_slice ProtoAdapter::generateProtocRequestByMethod(const std::string &methodName,  const Value *arg)
+grpc_slice ProtoAdapter::generateProtocRequest(const std::string &methodName,  const Value *arg)
 {
-    std::string msg = getMessageNameFromMethod(methodName, true);
-    return generateProtocRequest(msg, arg);
+    std::string message = getMessageNameFromMethod(methodName, true);
+    auto *desc = m_importer->pool()->FindMessageTypeByName(message);
+    auto *msg = m_dynfactory->GetPrototype(desc)->New();
+    ObjectInstance *instance = asObjectInstance(*arg);
+    generateProtocSubRequest(msg, instance);
+
+    size_t size = msg->ByteSizeLong();
+    uint8_t *buffer = new uint8_t[size];
+
+    if(!msg->SerializeToArray(buffer, size))
+         throw("Unable to serialize message");
+
+    return grpc_slice_from_static_buffer(buffer, size);
+    
 }
 
 
-grpc_slice ProtoAdapter::generateProtocRequest(const std::string &messageName, const Value *arg)
+void ProtoAdapter::generateProtocSubRequest(Message *msg, ObjectInstance *instance)
 {
-    std::string fullMsg = getFullMessageName(messageName);
-    auto *desc = m_importer->pool()->FindMessageTypeByName(fullMsg);
-    auto *msg = m_dynfactory->GetPrototype(desc)->New();
-    unsigned int index = 0;
-    ObjectInstance *instance = asObjectInstance(*arg);
-    int reqSize = instance->properties.size();
+    auto *desc = msg->GetDescriptor();
 
-    //TODO: Consider repeated types
-
-
-    while (index < reqSize)
+    for (int i = 0; i < instance->properties.size(); i++)
     {
-        auto *field = desc->field(index);
+        auto *field = desc->field(i);
         Value v = instance->properties[toUnicodeString(field->name()).hashCode()];
 
-        switch (field->cpp_type())
+        switch(field->cpp_type())
         {
             case FieldDescriptor::CPPTYPE_BOOL:
                 msg->GetReflection()->SetBool(msg, field, v.asBool());
@@ -211,7 +217,7 @@ grpc_slice ProtoAdapter::generateProtocRequest(const std::string &messageName, c
             case FieldDescriptor::CPPTYPE_MESSAGE:
             {
                 auto *innerMsg = m_dynfactory->GetPrototype(field->message_type())->New();
-                generateProtocSubRequest(field->message_type()->full_name(), arg, innerMsg, index);
+                generateProtocSubRequest(innerMsg, asObjectInstance(v));
                 msg->GetReflection()->SetAllocatedMessage(msg, innerMsg, field);
             }
             break;
@@ -220,72 +226,7 @@ grpc_slice ProtoAdapter::generateProtocRequest(const std::string &messageName, c
                 throw("Unimplemented/Unsupported data type");
             break;
         }
-
-        index++;
     }
-
-    size_t size = msg->ByteSizeLong();
-    uint8_t *buffer = new uint8_t[size];
-
-    if(!msg->SerializeToArray(buffer, size))
-        throw("Unable to serialize message");
-
-    return grpc_slice_from_static_buffer(buffer, size);
-}
-
-void ProtoAdapter::generateProtocSubRequest(const std::string &messageName, const Value *arg, Message *innerMsg, unsigned int &index)
-{
-    auto *desc = m_importer->pool()->FindMessageTypeByName(messageName);
-    std::string request;
-    ObjectInstance *instance = asObjectInstance(*arg);
-
-    for (int i = 0; i < desc->field_count(); i++)
-    {
-        auto *field = desc->field(i);
-        Value v = instance->properties[index];
-
-        switch (field->cpp_type())
-        {
-            case FieldDescriptor::CPPTYPE_BOOL:
-                innerMsg->GetReflection()->SetBool(innerMsg, field, v.asBool());
-            break;
-
-            case FieldDescriptor::CPPTYPE_DOUBLE:
-                innerMsg->GetReflection()->SetDouble(innerMsg, field, v.asReal());
-            break;
-
-            case FieldDescriptor::CPPTYPE_ENUM:
-                innerMsg->GetReflection()->SetEnumValue(innerMsg, field, v.asInt());
-            break;
-
-            case FieldDescriptor::CPPTYPE_FLOAT:
-               innerMsg->GetReflection()->SetFloat(innerMsg, field, v.asReal());
-            break;
-
-            case FieldDescriptor::CPPTYPE_INT32:
-                innerMsg->GetReflection()->SetInt32(innerMsg, field, v.asInt());
-            break;
-            case FieldDescriptor::CPPTYPE_INT64:
-                innerMsg->GetReflection()->SetInt32(innerMsg, field, v.asInt());
-            break;
-
-            case FieldDescriptor::CPPTYPE_UINT32:
-                innerMsg->GetReflection()->SetInt32(innerMsg, field, v.asInt());
-            break;
-
-            case FieldDescriptor::CPPTYPE_UINT64:
-                innerMsg->GetReflection()->SetInt32(innerMsg, field, v.asInt());
-            break;
-
-            case FieldDescriptor::CPPTYPE_MESSAGE:
-                auto *anotherMsg = m_dynfactory->GetPrototype(field->message_type())->New();
-                generateProtocSubRequest(field->message_type()->full_name(), arg, anotherMsg, index);
-                innerMsg->GetReflection()->SetAllocatedMessage(innerMsg, anotherMsg, field);
-            break;
-        }
-        index++;
-    }
-
 }
 
 
@@ -295,20 +236,28 @@ Value ProtoAdapter::generateRoxalResponse(const std::string &methodName, const g
     std::string message = getMessageNameFromMethod(methodName, false);
     auto *desc = m_importer->pool()->FindMessageTypeByName(message);
     auto *msg = m_dynfactory->GetPrototype(desc)->New();
-    ObjObjectType *type = buildObjectDeclaration(message);
-    ObjectInstance *instance = objectInstanceVal(type);
+    ObjectInstance *instance = objectInstanceVal(m_decls[toUnicodeString(desc->name()).hashCode()]);
 
 
     
     //Note: Need to divide by two to eliminate extra characters added in the message
-    if(!msg->ParseFromArray(response.data.inlined.bytes, response.data.inlined.length))
+    if(!msg->ParseFromArray(response.data.inlined.bytes, response.data.inlined.length) && !msg->ParseFromArray(response.data.refcounted.bytes, response.data.refcounted.length))
     {
         std::cout << "Could not parse response" << std::endl;
         return nilVal();
     }
     
 
+    generateSubResponse(msg, instance);
+    return Value(instance);
+}
+
+
+void ProtoAdapter::generateSubResponse(Message *msg, ObjectInstance *instance)
+{
+    auto *desc = msg->GetDescriptor();
     auto *refl = msg->GetReflection();
+    
 
     for (int i = 0; i < desc->field_count(); i++)
     {
@@ -319,7 +268,6 @@ Value ProtoAdapter::generateRoxalResponse(const std::string &methodName, const g
         {
             case FieldDescriptor::CPPTYPE_INT32:
                 instance->properties[hash] = intVal(refl->GetInt32(*msg, field));
-                //std::cout << v << std::endl;
             break;
 
             case FieldDescriptor::CPPTYPE_INT64:
@@ -350,19 +298,27 @@ Value ProtoAdapter::generateRoxalResponse(const std::string &methodName, const g
                 instance->properties[hash] = intVal(refl->GetEnumValue(*msg, field));
             break;
 
-            //TODO: Revisit later (nested messages)
-            // case FieldDescriptor::CPPTYPE_MESSAGE:
-            //     instance->properties.emplace(i, Value(refl->GetMessage(*msg, field)));
-            // break;
+            case FieldDescriptor::CPPTYPE_STRING:
+                instance->properties[hash] = Value(stringVal(toUnicodeString(refl->GetString(*msg, field))));
+            break;
+
+            case FieldDescriptor::CPPTYPE_MESSAGE:
+            {
+                ObjObjectType *decl = m_decls[toUnicodeString(field->message_type()->name()).hashCode()];
+                ObjectInstance* newinst = objectInstanceVal(decl);
+                generateSubResponse(refl->MutableMessage(msg, field), newinst);
+                instance->properties[hash] = objVal(newinst);
+            }
+            break;
 
             default:
                 std::cout << "Undefined type" << std::endl;
                 instance->properties[hash] = nilVal();
             break;
         }
-    }    
 
-    return Value(instance);
+    }
+
 }
 
 // ---- Auxiliary Methods ---- //
@@ -453,7 +409,7 @@ ObjObjectType* ProtoAdapter::buildObjectDeclaration(const std::string &messageNa
             break;
 
             case FieldDescriptor::CPPTYPE_MESSAGE:
-                def = defaultValue(ValueType::Object);
+                def = defaultValue(ValueType::Nil);
             break;
 
             case FieldDescriptor::CPPTYPE_STRING:
@@ -475,12 +431,16 @@ ObjObjectType* ProtoAdapter::buildObjectDeclaration(const std::string &messageNa
 
 std::vector<ObjObjectType*> ProtoAdapter::allocateObjects(const std::string &protoFile)
 {
-    auto *file_desc = m_importer->Import(protoFile);
-    std::vector<ObjObjectType*> objects; 
+    auto *file_desc = m_importer->Import(protoFile); 
+    std::vector<ObjObjectType*> objects;
 
     for (int i = 0; i < file_desc->message_type_count(); i++)
-        objects.push_back(buildObjectDeclaration(file_desc->message_type(i)->full_name()));
-
+    { 
+        ObjObjectType* decl = buildObjectDeclaration(file_desc->message_type(i)->full_name());
+        m_decls.emplace(decl->name.hashCode(), decl);
+        objects.push_back(decl);
+    }
+    
     return objects;
 }
 
