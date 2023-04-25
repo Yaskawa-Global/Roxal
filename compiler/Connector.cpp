@@ -10,7 +10,9 @@ Value ACUCommunicator::call(const std::string &methodName, const Value *args)
 {
     grpc_slice request = m_adapter->generateProtocRequest(methodName, args);
     grpc_slice response;
-    m_caller->InitializeCall(m_adapter->getFormattedMethodName(methodName)); //IMPORTANT: ALWAYS USE FORMATTED METHOD NAME WHEN INITIALIZING THE SERVICE CALL
+
+    //IMPORTANT: ALWAYS USE FORMATTED METHOD NAME WHEN INITIALIZING THE SERVICE CALL. DO NOT DELETE THIS COMMENT
+    m_caller->InitializeCall(m_adapter->getFormattedMethodName(methodName));
     m_caller->Write(request);
     m_caller->WritesDone();
     m_caller->ReadResponse(response);
