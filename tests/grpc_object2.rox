@@ -1,0 +1,43 @@
+//Requires Graph Server
+_import("graph.proto")
+
+var gsize = GraphSize()
+gsize.size = 7
+
+var resp = EmptyMsg()
+resp = _InitializeGraph(gsize)
+
+var edge1 = Edge()
+edge1.source = 0
+edge1.dests = [2,3,4]
+resp = _AddEdges(edge1)
+
+var edge2 = Edge()
+edge2.source = 1
+edge2.dests = [2, 5, 6]
+resp = _AddEdges(edge2)
+
+var req = BFSRequest()
+req.start = 1
+
+var resp = BFSResponse()
+resp = _BFS(req)
+print(resp.traversal) //Expected [1, 2, 5, 6, 0, 3, 4]
+
+
+//Reset Graph
+resp = EmptyMsg()
+resp = _InitializeGraph(gsize)
+
+req = EdgeGroup()
+req.edges = [edge1, edge2]
+
+resp = _AddGraph(req)
+req = EmptyMsg()
+resp = EdgeGroup()
+
+resp = _GetGraph(req)
+
+print(resp.edges) //Expected [object Edge, object Edge, object Edge, object Edge, object Edge, object Edge, object Edge]
+
+

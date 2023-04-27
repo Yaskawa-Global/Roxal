@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+message GraphSize
+{
+	uint32 size = 1;
+}
+
+message Edge{
+	uint32 source = 1;
+	repeated uint32 dests = 2;
+}
+
+message EmptyMsg{
+
+}
+
+message BFSRequest {
+	uint32 start = 1;
+}
+
+message BFSResponse{
+	repeated uint32 traversal = 1;
+}
+
+message EdgeGroup{
+	repeated Edge edges=1;
+}
+
+service GraphTravel {
+	rpc InitializeGraph(GraphSize) returns (EmptyMsg);
+	rpc AddEdges(Edge) returns (EmptyMsg);
+	rpc AddGraph(EdgeGroup) returns (EmptyMsg);
+	rpc BFS(BFSRequest) returns (BFSResponse);
+	rpc GetGraph(EmptyMsg) returns (EdgeGroup);
+}

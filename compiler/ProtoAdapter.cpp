@@ -110,6 +110,7 @@ std::string ProtoAdapter::getMessageNameFromMethod(const std::string &methodName
     
 }
 
+
 // int ProtoAdapter::validateArguments(const std::string &methodName, const Value *arg)
 // {
 //     std::string messageName = getMessageNameFromMethod(methodName, true);
@@ -171,6 +172,10 @@ grpc_slice ProtoAdapter::generateProtocRequest(const std::string &methodName,  c
 }
 
 
+
+
+
+
 void ProtoAdapter::generateProtocSubRequest(Message *msg, ObjectInstance *instance)
 {
     auto *desc = msg->GetDescriptor();
@@ -180,6 +185,14 @@ void ProtoAdapter::generateProtocSubRequest(Message *msg, ObjectInstance *instan
         auto *field = desc->field(i);
         Value v = instance->properties[toUnicodeString(field->name()).hashCode()];
 
+        if (field->is_repeated())
+            buildRepeatedReqField(msg, field, v);
+
+        else
+            buildReqField(msg, field, v);
+    }
+
+/*
         switch(field->cpp_type())
         {
             case FieldDescriptor::CPPTYPE_BOOL:
@@ -227,8 +240,123 @@ void ProtoAdapter::generateProtocSubRequest(Message *msg, ObjectInstance *instan
             break;
         }
     }
+*/
 }
 
+void ProtoAdapter::buildReqField(Message *msg, const FieldDescriptor *field, Value &v)
+{
+    switch(field->cpp_type())
+        {
+            case FieldDescriptor::CPPTYPE_BOOL:
+                msg->GetReflection()->SetBool(msg, field, v.asBool());
+            break;
+
+            case FieldDescriptor::CPPTYPE_DOUBLE:
+                msg->GetReflection()->SetDouble(msg, field, v.asReal());
+            break;
+
+            case FieldDescriptor::CPPTYPE_ENUM:
+                msg->GetReflection()->SetEnumValue(msg, field, v.asInt());
+            break;
+
+            case FieldDescriptor::CPPTYPE_FLOAT:
+               msg->GetReflection()->SetFloat(msg, field, v.asReal());
+            break;
+
+            case FieldDescriptor::CPPTYPE_INT32:
+                msg->GetReflection()->SetInt32(msg, field, v.asInt());
+            break;
+
+            case FieldDescriptor::CPPTYPE_INT64:
+                msg->GetReflection()->SetInt64(msg, field, v.asInt());
+            break;
+
+            case FieldDescriptor::CPPTYPE_UINT32:
+                msg->GetReflection()->SetUInt32(msg, field, v.asInt());
+            break;
+
+            case FieldDescriptor::CPPTYPE_UINT64:
+                msg->GetReflection()->SetUInt64(msg, field, v.asInt());
+            break;
+
+            case FieldDescriptor::CPPTYPE_STRING:
+                msg->GetReflection()->SetString(msg, field, asString(v)->toStdString());
+
+            case FieldDescriptor::CPPTYPE_MESSAGE:
+            {
+                auto *innerMsg = m_dynfactory->GetPrototype(field->message_type())->New();
+                generateProtocSubRequest(innerMsg, asObjectInstance(v));
+                msg->GetReflection()->SetAllocatedMessage(msg, innerMsg, field);
+            }
+            break;
+
+            default:
+                throw("Unimplemented/Unsupported data type");
+            break;
+        }
+}
+
+void ProtoAdapter::buildRepeatedReqField(Message *msg, const FieldDescriptor *field, Value &arg)
+{
+        ObjList* list = asList(arg);
+
+        for (int i = 0; i < list->elts.size(); i++)
+        {
+            Value v = list->elts.at(i);
+
+            switch(field->cpp_type())
+            {
+                case FieldDescriptor::CPPTYPE_BOOL:
+                    msg->GetReflection()->GetMutableRepeatedFieldRef<bool>(msg, field).Add(v.asBool());
+                break;
+
+                case FieldDescriptor::CPPTYPE_DOUBLE:
+                    msg->GetReflection()->GetMutableRepeatedFieldRef<double>(msg,field).Add(v.asReal());
+                break;
+
+                case FieldDescriptor::CPPTYPE_ENUM:
+                    msg->GetReflection()->GetMutableRepeatedFieldRef<int32_t>(msg, field).Add(v.asInt());
+                break;
+
+                case FieldDescriptor::CPPTYPE_FLOAT:
+                    msg->GetReflection()->GetMutableRepeatedFieldRef<float>(msg, field).Add(v.asReal());
+                break;
+
+                case FieldDescriptor::CPPTYPE_INT32:
+                    msg->GetReflection()->GetMutableRepeatedFieldRef<int32_t>(msg, field).Add(v.asInt());
+                break;
+
+                case FieldDescriptor::CPPTYPE_INT64:
+                    msg->GetReflection()->GetMutableRepeatedFieldRef<int64_t>(msg, field).Add(v.asInt());
+                break;
+
+                case FieldDescriptor::CPPTYPE_UINT32:
+                    msg->GetReflection()->GetMutableRepeatedFieldRef<uint32_t>(msg, field).Add(v.asInt());
+                break;
+
+                case FieldDescriptor::CPPTYPE_UINT64:
+                    msg->GetReflection()->GetMutableRepeatedFieldRef<uint64_t>(msg, field).Add(v.asInt());
+                break;
+
+                case FieldDescriptor::CPPTYPE_STRING:
+                    msg->GetReflection()->GetMutableRepeatedFieldRef<std::string>(msg, field).Add(asString(v)->toStdString());
+                break;
+
+                case FieldDescriptor::CPPTYPE_MESSAGE:
+                {
+                   MutableRepeatedFieldRef msgList = msg->GetReflection()->GetMutableRepeatedFieldRef<Message>(msg, field);
+                   auto *innermsg = msgList.NewMessage();
+                   generateProtocSubRequest(innermsg, asObjectInstance(v));
+                   msgList.Add(*innermsg);
+                }
+                break;
+
+                default:
+                    throw("Unimplemented/Unsupported data type");
+                break;
+            }
+        }
+}   
 
 
 Value ProtoAdapter::generateRoxalResponse(const std::string &methodName, const grpc_slice &response)
@@ -248,15 +376,15 @@ Value ProtoAdapter::generateRoxalResponse(const std::string &methodName, const g
     }
     
 
-    generateSubResponse(msg, instance);
+    generateSubResponse(*msg, instance);
     return Value(instance);
 }
 
 
-void ProtoAdapter::generateSubResponse(Message *msg, ObjectInstance *instance)
+void ProtoAdapter::generateSubResponse(const Message &msg, ObjectInstance *instance)
 {
-    auto *desc = msg->GetDescriptor();
-    auto *refl = msg->GetReflection();
+    auto *desc = msg.GetDescriptor();
+    auto *refl = msg.GetReflection();
     
 
     for (int i = 0; i < desc->field_count(); i++)
@@ -264,61 +392,230 @@ void ProtoAdapter::generateSubResponse(Message *msg, ObjectInstance *instance)
         auto *field = desc->field(i);
         int32_t hash = toUnicodeString(field->name()).hashCode();
         
-        switch (field->cpp_type())
-        {
-            case FieldDescriptor::CPPTYPE_INT32:
-                instance->properties[hash] = intVal(refl->GetInt32(*msg, field));
-            break;
+        if (field->is_repeated())
+            buildRepeatedRespField(msg, field, instance->properties[hash]);
 
-            case FieldDescriptor::CPPTYPE_INT64:
-               instance->properties[hash] = intVal(refl->GetInt64(*msg, field)); //Use 32 bit integers for now
-            break;
+        else
+            buildRespField(msg, field, instance->properties[hash]);
 
-            case FieldDescriptor::CPPTYPE_UINT64:
-                instance->properties[hash] = intVal(refl->GetUInt64(*msg, field));
-            break;
+        // switch (field->cpp_type())
+        // {
+        //     case FieldDescriptor::CPPTYPE_INT32:
+        //         instance->properties[hash] = intVal(refl->GetInt32(*msg, field));
+        //     break;
 
-            case FieldDescriptor::CPPTYPE_UINT32:
-                instance->properties[hash] = intVal(refl->GetUInt32(*msg, field));
-            break;
+        //     case FieldDescriptor::CPPTYPE_INT64:
+        //        instance->properties[hash] = intVal(refl->GetInt64(*msg, field)); //Use 32 bit integers for now
+        //     break;
 
-            case FieldDescriptor::CPPTYPE_DOUBLE:
-                instance->properties[hash] = realVal(refl->GetDouble(*msg, field));
-            break;
+        //     case FieldDescriptor::CPPTYPE_UINT64:
+        //         instance->properties[hash] = intVal(refl->GetUInt64(*msg, field));
+        //     break;
 
-            case FieldDescriptor::CPPTYPE_FLOAT:
-                instance->properties[hash] = realVal(refl->GetFloat(*msg, field));
-            break;
+        //     case FieldDescriptor::CPPTYPE_UINT32:
+        //         instance->properties[hash] = intVal(refl->GetUInt32(*msg, field));
+        //     break;
 
-            case FieldDescriptor::CPPTYPE_BOOL:
-                instance->properties[hash] = boolVal(refl->GetBool(*msg, field));
-            break;
+        //     case FieldDescriptor::CPPTYPE_DOUBLE:
+        //         instance->properties[hash] = realVal(refl->GetDouble(*msg, field));
+        //     break;
 
-            case FieldDescriptor::CPPTYPE_ENUM:
-                instance->properties[hash] = intVal(refl->GetEnumValue(*msg, field));
-            break;
+        //     case FieldDescriptor::CPPTYPE_FLOAT:
+        //         instance->properties[hash] = realVal(refl->GetFloat(*msg, field));
+        //     break;
 
-            case FieldDescriptor::CPPTYPE_STRING:
-                instance->properties[hash] = Value(stringVal(toUnicodeString(refl->GetString(*msg, field))));
-            break;
+        //     case FieldDescriptor::CPPTYPE_BOOL:
+        //         instance->properties[hash] = boolVal(refl->GetBool(*msg, field));
+        //     break;
 
-            case FieldDescriptor::CPPTYPE_MESSAGE:
-            {
-                ObjObjectType *decl = m_decls[toUnicodeString(field->message_type()->name()).hashCode()];
-                ObjectInstance* newinst = objectInstanceVal(decl);
-                generateSubResponse(refl->MutableMessage(msg, field), newinst);
-                instance->properties[hash] = objVal(newinst);
-            }
-            break;
+        //     case FieldDescriptor::CPPTYPE_ENUM:
+        //         instance->properties[hash] = intVal(refl->GetEnumValue(*msg, field));
+        //     break;
 
-            default:
-                std::cout << "Undefined type" << std::endl;
-                instance->properties[hash] = nilVal();
-            break;
-        }
+        //     case FieldDescriptor::CPPTYPE_STRING:
+        //         instance->properties[hash] = Value(stringVal(toUnicodeString(refl->GetString(*msg, field))));
+        //     break;
+
+        //     case FieldDescriptor::CPPTYPE_MESSAGE:
+        //     {
+        //         ObjObjectType *decl = m_decls[toUnicodeString(field->message_type()->name()).hashCode()];
+        //         ObjectInstance* newinst = objectInstanceVal(decl);
+        //         generateSubResponse(refl->MutableMessage(msg, field), newinst);
+        //         instance->properties[hash] = objVal(newinst);
+        //     }
+        //     break;
+
+        //     default:
+        //         std::cout << "Undefined type" << std::endl;
+        //         instance->properties[hash] = nilVal();
+        //     break;
+        // }
 
     }
 
+}
+
+void ProtoAdapter::buildRespField(const Message &msg, const FieldDescriptor *field, Value &roxField)
+{
+    auto *refl = msg.GetReflection();
+
+    switch (field->cpp_type())
+    {
+        case FieldDescriptor::CPPTYPE_INT32:
+            roxField = intVal(refl->GetInt32(msg, field));
+        break;
+
+        case FieldDescriptor::CPPTYPE_INT64:
+            roxField = intVal(refl->GetInt64(msg, field)); //Use 32 bit integers for now
+        break;
+
+        case FieldDescriptor::CPPTYPE_UINT64:
+            roxField = intVal(refl->GetUInt64(msg, field));
+        break;
+
+        case FieldDescriptor::CPPTYPE_UINT32:
+            roxField = intVal(refl->GetUInt32(msg, field));
+        break;
+
+        case FieldDescriptor::CPPTYPE_DOUBLE:
+            roxField = realVal(refl->GetDouble(msg, field));
+        break;
+
+        case FieldDescriptor::CPPTYPE_FLOAT:
+            roxField = realVal(refl->GetFloat(msg, field));
+        break;
+
+        case FieldDescriptor::CPPTYPE_BOOL:
+            roxField = boolVal(refl->GetBool(msg, field));
+        break;
+
+        case FieldDescriptor::CPPTYPE_ENUM:
+            roxField = intVal(refl->GetEnumValue(msg, field));
+        break;
+
+        case FieldDescriptor::CPPTYPE_STRING:
+            roxField = Value(stringVal(toUnicodeString(refl->GetString(msg, field))));
+        break;
+
+        case FieldDescriptor::CPPTYPE_MESSAGE:
+        {
+            ObjObjectType *decl = m_decls[toUnicodeString(field->message_type()->name()).hashCode()];
+            ObjectInstance* newinst = objectInstanceVal(decl);
+            generateSubResponse(refl->GetMessage(msg, field), newinst);
+            roxField = objVal(newinst);
+        }
+        break;
+
+        default:
+            std::cout << "Undefined type" << std::endl;
+            roxField = nilVal();
+        break;
+    }
+    
+}
+
+void ProtoAdapter::buildRepeatedRespField(const Message &msg, const FieldDescriptor *field, Value &roxField)
+{
+    ObjList *list = new ObjList();
+    auto *refl = msg.GetReflection();
+
+    switch(field->cpp_type())
+    {
+        case FieldDescriptor::CPPTYPE_BOOL:
+        {
+            RepeatedFieldRef<bool> rpt = refl->GetRepeatedFieldRef<bool>(msg, field);
+            for (int i = 0; i < rpt.size(); i++)
+                list->elts.push_back(boolVal(rpt.Get(i)));
+        }
+        break;
+
+        case FieldDescriptor::CPPTYPE_DOUBLE:
+        {
+            RepeatedFieldRef<double> rpt = refl->GetRepeatedFieldRef<double>(msg, field);
+            for (int i = 0; i < rpt.size(); i++)
+                list->elts.push_back(realVal(rpt.Get(i)));
+        }
+        break;
+
+        case FieldDescriptor::CPPTYPE_ENUM:
+        {
+            RepeatedFieldRef<int32> rpt = refl->GetRepeatedFieldRef<int32_t>(msg, field);
+            for (int i = 0; i < rpt.size(); i++)
+                list->elts.push_back(intVal(rpt.Get(i)));
+        }
+        break;
+
+        case FieldDescriptor::CPPTYPE_INT32:
+        {
+            RepeatedFieldRef<int32> rpt = refl->GetRepeatedFieldRef<int32_t>(msg, field);
+            for (int i = 0; i < rpt.size(); i++)
+                list->elts.push_back(intVal(rpt.Get(i)));
+        }
+        break;
+
+        case FieldDescriptor::CPPTYPE_UINT32:
+        {
+            RepeatedFieldRef<uint32> rpt = refl->GetRepeatedFieldRef<uint32_t>(msg, field);
+            for (int i = 0; i < rpt.size(); i++)
+                list->elts.push_back(intVal(rpt.Get(i)));
+        }
+        break;
+
+        case FieldDescriptor::CPPTYPE_UINT64:
+        {
+            RepeatedFieldRef<uint64> rpt = refl->GetRepeatedFieldRef<uint64_t>(msg, field);
+            for (int i = 0; i < rpt.size(); i++)
+                list->elts.push_back(intVal(rpt.Get(i)));
+        }
+        break;
+
+        case FieldDescriptor::CPPTYPE_INT64:
+        {
+            RepeatedFieldRef<int64> rpt = refl->GetRepeatedFieldRef<int64_t>(msg, field);
+            for (int i = 0; i < rpt.size(); i++)
+                list->elts.push_back(intVal(rpt.Get(i)));
+        }
+        break;
+
+        case FieldDescriptor::CPPTYPE_FLOAT:
+        {
+            RepeatedFieldRef<float> rpt = refl->GetRepeatedFieldRef<float>(msg, field);
+            for (int i = 0; i < rpt.size(); i++)
+                list->elts.push_back(realVal(rpt.Get(i)));
+        }
+        break;
+
+        case FieldDescriptor::CPPTYPE_STRING:
+        {
+            RepeatedFieldRef<std::string> rpt = refl->GetRepeatedFieldRef<std::string>(msg, field);
+            for (int i = 0; i < rpt.size(); i++)
+                list->elts.push_back(Value(stringVal(toUnicodeString(rpt.Get(i)))));
+        }
+        break;
+            
+        case FieldDescriptor::CPPTYPE_MESSAGE:
+        {
+            //RepeatedFieldRef<Message> rpt = refl->GetRepeatedFieldRef<Message>(msg, field);
+            ObjObjectType *decl = m_decls[toUnicodeString(field->message_type()->name()).hashCode()];
+            ObjectInstance* newinst = objectInstanceVal(decl);
+            
+            for (int i = 0; i < refl->FieldSize(msg, field); i++)
+            {
+                generateSubResponse(refl->GetRepeatedMessage(msg, field, i), newinst);
+                list->elts.push_back(objVal(newinst));
+            }
+        }
+        break;
+
+        default:
+        {
+            std::cout << "Undefined message type" << std::endl;
+            list->elts.push_back(nilVal());
+        }
+        break;
+    }
+
+    roxField = objVal(list);
 }
 
 // ---- Auxiliary Methods ---- //

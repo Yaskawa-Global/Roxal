@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <vector>
 #include <memory>
+#include <functional>
 
 #include "Value.h"
 #include "Object.h"
@@ -25,14 +26,19 @@ using namespace google::protobuf::compiler;
 
 class ErrorPrinter;
 
+
+
 namespace roxal {
 
     class ProtoAdapter
     {
+        
         public:
             //Constructors
             ProtoAdapter(const std::string &proto_path);
             ~ProtoAdapter();
+
+            // --- Typedefs and Generics --- //
 
             // --- RPC Methods --- //
             std::string getFullMethodName(const std::string &methodName);
@@ -43,10 +49,14 @@ namespace roxal {
             // --- Roxal and Protobuf Type Conversions --- //
             grpc_slice generateProtocRequest(const std::string &methodName, const Value *arg);
             void generateProtocSubRequest(Message *msg, ObjectInstance *instance);
-            
+            void buildReqField(Message *msg, const FieldDescriptor* field, Value &arg);
+            void buildRepeatedReqField(Message *msg, const FieldDescriptor *field, Value &arg);        
+
 
             Value generateRoxalResponse(const std::string &methodName, const grpc_slice &response);
-            void generateSubResponse(Message *msg, ObjectInstance *instance);
+            void generateSubResponse(const Message &msg, ObjectInstance *instance);
+            void buildRespField(const Message &msg, const FieldDescriptor *field, Value &roxField);
+            void buildRepeatedRespField(const Message &msg, const FieldDescriptor *field, Value &objField);
             // int validateArguments(const std::string &methodName, const Value *arg);
             // bool validateArgumentCount(const std::string &messageName, const Value *arg);
             // bool validateArgumentTypes(const std::string &messageName, const Value *arg);
