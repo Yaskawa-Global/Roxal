@@ -3,6 +3,7 @@
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <list>
 
 #include "core/atomic.h"
 #include "Chunk.h"
