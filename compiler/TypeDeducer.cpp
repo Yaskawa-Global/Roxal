@@ -15,42 +15,53 @@ ast::ASTVisitor::TraversalOrder TypeDeducer::traversalOrder() const
 }
 
 
-void TypeDeducer::visit(ptr<ast::File> ast)
+std::any TypeDeducer::visit(ptr<ast::File> ast)
 {
-    ast->acceptChildren(*this);
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::SingleInput> ast)
+std::any TypeDeducer::visit(ptr<ast::SingleInput> ast)
 {
-    ast->acceptChildren(*this);
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::Annotation> ast)
+std::any TypeDeducer::visit(ptr<ast::Annotation> ast)
 {
-    ast->acceptChildren(*this);
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::TypeDecl> ast)
+std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
 {
-    ast->acceptChildren(*this);
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::FuncDecl> ast)
+std::any TypeDeducer::visit(ptr<ast::FuncDecl> ast)
 {
-    ast->acceptChildren(*this);
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
 
     // for completeness/convenience, set function type here too
     ast->type = ast->func->type;
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::VarDecl> ast)
+std::any TypeDeducer::visit(ptr<ast::VarDecl> ast)
 {
-    ast->acceptChildren(*this);
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
     if (ast->varType.has_value()) {
         if (std::holds_alternative<BuiltinType>(ast->varType.value())) {
             ast->type = std::make_shared<type::Type>(std::get<BuiltinType>(ast->varType.value()));
@@ -67,47 +78,54 @@ void TypeDeducer::visit(ptr<ast::VarDecl> ast)
         }
 
     }
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::Suite> ast)
+std::any TypeDeducer::visit(ptr<ast::Suite> ast)
 {
-    ast->acceptChildren(*this);
-
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::ExpressionStatement> ast)
+std::any TypeDeducer::visit(ptr<ast::ExpressionStatement> ast)
 {
-    ast->acceptChildren(*this);
-
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::ReturnStatement> ast)
+std::any TypeDeducer::visit(ptr<ast::ReturnStatement> ast)
 {
-    ast->acceptChildren(*this);
-
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::IfStatement> ast)
+std::any TypeDeducer::visit(ptr<ast::IfStatement> ast)
 {
-    ast->acceptChildren(*this);
-
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::WhileStatement> ast)
+std::any TypeDeducer::visit(ptr<ast::WhileStatement> ast)
 {
-    ast->acceptChildren(*this);
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
+}   
 
-}
 
-
-void TypeDeducer::visit(ptr<ast::Function> ast)
+std::any TypeDeducer::visit(ptr<ast::Function> ast)
 {
-    ast->acceptChildren(*this);
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
 
     auto type = std::make_shared<Type>();
     type->builtin = BuiltinType::Func;
@@ -150,19 +168,22 @@ void TypeDeducer::visit(ptr<ast::Function> ast)
     }
 
     ast->type = type;
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::Parameter> ast)
+std::any TypeDeducer::visit(ptr<ast::Parameter> ast)
 {
-    ast->acceptChildren(*this);
-
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::Assignment> ast)
+std::any TypeDeducer::visit(ptr<ast::Assignment> ast)
 {
-    ast->acceptChildren(*this);
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
 
     // assignment has type of rhs
 
@@ -170,76 +191,87 @@ void TypeDeducer::visit(ptr<ast::Assignment> ast)
     //  rhs will be converted to lhs type
     if (ast->rhs->type.has_value())
         ast->type = ast->rhs->type.value();
+
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::BinaryOp> ast)
+std::any TypeDeducer::visit(ptr<ast::BinaryOp> ast)
 {
-    ast->acceptChildren(*this);
-
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::UnaryOp> ast)
+std::any TypeDeducer::visit(ptr<ast::UnaryOp> ast)
 {
-    ast->acceptChildren(*this);
-
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::Variable> ast)
+std::any TypeDeducer::visit(ptr<ast::Variable> ast)
 {
     // TODO: lookup name
+    return {};
 }
 
 
-void TypeDeducer::visit(ptr<ast::Call> ast)
+std::any TypeDeducer::visit(ptr<ast::Call> ast)
 {
-    ast->acceptChildren(*this);
-
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::Index> ast)
+std::any TypeDeducer::visit(ptr<ast::Index> ast)
 {
-    ast->acceptChildren(*this);
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
 
     // if the indexable is a string, indexing yields a string also
     if (ast->indexable->type.has_value()) {
         if (ast->indexable->type.value()->builtin == BuiltinType::String)
             ast->type = std::make_shared<Type>(BuiltinType::String);
     }
-
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::Literal> ast)
+std::any TypeDeducer::visit(ptr<ast::Literal> ast)
 {
     // non-Nil typed literals handled by specialized visit methods
     if (ast->literalType == ast::Literal::Nil)
         ast->type = std::make_shared<Type>(BuiltinType::Nil);
+    return {};
 }
 
 
-void TypeDeducer::visit(ptr<ast::Bool> ast)
+std::any TypeDeducer::visit(ptr<ast::Bool> ast)
 {
     ast->type = std::make_shared<Type>(BuiltinType::Bool);
+    return {};
 }
 
 
-void TypeDeducer::visit(ptr<ast::Str> ast)
+std::any TypeDeducer::visit(ptr<ast::Str> ast)
 {
     ast->type = std::make_shared<Type>(BuiltinType::String);
+    return {};
 }
 
 
-void TypeDeducer::visit(ptr<ast::Type> ast)
+std::any TypeDeducer::visit(ptr<ast::Type> ast)
 {
     ast->type = std::make_shared<Type>(BuiltinType::Type);
+    return {};
 }
 
 
-void TypeDeducer::visit(ptr<ast::Num> ast)
+std::any TypeDeducer::visit(ptr<ast::Num> ast)
 {
     if (std::holds_alternative<int32_t>(ast->num)) 
         ast->type = std::make_shared<Type>(BuiltinType::Int);
@@ -247,19 +279,24 @@ void TypeDeducer::visit(ptr<ast::Num> ast)
         ast->type = std::make_shared<Type>(BuiltinType::Real);
     else
         throw std::runtime_error("Unhandled Num literal type");
+    return {};
 }
 
 
-void TypeDeducer::visit(ptr<ast::List> ast)
+std::any TypeDeducer::visit(ptr<ast::List> ast)
 {
-    ast->acceptChildren(*this);
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
     ast->type = std::make_shared<Type>(BuiltinType::List);
+    return results;
 }
 
 
-void TypeDeducer::visit(ptr<ast::Dict> ast)
+std::any TypeDeducer::visit(ptr<ast::Dict> ast)
 {
-    ast->acceptChildren(*this);
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
     ast->type = std::make_shared<Type>(BuiltinType::Dict);
+    return results;
 }
 

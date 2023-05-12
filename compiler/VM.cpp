@@ -106,10 +106,44 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
 
 VM::InterpretResult VM::interpretLine(std::istream& linestream)
 {
+    ObjFunction* function { nullptr };
+
+    static RoxalCompiler compiler {};
+    compiler.setOutputBytecodeDissasembly(outputBytecodeDissasembly);
+
+    try {
+        function = compiler.compile(linestream, "cli");
+
+    } catch (std::exception& e) {
+        return InterpretResult::CompileError;
+    }
+
+    if (function == nullptr)
+        return InterpretResult::CompileError;
+
     lineMode = true;
     lineStream = &linestream;
-    //...
-    return InterpretResult::OK;
+
+    ObjClosure* closure = closureVal(function);
+    Value closureValue { objVal(closure) };
+
+    auto newThread = std::make_shared<Thread>();     
+    threads.store(newThread->id(), newThread);
+    newThread->spawn(closureValue);
+
+    newThread->join();
+    
+    InterpretResult result = newThread->result; 
+
+    #if defined(DEBUG_TRACE_EXECUTION)
+    if (globals.size() > 0) {        
+        std::cout << std::endl << "== globals ==" << std::endl;
+        for(const auto& global : globals.get()) 
+            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second) << std::endl;
+    }
+    #endif
+
+    return result;
 }
 
 
@@ -477,6 +511,20 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
         if (thread->frames.size() > 128) {
             runtimeError("Stack overflow.");
             return false;
+        }
+    }
+
+
+    if (!closure->function->annotations.empty()) {
+        for(const auto& annot : closure->function->annotations) {
+            if (annot->name == "c") {
+                ObjFunction* function = closure->function;
+                // TODO: implement (consider if we do it here, which may require positional args in call,
+                //        or in dispatch loop if callframe.startIp == callframe.ip) or
+                //        modify the compiler to output a special CCALL OpCode
+                runtimeError("Calling C annotated functions unimplemented in call to "+toUTF8StdString(function->name));
+                return false;
+            }
         }
     }
 

@@ -62,32 +62,32 @@ public:
     virtual TraversalOrder traversalOrder() const 
       { return TraversalOrder::Postorder; }
 
-    virtual void visit(ptr<File> ast) = 0;
-    virtual void visit(ptr<SingleInput> ast) = 0;
-    virtual void visit(ptr<Annotation> ast) = 0;
-    virtual void visit(ptr<TypeDecl> ast) = 0;
-    virtual void visit(ptr<FuncDecl> ast) = 0;
-    virtual void visit(ptr<VarDecl> ast) = 0;
-    virtual void visit(ptr<Suite> ast) = 0;
-    virtual void visit(ptr<ExpressionStatement> ast) = 0;
-    virtual void visit(ptr<ReturnStatement> ast) = 0;
-    virtual void visit(ptr<IfStatement> ast) = 0;
-    virtual void visit(ptr<WhileStatement> ast) = 0;
-    virtual void visit(ptr<Function> ast) = 0;
-    virtual void visit(ptr<Parameter> ast) = 0;
-    virtual void visit(ptr<Assignment> ast) = 0;
-    virtual void visit(ptr<BinaryOp> ast) = 0;
-    virtual void visit(ptr<UnaryOp> ast) = 0;
-    virtual void visit(ptr<Variable> ast) = 0;
-    virtual void visit(ptr<Call> ast) = 0;
-    virtual void visit(ptr<Index> ast) = 0;
-    virtual void visit(ptr<Literal> ast) = 0;
-    virtual void visit(ptr<Bool> ast) = 0;
-    virtual void visit(ptr<Str> ast) = 0;
-    virtual void visit(ptr<Type> ast) = 0;
-    virtual void visit(ptr<Num> ast) = 0;
-    virtual void visit(ptr<List> ast) = 0;
-    virtual void visit(ptr<Dict> ast) = 0;
+    virtual std::any visit(ptr<File> ast) = 0;
+    virtual std::any visit(ptr<SingleInput> ast) = 0;
+    virtual std::any visit(ptr<Annotation> ast) = 0;
+    virtual std::any visit(ptr<TypeDecl> ast) = 0;
+    virtual std::any visit(ptr<FuncDecl> ast) = 0;
+    virtual std::any visit(ptr<VarDecl> ast) = 0;
+    virtual std::any visit(ptr<Suite> ast) = 0;
+    virtual std::any visit(ptr<ExpressionStatement> ast) = 0;
+    virtual std::any visit(ptr<ReturnStatement> ast) = 0;
+    virtual std::any visit(ptr<IfStatement> ast) = 0;
+    virtual std::any visit(ptr<WhileStatement> ast) = 0;
+    virtual std::any visit(ptr<Function> ast) = 0;
+    virtual std::any visit(ptr<Parameter> ast) = 0;
+    virtual std::any visit(ptr<Assignment> ast) = 0;
+    virtual std::any visit(ptr<BinaryOp> ast) = 0;
+    virtual std::any visit(ptr<UnaryOp> ast) = 0;
+    virtual std::any visit(ptr<Variable> ast) = 0;
+    virtual std::any visit(ptr<Call> ast) = 0;
+    virtual std::any visit(ptr<Index> ast) = 0;
+    virtual std::any visit(ptr<Literal> ast) = 0;
+    virtual std::any visit(ptr<Bool> ast) = 0;
+    virtual std::any visit(ptr<Str> ast) = 0;
+    virtual std::any visit(ptr<Type> ast) = 0;
+    virtual std::any visit(ptr<Num> ast) = 0;
+    virtual std::any visit(ptr<List> ast) = 0;
+    virtual std::any visit(ptr<Dict> ast) = 0;
 
 
     inline bool visitFirst() const {
@@ -113,6 +113,7 @@ struct LinePos {
 
 
 typedef std::pair<icu::UnicodeString, ptr<Expression>> ArgNameExpr;
+typedef std::vector<std::any> Anys;
 
 
 
@@ -144,7 +145,7 @@ struct AST : public std::enable_shared_from_this<AST>
     std::string fullSource;
     #endif
 
-    virtual void accept(ASTVisitor& v) {}
+    virtual std::any accept(ASTVisitor& v) { return {}; }
     virtual void output(std::ostream& os, int indent) const;
 
     std::optional<ptr<type::Type>> type; // type information, if known
@@ -169,21 +170,21 @@ std::ostream& operator<<(std::ostream& os, const AST& ast);
 struct File : public AST {
     std::vector<std::variant<ptr<Declaration>, ptr<Statement>>> declsOrStmts;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
     // convenience for visitors when using VisitorDetermined traversal
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
 struct SingleInput : public AST {
     ptr<Statement> stmt;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -195,10 +196,10 @@ struct Annotation : public AST {
 
     bool namedArgs() const; // any args named?
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -213,7 +214,7 @@ struct Declaration : public AST {
 
     DeclType declType;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
 };
 
 
@@ -230,7 +231,7 @@ struct Statement : public AST {
 
     StmtType stmtType;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
 };
 
 
@@ -239,10 +240,10 @@ struct Suite : public Statement {
 
     std::vector<std::variant<ptr<Declaration>, ptr<Statement>>> declsOrStmts;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -251,10 +252,10 @@ struct ExpressionStatement : public Statement {
 
     ptr<ast::Expression> expr;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -263,10 +264,10 @@ struct ReturnStatement : public Statement {
 
     std::optional<ptr<ast::Expression>> expr;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -277,10 +278,10 @@ struct IfStatement : public Statement {
     std::vector<std::pair<ptr<ast::Expression>, ptr<ast::Suite>>> conditionalSuites;
     std::optional<ptr<ast::Suite>> elseSuite;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -290,10 +291,10 @@ struct WhileStatement : public Statement {
     ptr<ast::Expression> condition;
     ptr<ast::Suite> body;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -304,10 +305,10 @@ struct VarDecl : public Declaration {
     std::optional<ptr<Expression>> initializer;
     std::optional<std::variant<BuiltinType,icu::UnicodeString>> varType;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -316,10 +317,10 @@ struct FuncDecl : public Declaration {
 
     ptr<Function> func;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -330,10 +331,10 @@ struct Function : public AST {
     std::optional<std::variant<BuiltinType,icu::UnicodeString>> returnType;
     ptr<Suite> body;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -342,10 +343,10 @@ struct Parameter : public AST {
     std::optional<std::variant<BuiltinType,icu::UnicodeString>> type;
     std::optional<ptr<Expression>> defaultValue;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -364,10 +365,10 @@ struct TypeDecl : public Declaration {
     // pre-declared properties (same syntax as variable declarations)
     std::vector<ptr<VarDecl>> properties;
  
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -385,7 +386,7 @@ struct Expression : public AST {
 
     ExprType exprType;
 
-    virtual void accept(ASTVisitor& v); // needed?
+    virtual std::any accept(ASTVisitor& v); // needed?
 };
 
 
@@ -408,10 +409,10 @@ struct BinaryOp : public Expression {
     ptr<Expression> lhs;
     ptr<Expression> rhs;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -430,10 +431,10 @@ struct UnaryOp : public Expression {
     std::optional<icu::UnicodeString> member;
     ptr<Expression> arg;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -443,10 +444,10 @@ struct Assignment : public Expression {
     ptr<Expression> lhs;
     ptr<Expression> rhs;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -456,7 +457,7 @@ struct Variable : public Expression {
 
     icu::UnicodeString name;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 };
 
@@ -470,10 +471,10 @@ struct Call : public Expression {
 
     bool namedArgs() const; // any args named?
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -484,10 +485,10 @@ struct Index : public Expression {
     ptr<Expression> indexable;
     std::vector<ptr<Expression>> args;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 
@@ -505,7 +506,7 @@ struct Literal : public Expression {
 
     LiteralType literalType;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 };
 
@@ -515,7 +516,7 @@ struct Bool : public Literal {
     Bool(bool b) : value(b) { literalType = LiteralType::Bool; }
     bool value;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 };
 
@@ -524,7 +525,7 @@ struct Num : public Literal {
 
     std::variant<int32_t,double> num;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 };
 
@@ -533,7 +534,7 @@ struct Str : public Literal {
 
     icu::UnicodeString str;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 };
 
@@ -542,7 +543,7 @@ struct Type : public Literal {
 
     BuiltinType t;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 };
 
@@ -551,10 +552,10 @@ struct List : public Literal {
 
     std::vector<ptr<Expression>> elements;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 struct Dict : public Literal {
@@ -563,10 +564,10 @@ struct Dict : public Literal {
     // key -> value pairs
     std::vector<std::pair<ptr<Expression>,ptr<Expression>>> entries;
 
-    virtual void accept(ASTVisitor& v);
+    virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
-    void acceptChildren(ASTVisitor& v);
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 

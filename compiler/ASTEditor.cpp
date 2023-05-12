@@ -211,7 +211,7 @@ void ASTEditor::replaceSubtree(ptr<roxal::ast::AST> tree, ptr<roxal::ast::AST> p
     deleteSubtree(tree, parent, toRemove);
 }
 
-void ASTEditor::visit(ptr<ast::File> ast)
+std::any ASTEditor::visit(ptr<ast::File> ast)
 {
     //
     switch(m_activeOperation)
@@ -233,22 +233,25 @@ void ASTEditor::visit(ptr<ast::File> ast)
             break;
         }
     }
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::SingleInput> ast)
+std::any ASTEditor::visit(ptr<ast::SingleInput> ast)
 {
     //Nothing to do here?
     //ptr<Statement> stmt;
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::Annotation> ast)
+std::any ASTEditor::visit(ptr<ast::Annotation> ast)
 {
     //icu::UnicodeString name;
     //std::vector<ArgNameExpr> args;
     //handle ArgNameExpr
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::TypeDecl> ast)
+std::any ASTEditor::visit(ptr<ast::TypeDecl> ast)
 {
     //std::optional<icu::UnicodeString> extends;
     //std::vector<icu::UnicodeString> implements;
@@ -259,16 +262,18 @@ void ASTEditor::visit(ptr<ast::TypeDecl> ast)
     {
         method->accept(*this);
     }
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::FuncDecl> ast)
+std::any ASTEditor::visit(ptr<ast::FuncDecl> ast)
 {
     //single function
     //ptr<Function> func;
     ast->func->accept(*this);
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::VarDecl> ast)
+std::any ASTEditor::visit(ptr<ast::VarDecl> ast)
 {
     //icu::UnicodeString name;
     //std::optional<ptr<Expression>> initializer;
@@ -277,9 +282,10 @@ void ASTEditor::visit(ptr<ast::VarDecl> ast)
      if(ast->initializer.has_value())
         ast->initializer.value();
     */
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::Suite> ast)
+std::any ASTEditor::visit(ptr<ast::Suite> ast)
 {
     //handles only suite
     switch(m_activeOperation)
@@ -301,15 +307,17 @@ void ASTEditor::visit(ptr<ast::Suite> ast)
             break;
         }
     }
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::ExpressionStatement> ast)
+std::any ASTEditor::visit(ptr<ast::ExpressionStatement> ast)
 {
     //only a single expression
     //ptr<ast::Expression> expr;
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::ReturnStatement> ast)
+std::any ASTEditor::visit(ptr<ast::ReturnStatement> ast)
 {
     //can only have one and its optional
     //ptr<ast::Expression> expr;
@@ -318,9 +326,10 @@ void ASTEditor::visit(ptr<ast::ReturnStatement> ast)
      if(ast->expr.has_value())
         ast->expr.value();
     */
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::IfStatement> ast)
+std::any ASTEditor::visit(ptr<ast::IfStatement> ast)
 {
     //need to handle expressions in conditionalSuites
     //std::vector<std::pair<ptr<ast::Expression>, ptr<ast::Suite>>> conditionalSuites;
@@ -340,9 +349,10 @@ void ASTEditor::visit(ptr<ast::IfStatement> ast)
         if(ast->elseSuite.has_value())
             ast->elseSuite.value()->accept(*this);
     }
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::WhileStatement> ast)
+std::any ASTEditor::visit(ptr<ast::WhileStatement> ast)
 {
     //ptr<ast::Expression> condition;
     //ptr<ast::Suite> body;
@@ -357,9 +367,10 @@ void ASTEditor::visit(ptr<ast::WhileStatement> ast)
         //insert into suite
         ast->body->accept(*this);
     }
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::Function> ast)
+std::any ASTEditor::visit(ptr<ast::Function> ast)
 {
     //icu::UnicodeString name;
     //std::vector<ptr<Parameter>> params;
@@ -368,85 +379,100 @@ void ASTEditor::visit(ptr<ast::Function> ast)
 
     //insert into suite
     ast->body->accept(*this);
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::Parameter> ast)
+std::any ASTEditor::visit(ptr<ast::Parameter> ast)
 {
     //icu::UnicodeString name;
     //std::optional<std::variant<BuiltinType,icu::UnicodeString>> type;
     //std::optional<ptr<Expression>> defaultValue;
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::Assignment> ast)
+std::any ASTEditor::visit(ptr<ast::Assignment> ast)
 {
     //ptr<Expression> lhs;
     //ptr<Expression> rhs;
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::BinaryOp> ast)
+std::any ASTEditor::visit(ptr<ast::BinaryOp> ast)
 {
     //Op op;
     //ptr<Expression> lhs;
     //ptr<Expression> rhs;
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::UnaryOp> ast)
+std::any ASTEditor::visit(ptr<ast::UnaryOp> ast)
 {
     //Op op;
     //std::optional<icu::UnicodeString> member;
     //ptr<Expression> arg;
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::Variable> ast)
+std::any ASTEditor::visit(ptr<ast::Variable> ast)
 {
     //icu::UnicodeString name;
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::Call> ast)
+std::any ASTEditor::visit(ptr<ast::Call> ast)
 {
     //std::vector<ArgNameExpr> args;
     //ptr<Expression> lhs;
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::Index> ast)
+std::any ASTEditor::visit(ptr<ast::Index> ast)
 {
     //ptr<Expression> indexable;
     //std::vector<ptr<Expression>> args;
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::Literal> ast)
+std::any ASTEditor::visit(ptr<ast::Literal> ast)
 {
     //LiteralType literalType;
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::Bool> ast)
+std::any ASTEditor::visit(ptr<ast::Bool> ast)
 {
     // bool value;
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::Str> ast)
+std::any ASTEditor::visit(ptr<ast::Str> ast)
 {
     //icu::UnicodeString str;
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::Type> ast)
+std::any ASTEditor::visit(ptr<ast::Type> ast)
 {
     //BuiltinType t;
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::Num> ast)
+std::any ASTEditor::visit(ptr<ast::Num> ast)
 {
     //std::variant<int32_t,double> num;
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::List> ast)
+std::any ASTEditor::visit(ptr<ast::List> ast)
 {
     //std::vector<ptr<Expression>> elements;
+    return {};
 }
 
-void ASTEditor::visit(ptr<ast::Dict> ast)
+std::any ASTEditor::visit(ptr<ast::Dict> ast)
 {
     //std::vector<std::pair<ptr<Expression>,ptr<Expression>>> entries;
+    return {};
 }
 
 void ASTEditor::updateAstLinePositions(ptr<roxal::ast::AST> ast, int startingLine, int startingPos, int lineDelta, int posDelta)

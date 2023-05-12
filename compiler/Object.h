@@ -16,9 +16,12 @@
 #include "Value.h"
 
 
-// forward decl
+// forward decls
 namespace roxal::type {
     struct Type;
+}
+namespace roxal::ast {
+    struct Annotation;
 }
 
 
@@ -310,6 +313,7 @@ struct ObjFunction : public Obj
     int arity;
     int upvalueCount;
     ptr<Chunk> chunk;
+    std::vector<ptr<ast::Annotation>> annotations;
 
     // for parameters with default values that must be re-evaluated on each call
     //  this is map from param name UnicodeString::hashCode() -> ObjFunction

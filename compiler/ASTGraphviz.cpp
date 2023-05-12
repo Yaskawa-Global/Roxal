@@ -116,7 +116,7 @@ std::string ASTGraphviz::generateGraphText(ptr<ast::AST> ast)
 }
 
 
-void ASTGraphviz::visit(ptr<ast::File> ast)
+std::any ASTGraphviz::visit(ptr<ast::File> ast)
 {
     startVisit();
 
@@ -128,19 +128,21 @@ void ASTGraphviz::visit(ptr<ast::File> ast)
     nodes[name] = node(name,"File");
     stackPush(name);
     endVisit()
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::SingleInput> ast)
+std::any ASTGraphviz::visit(ptr<ast::SingleInput> ast)
 {
     startVisit();
     throw std::runtime_error(__PRETTY_FUNCTION__+std::string("unimplemented"));
 
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::Annotation> ast)
+std::any ASTGraphviz::visit(ptr<ast::Annotation> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -159,10 +161,11 @@ void ASTGraphviz::visit(ptr<ast::Annotation> ast)
     stackPush(name);
 
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::TypeDecl> ast)
+std::any ASTGraphviz::visit(ptr<ast::TypeDecl> ast)
 {
     startVisit();
 
@@ -180,10 +183,11 @@ void ASTGraphviz::visit(ptr<ast::TypeDecl> ast)
                        toUTF8StdString(ast->name));
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::FuncDecl> ast)
+std::any ASTGraphviz::visit(ptr<ast::FuncDecl> ast)
 {
     startVisit();
 
@@ -195,10 +199,11 @@ void ASTGraphviz::visit(ptr<ast::FuncDecl> ast)
     stackPush(name);
 
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::VarDecl> ast)
+std::any ASTGraphviz::visit(ptr<ast::VarDecl> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -209,10 +214,11 @@ void ASTGraphviz::visit(ptr<ast::VarDecl> ast)
     nodes[name] = node(name,"VarDecl",toUTF8StdString(ast->name));
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::Suite> ast)
+std::any ASTGraphviz::visit(ptr<ast::Suite> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -230,10 +236,11 @@ void ASTGraphviz::visit(ptr<ast::Suite> ast)
     stackPush(name);
 
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::ExpressionStatement> ast)
+std::any ASTGraphviz::visit(ptr<ast::ExpressionStatement> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -243,10 +250,11 @@ void ASTGraphviz::visit(ptr<ast::ExpressionStatement> ast)
     nodes[name] = node(name,"ExprStmt");
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::ReturnStatement> ast)
+std::any ASTGraphviz::visit(ptr<ast::ReturnStatement> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -257,10 +265,11 @@ void ASTGraphviz::visit(ptr<ast::ReturnStatement> ast)
     nodes[name] = node(name,"Return");
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::IfStatement> ast)
+std::any ASTGraphviz::visit(ptr<ast::IfStatement> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -277,10 +286,11 @@ void ASTGraphviz::visit(ptr<ast::IfStatement> ast)
     nodes[name] = node(name,"If");
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::WhileStatement> ast)
+std::any ASTGraphviz::visit(ptr<ast::WhileStatement> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -292,10 +302,11 @@ void ASTGraphviz::visit(ptr<ast::WhileStatement> ast)
     stackPush(name);
 
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::Function> ast)
+std::any ASTGraphviz::visit(ptr<ast::Function> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -320,10 +331,11 @@ void ASTGraphviz::visit(ptr<ast::Function> ast)
     nodes[name] = node(name, "Function "+nameReturn);
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::Parameter> ast)
+std::any ASTGraphviz::visit(ptr<ast::Parameter> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -344,10 +356,11 @@ void ASTGraphviz::visit(ptr<ast::Parameter> ast)
     nodes[name] = node(name, "Param "+nametype);
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::Assignment> ast)
+std::any ASTGraphviz::visit(ptr<ast::Assignment> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -358,10 +371,11 @@ void ASTGraphviz::visit(ptr<ast::Assignment> ast)
     nodes[name] = node(name,"Assign");
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::BinaryOp> ast)
+std::any ASTGraphviz::visit(ptr<ast::BinaryOp> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -372,10 +386,11 @@ void ASTGraphviz::visit(ptr<ast::BinaryOp> ast)
     nodes[name] = node(name,ast->opString());
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::UnaryOp> ast)
+std::any ASTGraphviz::visit(ptr<ast::UnaryOp> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -386,10 +401,11 @@ void ASTGraphviz::visit(ptr<ast::UnaryOp> ast)
                    + ((ast->op == UnaryOp::Op::Accessor) && ast->member.has_value() ? toUTF8StdString(ast->member.value()) : "?"));
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::Variable> ast)
+std::any ASTGraphviz::visit(ptr<ast::Variable> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -397,10 +413,11 @@ void ASTGraphviz::visit(ptr<ast::Variable> ast)
     nodes[name] = node(name,"ident",toUTF8StdString(ast->name));
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::Call> ast)
+std::any ASTGraphviz::visit(ptr<ast::Call> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -418,10 +435,11 @@ void ASTGraphviz::visit(ptr<ast::Call> ast)
     nodes[name] = node(name,"Call");
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::Index> ast)
+std::any ASTGraphviz::visit(ptr<ast::Index> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -434,10 +452,11 @@ void ASTGraphviz::visit(ptr<ast::Index> ast)
     nodes[name] = node(name,"[]");
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::Literal> ast)
+std::any ASTGraphviz::visit(ptr<ast::Literal> ast)
 {
     startVisit();
 
@@ -446,40 +465,44 @@ void ASTGraphviz::visit(ptr<ast::Literal> ast)
                        ast->literalType == Literal::Nil ? "nil" : "?");
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::Bool> ast)
+std::any ASTGraphviz::visit(ptr<ast::Bool> ast)
 {
     startVisit();
     auto name { uname(ast) };
     nodes[name] = node(name,"bool",ast->value ? "true" : "false");
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::Str> ast)
+std::any ASTGraphviz::visit(ptr<ast::Str> ast)
 {
     startVisit();
     auto name { uname(ast) };
     nodes[name] = node(name,"string",toUTF8StdString(ast->str));
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::Type> ast)
+std::any ASTGraphviz::visit(ptr<ast::Type> ast)
 {
     startVisit();
     auto name { uname(ast) };
     nodes[name] = node(name,"type",ast::to_string(ast->t));
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::Num> ast)
+std::any ASTGraphviz::visit(ptr<ast::Num> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -497,10 +520,11 @@ void ASTGraphviz::visit(ptr<ast::Num> ast)
 
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::List> ast)
+std::any ASTGraphviz::visit(ptr<ast::List> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -512,10 +536,11 @@ void ASTGraphviz::visit(ptr<ast::List> ast)
     nodes[name] = node(name,"list");
     stackPush(name);
     endVisit();
+    return {};
 }
 
 
-void ASTGraphviz::visit(ptr<ast::Dict> ast)
+std::any ASTGraphviz::visit(ptr<ast::Dict> ast)
 {
     startVisit();
     auto name { uname(ast) };
@@ -529,4 +554,5 @@ void ASTGraphviz::visit(ptr<ast::Dict> ast)
     nodes[name] = node(name,"dict");
     stackPush(name);
     endVisit();
+    return {};
 }

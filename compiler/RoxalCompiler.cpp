@@ -144,30 +144,35 @@ ASTVisitor::TraversalOrder RoxalCompiler::traversalOrder() const
 
 
 
-void RoxalCompiler::visit(ptr<ast::File> ast)
+std::any RoxalCompiler::visit(ptr<ast::File> ast)
 {
     currentNode = ast;
-    ast->acceptChildren(*this);
+    Anys results {};
+    ast->acceptChildren(*this, results);
     emitReturn();
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::SingleInput> ast)
+std::any RoxalCompiler::visit(ptr<ast::SingleInput> ast)
 {
     currentNode = ast;
-    ast->acceptChildren(*this);
+    Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
 }
 
 
-void RoxalCompiler::visit(ptr<ast::Annotation> ast)
+std::any RoxalCompiler::visit(ptr<ast::Annotation> ast)
 {
     currentNode = ast;
     // currently, we don't generate any code for annotations
     //ast->acceptChildren(*this);
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
+std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 {
     currentNode = ast;
 
@@ -256,10 +261,11 @@ void RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     emitByte(OpCode::Pop, "type name");
 
     typeScopes.pop_back();
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
+std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
 {
     currentNode = ast;    
 
@@ -276,13 +282,23 @@ void RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
         funcScope()->locals.back().depth = funcScope()->scopeDepth;
     }
 
-    ast->acceptChildren(*this);
+    Anys results {};
+    ast->acceptChildren(*this, results);
+
+    // unwrap ObjFunction* returned by visit(ptr<Function>)
+    auto function = std::any_cast<ObjFunction*>(std::any_cast<Anys>(results.at(0)).at(0));
+
+    // attached the FuncDecl annotations (which appear right before the func declatation)
+    //  to the function object to make them available at runtime
+    function->annotations = ast->annotations;
 
     defineVariable(var);
+
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::VarDecl> ast)
+std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
 {
     currentNode = ast;
 
@@ -300,35 +316,42 @@ void RoxalCompiler::visit(ptr<ast::VarDecl> ast)
         emitByte(OpCode::ConstNil);
 
     defineVariable(var);
+
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::Suite> ast)
+std::any RoxalCompiler::visit(ptr<ast::Suite> ast)
 {
     currentNode = ast;
+    Anys results {};
 
     beginScope();
-    ast->acceptChildren(*this);
+    ast->acceptChildren(*this, results);
     endScope();
+    return results;
 }
 
 
-void RoxalCompiler::visit(ptr<ast::ExpressionStatement> ast)
+std::any RoxalCompiler::visit(ptr<ast::ExpressionStatement> ast)
 {
     currentNode = ast;
-    ast->acceptChildren(*this);
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
 
     // expressions leave their value on the stack, but statements don't
     //  have a value, so discard it
     emitByte(OpCode::Pop, "expr_stmt value");
+    return results;
 }
 
 
-void RoxalCompiler::visit(ptr<ast::ReturnStatement> ast)
+std::any RoxalCompiler::visit(ptr<ast::ReturnStatement> ast)
 {
     currentNode = ast;
+    ast::Anys results {};
 
-    ast->acceptChildren(*this);
+    ast->acceptChildren(*this, results);
 
     if (ast->expr.has_value()) {
 
@@ -341,10 +364,12 @@ void RoxalCompiler::visit(ptr<ast::ReturnStatement> ast)
     }
     else        
         emitReturn();
+
+    return results;
 }
 
 
-void RoxalCompiler::visit(ptr<ast::IfStatement> ast)
+std::any RoxalCompiler::visit(ptr<ast::IfStatement> ast)
 {
     currentNode = ast;
 
@@ -378,10 +403,12 @@ void RoxalCompiler::visit(ptr<ast::IfStatement> ast)
     }
     
     patchJump(jumpOverElse);
+
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::WhileStatement> ast)
+std::any RoxalCompiler::visit(ptr<ast::WhileStatement> ast)
 {
     currentNode = ast;
 
@@ -399,10 +426,12 @@ void RoxalCompiler::visit(ptr<ast::WhileStatement> ast)
 
     patchJump(jumpToExit);
     emitByte(OpCode::Pop, "while cond");
+
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::Function> ast)
+std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 {
     currentNode = ast;
     
@@ -430,7 +459,8 @@ void RoxalCompiler::visit(ptr<ast::Function> ast)
     if (funcScope()->function->arity > 255)
         error("Maximum of function or procedure 255 parameters exceeded.");
 
-    ast->acceptChildren(*this);
+    Anys results {};
+    ast->acceptChildren(*this, results);
 
     //endScope(); // state scope about to be discarded, not needed
 
@@ -440,6 +470,7 @@ void RoxalCompiler::visit(ptr<ast::Function> ast)
         funcScope()->function->chunk->disassemble(funcScope()->function->name);
 
     ObjFunction* function = funcScope()->function;
+
     auto functionScope { *funcScope() };
 
     funcScopes.pop_back(); // back to surrpounding function
@@ -458,10 +489,12 @@ void RoxalCompiler::visit(ptr<ast::Function> ast)
         emitByte(functionScope.upvalues[i].isLocal ? 1 : 0);
         emitByte(functionScope.upvalues[i].index);
     }
+
+    return function; // used by caller visit(ptr<FuncDecl>)
 }
 
 
-void RoxalCompiler::visit(ptr<ast::Parameter> ast)
+std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
 {
     currentNode = ast;
 
@@ -489,8 +522,8 @@ void RoxalCompiler::visit(ptr<ast::Parameter> ast)
 
         funcScope()->function->arity = 0;
 
-
-        ast->acceptChildren(*this);
+        Anys results;
+        ast->acceptChildren(*this, results);
 
         //endScope(); // state scope about to be discarded, not needed
 
@@ -511,10 +544,11 @@ void RoxalCompiler::visit(ptr<ast::Parameter> ast)
         //  for which it is a param
         funcScope()->function->paramDefaultFunc[ast->name.hashCode()] = function;
     }
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::Assignment> ast)
+std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 {
     currentNode = ast;
     
@@ -544,10 +578,11 @@ void RoxalCompiler::visit(ptr<ast::Assignment> ast)
     }
     else
         throw std::runtime_error("Unimplemented kind of LHS for assignment");
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
+std::any RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
 {
     currentNode = ast;
 
@@ -573,7 +608,8 @@ void RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
         patchJump(jumpToEnd);
     }
     else {
-        ast->acceptChildren(*this);
+        Anys results;
+        ast->acceptChildren(*this, results);
 
         switch (ast->op) {
             case BinaryOp::Add: emitByte(OpCode::Add); break;
@@ -592,13 +628,15 @@ void RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
                 throw std::runtime_error("unimplemented binary opertor:"+ast->opString());
         }
     }
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
+std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
 {
     currentNode = ast;
-    ast->acceptChildren(*this);
+    Anys results {};
+    ast->acceptChildren(*this, results);
 
     switch (ast->op) {
         case UnaryOp::Negate: emitByte(OpCode::Negate); break;
@@ -613,21 +651,24 @@ void RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
         default:
             throw std::runtime_error("unimplemented unary opertor:"+ast->opString());
     }
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::Variable> ast)
+std::any RoxalCompiler::visit(ptr<ast::Variable> ast)
 {
     currentNode = ast;
     namedVariable(ast->name);
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::Call> ast)
+std::any RoxalCompiler::visit(ptr<ast::Call> ast)
 {
     currentNode = ast;
+    Anys results {};
 
-    ast->acceptChildren(*this);
+    ast->acceptChildren(*this, results);
 
     auto argCount = ast->args.size();
     if (argCount > 127)
@@ -683,22 +724,25 @@ void RoxalCompiler::visit(ptr<ast::Call> ast)
         for(auto i=0; i<bytes.size();i++)
             emitByte(bytes[i]);
     }
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::Index> ast)
+std::any RoxalCompiler::visit(ptr<ast::Index> ast)
 {
     currentNode = ast;
-    ast->acceptChildren(*this);
+    Anys results {};
+    ast->acceptChildren(*this, results);
 
     auto argCount = ast->args.size();
     if (argCount > 255)
         error("Number of indices is limited to 255");
     emitBytes(OpCode::Index, argCount);
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::Literal> ast)
+std::any RoxalCompiler::visit(ptr<ast::Literal> ast)
 {
     currentNode = ast;
     // non-Nil typed literals handled by specialized visit methods
@@ -706,36 +750,40 @@ void RoxalCompiler::visit(ptr<ast::Literal> ast)
         emitByte(OpCode::ConstNil);
     else
         throw std::runtime_error("Literal type unhandled");
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::Bool> ast)
+std::any RoxalCompiler::visit(ptr<ast::Bool> ast)
 {
     currentNode = ast;
     emitByte( ast->value ? OpCode::ConstTrue : OpCode::ConstFalse );
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::Str> ast)
+std::any RoxalCompiler::visit(ptr<ast::Str> ast)
 {
     currentNode = ast;
 
     // new ObjString or existing one if exists in strings intern map
     auto objStr = stringVal(ast->str); 
     emitConstant(objVal(objStr));
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::Type> ast)
+std::any RoxalCompiler::visit(ptr<ast::Type> ast)
 {
     currentNode = ast;
     ValueType type { builtinToValueType(ast->t) };
 
     emitConstant(typeVal(type));
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::Num> ast)
+std::any RoxalCompiler::visit(ptr<ast::Num> ast)
 {
     currentNode = ast;
 
@@ -747,35 +795,40 @@ void RoxalCompiler::visit(ptr<ast::Num> ast)
     }
     else 
         throw std::runtime_error("unhandled Num type");
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::List> ast)
+std::any RoxalCompiler::visit(ptr<ast::List> ast)
 {
     currentNode = ast;
+    Anys results {};
 
     // generate code to eval each elements and leave on stack
-    ast->acceptChildren(*this);
+    ast->acceptChildren(*this, results);
 
     if (ast->elements.size() > 255)
         error("Number of literal list elements is limited to 255");
 
     emitBytes(OpCode::NewList, ast->elements.size());
+    return {};
 }
 
 
-void RoxalCompiler::visit(ptr<ast::Dict> ast)
+std::any RoxalCompiler::visit(ptr<ast::Dict> ast)
 {
     currentNode = ast;
+    Anys results {};
 
     // generate code to eval each key & value and leave on stack
-    ast->acceptChildren(*this);
+    ast->acceptChildren(*this, results);
 
     if (ast->entries.size() > 255)
         error("Number of literal dict entries is limited to 255");
 
     // arg is entry count, so 2x as many stack values (key & value for each entry)
     emitBytes(OpCode::NewDict, ast->entries.size());
+    return {};
 }
 
 
