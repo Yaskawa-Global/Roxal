@@ -1608,6 +1608,26 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 defineMethod(readString());
                 break;
             }
+            case asByte(OpCode::Extend): {
+                if (!isObjectType(peek(1))) {
+                    runtimeError("Super type to extend must be an object or actor type");;
+                    return errorReturn;
+                }
+                ObjObjectType* superType = asObjectType(peek(1));
+                ObjObjectType* subType = asObjectType(peek(0));
+
+                // object cannot extend an actor
+                if (superType->isActor && !subType->isActor) {
+                    runtimeError("A type object cannot extend an actor, only another object type");
+                    return errorReturn;
+                }
+
+                // add all of super's methods to sub type
+                subType->methods.insert(superType->methods.cbegin(),superType->methods.cend());
+                subType->properties.insert(superType->properties.cbegin(),superType->properties.cend());
+                pop();
+                break;
+            }
             case asByte(OpCode::Nop): {
                 break;
             }

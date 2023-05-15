@@ -187,6 +187,21 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     emitBytes(isActor ? OpCode::ActorType : OpCode::ObjectType, typeNameConstant);
     defineVariable(typeNameConstant);
 
+
+    // handle extension (inheritance)
+    if (ast->extends.has_value()) {
+        auto superTypeName = ast->extends.value();
+
+        // can't inherit yourself
+        if (superTypeName == ast->name)
+            error("Type object or actor '"+toUTF8StdString(ast->name)+"' can't extend itself.");
+
+        namedVariable(superTypeName, /*assign=*/false); // parent (super)
+        namedVariable(ast->name, /*assign=*/false); // child (sub)
+        emitByte(OpCode::Extend);
+    }
+
+
     namedVariable(ast->name, false); // make type accessible on the stack
 
     typeScopes.push_back(TypeScope());

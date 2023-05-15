@@ -45,6 +45,7 @@ enum class OpCode {
     ActorType,
     Property,
     Method,
+    Extend,
     DefineGlobal,
     GetGlobal,
     SetGlobal,

@@ -270,6 +270,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("PROPERTY", offset);
         case asByte(OpCode::Method):
             return constantInstruction("METHOD", offset);
+        case asByte(OpCode::Extend):
+            return constantInstruction("EXTEND", offset);
         case asByte(OpCode::DefineGlobal):
             return constantInstruction("DEFINE_GLOBAL", offset);
         case asByte(OpCode::GetGlobal):
