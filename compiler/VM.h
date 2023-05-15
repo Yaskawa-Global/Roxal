@@ -196,6 +196,7 @@ protected:
     void defineBuiltinFunctions();
 
     Value print_builtin(int argCount, Value* args);
+    Value clone_builtin(int argCount, Value* args);
     Value sleep_builtin(int argCount, Value* args);
     Value fork_builtin(int argCount, Value* args);
     Value join_builtin(int argCount, Value* args);

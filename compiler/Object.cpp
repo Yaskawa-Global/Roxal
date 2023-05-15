@@ -34,6 +34,49 @@ ValueType Obj::valueType() const
 }
 
 
+// deep copy
+Obj* Obj::clone() const
+{
+    Obj* mutableThis = const_cast<Obj*>(this);
+
+    if (type == ObjType::String)
+        return mutableThis; // strings are immutable, safe to copy reference
+        // FIXME!!!: collision for ObjType::Type - used by ObjTypeSpec and ObjPrimitive for builtin type!
+    else if (type == ObjType::Bool || type == ObjType::Real || type == ObjType::Int /*|| type == ObjType::Type*/)
+        return cloneObjPrimitive(static_cast<const ObjPrimitive*>(this));
+    else if (type == ObjType::List)
+        return cloneList(static_cast<const ObjList*>(this));
+    else if (type == ObjType::Dict)
+        return cloneDict(static_cast<const ObjDict*>(this));
+    else if (type == ObjType::Function) // code is immutable, can copy reference
+        return mutableThis;
+    else if (type == ObjType::Upvalue)
+        return cloneUpvalue(static_cast<const ObjUpvalue*>(this));
+    else if (type == ObjType::Closure)
+        return cloneClosure(static_cast<const ObjClosure*>(this));
+    else if (type == ObjType::Future) {
+        // wait for result, then turn it into an ObjPrimitive copy of the value
+        Value value = static_cast<ObjFuture*>(mutableThis)->asValue();
+        value.box();
+        assert(value.isBoxed() && value.isObj() && isObjPrimitive(value));
+        return asObjPrimitive(value);
+    }
+    else if (type == ObjType::Native)
+        return mutableThis; // native functions are immutable
+    else if (type == ObjType::Type) // complex types are immutable once declared
+        return mutableThis;    
+    else if (type == ObjType::Instance)
+        return cloneObjectInstance(static_cast<const ObjectInstance*>(this));
+    else if (type == ObjType::Actor)
+        throw std::runtime_error("cannot be clone() type actor instances");
+    else if (type == ObjType::BoundMethod)
+        // NB: this clones the reciever object
+        return cloneBoundMethod(static_cast<const ObjBoundMethod*>(this));
+
+    throw std::runtime_error("clone() unimplemented for type "+std::to_string(int(this->type)));
+}
+
+
 void Obj::registerStream()
 {
     if (type==ObjType::Stream)
@@ -157,6 +200,18 @@ ObjList* roxal::listVal(const std::vector<Value>& elts)
 }
 
 
+ObjList* roxal::cloneList(const ObjList* l)
+{
+    // TODO: optimize
+    auto newl = newObj<ObjList>(__func__);
+    auto lsize = l->elts.size();
+    for(auto i=0; i<lsize; i++)
+        newl->elts.push_back(l->elts.at(i).clone());
+    return newl;
+}
+
+
+
 std::string roxal::objListToString(const ObjList* ol)
 {
     throw std::runtime_error(std::string("unimplemented ")+__func__);
@@ -170,6 +225,16 @@ ObjDict* roxal::dictVal(const std::vector<std::pair<Value,Value>>& entries)
         d->store(entry.first, entry.second);
     return d;
 }
+
+ObjDict* roxal::cloneDict(const ObjDict* d)
+{
+    auto newd = newObj<ObjDict>(__func__);
+    const auto dkeys = d->keys();
+    for(const auto& dkey : dkeys)
+        newd->store(dkey.clone(), d->at(dkey).clone());
+    return newd;
+}
+
 
 std::string roxal::objDictToString(const ObjDict* od)
 {
@@ -330,6 +395,48 @@ ObjectInstance::~ObjectInstance()
 ObjectInstance* roxal::objectInstanceVal(ObjObjectType* objectType)
 {
     return newObj<ObjectInstance>(__func__, objectType);
+}
+
+
+ObjectInstance* roxal::cloneObjectInstance(const ObjectInstance* obj)
+{
+    // clone (deep copy) object instance
+    auto newobj = objectInstanceVal(obj->instanceType);
+
+    for(const auto& index_value : obj->properties) {
+        const auto index { index_value.first };
+        const auto& value { index_value.second };
+
+        if (value.isPrimitive())
+            newobj->properties[index] = value;
+        else if (isString(value)) {
+            // strings are reference types, but immutable, so can copy reference
+            newobj->properties[index] = value;
+        } 
+        else if (isObjectInstance(value)) {
+            auto propcopy = cloneObjectInstance(asObjectInstance(value));  // recurse
+            newobj->properties[index] = Value(propcopy);
+        }
+        else if (isActorInstance(value)) {
+            throw std::runtime_error("clone of type actor unsuported");
+        }
+        else if (isList(value)) {
+
+        }
+        // TODO: add explicit handling of internal types like closure, future, function etc (just shallow copy)
+        //       add explicit deep copying of builtin ref types like list and dict 
+        else {
+            #ifdef DEBUG_BUILD
+            auto propName { std::get<0>(obj->instanceType->properties.at(index)) };
+            std::cerr << "shallow copying property " << toUTF8StdString(propName) << " :" << value.typeName() <<  " from " << Value(obj->instanceType) << std::endl;
+            std::cerr << " isPrimitive?" << (value.isPrimitive() ? "yes":"no") << std::endl;
+            #endif
+            newobj->properties[index] = value;
+        }
+
+    }
+
+    return newobj;
 }
 
 

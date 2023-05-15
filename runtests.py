@@ -20,7 +20,8 @@ tests = [
     'typeobj1', 'typeobj2', 'typeobj3', 'typeobj4', 'typeobj5', 'typeobj6', 'typeobj7',
     'method_named_param',
     'annot1',
-    'threads1', 'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6'
+    'threads1', 'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6',
+    'clone1'
 ]
 
 test_dir='../tests'

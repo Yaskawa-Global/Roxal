@@ -61,6 +61,8 @@ struct Obj {
 
     ValueType valueType() const;
 
+    Obj* clone() const; // deep copy
+
     inline void incRef() 
     {
         auto prevCount = refCount.fetch_add(1,std::memory_order_relaxed); 
@@ -179,9 +181,23 @@ struct ObjPrimitive : public Obj
     } as;
 };
 
-inline bool isPrimitive(const Value& v) { return isObjType(v, ObjType::Bool) || isObjType(v, ObjType::Int) || isObjType(v, ObjType::Real) || isObjType(v,ObjType::Type); }
-inline ObjPrimitive* asPrimitive(const Value& v) { return static_cast<ObjPrimitive*>(v.asObj()); }
+inline bool isObjPrimitive(const Value& v) { return isObjType(v, ObjType::Bool) || isObjType(v, ObjType::Int) || isObjType(v, ObjType::Real) || isObjType(v,ObjType::Type); }
+inline ObjPrimitive* asObjPrimitive(const Value& v) { return static_cast<ObjPrimitive*>(v.asObj()); }
 
+inline ObjPrimitive* cloneObjPrimitive(const ObjPrimitive* op) {    
+    if (op->type == ObjType::Bool)
+        return newObj<ObjPrimitive>(__func__,op->as.boolean);
+    else if (op->type == ObjType::Int)
+        return newObj<ObjPrimitive>(__func__,op->as.integer);
+    else if (op->type == ObjType::Real)
+        return newObj<ObjPrimitive>(__func__,op->as.real);
+    else if (op->type == ObjType::Type)
+        return newObj<ObjPrimitive>(__func__,op->as.btype);
+    #ifdef DEBUG_BUILD
+    throw std::runtime_error("Unsupported ObjPrimitive Type "+std::to_string(int(op->type)));
+    #endif
+    return newObj<ObjPrimitive>(__func__,false);
+}
 
 
 
@@ -229,6 +245,7 @@ inline bool isList(const Value& v) { return isObjType(v, ObjType::List); }
 inline ObjList* asList(const Value& v) { return static_cast<ObjList*>(v.asObj()); }
 
 ObjList* listVal(const std::vector<Value>& elts); 
+ObjList* cloneList(const ObjList* l); // deep copy
 
 std::string objListToString(const ObjList* ol);
 
@@ -287,6 +304,7 @@ inline bool isDict(const Value& v) { return isObjType(v, ObjType::Dict); }
 inline ObjDict* asDict(const Value& v) { return static_cast<ObjDict*>(v.asObj()); }
 
 ObjDict* dictVal(const std::vector<std::pair<Value,Value>>& entries); 
+ObjDict* cloneDict(const ObjDict* d);
 
 std::string objDictToString(const ObjDict* od);
 
@@ -360,6 +378,13 @@ inline ObjUpvalue* upvalueVal(Value* v) {
     return newObj<ObjUpvalue>(__func__,v);
 }
 
+inline ObjUpvalue* cloneUpvalue(const ObjUpvalue* u) {
+    ObjUpvalue* newup = newObj<ObjUpvalue>(__func__,u->location);
+    // clone value (this Upvalue is now closed)
+    newup->closed = newup->location->clone();
+    newup->location = &newup->closed;
+    return newup;
+}
 
 
 //
@@ -398,6 +423,14 @@ inline ObjClosure* closureVal(ObjFunction* function) {
     return newObj<ObjClosure>(__func__,function);
 }
 
+inline ObjClosure* cloneClosure(const ObjClosure* c) {
+    ObjClosure* newc = newObj<ObjClosure>(__func__,c->function);
+    newc->upvalues.resize(c->upvalues.size());
+    for(auto i=0; i<c->upvalues.size();i++)
+        newc->upvalues[i] = cloneUpvalue(c->upvalues.at(i));
+    return newc;
+}
+
 
 
 // future
@@ -433,6 +466,7 @@ inline ObjFuture* futureVal(const std::shared_future<Value>& fv) {
 
 
 
+
 //
 // native function
 
@@ -460,6 +494,8 @@ ObjNative* nativeVal(NativeFn function);
 //
 // runtime type 
 
+//FIXME!!!: collision exists for Obj::type == ObjType::Type - it is used
+//       both by ObjTypeSpec and by ObjPrimitive for builtin type
 struct ObjTypeSpec : public Obj
 {
     ObjTypeSpec() {
@@ -526,7 +562,7 @@ inline bool isObjectInstance(const Value& v) { return isObjType(v, ObjType::Inst
 inline ObjectInstance* asObjectInstance(const Value& v) { return static_cast<ObjectInstance*>(v.asObj()); }
 
 ObjectInstance* objectInstanceVal(ObjObjectType* objectType);
-
+ObjectInstance* cloneObjectInstance(const ObjectInstance* obj); // deep copy
 
 
 //
@@ -587,6 +623,12 @@ inline ObjBoundMethod* asBoundMethod(const Value& v) { return static_cast<ObjBou
 
 inline ObjBoundMethod* boundMethodVal(const Value& instance, ObjClosure* closure) {
     return newObj<ObjBoundMethod>(__func__,instance, closure);
+}
+
+inline ObjBoundMethod* cloneBoundMethod(const ObjBoundMethod* bm) {
+    auto newmb = newObj<ObjBoundMethod>(__func__,bm->receiver, bm->method);
+    newmb->receiver = newmb->receiver.clone();
+    return newmb;
 }
 
 

@@ -1720,6 +1720,7 @@ void VM::runtimeError(const std::string& format, ...)
 void VM::defineBuiltinFunctions()
 {
     defineNative("print", &VM::print_builtin);
+    defineNative("clone", &VM::clone_builtin);
     defineNative("sleep", &VM::sleep_builtin);
     defineNative("fork", &VM::fork_builtin);
     defineNative("join", &VM::join_builtin);
@@ -1736,6 +1737,15 @@ Value VM::print_builtin(int argCount, Value* args)
     auto str = toString(args[0]);
     std::cout << str << std::endl;
     return nilVal();
+}
+
+
+Value VM::clone_builtin(int argCount, Value* args)
+{
+    if (argCount != 1) 
+        throw std::invalid_argument("clone takes a single argument (the value to deep-copy)");
+    
+    return args[0].clone();
 }
 
 

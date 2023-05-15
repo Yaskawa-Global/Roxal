@@ -80,13 +80,13 @@ void Value::unbox() {
     Obj* obj = asObj();
 
     if (isBool())
-        *this = Value(asPrimitive(*this)->as.boolean);
+        *this = Value(asObjPrimitive(*this)->as.boolean);
     else if (isInt())
-        *this = Value(asPrimitive(*this)->as.integer);
+        *this = Value(asObjPrimitive(*this)->as.integer);
     else if (isReal())
-        *this = Value(asPrimitive(*this)->as.real);
+        *this = Value(asObjPrimitive(*this)->as.real);
     else if (isType())
-        *this = Value(asPrimitive(*this)->as.btype);
+        *this = Value(asObjPrimitive(*this)->as.btype);
     else
         throw std::runtime_error("Unsupported type for auto-unboxing "+typeName());
 
@@ -121,7 +121,7 @@ bool Value::asBool(bool strict) const
     }
     else {        
         switch (asObj()->type) {
-        case ObjType::Bool: return asPrimitive(*this)->as.boolean;
+        case ObjType::Bool: return asObjPrimitive(*this)->as.boolean;
         default: ;
         }
     }
@@ -211,7 +211,7 @@ ValueType Value::asType(bool strict) const
     }
     else {
         if (asObj()->type==ObjType::Type)
-            return asPrimitive(*this)->as.btype;
+            return asObjPrimitive(*this)->as.btype;
     }
     return ValueType::Nil;
 }
@@ -241,7 +241,7 @@ std::string Value::typeName() const
         return "type";
 
     if (isBoxed()) {
-        auto pobj = asPrimitive(*this);
+        auto pobj = asObjPrimitive(*this);
         if (pobj->isBool())
             return "bool";
         else if (pobj->isInt())
@@ -475,6 +475,19 @@ bool Value::operator==(const Value& rhs) const
 }
 
 
+// deep copy if reference type
+Value Value::clone() const
+{
+    if (isPrimitive()) // value type
+        return *this;
+    else if (isObj())
+        return Value(asObj()->clone());
+
+    throw std::runtime_error("unhandled clone()");
+}
+
+
+
 void Value::resolveFuture()
 {
     if (isFuture(*this))
@@ -520,7 +533,7 @@ Value roxal::toType(ValueType t, Value v, bool strict)
             return v;
     }
     else {
-        auto pobj = asPrimitive(v);
+        auto pobj = asObjPrimitive(v);
         if (pobj->valueType() == t)
             return v;
         Value unboxedv { v };
