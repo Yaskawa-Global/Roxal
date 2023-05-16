@@ -995,7 +995,10 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
     auto readConstant = [&]() -> Value {
         #ifdef DEBUG_BUILD
-            return frame->closure->function->chunk->constants.at(Chunk::size_type(readByte()));
+            auto index { Chunk::size_type(readByte()) };
+            if (index >= frame->closure->function->chunk->constants.size())
+                throw std::runtime_error("Chunk instruction read constant invalid index into constants table");
+            return frame->closure->function->chunk->constants.at(index);
         #else
             return frame->closure->function->chunk->constants[Chunk::size_type(readByte())];
         #endif
@@ -1041,7 +1044,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             else {
                 std::cout << "          <end of chunk>" << std::endl;
-                return InterpretResult::RuntimeError;
+                return std::make_pair(InterpretResult::RuntimeError,nilVal());
             }
         #endif
 
@@ -1182,6 +1185,19 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 objInst->properties[name->hash] = value;
                 popN(2); // pop original value & instance
                 push(value); // value (possibly converted)
+                break;
+            }
+            case asByte(OpCode::GetSuper): {
+                ObjString* name = readString();
+                #ifdef DEBUG_BUILD
+                if (!isTypeSpec(peek(0)) && !isObjectType(peek(0)))
+                    throw std::runtime_error("super doesn't reference an object or actor type.");
+                #endif
+
+                ObjObjectType* superType = asObjectType(pop()); 
+                if (!bindMethod(superType,name))
+                    return std::make_pair(InterpretResult::RuntimeError,nilVal());
+
                 break;
             }
             case asByte(OpCode::Equal): {
@@ -1631,6 +1647,12 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::Nop): {
                 break;
             }
+            default:
+                #ifdef DEBUG_BUILD
+                runtimeError("Invalid instruction "+std::to_string(instruction));
+                #endif
+                return std::make_pair(InterpretResult::RuntimeError,nilVal());
+                break;
         }
 
         postInstructionDispatch:

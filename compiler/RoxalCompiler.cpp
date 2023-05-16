@@ -178,6 +178,8 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     bool isActor = ast->kind==TypeDecl::Actor;
 
+    beginTypeScope(ast->name);
+
     int16_t typeNameConstant = identifierConstant(ast->name);
     declareVariable(ast->name);    
 
@@ -190,6 +192,8 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     // handle extension (inheritance)
     if (ast->extends.has_value()) {
+        typeScope()->hasSuperType = true;
+
         auto superTypeName = ast->extends.value();
 
         // can't inherit yourself
@@ -197,15 +201,17 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             error("Type object or actor '"+toUTF8StdString(ast->name)+"' can't extend itself.");
 
         namedVariable(superTypeName, /*assign=*/false); // parent (super)
+
+        beginScope();
+        addLocal("super");
+        defineVariable(0);
+
         namedVariable(ast->name, /*assign=*/false); // child (sub)
         emitByte(OpCode::Extend);
     }
 
 
     namedVariable(ast->name, false); // make type accessible on the stack
-
-    typeScopes.push_back(TypeScope());
-
 
     for(size_t i=0; i<ast->properties.size(); i++) {
         if (isActor) {
@@ -275,7 +281,11 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     emitByte(OpCode::Pop, "type name");
 
-    typeScopes.pop_back();
+    if (typeScope()->hasSuperType)
+        endScope();
+
+    endTypeScope();
+
     return {};
 }
 
@@ -651,6 +661,30 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
 {
     currentNode = ast;
     Anys results {};
+
+    // special case for super.<member>
+    if ((ast->op == UnaryOp::Accessor) && isa<Variable>(ast->arg)
+        && as<Variable>(ast->arg)->name == "super") {
+
+        if (typeScopes.empty())
+            error("Can't use 'super' outside of a type object or actor declaration.");
+
+        if (!typeScope()->hasSuperType)
+            error("Can't use 'super' in a type object or actor that doesn't extend another type");
+
+        if (!ast->member.has_value())
+            throw std::runtime_error("super. accessor requires member name");
+
+        int16_t identConstant = identifierConstant(ast->member.value());
+        if (identConstant > 255)
+            error("Too many constants in scope");
+
+        namedVariable("this", false);
+        namedVariable("super", false);
+        emitBytes(OpCode::GetSuper, uint8_t(identConstant));
+        return {};
+    }
+
     ast->acceptChildren(*this, results);
 
     switch (ast->op) {
@@ -658,10 +692,12 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
         case UnaryOp::Not: emitByte(OpCode::Negate); break;
         case UnaryOp::Accessor: {
             if (!ast->member.has_value())
-                throw std::runtime_error("Accessor . required member name");
+                throw std::runtime_error("Accessor . requires member name");
 
             int16_t identConstant = identifierConstant(ast->member.value());
-            emitBytes(OpCode::GetProp, identConstant);
+            if (identConstant > 255)
+                error("Too many constants in scope");
+            emitBytes(OpCode::GetProp, uint8_t(identConstant));
         } break;
         default:
             throw std::runtime_error("unimplemented unary opertor:"+ast->opString());

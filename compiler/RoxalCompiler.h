@@ -112,7 +112,11 @@ protected:
 
 
     struct TypeScope {
+        TypeScope(const icu::UnicodeString& typeName)
+          : name(typeName), hasSuperType(false) {}
 
+        icu::UnicodeString name;
+        bool hasSuperType;
     };
 
     typedef std::vector<TypeScope> TypeScopes;
@@ -127,6 +131,17 @@ protected:
     auto enclosingTypeScope(TypeScopes::iterator s) {
         if (s != typeScopes.begin())
             return --s;
+        throw std::runtime_error("TypeScope stack underflow");
+    }
+
+    void beginTypeScope(const icu::UnicodeString& typeName) {
+        typeScopes.push_back(TypeScope(typeName));
+    }
+    void endTypeScope() {
+        if (!typeScopes.empty()) {
+            typeScopes.pop_back();
+            return;
+        }
         throw std::runtime_error("TypeScope stack underflow");
     }
 

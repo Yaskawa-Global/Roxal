@@ -127,6 +127,10 @@ Chunk::size_type Chunk::jumpInstruction(const std::string& name, int sign, size_
 Chunk::size_type Chunk::constantInstruction(const std::string& name, size_type offset) const
 {
     uint8_t constant = code.at(offset+1);
+    #ifdef DEBUG_BUILD
+    if (constant >= constants.size()) 
+        throw std::runtime_error("Constant instruction at "+std::to_string(offset)+" references constant "+std::to_string(constant)+" but constant table size is "+std::to_string(constants.size()));
+    #endif
     auto value = constants.at(constant);
     std::cout << format("%-16s %4d '", name.c_str(), constant) 
               << toString(value)
@@ -271,7 +275,7 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
         case asByte(OpCode::Method):
             return constantInstruction("METHOD", offset);
         case asByte(OpCode::Extend):
-            return constantInstruction("EXTEND", offset);
+            return simpleInstruction("EXTEND", offset);
         case asByte(OpCode::DefineGlobal):
             return constantInstruction("DEFINE_GLOBAL", offset);
         case asByte(OpCode::GetGlobal):
@@ -292,6 +296,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("SET_PROP", offset);
         case asByte(OpCode::GetProp):
             return constantInstruction("GET_PROP", offset);
+        case asByte(OpCode::GetSuper):
+            return constantInstruction("GET_SUPER", offset);
         case asByte(OpCode::NewList):
             return byteInstruction("NEWLIST", offset);
         case asByte(OpCode::NewDict):

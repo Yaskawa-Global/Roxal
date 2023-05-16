@@ -1379,6 +1379,19 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
         setSourceInfo(var,context);
         return typeValue(var);
     }
+    else if (context->SUPER()) {
+        auto supervar = std::make_shared<Variable>("super");
+        setSourceInfo(supervar,context);
+
+        UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
+
+        auto access = std::make_shared<UnaryOp>(UnaryOp::Accessor);
+        setSourceInfo(access, context->DOT());
+        access->arg = supervar;
+        access->member = ident;
+
+        return typeValue(access);
+    }
     else if (context->IDENTIFIER()) {
         UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
         auto var = std::make_shared<Variable>(ident);
@@ -1387,11 +1400,6 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
     }
     else if (context->OPEN_PAREN())
         return visitExpression(context->expression());
-    else if (context->SUPER()) {
-        auto var = std::make_shared<Variable>("super");
-        setSourceInfo(var,context);
-        return typeValue(var);
-    }
     else if (context->num())
         return visitNum(context->num());
     else if (context->str())

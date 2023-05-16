@@ -56,6 +56,7 @@ enum class OpCode {
     SetLocal,
     SetProp,
     GetProp,
+    GetSuper,
     NewList,
     NewDict
 };
