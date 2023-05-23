@@ -24,6 +24,7 @@ ValueType Obj::valueType() const
         case ObjType::Int: return ValueType::Int;
         case ObjType::Real: return ValueType::Real;
         case ObjType::String: return ValueType::String;
+        case ObjType::Range: return ValueType::Range;
         case ObjType::Type: return ValueType::Type; // TODO: need to return more specific ObjectType for type object & type actor?
         case ObjType::List: return ValueType::List;
         case ObjType::Dict: return ValueType::Dict;
@@ -44,6 +45,8 @@ Obj* Obj::clone() const
         // FIXME!!!: collision for ObjType::Type - used by ObjTypeSpec and ObjPrimitive for builtin type!
     else if (type == ObjType::Bool || type == ObjType::Real || type == ObjType::Int /*|| type == ObjType::Type*/)
         return cloneObjPrimitive(static_cast<const ObjPrimitive*>(this));
+    else if (type == ObjType::Range)
+        return cloneRange(static_cast<const ObjRange*>(this));
     else if (type == ObjType::List)
         return cloneList(static_cast<const ObjList*>(this));
     else if (type == ObjType::Dict)
@@ -72,6 +75,9 @@ Obj* Obj::clone() const
     else if (type == ObjType::BoundMethod)
         // NB: this clones the reciever object
         return cloneBoundMethod(static_cast<const ObjBoundMethod*>(this));
+    else if (type == ObjType::RangeView)
+        // NB: this clones the viewed target value
+        return cloneRangeView(static_cast<const RangeView*>(this));
 
     throw std::runtime_error("clone() unimplemented for type "+std::to_string(int(this->type)));
 }
@@ -153,6 +159,64 @@ ObjString* roxal::stringVal(const UnicodeString& s)
         return objStr.value();
     }
 } 
+
+
+
+// range
+
+ObjRange::ObjRange()
+    : start(intVal(0)), stop(intVal(0)), step(intVal(1)), closed(false)
+{
+    type = ObjType::Range;
+}
+
+
+ObjRange::ObjRange(const Value& rstart, const Value& rstop, const Value& rstep, bool rclosed)
+    : start(rstart), stop(rstop), step(rstep), closed(rclosed)
+{
+    type = ObjType::Range;
+}
+
+
+ObjRange* roxal::rangeVal()
+{
+    return newObj<ObjRange>(__func__);
+}
+
+
+ObjRange* roxal::rangeVal(const Value& start, const Value& stop, const Value& step, bool closed)
+{
+    return newObj<ObjRange>(__func__,start,stop,step,closed);
+}
+
+
+std::string roxal::objRangeToString(const ObjRange* r)
+{
+    std::ostringstream oss {};
+
+    //oss << "[";
+    if (!r->start.isNil())
+        oss << toString(r->start);
+    oss << std::string(r->closed ? ".." : ":");
+    if (!r->stop.isNil())
+        oss << toString(r->stop);
+    if (!r->step.isNil() && (r->step.asInt()!=1))
+        oss << ":" << toString(r->step);
+    //oss << "]";
+    return oss.str();
+}
+
+
+ObjRange* roxal::cloneRange(const ObjRange* r)
+{
+    return newObj<ObjRange>(__func__,
+                           r->start.clone(),
+                           r->stop.clone(),
+                           r->step.clone(),
+                           r->closed);
+}
+
+
 
 
 // runtime types
@@ -265,6 +329,9 @@ std::string roxal::objToString(const Value& v)
         case ObjType::String: {
             return toUTF8StdString(asUString(v));
         }
+        case ObjType::Range: {
+            return objRangeToString(asRange(v));
+        }
         case ObjType::List: {
             auto l = asList(v);
             std::ostringstream os;
@@ -330,6 +397,12 @@ std::string roxal::objToString(const Value& v)
             ObjFuture* fut = asFuture(v);
             Value v = fut->future.get(); // will block if promise not fulfilled
             return toString(v);
+        }
+        case ObjType::RangeView: {
+            // TODO: convert view to underlying target value type (by taking view)
+            //  and output that.  For now, output something that shows range and value
+            RangeView* rv = asRangeView(v);
+            return toString(rv->value)+"["+toString(rv->range)+"]";
         }
         default: ;
     }

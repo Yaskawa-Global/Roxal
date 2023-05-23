@@ -276,13 +276,14 @@ ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
 
 // info to represent cases:
 //  (arg*) - call only with 0 or more args - (call==true)
-//  [arg+] - indexer only with 0 or more args - (indexer==true)
+//  [arg+] - indexer only with 1 or more args - (indexer==true, arguments==true)
 //  .access - accessor only (accessor==true)
 //  .access(arg*) - accessor and call (with 0 or more args) (accessor=true && call==true)
 struct ArgsOrAccessorInfo {
     bool call;
     bool accessor;
     bool indexer;
+    bool arguments; // if indexer: arguments? (or slices)
     UnicodeString accessed; // for accessor (or annotation identifier)
     // calls can include param names, indexers cannot (empty string if no name given)
     typedef std::vector<ArgNameExpr> ArgNameExprVec;
@@ -904,25 +905,33 @@ std::any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *context)
         return visitFollowed_by(context->followed_by());
     }
     else if (context->EQUALS()) { // assignment
-        icu::UnicodeString ident { icu::UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
 
         auto assign = std::make_shared<Assignment>();
         setSourceInfo(assign, context);
 
-        if (context->DOT()) { // property set
-            
-            auto callable = visitCall(context->call());
+        if (context->IDENTIFIER()) {  // property or variable set
 
-            auto access = std::make_shared<UnaryOp>(UnaryOp::Accessor);
-            setSourceInfo(access,context->DOT());
-            access->arg = as<Expression>(callable);
-            access->member = ident;
+            icu::UnicodeString ident { icu::UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
 
-            assign->lhs = access;
+            if (context->DOT()) { // property set
+                
+                auto callable = visitCall(context->call());
+
+                auto access = std::make_shared<UnaryOp>(UnaryOp::Accessor);
+                setSourceInfo(access,context->DOT());
+                access->arg = as<Expression>(callable);
+                access->member = ident;
+
+                assign->lhs = access;
+            }
+            else { // variable set
+                assign->lhs = std::make_shared<Variable>(ident);
+                setSourceInfo(assign->lhs,context->IDENTIFIER());
+            }
         }
-        else { // variable set
-            assign->lhs = std::make_shared<Variable>(ident);
-            setSourceInfo(assign->lhs,context->IDENTIFIER());
+        else { // lvalue set
+            auto callable = visitCall(context->call());
+            assign->lhs = as<Expression>(callable);
         }
 
         assign->rhs = as<Expression>(visitAssignment(context->assignment()));
@@ -1275,8 +1284,14 @@ std::any ASTGenerator::visitCall(RoxalParser::CallContext *context)
             auto index = std::make_shared<Index>();
             setSourceInfo(index,context->args_or_index_or_accessor().at(i));
             index->indexable = callable_or_indexable;
-            for(auto& arg : *argsOrAccessorInfo->args)
-                index->args.push_back(arg.second);
+
+            std::vector<ptr<Expression>> args {};
+            for(auto& namearg : *argsOrAccessorInfo->args) {
+                auto& arg { namearg.second };
+                args.push_back(arg);
+            }
+            index->args = args;
+
             callable_or_indexable = index;
         }
     }
@@ -1294,13 +1309,15 @@ std::any ASTGenerator::visitArgs_or_index_or_accessor(RoxalParser::Args_or_index
     auto info = std::make_shared<ArgsOrAccessorInfo>();
     info->accessor = info->indexer = info->call = false;
 
-    if (context->DOT()) { // accessor, possibly call or indexer
+    if (context->DOT()) { // accessor, possibly call 
         info->accessor = true;
+        info->arguments = false;
         UnicodeString ident = context->IDENTIFIER() ? UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) : "";
         info->accessed = ident;
 
         if (context->OPEN_PAREN()) {
             info->call = true;
+            info->arguments = true; // (redundant)
             if (context->arguments()) {
                 auto args = anyas<ptr<ArgsOrAccessorInfo::ArgNameExprVec>>(visitArguments(context->arguments()));
                 info->args = args;
@@ -1311,8 +1328,11 @@ std::any ASTGenerator::visitArgs_or_index_or_accessor(RoxalParser::Args_or_index
     }
     else if (context->OPEN_BRACK()) { // indexing
         info->indexer = true;
-        auto args = anyas<ptr<ArgsOrAccessorInfo::ArgNameExprVec>>(visitArguments(context->arguments()));
-        info->args = args;
+        auto range_or_exprs = anyas<ptr<std::vector<ptr<Expression>>>>(visitRanges(context->ranges()));
+        info->args = std::make_shared<ArgsOrAccessorInfo::ArgNameExprVec>();
+        for(auto& range_or_expr : *range_or_exprs) 
+            info->args->push_back(std::make_pair(icu::UnicodeString(),range_or_expr));        
+        info->arguments = false;
     }
     else if (context->OPEN_PAREN()) { // call
         info->call = true;
@@ -1330,6 +1350,70 @@ std::any ASTGenerator::visitArgs_or_index_or_accessor(RoxalParser::Args_or_index
     visitEnd();
 }
 
+
+
+std::any ASTGenerator::visitRanges(RoxalParser::RangesContext *context)
+{
+    visitStart();
+
+    auto indices = std::make_shared<std::vector<ptr<Expression>>>();
+
+    for(int i=0; i<context->range().size(); i++) 
+        indices->push_back(as<Expression>(visitRange(context->range().at(i))));    
+
+    return indices;
+    visitEnd();
+}
+
+
+std::any ASTGenerator::visitRange(RoxalParser::RangeContext *context)
+{
+    visitStart();
+
+    auto range = std::make_shared<ast::Range>();
+
+    range->closed = false;
+    if (!context->COLON().empty()) { // half-open range [)
+        auto startOptExpr = visitOptional_expression(context->optional_expression().at(0));
+        if (startOptExpr.has_value())
+            range->start = as<Expression>(startOptExpr);
+
+        auto stopOptExpr = visitOptional_expression(context->optional_expression().at(1));
+        if (stopOptExpr.has_value())
+            range->stop = as<Expression>(stopOptExpr);
+
+        if (context->expression())
+            range->step = as<Expression>(visitExpression(context->expression()));
+    }
+    else if (context->DOTDOT()) { // closed range []
+        range->closed = true;
+        auto startOptExpr = visitOptional_expression(context->optional_expression().at(0));
+        if (startOptExpr.has_value())
+            range->start = as<Expression>(startOptExpr);
+
+        auto stopOptExpr = visitOptional_expression(context->optional_expression().at(1));
+        if (stopOptExpr.has_value())
+            range->stop = as<Expression>(stopOptExpr);
+    }
+    else { // simple single index expr
+        // equivelent to range [n:n)
+        range->start = as<Expression>(visitExpression(context->expression()));
+        range->stop = range->start;
+    }
+
+    return typeValue(range);
+    visitEnd();
+}
+
+
+std::any ASTGenerator::visitOptional_expression(RoxalParser::Optional_expressionContext *context)
+{
+    visitStart();
+    if (context->expression())
+        return visitExpression(context->expression());
+    return {};
+    visitEnd();
+}
 
 
 // returns ptr<std::vector<std::pair<UnicodeString,ptr<Expression>>> of argument expressions
@@ -1398,12 +1482,25 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
         setSourceInfo(var,context);
         return typeValue(var);
     }
-    else if (context->OPEN_PAREN())
-        return visitExpression(context->expression());
     else if (context->num())
         return visitNum(context->num());
     else if (context->str())
         return visitStr(context->str());
+    else if (context->RANGE()) {
+        // create constructor call to range type
+        auto call = std::make_shared<ast::Call>();
+        auto rangeType = std::make_shared<ast::Type>();
+        rangeType->t = BuiltinType::Range;
+        call->callable = rangeType;
+
+        auto rangeExpr = as<Expression>(visitRange(context->range()));
+
+        call->args.push_back(std::make_pair(icu::UnicodeString(), rangeExpr));
+
+        return typeValue(call);
+    }
+    else if (context->OPEN_PAREN())
+        return visitExpression(context->expression());
     else if (context->list())
         return visitList(context->list());
     else if (context->dict())
@@ -1444,6 +1541,8 @@ std::any ASTGenerator::visitBuiltin_type(RoxalParser::Builtin_typeContext *conte
         type = BuiltinType::Decimal;
     else if (context->STRING())
         type = BuiltinType::String;
+    else if (context->RANGE())
+        type = BuiltinType::Range;
     else if (context->LIST())
         type = BuiltinType::List;
     else if (context->DICT())

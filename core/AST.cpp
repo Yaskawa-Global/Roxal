@@ -618,6 +618,8 @@ std::any Expression::accept(ASTVisitor& v)
         case Literal: { return std::dynamic_pointer_cast<ast::Literal>(shared_from_this())->accept(v); break; }
         case Variable: { return std::dynamic_pointer_cast<ast::Variable>(shared_from_this())->accept(v); break; }
         case Call: { return std::dynamic_pointer_cast<ast::Call>(shared_from_this())->accept(v); break; }
+        case Range: { return std::dynamic_pointer_cast<ast::Range>(shared_from_this())->accept(v); break; }
+        case Index: { return std::dynamic_pointer_cast<ast::Index>(shared_from_this())->accept(v); break; }
         default: throw std::runtime_error("unimplemented Expression::accept() alternative");
     }
     return {};
@@ -840,6 +842,74 @@ void Call::output(std::ostream& os, int indent) const
         arg.second->output(os,indent+2);
     }
 }
+
+
+
+std::any Range::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(std::dynamic_pointer_cast<Range>(shared_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(std::dynamic_pointer_cast<Range>(shared_from_this())) );
+
+    return results;
+}
+
+void Range::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    // start
+    if (start != nullptr)
+        results.push_back( start->accept(v) );
+    else
+        results.push_back( {} );
+
+    // stop
+    if (stop != nullptr)
+        results.push_back( stop->accept(v) );
+    else
+        results.push_back( {} );
+
+    // step
+    if (step != nullptr)
+        results.push_back( step->accept(v) );
+    else
+        results.push_back( {} );
+}
+
+
+void Range::output(std::ostream& os, int indent) const
+{
+    bool hasStep = (step != nullptr);
+    if (closed)
+        os << spaces(indent+2) << " range [start..end]" << std::endl;
+    else {
+        if (hasStep)
+            os << spaces(indent+2) << " range [start:end:step)" << std::endl;
+        else
+            os << spaces(indent+2) << " range [start:end)" << std::endl;
+    }
+    if (start != nullptr)
+        start->output(os,indent+4);
+    else
+        os << spaces(indent+4) << "-" << std::endl;
+    if (stop != nullptr)
+        stop->output(os,indent+4);
+    else
+        os << spaces(indent+4) << "-" << std::endl;
+    if (!closed) {
+        if (step != nullptr)
+            step->output(os,indent+4);
+        else
+            os << spaces(indent+4) << "-" << std::endl;
+    }
+}
+
 
 
 

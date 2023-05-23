@@ -21,6 +21,7 @@ enum class ValueType {
 
     // Obj (pointer) types 
     String,
+    Range,
     List,
     Dict,
     Vector,

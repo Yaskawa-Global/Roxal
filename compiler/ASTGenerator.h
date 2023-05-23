@@ -89,6 +89,12 @@ public:
 
     virtual std::any visitArgs_or_index_or_accessor(RoxalParser::Args_or_index_or_accessorContext *context);
 
+    virtual std::any visitRanges(RoxalParser::RangesContext *context);
+
+    virtual std::any visitRange(RoxalParser::RangeContext *context);
+
+    virtual std::any visitOptional_expression(RoxalParser::Optional_expressionContext *context);
+
     virtual std::any visitArguments(RoxalParser::ArgumentsContext *context);
 
     virtual std::any visitArgument(RoxalParser::ArgumentContext *context);

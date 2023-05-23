@@ -40,10 +40,12 @@ enum class ObjType {
     Native,
     Upvalue,
     Future,
+    RangeView,
     Bool,
     Int,
     Real,
     String,
+    Range,
     Type,
     List,
     Dict,
@@ -226,6 +228,36 @@ inline UnicodeString asUString(const Value& v) { return asString(v)->s; }
 ObjString* stringVal(const UnicodeString& s); 
 
 std::string objStringToString(const ObjString* os);
+
+
+
+
+//
+// range
+
+struct ObjRange : public Obj 
+{
+    ObjRange(); // empty range
+    ObjRange(const Value& start, const Value& stop, const Value& step, bool closed);
+    virtual ~ObjRange() {}
+
+    Value start;
+    Value stop;
+    Value step;
+    bool closed;
+};
+
+
+inline bool isRange(const Value& v) { return isObjType(v, ObjType::Range); }
+inline ObjRange* asRange(const Value& v) { return static_cast<ObjRange*>(v.asObj()); }
+
+ObjRange* rangeVal(); // empty range
+ObjRange* rangeVal(const Value& start, const Value& stop, const Value& step, bool closed); 
+
+std::string objRangeToString(const ObjRange* r);
+ObjRange* cloneRange(const ObjRange* r); // deep copy
+
+
 
 
 
@@ -630,6 +662,36 @@ inline ObjBoundMethod* cloneBoundMethod(const ObjBoundMethod* bm) {
     newmb->receiver = newmb->receiver.clone();
     return newmb;
 }
+
+
+
+//
+// A view of a value via a range
+//  (range bound to a value)
+
+struct RangeView : public Obj
+{
+    RangeView(const Value& v, const Value& r)
+        : value(v), range(r) { type = ObjType::RangeView; }
+    virtual ~RangeView() {}
+
+    Value value;
+    Value range;
+};
+
+inline bool isRangeView(const Value& v) { return isObjType(v, ObjType::RangeView); }
+inline RangeView* asRangeView(const Value& v) { return static_cast<RangeView*>(v.asObj()); }
+
+inline RangeView* rangeViewVal(const Value& value, const Value& range) {
+    return newObj<RangeView>(__func__,value, range);
+}
+
+inline RangeView* cloneRangeView(const RangeView* rv) {
+    auto newrv = newObj<RangeView>(__func__,rv->value.clone(), rv->range.clone());
+    return newrv;
+}
+
+
 
 
 

@@ -37,6 +37,7 @@ class BinaryOp;
 class UnaryOp;
 class Variable;
 class Call;
+class Range;
 class Index;
 class Literal;
 class Bool;
@@ -80,6 +81,7 @@ public:
     virtual std::any visit(ptr<UnaryOp> ast) = 0;
     virtual std::any visit(ptr<Variable> ast) = 0;
     virtual std::any visit(ptr<Call> ast) = 0;
+    virtual std::any visit(ptr<Range> ast) = 0;
     virtual std::any visit(ptr<Index> ast) = 0;
     virtual std::any visit(ptr<Literal> ast) = 0;
     virtual std::any visit(ptr<Bool> ast) = 0;
@@ -113,6 +115,8 @@ struct LinePos {
 
 
 typedef std::pair<icu::UnicodeString, ptr<Expression>> ArgNameExpr;
+// start,stop,step,is-stop-inclusive
+typedef std::tuple<ptr<Expression>,ptr<Expression>,ptr<Expression>,bool> RangeExpr;
 typedef std::vector<std::any> Anys;
 
 
@@ -380,6 +384,7 @@ struct Expression : public AST {
         Literal,
         Variable,
         Call,
+        Range,
         Index
     };
     Expression(ExprType et) : exprType(et) {}
@@ -478,6 +483,37 @@ struct Call : public Expression {
 };
 
 
+struct Range : public Expression {
+    Range() : Expression(ExprType::Range),
+              start(nullptr), stop(nullptr), step(nullptr)
+     {}
+
+    // a range includes
+    //  an optional start
+    //  an optional stop 
+    //  an optional step
+    //  flag indicating if the stop is inclusive
+    // if closed==false, behaves like Python slice or Ruby ... (half-open interval)
+    // if closed==true, behaves like Ruby [a..b] (closed interval)
+
+    // if start is omitted, implies implicit start (e.g. first element)
+    // if stop  is omitted, implies implicit stop (e.g. last element)
+    // if step  is omitted, implies 1 
+    // if closed==true, stop is inclusive (closed interval), otherwise exclusive (half-open interval)
+    
+    ptr<Expression> start; // may be null
+    ptr<Expression> stop;  // may be null
+    ptr<Expression> step;  // may be null
+
+    bool closed;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
 
 struct Index : public Expression {
     Index() : Expression(ExprType::Index) {}
@@ -537,6 +573,7 @@ struct Str : public Literal {
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 };
+
 
 struct Type : public Literal {
     Type() { literalType = LiteralType::Type; }

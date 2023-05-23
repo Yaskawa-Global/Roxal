@@ -30,6 +30,7 @@ enum class OpCode {
     FollowedBy,
     Pop,
     PopN,
+    Dup,
     JumpIfFalse,
     JumpIfTrue,
     Jump,
@@ -57,6 +58,7 @@ enum class OpCode {
     SetProp,
     GetProp,
     GetSuper,
+    NewRange,
     NewList,
     NewDict
 };

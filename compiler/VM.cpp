@@ -539,7 +539,6 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
         throw std::runtime_error("Named parameters unsupported in constructor for "+to_string(builtinType));
     auto argBegin = thread->stackTop - callSpec.argCount;
     auto argEnd = thread->stackTop;
-
     *(thread->stackTop - callSpec.argCount - 1) = construct(builtinType, argBegin, argEnd);
     popN(callSpec.argCount);
     return true;
@@ -724,15 +723,20 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                 }
                 ObjList* list = asList(indexable);
                 Value index = pop();
-                if (!index.isNumber()) {
-                    runtimeError("List indexing subscript must be a number.");
-                    return false;
+
+                if (index.isNumber()) {
+                    // TODO: bounds check
+                    Value result { list->elts.at(index.asInt()) };
+                    pop(); // discard indexable
+                    push(result);
+                    return true;
                 }
-                // TODO: bounds check
-                Value result { list->elts.at(index.asInt()) };
-                pop(); // discard indexable
-                push(result);
-                return true;
+                else if (index.isObj() && isRange(index)) {
+                    throw std::runtime_error("list indexing by range unimplemented");
+                    return true;
+                }
+                runtimeError("List indexing subscript must be a number or a range.");
+                return false;
             }
             case ObjType::Dict: {
                 if (subscriptCount != 1) {
@@ -1375,6 +1379,11 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     pop();
                 break;
             }
+            case asByte(OpCode::Dup): {
+                auto value = peek(0);
+                push(value);
+                break;
+            }
             case asByte(OpCode::JumpIfFalse): {
                 uint16_t jumpDist = readShort();
                 peek(0).resolveFuture();
@@ -1582,6 +1591,19 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 push(constant);
                 break;
             }
+            case asByte(OpCode::NewRange): {
+                bool closed = ((readByte() & 1) > 0);
+                if (!peek(2).isNil() && !peek(2).isNumber()) 
+                    runtimeError("The start bound of a range must be a number");
+                if (!peek(1).isNil() && !peek(1).isNumber()) 
+                    runtimeError("The stop bound of a range must be a number");
+                if (!peek(0).isNil() && !peek(0).isNumber()) 
+                    runtimeError("The step of a range must be a number");
+                auto rangeObj = rangeVal(peek(2),peek(1),peek(0),closed);
+                popN(3);
+                push(objVal(rangeObj));
+                break;
+            }
             case asByte(OpCode::NewList): {
                 int eltCount = readByte();
                 std::vector<Value> elts {};
@@ -1626,7 +1648,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::Extend): {
                 if (!isObjectType(peek(1))) {
-                    runtimeError("Super type to extend must be an object or actor type");;
+                    runtimeError("Super type to extend must be an object or actor type");
                     return errorReturn;
                 }
                 ObjObjectType* superType = asObjectType(peek(1));

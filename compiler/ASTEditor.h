@@ -38,6 +38,7 @@ public:
     virtual std::any visit(ptr<ast::UnaryOp> ast);
     virtual std::any visit(ptr<ast::Variable> ast);
     virtual std::any visit(ptr<ast::Call> ast);
+    virtual std::any visit(ptr<ast::Range> ast);
     virtual std::any visit(ptr<ast::Index> ast);
     virtual std::any visit(ptr<ast::Literal> ast);
     virtual std::any visit(ptr<ast::Bool> ast);
@@ -105,6 +106,7 @@ public:
     std::any visit(ptr<roxal::ast::UnaryOp> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Variable> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Call> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::Range> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Index> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Literal> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Bool> ast) override { if(m_f) m_f(ast); return{}; }

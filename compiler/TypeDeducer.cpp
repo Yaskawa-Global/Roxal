@@ -227,6 +227,17 @@ std::any TypeDeducer::visit(ptr<ast::Call> ast)
 }
 
 
+std::any TypeDeducer::visit(ptr<ast::Range> ast)
+{
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+
+    ast->type = std::make_shared<Type>(BuiltinType::Range);
+
+    return results;
+}
+
+
 std::any TypeDeducer::visit(ptr<ast::Index> ast)
 {
     ast::Anys results {};

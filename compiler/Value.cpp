@@ -28,6 +28,7 @@ std::string roxal::to_string(ValueType t)
     case ValueType::Real: return "real"; break;
     case ValueType::Decimal: return "decimal"; break;
     case ValueType::String: return "string"; break;
+    case ValueType::Range: return "range"; break;
     case ValueType::Type: return "type"; break;
     case ValueType::List: return "list"; break;
     case ValueType::Dict: return "dict"; break;
@@ -507,6 +508,7 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::Decimal: throw std::runtime_error("decimal unimplemented");
         case ValueType::Type: return typeVal(ValueType::Nil);
         case ValueType::String: return Value(stringVal(UnicodeString()));
+        case ValueType::Range: return Value(rangeVal());
         case ValueType::List: return Value(listVal({}));
         case ValueType::Dict: return Value(dictVal({}));
         case ValueType::Vector:
@@ -548,6 +550,12 @@ Value roxal::toType(ValueType t, Value v, bool strict)
             // TODO: use alternate 'non-debug' string conversion only utilizing UnicodeString
             return Value(stringVal(toUnicodeString(toString(v))));
         } break;
+        case ValueType::Range: {
+            if (v.type() == ValueType::Range)
+                return v;
+            if (!strict)
+                return objVal(rangeVal(v,v,intVal(1),true));
+        } break;
         case ValueType::Dict: {
             // can convert objects to dict of property, value pairs (non-strict only)
 
@@ -571,9 +579,10 @@ Value roxal::toType(ValueType t, Value v, bool strict)
                 }
                 return Value(dictValue);
             }
-        }
+        } break;
         //... TODO
     }
+    //TODO: is strict cause a type conversion runtime error
     return nilVal(); 
 }
 
@@ -593,7 +602,6 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
             throw std::runtime_error("stream(initial=0,freq=1) constructor requires 0,1 or 2 arguments");
         return stream;
     }
-
     if (end - 1 == begin)
         return toType(type, *begin, false);
     throw std::runtime_error("type constructors with >1 arg unimplemented");

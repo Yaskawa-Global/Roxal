@@ -779,6 +779,41 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
 }
 
 
+std::any RoxalCompiler::visit(ptr<ast::Range> ast)
+{
+    currentNode = ast;
+    Anys results {};
+
+    // always push 3 values, nil for implicit
+
+    // special case for range n:n - don't visit same
+    //  expression twice and we just leave single expr on stack
+    if ((ast->start != nullptr) && (ast->start == ast->stop)) {
+        results.push_back( ast->start->accept(*this) );
+    }
+    else {
+        if (ast->start != nullptr)
+            results.push_back( ast->start->accept(*this) );
+        else
+            emitByte(OpCode::ConstNil);
+
+        if (ast->stop != nullptr)
+            results.push_back( ast->stop->accept(*this) );
+        else
+            emitByte(OpCode::ConstNil);
+
+        if (ast->step != nullptr)
+            results.push_back( ast->step->accept(*this) );
+        else
+            emitByte(OpCode::ConstNil);
+
+        emitBytes(OpCode::NewRange, uint8_t(ast->closed ? 1 : 0));
+    }
+
+    return results;
+}
+
+
 std::any RoxalCompiler::visit(ptr<ast::Index> ast)
 {
     currentNode = ast;
@@ -961,6 +996,7 @@ ValueType RoxalCompiler::builtinToValueType(ast::BuiltinType bt)
         case ast::BuiltinType::Real: type = ValueType::Real; break;
         case ast::BuiltinType::Decimal: type = ValueType::Decimal; break;
         case ast::BuiltinType::String: type = ValueType::String; break;
+        case ast::BuiltinType::Range: type = ValueType::Range; break;
         case ast::BuiltinType::List: type = ValueType::List; break;
         case ast::BuiltinType::Dict: type = ValueType::Dict; break;
         case ast::BuiltinType::Vector: type = ValueType::Vector; break;

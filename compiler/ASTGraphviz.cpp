@@ -439,6 +439,25 @@ std::any ASTGraphviz::visit(ptr<ast::Call> ast)
 }
 
 
+std::any ASTGraphviz::visit(ptr<ast::Range> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+
+    if (ast->step != nullptr)
+        addLink(name, stackPop(), "step");
+    if (ast->stop != nullptr)
+        addLink(name, stackPop(), "stop");
+    if (ast->start != nullptr)
+        addLink(name, stackPop(), "start");
+
+    nodes[name] = node(name, std::string("range ")+(ast->closed ? "[]" : "[)") );
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
+
 std::any ASTGraphviz::visit(ptr<ast::Index> ast)
 {
     startVisit();

@@ -426,6 +426,14 @@ std::any ASTEditor::visit(ptr<ast::Call> ast)
     return {};
 }
 
+std::any ASTEditor::visit(ptr<ast::Range> ast)
+{
+    //ptr<Expression> start;
+    //ptr<Expression> stop; 
+    //ptr<Expression> step;  
+    return {};
+}
+
 std::any ASTEditor::visit(ptr<ast::Index> ast)
 {
     //ptr<Expression> indexable;
