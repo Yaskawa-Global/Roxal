@@ -209,9 +209,9 @@ ranges
 range
   : expression  // simple index (equivelent to n:n range)
   // [start:stop] or [start:] or [:stop] or either of those with optional :step] - half open (stop is exclusive)
-  | optional_expression COLON optional_expression (COLON expression)?
+  | optional_expression (DOTDOT '<'|COLON) optional_expression ((COLON|BY) expression)?
   // inclusive range (closed interval)
-  | optional_expression DOTDOT optional_expression
+  | optional_expression DOTDOT optional_expression ((COLON|BY) expression)?
   ;
 
 optional_expression
@@ -311,6 +311,7 @@ ELSEIF: 'elseif';
 WHILE: 'while';
 FOR : 'for';
 IN : 'in';
+BY : 'by';
 
 
 NEWLINE : ( '\r'? '\n' | '\r' | '\f' ) SPACES?;
@@ -340,6 +341,7 @@ EQUALS: '=';
 ISNOTEQUALS: '!=' | '<>' | '\u2260'; // ≠
 FOLLOWEDBY: '|>' | '\u21A6'; // ↦
 YIELDS: '->' | '\u2192'; // →
+UNDERSCORE: '_' ;
 
 OPEN_PAREN : '(';
 CLOSE_PAREN : ')';

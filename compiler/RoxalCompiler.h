@@ -171,6 +171,7 @@ protected:
     void emitByte(OpCode op, const std::string& comment = "");
     void emitBytes(uint8_t byte1, uint8_t byte2, const std::string& comment = "");
     void emitBytes(OpCode op, uint8_t byte2, const std::string& comment = "");
+    void emitBytes(OpCode op, uint8_t byte2, uint8_t byte3, const std::string& comment = "");
 
     void emitLoop(Chunk::size_type loopStart, const std::string& comment = "");
 

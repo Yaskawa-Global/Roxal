@@ -886,13 +886,17 @@ void Range::acceptChildren(ASTVisitor& v, Anys& results)
 void Range::output(std::ostream& os, int indent) const
 {
     bool hasStep = (step != nullptr);
-    if (closed)
-        os << spaces(indent+2) << " range [start..end]" << std::endl;
+    if (closed) {
+        if (hasStep)
+            os << spaces(indent+2) << " range start..stop by step" << std::endl;
+        else
+            os << spaces(indent+2) << " range start..stop" << std::endl;
+    }
     else {
         if (hasStep)
-            os << spaces(indent+2) << " range [start:end:step)" << std::endl;
+            os << spaces(indent+2) << " range start..<end by step" << std::endl;
         else
-            os << spaces(indent+2) << " range [start:end)" << std::endl;
+            os << spaces(indent+2) << " range start..<end" << std::endl;
     }
     if (start != nullptr)
         start->output(os,indent+4);

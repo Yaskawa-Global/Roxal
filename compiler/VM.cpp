@@ -539,9 +539,14 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
         throw std::runtime_error("Named parameters unsupported in constructor for "+to_string(builtinType));
     auto argBegin = thread->stackTop - callSpec.argCount;
     auto argEnd = thread->stackTop;
-    *(thread->stackTop - callSpec.argCount - 1) = construct(builtinType, argBegin, argEnd);
-    popN(callSpec.argCount);
-    return true;
+    try {
+        *(thread->stackTop - callSpec.argCount - 1) = construct(builtinType, argBegin, argEnd);
+        popN(callSpec.argCount);
+        return true;
+    } catch (std::exception& e) {
+        runtimeError(e.what());
+    }
+    return false;
 }
 
 
@@ -703,17 +708,17 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                 }
                 ObjString* str = asString(indexable);
                 Value index = pop();
-                if (!index.isNumber()) {
-                    runtimeError("String indexing subscript must be a number.");
+                //std::cout << "VM::indexValue indexable="+toString(indexable)+" index="+toString(index) << std::endl << std::flush;
+                try {
+                    Value substr { str->index(index) };
+                    pop(); // discard indexable
+                    push(substr);
+
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
                     return false;
                 }
-                const UnicodeString& ustr { str->s };
-                UnicodeString substr {};
-                // TODO: bounds check
-                ustr.extract(int32_t(index.asInt()),1,substr);
-                auto newStrValue { objVal(stringVal(substr)) };
-                pop(); // discard indexable
-                push(newStrValue);
+
                 return true;
             }
             case ObjType::List: {
@@ -723,20 +728,16 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                 }
                 ObjList* list = asList(indexable);
                 Value index = pop();
-
-                if (index.isNumber()) {
-                    // TODO: bounds check
-                    Value result { list->elts.at(index.asInt()) };
+                try {
+                    Value sublist { list->index(index) };
                     pop(); // discard indexable
-                    push(result);
-                    return true;
+                    push(sublist);
+
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return false;
                 }
-                else if (index.isObj() && isRange(index)) {
-                    throw std::runtime_error("list indexing by range unimplemented");
-                    return true;
-                }
-                runtimeError("List indexing subscript must be a number or a range.");
-                return false;
+                return true;
             }
             case ObjType::Dict: {
                 if (subscriptCount != 1) {
@@ -766,8 +767,13 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                 Value result;
                 if (n==0)
                     result = indexable;
-                else if (n==-1) 
-                    result = Stream::prev(n,indexable);
+                else if (n==-1) {
+                    try {
+                        result = Stream::prev(n,indexable);
+                    } catch (std::exception& e) {
+                        runtimeError(e.what());
+                    }
+                }
                 else {
                     runtimeError("Stream index "+std::to_string(n)+" out of range.");
                     return false;
@@ -804,11 +810,15 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                 Value indexable { stringVal(func->name) };
 
                 if (n==-1) {
-                    Value stream { Stream::prev(n,indexable) };
-                    frame->forwardStreamRefs[func->name] = stream;
-                    //std::cout << "Added forward stream ref " << toUTF8StdString(func->name) << std::endl;//!!!
-                    pop(); // discard indexable
-                    push(stream);
+                    try {
+                        Value stream { Stream::prev(n,indexable) };
+                        frame->forwardStreamRefs[func->name] = stream;
+                        //std::cout << "Added forward stream ref " << toUTF8StdString(func->name) << std::endl;
+                        pop(); // discard indexable
+                        push(stream);
+                    } catch (std::exception& e) {
+                        runtimeError(e.what());
+                    }
                 }
                 else {
                     runtimeError("Stream index "+std::to_string(n)+" out of range.");
@@ -824,6 +834,13 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
     }
     runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed, not type "+indexable.typeName()+".");
     return false;
+}
+
+
+Value VM::setIndexValue(const Value& indexable, int subscriptCount)
+{
+    throw std::runtime_error("setIndexValue() unimplemented");
+    return nilVal();
 }
 
 
@@ -1010,7 +1027,10 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
     auto readConstant2 = [&]() -> Value {
         #ifdef DEBUG_BUILD
-            return frame->closure->function->chunk->constants.at(Chunk::size_type((readByte() << 8) + readByte()));
+            auto index { Chunk::size_type((readByte() << 8) + readByte()) };
+            if (index >= frame->closure->function->chunk->constants.size())
+                throw std::runtime_error("Chunk instruction read constant invalid index into constants table");
+            return frame->closure->function->chunk->constants.at(index);
         #else
             return frame->closure->function->chunk->constants[Chunk::size_type((readByte() << 8) + readByte())];
         #endif
@@ -1018,6 +1038,10 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
     auto readString = [&]() -> ObjString* {
         return asString(readConstant());
+    };
+
+    auto readString2 = [&]() -> ObjString* {
+        return asString(readConstant2());
     };
 
     auto binaryOp = [&](std::function<Value(Value, Value)> op) {
@@ -1419,7 +1443,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::Index): {
                 uint8_t argCount = readByte();
-                peek(argCount).resolveFuture();
+                peek(argCount).resolveFuture(); // indexable
                 if (!indexValue(peek(argCount), argCount))
                     return errorReturn;
                 break;
@@ -1534,13 +1558,36 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 frame->slots[slot] = peek(0);
                 break;
             }
+            case asByte(OpCode::SetIndex): {
+                uint8_t argCount = readByte();
+                peek(argCount).resolveFuture(); // indexable
+                push(setIndexValue(peek(argCount), argCount));
+                break;
+            }
             case asByte(OpCode::DefineGlobal): {
                 ObjString* name = readString();
                 globals.store(name->hash, std::make_pair(name->s,pop()));
                 break;
             }
+            case asByte(OpCode::DefineGlobal2): {
+                ObjString* name = readString2();
+                globals.store(name->hash, std::make_pair(name->s,pop()));
+                break;
+            }
             case asByte(OpCode::GetGlobal): {
                 ObjString* name = readString();
+                if (globals.containsKey(name->hash)) {
+                    Value value = globals.at(name->hash).second;
+                    push(value);
+                }
+                else {
+                    runtimeError("Undefined variable '"+name->toStdString()+"'");
+                    return errorReturn;
+                }
+                break;
+            }
+            case asByte(OpCode::GetGlobal2): {
+                ObjString* name = readString2();
                 if (globals.containsKey(name->hash)) {
                     Value value = globals.at(name->hash).second;
                     push(value);
@@ -1563,8 +1610,33 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 }
                 break;
             }
+            case asByte(OpCode::SetGlobal2): {
+                ObjString* name = readString2();
+                if (globals.containsKey(name->hash)) { // found
+                    // set new value, but leave it on stack (as assignment is an expression)
+                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
+                }
+                else {
+                    runtimeError("Undefined variable '"+name->toStdString()+"'");
+                    return errorReturn;
+                }
+                break;
+            }
             case asByte(OpCode::SetNewGlobal): {
                 ObjString* name = readString();
+                if (globals.containsKey(name->hash)) { // found
+                    // set new value, but leave it on stack (as assignment is an expression)
+                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
+                }
+                else {
+                    // only automatic declaration of globals on assignment when
+                    //   at global/module level scope
+                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
+                }
+                break;
+            }
+            case asByte(OpCode::SetNewGlobal2): {
+                ObjString* name = readString2();
                 if (globals.containsKey(name->hash)) { // found
                     // set new value, but leave it on stack (as assignment is an expression)
                     globals.store(name->hash, std::make_pair(name->s,peek(0)));
@@ -1784,6 +1856,7 @@ void VM::runtimeError(const std::string& format, ...)
 void VM::defineBuiltinFunctions()
 {
     defineNative("print", &VM::print_builtin);
+    defineNative("len", &VM::len_builtin);
     defineNative("clone", &VM::clone_builtin);
     defineNative("sleep", &VM::sleep_builtin);
     defineNative("fork", &VM::fork_builtin);
@@ -1795,13 +1868,44 @@ void VM::defineBuiltinFunctions()
 
 Value VM::print_builtin(int argCount, Value* args)
 {
-    if (argCount != 1) 
-        throw std::invalid_argument("print expects single argument (convertable to a string)");
+    if (argCount == 0) {
+        std::cout << std::endl;
+        return nilVal();
+    }
+    else if (argCount != 1)
+        throw std::invalid_argument("print expects either no arguments (to output a newline) or single argument convertable to a string");
 
     auto str = toString(args[0]);
     std::cout << str << std::endl;
     return nilVal();
 }
+
+
+Value VM::len_builtin(int argCount, Value* args)
+{
+    if (argCount != 1)
+        throw std::invalid_argument("len expects single argument");
+
+    const Value& v (args[0]);
+    int32_t len {1};
+
+    switch (v.type()) {
+        case ValueType::String: len = asString(v)->length(); break;
+        case ValueType::List: len = asList(v)->length(); break;
+        case ValueType::Dict: len = asDict(v)->length(); break;
+        case ValueType::Range: {
+            len = asRange(v)->length();
+            if (len<0) return nilVal(); // has no defined length
+        } break;
+        default:
+        #ifdef DEBUG_BUILD
+        std::cerr << "Unhandled type in len():" << v.typeName() << std::endl;
+        #endif
+    }
+
+    return intVal(len);
+}
+
 
 
 Value VM::clone_builtin(int argCount, Value* args)

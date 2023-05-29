@@ -1372,8 +1372,16 @@ std::any ASTGenerator::visitRange(RoxalParser::RangeContext *context)
 
     auto range = std::make_shared<ast::Range>();
 
-    range->closed = false;
-    if (!context->COLON().empty()) { // half-open range [)
+    bool hasDots = (context->DOTDOT()!=nullptr);
+    bool hasLess = (context->LESS_THAN()!=nullptr);
+    bool hasColon = !context->COLON().empty();
+
+    bool closedRange = hasDots && !hasLess;
+    bool openRange = !closedRange && (hasDots || hasColon);
+    bool expressionOnly = !closedRange && !openRange;
+
+    if (openRange) { // half-open range [)
+        range->closed = false;
         auto startOptExpr = visitOptional_expression(context->optional_expression().at(0));
         if (startOptExpr.has_value())
             range->start = as<Expression>(startOptExpr);
@@ -1385,7 +1393,7 @@ std::any ASTGenerator::visitRange(RoxalParser::RangeContext *context)
         if (context->expression())
             range->step = as<Expression>(visitExpression(context->expression()));
     }
-    else if (context->DOTDOT()) { // closed range []
+    else if (closedRange) { // closed range []
         range->closed = true;
         auto startOptExpr = visitOptional_expression(context->optional_expression().at(0));
         if (startOptExpr.has_value())
@@ -1394,12 +1402,18 @@ std::any ASTGenerator::visitRange(RoxalParser::RangeContext *context)
         auto stopOptExpr = visitOptional_expression(context->optional_expression().at(1));
         if (stopOptExpr.has_value())
             range->stop = as<Expression>(stopOptExpr);
+
+        if (context->expression())
+            range->step = as<Expression>(visitExpression(context->expression()));
     }
-    else { // simple single index expr
+    else if (expressionOnly) { // simple single index expr
         // equivelent to range [n:n)
+        range->closed = false;
         range->start = as<Expression>(visitExpression(context->expression()));
         range->stop = range->start;
     }
+    else
+        throw std::runtime_error("Unexpected range alternative");
 
     return typeValue(range);
     visitEnd();

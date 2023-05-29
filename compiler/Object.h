@@ -215,6 +215,12 @@ struct ObjString : public Obj
     UnicodeString s;
     int32_t hash;
 
+    // number of 16bit Unicode code units
+    int32_t length() const { return s.length(); }
+
+    // Elements are Unicode code units (not code points or characters)
+    Value index(const Value& i) const;
+
     std::string toStdString() const 
       { std::string ss; s.toUTF8String(ss); return ss; }
 };
@@ -245,6 +251,22 @@ struct ObjRange : public Obj
     Value stop;
     Value step;
     bool closed;
+
+    // length can depend on target length due to use of -ve offsets from end
+    int32_t length(int32_t targetLen) const;
+
+    // valid only if start & stop are positive (and stop must be supplied, -1 otherwise)
+    int32_t length() const;
+
+    // map index in range to values in range
+    //  if targetLenb specified (not -1) it then
+    //  range is interpreted as over a target of that length, with
+    //   special case of start,stop being negative being interpreted
+    //   as counting back the end of the target
+    //  e.g. if target is list 3 elemnent list and range is [1:] then
+    //   targetIndex(1) = 2
+    int32_t targetIndex(int32_t index, int32_t targetLen=-1) const;
+
 };
 
 
@@ -267,7 +289,12 @@ ObjRange* cloneRange(const ObjRange* r); // deep copy
 struct ObjList : public Obj
 {
     ObjList() { type = ObjType::List; }
+    ObjList(const ObjRange* r);
     virtual ~ObjList() {}
+
+    int32_t length() const { return elts.size(); }
+
+    Value index(const Value& i) const;
 
     atomic_vector<Value> elts;
 };
@@ -276,6 +303,8 @@ struct ObjList : public Obj
 inline bool isList(const Value& v) { return isObjType(v, ObjType::List); }
 inline ObjList* asList(const Value& v) { return static_cast<ObjList*>(v.asObj()); }
 
+ObjList* listVal(); 
+ObjList* listVal(const ObjRange* r); 
 ObjList* listVal(const std::vector<Value>& elts); 
 ObjList* cloneList(const ObjList* l); // deep copy
 
@@ -290,6 +319,11 @@ struct ObjDict : public Obj
 {
     ObjDict() { type = ObjType::Dict; }
     virtual ~ObjDict() {}
+
+    int32_t length() const {
+        std::lock_guard<std::mutex> lock(m);
+        return m_keys.size();
+    }
 
     bool contains(const Value& key) const {
         std::lock_guard<std::mutex> lock(m);
@@ -335,6 +369,7 @@ private:
 inline bool isDict(const Value& v) { return isObjType(v, ObjType::Dict); }
 inline ObjDict* asDict(const Value& v) { return static_cast<ObjDict*>(v.asObj()); }
 
+ObjDict* dictVal(); 
 ObjDict* dictVal(const std::vector<std::pair<Value,Value>>& entries); 
 ObjDict* cloneDict(const ObjDict* d);
 
@@ -668,7 +703,7 @@ inline ObjBoundMethod* cloneBoundMethod(const ObjBoundMethod* bm) {
 //
 // A view of a value via a range
 //  (range bound to a value)
-
+// TODO: imcomplete (needed?)
 struct RangeView : public Obj
 {
     RangeView(const Value& v, const Value& r)

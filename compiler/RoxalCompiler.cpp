@@ -601,6 +601,22 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
         emitBytes(OpCode::SetProp, propName);
     }
+    else if (isa<Index>(ast->lhs)) {
+
+        // evaluate rhs
+        ast->rhs->accept(*this);
+
+        auto index { as<Index>(ast->lhs) };
+
+        // value being indexed
+        index->indexable->accept(*this);
+
+        // index args
+        for(auto& arg : index->args)
+            arg->accept(*this);
+
+        emitBytes(OpCode::SetIndex, index->args.size());
+    }
     else
         throw std::runtime_error("Unimplemented kind of LHS for assignment");
     return {};
@@ -1035,6 +1051,14 @@ void RoxalCompiler::emitBytes(OpCode op, uint8_t byte2, const std::string& comme
     currentChunk()->write(byte2, currentNode->interval.first.line);
 }
 
+void RoxalCompiler::emitBytes(OpCode op, uint8_t byte2, uint8_t byte3, const std::string& comment)
+{
+    currentChunk()->write(op, currentNode->interval.first.line, comment);
+    currentChunk()->write(byte2, currentNode->interval.first.line);
+    currentChunk()->write(byte3, currentNode->interval.first.line);
+}
+
+
 
 void RoxalCompiler::emitLoop(Chunk::size_type loopStart, const std::string& comment)
 {
@@ -1265,28 +1289,36 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
 
     int16_t arg = resolveLocal(funcScope(),name);
     if (arg != -1) { // found
-        getOp = OpCode::GetLocal;
-        setOp = OpCode::SetLocal;
+        getOp = (arg<=255) ? OpCode::GetLocal : OpCode::GetLocal2;
+        setOp = (arg<=255) ? OpCode::SetLocal : OpCode::SetLocal2;
     }
     else if ((arg = resolveUpvalue(funcScope(),name)) != -1) {
-        getOp = OpCode::GetUpvalue;
-        setOp = OpCode::SetUpvalue;
+        getOp = (arg<=255) ? OpCode::GetUpvalue : OpCode::GetUpvalue2;
+        setOp = (arg<=255) ? OpCode::SetUpvalue : OpCode::SetUpvalue2;
     }
     else { // local, not found
         // assume global
         arg = identifierConstant(name);
-        getOp = OpCode::GetGlobal;
+        getOp = (arg<=255) ? OpCode::GetGlobal : OpCode::GetGlobal2;
         //  allow assigning without previously declaring, except within functions
         if (funcScope()->functionType != FunctionType::Module)
-            setOp = OpCode::SetGlobal;
+            setOp = (arg<=255) ? OpCode::SetGlobal : OpCode::SetGlobal2;
         else 
-            setOp = OpCode::SetNewGlobal;
+            setOp = (arg<=255) ? OpCode::SetNewGlobal : OpCode::SetNewGlobal2;
     }
 
-    if (!assign)
-        emitBytes(getOp, arg, toUTF8StdString(name));
-    else
-        emitBytes(setOp, arg, toUTF8StdString(name));
+    if (!assign) {
+        if (arg <= 255)
+            emitBytes(getOp, arg, toUTF8StdString(name));
+        else
+            emitBytes(getOp, arg>>8, arg%256, toUTF8StdString(name));
+    }
+    else {
+        if (arg <= 255)
+            emitBytes(setOp, arg, toUTF8StdString(name));
+        else
+            emitBytes(setOp, arg>>8, arg%256, toUTF8StdString(name));
+    }
 
     return true;
 }

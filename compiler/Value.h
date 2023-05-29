@@ -127,6 +127,9 @@ public:
     inline bool isBool() const { return (val|uint64_t(1)<<TypeTagOffset) == (QNAN | TagTrue); }
     bool asBool(bool strict=true) const;
 
+    inline bool isByte() const { return (val & (QNAN | TypeTag)) == (QNAN | TagByte); }
+    uint8_t asByte(bool strict=true) const;
+
     inline bool isInt() const { return (val & (QNAN | TypeTag)) == (QNAN | TagInt); }
     int32_t asInt(bool strict=true) const;
 

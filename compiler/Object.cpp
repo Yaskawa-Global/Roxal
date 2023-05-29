@@ -129,6 +129,45 @@ ObjString::~ObjString()
 }
 
 
+Value ObjString::index(const Value& i) const
+{
+    if (!i.isNumber() && !isRange(i)) 
+        throw std::invalid_argument("String index must be a number or a range.");
+
+    UnicodeString substr {};
+    if (i.isNumber()) {
+        auto len = s.length();
+        auto unit = i.asInt();
+        // allow -ve numbers to index from the end of the string
+        if (unit < 0)
+            unit = len - (-unit);
+
+        if (unit < 0 || unit >= len)
+            throw std::invalid_argument("String index out-of-range.");
+
+        s.extract(int32_t(unit),1,substr);
+        return objVal(stringVal(substr));
+    }
+    else if (isRange(i)) {
+        auto r = asRange(i);
+        auto strLen = s.length();
+        auto rangeLen = r->length(strLen);
+        //std::cout << "::index " << i << " len:" << rangeLen << std::endl;
+        for(auto i=0; i<rangeLen; i++) {
+            auto targetIndex = r->targetIndex(i,strLen);
+            //std::cout << " ti=" << targetIndex << std::endl;    
+            if ((targetIndex >= 0) && (targetIndex < strLen))
+                substr += s.charAt(targetIndex);
+        }
+        if (substr.isBogus())
+            throw std::invalid_argument("Resulting sub-string from index is not valid");
+
+        return objVal(stringVal(substr));
+    }
+    throw std::runtime_error("String indexing subscript must be a number or a range.");
+}
+
+
 
 static uint32_t fnv1a32(const UnicodeString& s)
 {
@@ -152,6 +191,7 @@ ObjString* roxal::stringVal(const UnicodeString& s)
     int32_t hash = s.hashCode();
     auto objStr = strings.lookup(hash);
     if (!objStr.has_value()) { // not found
+
         // create new
         return newObj<ObjString>(__func__,s); 
     }
@@ -178,6 +218,138 @@ ObjRange::ObjRange(const Value& rstart, const Value& rstop, const Value& rstep, 
 }
 
 
+
+int32_t ObjRange::length(int32_t targetLen) const 
+{
+    // handle common case of ints first
+    if (   (start.isInt() || start.isNil()) 
+         && (stop.isInt() || stop.isNil())
+         && (step.isInt() || step.isNil())) {
+
+        int32_t stepi = step.isNil() ? 1 : step.asInt();
+
+        if (stepi > 0) { // normal order
+            int32_t starti = start.isNil() ? 0 : start.asInt();
+            int32_t stopi = stop.isNil() ? targetLen : stop.asInt();
+            if (starti < 0) starti = targetLen + starti;
+            if (stopi < 0) stopi = targetLen + stopi;
+            
+            if (!closed) {
+                //return abs(stopi - starti)/stepi;
+                if (starti >= stopi) return 0;
+                return (stopi - starti - 1) / stepi + 1;
+            }
+            else {
+                //return abs(stopi - starti + 1)/stepi;
+                if (starti > stopi) return 0;
+                return ((stopi+1) - starti - 1) / stepi + 1;
+            }
+        }
+        else { // reverse order e.g. -2:1:-2
+            int32_t starti = start.isNil() ? targetLen-1 : start.asInt();
+            int32_t stopi = stop.isNil() ? (closed?0:-1) : stop.asInt();
+            if (starti < 0) starti = targetLen + starti;
+            if ((stopi < 0) && !stop.isNil()) stopi = targetLen + stopi;
+
+            if (!closed)
+                return (starti - stopi - 1)/-stepi + 1;
+            else 
+                return (starti - (stopi-1) - 1)/-stepi + 1;
+        }
+    }
+    else {
+        throw std::runtime_error("non-int ranges unimplemented");
+    }
+}
+
+
+int32_t ObjRange::length() const
+{
+    // handle common case of ints first
+    if (   (start.isInt() || start.isNil()) 
+         && (stop.isInt() || stop.isNil())
+         && (step.isInt() || step.isNil())) {
+
+        int32_t stepi = step.isNil() ? 1 : step.asInt();
+
+        if (stepi > 0) { // normal order
+            if (stop.isNil()) return -1;
+
+            int32_t starti = start.isNil() ? 0 : start.asInt();
+            int32_t stopi = stop.asInt();
+            //if ((starti < 0) || (stopi < 0)) return -1;
+            //std::cout << " length() starti:" << starti << " stopi:" << stopi << " stepi:" << stepi << " closed:" << closed << std::endl;
+            if (!closed) {
+                if (starti >= stopi) return 0;
+                return (stopi - starti - 1) / stepi + 1;
+            }
+            else {
+                if (starti > stopi) return 0;
+                return ((stopi+1) - starti - 1) / stepi + 1;
+            }
+
+        } else { // reverse order e.g. -2:1:-2
+            //std::cout << "length()" << objRangeToString(this) << std::endl;
+            if (start.isNil()) return -1;
+
+            int32_t starti = start.asInt();
+            int32_t stopi = stop.isNil() ? (closed?0:-1) : stop.asInt();
+            //if ((starti < 0) || ((stopi < 0) && !stop.isNil())) return -1;
+            //std::cout << " length() starti:" << starti << " stopi:" << stopi << " stepi:" << stepi << (closed?" closed":" open") << std::endl;
+
+            if (!closed) 
+                return (starti - stopi - 1)/-stepi + 1;
+            else 
+                return (starti - (stopi-1) - 1)/-stepi + 1;
+        }
+    }
+    else {
+        throw std::runtime_error("non-int ranges unimplemented");
+    }
+}
+
+
+
+int32_t ObjRange::targetIndex(int32_t index, int32_t targetLen) const
+{
+    // handle common case of ints first
+    if (   (start.isInt() || start.isNil()) 
+         && (stop.isInt() || stop.isNil())
+         && (step.isInt() || step.isNil())) {
+
+        bool rangeOverTarget = targetLen >= 0;
+
+        auto stepi = step.isNil() ? 1 : step.asInt();
+        int32_t starti, stopi;
+
+        if (stepi > 0) { // normal order
+            starti = start.isNil() ? 0 : start.asInt();
+            stopi = stop.isNil() ? targetLen : stop.asInt();
+            if (rangeOverTarget) {
+                if (starti < 0) starti = targetLen + starti;
+                if (stopi < 0) stopi = targetLen + stopi;
+            }
+        }
+        else { // reverse order
+            if (!rangeOverTarget && start.isNil())
+                 throw std::invalid_argument("Indeterminate range start");
+
+            starti = start.isNil() ? targetLen-1 : start.asInt();
+            stopi = stop.isNil() ? -1 : stop.asInt();
+            if (rangeOverTarget) {
+                if (starti < 0) starti = targetLen + starti;
+                if ((stopi < 0) && !stop.isNil()) stopi = targetLen + stopi;
+            }
+        }
+
+        return starti + index*stepi;
+    }
+    else {
+        throw std::runtime_error("non-int ranges unimplemented");
+    }
+}
+
+
 ObjRange* roxal::rangeVal()
 {
     return newObj<ObjRange>(__func__);
@@ -194,15 +366,14 @@ std::string roxal::objRangeToString(const ObjRange* r)
 {
     std::ostringstream oss {};
 
-    //oss << "[";
     if (!r->start.isNil())
         oss << toString(r->start);
-    oss << std::string(r->closed ? ".." : ":");
+    oss << std::string(r->closed ? ".." : "..<");
     if (!r->stop.isNil())
         oss << toString(r->stop);
     if (!r->step.isNil() && (r->step.asInt()!=1))
-        oss << ":" << toString(r->step);
-    //oss << "]";
+        oss << " by " << toString(r->step);
+
     return oss.str();
 }
 
@@ -255,6 +426,55 @@ std::string roxal::objStringToString(const ObjString* os)
 
 
 
+ObjList::ObjList(const ObjRange* r)
+{
+    type = ObjType::List;
+    int32_t rangeLen = r->length();
+    for(int32_t i=0; i<rangeLen; i++)
+        elts.push_back(intVal(r->targetIndex(i,-1)));
+}
+
+
+Value ObjList::index(const Value& i) const
+{
+    if (i.isNumber()) {
+        auto index = i.asInt();
+        if (index < 0 || index >= length())
+            throw std::invalid_argument("List index out-of-range.");
+        return elts.at(index);
+    }
+    else if (isRange(i)) {
+        auto sublist = listVal();
+        auto r = asRange(i);
+        auto listLen = length();
+        auto rangeLen = r->length(listLen);
+
+        for(auto i=0; i<rangeLen; i++) {
+            auto targetIndex = r->targetIndex(i,listLen);
+            if ((targetIndex >= 0) && (targetIndex < listLen))
+                sublist->elts.push_back(elts.at(targetIndex));
+        }
+
+        return objVal(sublist);
+    }
+    else
+        throw std::invalid_argument("List indexing subscript must be a number or a range.");
+    return nilVal();
+}
+
+
+
+ObjList* roxal::listVal()
+{
+    return newObj<ObjList>(__func__);
+}
+
+
+ObjList* roxal::listVal(const ObjRange* r)
+{
+    return newObj<ObjList>(__func__,r);
+}
+
 ObjList* roxal::listVal(const std::vector<Value>& elts)
 {
     auto l = newObj<ObjList>(__func__);
@@ -281,6 +501,10 @@ std::string roxal::objListToString(const ObjList* ol)
     throw std::runtime_error(std::string("unimplemented ")+__func__);
 }
 
+ObjDict* roxal::dictVal()
+{
+    return newObj<ObjDict>(__func__);
+}
 
 ObjDict* roxal::dictVal(const std::vector<std::pair<Value,Value>>& entries)
 {

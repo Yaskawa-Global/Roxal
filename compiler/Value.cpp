@@ -131,6 +131,44 @@ bool Value::asBool(bool strict) const
 
 
 
+uint8_t Value::asByte(bool strict) const
+{
+    Value unboxed;
+    Value const* v { this };
+    if (isBoxed()) {
+        unboxed = *this;
+        unboxed.unbox();
+        v = &unboxed;
+    }
+
+    if (!v->isObj()) {
+        switch (v->type()) {
+        case ValueType::Int: { uint64_t i {v->val & ~(QNAN | TypeTag)} ; return *reinterpret_cast<uint8_t*>(&i); }
+        case ValueType::Real: return uint8_t(*reinterpret_cast<const double*>(&val));
+        case ValueType::Bool: return (val == (QNAN | TagTrue)) ? 1 : 0;
+        case ValueType::Decimal: return 0; // TODO: implement
+        default: ;
+        }
+    } else {
+        if (isString(*v) && !strict) {
+            try {
+                auto str { toUTF8StdString(asString(*v)->s) };
+                if ((str.size() > 2) && (str[0] == '0')) {
+                    if (str[1] == 'x' || str[1]=='X')
+                        return std::stoi(str.substr(2),nullptr,16);
+                    else if (str[1] == 'b' || str[1]=='B')
+                        return std::stoi(str.substr(2),nullptr,2);
+                    else if (str[1] == 'o' || str[1]=='O')
+                        return std::stoi(str.substr(2),nullptr,8);
+                }
+                return std::stoi(str,nullptr,10);
+            } catch(...) { return 0; }
+        }
+    }
+    return 0;
+}
+
+
 int32_t Value::asInt(bool strict) const
 {
     Value unboxed;
@@ -509,8 +547,8 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::Type: return typeVal(ValueType::Nil);
         case ValueType::String: return Value(stringVal(UnicodeString()));
         case ValueType::Range: return Value(rangeVal());
-        case ValueType::List: return Value(listVal({}));
-        case ValueType::Dict: return Value(dictVal({}));
+        case ValueType::List: return Value(listVal());
+        case ValueType::Dict: return Value(dictVal());
         case ValueType::Vector:
         case ValueType::Matrix:
         case ValueType::Tensor:
@@ -556,6 +594,10 @@ Value roxal::toType(ValueType t, Value v, bool strict)
             if (!strict)
                 return objVal(rangeVal(v,v,intVal(1),true));
         } break;
+        case ValueType::List: {
+            if ((v.type() == ValueType::Range) && !strict) 
+                return objVal(listVal(asRange(v)));
+        } break;
         case ValueType::Dict: {
             // can convert objects to dict of property, value pairs (non-strict only)
 
@@ -580,10 +622,9 @@ Value roxal::toType(ValueType t, Value v, bool strict)
                 return Value(dictValue);
             }
         } break;
-        //... TODO
+        //TODO: add more conversions
     }
-    //TODO: is strict cause a type conversion runtime error
-    return nilVal(); 
+    throw std::invalid_argument("unable to convert value of type "+to_string(v.type())+" to "+to_string(t));
 }
 
 
@@ -602,8 +643,9 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
             throw std::runtime_error("stream(initial=0,freq=1) constructor requires 0,1 or 2 arguments");
         return stream;
     }
-    if (end - 1 == begin)
-        return toType(type, *begin, false);
+    if (end - 1 == begin) 
+        // pass non-stict as this is an explicit construction/conversion
+        return toType(type, *begin, /*strict=*/false);
     throw std::runtime_error("type constructors with >1 arg unimplemented");
     return nilVal();
 }

@@ -145,7 +145,7 @@ Chunk::size_type Chunk::constantInstruction2(const std::string& name, size_type 
     std::cout << format("%-16s %4d '", name.c_str(), constant) 
               << toString(constants.at(constant))
               << "'" << std::endl;
-    return offset+2;
+    return offset+3;
 }
 
 
@@ -243,6 +243,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
         }
         case asByte(OpCode::Index):
             return byteInstruction("INDEX", offset);
+        case asByte(OpCode::SetIndex):
+            return byteInstruction("SET_INDEX", offset);
         case asByte(OpCode::Invoke):
             return invokeInstruction("INVOKE", offset);
         case asByte(OpCode::Closure): {
@@ -280,20 +282,36 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("EXTEND", offset);
         case asByte(OpCode::DefineGlobal):
             return constantInstruction("DEFINE_GLOBAL", offset);
+        case asByte(OpCode::DefineGlobal2):
+            return constantInstruction2("DEFINE_GLOBAL2", offset);
         case asByte(OpCode::GetGlobal):
             return constantInstruction("GET_GLOBAL", offset);
+        case asByte(OpCode::GetGlobal2):
+            return constantInstruction2("GET_GLOBAL2", offset);
         case asByte(OpCode::SetGlobal):
             return constantInstruction("SET_GLOBAL", offset);
+        case asByte(OpCode::SetGlobal2):
+            return constantInstruction2("SET_GLOBAL2", offset);
         case asByte(OpCode::SetNewGlobal):
             return constantInstruction("SET_NEW_GLOBAL", offset);
+        case asByte(OpCode::SetNewGlobal2):
+            return constantInstruction2("SET_NEW_GLOBAL2", offset);
         case asByte(OpCode::GetLocal):
             return byteInstruction("GET_LOCAL", offset);
+        case asByte(OpCode::GetLocal2):
+            return shortInstruction("GET_LOCAL2", offset);
         case asByte(OpCode::SetLocal):
             return byteInstruction("SET_LOCAL", offset);
+        case asByte(OpCode::SetLocal2):
+            return shortInstruction("SET_LOCAL2", offset);
         case asByte(OpCode::GetUpvalue):
             return byteInstruction("GET_UPVALUE", offset);
+        case asByte(OpCode::GetUpvalue2):
+            return shortInstruction("GET_UPVALUE2", offset);
         case asByte(OpCode::SetUpvalue):
             return byteInstruction("SET_UPVALUE", offset);
+        case asByte(OpCode::SetUpvalue2):
+            return shortInstruction("SET_UPVALUE2", offset);
         case asByte(OpCode::SetProp):
             return constantInstruction("SET_PROP", offset);
         case asByte(OpCode::GetProp):
