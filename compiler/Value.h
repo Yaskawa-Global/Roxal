@@ -136,7 +136,7 @@ public:
     inline bool isReal() const { return (val&QNAN) != QNAN; }
     double asReal(bool strict=true) const; 
 
-    inline bool isNumber() const { return isInt() || isReal(); } // TODO: || isByte() || isDecimal(v)
+    inline bool isNumber() const { return isInt() || isReal() || isByte(); } // TODO: || isDecimal(v)
 
     inline bool isType() const { return (val & (QNAN | TypeTag)) == (QNAN | TagType); }
     ValueType asType(bool strict=true) const;

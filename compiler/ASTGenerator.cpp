@@ -1330,8 +1330,18 @@ std::any ASTGenerator::visitArgs_or_index_or_accessor(RoxalParser::Args_or_index
         info->indexer = true;
         auto range_or_exprs = anyas<ptr<std::vector<ptr<Expression>>>>(visitRanges(context->ranges()));
         info->args = std::make_shared<ArgsOrAccessorInfo::ArgNameExprVec>();
-        for(auto& range_or_expr : *range_or_exprs) 
-            info->args->push_back(std::make_pair(icu::UnicodeString(),range_or_expr));        
+        for(auto& range_or_expr : *range_or_exprs) {
+            // special case: if the range is just [e..e], just use the
+            //  expression instead of the range
+            ptr<Expression> arg = range_or_expr;
+            if (arg->exprType == Expression::ExprType::Range) {
+                auto r = std::dynamic_pointer_cast<Range>(arg);
+                if (r->closed && (r->start!=nullptr) && (r->start == r->stop) && (r->step==nullptr))
+                    arg = r->start;
+            }
+
+            info->args->push_back(std::make_pair(icu::UnicodeString(),arg));
+        }
         info->arguments = false;
     }
     else if (context->OPEN_PAREN()) { // call
@@ -1407,8 +1417,8 @@ std::any ASTGenerator::visitRange(RoxalParser::RangeContext *context)
             range->step = as<Expression>(visitExpression(context->expression()));
     }
     else if (expressionOnly) { // simple single index expr
-        // equivelent to range [n:n)
-        range->closed = false;
+        // equivelent to range [n..n]
+        range->closed = true;
         range->start = as<Expression>(visitExpression(context->expression()));
         range->stop = range->start;
     }

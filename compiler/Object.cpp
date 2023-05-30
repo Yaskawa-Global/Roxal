@@ -463,6 +463,42 @@ Value ObjList::index(const Value& i) const
 }
 
 
+void ObjList::setIndex(const Value& i, const Value& v)
+{
+    if (i.isNumber()) {
+        auto index = i.asInt();
+        if (index < 0 || index >= length())
+            throw std::invalid_argument("List index out-of-range.");
+        elts.store(index, v);
+    }
+    else if (isRange(i)) {
+
+        if (!isList(v))
+            throw std::invalid_argument("Assignment to list with range requires a list on the RHS.");
+
+        const ObjList* rhsList = asList(v);
+        auto rhsLen = rhsList->length();
+
+        auto r = asRange(i);
+        auto listLen = length();
+        auto rangeLen = r->length(listLen);
+
+        if (rhsLen != rangeLen)
+            throw std::invalid_argument("Assignment to list with range requires a list on RHS of same length ("+std::to_string(rangeLen)+") as the range being assigned (len RHS is "+std::to_string(rhsLen)+" ).");
+
+        for(auto i=0; i<rangeLen; i++) {
+            auto targetIndex = r->targetIndex(i,listLen);
+            if ((targetIndex >= 0) && (targetIndex < listLen)) {
+                if (i < rhsLen)
+                    elts.store(targetIndex,rhsList->elts.at(i));
+            }
+        }
+    }
+    else
+        throw std::invalid_argument("List indexing subscript must be a number or a range (not "+to_string(i.type())+").");
+}
+
+
 
 ObjList* roxal::listVal()
 {

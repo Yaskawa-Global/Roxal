@@ -75,7 +75,7 @@ public:
     bool invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec);
     bool invoke(ObjString* name, const CallSpec& callSpec);
     bool indexValue(const Value& indexable, int subscriptCount);
-    Value setIndexValue(const Value& indexable, int subscriptCount);
+    bool setIndexValue(const Value& indexable, int subscriptCount, Value& value);
     bool bindMethod(ObjObjectType* instanceType, ObjString* name);
     ObjUpvalue* captureUpvalue(Value& local);
     void closeUpvalues(Value* last);

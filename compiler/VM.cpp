@@ -837,10 +837,44 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
 }
 
 
-Value VM::setIndexValue(const Value& indexable, int subscriptCount)
+bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
 {
-    throw std::runtime_error("setIndexValue() unimplemented");
-    return nilVal();
+    if (indexable.isObj()) {
+        // TODO: move some per-type indexing code into Object or Value 
+        switch (objType(indexable)) {
+            case ObjType::String: {
+                runtimeError("Strings are immutable - content cannot be modified.");
+                return false;
+            } break;
+            case ObjType::List: {
+                if (subscriptCount != 1) {
+                    runtimeError("List indexing requires a single subscript.");
+                    return false;
+                }
+                ObjList* list = asList(indexable);
+                Value index = pop();
+                try {
+                    if (isRange(index) && !isList(value)) value.resolveFuture();
+                    list->setIndex(index, value);
+                    pop(); // discard indexable
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return false;
+                }
+                return true;
+            } break;
+            case ObjType::Dict: {
+                throw std::runtime_error("Dict setIndexValue unimplemented.");
+            } break;
+            default: 
+                break;
+        } 
+        runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed, not type "+objTypeName(indexable.asObj())+".");
+        return false;
+    }
+
+    runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed, not type "+indexable.typeName()+".");
+    return false;
 }
 
 
@@ -1561,7 +1595,14 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::SetIndex): {
                 uint8_t argCount = readByte();
                 peek(argCount).resolveFuture(); // indexable
-                push(setIndexValue(peek(argCount), argCount));
+                try {
+                    Value& indexable { peek(argCount) };
+                    Value& value { peek(argCount+1) };
+                    setIndexValue(indexable, argCount, value);
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
                 break;
             }
             case asByte(OpCode::DefineGlobal): {

@@ -295,6 +295,7 @@ struct ObjList : public Obj
     int32_t length() const { return elts.size(); }
 
     Value index(const Value& i) const;
+    void setIndex(const Value& i, const Value& v);
 
     atomic_vector<Value> elts;
 };
