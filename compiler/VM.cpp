@@ -864,7 +864,20 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                 return true;
             } break;
             case ObjType::Dict: {
-                throw std::runtime_error("Dict setIndexValue unimplemented.");
+                if (subscriptCount != 1) {
+                    runtimeError("Dict indexing requires a single subscript.");
+                    return false;
+                }
+                ObjDict* dict = asDict(indexable);
+                Value index = pop();
+                try {
+                    dict->store(index, value);
+                    pop(); // discard indexable
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return false;
+                }
+                return true;
             } break;
             default: 
                 break;
