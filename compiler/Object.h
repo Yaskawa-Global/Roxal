@@ -40,7 +40,6 @@ enum class ObjType {
     Native,
     Upvalue,
     Future,
-    RangeView,
     Bool,
     Int,
     Real,
@@ -697,34 +696,6 @@ inline ObjBoundMethod* cloneBoundMethod(const ObjBoundMethod* bm) {
     auto newmb = newObj<ObjBoundMethod>(__func__,bm->receiver, bm->method);
     newmb->receiver = newmb->receiver.clone();
     return newmb;
-}
-
-
-
-//
-// A view of a value via a range
-//  (range bound to a value)
-// TODO: imcomplete (needed?)
-struct RangeView : public Obj
-{
-    RangeView(const Value& v, const Value& r)
-        : value(v), range(r) { type = ObjType::RangeView; }
-    virtual ~RangeView() {}
-
-    Value value;
-    Value range;
-};
-
-inline bool isRangeView(const Value& v) { return isObjType(v, ObjType::RangeView); }
-inline RangeView* asRangeView(const Value& v) { return static_cast<RangeView*>(v.asObj()); }
-
-inline RangeView* rangeViewVal(const Value& value, const Value& range) {
-    return newObj<RangeView>(__func__,value, range);
-}
-
-inline RangeView* cloneRangeView(const RangeView* rv) {
-    auto newrv = newObj<RangeView>(__func__,rv->value.clone(), rv->range.clone());
-    return newrv;
 }
 
 

@@ -75,9 +75,6 @@ Obj* Obj::clone() const
     else if (type == ObjType::BoundMethod)
         // NB: this clones the reciever object
         return cloneBoundMethod(static_cast<const ObjBoundMethod*>(this));
-    else if (type == ObjType::RangeView)
-        // NB: this clones the viewed target value
-        return cloneRangeView(static_cast<const RangeView*>(this));
 
     throw std::runtime_error("clone() unimplemented for type "+std::to_string(int(this->type)));
 }
@@ -534,7 +531,19 @@ ObjList* roxal::cloneList(const ObjList* l)
 
 std::string roxal::objListToString(const ObjList* ol)
 {
-    throw std::runtime_error(std::string("unimplemented ")+__func__);
+    std::ostringstream os;
+    os << "[";
+    auto list { ol->elts.get() };
+    for(auto it = list.begin(); it != list.end(); ++it) {
+        const auto& value { *it };
+        auto valStr { toString(value) };
+        if (isString(value)) valStr = "\""+valStr+"\"";
+        os << valStr;
+        if (it != list.end()-1)
+            os << ", ";                
+    }
+    os << "]";
+    return os.str();
 }
 
 
@@ -566,7 +575,23 @@ ObjDict* roxal::cloneDict(const ObjDict* d)
 
 std::string roxal::objDictToString(const ObjDict* od)
 {
-    throw std::runtime_error(std::string("unimplemented ")+__func__);
+    std::ostringstream os;
+    os << "{";
+    size_t i=0;
+    auto keys { od->keys() };
+    for(const auto& key : keys) {
+        const auto value { od->at(key) };
+        auto keyStr { toString(key) };
+        auto valStr { toString(value) };
+        if (isString(key)) keyStr = "\""+keyStr+"\"";
+        if (isString(value)) valStr = "\""+valStr+"\"";
+        os << keyStr << ": " << valStr;
+        if (i != keys.size()-1)
+            os << ", ";
+        i++;
+    }
+    os << "}";
+    return os.str();
 }
 
 
@@ -597,40 +622,10 @@ std::string roxal::objToString(const Value& v)
             return objRangeToString(asRange(v));
         }
         case ObjType::List: {
-            auto l = asList(v);
-            std::ostringstream os;
-            os << "[";
-            auto list { l->elts.get() };
-            for(auto it = list.begin(); it != list.end(); ++it) {
-                const auto& value { *it };
-                auto valStr { toString(value) };
-                if (isString(value)) valStr = "\""+valStr+"\"";
-                os << valStr;
-                if (it != list.end()-1)
-                    os << ", ";                
-            }
-            os << "]";
-            return os.str();
+            return objListToString(asList(v));
         }
         case ObjType::Dict: {
-            auto d = asDict(v);
-            std::ostringstream os;
-            os << "{";
-            size_t i=0;
-            auto keys { d->keys() };
-            for(const auto& key : keys) {
-                const auto value { d->at(key) };
-                auto keyStr { toString(key) };
-                auto valStr { toString(value) };
-                if (isString(key)) keyStr = "\""+keyStr+"\"";
-                if (isString(value)) valStr = "\""+valStr+"\"";
-                os << keyStr << ": " << valStr;
-                if (i != keys.size()-1)
-                    os << ", ";
-                i++;
-            }
-            os << "}";
-            return os.str();
+            return objDictToString(asDict(v));
         }
         case ObjType::Stream: {
             // converting a stream to a string actually converts its current value to a string
@@ -661,12 +656,6 @@ std::string roxal::objToString(const Value& v)
             ObjFuture* fut = asFuture(v);
             Value v = fut->future.get(); // will block if promise not fulfilled
             return toString(v);
-        }
-        case ObjType::RangeView: {
-            // TODO: convert view to underlying target value type (by taking view)
-            //  and output that.  For now, output something that shows range and value
-            RangeView* rv = asRangeView(v);
-            return toString(rv->value)+"["+toString(rv->range)+"]";
         }
         default: ;
     }

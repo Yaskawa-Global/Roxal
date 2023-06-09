@@ -7,7 +7,7 @@ import subprocess
 #  and compare its output with <test>.out and issue error on mismatch
 
 tests = [
-    'comments', 'primitive1', 'constants',
+    'comments', 'primitive1', 'constants', 'scopetest2', 'scopetest3',
     'andtest', 'ortest', 'not',
     'arith', 'factorial',
     'dict', 'dict2', 'list', 'list2', 'range', 'range2',
@@ -19,7 +19,7 @@ tests = [
     'func_param_default', 'func_param_default2', 'func_param_default3','func_param_default4',
     'typeobj1', 'typeobj2', 'typeobj3', 'typeobj4', 'typeobj5', 'typeobj6', 'typeobj7',
     'method_named_param',
-    'annot1', 'generic',
+    'annot1', 'generic', 'objscopes',
     'threads1', 'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6',
     'clone1', 'extends1'
 ]

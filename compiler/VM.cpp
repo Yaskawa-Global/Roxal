@@ -1262,6 +1262,14 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 push(value); // value (possibly converted)
                 break;
             }
+            case asByte(OpCode::GetProp2): {
+                throw std::runtime_error("unimplemented");
+                break;
+            }
+            case asByte(OpCode::SetProp2): {
+                throw std::runtime_error("unimplemented");
+                break;
+            }
             case asByte(OpCode::GetSuper): {
                 ObjString* name = readString();
                 #ifdef DEBUG_BUILD

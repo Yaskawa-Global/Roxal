@@ -316,6 +316,10 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("SET_PROP", offset);
         case asByte(OpCode::GetProp):
             return constantInstruction("GET_PROP", offset);
+        case asByte(OpCode::SetProp2):
+            return constantInstruction2("SET_PROP", offset);
+        case asByte(OpCode::GetProp2):
+            return constantInstruction2("GET_PROP", offset);
         case asByte(OpCode::GetSuper):
             return constantInstruction("GET_SUPER", offset);
         case asByte(OpCode::NewRange):

@@ -461,8 +461,13 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     currentNode = ast;
     
     bool isProc = ast->isProc;
-    bool isMethod = !typeScopes.empty();
-
+    bool isMethod = !typeScopes.empty() // methods can't be outside type decl
+                     && (funcScope()->functionType!=FunctionType::Method) // or directly inside another method
+                     && (funcScope()->functionType!=FunctionType::Initializer);
+    // std::cout << " visit <Function> " << toUTF8StdString(ast->name) 
+    //           << " current funcScope:" << toUTF8StdString(funcScope()->function->name) 
+    //            << "[type:" << std::to_string(int(funcScope()->functionType)) << "]"
+    //           << " isMethod?" << isMethod << std::endl;
     bool isInitializer = isMethod && (ast->name == "init");
 
     if (isInitializer && !isProc)
@@ -1284,19 +1289,39 @@ void RoxalCompiler::defineVariable(uint16_t var)
 
 bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
 {
-    //std::cout << (&(*state()) - &(*states.begin())) << " namedVariable(" << toUTF8StdString(name) << ")" << std::endl;//!!!
+    //std::cout << (&(*state()) - &(*states.begin())) << " namedVariable(" << toUTF8StdString(name) << ")" << std::endl;
+    //std::cout << toUTF8StdString(funcScope()->function->name) << " namedVariable(" << toUTF8StdString(name) << ")" << std::endl;
+
     OpCode getOp, setOp;
 
     int16_t arg = resolveLocal(funcScope(),name);
+    bool found = false;
     if (arg != -1) { // found
+        found = true;
         getOp = (arg<=255) ? OpCode::GetLocal : OpCode::GetLocal2;
         setOp = (arg<=255) ? OpCode::SetLocal : OpCode::SetLocal2;
     }
-    else if ((arg = resolveUpvalue(funcScope(),name)) != -1) {
+    // else if ((funcScope()->functionType == FunctionType::Method ) && ((arg = resolveLocal(funcScope(),"this") != -1))) {
+    //     // if we have a property name, allow access without 'this.' prefix
+    //     if (!typeScopes.empty()) {
+    //         // FIXME: statically check the property exists.. (otherwise we're blocking all outer scope local access..)
+    //         //std::cout << funcScope() << std::endl;       
+    //         arg = identifierConstant(name);
+    //         namedVariable("this", false);
+    //         //emitBytes(OpCode::GetProp, uint8_t(identConstant));
+    //         getOp = (arg<=255) ? OpCode::GetProp : OpCode::GetProp2;
+    //         setOp = (arg<=255) ? OpCode::SetProp : OpCode::SetProp2;
+    //         found = true;
+    //     }
+    // }
+
+    if (!found && ((arg = resolveUpvalue(funcScope(),name)) != -1)) {
+        found = true;
         getOp = (arg<=255) ? OpCode::GetUpvalue : OpCode::GetUpvalue2;
         setOp = (arg<=255) ? OpCode::SetUpvalue : OpCode::SetUpvalue2;
     }
-    else { // local, not found
+
+    if (!found) { // local, not found
         // assume global
         arg = identifierConstant(name);
         getOp = (arg<=255) ? OpCode::GetGlobal : OpCode::GetGlobal2;
