@@ -15,32 +15,33 @@ public:
 
     virtual TraversalOrder traversalOrder() const;
 
-    virtual void visit(ptr<ast::File> ast);
-    virtual void visit(ptr<ast::SingleInput> ast);
-    virtual void visit(ptr<ast::Annotation> ast);
-    virtual void visit(ptr<ast::TypeDecl> ast);
-    virtual void visit(ptr<ast::FuncDecl> ast);
-    virtual void visit(ptr<ast::VarDecl> ast);
-    virtual void visit(ptr<ast::Suite> ast);
-    virtual void visit(ptr<ast::ExpressionStatement> ast);
-    virtual void visit(ptr<ast::ReturnStatement> ast);
-    virtual void visit(ptr<ast::IfStatement> ast);
-    virtual void visit(ptr<ast::WhileStatement> ast);
-    virtual void visit(ptr<ast::Function> ast);
-    virtual void visit(ptr<ast::Parameter> ast);
-    virtual void visit(ptr<ast::Assignment> ast);
-    virtual void visit(ptr<ast::BinaryOp> ast);
-    virtual void visit(ptr<ast::UnaryOp> ast);
-    virtual void visit(ptr<ast::Variable> ast);
-    virtual void visit(ptr<ast::Call> ast);
-    virtual void visit(ptr<ast::Index> ast);
-    virtual void visit(ptr<ast::Literal> ast);
-    virtual void visit(ptr<ast::Bool> ast);
-    virtual void visit(ptr<ast::Str> ast);
-    virtual void visit(ptr<ast::Type> ast);
-    virtual void visit(ptr<ast::Num> ast);
-    virtual void visit(ptr<ast::List> ast);
-    virtual void visit(ptr<ast::Dict> ast);
+    virtual std::any visit(ptr<ast::File> ast);
+    virtual std::any visit(ptr<ast::SingleInput> ast);
+    virtual std::any visit(ptr<ast::Annotation> ast);
+    virtual std::any visit(ptr<ast::TypeDecl> ast);
+    virtual std::any visit(ptr<ast::FuncDecl> ast);
+    virtual std::any visit(ptr<ast::VarDecl> ast);
+    virtual std::any visit(ptr<ast::Suite> ast);
+    virtual std::any visit(ptr<ast::ExpressionStatement> ast);
+    virtual std::any visit(ptr<ast::ReturnStatement> ast);
+    virtual std::any visit(ptr<ast::IfStatement> ast);
+    virtual std::any visit(ptr<ast::WhileStatement> ast);
+    virtual std::any visit(ptr<ast::Function> ast);
+    virtual std::any visit(ptr<ast::Parameter> ast);
+    virtual std::any visit(ptr<ast::Assignment> ast);
+    virtual std::any visit(ptr<ast::BinaryOp> ast);
+    virtual std::any visit(ptr<ast::UnaryOp> ast);
+    virtual std::any visit(ptr<ast::Variable> ast);
+    virtual std::any visit(ptr<ast::Call> ast);
+    virtual std::any visit(ptr<ast::Range> ast);
+    virtual std::any visit(ptr<ast::Index> ast);
+    virtual std::any visit(ptr<ast::Literal> ast);
+    virtual std::any visit(ptr<ast::Bool> ast);
+    virtual std::any visit(ptr<ast::Str> ast);
+    virtual std::any visit(ptr<ast::Type> ast);
+    virtual std::any visit(ptr<ast::Num> ast);
+    virtual std::any visit(ptr<ast::List> ast);
+    virtual std::any visit(ptr<ast::Dict> ast);
 
     bool hasType(ptr<ast::AST> ast) const { return ast->existsAttr("type"); }
 

@@ -17,7 +17,7 @@ namespace roxal::type {
 enum class BuiltinType {
     Nil, 
     Bool, Byte, Number, Int, Real, Decimal, 
-    String, 
+    String, Range,
     List, Dict, 
     Vector, Matrix, Tensor, 
     Orient, Stream,

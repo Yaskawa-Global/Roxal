@@ -1,0 +1,49 @@
+
+type object Obj:
+
+  proc init():
+    this.name = "AnObj"
+    this.i = 3
+
+  func method():
+
+    func f():       
+
+      type object Obj2:
+
+        proc init():
+          this.name = "AnObj2"
+
+        func method2():
+          func g():
+            print('g: '+this.name)
+            return this.j
+
+          print('method2: '+this.name)
+          return g()
+
+      print('f: '+this.name)
+      this.o2 = Obj2()
+      this.o2.j = this.i
+
+      return this.o2.method2()
+  
+    print('method: '+this.name)
+    return f()
+  
+
+var o = Obj()
+print(o.name)
+
+print(o.method())
+
+print(o.o2.name)
+
+o.o2.j = 4
+print(o.method())
+
+o.i = 4
+print(o.method())
+
+
+

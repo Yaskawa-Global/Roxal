@@ -78,6 +78,7 @@ public:
     bool invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec);
     bool invoke(ObjString* name, const CallSpec& callSpec);
     bool indexValue(const Value& indexable, int subscriptCount);
+    bool setIndexValue(const Value& indexable, int subscriptCount, Value& value);
     bool bindMethod(ObjObjectType* instanceType, ObjString* name);
     ObjUpvalue* captureUpvalue(Value& local);
     void closeUpvalues(Value* last);
@@ -185,6 +186,14 @@ protected:
 
     ObjString* initString;
 
+    // TODO: perhaps implement inheretance first, then pre-define
+    //  object type as root of class heirarchy and add clone() and other
+    //  builtins to that
+    // Builtin methods
+    //  type name -> method-name,method-closure
+    // Since methods are added to types as they're defined at runtime,
+    //  we need to 
+    //std::map<icu::UnicodeString, std::pair<icu::UnicodeString, Value>> builtinMethods;
 
     void resetStack();
     void freeObjects();
@@ -199,6 +208,8 @@ protected:
     void defineBuiltinFunctions();
 
     Value print_builtin(int argCount, Value* args);
+    Value len_builtin(int argCount, Value* args);
+    Value clone_builtin(int argCount, Value* args);
     Value sleep_builtin(int argCount, Value* args);
     Value fork_builtin(int argCount, Value* args);
     Value join_builtin(int argCount, Value* args);

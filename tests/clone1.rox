@@ -1,0 +1,38 @@
+
+// check object clone() (deep copy)
+type object A:
+  var ai: int = 1
+
+type object B:
+  var a
+
+a = A()
+b = B()
+b.a = a
+
+print(b.a.ai) // 1
+
+#b2 = b.clone()
+b2 = clone(b)
+b2.a.ai = 2
+
+print(b.a.ai) // 1
+print(b2.a.ai) // 2 (as b2 has its own A instance)
+
+// check builtins
+
+// list & dict elt assignment not yet supported
+
+#l1 = [1,2,3]
+#l2 = clone(l1)
+#l2[0] = 4
+#print(l1)
+#print(l2)
+
+
+s = "abcdef"
+s2 = clone(s)
+print(s)
+print(s2)
+
+

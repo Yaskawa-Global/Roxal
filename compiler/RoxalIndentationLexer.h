@@ -10,6 +10,7 @@
 
 #include <stack>
 #include <deque>
+#include <list>
 
 #include "RoxalLexer.h"
 

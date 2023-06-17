@@ -16,9 +16,12 @@
 #include "Value.h"
 
 
-// forward decl
+// forward decls
 namespace roxal::type {
     struct Type;
+}
+namespace roxal::ast {
+    struct Annotation;
 }
 
 
@@ -41,6 +44,7 @@ enum class ObjType {
     Int,
     Real,
     String,
+    Range,
     Type,
     List,
     Dict,
@@ -57,6 +61,8 @@ struct Obj {
 
 
     ValueType valueType() const;
+
+    Obj* clone() const; // deep copy
 
     inline void incRef() 
     {
@@ -176,9 +182,23 @@ struct ObjPrimitive : public Obj
     } as;
 };
 
-inline bool isPrimitive(const Value& v) { return isObjType(v, ObjType::Bool) || isObjType(v, ObjType::Int) || isObjType(v, ObjType::Real) || isObjType(v,ObjType::Type); }
-inline ObjPrimitive* asPrimitive(const Value& v) { return static_cast<ObjPrimitive*>(v.asObj()); }
+inline bool isObjPrimitive(const Value& v) { return isObjType(v, ObjType::Bool) || isObjType(v, ObjType::Int) || isObjType(v, ObjType::Real) || isObjType(v,ObjType::Type); }
+inline ObjPrimitive* asObjPrimitive(const Value& v) { return static_cast<ObjPrimitive*>(v.asObj()); }
 
+inline ObjPrimitive* cloneObjPrimitive(const ObjPrimitive* op) {    
+    if (op->type == ObjType::Bool)
+        return newObj<ObjPrimitive>(__func__,op->as.boolean);
+    else if (op->type == ObjType::Int)
+        return newObj<ObjPrimitive>(__func__,op->as.integer);
+    else if (op->type == ObjType::Real)
+        return newObj<ObjPrimitive>(__func__,op->as.real);
+    else if (op->type == ObjType::Type)
+        return newObj<ObjPrimitive>(__func__,op->as.btype);
+    #ifdef DEBUG_BUILD
+    throw std::runtime_error("Unsupported ObjPrimitive Type "+std::to_string(int(op->type)));
+    #endif
+    return newObj<ObjPrimitive>(__func__,false);
+}
 
 
 
@@ -193,6 +213,12 @@ struct ObjString : public Obj
 
     UnicodeString s;
     int32_t hash;
+
+    // number of 16bit Unicode code units
+    int32_t length() const { return s.length(); }
+
+    // Elements are Unicode code units (not code points or characters)
+    Value index(const Value& i) const;
 
     std::string toStdString() const 
       { std::string ss; s.toUTF8String(ss); return ss; }
@@ -210,13 +236,65 @@ std::string objStringToString(const ObjString* os);
 
 
 
+
+//
+// range
+
+struct ObjRange : public Obj 
+{
+    ObjRange(); // empty range
+    ObjRange(const Value& start, const Value& stop, const Value& step, bool closed);
+    virtual ~ObjRange() {}
+
+    Value start;
+    Value stop;
+    Value step;
+    bool closed;
+
+    // length can depend on target length due to use of -ve offsets from end
+    int32_t length(int32_t targetLen) const;
+
+    // valid only if start & stop are positive (and stop must be supplied, -1 otherwise)
+    int32_t length() const;
+
+    // map index in range to values in range
+    //  if targetLenb specified (not -1) it then
+    //  range is interpreted as over a target of that length, with
+    //   special case of start,stop being negative being interpreted
+    //   as counting back the end of the target
+    //  e.g. if target is list 3 elemnent list and range is [1:] then
+    //   targetIndex(1) = 2
+    int32_t targetIndex(int32_t index, int32_t targetLen=-1) const;
+
+};
+
+
+inline bool isRange(const Value& v) { return isObjType(v, ObjType::Range); }
+inline ObjRange* asRange(const Value& v) { return static_cast<ObjRange*>(v.asObj()); }
+
+ObjRange* rangeVal(); // empty range
+ObjRange* rangeVal(const Value& start, const Value& stop, const Value& step, bool closed); 
+
+std::string objRangeToString(const ObjRange* r);
+ObjRange* cloneRange(const ObjRange* r); // deep copy
+
+
+
+
+
 //
 // list
 
 struct ObjList : public Obj
 {
     ObjList() { type = ObjType::List; }
+    ObjList(const ObjRange* r);
     virtual ~ObjList() {}
+
+    int32_t length() const { return elts.size(); }
+
+    Value index(const Value& i) const;
+    void setIndex(const Value& i, const Value& v);
 
     atomic_vector<Value> elts;
 };
@@ -225,7 +303,10 @@ struct ObjList : public Obj
 inline bool isList(const Value& v) { return isObjType(v, ObjType::List); }
 inline ObjList* asList(const Value& v) { return static_cast<ObjList*>(v.asObj()); }
 
+ObjList* listVal(); 
+ObjList* listVal(const ObjRange* r); 
 ObjList* listVal(const std::vector<Value>& elts); 
+ObjList* cloneList(const ObjList* l); // deep copy
 
 std::string objListToString(const ObjList* ol);
 
@@ -238,6 +319,11 @@ struct ObjDict : public Obj
 {
     ObjDict() { type = ObjType::Dict; }
     virtual ~ObjDict() {}
+
+    int32_t length() const {
+        std::lock_guard<std::mutex> lock(m);
+        return m_keys.size();
+    }
 
     bool contains(const Value& key) const {
         std::lock_guard<std::mutex> lock(m);
@@ -283,7 +369,9 @@ private:
 inline bool isDict(const Value& v) { return isObjType(v, ObjType::Dict); }
 inline ObjDict* asDict(const Value& v) { return static_cast<ObjDict*>(v.asObj()); }
 
+ObjDict* dictVal(); 
 ObjDict* dictVal(const std::vector<std::pair<Value,Value>>& entries); 
+ObjDict* cloneDict(const ObjDict* d);
 
 std::string objDictToString(const ObjDict* od);
 
@@ -310,6 +398,7 @@ struct ObjFunction : public Obj
     int arity;
     int upvalueCount;
     ptr<Chunk> chunk;
+    std::vector<ptr<ast::Annotation>> annotations;
 
     // for parameters with default values that must be re-evaluated on each call
     //  this is map from param name UnicodeString::hashCode() -> ObjFunction
@@ -356,6 +445,13 @@ inline ObjUpvalue* upvalueVal(Value* v) {
     return newObj<ObjUpvalue>(__func__,v);
 }
 
+inline ObjUpvalue* cloneUpvalue(const ObjUpvalue* u) {
+    ObjUpvalue* newup = newObj<ObjUpvalue>(__func__,u->location);
+    // clone value (this Upvalue is now closed)
+    newup->closed = newup->location->clone();
+    newup->location = &newup->closed;
+    return newup;
+}
 
 
 //
@@ -394,6 +490,14 @@ inline ObjClosure* closureVal(ObjFunction* function) {
     return newObj<ObjClosure>(__func__,function);
 }
 
+inline ObjClosure* cloneClosure(const ObjClosure* c) {
+    ObjClosure* newc = newObj<ObjClosure>(__func__,c->function);
+    newc->upvalues.resize(c->upvalues.size());
+    for(auto i=0; i<c->upvalues.size();i++)
+        newc->upvalues[i] = cloneUpvalue(c->upvalues.at(i));
+    return newc;
+}
+
 
 
 // future
@@ -429,6 +533,7 @@ inline ObjFuture* futureVal(const std::shared_future<Value>& fv) {
 
 
 
+
 //
 // native function
 
@@ -456,6 +561,8 @@ ObjNative* nativeVal(NativeFn function);
 //
 // runtime type 
 
+//FIXME!!!: collision exists for Obj::type == ObjType::Type - it is used
+//       both by ObjTypeSpec and by ObjPrimitive for builtin type
 struct ObjTypeSpec : public Obj
 {
     ObjTypeSpec() {
@@ -522,7 +629,7 @@ inline bool isObjectInstance(const Value& v) { return isObjType(v, ObjType::Inst
 inline ObjectInstance* asObjectInstance(const Value& v) { return static_cast<ObjectInstance*>(v.asObj()); }
 
 ObjectInstance* objectInstanceVal(ObjObjectType* objectType);
-
+ObjectInstance* cloneObjectInstance(const ObjectInstance* obj); // deep copy
 
 
 //
@@ -584,6 +691,14 @@ inline ObjBoundMethod* asBoundMethod(const Value& v) { return static_cast<ObjBou
 inline ObjBoundMethod* boundMethodVal(const Value& instance, ObjClosure* closure) {
     return newObj<ObjBoundMethod>(__func__,instance, closure);
 }
+
+inline ObjBoundMethod* cloneBoundMethod(const ObjBoundMethod* bm) {
+    auto newmb = newObj<ObjBoundMethod>(__func__,bm->receiver, bm->method);
+    newmb->receiver = newmb->receiver.clone();
+    return newmb;
+}
+
+
 
 
 

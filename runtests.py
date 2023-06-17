@@ -7,10 +7,10 @@ import subprocess
 #  and compare its output with <test>.out and issue error on mismatch
 
 tests = [
-    'comments', 'primitive1',
+    'comments', 'primitive1', 'constants', 'scopetest2', 'scopetest3',
     'andtest', 'ortest', 'not',
     'arith', 'factorial',
-    'dict', 'list',
+    'dict', 'dict2', 'list', 'list2', 'range', 'range2',
     'unicode',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5',
     'conversion1',
@@ -19,9 +19,11 @@ tests = [
     'func_param_default', 'func_param_default2', 'func_param_default3','func_param_default4',
     'typeobj1', 'typeobj2', 'typeobj3', 'typeobj4', 'typeobj5', 'typeobj6', 'typeobj7',
     'method_named_param',
-    'annot1',
+    'import', 'grpc_object',
+    #'grpc_object2', 'grpc_test1', 'grpc_test2',
+    'annot1', 'generic', 'objscopes',
     'threads1', 'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6',
-    'import', 'grpc_object', 'grpc_object2', 'grpc_test1', 'grpc_test2'
+    'clone1', 'extends1'
 ]
 
 test_dir='../tests'

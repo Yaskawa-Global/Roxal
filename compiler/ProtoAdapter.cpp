@@ -158,6 +158,8 @@ grpc_slice ProtoAdapter::generateProtocRequest(const std::string &methodName,  c
     std::string message = getMessageNameFromMethod(methodName, true);
     auto *desc = m_importer->pool()->FindMessageTypeByName(message);
     auto *msg = m_dynfactory->GetPrototype(desc)->New();
+    if (!isObjectInstance(*arg))
+        throw std::runtime_error("generateProtocRequest() - expected arg to be request message instance of type "+message);
     ObjectInstance *instance = asObjectInstance(*arg);
     generateProtocSubRequest(msg, instance);
 
@@ -165,7 +167,7 @@ grpc_slice ProtoAdapter::generateProtocRequest(const std::string &methodName,  c
     uint8_t *buffer = new uint8_t[size];
 
     if(!msg->SerializeToArray(buffer, size))
-         throw("Unable to serialize message");
+         throw std::runtime_error("generateProtocRequest() - Unable to serialize message");
 
     return grpc_slice_from_static_buffer(buffer, size);
     
@@ -180,10 +182,16 @@ void ProtoAdapter::generateProtocSubRequest(Message *msg, ObjectInstance *instan
 {
     auto *desc = msg->GetDescriptor();
 
+    // TODO: add some assertions or debug check & throw
     for (int i = 0; i < instance->properties.size(); i++)
     {
         auto *field = desc->field(i);
+
+        #ifndef DEBUG_BUILD
         Value v = instance->properties[toUnicodeString(field->name()).hashCode()];
+        #else
+        Value v = instance->properties.at(toUnicodeString(field->name()).hashCode());
+        #endif
 
         if (field->is_repeated())
             buildRepeatedReqField(msg, field, v);
@@ -281,6 +289,7 @@ void ProtoAdapter::buildReqField(Message *msg, const FieldDescriptor *field, Val
 
             case FieldDescriptor::CPPTYPE_STRING:
                 msg->GetReflection()->SetString(msg, field, asString(v)->toStdString());
+            break;
 
             case FieldDescriptor::CPPTYPE_MESSAGE:
             {

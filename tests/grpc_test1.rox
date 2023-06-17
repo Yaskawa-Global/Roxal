@@ -1,5 +1,5 @@
 //Requires Arithematic Server//
-_import("arithematic.proto")
+_import("protos/arithematic.proto")
 
 var req = NumRequest()
 var resp1 = NumResponse()

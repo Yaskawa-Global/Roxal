@@ -17,95 +17,101 @@ public:
 
     ptr<ast::AST> ast(std::istream& source, const std::string& name);
 
-    virtual antlrcpp::Any visitFile_input(RoxalParser::File_inputContext *context);
+    virtual std::any visitFile_input(RoxalParser::File_inputContext *context);
 
-    virtual antlrcpp::Any visitSingle_input(RoxalParser::Single_inputContext *context);
+    virtual std::any visitSingle_input(RoxalParser::Single_inputContext *context);
 
-    virtual antlrcpp::Any visitDeclaration(RoxalParser::DeclarationContext *context);
+    virtual std::any visitDeclaration(RoxalParser::DeclarationContext *context);
 
-    virtual antlrcpp::Any visitStatement(RoxalParser::StatementContext *context);
+    virtual std::any visitStatement(RoxalParser::StatementContext *context);
 
-    virtual antlrcpp::Any visitExpr_stmt(RoxalParser::Expr_stmtContext *context);
+    virtual std::any visitExpr_stmt(RoxalParser::Expr_stmtContext *context);
 
-    virtual antlrcpp::Any visitExpression(RoxalParser::ExpressionContext *context);
+    virtual std::any visitExpression(RoxalParser::ExpressionContext *context);
 
-    virtual antlrcpp::Any visitCompound_stmt(RoxalParser::Compound_stmtContext *context);
+    virtual std::any visitCompound_stmt(RoxalParser::Compound_stmtContext *context);
 
-    virtual antlrcpp::Any visitBlock_stmt(RoxalParser::Block_stmtContext *context);
+    virtual std::any visitBlock_stmt(RoxalParser::Block_stmtContext *context);
 
-    virtual antlrcpp::Any visitReturn_stmt(RoxalParser::Return_stmtContext *context);
+    virtual std::any visitReturn_stmt(RoxalParser::Return_stmtContext *context);
 
-    virtual antlrcpp::Any visitIf_stmt(RoxalParser::If_stmtContext *context);
+    virtual std::any visitIf_stmt(RoxalParser::If_stmtContext *context);
 
-    virtual antlrcpp::Any visitWhile_stmt(RoxalParser::While_stmtContext *context);
+    virtual std::any visitWhile_stmt(RoxalParser::While_stmtContext *context);
 
-    virtual antlrcpp::Any visitVar_decl(RoxalParser::Var_declContext *context);
+    virtual std::any visitVar_decl(RoxalParser::Var_declContext *context);
 
-    virtual antlrcpp::Any visitFunc_decl(RoxalParser::Func_declContext *context);
+    virtual std::any visitFunc_decl(RoxalParser::Func_declContext *context);
 
-    virtual antlrcpp::Any visitFunction(RoxalParser::FunctionContext *context);
+    virtual std::any visitFunction(RoxalParser::FunctionContext *context);
 
-    virtual antlrcpp::Any visitParameters(RoxalParser::ParametersContext *context);
+    virtual std::any visitParameters(RoxalParser::ParametersContext *context);
 
-    virtual antlrcpp::Any visitParameter(RoxalParser::ParameterContext *context);
+    virtual std::any visitParameter(RoxalParser::ParameterContext *context);
 
-    virtual antlrcpp::Any visitSuite(RoxalParser::SuiteContext *context);
+    virtual std::any visitSuite(RoxalParser::SuiteContext *context);
 
-    virtual antlrcpp::Any visitType_decl(RoxalParser::Type_declContext *context);
+    virtual std::any visitType_decl(RoxalParser::Type_declContext *context);
 
-    virtual antlrcpp::Any visitMethod(RoxalParser::MethodContext *context);
+    virtual std::any visitMethod(RoxalParser::MethodContext *context);
 
-    virtual antlrcpp::Any visitProperty(RoxalParser::PropertyContext *context);
+    virtual std::any visitProperty(RoxalParser::PropertyContext *context);
 
-    virtual antlrcpp::Any visitAnnotation(RoxalParser::AnnotationContext *context);
+    virtual std::any visitAnnotation(RoxalParser::AnnotationContext *context);
 
-    virtual antlrcpp::Any visitAnnot_argument(RoxalParser::Annot_argumentContext *context);
+    virtual std::any visitAnnot_argument(RoxalParser::Annot_argumentContext *context);
 
-    virtual antlrcpp::Any visitAssignment(RoxalParser::AssignmentContext *context);
+    virtual std::any visitAssignment(RoxalParser::AssignmentContext *context);
 
-    virtual antlrcpp::Any visitFollowed_by(RoxalParser::Followed_byContext *context);
+    virtual std::any visitFollowed_by(RoxalParser::Followed_byContext *context);
 
-    virtual antlrcpp::Any visitLogic_or(RoxalParser::Logic_orContext *context);
+    virtual std::any visitLogic_or(RoxalParser::Logic_orContext *context);
 
-    virtual antlrcpp::Any visitLogic_and(RoxalParser::Logic_andContext *context);
+    virtual std::any visitLogic_and(RoxalParser::Logic_andContext *context);
 
-    virtual antlrcpp::Any visitEquality(RoxalParser::EqualityContext *context);
+    virtual std::any visitEquality(RoxalParser::EqualityContext *context);
 
-    virtual antlrcpp::Any visitEqualnotequal(RoxalParser::EqualnotequalContext *context);
+    virtual std::any visitEqualnotequal(RoxalParser::EqualnotequalContext *context);
 
-    virtual antlrcpp::Any visitComparison(RoxalParser::ComparisonContext *context);
+    virtual std::any visitComparison(RoxalParser::ComparisonContext *context);
 
-    virtual antlrcpp::Any visitTerm(RoxalParser::TermContext *context);
+    virtual std::any visitTerm(RoxalParser::TermContext *context);
 
-    virtual antlrcpp::Any visitPlusminus(RoxalParser::PlusminusContext *context);
+    virtual std::any visitPlusminus(RoxalParser::PlusminusContext *context);
 
-    virtual antlrcpp::Any visitFactor(RoxalParser::FactorContext *context);
+    virtual std::any visitFactor(RoxalParser::FactorContext *context);
 
-    virtual antlrcpp::Any visitMultdiv(RoxalParser::MultdivContext *context);
+    virtual std::any visitMultdiv(RoxalParser::MultdivContext *context);
 
-    virtual antlrcpp::Any visitUnary(RoxalParser::UnaryContext *context);
+    virtual std::any visitUnary(RoxalParser::UnaryContext *context);
 
-    virtual antlrcpp::Any visitCall(RoxalParser::CallContext *context);
+    virtual std::any visitCall(RoxalParser::CallContext *context);
 
-    virtual antlrcpp::Any visitArgs_or_index_or_accessor(RoxalParser::Args_or_index_or_accessorContext *context);
+    virtual std::any visitArgs_or_index_or_accessor(RoxalParser::Args_or_index_or_accessorContext *context);
 
-    virtual antlrcpp::Any visitArguments(RoxalParser::ArgumentsContext *context);
+    virtual std::any visitRanges(RoxalParser::RangesContext *context);
 
-    virtual antlrcpp::Any visitArgument(RoxalParser::ArgumentContext *context);
+    virtual std::any visitRange(RoxalParser::RangeContext *context);
 
-    virtual antlrcpp::Any visitPrimary(RoxalParser::PrimaryContext *context);
+    virtual std::any visitOptional_expression(RoxalParser::Optional_expressionContext *context);
 
-    virtual antlrcpp::Any visitBuiltin_type(RoxalParser::Builtin_typeContext *context);
+    virtual std::any visitArguments(RoxalParser::ArgumentsContext *context);
 
-    virtual antlrcpp::Any visitList(RoxalParser::ListContext *context);
+    virtual std::any visitArgument(RoxalParser::ArgumentContext *context);
 
-    virtual antlrcpp::Any visitDict(RoxalParser::DictContext *context);
+    virtual std::any visitPrimary(RoxalParser::PrimaryContext *context);
 
-    virtual antlrcpp::Any visitStr(RoxalParser::StrContext *context);
+    virtual std::any visitBuiltin_type(RoxalParser::Builtin_typeContext *context);
 
-    virtual antlrcpp::Any visitNum(RoxalParser::NumContext *context);
+    virtual std::any visitList(RoxalParser::ListContext *context);
 
-    virtual antlrcpp::Any visitInteger(RoxalParser::IntegerContext *context);
+    virtual std::any visitDict(RoxalParser::DictContext *context);
+
+    virtual std::any visitStr(RoxalParser::StrContext *context);
+
+    virtual std::any visitNum(RoxalParser::NumContext *context);
+
+    virtual std::any visitInteger(RoxalParser::IntegerContext *context);
    
 
 protected:

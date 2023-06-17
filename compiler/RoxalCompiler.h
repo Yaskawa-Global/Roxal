@@ -22,32 +22,33 @@ public:
 
     virtual TraversalOrder traversalOrder() const;
 
-    virtual void visit(ptr<ast::File> ast);
-    virtual void visit(ptr<ast::SingleInput> ast);
-    virtual void visit(ptr<ast::Annotation> ast);
-    virtual void visit(ptr<ast::TypeDecl> ast);
-    virtual void visit(ptr<ast::FuncDecl> ast);
-    virtual void visit(ptr<ast::VarDecl> ast);
-    virtual void visit(ptr<ast::Suite> ast);
-    virtual void visit(ptr<ast::ExpressionStatement> ast);
-    virtual void visit(ptr<ast::ReturnStatement> ast);
-    virtual void visit(ptr<ast::IfStatement> ast);
-    virtual void visit(ptr<ast::WhileStatement> ast);
-    virtual void visit(ptr<ast::Function> ast);
-    virtual void visit(ptr<ast::Parameter> ast);
-    virtual void visit(ptr<ast::Assignment> ast);
-    virtual void visit(ptr<ast::BinaryOp> ast);
-    virtual void visit(ptr<ast::UnaryOp> ast);
-    virtual void visit(ptr<ast::Variable> ast);
-    virtual void visit(ptr<ast::Call> ast);
-    virtual void visit(ptr<ast::Index> ast);
-    virtual void visit(ptr<ast::Literal> ast);
-    virtual void visit(ptr<ast::Bool> ast);
-    virtual void visit(ptr<ast::Str> ast);
-    virtual void visit(ptr<ast::Type> ast);
-    virtual void visit(ptr<ast::Num> ast);
-    virtual void visit(ptr<ast::List> ast);
-    virtual void visit(ptr<ast::Dict> ast);
+    virtual std::any visit(ptr<ast::File> ast);
+    virtual std::any visit(ptr<ast::SingleInput> ast);
+    virtual std::any visit(ptr<ast::Annotation> ast);
+    virtual std::any visit(ptr<ast::TypeDecl> ast);
+    virtual std::any visit(ptr<ast::FuncDecl> ast);
+    virtual std::any visit(ptr<ast::VarDecl> ast);
+    virtual std::any visit(ptr<ast::Suite> ast);
+    virtual std::any visit(ptr<ast::ExpressionStatement> ast);
+    virtual std::any visit(ptr<ast::ReturnStatement> ast);
+    virtual std::any visit(ptr<ast::IfStatement> ast);
+    virtual std::any visit(ptr<ast::WhileStatement> ast);
+    virtual std::any visit(ptr<ast::Function> ast);
+    virtual std::any visit(ptr<ast::Parameter> ast);
+    virtual std::any visit(ptr<ast::Assignment> ast);
+    virtual std::any visit(ptr<ast::BinaryOp> ast);
+    virtual std::any visit(ptr<ast::UnaryOp> ast);
+    virtual std::any visit(ptr<ast::Variable> ast);
+    virtual std::any visit(ptr<ast::Call> ast);
+    virtual std::any visit(ptr<ast::Range> ast);
+    virtual std::any visit(ptr<ast::Index> ast);
+    virtual std::any visit(ptr<ast::Literal> ast);
+    virtual std::any visit(ptr<ast::Bool> ast);
+    virtual std::any visit(ptr<ast::Str> ast);
+    virtual std::any visit(ptr<ast::Type> ast);
+    virtual std::any visit(ptr<ast::Num> ast);
+    virtual std::any visit(ptr<ast::List> ast);
+    virtual std::any visit(ptr<ast::Dict> ast);
     
    
 protected:
@@ -112,7 +113,11 @@ protected:
 
 
     struct TypeScope {
+        TypeScope(const icu::UnicodeString& typeName)
+          : name(typeName), hasSuperType(false) {}
 
+        icu::UnicodeString name;
+        bool hasSuperType;
     };
 
     typedef std::vector<TypeScope> TypeScopes;
@@ -127,6 +132,17 @@ protected:
     auto enclosingTypeScope(TypeScopes::iterator s) {
         if (s != typeScopes.begin())
             return --s;
+        throw std::runtime_error("TypeScope stack underflow");
+    }
+
+    void beginTypeScope(const icu::UnicodeString& typeName) {
+        typeScopes.push_back(TypeScope(typeName));
+    }
+    void endTypeScope() {
+        if (!typeScopes.empty()) {
+            typeScopes.pop_back();
+            return;
+        }
         throw std::runtime_error("TypeScope stack underflow");
     }
 
@@ -155,6 +171,7 @@ protected:
     void emitByte(OpCode op, const std::string& comment = "");
     void emitBytes(uint8_t byte1, uint8_t byte2, const std::string& comment = "");
     void emitBytes(OpCode op, uint8_t byte2, const std::string& comment = "");
+    void emitBytes(OpCode op, uint8_t byte2, uint8_t byte3, const std::string& comment = "");
 
     void emitLoop(Chunk::size_type loopStart, const std::string& comment = "");
 

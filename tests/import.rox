@@ -1,2 +1,2 @@
-_import('arithematic.proto')
+_import('protos/arithematic.proto')
 print("Successfully Added Proto Files!")

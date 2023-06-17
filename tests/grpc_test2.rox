@@ -1,4 +1,4 @@
-_import("route_guide.proto")
+_import("protos/route_guide.proto")
 
 var req = Rectangle()
 var resp = Feature()

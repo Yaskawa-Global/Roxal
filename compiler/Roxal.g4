@@ -136,6 +136,7 @@ expression
 
 assignment
  : ( call DOT )? IDENTIFIER EQUALS assignment
+ | call EQUALS assignment
  | followed_by 
  ;
 
@@ -197,8 +198,24 @@ call
 
 args_or_index_or_accessor
   : '(' arguments? ')' 
-  | '[' arguments ']' 
+  | '[' ranges ']' 
   | DOT IDENTIFIER ('(' arguments? ')')?
+  ;
+
+ranges
+  : range ( ',' range )*
+  ;
+
+range
+  : expression  // simple index (equivelent to n:n range)
+  // [start:stop] or [start:] or [:stop] or either of those with optional :step] - half open (stop is exclusive)
+  | optional_expression (DOTDOT '<'|COLON) optional_expression ((COLON|BY) expression)?
+  // inclusive range (closed interval)
+  | optional_expression DOTDOT optional_expression ((COLON|BY) expression)?
+  ;
+
+optional_expression
+  : expression?
   ;
 
 
@@ -218,6 +235,7 @@ primary
  | LNIL
  | THIS
  | str   // str+ ?
+ | RANGE '(' range ')'
  | list
  | dict
  | IDENTIFIER 
@@ -230,7 +248,7 @@ primary
 builtin_type
  : LNIL 
  | BOOL | BYTE | NUMBER | INT | REAL | DECIMAL
- | STRING 
+ | STRING | RANGE
  | LIST | DICT 
  | VECTOR | MATRIX | TENSOR
  | ORIENT | STREAM
@@ -274,6 +292,7 @@ INT: 'int';
 REAL: 'real';
 DECIMAL: 'decimal';  // dec?
 STRING: 'string';
+RANGE: 'range';
 LIST: 'list';
 DICT: 'dict';
 VECTOR: 'vector';
@@ -292,11 +311,13 @@ ELSEIF: 'elseif';
 WHILE: 'while';
 FOR : 'for';
 IN : 'in';
+BY : 'by';
 
 
 NEWLINE : ( '\r'? '\n' | '\r' | '\f' ) SPACES?;
 
 
+DOTDOT : '..' | '...' | '\u2026'; // …
 DOT : '.';
 STAR : '*';
 COMMA : ',';
@@ -320,6 +341,7 @@ EQUALS: '=';
 ISNOTEQUALS: '!=' | '<>' | '\u2260'; // ≠
 FOLLOWEDBY: '|>' | '\u21A6'; // ↦
 YIELDS: '->' | '\u2192'; // →
+UNDERSCORE: '_' ;
 
 OPEN_PAREN : '(';
 CLOSE_PAREN : ')';
@@ -340,6 +362,7 @@ LNIL: 'nil';
 str
  : STRING_LITERAL
  ;
+
 
 num
  : integer
@@ -436,7 +459,7 @@ fragment BIN_DIGIT
 
 fragment POINT_FLOAT
  : INT_PART? FRACTION
- | INT_PART '.'
+ //| INT_PART '.' 
  ;
 
 fragment EXPONENT_FLOAT

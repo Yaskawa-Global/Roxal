@@ -21,6 +21,7 @@ enum class ValueType {
 
     // Obj (pointer) types 
     String,
+    Range,
     List,
     Dict,
     Vector,
@@ -70,7 +71,7 @@ const uint64_t TagType   = uint64_t(ValueType::Type) << TypeTagOffset;
 //ValueType valueType(ValueType t); // value type (ignoring boxing - so primitive type if boxed)
 
 class Value;
-bool isPrimitive(const Value& v); // forward from Object.h
+bool isObjPrimitive(const Value& v); // forward from Object.h
 
 
 
@@ -115,7 +116,7 @@ public:
 
     void box();
     void unbox();
-    bool isBoxed() const { return isObj() && isPrimitive(*this); }
+    bool isBoxed() const { return isObj() && isObjPrimitive(*this); }
     bool isBoxable() const { return !isBoxed() && (isBool() || isInt() || isReal()); }
 
     ValueType type() const;
@@ -126,16 +127,24 @@ public:
     inline bool isBool() const { return (val|uint64_t(1)<<TypeTagOffset) == (QNAN | TagTrue); }
     bool asBool(bool strict=true) const;
 
+    inline bool isByte() const { return (val & (QNAN | TypeTag)) == (QNAN | TagByte); }
+    uint8_t asByte(bool strict=true) const;
+
     inline bool isInt() const { return (val & (QNAN | TypeTag)) == (QNAN | TagInt); }
     int32_t asInt(bool strict=true) const;
 
     inline bool isReal() const { return (val&QNAN) != QNAN; }
     double asReal(bool strict=true) const; 
 
-    inline bool isNumber() const { return isInt() || isReal(); } // TODO: || isByte() || isDecimal(v)
+    inline bool isNumber() const { return isInt() || isReal() || isByte(); } // TODO: || isDecimal(v)
 
     inline bool isType() const { return (val & (QNAN | TypeTag)) == (QNAN | TagType); }
     ValueType asType(bool strict=true) const;
+
+    // is builtin value type? (excludes boxed ObjPrimitive)
+    inline bool isPrimitive() const {
+        return isNil() || isBool() || isInt() || isReal() || isType();
+    }
 
     inline bool isObj() const { return (val & (QNAN | SignBit)) == (QNAN | SignBit); }
     inline Obj* asObj() const { 
@@ -161,6 +170,8 @@ public:
     uint64_t getVal() const { return val; }
     static void testPrimitiveValues();
     #endif
+
+    Value clone() const; // deep copy
 
 protected:
     std::atomic_uint64_t val;

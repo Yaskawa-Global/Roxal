@@ -19,6 +19,7 @@ std::string roxal::type::to_string(BuiltinType t)
         case BuiltinType::Real : return "real";
         case BuiltinType::Decimal : return "decimal";
         case BuiltinType::String : return "string";
+        case BuiltinType::Range : return "range";
         case BuiltinType::List : return "list";
         case BuiltinType::Dict : return "dict";
         case BuiltinType::Vector : return "vector";

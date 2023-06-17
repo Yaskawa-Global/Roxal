@@ -283,7 +283,6 @@ Value Stream::prev(int32_t index, Value s)
     #endif
 
 
-
     //std::vector<Value> args {};
     std::vector<Value> args {intVal(0), realVal(100.0)}; //!!!
     auto resultValue = construct(ValueType::Stream, args.begin(), args.end());

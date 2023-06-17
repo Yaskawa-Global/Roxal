@@ -1,5 +1,5 @@
 //Requires Graph Server
-_import("graph.proto")
+_import("protos/graph.proto")
 
 var gsize = GraphSize()
 gsize.size = 7
