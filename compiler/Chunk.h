@@ -31,6 +31,7 @@ enum class OpCode {
     Pop,
     PopN,
     Dup,
+    Swap,
     JumpIfFalse,
     JumpIfTrue,
     Jump,

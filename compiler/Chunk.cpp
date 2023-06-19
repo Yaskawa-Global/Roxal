@@ -216,7 +216,9 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
         case asByte(OpCode::PopN):
             return byteInstruction("POPN", offset);
         case asByte(OpCode::Dup):
-            return byteInstruction("DUP", offset);
+            return simpleInstruction("DUP", offset);
+        case asByte(OpCode::Swap):
+            return simpleInstruction("SWAP", offset);
         case asByte(OpCode::JumpIfFalse):
             return jumpInstruction("JUMP_IF_FALSE", 1, offset);
         case asByte(OpCode::JumpIfTrue):

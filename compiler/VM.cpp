@@ -1,7 +1,10 @@
 #include <functional>
 #include <time.h>
+#include <math.h>
 #include <chrono>
 #include <thread>
+#include <utility>
+
 
 #include "ASTGenerator.h"
 #include "ASTGraphviz.h"
@@ -1463,6 +1466,10 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 push(value);
                 break;
             }
+            case asByte(OpCode::Swap): {
+                std::swap(peek(0), peek(1));
+                break;
+            }
             case asByte(OpCode::JumpIfFalse): {
                 uint16_t jumpDist = readShort();
                 peek(0).resolveFuture();
@@ -2080,6 +2087,8 @@ void VM::defineNativeFunctions()
     defineNative("_ussleep", &VM::usSleep_native);
     defineNative("_mssleep", &VM::msSleep_native);
     //defineNative("_sleep", &VM::sleep_native);
+    defineNative("sin", &VM::sin_native);
+    defineNative("cos", &VM::cos_native);
 }
 
 
@@ -2116,5 +2125,21 @@ Value VM::sleep_native(int argCount, Value* args)
     std::this_thread::sleep_for(std::chrono::seconds(args[0].asInt()));
 
     return nilVal();
+}
+
+Value VM::sin_native(int argCount, Value* args)
+{
+    if ((argCount != 1) || !args[0].isNumber()) 
+        throw std::invalid_argument("sin expects single numeric argument");
+
+    return Value(sin(args[0].asReal()));
+}
+
+Value VM::cos_native(int argCount, Value* args)
+{
+    if ((argCount != 1) || !args[0].isNumber()) 
+        throw std::invalid_argument("cos expects single numeric argument");
+
+    return Value(cos(args[0].asReal()));
 }
 

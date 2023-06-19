@@ -222,6 +222,8 @@ protected:
     Value usSleep_native(int argCount, Value* args);
     Value msSleep_native(int argCount, Value* args);
     Value sleep_native(int argCount, Value* args);
+    Value sin_native(int argCount, Value* args);
+    Value cos_native(int argCount, Value* args);
 
 };
 

@@ -1,5 +1,4 @@
 
-
 #include <boost/algorithm/string/replace.hpp>
 
 #include <core/common.h>
@@ -604,7 +603,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
         ast->rhs->accept(*this);
 
-        emitBytes(OpCode::SetProp, propName);
+        emitBytes(propName <= 255 ? OpCode::SetProp : OpCode::SetProp2, propName);
     }
     else if (isa<Index>(ast->lhs)) {
 
@@ -622,8 +621,63 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
         emitBytes(OpCode::SetIndex, index->args.size());
     }
+    else if (isa<List>(ast->lhs)) {
+        // binding assignment - assign east LHS element of list seperately from indexed element of RHS
+
+        // evaluate rhs (expected to leave list on stack)
+        //  TOOD: consider also supporting dict lhs so return components can be named(?)
+        ast->rhs->accept(*this);
+
+        auto lhsList = as<List>(ast->lhs);
+        auto lhsSize = lhsList->elements.size();
+        for(auto li=0; li<lhsSize; li++) {
+            auto lhsElt = lhsList->elements.at(li);
+
+            // first index the RHS list to get the RHS element to assign
+            emitByte(OpCode::Dup); // duplicate the RHS (as Index will pop it)
+            emitConstant(intVal(li));
+            emitBytes(OpCode::Index, 1);
+
+            if (isa<Variable>(lhsElt)) {
+                auto varname { as<Variable>(lhsElt)->name };
+
+                namedVariable(varname, /*assign=*/true);
+
+            }
+            else if (isa<UnaryOp>(lhsElt) && as<UnaryOp>(lhsElt)->op==UnaryOp::Accessor) {
+                auto accessor = as<UnaryOp>(lhsElt);
+
+                accessor->arg->accept(*this);
+
+                if (!accessor->member.has_value())
+                    throw std::runtime_error("accessor unary operator expects member name");
+                int16_t propName = identifierConstant(accessor->member.value());
+
+                emitByte(OpCode::Swap);
+
+                emitBytes(propName <= 255 ? OpCode::SetProp : OpCode::SetProp2, propName);
+            }
+            else if (isa<Index>(lhsElt)) {
+
+                auto index { as<Index>(lhsElt) };
+
+                // value being indexed
+                index->indexable->accept(*this);
+
+                // index args
+                for(auto& arg : index->args)
+                    arg->accept(*this);
+
+                emitBytes(OpCode::SetIndex, index->args.size());
+            }
+            else
+                throw std::runtime_error("Elements of LHS list of binding assignment must be variables, property accessors or indexing");
+
+            emitByte(OpCode::Pop,"RHS #"+std::to_string(li)); // discard RHS element, leaving RHS list on top
+        }
+    }
     else
-        throw std::runtime_error("Unimplemented kind of LHS for assignment");
+        throw std::runtime_error("LHS of assignment must be a variable, property accessor or indexing");
     return {};
 }
 
