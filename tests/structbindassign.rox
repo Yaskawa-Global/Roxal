@@ -1,0 +1,37 @@
+
+[x, y] = [1.1,2.2]
+print(x)
+print(y)
+
+π = 3.141592653589793238462643383
+
+func rotate2D(x, y, θ):
+  var xr = x × cos(θ) + y × sin(θ)
+  var yr = -x × sin(θ) + y × cos(θ)
+  return [xr,yr]
+
+
+[rotx, roty] = rotate2D(x,y, (30×π)/180.0)
+
+print(''+rotx + ' , ' + roty)
+
+
+type object Obj:
+  var p :real
+  var q :real
+
+o = Obj()
+
+[o.p, o.q] = [3.3, 4.4]
+
+print(o.p)
+print(o.q)
+
+var l = [1,2,3,4]
+
+[l[1], l[2]] = [2.2,3.3]
+print(l)  // [1,2.2,3.3,4]
+
+
+
+
