@@ -997,6 +997,9 @@ void VM::defineProperty(ObjString* name)
     #endif
     ObjObjectType* objType = asObjectType(peek(2));
 
+    if (objType->properties.contains(name->hash))
+        throw std::runtime_error("Duplicate property '"+name->toStdString()+"' declared in type "+(objType->isActor?"actor":"object")+" "+toUTF8StdString(objType->name));
+
     const Value& propertyType { peek(1) };
     Value propertyInitial { peek(0) };
 
@@ -1025,6 +1028,10 @@ void VM::defineMethod(ObjString* name)
         throw std::runtime_error("Can't create method without object or actor type on stack");
     #endif
     ObjObjectType* type = asObjectType(peek(1));
+
+    if (type->methods.contains(name->hash))
+        throw std::runtime_error("Duplicate method '"+name->toStdString()+"' declared in type "+(type->isActor?"actor":"object")+" "+toUTF8StdString(type->name));
+
     type->methods[name->hash] = std::make_pair(name->s,method);
     pop();
 }
@@ -1780,11 +1787,21 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Property): {
-                defineProperty(readString());
+                try {
+                    defineProperty(readString());
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
                 break;
             }
             case asByte(OpCode::Method): {
-                defineMethod(readString());
+                try {
+                    defineMethod(readString());
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
                 break;
             }
             case asByte(OpCode::Extend): {
