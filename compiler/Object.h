@@ -387,6 +387,8 @@ enum class FunctionType {
     Module
 };
 
+std::string toString(FunctionType ft);
+
 
 struct ObjFunction : public Obj
 {

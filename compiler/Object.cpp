@@ -664,6 +664,18 @@ std::string roxal::objToString(const Value& v)
 
 
 
+std::string roxal::toString(FunctionType ft) 
+{
+    switch (ft) {
+        case FunctionType::Function: return "Function";
+        case FunctionType::Method: return "Method";
+        case FunctionType::Initializer: return "Initializer";
+        case FunctionType::Module: return "Module";
+        default: return "?";
+    }
+}
+
+
 
 ObjFunction::ObjFunction()
     : arity(0), upvalueCount(0), name()

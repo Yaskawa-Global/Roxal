@@ -70,10 +70,74 @@ protected:
     };
 
 
+
+    // stack new scope when entering new lexical level (global, module, type, func/method, scope:, for etc)
+    struct LexicalScope {
+        enum class Type {
+            Global,
+            Module,
+            Type,
+            Func,
+            Scope // scope: for .. : etc.
+        };
+
+        LexicalScope(Type t, const icu::UnicodeString& n) : type(t), name(n) {}
+        virtual ~LexicalScope() {} // TODO: eliminate virtual and use static casts since type is selector
+
+        Type type;
+        icu::UnicodeString name;
+
+        std::string typeString() const {
+            if (type == Type::Global) return "Global";
+            if (type == Type::Module) return "Module";
+            if (type == Type::Type) return "Type";
+            if (type == Type::Func) return "Func";
+            if (type == Type::Scope) return "Scope";
+            return "?";
+        }
+    };
+    typedef std::vector<ptr<LexicalScope>> LexicalScopes;
+    typedef LexicalScopes::iterator Scope;
+    LexicalScopes lexicalScopes;
+    void outputScopes();
+
+    void enterGlobalScope();
+    void exitGlobalScope();
+
+    void enterModuleScope(const icu::UnicodeString& moduleName);
+    void exitModuleScope();
+
+    void enterTypeScope(const icu::UnicodeString& typeName);
+    void exitTypeScope();
+
+    void enterFuncScope(const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> type);
+    void exitFuncScope();
+
+    void enterLexicalScope();
+    void exitLexicalScope();
+
+
+    int scopeDepth() const;
+    Scope scope();
+    bool hasEnclosingScope(Scope s);
+    Scope enclosingScope(Scope s);
+
+    bool inFuncScope();
+    bool inFuncScope(Scope s);
+    Scope funcScope();
+    bool hasEnclosingFuncScope(Scope s);
+    Scope enclosingFuncScope(Scope s);
+
+    bool inTypeScope();
+    Scope typeScope();
+    Scope enclosingTypeScope(Scope s);
+
+
     // stack new states when we enter new functions to compile
-    struct FunctionScope {
+    struct FunctionScope : public LexicalScope
+    {
         FunctionScope(const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> type) 
-            : scopeDepth(0), strict(true), functionType(funcType), type(type)
+            : LexicalScope(Type::Func, funcName), scopeDepth(0), strict(true), functionType(funcType), type(type)
         {
             function = functionVal();
             function->name = funcName;
@@ -96,65 +160,28 @@ protected:
         std::vector<uint16_t> identConsts;
     };
 
-    typedef std::vector<FunctionScope> FunctionScopes;
-    FunctionScopes funcScopes;
 
-    auto funcScope() {
-        if (!funcScopes.empty())
-            return funcScopes.end()-1;
-        throw std::runtime_error("FunctionScope stack underflow");
-    }
+    ptr<FunctionScope> asFuncScope(Scope s) const { return std::dynamic_pointer_cast<FunctionScope>(*s); }
 
-    auto enclosingFuncScope(FunctionScopes::iterator s) {
-        if (s != funcScopes.begin())
-            return --s;
-        throw std::runtime_error("FunctionScope stack underflow");
-    }
-
-
-    struct TypeScope {
+    struct TypeScope : public LexicalScope 
+    {
         TypeScope(const icu::UnicodeString& typeName)
-          : name(typeName), hasSuperType(false) {}
+          : LexicalScope(Type::Type, typeName), hasSuperType(false) {}
 
-        icu::UnicodeString name;
         bool hasSuperType;
     };
 
-    typedef std::vector<TypeScope> TypeScopes;
-    TypeScopes typeScopes;
-
-    auto typeScope() {
-        if (!typeScopes.empty())
-            return typeScopes.end()-1;
-        throw std::runtime_error("TypeScope stack underflow");
-    }
-
-    auto enclosingTypeScope(TypeScopes::iterator s) {
-        if (s != typeScopes.begin())
-            return --s;
-        throw std::runtime_error("TypeScope stack underflow");
-    }
-
-    void beginTypeScope(const icu::UnicodeString& typeName) {
-        typeScopes.push_back(TypeScope(typeName));
-    }
-    void endTypeScope() {
-        if (!typeScopes.empty()) {
-            typeScopes.pop_back();
-            return;
-        }
-        throw std::runtime_error("TypeScope stack underflow");
-    }
+    ptr<TypeScope> asTypeScope(Scope s) const { return std::dynamic_pointer_cast<TypeScope>(*s); }
 
 
 
 
-    ptr<Chunk> currentChunk() const {
+    ptr<Chunk> currentChunk() {
         #ifdef DEBUG_BUILD
-        if (funcScopes.empty())
-            throw std::runtime_error("currentChunk() - funcScopes is empty");
+        if (!inFuncScope())
+            throw std::runtime_error("currentChunk() - not in func scope");
         #endif
-        return funcScopes.back().function->chunk;
+        return asFuncScope(funcScope())->function->chunk;
     }
 
     ptr<ast::AST> currentNode;
@@ -188,9 +215,9 @@ protected:
     int16_t identifierConstant(const icu::UnicodeString& ident);
 
     void addLocal(const icu::UnicodeString& name);
-    int16_t resolveLocal(FunctionScopes::iterator scopeState, const icu::UnicodeString& name);
-    int addUpvalue(FunctionScopes::iterator scopeState, uint8_t index, bool isLocal);
-    int16_t resolveUpvalue(FunctionScopes::iterator scopeState, const icu::UnicodeString& name);
+    int16_t resolveLocal(Scope scopeState, const icu::UnicodeString& name);
+    int addUpvalue(Scope scopeState, uint8_t index, bool isLocal);
+    int16_t resolveUpvalue(Scope scopeState, const icu::UnicodeString& name);
     void declareVariable(const icu::UnicodeString& name);
     void defineVariable(uint16_t global);
     bool namedVariable(const icu::UnicodeString& ident, bool assign=false);
