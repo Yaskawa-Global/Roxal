@@ -73,7 +73,7 @@ protected:
 
     // stack new scope when entering new lexical level (global, module, type, func/method, scope:, for etc)
     struct LexicalScope {
-        enum class Type {
+        enum class ScopeType {
             Global,
             Module,
             Type,
@@ -81,18 +81,25 @@ protected:
             Scope // scope: for .. : etc.
         };
 
-        LexicalScope(Type t, const icu::UnicodeString& n) : type(t), name(n) {}
-        virtual ~LexicalScope() {} // TODO: eliminate virtual and use static casts since type is selector
+        LexicalScope(ScopeType st, const icu::UnicodeString& n) : scopeType(st), name(n) {}
+        virtual ~LexicalScope() {} 
 
-        Type type;
+        ScopeType scopeType;
         icu::UnicodeString name;
 
+        bool strict; 
+
+        bool isGlobal() const { return scopeType==ScopeType::Global; }
+        bool isModule() const { return scopeType==ScopeType::Module; }
+        bool isFunc() const { return scopeType==ScopeType::Func; }
+        bool isFuncOrModule() const { return scopeType==ScopeType::Func || scopeType==ScopeType::Module; }
+
         std::string typeString() const {
-            if (type == Type::Global) return "Global";
-            if (type == Type::Module) return "Module";
-            if (type == Type::Type) return "Type";
-            if (type == Type::Func) return "Func";
-            if (type == Type::Scope) return "Scope";
+            if (scopeType == ScopeType::Global) return "Global";
+            if (scopeType == ScopeType::Module) return "Module";
+            if (scopeType == ScopeType::Type) return "Type";
+            if (scopeType == ScopeType::Func) return "Func";
+            if (scopeType == ScopeType::Scope) return "Scope";
             return "?";
         }
     };
@@ -113,8 +120,8 @@ protected:
     void enterFuncScope(const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> type);
     void exitFuncScope();
 
-    void enterLexicalScope();
-    void exitLexicalScope();
+    void enterLocalScope();
+    void exitLocalScope();
 
 
     int scopeDepth() const;
@@ -132,13 +139,16 @@ protected:
     Scope typeScope();
     Scope enclosingTypeScope(Scope s);
 
+    Scope moduleScope();
+
 
     // stack new states when we enter new functions to compile
     struct FunctionScope : public LexicalScope
     {
-        FunctionScope(const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> type) 
-            : LexicalScope(Type::Func, funcName), scopeDepth(0), strict(true), functionType(funcType), type(type)
+        FunctionScope(const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> t) 
+            : LexicalScope(ScopeType::Func, funcName), scopeDepth(0), functionType(funcType), type(t)
         {
+            strict = true;
             function = functionVal();
             function->name = funcName;
             function->funcType = type; // store type for runtime
@@ -150,8 +160,6 @@ protected:
         std::vector<Local> locals;
         std::vector<Upvalue> upvalues;
         int scopeDepth;
-
-        bool strict; 
 
         ObjFunction*    function;
         FunctionType    functionType;
@@ -166,12 +174,27 @@ protected:
     struct TypeScope : public LexicalScope 
     {
         TypeScope(const icu::UnicodeString& typeName)
-          : LexicalScope(Type::Type, typeName), hasSuperType(false) {}
+          : LexicalScope(ScopeType::Type, typeName), hasSuperType(false) {}
 
         bool hasSuperType;
     };
 
     ptr<TypeScope> asTypeScope(Scope s) const { return std::dynamic_pointer_cast<TypeScope>(*s); }
+
+
+    struct ModuleScope : public FunctionScope
+    {
+        ModuleScope(const icu::UnicodeString& moduleName)
+            : FunctionScope(moduleName, FunctionType::Module, std::make_shared<type::Type>(type::BuiltinType::Func))
+        {
+            //this->functionType = FunctionType::Module;
+            scopeType = ScopeType::Module;
+            type->func = type::Type::FuncType();
+        }
+    };
+
+    ptr<ModuleScope> asModuleScope(Scope s) const { return std::dynamic_pointer_cast<ModuleScope>(*s); }
+
 
 
 
@@ -186,9 +209,6 @@ protected:
 
     ptr<ast::AST> currentNode;
 
-
-    void beginScope();
-    void endScope();
 
     void error(const std::string& message);
 

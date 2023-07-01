@@ -84,40 +84,40 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 
     if (ast != nullptr) {
 
-        auto moduleType { std::make_shared<type::Type>(BuiltinType::Func) };
-        moduleType->func = type::Type::FuncType();
+        enterModuleScope(toUnicodeString(name));
 
-        // FIXME: implement ModuleScope as a type of FunctionScope
-        enterFuncScope(toUnicodeString(name), FunctionType::Module, moduleType);
+        auto module { asModuleScope(moduleScope()) };
 
-        asFuncScope(funcScope())->strict = false;
+        module->strict = false;
 
         try {
             auto file = as<File>(ast);
 
             file->accept(*this);
             
-            function = asFuncScope(funcScope())->function;
+            function = module->function;
+
+            assert(function != nullptr);
 
             if (outputBytecodeDissasembly)
-                asFuncScope(funcScope())->function->chunk->disassemble(asFuncScope(funcScope())->function->name);
+                module->function->chunk->disassemble(module->function->name);
 
             //std::cout << "value:" << value->repr() << std::endl;
         } catch (std::logic_error& e) {
-            exitFuncScope();
+            std::cout << std::string("Compile error: ") << e.what() << std::endl;
+            exitModuleScope();
             if (function != nullptr)
                 delObj(function);
-            std::cout << std::string("Compile error: ") << e.what() << std::endl;
             return nullptr;
         } catch (std::exception& e) {
-            exitFuncScope();
+            std::cout << std::string("Exception: ") << e.what() << std::endl;
+            exitModuleScope();
             if (function != nullptr)
                 delObj(function);
-            std::cout << std::string("Exception: ") << e.what() << std::endl;
             throw e;
         } 
 
-        exitFuncScope();
+        exitModuleScope();
         
         //std::cout << "\n" << interpreter.stackAsString(false) << std::endl;
     }
@@ -202,7 +202,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         namedVariable(superTypeName, /*assign=*/false); // parent (super)
 
-        beginScope();
+        enterLocalScope();
         addLocal("super");
         defineVariable(0);
 
@@ -282,7 +282,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     emitByte(OpCode::Pop, "type name");
 
     if (asTypeScope(typeScope())->hasSuperType)
-        endScope();
+        exitLocalScope();
 
     exitTypeScope();
 
@@ -351,9 +351,9 @@ std::any RoxalCompiler::visit(ptr<ast::Suite> ast)
     currentNode = ast;
     Anys results {};
 
-    beginScope();
+    enterLocalScope();
     ast->acceptChildren(*this, results);
-    endScope();
+    exitLocalScope();
     return results;
 }
 
@@ -404,9 +404,9 @@ std::any RoxalCompiler::visit(ptr<ast::IfStatement> ast)
     auto jumpOverIf = emitJump(OpCode::JumpIfFalse);
     emitByte(OpCode::Pop, "if cond");
 
-    beginScope();
+    enterLocalScope();
     ast->conditionalSuites.at(0).second->accept(*this);
-    endScope();
+    exitLocalScope();
 
     auto jumpOverElse = emitJump(OpCode::Jump);
 
@@ -422,9 +422,9 @@ std::any RoxalCompiler::visit(ptr<ast::IfStatement> ast)
 
     emitByte(OpCode::Pop, "if cond");
     if (ast->elseSuite.has_value()) {
-        beginScope();
+        enterLocalScope();
         ast->elseSuite.value()->accept(*this);
-        endScope();
+        exitLocalScope();
     }
     
     patchJump(jumpOverElse);
@@ -483,7 +483,7 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     #ifdef DEBUG_BUILD
     emitByte(OpCode::Nop, "func "+toUTF8StdString(ast->name));
     #endif
-    beginScope();
+    enterLocalScope();
 
     asFuncScope(funcScope())->function->arity = ast->params.size();
     if (asFuncScope(funcScope())->function->arity > 255)
@@ -492,7 +492,7 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     Anys results {};
     ast->acceptChildren(*this, results);
 
-    //endScope(); // state scope about to be discarded, not needed
+    //exitLocalScope(); 
 
     emitReturn();
 
@@ -546,14 +546,14 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
         #ifdef DEBUG_BUILD
         emitByte(OpCode::Nop, "param_def "+toUTF8StdString(ast->name));
         #endif
-        beginScope();
+        enterLocalScope();
 
         asFuncScope(funcScope())->function->arity = 0;
 
         Anys results;
         ast->acceptChildren(*this, results);
 
-        //endScope(); // state scope about to be discarded, not needed
+        exitLocalScope(); 
 
         // since this closure was called directly by being queued by OpCode::Call
         //  rather than through byte code pushing the callable/closure, we
@@ -1024,6 +1024,7 @@ void RoxalCompiler::exitGlobalScope()
 
 void RoxalCompiler::enterModuleScope(const icu::UnicodeString& moduleName)
 {
+    lexicalScopes.push_back(std::make_shared<ModuleScope>(moduleName));
     #ifdef DEBUG_TRACE_SCOPES
     std::cout << "enterModuleScope(" << toUTF8StdString(moduleName) << ")" << std::endl;
     outputScopes();
@@ -1032,8 +1033,19 @@ void RoxalCompiler::enterModuleScope(const icu::UnicodeString& moduleName)
 
 void RoxalCompiler::exitModuleScope()
 {
+    #ifdef DEBUG_BUILD
+    if (lexicalScopes.empty())
+        throw std::runtime_error("exitModuleScope() stack underflow");
+    if ((*scope())->scopeType != LexicalScope::ScopeType::Module)
+        throw std::runtime_error("exitModuleScope() - not in module scope");
+    #endif
     #ifdef DEBUG_TRACE_SCOPES
-    std::cout << "exitModuleScope()" << std::endl;
+    std::cout << "exitModuleScope(" << toUTF8StdString(asModuleScope(moduleScope())->function->name) << ")" << std::endl;
+    #endif
+
+    lexicalScopes.pop_back();
+
+    #ifdef DEBUG_TRACE_SCOPES
     outputScopes();
     #endif
 }
@@ -1054,7 +1066,7 @@ void RoxalCompiler::exitTypeScope()
     #ifdef DEBUG_BUILD
     if (lexicalScopes.empty())
         throw std::runtime_error("exitTypeScope() stack underflow");
-    if ((*scope())->type != LexicalScope::Type::Type)
+    if ((*scope())->scopeType != LexicalScope::ScopeType::Type)
         throw std::runtime_error("exitTypeScope() - not in type scope");
     #endif
     #ifdef DEBUG_TRACE_SCOPES
@@ -1084,7 +1096,7 @@ void RoxalCompiler::exitFuncScope()
     #ifdef DEBUG_BUILD
     if (lexicalScopes.empty())
         throw std::runtime_error("exitFuncScope() stack underflow");
-    if ((*scope())->type != LexicalScope::Type::Func)
+    if ((*scope())->scopeType != LexicalScope::ScopeType::Func)
         throw std::runtime_error("exitFuncScope() - not in func scope");
     #endif
     #ifdef DEBUG_TRACE_SCOPES
@@ -1099,16 +1111,42 @@ void RoxalCompiler::exitFuncScope()
 }
 
 
-void RoxalCompiler::enterLexicalScope()
+void RoxalCompiler::enterLocalScope()
 {
+    asFuncScope(funcScope())->scopeDepth++;
     #ifdef DEBUG_TRACE_SCOPES
-    std::cout << "enterLexicalScope()" << std::endl;
+    std::cout << "enterLocalScope() depth:" << asFuncScope(funcScope())->scopeDepth << std::endl;
     outputScopes();
     #endif
 }
 
-void RoxalCompiler::exitLexicalScope()
+void RoxalCompiler::exitLocalScope()
 {
+    #ifdef DEBUG_BUILD
+    if (lexicalScopes.empty())
+        throw std::runtime_error("exitLocalScope() stack underflow");
+    if (!inFuncScope())
+        throw std::runtime_error("exitLocalScope() - not in func scope");
+    if (asFuncScope(funcScope())->scopeDepth == 0)
+        throw std::runtime_error("exitLocalScope() depth underflow");
+    #endif
+    asFuncScope(funcScope())->scopeDepth--;
+
+    auto& locals { asFuncScope(funcScope())->locals };
+
+    while (!locals.empty()
+           && locals.back().depth > asFuncScope(funcScope())->scopeDepth) {
+
+        std::string popComment { "local "+toUTF8StdString(locals.back().name)+" depth:"+std::to_string(locals.back().depth) };
+
+        if (locals.back().isCaptured)
+            emitByte(OpCode::CloseUpvalue, popComment);
+        else
+            emitByte(OpCode::Pop, popComment);
+
+        locals.pop_back();
+    }
+
     #ifdef DEBUG_TRACE_SCOPES
     std::cout << "exitLexicalScope()" << std::endl;
     outputScopes();
@@ -1149,7 +1187,7 @@ RoxalCompiler::Scope RoxalCompiler::enclosingScope(RoxalCompiler::Scope s)
 bool RoxalCompiler::inFuncScope()
 {
     for(auto i = lexicalScopes.rbegin(); i != lexicalScopes.rend(); ++i)
-        if ((*i)->type == LexicalScope::Type::Func)
+        if ((*i)->isFuncOrModule())
             return true;
     return false;
 }
@@ -1157,7 +1195,7 @@ bool RoxalCompiler::inFuncScope()
 bool RoxalCompiler::inFuncScope(Scope s)
 {
     // is this a func scope, or is enclosed by one?
-    return ((*s)->type==LexicalScope::Type::Func) || hasEnclosingFuncScope(s);
+    return (*s)->isFuncOrModule() || hasEnclosingFuncScope(s);
 }
 
 
@@ -1165,7 +1203,7 @@ RoxalCompiler::Scope RoxalCompiler::funcScope()
 {
     // find top-most func scope
     auto s = scope();
-    while ((*s)->type != LexicalScope::Type::Func)
+    while (!(*s)->isFuncOrModule())
         s = enclosingScope(s);
     return s;
 }
@@ -1175,7 +1213,7 @@ bool RoxalCompiler::hasEnclosingFuncScope(Scope s)
     auto es = s;
     while (hasEnclosingScope(es)) {
         es = enclosingScope(es);
-        if ((*es)->type == LexicalScope::Type::Func)
+        if ((*es)->isFuncOrModule())
             return true;
     }
 
@@ -1186,7 +1224,7 @@ bool RoxalCompiler::hasEnclosingFuncScope(Scope s)
 RoxalCompiler::Scope RoxalCompiler::enclosingFuncScope(Scope s)
 {
     auto es = enclosingScope(s);
-    while ((*es)->type != LexicalScope::Type::Func)
+    while (!(*es)->isFuncOrModule())
         es = enclosingScope(es);
     return es;
 }
@@ -1194,7 +1232,7 @@ RoxalCompiler::Scope RoxalCompiler::enclosingFuncScope(Scope s)
 bool RoxalCompiler::inTypeScope()
 {
     for(auto i = lexicalScopes.rbegin(); i != lexicalScopes.rend(); ++i)
-        if ((*i)->type == LexicalScope::Type::Type)
+        if ((*i)->scopeType == LexicalScope::ScopeType::Type)
             return true;
     return false;
 }
@@ -1202,7 +1240,7 @@ bool RoxalCompiler::inTypeScope()
 RoxalCompiler::Scope RoxalCompiler::typeScope()
 {
     auto s = scope();
-    while ((*s)->type != LexicalScope::Type::Type)
+    while ((*s)->scopeType != LexicalScope::ScopeType::Type)
         s = enclosingScope(s);
     return s;
 }
@@ -1210,64 +1248,21 @@ RoxalCompiler::Scope RoxalCompiler::typeScope()
 RoxalCompiler::Scope RoxalCompiler::enclosingTypeScope(Scope s)
 {
     auto es = enclosingScope(s);
-    while ((*es)->type != LexicalScope::Type::Type)
+    while ((*es)->scopeType != LexicalScope::ScopeType::Type)
         es = enclosingScope(es);
     return es;
 }
 
 
-
-void RoxalCompiler::beginScope()
+RoxalCompiler::Scope RoxalCompiler::moduleScope()
 {
-    asFuncScope(funcScope())->scopeDepth++;
-    //std::cout << "beginScope() depth=" << state()->scopeDepth << std::endl;
+    auto s = scope();
+    while ((*s)->scopeType != LexicalScope::ScopeType::Module)
+        s = enclosingScope(s);
+    return s;
 }
 
-void RoxalCompiler::endScope()
-{
-    asFuncScope(funcScope())->scopeDepth--;
 
-    // count how many local variables in the current scope need to be poped
-    //  from the stack and emit pop instruction(s)
-    // int16_t count { 0 };
-    // while (!state()->locals.empty()
-    //        && state()->locals.back().depth > state()->scopeDepth) {
-    //     count++;
-    //     if (count == 255) {
-    //         emitBytes(OpCode::PopN, 255);
-    //         count=0;
-    //     }
-    //     state()->locals.pop_back();
-    // }
-    // if (count > 0) {
-    //     if (count==1)
-    //         emitByte(OpCode::Pop);
-    //     else
-    //         emitBytes(OpCode::PopN, uint8_t(count));
-    // }
-
-    auto& locals { asFuncScope(funcScope())->locals };
-
-    // std::cout << "<endScope() depth=" << (state()->scopeDepth+1) << " local.size=" << locals.size() << ":" << std::endl;
-    // for(auto li=locals.begin(); li!=locals.end(); ++li) {
-    //     std::cout << "  " << int(&(*li) - &(*locals.begin())) << " " << toUTF8StdString(li->name) << " " << li->depth << " "
-    //      << (li->isCaptured ? "captured":"notcaptured") << std::endl;
-    // }
-    // std::cout << std::endl;
-
-    while (!locals.empty()
-           && locals.back().depth > asFuncScope(funcScope())->scopeDepth) {
-
-        std::string popComment { "local "+toUTF8StdString(locals.back().name)+" depth:"+std::to_string(locals.back().depth) };
-
-        if (locals.back().isCaptured)
-            emitByte(OpCode::CloseUpvalue, popComment);
-        else
-            emitByte(OpCode::Pop, popComment);
-
-        locals.pop_back();           
-    }
-}
 
 static std::string linePos(ptr<AST> node)
 {
@@ -1458,8 +1453,8 @@ void RoxalCompiler::addLocal(const icu::UnicodeString& name)
 int16_t RoxalCompiler::resolveLocal(Scope scopeState, const icu::UnicodeString& name)
 {
     #ifdef DEBUG_BUILD
-    if ((*scopeState)->type != LexicalScope::Type::Func)
-        throw std::runtime_error("resolveLocal() scopeState is not a func scope");    
+    if (!(*scopeState)->isFuncOrModule())
+        throw std::runtime_error("resolveLocal() scopeState is not a func/module scope");    
     #endif
     #ifdef DEBUG_TRACE_NAME_RESOLUTION
     std::cout << "resolveLocal(scope=" << toUTF8StdString((*scopeState)->name) << ", " << toUTF8StdString(name) << ")";
