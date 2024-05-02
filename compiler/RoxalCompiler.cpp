@@ -1,4 +1,4 @@
-
+#include <filesystem>
 #include <boost/algorithm/string/replace.hpp>
 
 #include <core/common.h>
@@ -84,7 +84,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 
     if (ast != nullptr) {
 
-        enterModuleScope(toUnicodeString(name));
+        enterModuleScope("",toUnicodeString(name));
 
         auto module { asModuleScope(moduleScope()) };
 
@@ -170,6 +170,56 @@ std::any RoxalCompiler::visit(ptr<ast::Annotation> ast)
     //ast->acceptChildren(*this);
     return {};
 }
+
+
+std::any RoxalCompiler::visit(ptr<ast::Import> ast)
+{
+
+    currentNode = ast;
+
+    // TODO: ignore all but last component for now
+    auto moduleName = ast->packages.at(ast->packages.size()-1);
+    auto filename = toUTF8StdString(moduleName + ".rox");
+
+    if (!std::filesystem::exists(std::filesystem::path(filename))) {
+        error("import file '"+filename+"' not found.");
+        return {};
+    }
+
+    std::ifstream sourcestream(filename); 
+
+    ObjFunction* function { nullptr };
+
+    try {
+        // compile to generate code for imported module
+        RoxalCompiler compiler {};
+        compiler.setOutputBytecodeDissasembly(outputBytecodeDissasembly);
+
+        function = compiler.compile(sourcestream, toUTF8StdString(moduleName));
+
+        // emit code to place module's main chunk on stack as closure
+        assert(function->upvalueCount == 0);
+        emitBytes(OpCode::Closure, makeConstant(objVal(function)));
+
+        // call it to have it executed (which will result in globals being declared)
+        CallSpec callSpec {};
+        callSpec.allPositional = true;
+        callSpec.argCount = 0;
+        auto bytes = callSpec.toBytes();
+        assert(bytes.size()==1);
+        emitBytes(OpCode::Call, bytes[0]);
+
+        // !!! FIXME: when the above is executed in the context of importing module
+        //  the imported module's symbols are directly in our global space (no namespacing!)
+
+    } catch (std::exception& e) {
+        error(e.what());
+        return {};
+    }
+
+    return {};
+}
+
 
 
 std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
@@ -1034,9 +1084,9 @@ void RoxalCompiler::exitGlobalScope()
 }
 
 
-void RoxalCompiler::enterModuleScope(const icu::UnicodeString& moduleName)
+void RoxalCompiler::enterModuleScope(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName)
 {
-    lexicalScopes.push_back(std::make_shared<ModuleScope>(moduleName));
+    lexicalScopes.push_back(std::make_shared<ModuleScope>(packageName, moduleName));
     #ifdef DEBUG_TRACE_SCOPES
     std::cout << "enterModuleScope(" << toUTF8StdString(moduleName) << ")" << std::endl;
     outputScopes();
@@ -1052,7 +1102,10 @@ void RoxalCompiler::exitModuleScope()
         throw std::runtime_error("exitModuleScope() - not in module scope");
     #endif
     #ifdef DEBUG_TRACE_SCOPES
-    std::cout << "exitModuleScope(" << toUTF8StdString(asModuleScope(moduleScope())->function->name) << ")" << std::endl;
+    auto module { asModuleScope(moduleScope() };
+    std::cout << "exitModuleScope(" 
+              << (!module->packageName.isEmpty() ? toUTF8StdString(module->packageName)+"." : "") 
+              << toUTF8StdString(module->moduleName) << ")" << std::endl;
     #endif
 
     lexicalScopes.pop_back();
@@ -1095,7 +1148,11 @@ void RoxalCompiler::exitTypeScope()
 
 void RoxalCompiler::enterFuncScope(const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> type)
 {
-    lexicalScopes.push_back(std::make_shared<FunctionScope>(funcName,funcType,type));
+    // function scopes only valud in a module
+    auto modScope { asModuleScope(moduleScope()) };
+
+    lexicalScopes.push_back(std::make_shared<FunctionScope>(modScope->packageName, modScope->moduleName,
+                                                           funcName,funcType,type));
 
     #ifdef DEBUG_TRACE_SCOPES
     std::cout << "enterFuncScope(" << toUTF8StdString(funcName) << ",funcType=" << toString(funcType) << ")" << std::endl;
