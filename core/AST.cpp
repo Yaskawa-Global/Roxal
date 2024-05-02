@@ -51,6 +51,10 @@ void File::acceptChildren(ASTVisitor& v, Anys& results)
     for(auto& annot : annotations)
         results.push_back( annot->accept(v) );
 
+    for(auto& import : imports)
+        results.push_back( import->accept(v) );
+
+
     for(auto& declOrStmt : declsOrStmts ) {
 
         if (std::holds_alternative<ptr<Declaration>>(declOrStmt))
@@ -79,6 +83,9 @@ void File::output(std::ostream& os, int indent) const
 
     for(auto& annot : annotations)
         annot->output(os,indent+1);
+
+    for(auto& import : imports)
+        import->output(os,indent+1);
 
     for(auto& declOrStmt : declsOrStmts ) 
         if (std::holds_alternative<ptr<Declaration>>(declOrStmt))
@@ -164,6 +171,40 @@ void Annotation::output(std::ostream& os, int indent) const
     }
 }
 
+
+
+std::any Import::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(std::dynamic_pointer_cast<Import>(shared_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(std::dynamic_pointer_cast<Import>(shared_from_this())) );
+
+    return results;
+}
+
+void Import::output(std::ostream& os, int indent) const
+{
+    if (packages.size() > 0) {
+        os << spaces(indent)+"import ";
+        for(auto i=0; i < packages.size(); i++) {
+            os << toUTF8StdString(packages[i]);
+            if (i != packages.size()-1)
+                os << ".";
+        }
+        os << std::endl;
+    }
+}
+
+void Import::acceptChildren(ASTVisitor& v, Anys& results)
+{
+}
 
 
 

@@ -82,8 +82,13 @@ inline constexpr uint8_t asByte(OpCode op) { return uint8_t(op); }
 class Chunk 
 {
 public:
-    Chunk();
+    Chunk(const icu::UnicodeString& packageName_, const icu::UnicodeString& moduleName_);
     virtual ~Chunk() {}
+
+    // fully-qualified package & module name (e.g. p.q.mod)
+    //  is prefix for all module-level(global) names
+    icu::UnicodeString packageName;
+    icu::UnicodeString moduleName;
 
     typedef std::vector<uint8_t> CodeType;
 

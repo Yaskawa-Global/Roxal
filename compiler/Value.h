@@ -77,16 +77,37 @@ bool isObjPrimitive(const Value& v); // forward from Object.h
 
 class Value {
 public:
+    /// @brief Default constructor. Initializes the value to Nil.    
     Value() : val(QNAN | TagNil) {}  
 
+    /// @brief Constructs a boolean value.
+    /// @param b The boolean value.
     explicit Value(bool b) { val = b ? (QNAN | TagTrue) : (QNAN | TagFalse); }
+    
+    
+    /// @brief Constructs a byte value.
+    /// @param b The byte value.
     explicit Value(uint8_t b) { val = QNAN | TagByte | (0xff & *reinterpret_cast<uint8_t*>(&b)); }
+    
+    /// @brief Constructs a real value.
+    /// @param r The real value.
     explicit Value(double r) { val = (*reinterpret_cast<uint64_t*>(&r)); }
+    
+    /// @brief Constructs an integer value.
+    /// @param i The integer value.    
     explicit Value(int32_t i) { val = QNAN | TagInt | (0xffffffff & *reinterpret_cast<uint64_t*>(&i)); }
+    
+    /// @brief Constructs a value of the specified builtin type.
+    /// @param bt The builtin type.
     explicit Value(ValueType bt) { val = QNAN | TagType | uint64_t(bt); }
+    
+    /// @brief Constructs a value from an object pointer.
+    /// @param o The object pointer.
     explicit Value(Obj* o);
 
 
+    /// @brief Copy constructor.
+    /// @param v The value to copy.
     Value(const Value& v) 
     {
         val.store(v.val.load());
@@ -94,7 +115,9 @@ public:
             incRefObj();    
     }
 
-
+    /// @brief Assignment operator.
+    /// @param v The value to assign.
+    /// @return The assigned value.
     Value& operator=(const Value& v)
     {
         if (isObj() || isBoxed())
@@ -108,45 +131,100 @@ public:
     }
 
 
+    /// @brief Destructor. Will decrement the reference count of objects.
     ~Value() {
         if (isObj() || isBoxed())
             decRefObj();
     }
 
 
+    /// @brief Boxes the value into an object if it is a primitive type.
     void box();
+    
+    /// @brief Unboxes the value from an object if it is boxed.
     void unbox();
+    
+    /// @brief Checks if the value is boxed.
+    /// @return True if the value is boxed, false otherwise.
     bool isBoxed() const { return isObj() && isObjPrimitive(*this); }
+    
+    /// @brief Checks if the value is boxable (primitive type that can be boxed).
+    /// @return True if the value is boxable, false otherwise.
     bool isBoxable() const { return !isBoxed() && (isBool() || isInt() || isReal()); }
 
+    /// @brief Retrieves the value type.
+    /// @return The value type.
     ValueType type() const;
+    
+    /// @brief Retrieves the type name of the value.
+    /// @return The type name of the value.
     std::string typeName() const;
 
+    /// @brief Checks if the value is Nil.
+    /// @return True if the value is Nil, false otherwise.
     inline bool isNil() const { return val == (QNAN | TagNil); }
 
+    /// @brief Checks if the value is a boolean.
+    /// @return True if the value is a boolean, false otherwise.
     inline bool isBool() const { return (val|uint64_t(1)<<TypeTagOffset) == (QNAN | TagTrue); }
+    
+    /// @brief Retrieves the value as a boolean.
+    /// @param strict If true, performs strict type checking. If false, allows type coercion.
+    /// @return The boolean value.
     bool asBool(bool strict=true) const;
 
+    /// @brief Checks if the value is a byte.
+    /// @return True if the value is a byte, false otherwise.
     inline bool isByte() const { return (val & (QNAN | TypeTag)) == (QNAN | TagByte); }
+        
+    /// @brief Retrieves the value as a byte.
+    /// @param strict If true, performs strict type checking. If false, allows type coercion.
+    /// @return The byte value.
     uint8_t asByte(bool strict=true) const;
 
+    /// @brief Checks if the value is an integer.
+    /// @return True if the value is an integer, false otherwise.
     inline bool isInt() const { return (val & (QNAN | TypeTag)) == (QNAN | TagInt); }
+    
+    /// @brief Retrieves the value as an integer.
+    /// @param strict If true, performs strict type checking. If false, allows type coercion.
+    /// @return The integer value.
     int32_t asInt(bool strict=true) const;
 
+    /// @brief Checks if the value is a real number.
+    /// @return True if the value is a real number, false otherwise.
     inline bool isReal() const { return (val&QNAN) != QNAN; }
+    
+    /// @brief Retrieves the value as a real number.
+    /// @param strict If true, performs strict type checking. If false, allows type coercion.
+    /// @return The real value.
     double asReal(bool strict=true) const; 
 
+    /// @brief Checks if the value is a number (integer, real, or byte).
+    /// @return True if the value is a number, false otherwise.
     inline bool isNumber() const { return isInt() || isReal() || isByte(); } // TODO: || isDecimal(v)
 
+    /// @brief Checks if the value is a type.
+    /// @return True if the value is a type, false otherwise.
     inline bool isType() const { return (val & (QNAN | TypeTag)) == (QNAN | TagType); }
+    
+    /// @brief Retrieves the value as a type.
+    /// @param strict If true, performs strict type checking. If false, allows type coercion.
+    /// @return The type value.
     ValueType asType(bool strict=true) const;
 
-    // is builtin value type? (excludes boxed ObjPrimitive)
+    /// @brief Checks if the value is a primitive type (not an object - excludes boxed ObjPrimitive).
+    /// @return True if the value is a primitive type, false otherwise.
     inline bool isPrimitive() const {
         return isNil() || isBool() || isInt() || isReal() || isType();
     }
 
+    /// @brief Checks if the value is an object.
+    /// @return True if the value is an object, false otherwise.
     inline bool isObj() const { return (val & (QNAN | SignBit)) == (QNAN | SignBit); }
+    
+    /// @brief Retrieves the value as an object pointer.
+    /// @return The object pointer.
     inline Obj* asObj() const { 
         #ifdef DEBUG_BUILD
         assert(isObj());
@@ -155,13 +233,18 @@ public:
     }
 
 
-    // if is ObjFuture, block waiting for value (and replace this with value) 
+    // @brief if is ObjFuture, block waiting for value (and replace this with value) 
     void resolveFuture();
 
+    /// @brief Equality operator.
+    /// @param rhs The right-hand side value to compare.
+    /// @return True if the values are equal, false otherwise.
     bool operator==(const Value& rhs) const;
 
     static_assert(sizeof(size_t) >= sizeof(uint64_t), "size_t is not big enough for uint64_t val as hash");
 
+    /// @brief Calculates the hash value of the value.
+    /// @return The hash value.
     size_t hash() const {
         return size_t(val.load());
     }
@@ -171,7 +254,9 @@ public:
     static void testPrimitiveValues();
     #endif
 
-    Value clone() const; // deep copy
+    /// @brief Creates a deep copy of the value.
+    /// @return The cloned value.
+    Value clone() const;
 
 protected:
     std::atomic_uint64_t val;

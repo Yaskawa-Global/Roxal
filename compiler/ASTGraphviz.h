@@ -19,6 +19,7 @@ public:
     virtual std::any visit(ptr<ast::File> ast);
     virtual std::any visit(ptr<ast::SingleInput> ast);
     virtual std::any visit(ptr<ast::Annotation> ast);
+    virtual std::any visit(ptr<ast::Import> ast);
     virtual std::any visit(ptr<ast::TypeDecl> ast);
     virtual std::any visit(ptr<ast::FuncDecl> ast);
     virtual std::any visit(ptr<ast::VarDecl> ast);

@@ -25,6 +25,7 @@ public:
     virtual std::any visit(ptr<ast::File> ast);
     virtual std::any visit(ptr<ast::SingleInput> ast);
     virtual std::any visit(ptr<ast::Annotation> ast);
+    virtual std::any visit(ptr<ast::Import> ast);
     virtual std::any visit(ptr<ast::TypeDecl> ast);
     virtual std::any visit(ptr<ast::FuncDecl> ast);
     virtual std::any visit(ptr<ast::VarDecl> ast);
@@ -111,7 +112,7 @@ protected:
     void enterGlobalScope();
     void exitGlobalScope();
 
-    void enterModuleScope(const icu::UnicodeString& moduleName);
+    void enterModuleScope(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName);
     void exitModuleScope();
 
     void enterTypeScope(const icu::UnicodeString& typeName);
@@ -145,11 +146,12 @@ protected:
     // stack new states when we enter new functions to compile
     struct FunctionScope : public LexicalScope
     {
-        FunctionScope(const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> t) 
+        FunctionScope(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName,
+                      const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> t) 
             : LexicalScope(ScopeType::Func, funcName), scopeDepth(0), functionType(funcType), type(t)
         {
             strict = true;
-            function = functionVal();
+            function = functionVal(packageName, moduleName);
             function->name = funcName;
             function->funcType = type; // store type for runtime
             UnicodeString localName { (funcType==FunctionType::Method || funcType==FunctionType::Initializer) ? 
@@ -184,13 +186,17 @@ protected:
 
     struct ModuleScope : public FunctionScope
     {
-        ModuleScope(const icu::UnicodeString& moduleName)
-            : FunctionScope(moduleName, FunctionType::Module, std::make_shared<type::Type>(type::BuiltinType::Func))
+        ModuleScope(const icu::UnicodeString& packageName_, const icu::UnicodeString& moduleName_)
+            : FunctionScope(packageName_, moduleName_, moduleName_, FunctionType::Module, std::make_shared<type::Type>(type::BuiltinType::Func)),
+              packageName(packageName_), moduleName(moduleName_)
         {
             //this->functionType = FunctionType::Module;
             scopeType = ScopeType::Module;
             type->func = type::Type::FuncType();
         }
+
+        icu::UnicodeString packageName;
+        icu::UnicodeString moduleName;
     };
 
     ptr<ModuleScope> asModuleScope(Scope s) const { return std::dynamic_pointer_cast<ModuleScope>(*s); }

@@ -392,7 +392,7 @@ std::string toString(FunctionType ft);
 
 struct ObjFunction : public Obj
 {
-    ObjFunction();
+    ObjFunction(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName);
     virtual ~ObjFunction() {}
 
     UnicodeString name;
@@ -418,8 +418,8 @@ inline ObjFunction* asFunction(const Value& v) {
 }
 
 
-inline ObjFunction* functionVal() {
-    return newObj<ObjFunction>(__func__);
+inline ObjFunction* functionVal(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName) {
+    return newObj<ObjFunction>(__func__, packageName, moduleName);
 }
 
 std::string objFunctionToString(const ObjFunction* of);

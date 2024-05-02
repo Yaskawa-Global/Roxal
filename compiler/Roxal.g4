@@ -17,7 +17,7 @@ tokens { INDENT, DEDENT }
  */
 
 file_input
- : annotation* ( NEWLINE | declaration )* EOF
+ : annotation* import_stmt* ( NEWLINE | declaration )* EOF
  ;
 
 
@@ -25,6 +25,11 @@ single_input
  : NEWLINE
  | statement
  | compound_stmt NEWLINE
+ ;
+
+
+import_stmt
+ : IMPORT IDENTIFIER (DOT IDENTIFIER)*
  ;
 
 
@@ -282,6 +287,7 @@ IMPLEMENTS: 'implements';
 EXTENDS: 'extends';
 THIS: 'this';
 SUPER: 'super';
+IMPORT : 'import';
 
 
 // Types

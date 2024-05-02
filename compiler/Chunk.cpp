@@ -8,7 +8,8 @@
 using namespace roxal;
 
 
-Chunk::Chunk()
+Chunk::Chunk(const icu::UnicodeString& packageName_, const icu::UnicodeString& moduleName_)
+    : packageName(packageName_), moduleName(moduleName_)
 {
     code.reserve(8);
 }
@@ -366,6 +367,22 @@ CallSpec::CallSpec(Chunk::iterator& ci)
 }
 
 
+/**
+ * @brief Serializes the CallSpec into a vector of bytes.
+ *
+ * The function serializes the `CallSpec` object into a byte vector format that can be used by the `Chunk` bytecode.
+ * If `allPositional` is true, it means all the arguments are positional and the byte vector starts with
+ * the argument count (masked with 0x7F to ensure it's within 7 bits). If `allPositional` is false,
+ * it means there are named arguments and each argument will be represented with either one or two bytes
+ * following the argument count byte (which has the MSB set to 1).
+ *
+ * For positional arguments, a single byte with the value 0 is used. For named arguments, two bytes are used
+ * to represent the 15-bit hash code of the argument name. The first byte is the higher part of the hash code,
+ * and the second byte is the lower part. The MSB of the first byte is set to 1 to indicate that this is a named argument.
+ *
+ * @return A vector of bytes representing the serialized CallSpec.
+ * @throw std::runtime_error If the argument count exceeds 127 in a debug build.
+ */
 std::vector<uint8_t> CallSpec::toBytes() const
 {
     std::vector<uint8_t> bytes {};
@@ -401,6 +418,11 @@ std::vector<uint8_t> CallSpec::toBytes() const
 }
 
 
+/**
+ * @brief A function that checks if any argument in the CallSpec object is not positional (i.e. is named).
+ *
+ * @return true if there is at least one argument that is not positional, false otherwise
+ */
 bool CallSpec::namedArgs() const
 {
     for(auto& arg : args)

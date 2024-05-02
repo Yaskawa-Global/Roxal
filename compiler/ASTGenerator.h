@@ -21,6 +21,8 @@ public:
 
     virtual std::any visitSingle_input(RoxalParser::Single_inputContext *context);
 
+    virtual std::any visitImport_stmt(RoxalParser::Import_stmtContext *context);
+
     virtual std::any visitDeclaration(RoxalParser::DeclarationContext *context);
 
     virtual std::any visitStatement(RoxalParser::StatementContext *context);

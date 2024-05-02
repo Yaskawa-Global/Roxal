@@ -165,6 +165,28 @@ std::any ASTGraphviz::visit(ptr<ast::Annotation> ast)
 }
 
 
+std::any ASTGraphviz::visit(ptr<ast::Import> ast)
+{
+    startVisit();
+
+    auto name { uname(ast) };
+
+    std::string module {};
+    for(size_t i=0; i < ast->packages.size(); i++) {
+        module += toUTF8StdString(ast->packages.at(i));
+        if (i < ast->packages.size()-1)
+            module += ".";
+    }
+
+    nodes[name] = node(name,"import", module);
+
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
+
+
 std::any ASTGraphviz::visit(ptr<ast::TypeDecl> ast)
 {
     startVisit();
