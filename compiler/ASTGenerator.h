@@ -45,6 +45,8 @@ public:
 
     virtual std::any visitFunction(RoxalParser::FunctionContext *context);
 
+    virtual std::any visitFunc_sig(RoxalParser::Func_sigContext *context);
+
     virtual std::any visitParameters(RoxalParser::ParametersContext *context);
 
     virtual std::any visitParameter(RoxalParser::ParameterContext *context);

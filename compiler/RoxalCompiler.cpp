@@ -177,6 +177,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     currentNode = ast;
 
     bool isActor = ast->kind==TypeDecl::Actor;
+    bool isInterface = ast->kind==TypeDecl::Interface;
 
     enterTypeScope(ast->name);
 
@@ -186,7 +187,10 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     if (ast->implements.size()>2)
         throw std::runtime_error("Multiple implements types unimplemented.");
 
-    emitBytes(isActor ? OpCode::ActorType : OpCode::ObjectType, typeNameConstant);
+    if (isInterface && (ast->implements.size() > 0))
+        throw std::runtime_error("Interfaces can't implement (only extend)");
+
+    emitBytes(isActor ? OpCode::ActorType : (isInterface ? OpCode::InterfaceType : OpCode::ObjectType), typeNameConstant);
     defineVariable(typeNameConstant);
 
 
@@ -198,7 +202,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         // can't inherit yourself
         if (superTypeName == ast->name)
-            error("Type object or actor '"+toUTF8StdString(ast->name)+"' can't extend itself.");
+            error("Type object, actor or interface '"+toUTF8StdString(ast->name)+"' can't extend itself.");
 
         namedVariable(superTypeName, /*assign=*/false); // parent (super)
 
@@ -214,6 +218,12 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     namedVariable(ast->name, false); // make type accessible on the stack
 
     for(size_t i=0; i<ast->properties.size(); i++) {
+
+        if (isInterface) {
+            error("Interfaces cannot declare properties");
+            break;
+        }
+
         if (isActor) {
             // TODO: once we have private properties, allow those and allow them
             //  to be accessible by the actor's methods, but not from other threads
@@ -263,7 +273,9 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         }
 
         emitBytes(OpCode::Property, uint8_t(propNameConstant), "property "+toUTF8StdString(propName));
-    }
+
+    } // properties
+
 
     for(size_t i=0; i<ast->methods.size(); i++) {
 
@@ -313,7 +325,7 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
     // unwrap ObjFunction* returned by visit(ptr<Function>)
     auto function = std::any_cast<ObjFunction*>(std::any_cast<Anys>(results.at(0)).at(0));
 
-    // attached the FuncDecl annotations (which appear right before the func declatation)
+    // attached the FuncDecl annotations (which appear right before the func declaration)
     //  to the function object to make them available at runtime
     function->annotations = ast->annotations;
 

@@ -84,8 +84,12 @@ func_decl
  ;
 
 function
- : (FUNC | PROC) IDENTIFIER '(' parameters? ')' (YIELDS (builtin_type | IDENTIFIER))? ':' 
+ : func_sig ':' 
    suite
+ ;
+
+func_sig
+ : (FUNC | PROC) IDENTIFIER '(' parameters? ')' (YIELDS (builtin_type | IDENTIFIER))? 
  ;
 
 parameters
@@ -100,16 +104,21 @@ parameter
 suite 
 // : expr_stmt NEWLINE
  : NEWLINE INDENT (declaration NEWLINE?)+ DEDENT
+ | NEWLINE INDENT DASH DEDENT
  ;
 
 type_decl
- : annotation* TYPE (OBJECT | ACTOR) IDENTIFIER 
-    (EXTENDS IDENTIFIER)? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)? ':' NEWLINE
-   INDENT (property|method)* DEDENT
+ : annotation* TYPE (OBJECT | ACTOR | INTERFACE) IDENTIFIER 
+    (EXTENDS IDENTIFIER)? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)? 
+    ( (':' NEWLINE INDENT (property|method)* DEDENT)
+      | NEWLINE
+    )
  ;
 
 method
- : annotation* function
+ : annotation* 
+   func_sig 
+   ((':' suite) | NEWLINE)  // abstract methods have no body
  ;
 
 property
@@ -302,6 +311,7 @@ ORIENT: 'orient';
 STREAM: 'stream';
 OBJECT: 'object';
 ACTOR : 'actor';
+INTERFACE : 'interface' ;
 
 
 // control
@@ -342,6 +352,7 @@ ISNOTEQUALS: '!=' | '<>' | '\u2260'; // ≠
 FOLLOWEDBY: '|>' | '\u21A6'; // ↦
 YIELDS: '->' | '\u2192'; // →
 UNDERSCORE: '_' ;
+DASH: MINUS ;
 
 OPEN_PAREN : '(';
 CLOSE_PAREN : ')';

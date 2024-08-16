@@ -487,7 +487,8 @@ void Function::acceptChildren(ASTVisitor& v, Anys& results)
 {
     for(auto& param : params)
         results.push_back( param->accept(v) );
-    results.push_back( body->accept(v) );
+    if ( body != nullptr) // abstract & interface methods have no function body
+        results.push_back( body->accept(v) );
 }
 
 
@@ -590,7 +591,7 @@ void TypeDecl::acceptChildren(ASTVisitor& v, Anys& results)
 void TypeDecl::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"TypeDecl " 
-       << (kind==Object ? "object" : (kind==Actor?"actor":"?")) << " " << toUTF8StdString(name)
+       << (kind==Object ? "object" : (kind==Actor?"actor": (kind == Interface?"interface":"?"))) << " " << toUTF8StdString(name)
        << (extends.has_value() ? " "+toUTF8StdString(extends.value()) :"")
        << std::endl;
     if (!implements.empty()) {
@@ -598,6 +599,7 @@ void TypeDecl::output(std::ostream& os, int indent) const
            << " implements " << toUTF8StdString(implements.at(0));
         for(int i=1; i<implements.size();i++)
             os << ", " << toUTF8StdString(implements.at(i));
+        os << std::endl;
     }
     for(auto& annot : annotations)
         annot->output(os, indent+1);

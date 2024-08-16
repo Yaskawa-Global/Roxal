@@ -703,9 +703,9 @@ ObjNative* roxal::nativeVal(NativeFn function)
 
 
 
-ObjObjectType* roxal::objectTypeVal(const icu::UnicodeString& typeName, bool isActor)
+ObjObjectType* roxal::objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface)
 {
-    return newObj<ObjObjectType>(__func__, typeName, isActor);
+    return newObj<ObjObjectType>(__func__, typeName, isActor, isInterface);
 }
 
 

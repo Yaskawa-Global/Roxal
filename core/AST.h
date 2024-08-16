@@ -357,7 +357,7 @@ struct Parameter : public AST {
 struct TypeDecl : public Declaration {
     TypeDecl() : Declaration(DeclType::Type) {}
 
-    enum Kind { Object, Actor };
+    enum Kind { Object, Actor, Interface };
     Kind kind;
 
     icu::UnicodeString name;

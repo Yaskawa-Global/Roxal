@@ -1,0 +1,11 @@
+type object Parent
+
+type object Child implements Parent
+
+
+
+var c = Child()
+
+
+
+  

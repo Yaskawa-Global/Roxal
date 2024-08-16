@@ -619,6 +619,20 @@ std::any ASTGenerator::visitFunction(RoxalParser::FunctionContext *context)
 {
     visitStart();
 
+    auto func = as<Function>(visitFunc_sig(context->func_sig()));
+
+    auto body = visitSuite(context->suite());
+    func->body = as<Suite>(body);
+
+    return typeValue(func);
+    visitEnd();
+}
+
+
+std::any ASTGenerator::visitFunc_sig(RoxalParser::Func_sigContext *context)
+{
+    visitStart();
+
     auto ident { UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText()) };
 
     auto func = std::make_shared<Function>();
@@ -643,10 +657,6 @@ std::any ASTGenerator::visitFunction(RoxalParser::FunctionContext *context)
 
     if (func->returnType.has_value() && func->isProc)
         throw std::runtime_error("Proc "+toUTF8StdString(ident)+" cannot specify a return type.");
-
-
-    auto body = visitSuite(context->suite());
-    func->body = as<Suite>(body);
 
     return typeValue(func);
     visitEnd();
@@ -742,11 +752,15 @@ std::any ASTGenerator::visitType_decl(RoxalParser::Type_declContext *context)
    auto typedecl = std::make_shared<TypeDecl>();
    setSourceInfo(typedecl,context);
 
+   bool isInterface = (context->INTERFACE() != nullptr);
    bool isActor = (context->ACTOR() != nullptr);
-   typedecl->kind = isActor ? TypeDecl::Actor : TypeDecl::Object;
+   typedecl->kind = isActor ? TypeDecl::Actor : (isInterface ? TypeDecl::Interface : TypeDecl::Object);
 
    size_t identIndex = 0;
    typedecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
+
+    if (isInterface && context->IMPLEMENTS() != nullptr)
+        throw std::runtime_error("Interface "+toUTF8StdString(typedecl->name)+" cannot implement, use extends instead");
 
    if (context->annotation().size() > 0) {
 
@@ -798,11 +812,20 @@ std::any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
 {
     visitStart();
 
-    auto func = visitFunction(context->function());
+    auto func = visitFunc_sig(context->func_sig());
     if (!isa<Function>(func))
         throw std::runtime_error("Expected Function for methods of object or actor type");
 
     auto function = as<Function>(func);
+
+    // has body suite?
+    if (context->COLON()) {
+        auto body = visitSuite(context->suite());
+        function->body = as<Suite>(body);
+    }
+    else // abstract method
+        function->body = nullptr;
+
 
     // TODO: should visitAnnotation before visitFunction?
     if (context->annotation().size() > 0) {

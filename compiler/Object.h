@@ -590,8 +590,8 @@ std::string objTypeSpecToString(const ObjTypeSpec* ots);
 
 struct ObjObjectType : public ObjTypeSpec
 {
-    ObjObjectType(const icu::UnicodeString& typeName, bool isactor) 
-        : name(typeName), isActor(isactor) 
+    ObjObjectType(const icu::UnicodeString& typeName, bool isactor, bool isinterface = false) 
+        : name(typeName), isActor(isactor), isInterface(isinterface) 
     { 
         typeValue = isactor ? ValueType::Actor : ValueType::Object;
     }
@@ -599,6 +599,7 @@ struct ObjObjectType : public ObjTypeSpec
 
     icu::UnicodeString name;
     bool isActor;
+    bool isInterface;
 
     // name -> type, initial value
     std::unordered_map<int32_t, std::tuple<icu::UnicodeString, Value, Value>> properties;
@@ -612,7 +613,7 @@ inline bool isObjectType(const Value& v) { return isObjType(v, ObjType::Type) &&
 inline ObjObjectType* asObjectType(const Value& v) { return static_cast<ObjObjectType*>(v.asObj()); }
 
 
-ObjObjectType* objectTypeVal(const icu::UnicodeString& typeName, bool isActor);
+ObjObjectType* objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface = false);
 
 
 //

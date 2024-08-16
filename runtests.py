@@ -18,6 +18,7 @@ tests = [
     'if',
     'func_param_default', 'func_param_default2', 'func_param_default3','func_param_default4',
     'typeobj1', 'typeobj2', 'typeobj3', 'typeobj4', 'typeobj5', 'typeobj6', 'typeobj7',
+    'implements1',
     'method_named_param',
     'annot1', 'generic', 'objscopes',
     'threads1', 'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6',

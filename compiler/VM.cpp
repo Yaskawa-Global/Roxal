@@ -996,6 +996,10 @@ void VM::defineProperty(ObjString* name)
         throw std::runtime_error("Can't create property without object or actor type on stack");
     #endif
     ObjObjectType* objType = asObjectType(peek(2));
+    #ifdef DEBUG_BUILD
+    if (objType->isInterface)
+        throw std::runtime_error("Can't create property for an interface");
+    #endif
 
     if (objType->properties.contains(name->hash))
         throw std::runtime_error("Duplicate property '"+name->toStdString()+"' declared in type "+(objType->isActor?"actor":"object")+" "+toUTF8StdString(objType->name));
@@ -1784,6 +1788,12 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::ActorType): {
                 ObjString* name = readString();
                 push(objVal(objectTypeVal(name->s, /*isActor=*/true)));
+                break;
+            }
+            case asByte(OpCode::InterfaceType): {
+                // interface types are represented as object types (but are abstract - all abstract methods)
+                ObjString* name = readString();
+                push(objVal(objectTypeVal(name->s, /*isActor=*/false, /*isInterface=*/true)));
                 break;
             }
             case asByte(OpCode::Property): {

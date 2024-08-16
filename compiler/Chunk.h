@@ -46,6 +46,7 @@ enum class OpCode {
     ReturnStore,
     ObjectType,
     ActorType,
+    InterfaceType,
     Property,
     Method,
     Extend,
