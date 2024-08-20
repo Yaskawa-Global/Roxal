@@ -1,12 +1,12 @@
 
 #super.it() // error
 
-type object P:
+type P object:
   func pmethod():
     #super.nosuper() // error
     print('hi from pm in P')
 
-type object C extends P:
+type C object extends P:
   func cmethod():
     var spm = super.pmethod
     spm() // same as super.pmethod()

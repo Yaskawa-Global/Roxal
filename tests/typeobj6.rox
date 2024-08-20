@@ -1,4 +1,4 @@
-type object A:
+type A object:
   proc init():
     print('A instantiated')
 

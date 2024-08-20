@@ -1,6 +1,6 @@
-type object Parent
+type Parent object
 
-type object Child implements Parent
+type Child object implements Parent
 
 
 

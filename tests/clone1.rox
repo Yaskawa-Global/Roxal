@@ -1,9 +1,9 @@
 
 // check object clone() (deep copy)
-type object A:
+type A object:
   var ai: int = 1
 
-type object B:
+type B object:
   var a
 
 a = A()

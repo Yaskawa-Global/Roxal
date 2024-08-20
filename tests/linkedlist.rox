@@ -1,12 +1,12 @@
 
-type object Node:
+type Node object:
 
   proc init(o):
     this.o = o
     this.next = nil
 
 
-type object List:
+type List object:
   
   proc init():
     this.head = nil

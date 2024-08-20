@@ -9,7 +9,7 @@ var a = 1
 print(a)
 
 @mark( anobj= 'an object')
-type object MyObj:
+type MyObj object:
 
   @doit(true, amethod = 'a method')
   proc myproc():

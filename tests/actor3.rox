@@ -1,6 +1,6 @@
 var g = false
 
-type actor A:
+type A actor:
   func f():
     return 'retval'
 

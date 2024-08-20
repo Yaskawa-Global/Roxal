@@ -1,5 +1,5 @@
 // test calling a non-method
-type object MyObject:
+type MyObject object:
   proc init():
     func f():
       print("not a method called correctly")

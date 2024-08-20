@@ -1,4 +1,4 @@
-type object Class1:
+type Class1 object:
   var p :int = 1
 
   func method():

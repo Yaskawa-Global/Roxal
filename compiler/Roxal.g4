@@ -108,7 +108,7 @@ suite
  ;
 
 type_decl
- : annotation* TYPE (OBJECT | ACTOR | INTERFACE) IDENTIFIER 
+ : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE)  
     (EXTENDS IDENTIFIER)? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)? 
     ( (':' NEWLINE INDENT (property|method)* DEDENT)
       | NEWLINE

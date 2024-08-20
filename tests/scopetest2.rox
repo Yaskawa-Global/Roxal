@@ -1,5 +1,5 @@
 
-type object Obj:
+type Obj object:
 
   func method():
 

@@ -1,4 +1,4 @@
-type object Toast:
+type Toast object:
   func method():
     print(this.jam)
 

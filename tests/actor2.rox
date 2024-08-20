@@ -1,6 +1,6 @@
 var g = false
 
-type actor A:
+type A actor:
   func addone(n):
     sleep(100000)
     g = true

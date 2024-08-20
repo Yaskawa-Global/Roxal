@@ -1,5 +1,5 @@
 
-type object Obj:
+type Obj object:
 
   proc init():
     this.name = "AnObj"
@@ -9,7 +9,7 @@ type object Obj:
 
     func f():       
 
-      type object Obj2:
+      type Obj2 object:
 
         proc init():
           this.name = "AnObj2"
@@ -44,6 +44,3 @@ print(o.method())
 
 o.i = 4
 print(o.method())
-
-
-

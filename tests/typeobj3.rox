@@ -1,4 +1,4 @@
-type object MyObject:
+type MyObject object:
   proc init(a):
     print(a)
 

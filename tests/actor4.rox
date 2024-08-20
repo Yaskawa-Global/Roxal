@@ -1,6 +1,6 @@
 var gl = false
 
-type actor A:
+type A actor:
   proc f():
     print('from actor A.f()')
 
