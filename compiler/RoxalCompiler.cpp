@@ -46,8 +46,8 @@ ptr<C> as(ptr<AST> p) {
 }
 
 
-RoxalCompiler::RoxalCompiler() 
-    : outputBytecodeDissasembly(false) 
+RoxalCompiler::RoxalCompiler()
+    : outputBytecodeDissasembly(false)
 {}
 
 
@@ -61,7 +61,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
         ASTGenerator astGenerator {};
         ast = astGenerator.ast(source, name);
     } catch (std::exception& e) {
-        std::cout << "Exception in parsing - " << std::string(e.what()) << std::endl; 
+        std::cout << "Exception in parsing - " << std::string(e.what()) << std::endl;
         return function;
     }
 
@@ -72,7 +72,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
         TypeDeducer typeDeducer {};
         typeDeducer.visit(as<File>(ast));
     } catch (std::exception& e) {
-        std::cout << "Exception during type inference - " << std::string(e.what()) << std::endl; 
+        std::cout << "Exception during type inference - " << std::string(e.what()) << std::endl;
         return function;
     }
 
@@ -94,7 +94,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
             auto file = as<File>(ast);
 
             file->accept(*this);
-            
+
             function = module->function;
 
             assert(function != nullptr);
@@ -115,13 +115,13 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
             if (function != nullptr)
                 delObj(function);
             throw e;
-        } 
+        }
 
         exitModuleScope();
-        
+
         //std::cout << "\n" << interpreter.stackAsString(false) << std::endl;
     }
-    
+
     return function;
 }
 
@@ -178,11 +178,12 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     bool isActor = ast->kind==TypeDecl::Actor;
     bool isInterface = ast->kind==TypeDecl::Interface;
+    bool isEnumeration = ast->kind==TypeDecl::Enumeration;
 
     enterTypeScope(ast->name);
 
     int16_t typeNameConstant = identifierConstant(ast->name);
-    declareVariable(ast->name);    
+    declareVariable(ast->name);
 
     if (ast->implements.size()>2)
         throw std::runtime_error("Multiple implements types unimplemented.");
@@ -190,12 +191,14 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     if (isInterface && (ast->implements.size() > 0))
         throw std::runtime_error("Interfaces can't implement (only extend)");
 
+    // TODO: temporarily we're handling enums as objects with a property per label
+    //  (later, they should be treaded as just pushing the label's property on the stack as if a literal was inline)
     emitBytes(isActor ? OpCode::ActorType : (isInterface ? OpCode::InterfaceType : OpCode::ObjectType), typeNameConstant);
     defineVariable(typeNameConstant);
 
 
     // handle extension (inheritance)
-    if (ast->extends.has_value()) {
+    if (ast->extends.has_value() && !isEnumeration) {
         asTypeScope(typeScope())->hasSuperType = true;
 
         auto superTypeName = ast->extends.value();
@@ -233,13 +236,13 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         // emit code to push type & initial value (if any) on stack, then OpCode::Property
 
-        ptr<VarDecl> prop { ast->properties.at(i) }; 
+        ptr<VarDecl> prop { ast->properties.at(i) };
 
         auto propName { prop->name };
         int16_t propNameConstant = identifierConstant(propName);
-        if (propNameConstant >= 255) 
+        if (propNameConstant >= 255)
             error("Too many properties for one actor or object type.");
-        
+
         // type
         if (prop->varType.has_value()) {
             auto varType { prop->varType.value() };
@@ -283,13 +286,63 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         auto methodName { func->name };
         int16_t methodNameConstant = identifierConstant(methodName);
-        if (methodNameConstant >= 255) 
+        if (methodNameConstant >= 255)
             error("Too many methods for one actor or object type.");
 
         func->accept(*this);
 
         emitBytes(OpCode::Method, uint8_t(methodNameConstant), "method "+toUTF8StdString(methodName));
     }
+
+
+    if (isEnumeration) {
+        // TODO: temporarily we're handling enums as objects with a property per label
+        //  (later, they should be treaded as just pushing the label's property on the stack as if a literal was inline)
+        //  This doesn't really work fully as intended, because the properties should be consts and be accesible
+        //   like const or static class members, but current the Enum needs to be instantiated to access the props/labels
+
+        for(size_t i=0; i<ast->enumLabels.size(); i++) {
+
+            const auto& enumLabel { ast->enumLabels.at(i) };
+
+            // TODO: TypeDeducer currenly adds values to enum labels if missing
+            //  (but maybe this will be moved to another pass or to here)
+            assert(enumLabel.second != nullptr);
+
+            auto propName { enumLabel.first };
+            int16_t propNameConstant = identifierConstant(propName);
+            if (propNameConstant >= 255)
+                error("Too many enum labels for one enum type.");
+
+            assert(enumLabel.second->type.has_value());
+            auto valType { enumLabel.second->type.value() };
+
+            auto builtinType { valType->builtin };
+            Value typeValue { typeSpecVal(builtinToValueType(builtinType)) };
+
+            emitConstant(typeValue, "enum label "+toUTF8StdString(propName)+" type");
+
+            ptr<ast::Literal> literalExpr { std::dynamic_pointer_cast<ast::Literal>(enumLabel.second) };
+            assert(literalExpr != nullptr); // currently expected to be a literal
+            Value value {};
+            if (literalExpr->literalType == ast::Literal::LiteralType::Num) {
+                ptr<ast::Num> numExpr { std::dynamic_pointer_cast<ast::Num>(literalExpr) };
+                if (valType->builtin == BuiltinType::Byte)
+                    value = byteVal(std::get<int>(numExpr->num));
+                else if (valType->builtin == BuiltinType::Int)
+                    value = intVal(std::get<int>(numExpr->num));
+                else
+                    error("Unsupported literal type for enum label.");
+            }
+            else
+                error("Unsupported literal type for enum label.");
+
+            emitConstant(value);
+
+            emitBytes(OpCode::Property, uint8_t(propNameConstant), "enum value "+toUTF8StdString(propName));
+        }
+    }
+
 
     emitByte(OpCode::Pop, "type name");
 
@@ -304,7 +357,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
 std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
 {
-    currentNode = ast;    
+    currentNode = ast;
 
     auto name { as<Function>(ast->func)->name };
 
@@ -344,7 +397,7 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
     if (asFuncScope(funcScope())->scopeDepth == 0) // global variable
         var = identifierConstant(ast->name); // create constant table entry for name
 
-    // TODO: support type spec 
+    // TODO: support type spec
 
     if (ast->initializer.has_value()) {
         ast->initializer.value()->accept(*this);
@@ -399,7 +452,7 @@ std::any RoxalCompiler::visit(ptr<ast::ReturnStatement> ast)
 
         emitByte(OpCode::Return);
     }
-    else        
+    else
         emitReturn();
 
     return results;
@@ -410,7 +463,7 @@ std::any RoxalCompiler::visit(ptr<ast::IfStatement> ast)
 {
     currentNode = ast;
 
-    // (first) if condition 
+    // (first) if condition
     ast->conditionalSuites.at(0).first->accept(*this);
 
     auto jumpOverIf = emitJump(OpCode::JumpIfFalse);
@@ -438,7 +491,7 @@ std::any RoxalCompiler::visit(ptr<ast::IfStatement> ast)
         ast->elseSuite.value()->accept(*this);
         exitLocalScope();
     }
-    
+
     patchJump(jumpOverElse);
 
     return {};
@@ -451,7 +504,7 @@ std::any RoxalCompiler::visit(ptr<ast::WhileStatement> ast)
 
     auto loopStart = currentChunk()->code.size();
 
-    // while condition 
+    // while condition
     ast->condition->accept(*this);
 
     auto jumpToExit = emitJump(OpCode::JumpIfFalse);
@@ -471,13 +524,13 @@ std::any RoxalCompiler::visit(ptr<ast::WhileStatement> ast)
 std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 {
     currentNode = ast;
-    
+
     bool isProc = ast->isProc;
     bool isMethod = inTypeScope() // methods can't be outside type decl
                      && (asFuncScope(funcScope())->functionType!=FunctionType::Method) // or directly inside another method
                      && (asFuncScope(funcScope())->functionType!=FunctionType::Initializer);
-    // std::cout << " visit <Function> " << toUTF8StdString(ast->name) 
-    //           << " current funcScope:" << toUTF8StdString(asFuncScope(funcScope())->function->name) 
+    // std::cout << " visit <Function> " << toUTF8StdString(ast->name)
+    //           << " current funcScope:" << toUTF8StdString(asFuncScope(funcScope())->function->name)
     //            << "[type:" << toString(asFuncScope(funcScope())->functionType) << "]"
     //           << " isMethod?" << isMethod << std::endl;
     bool isInitializer = isMethod && (ast->name == "init");
@@ -485,7 +538,7 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     if (isInitializer && !isProc)
         error("object or actor type 'init' method must be a proc.");
 
-    FunctionType ftype = isMethod ? 
+    FunctionType ftype = isMethod ?
                               (isInitializer ? FunctionType::Initializer : FunctionType::Method)
                             : FunctionType::Function;
 
@@ -504,7 +557,7 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     Anys results {};
     ast->acceptChildren(*this, results);
 
-    //exitLocalScope(); 
+    //exitLocalScope();
 
     emitReturn();
 
@@ -525,7 +578,7 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
         if (i >= functionScope.upvalues.size())
             throw std::runtime_error("invalid upvalue index");
         #endif
-        //std::cout << "    - " << int(functionState.upvalues[i].index) << " " << std::string(functionState.upvalues[i].isLocal ?"local":"nonlocal") << std::endl;        
+        //std::cout << "    - " << int(functionState.upvalues[i].index) << " " << std::string(functionState.upvalues[i].isLocal ?"local":"nonlocal") << std::endl;
         emitByte(functionScope.upvalues[i].isLocal ? 1 : 0);
         emitByte(functionScope.upvalues[i].index);
     }
@@ -565,7 +618,7 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
         Anys results;
         ast->acceptChildren(*this, results);
 
-        exitLocalScope(); 
+        exitLocalScope();
 
         // since this closure was called directly by being queued by OpCode::Call
         //  rather than through byte code pushing the callable/closure, we
@@ -591,7 +644,7 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
 std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 {
     currentNode = ast;
-    
+
     if (isa<Variable>(ast->lhs)) {
 
         ast->rhs->accept(*this);
@@ -604,7 +657,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
     }
     else if (isa<UnaryOp>(ast->lhs) && as<UnaryOp>(ast->lhs)->op==UnaryOp::Accessor) {
         auto accessor = as<UnaryOp>(ast->lhs);
-        // visit the lhs of the accessor operator to generate code to evaluate it 
+        // visit the lhs of the accessor operator to generate code to evaluate it
         //  (so we don't evaluate the access, since we want to set the member, not get it)
         accessor->arg->accept(*this);
 
@@ -837,7 +890,7 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
                 // 15bits of param name string hash
                 aspec.paramNameHash =0x8000 | (arg.first.hashCode() & 0x7fff);
                 #ifdef DEBUG_BUILD
-                hashes[arg.first] = aspec.paramNameHash; 
+                hashes[arg.first] = aspec.paramNameHash;
                 #endif
             }
             callSpec.args.push_back(aspec);
@@ -939,7 +992,7 @@ std::any RoxalCompiler::visit(ptr<ast::Str> ast)
     currentNode = ast;
 
     // new ObjString or existing one if exists in strings intern map
-    auto objStr = stringVal(ast->str); 
+    auto objStr = stringVal(ast->str);
     emitConstant(objVal(objStr));
     return {};
 }
@@ -965,7 +1018,7 @@ std::any RoxalCompiler::visit(ptr<ast::Num> ast)
     else if (std::holds_alternative<int32_t>(ast->num)) {
         emitConstant(intVal(std::get<int32_t>(ast->num)));
     }
-    else 
+    else
         throw std::runtime_error("unhandled Num type");
     return {};
 }
@@ -1166,8 +1219,8 @@ void RoxalCompiler::exitLocalScope()
 }
 
 
-int RoxalCompiler::scopeDepth() const 
-{ 
+int RoxalCompiler::scopeDepth() const
+{
     return int(lexicalScopes.size());
 }
 
@@ -1375,7 +1428,7 @@ void RoxalCompiler::emitReturn(const std::string& comment)
 {
     if (asFuncScope(funcScope())->functionType == FunctionType::Initializer)
         emitBytes(OpCode::GetLocal, 0);
-    else 
+    else
         emitByte(OpCode::ConstNil, comment);
 
     emitByte(OpCode::Return);
@@ -1443,10 +1496,10 @@ int16_t RoxalCompiler::identifierConstant(const icu::UnicodeString& ident)
 
 void RoxalCompiler::addLocal(const icu::UnicodeString& name)
 {
-    //std::cout << (&(*state()) - &(*states.begin())) << " addLocal(" << toUTF8StdString(name) << ")" << std::endl;//!!!
+    //std::cout << (&(*state()) - &(*states.begin())) << " addLocal(" << toUTF8StdString(name) << ")" << std::endl;
     if (asFuncScope(funcScope())->locals.size() == 255) {
         error("Maximum of 255 local variables per function exceeded.");
-        return;  
+        return;
     }
     #ifdef DEBUG_TRACE_NAME_RESOLUTION
     std::cout << "addLocal(" << toUTF8StdString(name) << ")" << std::endl;
@@ -1466,12 +1519,12 @@ int16_t RoxalCompiler::resolveLocal(Scope scopeState, const icu::UnicodeString& 
 {
     #ifdef DEBUG_BUILD
     if (!(*scopeState)->isFuncOrModule())
-        throw std::runtime_error("resolveLocal() scopeState is not a func/module scope");    
+        throw std::runtime_error("resolveLocal() scopeState is not a func/module scope");
     #endif
     #ifdef DEBUG_TRACE_NAME_RESOLUTION
     std::cout << "resolveLocal(scope=" << toUTF8StdString((*scopeState)->name) << ", " << toUTF8StdString(name) << ")";
     #endif
-    //std::cout << (&(*scopeState) - &(*states.begin()))<< " resolveLocal(" << toUTF8StdString(name) << ")" << std::endl;//!!!
+    //std::cout << (&(*scopeState) - &(*states.begin()))<< " resolveLocal(" << toUTF8StdString(name) << ")" << std::endl;
     auto locals { asFuncScope(scopeState)->locals };
     if (!locals.empty())
         for(int32_t i=locals.size()-1; i>=0; i--) {
@@ -1498,14 +1551,14 @@ int16_t RoxalCompiler::resolveLocal(Scope scopeState, const icu::UnicodeString& 
 
 int RoxalCompiler::addUpvalue(Scope scopeState, uint8_t index, bool isLocal)
 {
-    //std::cout << (&(*scopeState) - &(*states.begin())) << " addUpvalue(" << index << " " << (isLocal ? "local" : "notlocal") << ")" << std::endl;//!!!
+    //std::cout << (&(*scopeState) - &(*states.begin())) << " addUpvalue(" << index << " " << (isLocal ? "local" : "notlocal") << ")" << std::endl;
     int upvalueCount = asFuncScope(scopeState)->function->upvalueCount;
     auto& upvalues { asFuncScope(scopeState)->upvalues };
 
     for (int i=0; i<upvalueCount; i++) {
         const Upvalue& upvalue = upvalues[i];
-        if (upvalue.index == index && upvalue.isLocal == isLocal) 
-            return i;        
+        if (upvalue.index == index && upvalue.isLocal == isLocal)
+            return i;
     }
 
     if (upvalueCount == std::numeric_limits<uint8_t>::max()) {
@@ -1527,8 +1580,8 @@ int RoxalCompiler::addUpvalue(Scope scopeState, uint8_t index, bool isLocal)
 
 int16_t RoxalCompiler::resolveUpvalue(Scope scopeState, const icu::UnicodeString& name)
 {
-    //std::cout << (&(*scopeState) - &(*states.begin())) << " resolveUpvalue(" << toUTF8StdString(name) << ")" << std::endl;//!!!
-    //std::string sname { toUTF8StdString(name) };//!!!
+    //std::cout << (&(*scopeState) - &(*states.begin())) << " resolveUpvalue(" << toUTF8StdString(name) << ")" << std::endl;
+    //std::string sname { toUTF8StdString(name) };
     #ifdef DEBUG_TRACE_NAME_RESOLUTION
     std::cout << "resolveUpvalue(scope=" << toUTF8StdString((*scopeState)->name) << ", " << toUTF8StdString(name) << ")";
     #endif
@@ -1623,7 +1676,7 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
     //     // if we have a property name, allow access without 'this.' prefix
     //     if (!typeScopes.empty()) {
     //         // FIXME: statically check the property exists.. (otherwise we're blocking all outer scope local access..)
-    //         //std::cout << funcScope() << std::endl;       
+    //         //std::cout << funcScope() << std::endl;
     //         arg = identifierConstant(name);
     //         namedVariable("this", false);
     //         //emitBytes(OpCode::GetProp, uint8_t(identConstant));
@@ -1646,7 +1699,7 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
         //  allow assigning without previously declaring, except within functions
         if (asFuncScope(funcScope())->functionType != FunctionType::Module)
             setOp = (arg<=255) ? OpCode::SetGlobal : OpCode::SetGlobal2;
-        else 
+        else
             setOp = (arg<=255) ? OpCode::SetNewGlobal : OpCode::SetNewGlobal2;
     }
 

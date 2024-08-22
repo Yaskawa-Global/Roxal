@@ -25,8 +25,8 @@ std::string roxal::type::to_string(BuiltinType t)
         case BuiltinType::Vector : return "vector";
         case BuiltinType::Matrix : return "matrix";
         case BuiltinType::Tensor : return "tensor";
-        case BuiltinType::Orient : return "stream";
-        case BuiltinType::Stream : return "orient";
+        case BuiltinType::Orient : return "orient";
+        case BuiltinType::Stream : return "stream";
         case BuiltinType::Func : return "func";
         case BuiltinType::Object : return "object";
         case BuiltinType::Actor : return "actor";

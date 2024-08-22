@@ -42,21 +42,21 @@ statement
 
 
 expr_stmt
- : expression  
+ : expression
  ;
 
 
 compound_stmt
  : block_stmt
  | return_stmt
- | if_stmt 
- | while_stmt 
-//  | for_stmt 
-//  | with_stmt 
+ | if_stmt
+ | while_stmt
+//  | for_stmt
+//  | with_stmt
  ;
 
 block_stmt
- : SCOPE ':' suite 
+ : SCOPE ':' suite
  ;
 
 
@@ -71,7 +71,7 @@ if_stmt
 
 
 while_stmt
- : WHILE expression ':' suite 
+ : WHILE expression ':' suite
  ;
 
 
@@ -84,16 +84,16 @@ func_decl
  ;
 
 function
- : func_sig ':' 
+ : func_sig ':'
    suite
  ;
 
 func_sig
- : (FUNC | PROC) IDENTIFIER '(' parameters? ')' (YIELDS (builtin_type | IDENTIFIER))? 
+ : (FUNC | PROC) IDENTIFIER '(' parameters? ')' (YIELDS (builtin_type | IDENTIFIER))?
  ;
 
 parameters
- : parameter (',' parameter)* 
+ : parameter (',' parameter)*
  ;
 
 parameter
@@ -101,23 +101,24 @@ parameter
  ;
 
 
-suite 
+suite
 // : expr_stmt NEWLINE
  : NEWLINE INDENT (declaration NEWLINE?)+ DEDENT
  | NEWLINE INDENT DASH DEDENT
  ;
 
 type_decl
- : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE)  
-    (EXTENDS IDENTIFIER)? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)? 
-    ( (':' NEWLINE INDENT (property|method)* DEDENT)
+ : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE | ENUM)
+    // only enum can extend bool, byte or int
+    (EXTENDS (IDENTIFIER | BYTE | INT))? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)?
+    ( (':' NEWLINE INDENT (property|method|enum_label)* DEDENT)
       | NEWLINE
     )
  ;
 
 method
- : annotation* 
-   func_sig 
+ : annotation*
+   func_sig
    ((':' suite) | NEWLINE)  // abstract methods have no body
  ;
 
@@ -125,16 +126,20 @@ property
  : annotation* VAR IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)? NEWLINE
  ;
 
+enum_label
+ : IDENTIFIER (EQUALS expression)? NEWLINE
+ ;
+
 
 annotation
- : AT IDENTIFIER 
+ : AT IDENTIFIER
    ( OPEN_PAREN (annot_argument (COMMA annot_argument)* COMMA?)? CLOSE_PAREN )?
-   NEWLINE 
+   NEWLINE
  ;
 
 annot_argument
  : (IDENTIFIER '=')? expression
- ; 
+ ;
 
 
 //TODO: assignment is an expression, but maybe we don't want assignments
@@ -146,24 +151,24 @@ expression
 assignment
  : ( call DOT )? IDENTIFIER EQUALS assignment
  | call EQUALS assignment
- | followed_by 
+ | followed_by
  ;
 
 followed_by
  : logic_or ( FOLLOWEDBY logic_or )*
- ; 
+ ;
 
 
 logic_or
- : logic_and ( OR logic_and )* 
+ : logic_and ( OR logic_and )*
  ;
 
 logic_and
- : equality ( AND equality )* 
+ : equality ( AND equality )*
  ;
 
 equality
- : comparison equalnotequal* 
+ : comparison equalnotequal*
  ;
 
 equalnotequal
@@ -172,12 +177,12 @@ equalnotequal
  ;
 
 comparison
- : term ( ( GREATER_THAN | GT_EQ | LESS_THAN | LT_EQ ) term )? 
+ : term ( ( GREATER_THAN | GT_EQ | LESS_THAN | LT_EQ ) term )?
  ;
 
 
 term
- : factor plusminus* 
+ : factor plusminus*
  ;
 
 plusminus
@@ -193,21 +198,21 @@ multdiv
  : ( MULT | STAR ) unary
  | DIV unary
  | MOD unary
- ; 
+ ;
 
 
 unary
- : ( NOT | MINUS ) unary | call 
+ : ( NOT | MINUS ) unary | call
  ;
 
 call
- : primary args_or_index_or_accessor* 
+ : primary args_or_index_or_accessor*
  ;
 
 
 args_or_index_or_accessor
-  : '(' arguments? ')' 
-  | '[' ranges ']' 
+  : '(' arguments? ')'
+  | '[' ranges ']'
   | DOT IDENTIFIER ('(' arguments? ')')?
   ;
 
@@ -228,8 +233,8 @@ optional_expression
   ;
 
 
-arguments 
- : argument ( ',' argument )* 
+arguments
+ : argument ( ',' argument )*
  ;
 
 argument
@@ -238,27 +243,27 @@ argument
 
 
 primary
- : LTRUE 
+ : LTRUE
  | LFALSE
- | num 
+ | num
  | LNIL
  | THIS
  | str   // str+ ?
  | RANGE '(' range ')'
  | list
  | dict
- | IDENTIFIER 
+ | IDENTIFIER
  | OPEN_PAREN expression CLOSE_PAREN
- | SUPER '.' IDENTIFIER 
+ | SUPER '.' IDENTIFIER
  | builtin_type
  ;
 
 
 builtin_type
- : LNIL 
+ : LNIL
  | BOOL | BYTE | NUMBER | INT | REAL | DECIMAL
  | STRING | RANGE
- | LIST | DICT 
+ | LIST | DICT
  | VECTOR | MATRIX | TENSOR
  | ORIENT | STREAM
  ;
@@ -296,12 +301,13 @@ SUPER: 'super';
 // Types
 BOOL: 'bool';
 BYTE: 'byte';
-NUMBER: 'number'; 
+NUMBER: 'number';
 INT: 'int';
 REAL: 'real';
 DECIMAL: 'decimal';  // dec?
 STRING: 'string';
 RANGE: 'range';
+ENUM: 'enum';
 LIST: 'list';
 DICT: 'dict';
 VECTOR: 'vector';
@@ -391,7 +397,7 @@ integer
 DECIMAL_INTEGER
  : NON_ZERO_DIGIT DIGIT*
  | '0'+
- ; 
+ ;
 
 OCT_INTEGER
  : '0' [oO] OCT_DIGIT+
@@ -470,7 +476,7 @@ fragment BIN_DIGIT
 
 fragment POINT_FLOAT
  : INT_PART? FRACTION
- //| INT_PART '.' 
+ //| INT_PART '.'
  ;
 
 fragment EXPONENT_FLOAT

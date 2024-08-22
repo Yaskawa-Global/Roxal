@@ -48,7 +48,7 @@ class List;
 class Dict;
 
 
-class ASTVisitor 
+class ASTVisitor
 {
 public:
     enum class TraversalOrder {
@@ -57,10 +57,10 @@ public:
         // AST will visit node, but not children
         //  - concrete visitor visit() method should explicity call
         //    accept on children to control visit order
-        VisitorDetermined 
+        VisitorDetermined
     };
 
-    virtual TraversalOrder traversalOrder() const 
+    virtual TraversalOrder traversalOrder() const
       { return TraversalOrder::Postorder; }
 
     virtual std::any visit(ptr<File> ast) = 0;
@@ -107,10 +107,10 @@ public:
 };
 
 
-struct LinePos { 
+struct LinePos {
     LinePos() : line(0), pos(0) {}
     LinePos(size_t l, size_t p) : line(l), pos(p) {}
-    size_t line; size_t pos; 
+    size_t line; size_t pos;
 };
 
 
@@ -153,6 +153,7 @@ struct AST : public std::enable_shared_from_this<AST>
     virtual void output(std::ostream& os, int indent) const;
 
     std::optional<ptr<type::Type>> type; // type information, if known
+
     void outputType(std::ostream& os, int indent) const;
 
     // annotations (select AST node types)
@@ -333,7 +334,7 @@ struct Function : public AST {
     icu::UnicodeString name;
     std::vector<ptr<Parameter>> params;
     std::optional<std::variant<BuiltinType,icu::UnicodeString>> returnType;
-    ptr<Suite> body;
+    std::optional<ptr<Suite>> body; // no body if abstract
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -357,7 +358,7 @@ struct Parameter : public AST {
 struct TypeDecl : public Declaration {
     TypeDecl() : Declaration(DeclType::Type) {}
 
-    enum Kind { Object, Actor, Interface };
+    enum Kind { Object, Actor, Interface, Enumeration };
     Kind kind;
 
     icu::UnicodeString name;
@@ -368,7 +369,9 @@ struct TypeDecl : public Declaration {
 
     // pre-declared properties (same syntax as variable declarations)
     std::vector<ptr<VarDecl>> properties;
- 
+
+    std::vector<std::pair<icu::UnicodeString, ptr<Expression>>> enumLabels;
+
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 
@@ -395,11 +398,11 @@ struct Expression : public AST {
 };
 
 
-struct BinaryOp : public Expression {    
+struct BinaryOp : public Expression {
     enum Op {
         None,
         Add, Subtract, Multiply, Divide, Modulo,
-        And, Or, 
+        And, Or,
         Equal, NotEqual,
         LessThan, GreaterThan, LessOrEqual, GreaterOrEqual,
         FollowedBy
@@ -424,7 +427,7 @@ struct BinaryOp : public Expression {
 struct UnaryOp : public Expression {
     enum Op {
         None,
-        Negate, Not, 
+        Negate, Not,
         Accessor
     };
 
@@ -490,7 +493,7 @@ struct Range : public Expression {
 
     // a range includes
     //  an optional start
-    //  an optional stop 
+    //  an optional stop
     //  an optional step
     //  flag indicating if the stop is inclusive
     // if closed==false, behaves like Python slice or Ruby ... (half-open interval)
@@ -498,9 +501,9 @@ struct Range : public Expression {
 
     // if start is omitted, implies implicit start (e.g. first element)
     // if stop  is omitted, implies implicit stop (e.g. last element)
-    // if step  is omitted, implies 1 
+    // if step  is omitted, implies 1
     // if closed==true, stop is inclusive (closed interval), otherwise exclusive (half-open interval)
-    
+
     ptr<Expression> start; // may be null
     ptr<Expression> stop;  // may be null
     ptr<Expression> step;  // may be null

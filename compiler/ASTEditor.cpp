@@ -378,7 +378,8 @@ std::any ASTEditor::visit(ptr<ast::Function> ast)
     //ptr<Suite> body;
 
     //insert into suite
-    ast->body->accept(*this);
+    if (ast->body.has_value())
+        ast->body.value()->accept(*this);
     return {};
 }
 

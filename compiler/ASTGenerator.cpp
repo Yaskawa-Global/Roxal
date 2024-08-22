@@ -96,8 +96,8 @@ T anyas(const std::any& a) {
 
 
 
-// The AST tree nodes all inherit from class AST 
-//  However, the ANTLR visitor return type is Any (or std::any in ANTLR 4.10).   
+// The AST tree nodes all inherit from class AST
+//  However, the ANTLR visitor return type is Any (or std::any in ANTLR 4.10).
 //  Unfortunately, the any classes don't allow access to the address of the contained type so there
 //   is no way to use dynamic_cast to test for runtime type information to determine which
 //   AST subclass is contained at runtime
@@ -161,7 +161,7 @@ void assertType(const std::any& a) {
 // is a an any TypeValue wrapping a ptr<T> (exactly T)
 template<typename T>
 bool is(const std::any& a) {
-    if (!a.has_value() || !anyis<TypeValue>(a)) 
+    if (!a.has_value() || !anyis<TypeValue>(a))
         throw std::runtime_error("is<T> requires any a is a TypeValue");
     return anyas<TypeValue>(a).is<T>();
 }
@@ -169,7 +169,7 @@ bool is(const std::any& a) {
 // is a an any TypeValue wrapping a ptr<T> or a superclass of T?
 template<typename T>
 bool isa(const std::any& a) {
-    if (!a.has_value() || !anyis<TypeValue>(a)) 
+    if (!a.has_value() || !anyis<TypeValue>(a))
         throw std::runtime_error("isa<T> requires any a is a TypeValue");
     if (anyis<TypeValue>(a)) // redundant?
         return anyas<TypeValue>(a).isa<T>();
@@ -179,7 +179,7 @@ bool isa(const std::any& a) {
 // convert from any wrapping TypeValue to ptr<T>
 template<typename T>
 ptr<T> as(const std::any& a) {
-    if (!a.has_value() || !anyis<TypeValue>(a)) 
+    if (!a.has_value() || !anyis<TypeValue>(a))
         throw std::runtime_error("as<T> requires any a is a TypeValue");
     #ifdef DEBUG_BUILD
     if (!isa<T>(a))
@@ -191,7 +191,7 @@ ptr<T> as(const std::any& a) {
 
 
 
-    
+
 ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
 {
     // store entire source string
@@ -217,8 +217,8 @@ ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
     std::cout << std::endl;
     #endif
 
-    RoxalParser parser(&tokens);    
-    
+    RoxalParser parser(&tokens);
+
     auto tree = parser.file_input();
 
     #if defined(DEBUG_OUTPUT_PARSE_TREE)
@@ -233,7 +233,7 @@ ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
             auto file = visitFile_input(tree);
             assertType<File>(file);
             ast = as<File>(file);
-            
+
         } catch (std::logic_error& e) {
             std::cout << std::string("Compile error: ") << e.what() << std::endl;
             return nullptr;
@@ -241,7 +241,7 @@ ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
             std::cout << std::string("Exception: ") << e.what() << std::endl;
             throw e;
         }
-    } 
+    }
 
     this->source = nullptr;
     this->sourceName.clear();
@@ -483,7 +483,7 @@ std::any ASTGenerator::visitReturn_stmt(RoxalParser::Return_stmtContext *context
     setSourceInfo(returnStmt, context);
     if (context->expression())
         returnStmt->expr = as<Expression>(visitExpression(context->expression()));
-        
+
     return typeValue(returnStmt);
     visitEnd();
 }
@@ -515,7 +515,7 @@ std::any ASTGenerator::visitIf_stmt(RoxalParser::If_stmtContext *context)
         body = as<Suite>(visitSuite(context->suite().at(context->suite().size()-1)));
         ifStmt->elseSuite = body;
     }
-    
+
     return typeValue(ifStmt);
     visitEnd();
 }
@@ -576,7 +576,7 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
             }
     }
 
-    if (context->EQUALS()) 
+    if (context->EQUALS())
         vardecl->initializer = as<Expression>(visitExpression(context->expression()));
 
     return typeValue(vardecl);
@@ -747,22 +747,34 @@ std::any ASTGenerator::visitSuite(RoxalParser::SuiteContext *context)
 
 std::any ASTGenerator::visitType_decl(RoxalParser::Type_declContext *context)
 {
-   visitStart();
+    visitStart();
 
-   auto typedecl = std::make_shared<TypeDecl>();
-   setSourceInfo(typedecl,context);
+    auto typedecl = std::make_shared<TypeDecl>();
+    setSourceInfo(typedecl,context);
 
-   bool isInterface = (context->INTERFACE() != nullptr);
-   bool isActor = (context->ACTOR() != nullptr);
-   typedecl->kind = isActor ? TypeDecl::Actor : (isInterface ? TypeDecl::Interface : TypeDecl::Object);
+    bool isInterface = (context->INTERFACE() != nullptr);
+    bool isActor = (context->ACTOR() != nullptr);
+    bool isEnumeration = (context->ENUM() != nullptr);
+    bool isObject = (context->OBJECT() != nullptr);
+    if (isActor)
+        typedecl->kind = TypeDecl::Actor;
+    else if (isInterface)
+        typedecl->kind = TypeDecl::Interface;
+    else if (isEnumeration)
+        typedecl->kind = TypeDecl::Enumeration;
+    else if (isObject)
+        typedecl->kind = TypeDecl::Object;
 
-   size_t identIndex = 0;
-   typedecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
+    size_t identIndex = 0;
+    typedecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
 
     if (isInterface && context->IMPLEMENTS() != nullptr)
         throw std::runtime_error("Interface "+toUTF8StdString(typedecl->name)+" cannot implement, use extends instead");
 
-   if (context->annotation().size() > 0) {
+    if (isEnumeration && context->IMPLEMENTS() != nullptr)
+        throw std::runtime_error("Enum "+toUTF8StdString(typedecl->name)+" cannot implement, use extends instead");
+
+    if (context->annotation().size() > 0) {
 
         for(size_t i=0; i< context->annotation().size();i++) {
 
@@ -776,8 +788,13 @@ std::any ASTGenerator::visitType_decl(RoxalParser::Type_declContext *context)
         }
     }
 
-    if (context->EXTENDS())
+    if (context->EXTENDS()) {
         typedecl->extends = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
+        if (isEnumeration) {
+            if (typedecl->extends != UnicodeString("byte") && typedecl->extends != UnicodeString("int"))
+                throw std::runtime_error("Enum(eration) "+toUTF8StdString(typedecl->name)+" can only extend byte or int");
+        }
+    }
 
     while(identIndex < context->IDENTIFIER().size())
         typedecl->implements.push_back(UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText()));
@@ -802,6 +819,15 @@ std::any ASTGenerator::visitType_decl(RoxalParser::Type_declContext *context)
         typedecl->properties.push_back(as<VarDecl>(varDecl));
     }
 
+    for(size_t i=0; i<context->enum_label().size(); i++) {
+
+        auto enumValueContext { context->enum_label().at(i) };
+
+        auto enumLabelExpr = anyas<std::pair<icu::UnicodeString,ptr<Expression>>>(visitEnum_label(enumValueContext));
+
+        typedecl->enumLabels.push_back(enumLabelExpr);
+    }
+
     return typeValue(typedecl);
     visitEnd();
 }
@@ -824,7 +850,7 @@ std::any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
         function->body = as<Suite>(body);
     }
     else // abstract method
-        function->body = nullptr;
+        function->body.reset();
 
 
     // TODO: should visitAnnotation before visitFunction?
@@ -841,7 +867,7 @@ std::any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
             function->annotations.push_back(annotation);
         }
     }
-    
+
     return typeValue(function);
     visitEnd();
 }
@@ -875,6 +901,23 @@ std::any ASTGenerator::visitProperty(RoxalParser::PropertyContext *context)
     }
 
     return typeValue(varDecl);
+    visitEnd();
+}
+
+
+std::any ASTGenerator::visitEnum_label(RoxalParser::Enum_labelContext *context)
+{
+    visitStart();
+
+    UnicodeString labelName { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
+
+    ptr<Expression> expr = nullptr;
+
+    if (context->expression())
+        expr = as<Expression>(visitExpression(context->expression()));
+
+    return std::make_pair(labelName, expr);
+
     visitEnd();
 }
 
@@ -937,7 +980,7 @@ std::any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *context)
             icu::UnicodeString ident { icu::UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
 
             if (context->DOT()) { // property set
-                
+
                 auto callable = visitCall(context->call());
 
                 auto access = std::make_shared<UnaryOp>(UnaryOp::Accessor);
@@ -1238,7 +1281,7 @@ std::any ASTGenerator::visitUnary(RoxalParser::UnaryContext *context)
         auto arg = visitUnary(context->unary());
 
         // as special case, if the arg is a single bool or num literal, just
-        //  modify the literal to negate it and return that instead of creating 
+        //  modify the literal to negate it and return that instead of creating
         //  a negation UnaryOp
         if (context->NOT() && isa<Bool>(arg)) {
             as<Bool>(arg)->value = !as<Bool>(arg)->value;
@@ -1255,7 +1298,7 @@ std::any ASTGenerator::visitUnary(RoxalParser::UnaryContext *context)
             return typeValue(numarg);
         }
 
-        auto op = std::make_shared<UnaryOp>(context->NOT() ? 
+        auto op = std::make_shared<UnaryOp>(context->NOT() ?
                                               UnaryOp::Not
                                               : (context->MINUS() ? UnaryOp::Negate
                                               : UnaryOp::None )
@@ -1324,7 +1367,7 @@ std::any ASTGenerator::visitCall(RoxalParser::CallContext *context)
 }
 
 
-// return ptr<ArgsOrAccessorInfo> 
+// return ptr<ArgsOrAccessorInfo>
 std::any ASTGenerator::visitArgs_or_index_or_accessor(RoxalParser::Args_or_index_or_accessorContext *context)
 {
     visitStart();
@@ -1332,7 +1375,7 @@ std::any ASTGenerator::visitArgs_or_index_or_accessor(RoxalParser::Args_or_index
     auto info = std::make_shared<ArgsOrAccessorInfo>();
     info->accessor = info->indexer = info->call = false;
 
-    if (context->DOT()) { // accessor, possibly call 
+    if (context->DOT()) { // accessor, possibly call
         info->accessor = true;
         info->arguments = false;
         UnicodeString ident = context->IDENTIFIER() ? UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) : "";
@@ -1391,8 +1434,8 @@ std::any ASTGenerator::visitRanges(RoxalParser::RangesContext *context)
 
     auto indices = std::make_shared<std::vector<ptr<Expression>>>();
 
-    for(int i=0; i<context->range().size(); i++) 
-        indices->push_back(as<Expression>(visitRange(context->range().at(i))));    
+    for(int i=0; i<context->range().size(); i++)
+        indices->push_back(as<Expression>(visitRange(context->range().at(i))));
 
     return indices;
     visitEnd();
@@ -1499,10 +1542,10 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
 {
     visitStart();
 
-    if (context->LTRUE()) 
-        return typeValue(std::make_shared<Bool>(true));    
+    if (context->LTRUE())
+        return typeValue(std::make_shared<Bool>(true));
     else if (context->LFALSE())
-        return typeValue(std::make_shared<Bool>(false));    
+        return typeValue(std::make_shared<Bool>(false));
     else if (context->LNIL())
         return typeValue(std::make_shared<Literal>());
     else if (context->THIS()) {
@@ -1553,7 +1596,7 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
     else if (context->dict())
         return visitDict(context->dict());
     else if (context->builtin_type()) {
-        auto builtinType = anyas<ast::BuiltinType>(visitBuiltin_type(context->builtin_type())); 
+        auto builtinType = anyas<ast::BuiltinType>(visitBuiltin_type(context->builtin_type()));
         auto type = std::make_shared<Type>();
         setSourceInfo(type,context);
         type->t = builtinType;
@@ -1607,7 +1650,7 @@ std::any ASTGenerator::visitBuiltin_type(RoxalParser::Builtin_typeContext *conte
     else
         throw std::runtime_error("unhandled BuiltinType alternative");
 
-    return type;    
+    return type;
     visitEnd();
 }
 
@@ -1714,7 +1757,7 @@ std::any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
         integer = std::strtoll(context->getText().c_str()+2, &p_end, 16);
         if (errno == ERANGE)
             throw std::runtime_error("Invalid hexadecimal integer literal");
-        // TODO: accept unsigned range and convert to twos-compliment 
+        // TODO: accept unsigned range and convert to twos-compliment
         if ((integer > std::numeric_limits<int32_t>::max()) || (integer < std::numeric_limits<int32_t>::min()))
             throw std::runtime_error("Invalid hexadecimal integer literal (out-of-range)");
         num->num = int32_t(integer);
@@ -1725,7 +1768,7 @@ std::any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
         integer = std::strtoll(context->getText().c_str()+2, &p_end, 8);
         if (errno == ERANGE)
             throw std::runtime_error("Invalid octal integer literal");
-        // TODO: accept unsigned range and convert to twos-compliment 
+        // TODO: accept unsigned range and convert to twos-compliment
         if ((integer > std::numeric_limits<int32_t>::max()) || (integer < std::numeric_limits<int32_t>::min()))
             throw std::runtime_error("Invalid octal integer literal (out-of-range)");
         num->num = int32_t(integer);
@@ -1736,7 +1779,7 @@ std::any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
         integer = std::strtoll(context->getText().c_str()+2, &p_end, 2);
         if (errno == ERANGE)
             throw std::runtime_error("Invalid binary integer literal");
-        // TODO: accept unsigned range and convert to twos-compliment 
+        // TODO: accept unsigned range and convert to twos-compliment
         if ((integer > std::numeric_limits<int32_t>::max()) || (integer < std::numeric_limits<int32_t>::min()))
             throw std::runtime_error("Invalid binary integer literal (out-of-range)");
         num->num = int32_t(integer);
@@ -1749,4 +1792,3 @@ std::any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
 
     visitEnd();
 }
-
