@@ -444,10 +444,10 @@ void linenoiseAddCompletion(linenoiseCompletions *lc, const char *str) {
     size_t len = strlen(str);
     char *copy, **cvec;
 
-    copy = static_cast<char*>(malloc(len+1));
+    copy = (char*)(malloc(len+1));
     if (copy == NULL) return;
     memcpy(copy,str,len+1);
-    cvec = static_cast<char**>(realloc(lc->cvec,sizeof(char*)*(lc->len+1)));
+    cvec = (char**)(realloc(lc->cvec,sizeof(char*)*(lc->len+1)));
     if (cvec == NULL) {
         free(copy);
         return;
@@ -473,7 +473,7 @@ static void abInit(struct abuf *ab) {
 }
 
 static void abAppend(struct abuf *ab, const char *s, int len) {
-    char *new_ = static_cast<char*>(realloc(ab->b,ab->len+len));
+    char *new_ = (char*)(realloc(ab->b,ab->len+len));
 
     if (new_ == NULL) return;
     memcpy(new_+ab->len,s,len);
@@ -1033,7 +1033,7 @@ static char *linenoiseNoTTY(void) {
             if (maxlen == 0) maxlen = 16;
             maxlen *= 2;
             char *oldval = line;
-            line = static_cast<char*>(realloc(line,maxlen));
+            line = (char*)(realloc(line,maxlen));
             if (line == NULL) {
                 if (oldval) free(oldval);
                 return NULL;
@@ -1129,7 +1129,7 @@ int linenoiseHistoryAdd(const char *line) {
 
     /* Initialization on first call. */
     if (history == NULL) {
-        history = static_cast<char**>(malloc(sizeof(char*)*history_max_len));
+        history = (char**)(malloc(sizeof(char*)*history_max_len));
         if (history == NULL) return 0;
         memset(history,0,(sizeof(char*)*history_max_len));
     }
@@ -1162,7 +1162,7 @@ int linenoiseHistorySetMaxLen(int len) {
     if (history) {
         int tocopy = history_len;
 
-        new_ = static_cast<char**>(malloc(sizeof(char*)*len));
+        new_ = (char**)(malloc(sizeof(char*)*len));
         if (new_ == NULL) return 0;
 
         /* If we can't copy everything, free the elements we'll not use. */

@@ -25,12 +25,14 @@ tests = [
     'clone1', 'extends1'
 ]
 
-test_dir='../tests'
-roxalpath = 'compiler'
-roxal = './roxal.sh'
+project_root = os.path.dirname(os.path.abspath(__file__))
+test_dir = os.path.join(project_root, 'tests')
+
+roxalpath = 'build'
+roxal = './roxal'
 
 cwd = os.getcwd()
-os.chdir(roxalpath)
+os.chdir(os.path.join(project_root,roxalpath))
 
 try:
     for test in tests:

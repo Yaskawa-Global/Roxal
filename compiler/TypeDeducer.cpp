@@ -44,24 +44,22 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
     ast::Anys results {};
     ast->acceptChildren(*this, results);
 
-    if (ast->extends.has_value()) {
-        auto extendsStr = toUTF8StdString(ast->extends.value());
-        if (extendsStr == to_string(BuiltinType::Bool))
-            ast->type = std::make_shared<type::Type>(BuiltinType::Bool);
-        else if (extendsStr == to_string(BuiltinType::Byte))
-            ast->type = std::make_shared<type::Type>(BuiltinType::Byte);
-        else if (extendsStr == to_string(BuiltinType::Int))
-            ast->type = std::make_shared<type::Type>(BuiltinType::Int);
-        else // TODO: consider allowing enums to extens other enums
-            throw std::runtime_error("Enum(eration) "+toUTF8StdString(ast->name)+" cannot extend type " + extendsStr);
-    }
-    else // default to int
-        ast->type = std::make_shared<type::Type>(BuiltinType::Int);
-
     // if (ast->type.has_value())
     //     std::cout << toUTF8StdString(ast->name) << " : " <<  ast->type.value()->toString() << std::endl;
 
     if (ast->kind == ast::TypeDecl::Kind::Enumeration) {
+
+        if (ast->extends.has_value()) {
+            auto extendsStr = toUTF8StdString(ast->extends.value());
+            if (extendsStr == to_string(BuiltinType::Byte))
+                ast->type = std::make_shared<type::Type>(BuiltinType::Byte);
+            else if (extendsStr == to_string(BuiltinType::Int))
+                ast->type = std::make_shared<type::Type>(BuiltinType::Int);
+            else // TODO: consider allowing enums to extens other enums
+                throw std::runtime_error("Enum(eration) "+toUTF8StdString(ast->name)+" cannot extend type " + extendsStr);
+        }
+        else // default to int
+            ast->type = std::make_shared<type::Type>(BuiltinType::Int);
 
         // iterate over each enum label and
         //   * look at the type of it's expression (check it matches (or can match) the enum type)

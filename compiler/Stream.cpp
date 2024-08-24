@@ -23,13 +23,13 @@ public:
         Multiply
     };
 
-    StreamExpr(const Value& v) 
+    StreamExpr(const Value& v)
         : op(Const)
     {
         val = v;
     }
 
-    StreamExpr(int32_t index, const Value& s) 
+    StreamExpr(int32_t index, const Value& s)
         : op(Prev)
     {
         val = intVal(index);
@@ -39,8 +39,8 @@ public:
         stream = s;
     }
 
-    StreamExpr(Op o, ptr<StreamExpr> lhs, ptr<StreamExpr> rhs) 
-        : op(o) 
+    StreamExpr(Op o, ptr<StreamExpr> lhs, ptr<StreamExpr> rhs)
+        : op(o)
     {
         operands.push_back(lhs);
         operands.push_back(rhs);
@@ -67,7 +67,7 @@ public:
     void patch(UnicodeString name, const Value& s) {
         if (op == Op::Const) {}
         else if (op == Op::Prev) {
-            if (isString(stream) && asUString(stream) == name) 
+            if (isString(stream) && asUString(stream) == name)
                 stream = s;
         }
         else {
@@ -91,8 +91,8 @@ protected:
 
 Stream::Stream(double freq, Value initial)
     : initialized(false), streamType(Type::Constant), expr(nullptr)
-{ 
-    type = ObjType::Stream; 
+{
+    type = ObjType::Stream;
     if (freq>0.0) {
         periodic = true;
         clockFreq = freq;
@@ -100,7 +100,7 @@ Stream::Stream(double freq, Value initial)
     else {
         //periodic = false;
         //clockFreq = 0.0; // unused
-        // FIXME: !!! default streams should be nonperiodic (or clocked at 'runtime' rate?)
+        // FIXME: !!! default streams should be nonperiodic (or clocked at 'runtime' rate? or manually clocked/ticked?)
         periodic = true;
         clockFreq = 100.0;
     }
@@ -110,8 +110,8 @@ Stream::Stream(double freq, Value initial)
 
 Stream::Stream(Value initial, Value rest)
     : initialized(false), streamType(Type::InitialRest), expr(nullptr)
-{ 
-    type = ObjType::Stream; 
+{
+    type = ObjType::Stream;
     initialVal = initial;
 
     #ifdef DEBUG_BUILD
@@ -125,27 +125,27 @@ Stream::Stream(Value initial, Value rest)
 Stream::Stream(bool periodic, double freq, ptr<StreamExpr> e)
     : initialized(false), streamType(Type::Expression), clockFreq(freq), expr(e)
 {
-    type = ObjType::Stream; 
+    type = ObjType::Stream;
     this->periodic = periodic;
 }
 
 
 
-Stream::~Stream() 
+Stream::~Stream()
 {
 }
 
 
-Value Stream::previousValue() const 
-{ 
-    if (!initialized) const_cast<Stream*>(this)->init(); 
-    return previousVal; 
+Value Stream::previousValue() const
+{
+    if (!initialized) const_cast<Stream*>(this)->init();
+    return previousVal;
 }
 
-Value Stream::currentValue() const 
-{ 
+Value Stream::currentValue() const
+{
     if (!initialized) const_cast<Stream*>(this)->init();
-    return currentVal; 
+    return currentVal;
 }
 
 
@@ -239,13 +239,13 @@ bool Stream::canEvaulateCurrent() const
         return asStream(followStream)->canEvaulateCurrent();
     else if (streamType==Type::Expression)
         return expr->canEval();
-    throw std::runtime_error(__func__+std::string("- unhandled stream type"));        
+    throw std::runtime_error(__func__+std::string("- unhandled stream type"));
 }
 
 
 
-void Stream::evaluateCurrent() 
-{ 
+void Stream::evaluateCurrent()
+{
     if (!initialized) init();
 
     #ifdef DEBUG_BUILD
@@ -255,7 +255,7 @@ void Stream::evaluateCurrent()
     if (isStream(followStream))
         currentVal = asStream(followStream)->currentValue();
     else
-        currentVal = expr->eval(); 
+        currentVal = expr->eval();
 }
 
 
@@ -303,7 +303,7 @@ Value Stream::prev(int32_t index, Value s)
     return resultValue;
 }
 
-// TODO: 
+// TODO:
 //  * eliminate the construct() call  (pass Streams around as Values, but compose them using non-Value StreamExpr)
 
 
@@ -317,7 +317,7 @@ Value Stream::add(Value lhs, Value rhs)
     bool periodic = isStream(lhs) ? asStream(lhs)->periodic : asStream(rhs)->periodic;
     double freq = 0.0;
     if (periodic)
-        freq = isStream(lhs) ? asStream(lhs)->clockFreq : asStream(rhs)->clockFreq;        
+        freq = isStream(lhs) ? asStream(lhs)->clockFreq : asStream(rhs)->clockFreq;
 
     auto lhsexpr = isStream(lhs) ? asStream(lhs)->expr : std::make_shared<StreamExpr>(lhs);
     auto rhsexpr = isStream(rhs) ? asStream(rhs)->expr : std::make_shared<StreamExpr>(rhs);
@@ -361,8 +361,8 @@ Value StreamExpr::eval() const
 
 
 
-StreamEngine::StreamEngine() 
-{ 
+StreamEngine::StreamEngine()
+{
     nsOffset = timeSinceBoot();
     //std::cout << "current time:" << currentTime() << std::endl;//!!!
 
@@ -381,9 +381,9 @@ StreamEngine::StreamEngine()
 
 }
 
-StreamEngine::~StreamEngine() 
+StreamEngine::~StreamEngine()
 {
-    
+
 }
 
 
@@ -442,7 +442,7 @@ void StreamEngine::startStream(Stream* s)
         assert(entry.timestamp > currentTime());
         #endif
         updateQueue.push(entry);
-    }    
+    }
 }
 
 
@@ -452,8 +452,8 @@ uint64_t StreamEngine::updateStreamStates()
     if (updateQueue.empty()) return 1;
 
 // auto ct=currentTime();
-// std::cout << __func__ << " queue#" << updateQueue.size() 
-//           << " current:" << ct 
+// std::cout << __func__ << " queue#" << updateQueue.size()
+//           << " current:" << ct
 //           << " top:" << updateQueue.top().timestamp
 //           << std::endl << std::flush;//!!!
 // for(auto it=updateQueue.cbegin(); it != updateQueue.cend(); ++it)
