@@ -111,7 +111,10 @@ type_decl
  : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE | ENUM)
     // only enum can extend bool, byte or int
     (EXTENDS (IDENTIFIER | BYTE | INT))? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)?
-    ( (':' NEWLINE INDENT (property|method|enum_label)* DEDENT)
+    (   (':' NEWLINE INDENT (property|method)* DEDENT)
+      // for enums, allow mixture of comma & line seperated labels
+      | (':' NEWLINE INDENT (enum_label (NEWLINE|COMMA) )* DEDENT)
+      | (':' (enum_label COMMA)* enum_label NEWLINE)
       | NEWLINE
     )
  ;
@@ -127,7 +130,7 @@ property
  ;
 
 enum_label
- : IDENTIFIER (EQUALS expression)? NEWLINE
+ : IDENTIFIER (EQUALS expression)?
  ;
 
 

@@ -10,7 +10,7 @@ tests = [
     'comments', 'primitive1', 'constants', 'scopetest2', 'scopetest3',
     'andtest', 'ortest', 'not',
     'arith', 'factorial',
-    'dict', 'dict2', 'list', 'list2', 'range', 'range2', 'enum1', 'enum2',
+    'dict', 'dict2', 'list', 'list2', 'range', 'range2', 'enum1', 'enum2', 'enum3',
     'unicode',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5',
     'conversion1',
