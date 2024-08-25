@@ -191,9 +191,10 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     if (isInterface && (ast->implements.size() > 0))
         throw std::runtime_error("Interfaces can't implement (only extend)");
 
-    // TODO: temporarily we're handling enums as objects with a property per label
-    //  (later, they should be treaded as just pushing the label's property on the stack as if a literal was inline)
-    emitBytes(isActor ? OpCode::ActorType : (isInterface ? OpCode::InterfaceType : OpCode::ObjectType), typeNameConstant);
+    if (isActor) emitBytes(OpCode::ActorType, typeNameConstant);
+    else if (isInterface) emitBytes(OpCode::InterfaceType, typeNameConstant);
+    else if (isEnumeration) emitBytes(OpCode::EnumerationType, typeNameConstant);
+    else emitBytes(OpCode::ObjectType, typeNameConstant);
     defineVariable(typeNameConstant);
 
 
@@ -296,10 +297,6 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
 
     if (isEnumeration) {
-        // TODO: temporarily we're handling enums as objects with a property per label
-        //  (later, they should be treaded as just pushing the label's property on the stack as if a literal was inline)
-        //  This doesn't really work fully as intended, because the properties should be consts and be accesible
-        //   like const or static class members, but current the Enum needs to be instantiated to access the props/labels
 
         for(size_t i=0; i<ast->enumLabels.size(); i++) {
 
@@ -309,18 +306,13 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             //  (but maybe this will be moved to another pass or to here)
             assert(enumLabel.second != nullptr);
 
-            auto propName { enumLabel.first };
-            int16_t propNameConstant = identifierConstant(propName);
+            auto labelName { enumLabel.first };
+            int16_t propNameConstant = identifierConstant(labelName);
             if (propNameConstant >= 255)
                 error("Too many enum labels for one enum type.");
 
             assert(enumLabel.second->type.has_value());
             auto valType { enumLabel.second->type.value() };
-
-            auto builtinType { valType->builtin };
-            Value typeValue { typeSpecVal(builtinToValueType(builtinType)) };
-
-            emitConstant(typeValue, "enum label "+toUTF8StdString(propName)+" type");
 
             ptr<ast::Literal> literalExpr { std::dynamic_pointer_cast<ast::Literal>(enumLabel.second) };
             assert(literalExpr != nullptr); // currently expected to be a literal
@@ -339,7 +331,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
             emitConstant(value);
 
-            emitBytes(OpCode::Property, uint8_t(propNameConstant), "enum value "+toUTF8StdString(propName));
+            emitBytes(OpCode::EnumLabel, uint8_t(propNameConstant), "enum value "+toUTF8StdString(labelName));
         }
     }
 

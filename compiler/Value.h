@@ -17,7 +17,8 @@ enum class ValueType {
     Int,       // 0110
     Real,      // 0111
     Decimal,   // 1000
-    Type,      // 1011
+    Enum,      // 1001
+    Type,      // 1010
 
     // Obj (pointer) types 
     String,
@@ -49,6 +50,9 @@ class StreamEngine;
 //  If type is nil or bool tag is also literal value
 //  If type is other value types, value is stored in lower bits (max 32bits)
 //  If type if object, sign bit is set and pointer is stored in lower 48 bits
+//  The enum type is an exception - it is a value type with complex type information:
+//   the lower 32bits are divided into lower 16bits holding the enum int16_t value and the
+//   upper 16bits holding an enum type id, used to lookup the enum type information from a global table 
 
 // All IEEE doubles are Quiet NANs if these bits are all 1:
 const uint64_t QNAN = ((uint64_t)0x7ffc000000000000);
@@ -65,7 +69,8 @@ const uint64_t TagTrue  = uint64_t(3) << TypeTagOffset; // 0011
 const uint64_t TagByte  = uint64_t(ValueType::Byte) << TypeTagOffset;
 const uint64_t TagInt   = uint64_t(ValueType::Int) << TypeTagOffset;
 const uint64_t TagDecimal = uint64_t(ValueType::Decimal) << TypeTagOffset;
-const uint64_t TagType   = uint64_t(ValueType::Type) << TypeTagOffset;
+const uint64_t TagEnum  = uint64_t(ValueType::Enum) << TypeTagOffset;
+const uint64_t TagType  = uint64_t(ValueType::Type) << TypeTagOffset;
 
 
 //ValueType valueType(ValueType t); // value type (ignoring boxing - so primitive type if boxed)
@@ -85,6 +90,8 @@ public:
     explicit Value(int32_t i) { val = QNAN | TagInt | (0xffffffff & *reinterpret_cast<uint64_t*>(&i)); }
     explicit Value(ValueType bt) { val = QNAN | TagType | uint64_t(bt); }
     explicit Value(Obj* o);
+    explicit Value(int16_t enumLabelValue, uint16_t enumTypeId) 
+        { val = QNAN | TagEnum | (0xffffffff & (*reinterpret_cast<uint64_t*>(&enumLabelValue) | (enumTypeId << 16))); }
 
 
     Value(const Value& v) 
@@ -137,6 +144,15 @@ public:
     double asReal(bool strict=true) const; 
 
     inline bool isNumber() const { return isInt() || isReal() || isByte(); } // TODO: || isDecimal(v)
+
+    inline bool isEnum() const { return (val & (QNAN | TypeTag)) == (QNAN | TagEnum); }
+    int16_t asEnum() const;
+    uint16_t enumTypeId() const { 
+        #ifdef DEBUG_BUILD
+        assert(isEnum());
+        #endif
+        return uint16_t(val >> 16); 
+    }
 
     inline bool isType() const { return (val & (QNAN | TypeTag)) == (QNAN | TagType); }
     ValueType asType(bool strict=true) const;
@@ -311,6 +327,8 @@ inline Value byteVal(uint8_t b) { return Value(b); }
 inline Value intVal(int32_t i) { return Value(i); }
 
 inline Value realVal(double r) { return Value(r); }
+
+inline Value enumVal(int16_t labelVal, uint16_t enumTypeId) { return Value(labelVal, enumTypeId); }
 
 inline Value typeVal(ValueType bt) { return Value(bt); }
 

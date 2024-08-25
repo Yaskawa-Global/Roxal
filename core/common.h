@@ -63,6 +63,9 @@ inline icu::UnicodeString toUnicodeString(const std::string& s) {
 }
 
 
+uint16_t randomUint16();
+
+
 // demangle typeid(T).name() strings to be more human readable
 std::string demangle(const char* name);
 

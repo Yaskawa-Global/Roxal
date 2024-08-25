@@ -586,34 +586,46 @@ std::string objTypeSpecToString(const ObjTypeSpec* ots);
 
 
 //
-// object|actor type
+// object|actor|interface|enum type
 
 struct ObjObjectType : public ObjTypeSpec
 {
-    ObjObjectType(const icu::UnicodeString& typeName, bool isactor, bool isinterface = false) 
-        : name(typeName), isActor(isactor), isInterface(isinterface) 
-    { 
-        typeValue = isactor ? ValueType::Actor : ValueType::Object;
+    ObjObjectType(const icu::UnicodeString& typeName, bool isactor = false, bool isinterface = false, bool isenumeration = false);
+    
+    virtual ~ObjObjectType() 
+    {
+        if (isEnumeration) 
+            enumTypes.erase(enumTypeId);
     }
-    virtual ~ObjObjectType() {}
 
     icu::UnicodeString name;
     bool isActor;
     bool isInterface;
+    bool isEnumeration;
+    uint16_t enumTypeId;
 
     // name -> type, initial value
     std::unordered_map<int32_t, std::tuple<icu::UnicodeString, Value, Value>> properties;
 
     // name -> closure
     std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> methods;
+
+    // name -> value
+    std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> enumLabelValues;
+
+
+    // global enum type id -> ObjObjectType 
+    //  TODO: make thread safe?
+    static std::unordered_map<uint16_t, ObjObjectType*> enumTypes; 
 };
 
 
 inline bool isObjectType(const Value& v) { return isObjType(v, ObjType::Type) && ((asTypeSpec(v)->typeValue == ValueType::Object) || (asTypeSpec(v)->typeValue == ValueType::Actor)); }
 inline ObjObjectType* asObjectType(const Value& v) { return static_cast<ObjObjectType*>(v.asObj()); }
 
+inline bool isEnumType(const Value& v) { return isObjType(v, ObjType::Type) && asTypeSpec(v)->typeValue == ValueType::Enum; }
 
-ObjObjectType* objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface = false);
+ObjObjectType* objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface = false, bool isEnumeration = false);
 
 
 //

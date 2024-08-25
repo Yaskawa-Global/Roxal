@@ -13,6 +13,24 @@ using namespace roxal;
 #include <cstdlib>
 #include <memory>
 #include <cxxabi.h>
+#include <random>
+
+
+uint16_t roxal::randomUint16() {
+    // Create a random device to seed the generator
+    static std::random_device rd;
+
+    // Initialize a Mersenne Twister random number generator
+    static std::mt19937 gen(rd());
+
+    // Define the distribution range for uint16_t
+    static std::uniform_int_distribution<uint16_t> dist(0, std::numeric_limits<uint16_t>::max());
+
+    // Generate and return the random number
+    return dist(gen);
+}
+
+
 
 std::string roxal::demangle(const char* name) 
 {

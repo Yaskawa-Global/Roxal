@@ -17,7 +17,7 @@ namespace roxal::type {
 enum class BuiltinType {
     Nil, 
     Bool, Byte, Number, Int, Real, Decimal, 
-    String, Range,
+    String, Range, Enum,
     List, Dict, 
     Vector, Matrix, Tensor, 
     Orient, Stream,
@@ -77,11 +77,17 @@ struct Type {
         std::string toString() const;
     };
 
+    struct EnumType {
+        icu::UnicodeString name;
+        std::optional<ptr<Type>> extends;
+        std::vector<std::pair<icu::UnicodeString, int32_t>> values;
+    };
 
     BuiltinType builtin;
 
     std::optional<FuncType> func;   // if Func
     std::optional<ObjectType> obj;  // if Object or Actor
+    std::optional<EnumType> enumer;  // if Enum
 
     std::string toString() const;
 };

@@ -638,7 +638,7 @@ std::string roxal::objToString(const Value& v)
             }
             else {
                 ObjObjectType* obj = asObjectType(v);
-                return std::string("<type ")+(obj->isActor ? "actor" :"object")+" "+toUTF8StdString(obj->name)+">";
+                return std::string("<type ")+(obj->isActor ? "actor" :(obj->isInterface ? "interface" : (obj->isEnumeration ? "enum" : "object")))+" "+toUTF8StdString(obj->name)+">";
             }
         }
         case ObjType::Instance: {
@@ -703,9 +703,29 @@ ObjNative* roxal::nativeVal(NativeFn function)
 
 
 
-ObjObjectType* roxal::objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface)
+
+std::unordered_map<uint16_t, roxal::ObjObjectType*> ObjObjectType::enumTypes {}; 
+
+ObjObjectType::ObjObjectType(const icu::UnicodeString& typeName, bool isactor, bool isinterface, bool isenumeration) 
+    : name(typeName), isActor(isactor), isInterface(isinterface), isEnumeration(isenumeration) 
+{ 
+    typeValue = ValueType::Object;
+    if (isActor)
+        typeValue = ValueType::Actor;
+    else if (isEnumeration) {
+        typeValue = ValueType::Enum;
+
+        // register ourselves in the global map of enum types, referenced in the enum values 
+        enumTypeId = randomUint16(); // generate unique random id
+        while (ObjObjectType::enumTypes.find(enumTypeId) != ObjObjectType::enumTypes.end()) 
+            enumTypeId = randomUint16();
+        enumTypes[enumTypeId] = this;
+    }
+}
+
+ObjObjectType* roxal::objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface, bool isEnumeration)
 {
-    return newObj<ObjObjectType>(__func__, typeName, isActor, isInterface);
+    return newObj<ObjObjectType>(__func__, typeName, isActor, isInterface, isEnumeration);
 }
 
 

@@ -590,11 +590,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             }
             case ObjType::Type: {
                 ObjTypeSpec* ts = asTypeSpec(callee);
-                if ((ts->typeValue != ValueType::Object) && (ts->typeValue != ValueType::Actor)) {
-                    //!!! FIXME:primitive...
-                    throw std::runtime_error("unimplemented");
-                }
-                else {
+                if ((ts->typeValue == ValueType::Object) || (ts->typeValue == ValueType::Actor)) {
                     ObjObjectType* type = asObjectType(callee);
                     if (!type->isActor) {
                         Value inst { objectInstanceVal(type) };
@@ -626,6 +622,43 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     }
                     return true;
                 } 
+                else if (ts->typeValue == ValueType::Enum) {
+                    // construct a default enun value for this enum type
+                    //  either the label corresponding to 0, or if none, any label 
+                    ObjObjectType* type = asObjectType(callee);
+                    #ifdef DEBUG_BUILD
+                    assert(type->isEnumeration);
+                    #endif
+
+                    if (callSpec.argCount != 0) { // TODO: support conbstructing enums from ints if label value exists
+                        runtimeError("Expected 0 arguments for enum '"+toUTF8StdString(type->name)+"' type instantiation, provided "+std::to_string(callSpec.argCount));
+                        return false;
+                    }
+
+                    Value value { nilVal() };
+                    for(const auto& hashLabelValue : type->enumLabelValues) {
+                        const auto& labelValue { hashLabelValue.second };
+                        if (labelValue.second.asEnum() == 0) {
+                            value = labelValue.second;
+                            break;
+                        }
+                    }
+                    if (value.isNil()) { // didn't find an enum label with value 0
+                        if (!type->enumLabelValues.empty())
+                            //  TODO: consider storing the label ordering so we can select the first one if none has value 0
+                            value = type->enumLabelValues.begin()->second.second;
+                        else {
+                            runtimeError("enum type '"+toUTF8StdString(type->name)+"' has no labels");
+                            return false;
+                        }
+                    }
+
+                    *(thread->stackTop - callSpec.argCount - 1) = value;
+                    return true;
+                }
+                else {
+                    throw std::runtime_error("unimplemented construction for type '"+to_string(ts->typeValue)+"'");
+                }
             }
             case ObjType::Closure:
                 return call(asClosure(callee), callSpec);
@@ -1034,11 +1067,37 @@ void VM::defineMethod(ObjString* name)
     ObjObjectType* type = asObjectType(peek(1));
 
     if (type->methods.contains(name->hash))
-        throw std::runtime_error("Duplicate method '"+name->toStdString()+"' declared in type "+(type->isActor?"actor":"object")+" "+toUTF8StdString(type->name));
+        throw std::runtime_error("Duplicate method '"+name->toStdString()+"' declared in type "+(type->isActor?"actor":"object")+" '"+toUTF8StdString(type->name)+"'");
 
     type->methods[name->hash] = std::make_pair(name->s,method);
     pop();
 }
+
+
+void VM::defineEnumLabel(ObjString* name)
+{
+    Value value = peek(0);
+    #ifdef DEBUG_BUILD
+    if (!value.isInt() && !value.isByte())
+        throw std::runtime_error("Can only create enum value from int or byte");
+    if (!isEnumType(peek(1)))
+        throw std::runtime_error("Can't create enum value without enum type on stack");
+    #endif
+    ObjObjectType* type = asObjectType(peek(1));
+
+     if (type->enumLabelValues.contains(name->hash))
+         throw std::runtime_error("Duplicate enum label '"+name->toStdString()+"' declared in type '"+toUTF8StdString(type->name)+"'");
+
+    // convert the value from byte or int to enum
+    int32_t intVal = value.asInt();
+    if (intVal < std::numeric_limits<int16_t>::min() || intVal > std::numeric_limits<int16_t>::max())
+        throw std::runtime_error("Enum label '"+toUTF8StdString(name->s)+"' value out of range for type '"+toUTF8StdString(type->name)+"'");
+    Value enumValue {int16_t(intVal), type->enumTypeId};
+
+    type->enumLabelValues[name->hash] = std::make_pair(name->s,enumValue);
+    pop();
+}
+
 
 
 
@@ -1236,6 +1295,22 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     runtimeError("Undefined method '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(actorInst->instanceType->name)+"'.");
                     return errorReturn;
 
+                }
+                else if (isEnumType(inst)) {
+
+                    auto enumObjType = asObjectType(inst);
+
+                    ObjString* name = readString();
+                    // is it an existing enum label?
+                    auto it = enumObjType->enumLabelValues.find(name->hash);
+                    if (it != enumObjType->enumLabelValues.end()) { // exists
+                        pop();
+                        push(it->second.second);
+                        break;
+                    }
+
+                    runtimeError("Undefined enum label '"+toUTF8StdString(name->s)+"' for enum type '"+toUTF8StdString(enumObjType->name)+"'.");
+                    return errorReturn;
                 }
 
                 runtimeError("Only object and actor instances have methods and only objects instances have properties.");
@@ -1796,6 +1871,12 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 push(objVal(objectTypeVal(name->s, /*isActor=*/false, /*isInterface=*/true)));
                 break;
             }
+            case asByte(OpCode::EnumerationType): {
+                ObjString* name = readString();
+                Value enumTypeVal = objVal(objectTypeVal(name->s, /*isActor=*/false, /*isInterface=*/false, /*isEnumeration=*/true));
+                push(enumTypeVal);
+                break;
+            }
             case asByte(OpCode::Property): {
                 try {
                     defineProperty(readString());
@@ -1808,6 +1889,15 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::Method): {
                 try {
                     defineMethod(readString());
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case asByte(OpCode::EnumLabel): {
+                try {
+                    defineEnumLabel(readString());
                 } catch (std::exception& e) {
                     runtimeError(e.what());
                     return errorReturn;

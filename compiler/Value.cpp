@@ -27,6 +27,7 @@ std::string roxal::to_string(ValueType t)
     case ValueType::Int: return "int"; break;
     case ValueType::Real: return "real"; break;
     case ValueType::Decimal: return "decimal"; break;
+    case ValueType::Enum: return "enum"; break;
     case ValueType::String: return "string"; break;
     case ValueType::Range: return "range"; break;
     case ValueType::Type: return "type"; break;
@@ -181,6 +182,7 @@ int32_t Value::asInt(bool strict) const
 
     if (!v->isObj()) {
         switch (v->type()) {
+        case ValueType::Enum: return int32_t(asEnum());
         case ValueType::Int: { uint64_t i {v->val & ~(QNAN | TypeTag)} ; return *reinterpret_cast<int32_t*>(&i); }
         case ValueType::Real: return int32_t(*reinterpret_cast<const double*>(&val));
         case ValueType::Bool: return (val == (QNAN | TagTrue)) ? 1 : 0;
@@ -206,6 +208,14 @@ int32_t Value::asInt(bool strict) const
     return 0;
 }
 
+
+int16_t Value::asEnum() const
+{
+    // TODO: handle boxed enum value
+    if (isEnum())
+        return int16_t(val & 0xffff);
+    return 0;
+}
 
 
 double Value::asReal(bool strict) const
@@ -276,6 +286,8 @@ std::string Value::typeName() const
         return "int";
     else if (isReal())
         return "real";
+    else if (isEnum())
+        return "enum";
     else if (isType())
         return "type";
 
@@ -544,6 +556,7 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::Int: return intVal(0);
         case ValueType::Real: return realVal(0.0);
         case ValueType::Decimal: throw std::runtime_error("decimal unimplemented");
+        case ValueType::Enum: throw std::runtime_error("Can't create default enum value without type"); // shouldn't be called for this t
         case ValueType::Type: return typeVal(ValueType::Nil);
         case ValueType::String: return Value(stringVal(UnicodeString()));
         case ValueType::Range: return Value(rangeVal());
@@ -697,6 +710,8 @@ bool roxal::valuesEqual(Value a, Value b)
             case ValueType::Nil:  return true; // only single Nil, so must both be Nil
             case ValueType::Int:  return a.asInt() == b.asInt();
             case ValueType::Real: return a.asReal() == b.asReal();
+            // same type & label value:
+            case ValueType::Enum: return (a.enumTypeId() == b.enumTypeId()) && (a.asEnum() == b.asEnum());
             case ValueType::Object: return objsEqual(a,b);
             default: throw std::runtime_error("unimplemented equality test for types "+a.typeName()+" and "+b.typeName());
         }
@@ -892,6 +907,20 @@ std::string roxal::toString(const Value& v)
         return format("%g", v.asReal());
     else if (v.isBool())
         return v.asBool() ? "true" : "false";
+    else if (v.isEnum()) {
+        // lookup the enum type
+        uint16_t enumTypeId = v.enumTypeId();
+        auto enumIt = ObjObjectType::enumTypes.find(enumTypeId);
+        if (enumIt == ObjObjectType::enumTypes.end())
+            throw std::runtime_error("unknown enum type id: "+std::to_string(enumTypeId)+" value is "+std::to_string(v.asEnum()));
+        ObjObjectType* enumTypeObj = enumIt->second;
+        for(const auto& enumHashLabelValue : enumTypeObj->enumLabelValues) {
+            const auto& labelValue {enumHashLabelValue.second };
+            if (labelValue.second.asEnum() == v.asEnum())
+                return toUTF8StdString(labelValue.first);
+        }
+        return ""; // throw? return default enum value?
+    }
     else if (v.isType())
         return to_string(v.asType());
     else if (v.isNil())
