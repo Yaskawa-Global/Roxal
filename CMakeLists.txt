@@ -14,7 +14,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 # Set the relative path to vcpkg (assumed to be at same level as project folder)
 set(VCPKG_ROOT "${CMAKE_SOURCE_DIR}/../vcpkg")
 
-# Point CMake to the vcpkg toolchain file 
+# Point CMake to the vcpkg toolchain file
 set(CMAKE_TOOLCHAIN_FILE "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
 
 # Add the vcpkg installation prefix to CMAKE_PREFIX_PATH
@@ -37,8 +37,8 @@ set(CORE_SOURCES
     core/atomic.cpp
     core/common.cpp
     core/types.cpp
-)    
-    
+)
+
 set(SOURCES
     compiler/ASTEditor.cpp
     compiler/ASTGenerator.cpp
@@ -138,7 +138,7 @@ add_test(NAME RoxalSourceTests
 # Set properties to always show output
 set_tests_properties(RoxalSourceTests PROPERTIES
     PASS_REGULAR_EXPRESSION ".*"
-    FAIL_REGULAR_EXPRESSION ".*fail.*"
+    FAIL_REGULAR_EXPRESSION ".*FAIL.*"
 )
 
 
@@ -146,4 +146,3 @@ add_custom_target(check
     COMMAND ${CMAKE_COMMAND} --build . --target all
     COMMAND ${CMAKE_CTEST_COMMAND}
 )
-

@@ -625,7 +625,8 @@ Value roxal::toType(ValueType t, Value v, bool strict)
                 ObjectInstance* vObj = asObjectInstance(v);
                 ObjObjectType* vObjType = vObj->instanceType;
                 for(const auto& property : vObjType->properties) {
-                    auto propName { stringVal(std::get<0>(property.second)) };
+                    const auto& prop { property.second };
+                    auto propName { stringVal(prop.name) };
                     #ifdef DEBUG_BUILD
                     assert(vObj->properties.find(propName->hash) != vObj->properties.end());
                     #endif

@@ -10,7 +10,7 @@ tests = [
     'comments', 'primitive1', 'constants', 'scopetest2', 'scopetest3',
     'andtest', 'ortest', 'not',
     'arith', 'factorial',
-    'dict', 'dict2', 'list', 'list2', 'range', 'range2', 'enum1',
+    'dict', 'dict2', 'list', 'list2', 'range', 'range2', 'enum1', 'enum2',
     'unicode',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5',
     'conversion1',
@@ -47,7 +47,7 @@ try:
         compProc = subprocess.run([roxal,testrox], capture_output=True, shell=False)
         output = compProc.stdout
 
-        with open(testout, mode='rb') as file: 
+        with open(testout, mode='rb') as file:
             expected = file.read()
 
         if expected != output:

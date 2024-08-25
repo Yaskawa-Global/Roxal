@@ -64,15 +64,15 @@ struct Obj {
 
     Obj* clone() const; // deep copy
 
-    inline void incRef() 
+    inline void incRef()
     {
-        auto prevCount = refCount.fetch_add(1,std::memory_order_relaxed); 
+        auto prevCount = refCount.fetch_add(1,std::memory_order_relaxed);
         if (prevCount==0 && type==ObjType::Stream)
-            registerStream();         
+            registerStream();
     }
 
-    inline void decRef() 
-    { 
+    inline void decRef()
+    {
         auto prevCount = refCount.fetch_sub(1,std::memory_order_relaxed);
         if (prevCount <= 1) {
             if (type==ObjType::Stream)
@@ -121,7 +121,7 @@ inline std::ostream& operator<<(std::ostream& out, const Obj* obj)
     return out;
 }
 
-inline std::string toString(Obj* obj) 
+inline std::string toString(Obj* obj)
 {
     std::stringstream ss;
     ss << obj;
@@ -134,7 +134,7 @@ inline Value objVal(Obj* o) { return Value(o); }
 
 
 inline ObjType objType(const Value& v) { return v.asObj()->type; }
-inline bool isObjType(const Value& v, ObjType type) 
+inline bool isObjType(const Value& v, ObjType type)
     { return v.isObj() && v.asObj()->type == type; }
 
 
@@ -144,10 +144,10 @@ bool objsEqual(const Value& l, const Value& r);
 std::string objTypeName(Obj* obj);
 
 
-// 
+//
 // Boxed built-in primitives (bool, byte, int, real, type)
 
-struct ObjPrimitive : public Obj 
+struct ObjPrimitive : public Obj
 {
     ObjPrimitive(bool b) { type=ObjType::Bool; as.boolean = b; }
     ObjPrimitive(double r) { type=ObjType::Real; as.real = r; }
@@ -160,7 +160,7 @@ struct ObjPrimitive : public Obj
             case ObjType::Int: return ValueType::Int;
             case ObjType::Real: return ValueType::Real;
             case ObjType::Type: return ValueType::Type;
-            default: 
+            default:
             #ifdef DEBUG_BUILD
               throw std::runtime_error("Unsupported ObjPrimitive Type "+std::to_string(int(type)));
             #else
@@ -185,7 +185,7 @@ struct ObjPrimitive : public Obj
 inline bool isObjPrimitive(const Value& v) { return isObjType(v, ObjType::Bool) || isObjType(v, ObjType::Int) || isObjType(v, ObjType::Real) || isObjType(v,ObjType::Type); }
 inline ObjPrimitive* asObjPrimitive(const Value& v) { return static_cast<ObjPrimitive*>(v.asObj()); }
 
-inline ObjPrimitive* cloneObjPrimitive(const ObjPrimitive* op) {    
+inline ObjPrimitive* cloneObjPrimitive(const ObjPrimitive* op) {
     if (op->type == ObjType::Bool)
         return newObj<ObjPrimitive>(__func__,op->as.boolean);
     else if (op->type == ObjType::Int)
@@ -206,7 +206,7 @@ inline ObjPrimitive* cloneObjPrimitive(const ObjPrimitive* op) {
 //
 // string
 
-struct ObjString : public Obj 
+struct ObjString : public Obj
 {
     ObjString(const UnicodeString& us);
     virtual ~ObjString();
@@ -220,7 +220,7 @@ struct ObjString : public Obj
     // Elements are Unicode code units (not code points or characters)
     Value index(const Value& i) const;
 
-    std::string toStdString() const 
+    std::string toStdString() const
       { std::string ss; s.toUTF8String(ss); return ss; }
 };
 
@@ -230,7 +230,7 @@ inline ObjString* asString(const Value& v) { return static_cast<ObjString*>(v.as
 inline UnicodeString asUString(const Value& v) { return asString(v)->s; }
 
 // allocate new ObjString on heap and copy s (or return existing interned string)
-ObjString* stringVal(const UnicodeString& s); 
+ObjString* stringVal(const UnicodeString& s);
 
 std::string objStringToString(const ObjString* os);
 
@@ -240,7 +240,7 @@ std::string objStringToString(const ObjString* os);
 //
 // range
 
-struct ObjRange : public Obj 
+struct ObjRange : public Obj
 {
     ObjRange(); // empty range
     ObjRange(const Value& start, const Value& stop, const Value& step, bool closed);
@@ -273,7 +273,7 @@ inline bool isRange(const Value& v) { return isObjType(v, ObjType::Range); }
 inline ObjRange* asRange(const Value& v) { return static_cast<ObjRange*>(v.asObj()); }
 
 ObjRange* rangeVal(); // empty range
-ObjRange* rangeVal(const Value& start, const Value& stop, const Value& step, bool closed); 
+ObjRange* rangeVal(const Value& start, const Value& stop, const Value& step, bool closed);
 
 std::string objRangeToString(const ObjRange* r);
 ObjRange* cloneRange(const ObjRange* r); // deep copy
@@ -303,9 +303,9 @@ struct ObjList : public Obj
 inline bool isList(const Value& v) { return isObjType(v, ObjType::List); }
 inline ObjList* asList(const Value& v) { return static_cast<ObjList*>(v.asObj()); }
 
-ObjList* listVal(); 
-ObjList* listVal(const ObjRange* r); 
-ObjList* listVal(const std::vector<Value>& elts); 
+ObjList* listVal();
+ObjList* listVal(const ObjRange* r);
+ObjList* listVal(const std::vector<Value>& elts);
 ObjList* cloneList(const ObjList* l); // deep copy
 
 std::string objListToString(const ObjList* ol);
@@ -347,7 +347,7 @@ struct ObjDict : public Obj
         std::lock_guard<std::mutex> lock(m);
         if (entries.find(key) == entries.end()) // key exists?
             m_keys.push_back(key); // no, add to keys list
-        entries[key] = val; // insert or replace 
+        entries[key] = val; // insert or replace
     }
 
     struct ValueComparitor
@@ -369,8 +369,8 @@ private:
 inline bool isDict(const Value& v) { return isObjType(v, ObjType::Dict); }
 inline ObjDict* asDict(const Value& v) { return static_cast<ObjDict*>(v.asObj()); }
 
-ObjDict* dictVal(); 
-ObjDict* dictVal(const std::vector<std::pair<Value,Value>>& entries); 
+ObjDict* dictVal();
+ObjDict* dictVal(const std::vector<std::pair<Value,Value>>& entries);
 ObjDict* cloneDict(const ObjDict* d);
 
 std::string objDictToString(const ObjDict* od);
@@ -409,12 +409,12 @@ struct ObjFunction : public Obj
 };
 
 inline bool isFunction(const Value& v) { return isObjType(v, ObjType::Function); }
-inline ObjFunction* asFunction(const Value& v) { 
+inline ObjFunction* asFunction(const Value& v) {
     #ifdef DEBUG_BUILD
     if (!isFunction(v))
         throw std::runtime_error("Value is not an ObjFunction");
     #endif
-    return static_cast<ObjFunction*>(v.asObj()); 
+    return static_cast<ObjFunction*>(v.asObj());
 }
 
 
@@ -429,7 +429,7 @@ std::string objFunctionToString(const ObjFunction* of);
 // Upvalue
 
 struct ObjUpvalue : public Obj {
-    ObjUpvalue(Value* v) 
+    ObjUpvalue(Value* v)
     {
         type = ObjType::Upvalue;
         location = v;
@@ -461,17 +461,17 @@ inline ObjUpvalue* cloneUpvalue(const ObjUpvalue* u) {
 
 struct ObjClosure : public Obj
 {
-    ObjClosure(ObjFunction* f) : function(f) { 
-        function->incRef(); 
+    ObjClosure(ObjFunction* f) : function(f) {
+        function->incRef();
 
-        type = ObjType::Closure; 
+        type = ObjType::Closure;
         upvalues.resize(function->upvalueCount, nullptr);
     }
     virtual ~ObjClosure() {
         for(size_t i=0; i<upvalues.size();i++)
-            if (upvalues[i] != nullptr) 
+            if (upvalues[i] != nullptr)
                 upvalues[i]->decRef();
-            
+
         function->decRef();
     }
 
@@ -480,12 +480,12 @@ struct ObjClosure : public Obj
 };
 
 inline bool isClosure(const Value& v) { return isObjType(v, ObjType::Closure); }
-inline ObjClosure* asClosure(const Value& v) { 
+inline ObjClosure* asClosure(const Value& v) {
     #ifdef DEBUG_BUILD
     if (!isClosure(v))
         throw std::runtime_error("Value is not an ObjClosure");
     #endif
-    return static_cast<ObjClosure*>(v.asObj()); 
+    return static_cast<ObjClosure*>(v.asObj());
 }
 
 inline ObjClosure* closureVal(ObjFunction* function) {
@@ -506,7 +506,7 @@ inline ObjClosure* cloneClosure(const ObjClosure* c) {
 
 struct ObjFuture : public Obj
 {
-    ObjFuture(const std::shared_future<Value>& fv) 
+    ObjFuture(const std::shared_future<Value>& fv)
         : future(fv)
     {
         type = ObjType::Future;
@@ -561,7 +561,7 @@ ObjNative* nativeVal(NativeFn function);
 
 
 //
-// runtime type 
+// runtime type
 
 //FIXME!!!: collision exists for Obj::type == ObjType::Type - it is used
 //       both by ObjTypeSpec and by ObjPrimitive for builtin type
@@ -591,10 +591,10 @@ std::string objTypeSpecToString(const ObjTypeSpec* ots);
 struct ObjObjectType : public ObjTypeSpec
 {
     ObjObjectType(const icu::UnicodeString& typeName, bool isactor = false, bool isinterface = false, bool isenumeration = false);
-    
-    virtual ~ObjObjectType() 
+
+    virtual ~ObjObjectType()
     {
-        if (isEnumeration) 
+        if (isEnumeration)
             enumTypes.erase(enumTypeId);
     }
 
@@ -605,7 +605,12 @@ struct ObjObjectType : public ObjTypeSpec
     uint16_t enumTypeId;
 
     // name -> type, initial value
-    std::unordered_map<int32_t, std::tuple<icu::UnicodeString, Value, Value>> properties;
+    struct Property {
+        icu::UnicodeString name;
+        Value type;
+        Value initialValue;
+    };
+    std::unordered_map<int32_t, Property> properties;
 
     // name -> closure
     std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> methods;
@@ -614,9 +619,9 @@ struct ObjObjectType : public ObjTypeSpec
     std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> enumLabelValues;
 
 
-    // global enum type id -> ObjObjectType 
+    // global enum type id -> ObjObjectType
     //  TODO: make thread safe?
-    static std::unordered_map<uint16_t, ObjObjectType*> enumTypes; 
+    static std::unordered_map<uint16_t, ObjObjectType*> enumTypes;
 };
 
 
@@ -668,7 +673,7 @@ struct ActorInstance : public Obj
     struct MethodCallInfo {
         Value callee;
         std::vector<Value> args;
-        ptr<std::promise<Value>> returnPromise; 
+        ptr<std::promise<Value>> returnPromise;
         CallSpec callSpec;
 
         bool valid() const { return !callee.isNil(); }
@@ -725,8 +730,3 @@ void testObjectValues();
 
 
 } // namespace
-
-
-
-
-
