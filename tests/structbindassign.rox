@@ -16,7 +16,7 @@ func rotate2D(x, y, θ):
 print(''+rotx + ' , ' + roty)
 
 
-type object Obj:
+type Obj object:
   var p :real
   var q :real
 

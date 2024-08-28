@@ -1,4 +1,4 @@
-type actor A:
+type A actor:
   func f():
     sleep(100000)
     print('f id:'+_threadid())

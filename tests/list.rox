@@ -2,7 +2,7 @@ var s = "01234"
 
 print(s[2])
 
-type object Obj:
+type Obj object:
 
   func sm():
     return "A"

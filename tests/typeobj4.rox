@@ -1,4 +1,4 @@
-type object CoffeeMaker:
+type CoffeeMaker object:
 
   proc init(coffee):
     this.coffee = coffee

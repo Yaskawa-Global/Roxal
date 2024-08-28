@@ -1,4 +1,5 @@
 #include <deque>
+#include <assert.h>
 
 #include "AST.h"
 
@@ -7,9 +8,9 @@ using namespace roxal::ast;
 
 
 
-void AST::output(std::ostream& os, int indent) const 
-{ 
-    os << spaces(indent) << "AST" << std::endl; 
+void AST::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent) << "AST" << std::endl;
 }
 
 void AST::outputType(std::ostream& os, int indent) const
@@ -31,13 +32,13 @@ std::ostream& roxal::ast::operator<<(std::ostream& os, const AST& ast)
 { ast.output(os,0); return os; }
 
 
-std::any File::accept(ASTVisitor& v) 
+std::any File::accept(ASTVisitor& v)
 {
     std::vector<std::any> results {};
     if (v.visitFirst())
         results.push_back( v.visit(std::dynamic_pointer_cast<File>(shared_from_this())) );
 
-    if (v.visitChildren()) 
+    if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
@@ -87,7 +88,7 @@ void File::output(std::ostream& os, int indent) const
     for(auto& import : imports)
         import->output(os,indent+1);
 
-    for(auto& declOrStmt : declsOrStmts ) 
+    for(auto& declOrStmt : declsOrStmts )
         if (std::holds_alternative<ptr<Declaration>>(declOrStmt))
             std::get<ptr<Declaration>>(declOrStmt)->output(os,indent+1);
         else if (std::holds_alternative<ptr<Statement>>(declOrStmt))
@@ -97,8 +98,8 @@ void File::output(std::ostream& os, int indent) const
 }
 
 
-std::any SingleInput::accept(ASTVisitor& v) 
-{ 
+std::any SingleInput::accept(ASTVisitor& v)
+{
     Anys results {};
 
     if (v.visitFirst())
@@ -209,7 +210,7 @@ void Import::acceptChildren(ASTVisitor& v, Anys& results)
 
 
 
-std::any Declaration::accept(ASTVisitor& v) 
+std::any Declaration::accept(ASTVisitor& v)
 {
     // downcast and pass-through (Declaration is abstract base)
     switch (declType) {
@@ -224,7 +225,7 @@ std::any Declaration::accept(ASTVisitor& v)
 
 
 
-std::any Statement::accept(ASTVisitor& v) 
+std::any Statement::accept(ASTVisitor& v)
 {
     // downcast and pass-through (Statement is abstract base)
     switch (stmtType) {
@@ -242,7 +243,7 @@ std::any Statement::accept(ASTVisitor& v)
 
 
 
-std::any Suite::accept(ASTVisitor& v) 
+std::any Suite::accept(ASTVisitor& v)
 {
     Anys results {};
 
@@ -296,13 +297,13 @@ std::any ExpressionStatement::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<ExpressionStatement>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<ExpressionStatement>(shared_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<ExpressionStatement>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<ExpressionStatement>(shared_from_this())) );
 
     return results;
 }
@@ -323,18 +324,18 @@ void ExpressionStatement::output(std::ostream& os, int indent) const
 
 
 
-std::any ReturnStatement::accept(ASTVisitor& v) 
-{ 
+std::any ReturnStatement::accept(ASTVisitor& v)
+{
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<ReturnStatement>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<ReturnStatement>(shared_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<ReturnStatement>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<ReturnStatement>(shared_from_this())) );
 
     return results;
 }
@@ -357,18 +358,18 @@ void ReturnStatement::output(std::ostream& os, int indent) const
 
 
 
-std::any IfStatement::accept(ASTVisitor& v) 
+std::any IfStatement::accept(ASTVisitor& v)
 {
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<IfStatement>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<IfStatement>(shared_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<IfStatement>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<IfStatement>(shared_from_this())) );
 
     return results;
 }
@@ -408,13 +409,13 @@ std::any WhileStatement::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<WhileStatement>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<WhileStatement>(shared_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<WhileStatement>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<WhileStatement>(shared_from_this())) );
 
     return results;
 }
@@ -440,18 +441,18 @@ void WhileStatement::output(std::ostream& os, int indent) const
 
 
 
-std::any VarDecl::accept(ASTVisitor& v) 
+std::any VarDecl::accept(ASTVisitor& v)
 {
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<VarDecl>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<VarDecl>(shared_from_this())) );
 
-    if (v.visitChildren()) 
+    if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<VarDecl>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<VarDecl>(shared_from_this())) );
 
     return results;
 }
@@ -480,13 +481,13 @@ std::any FuncDecl::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<FuncDecl>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<FuncDecl>(shared_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<FuncDecl>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<FuncDecl>(shared_from_this())) );
 
     return {};
 }
@@ -513,13 +514,13 @@ std::any Function::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Function>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<Function>(shared_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Function>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<Function>(shared_from_this())) );
 
     return results;
 }
@@ -528,8 +529,10 @@ void Function::acceptChildren(ASTVisitor& v, Anys& results)
 {
     for(auto& param : params)
         results.push_back( param->accept(v) );
-    if ( body != nullptr) // abstract & interface methods have no function body
-        results.push_back( body->accept(v) );
+    if (body.has_value()) { // abstract & interface methods have no function body
+        assert(body.value() != nullptr);
+        results.push_back( body.value()->accept(v) );
+    }
 }
 
 
@@ -551,8 +554,11 @@ void Function::output(std::ostream& os, int indent) const
         for(auto& param : params)
             param->output(os,indent+2);
     }
-    os << spaces(indent)+" body:" << std::endl;
-    body->output(os,indent+2);
+    if (body.has_value()) {
+        assert(body.value() != nullptr);
+        os << spaces(indent)+" body:" << std::endl;
+        body.value()->output(os,indent+2);
+    }
 }
 
 
@@ -562,15 +568,15 @@ std::any Parameter::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Parameter>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<Parameter>(shared_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Parameter>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<Parameter>(shared_from_this())) );
 
-    return results;        
+    return results;
 }
 
 void Parameter::output(std::ostream& os, int indent) const
@@ -607,13 +613,13 @@ std::any TypeDecl::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<TypeDecl>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<TypeDecl>(shared_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<TypeDecl>(shared_from_this())) ); 
+        results.push_back( v.visit(std::dynamic_pointer_cast<TypeDecl>(shared_from_this())) );
 
     return results;
 }
@@ -625,14 +631,18 @@ void TypeDecl::acceptChildren(ASTVisitor& v, Anys& results)
 
     for(auto& method : methods)
         results.push_back( method->accept(v) );
+
+    for(auto& enumLabel : enumLabels)
+        if (enumLabel.second != nullptr)
+            results.push_back( enumLabel.second->accept(v) );
 }
 
 
 
 void TypeDecl::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"TypeDecl " 
-       << (kind==Object ? "object" : (kind==Actor?"actor": (kind == Interface?"interface":"?"))) << " " << toUTF8StdString(name)
+    os << spaces(indent)+"TypeDecl "
+       << (kind==Object ? "object" : (kind==Actor?"actor": (kind == Interface?"interface":(kind == Enumeration?"enum":"?")))) << " " << toUTF8StdString(name)
        << (extends.has_value() ? " "+toUTF8StdString(extends.value()) :"")
        << std::endl;
     if (!implements.empty()) {
@@ -648,6 +658,15 @@ void TypeDecl::output(std::ostream& os, int indent) const
         property->output(os, indent+1);
     for(auto& method : methods)
         method->output(os, indent+1);
+    for(auto& enumLabels : enumLabels) {
+        os << spaces(indent+1) << toUTF8StdString(enumLabels.first);
+        if (enumLabels.second != nullptr) {
+            os << std::endl;
+            enumLabels.second->output(os, indent+2);
+        }
+        else
+            os << std::endl;
+    }
 }
 
 
@@ -669,8 +688,8 @@ std::any Expression::accept(ASTVisitor& v)
 }
 
 
-BinaryOp::BinaryOp(Op _op) 
-: Expression(ExprType::BinaryOp), op(_op) 
+BinaryOp::BinaryOp(Op _op)
+: Expression(ExprType::BinaryOp), op(_op)
 {
     if (op == None)
          throw std::runtime_error("Invalid null/none operator");
@@ -736,8 +755,8 @@ void BinaryOp::output(std::ostream& os, int indent) const
 
 
 
-UnaryOp::UnaryOp(Op _op) 
-: Expression(ExprType::UnaryOp), op(_op) 
+UnaryOp::UnaryOp(Op _op)
+: Expression(ExprType::UnaryOp), op(_op)
 {
     if (op == None)
          throw std::runtime_error("Invalid null/none operator");
@@ -780,7 +799,7 @@ void UnaryOp::acceptChildren(ASTVisitor& v, Anys& results)
 
 void UnaryOp::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"UnaryOp " << opString() 
+    os << spaces(indent)+"UnaryOp " << opString()
        << ((op==Accessor) ? (member.has_value() ? toUTF8StdString(member.value()) : "?") : "")
        << " ";
     outputType(os,-1);
@@ -1005,7 +1024,7 @@ std::any Literal::accept(ASTVisitor& v)
         case Num: { return std::dynamic_pointer_cast<ast::Num>(shared_from_this())->accept(v); break; }
         case Str: { return std::dynamic_pointer_cast<ast::Str>(shared_from_this())->accept(v); break; }
         default: throw std::runtime_error("unimplemented Literal::accept() alternative");
-    } 
+    }
     return {};
 }
 
@@ -1041,9 +1060,9 @@ std::any Num::accept(ASTVisitor& v)
 void Num::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Num ";
-    if (std::holds_alternative<int32_t>(num)) 
+    if (std::holds_alternative<int32_t>(num))
         os << std::to_string(std::get<int32_t>(num)) << ":int";
-    else if (std::holds_alternative<double>(num)) 
+    else if (std::holds_alternative<double>(num))
         os << std::to_string(std::get<double>(num)) << ":real";
     else
         os << "?";
@@ -1146,5 +1165,3 @@ void Dict::acceptChildren(ASTVisitor& v, Anys& results)
         results.push_back( entry.second->accept(v) );
     }
 }
-
-

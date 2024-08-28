@@ -51,6 +51,77 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
 {
     ast::Anys results {};
     ast->acceptChildren(*this, results);
+
+    // if (ast->type.has_value())
+    //     std::cout << toUTF8StdString(ast->name) << " : " <<  ast->type.value()->toString() << std::endl;
+
+    if (ast->kind == ast::TypeDecl::Kind::Enumeration) {
+
+        if (ast->extends.has_value()) {
+            auto extendsStr = toUTF8StdString(ast->extends.value());
+            if (extendsStr == to_string(BuiltinType::Byte))
+                ast->type = std::make_shared<type::Type>(BuiltinType::Byte);
+            else if (extendsStr == to_string(BuiltinType::Int))
+                ast->type = std::make_shared<type::Type>(BuiltinType::Int);
+            else // TODO: consider allowing enums to extens other enums
+                throw std::runtime_error("Enum(eration) "+toUTF8StdString(ast->name)+" cannot extend type " + extendsStr);
+        }
+        else // default to int
+            ast->type = std::make_shared<type::Type>(BuiltinType::Int);
+
+        // iterate over each enum label and
+        //   * look at the type of it's expression (check it matches (or can match) the enum type)
+        //   * if it has no expression, create an appropriate literal (e.g. incremented int)
+
+        // TODO: since this is manipulating the AST, it should be done in a separate pass
+
+        int32_t nextValue = 0;
+        bool isByteEnum = ast->type.value()->builtin == BuiltinType::Byte;
+
+        for(auto& enumLabel : ast->enumLabels) {
+
+            //std::cout << "enumLabel: " << toUTF8StdString(enumLabel.first) << std::endl;
+
+            if (enumLabel.second != nullptr) {
+                ptr<ast::Expression> labelExpr = enumLabel.second;
+                if (labelExpr->type.has_value()) {
+
+                    // TODO: until we have compile-time execution/evaluation-of-expresions, require enum values
+                    //       to be literals
+                    if (labelExpr->exprType != ast::Expression::ExprType::Literal)
+                        throw std::runtime_error("Enum(eration)"+toUTF8StdString(ast->name)
+                                +" label "+toUTF8StdString(enumLabel.first)+" must be a literal (byte, int)");
+                    auto literalTtype = std::dynamic_pointer_cast<ast::Literal>(labelExpr)->literalType;
+                    if (literalTtype != ast::Literal::LiteralType::Num) // TODO: check it isn't a real/double
+                        throw std::runtime_error("Enum(eration)"+toUTF8StdString(ast->name)
+                                +" label "+toUTF8StdString(enumLabel.first)+" must be a literal (byte, int)");
+
+                    auto labeltype = labelExpr->type.value();
+                    //std::cout << "type: " << labeltype->toString() << std::endl;
+
+                    // set nextValue to the expression literal value
+                    ptr<ast::Num> numExpr = std::dynamic_pointer_cast<ast::Num>(enumLabel.second);
+                    nextValue = std::get<int>(numExpr->num); // incremented below
+                }
+
+            }
+            else { // no expression supplied for enum label, assign next incremental according to type
+
+                if (isByteEnum) { // values are 0-255
+                    if (nextValue == 256)
+                        throw std::runtime_error("Enum(eration)"+toUTF8StdString(ast->name)
+                                +" value for "+toUTF8StdString(enumLabel.first)+" is out of range (>255 for byte enum)");
+                }
+                auto numExpr = std::make_shared<ast::Num>();
+                numExpr->num = nextValue;
+                numExpr->type = std::make_shared<type::Type>(BuiltinType::Int);
+                enumLabel.second = numExpr;
+            }
+            nextValue++;
+        }
+
+    }
+
     return results;
 }
 
@@ -127,7 +198,7 @@ std::any TypeDeducer::visit(ptr<ast::WhileStatement> ast)
     ast::Anys results {};
     ast->acceptChildren(*this, results);
     return results;
-}   
+}
 
 
 std::any TypeDeducer::visit(ptr<ast::Function> ast)
@@ -292,9 +363,9 @@ std::any TypeDeducer::visit(ptr<ast::Type> ast)
 
 std::any TypeDeducer::visit(ptr<ast::Num> ast)
 {
-    if (std::holds_alternative<int32_t>(ast->num)) 
+    if (std::holds_alternative<int32_t>(ast->num))
         ast->type = std::make_shared<Type>(BuiltinType::Int);
-    else if (std::holds_alternative<double>(ast->num)) 
+    else if (std::holds_alternative<double>(ast->num))
         ast->type = std::make_shared<Type>(BuiltinType::Real);
     else
         throw std::runtime_error("Unhandled Num literal type");
@@ -318,4 +389,3 @@ std::any TypeDeducer::visit(ptr<ast::Dict> ast)
     ast->type = std::make_shared<Type>(BuiltinType::Dict);
     return results;
 }
-

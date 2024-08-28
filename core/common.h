@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cstdint>
-#include <cstdarg> 
+#include <cstdarg>
 
 #include <string>
 #include <memory>
@@ -9,6 +9,7 @@
 #include <queue>
 #include <iostream>
 #include <stdexcept>
+#include <limits>
 
 // ICU
 #include <unicode/unistr.h>
@@ -61,6 +62,9 @@ inline std::string toUTF8StdString(const icu::UnicodeString& us) {
 inline icu::UnicodeString toUnicodeString(const std::string& s) {
     return icu::UnicodeString::fromUTF8(s);
 }
+
+
+uint16_t randomUint16(uint16_t min = 0, uint16_t max = std::numeric_limits<uint16_t>::max());
 
 
 // demangle typeid(T).name() strings to be more human readable

@@ -7,32 +7,19 @@ using namespace roxal::type;
 
 
 
+// must match index order in BuiltinType
+const std::vector<std::string> builtinTypeToString = {
+    "nil", "bool", "byte", "number", "int", "real", "decimal",
+    "string", "range", "enum", "list", "dict", "vector", "matrix",
+    "tensor", "orient", "stream", "func", "object", "actor", "type"
+};
 
 std::string roxal::type::to_string(BuiltinType t)
 {
-    switch (t) {
-        case BuiltinType::Nil: return "nil";
-        case BuiltinType::Bool : return "bool";
-        case BuiltinType::Byte : return "byte";
-        case BuiltinType::Number : return "number";
-        case BuiltinType::Int : return "int";
-        case BuiltinType::Real : return "real";
-        case BuiltinType::Decimal : return "decimal";
-        case BuiltinType::String : return "string";
-        case BuiltinType::Range : return "range";
-        case BuiltinType::List : return "list";
-        case BuiltinType::Dict : return "dict";
-        case BuiltinType::Vector : return "vector";
-        case BuiltinType::Matrix : return "matrix";
-        case BuiltinType::Tensor : return "tensor";
-        case BuiltinType::Orient : return "stream";
-        case BuiltinType::Stream : return "orient";
-        case BuiltinType::Func : return "func";
-        case BuiltinType::Object : return "object";
-        case BuiltinType::Actor : return "actor";
-        case BuiltinType::Type : return "type";
-        default: throw std::runtime_error("to_string(BuiltinType) unhandled alternative");
-    }
+    if (int(t) < 0 || int(t) >= builtinTypeToString.size())
+        throw std::runtime_error("to_string(BuiltinType) unhandled alternative");
+
+    return builtinTypeToString[size_t(t)];
 }
 
 
@@ -61,9 +48,9 @@ std::string Type::toString() const
                             tspec += "=";
                     }
                 }
-                else 
+                else
                     tspec += ".";
-                
+
                 if (i != funcType.params.size()-1)
                     tspec += ", ";
             }
@@ -74,7 +61,21 @@ std::string Type::toString() const
             }
         }
         else
-            tspec += "(...)"; 
+            tspec += "(...)";
+    }
+    else if (builtin == BuiltinType::Enum) {
+        if (enumer.has_value()) {
+            auto enumType { enumer.value() };
+            tspec += "(";
+            const auto& enumValues { enumType.values };
+            for(auto i=0; i<enumValues.size(); i++) {
+                tspec += toUTF8StdString(enumValues[i].first);
+                tspec += "="+std::to_string(enumValues[i].second);
+                if (i != enumValues.size()-1)
+                    tspec += ", ";
+            }
+            tspec += ")";
+        }
     }
 
     return tspec;

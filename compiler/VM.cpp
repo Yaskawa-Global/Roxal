@@ -76,11 +76,11 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
     ObjClosure* closure = closureVal(function);
     Value closureValue { objVal(closure) };
 
-    auto firstThread = std::make_shared<Thread>();     
+    auto firstThread = std::make_shared<Thread>();
     threads.store(firstThread->id(), firstThread);
     firstThread->spawn(closureValue);
 
-    // join all threads 
+    // join all threads
     //  (note: threads being waited on may create additional threads)
     while (threads.size() > 0) {
         for(auto thread : threads.get()) {
@@ -91,12 +91,12 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
 
     threads.clear();
 
-    InterpretResult result = firstThread->result; 
+    InterpretResult result = firstThread->result;
 
     #if defined(DEBUG_TRACE_EXECUTION)
-    if (globals.size() > 0) {        
+    if (globals.size() > 0) {
         std::cout << std::endl << "== globals ==" << std::endl;
-        for(const auto& global : globals.get()) 
+        for(const auto& global : globals.get())
             std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second) << std::endl;
     }
     #endif
@@ -130,18 +130,18 @@ VM::InterpretResult VM::interpretLine(std::istream& linestream)
     ObjClosure* closure = closureVal(function);
     Value closureValue { objVal(closure) };
 
-    auto newThread = std::make_shared<Thread>();     
+    auto newThread = std::make_shared<Thread>();
     threads.store(newThread->id(), newThread);
     newThread->spawn(closureValue);
 
     newThread->join();
-    
-    InterpretResult result = newThread->result; 
+
+    InterpretResult result = newThread->result;
 
     #if defined(DEBUG_TRACE_EXECUTION)
-    if (globals.size() > 0) {        
+    if (globals.size() > 0) {
         std::cout << std::endl << "== globals ==" << std::endl;
-        for(const auto& global : globals.get()) 
+        for(const auto& global : globals.get())
             std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second) << std::endl;
     }
     #endif
@@ -159,7 +159,7 @@ void VM::Thread::spawn(Value closure)
     assert(isClosure(closure));
 
     state = State::Spawned;
-    osthread = std::make_shared<std::thread>([this,closure]() { 
+    osthread = std::make_shared<std::thread>([this,closure]() {
         auto& vm { VM::instance() };
 
         vm.thread = shared_from_this(); // set thread local storage member
@@ -208,7 +208,7 @@ void VM::Thread::act(Value actorInstance)
     actor = true;
     state = State::Spawned;
 
-    osthread = std::make_shared<std::thread>([this,actorInstance]() { 
+    osthread = std::make_shared<std::thread>([this,actorInstance]() {
         auto& vm { VM::instance() };
 
         vm.thread = shared_from_this(); // set thread local storage member
@@ -238,20 +238,20 @@ void VM::Thread::act(Value actorInstance)
             }
 
             if (callInfo.valid()) {
-                
+
                 auto closure = asBoundMethod(callInfo.callee)->method;
 
 
-                for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it) 
+                for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
                     push(*it);
-                
+
                 vm.call(closure,callInfo.callSpec);
 
                 auto result = vm.execute();
 
                 if (result.first == InterpretResult::OK) {
 
-                    if (callInfo.returnPromise != nullptr) 
+                    if (callInfo.returnPromise != nullptr)
                         callInfo.returnPromise->set_value(result.second);
 
                 }
@@ -263,7 +263,7 @@ void VM::Thread::act(Value actorInstance)
                     break;
                 }
 
-                    
+
             }
 
         } while (true);
@@ -300,7 +300,7 @@ void VM::Thread::push(const Value& value)
 
 
 Value VM::Thread::pop()
-{    
+{
     #ifdef DEBUG_BUILD
     if (stackTop == stack.begin())
         throw std::runtime_error("Stack underflow");
@@ -308,7 +308,7 @@ Value VM::Thread::pop()
 
     stackTop--;
     auto retValue = *stackTop; // copy (hold ref)
-    
+
     if (stackTop->isObj())
         *stackTop = Value(); // ensure to call decRef on objects
 
@@ -387,7 +387,7 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
         assert(closure->function->funcType.has_value());
         ptr<type::Type> calleeType { closure->function->funcType.value() };
 
-        callframe.reorderArgs = callSpec.paramPositions(calleeType, true);        
+        callframe.reorderArgs = callSpec.paramPositions(calleeType, true);
 
         // handle execution of default param expression 'func' for params not supplied
         if (argCount < closure->function->arity) {
@@ -424,9 +424,9 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
                     //     uint8_t isLocal = readByte();
                     //     uint8_t index = readByte();
                     //     ObjUpvalue* upvalue;
-                    //     if (isLocal) 
+                    //     if (isLocal)
                     //         upvalue = captureUpvalue(*(frame->slots + index));
-                    //     else 
+                    //     else
                     //         upvalue = frame->closure->upvalues[index];
                     //     upvalue->incRef();
                     //     closure->upvalues[i] = upvalue;
@@ -502,8 +502,8 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
             push(closureFrame.first); // push closure value for def val func
             auto& frame { closureFrame.second };
             frame.parent = parentCallFrame;
-            frame.slots = &(*(thread->stackTop - 1));    
-            thread->pushFrame(frame); 
+            frame.slots = &(*(thread->stackTop - 1));
+            thread->pushFrame(frame);
             // reset parent
             (thread->frames.end()-1)->parent = parentCallFrame;
 
@@ -565,14 +565,14 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     return call(boundMethod->method, callSpec);
                 }
                 else {
-                    // call to actor method.  
+                    // call to actor method.
                     //  If the caller is the same actor, treat like regular method call
                     //  otherwise, instead of calling on this thread,
                     //  queue the call for the actor thread to handle
 
                     ActorInstance* inst = asActorInstance(boundMethod->receiver);
 
-                    if (std::this_thread::get_id() == inst->thread_id) { 
+                    if (std::this_thread::get_id() == inst->thread_id) {
                         // actor to this/self method call
                         *(thread->stackTop - callSpec.argCount - 1) = boundMethod->receiver; // FIXME: or inst??
                         return call(boundMethod->method, callSpec);
@@ -590,11 +590,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             }
             case ObjType::Type: {
                 ObjTypeSpec* ts = asTypeSpec(callee);
-                if ((ts->typeValue != ValueType::Object) && (ts->typeValue != ValueType::Actor)) {
-                    //!!! FIXME:primitive...
-                    throw std::runtime_error("unimplemented");
-                }
-                else {
+                if ((ts->typeValue == ValueType::Object) || (ts->typeValue == ValueType::Actor)) {
                     ObjObjectType* type = asObjectType(callee);
                     if (!type->isActor) {
                         Value inst { objectInstanceVal(type) };
@@ -625,7 +621,84 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         }
                     }
                     return true;
-                } 
+                }
+                else if (ts->typeValue == ValueType::Enum) {
+                    // construct a default enun value for this enum type
+                    //  either the label corresponding to 0, or if none, any label
+                    //  TODO: add member to type for devault value (in OpCode::EnumLabel can store value of first or 0 if declared)
+                    ObjObjectType* type = asObjectType(callee);
+                    #ifdef DEBUG_BUILD
+                    assert(type->isEnumeration);
+                    #endif
+
+                    Value value { nilVal() };
+
+                    if (callSpec.argCount == 0) {
+
+                        for(const auto& hashLabelValue : type->enumLabelValues) {
+                            const auto& labelValue { hashLabelValue.second };
+                            if (labelValue.second.asEnum() == 0) {
+                                value = labelValue.second;
+                                break;
+                            }
+                        }
+                        if (value.isNil()) { // didn't find an enum label with value 0
+                            if (!type->enumLabelValues.empty())
+                                //  TODO: consider storing the label ordering so we can select the first one if none has value 0
+                                value = type->enumLabelValues.begin()->second.second;
+                            else {
+                                runtimeError("enum type '"+toUTF8StdString(type->name)+"' has no labels");
+                                return false;
+                            }
+                        }
+                    }
+                    else if (callSpec.argCount == 1) {
+                        Value arg { peek(0) };
+                        if (!arg.isInt() && !arg.isByte()) {
+                            runtimeError("Type enum '"+toUTF8StdString(type->name)+"' instantiation requires an int or byte.");
+                            return false;
+                        }
+
+                        // first, see if this int value correspoinds to one of the enum label values
+                        bool found = false;
+                        for(auto& hashLabelValue : type->enumLabelValues) {
+                            const auto& labelValue { hashLabelValue.second };
+                            if (labelValue.second.asInt() == arg.asInt()) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            runtimeError("enum type '"+toUTF8StdString(type->name)+"' has no label with value "+std::to_string(arg.asInt()));
+                            return false;
+                        }
+
+                        // find enum type id for type (needed to costruct an enum value)
+                        uint16_t enumTypeId = 0; // valid ids can't be 0
+                        for(auto& enumTypeIdObjType : ObjObjectType::enumTypes) {
+                            if (enumTypeIdObjType.second == type) {
+                                enumTypeId = enumTypeIdObjType.first;
+                                break;
+                            }
+                        }
+                        #ifdef DEBUG_BUILD
+                        assert(enumTypeId != 0);
+                        #endif
+                        value = enumVal(arg.asInt(), enumTypeId);
+                    }
+                    else {
+                        runtimeError("Expected 0 or 1 argument for enum '"+toUTF8StdString(type->name)+"' type instantiation, provided "+std::to_string(callSpec.argCount));
+                        return false;
+                    }
+
+                    *(thread->stackTop - callSpec.argCount - 1) = value;
+                    popN(callSpec.argCount);
+
+                    return true;
+                }
+                else {
+                    throw std::runtime_error("unimplemented construction for type '"+to_string(ts->typeValue)+"'");
+                }
             }
             case ObjType::Closure:
                 return call(asClosure(callee), callSpec);
@@ -702,7 +775,7 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
 bool VM::indexValue(const Value& indexable, int subscriptCount)
 {
     if (indexable.isObj()) {
-        // TODO: move some per-type indexing code into Object or Value 
+        // TODO: move some per-type indexing code into Object or Value
         switch (objType(indexable)) {
             case ObjType::String: {
                 if (subscriptCount != 1) {
@@ -843,7 +916,7 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
 bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
 {
     if (indexable.isObj()) {
-        // TODO: move some per-type indexing code into Object or Value 
+        // TODO: move some per-type indexing code into Object or Value
         switch (objType(indexable)) {
             case ObjType::String: {
                 runtimeError("Strings are immutable - content cannot be modified.");
@@ -882,9 +955,9 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                 }
                 return true;
             } break;
-            default: 
+            default:
                 break;
-        } 
+        }
         runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed, not type "+objTypeName(indexable.asObj())+".");
         return false;
     }
@@ -947,7 +1020,7 @@ void VM::closeUpvalues(Value* last)
 }
 
 
-// execute OpCode::Return 
+// execute OpCode::Return
 //  returns the call frame's result Value (doesn't push on stack, or update current frame)
 Value VM::opReturn()
 {
@@ -958,7 +1031,7 @@ Value VM::opReturn()
 
     if (!returningFrame.forwardStreamRefs.empty()) {
         auto funcName { returningFrame.closure->function->name };
-        //std::cout << "returning frame "+toUTF8StdString(funcName)+" has forward stream refs" << std::endl;//!!!                    
+        //std::cout << "returning frame "+toUTF8StdString(funcName)+" has forward stream refs" << std::endl;//!!!
         for(auto& forwardStreamRef : returningFrame.forwardStreamRefs) {
             const auto& name { forwardStreamRef.first };
             auto& stream { forwardStreamRef.second };
@@ -967,8 +1040,8 @@ Value VM::opReturn()
             if (name != funcName) // shouldn't happen
                 throw std::runtime_error("invalid forward stream reference "+toUTF8StdString(name)+" in func "+toUTF8StdString(funcName));
             #endif
-            if (!isStream(result)) 
-                throw std::runtime_error("Func '"+toUTF8StdString(funcName)+"' must return a stream (not type "+result.typeName()+")");            
+            if (!isStream(result))
+                throw std::runtime_error("Func '"+toUTF8StdString(funcName)+"' must return a stream (not type "+result.typeName()+")");
             asStream(stream)->patch(name,result);
         }
     }
@@ -1017,7 +1090,7 @@ void VM::defineProperty(ObjString* name)
         }
     }
 
-    objType->properties[name->hash] = std::make_tuple(name->s,propertyType,propertyInitial);
+    objType->properties[name->hash] = {name->s,propertyType,propertyInitial};
     popN(2);
 }
 
@@ -1034,11 +1107,37 @@ void VM::defineMethod(ObjString* name)
     ObjObjectType* type = asObjectType(peek(1));
 
     if (type->methods.contains(name->hash))
-        throw std::runtime_error("Duplicate method '"+name->toStdString()+"' declared in type "+(type->isActor?"actor":"object")+" "+toUTF8StdString(type->name));
+        throw std::runtime_error("Duplicate method '"+name->toStdString()+"' declared in type "+(type->isActor?"actor":"object")+" '"+toUTF8StdString(type->name)+"'");
 
     type->methods[name->hash] = std::make_pair(name->s,method);
     pop();
 }
+
+
+void VM::defineEnumLabel(ObjString* name)
+{
+    Value value = peek(0);
+    #ifdef DEBUG_BUILD
+    if (!value.isInt() && !value.isByte())
+        throw std::runtime_error("Can only create enum value from int or byte");
+    if (!isEnumType(peek(1)))
+        throw std::runtime_error("Can't create enum value without enum type on stack");
+    #endif
+    ObjObjectType* type = asObjectType(peek(1));
+
+     if (type->enumLabelValues.contains(name->hash))
+         throw std::runtime_error("Duplicate enum label '"+name->toStdString()+"' declared in type '"+toUTF8StdString(type->name)+"'");
+
+    // convert the value from byte or int to enum
+    int32_t intVal = value.asInt();
+    if (intVal < std::numeric_limits<int16_t>::min() || intVal > std::numeric_limits<int16_t>::max())
+        throw std::runtime_error("Enum label '"+toUTF8StdString(name->s)+"' value out of range for type '"+toUTF8StdString(type->name)+"'");
+    Value enumValue {int16_t(intVal), type->enumTypeId};
+
+    type->enumLabelValues[name->hash] = std::make_pair(name->s,enumValue);
+    pop();
+}
+
 
 
 
@@ -1161,7 +1260,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 frame->tailArgValues.clear();
             }
 
-            // handle re-ordering arguments on top of stack 
+            // handle re-ordering arguments on top of stack
             //  (to reorder from caller argument order to callee parameter order)
             if (!frame->reorderArgs.empty()) {
 
@@ -1169,8 +1268,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 auto argCount { reorder.size() };
                 Value args[argCount];
                 // pop args from stack (they're in reverse order from top)
-                for(int16_t ai=argCount-1;ai>=0;ai--) 
-                    args[ai] = pop();            
+                for(int16_t ai=argCount-1;ai>=0;ai--)
+                    args[ai] = pop();
                 // re-push in callee parameter order
                 for(auto pi=0; pi<argCount;pi++) {
                     #ifdef DEBUG_BUILD
@@ -1178,7 +1277,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     #endif
                     push(args[reorder[pi]]);
                 }
-                
+
                 frame->reorderArgs.clear();
             }
 
@@ -1237,6 +1336,22 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     return errorReturn;
 
                 }
+                else if (isEnumType(inst)) {
+
+                    auto enumObjType = asObjectType(inst);
+
+                    ObjString* name = readString();
+                    // is it an existing enum label?
+                    auto it = enumObjType->enumLabelValues.find(name->hash);
+                    if (it != enumObjType->enumLabelValues.end()) { // exists
+                        pop();
+                        push(it->second.second);
+                        break;
+                    }
+
+                    runtimeError("Undefined enum label '"+toUTF8StdString(name->s)+"' for enum type '"+toUTF8StdString(enumObjType->name)+"'.");
+                    return errorReturn;
+                }
 
                 runtimeError("Only object and actor instances have methods and only objects instances have properties.");
                 return errorReturn;
@@ -1261,9 +1376,9 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     const auto& properties { objInst->instanceType->properties };
                     const auto& property = properties.find(name->hash);
                     if (property != properties.end()) {
-                        const auto& propertyType { std::get<1>(property->second) };
-                        if (!propertyType.isNil() && isTypeSpec(propertyType)) {
-                            ObjTypeSpec* typeSpec = asTypeSpec(propertyType);
+                        const auto& prop { property->second };
+                        if (!prop.type.isNil() && isTypeSpec(prop.type)) {
+                            ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                             if (typeSpec->typeValue != ValueType::Nil)
                                 // TODO: implement & use a canConvertToType()
                                 value = toType(typeSpec->typeValue,value,/*strict=*/false);
@@ -1291,7 +1406,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     throw std::runtime_error("super doesn't reference an object or actor type.");
                 #endif
 
-                ObjObjectType* superType = asObjectType(pop()); 
+                ObjObjectType* superType = asObjectType(pop());
                 if (!bindMethod(superType,name))
                     return std::make_pair(InterpretResult::RuntimeError,nilVal());
 
@@ -1539,9 +1654,9 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     uint8_t isLocal = readByte();
                     uint8_t index = readByte();
                     ObjUpvalue* upvalue;
-                    if (isLocal) 
+                    if (isLocal)
                         upvalue = captureUpvalue(*(frame->slots + index));
-                    else 
+                    else
                         upvalue = frame->closure->upvalues[index];
                     upvalue->incRef();
                     closure->upvalues[i] = upvalue;
@@ -1583,17 +1698,17 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
                 try {
                     Value result = opReturn();
-                
+
                     if (thread->frames.empty()) {
                         freeObjects();
 
                         return std::make_pair(InterpretResult::OK,result);
                     }
 
-                    CallFrames::iterator parentFrame = frame->parent;        
+                    CallFrames::iterator parentFrame = frame->parent;
                     #ifdef DEBUG_BUILD
                     assert(parentFrame != thread->frames.end());
-                    #endif            
+                    #endif
                     parentFrame->tailArgValues.push_back(result);
 
                     frame = thread->frames.end() -1;
@@ -1745,11 +1860,11 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::NewRange): {
                 bool closed = ((readByte() & 1) > 0);
-                if (!peek(2).isNil() && !peek(2).isNumber()) 
+                if (!peek(2).isNil() && !peek(2).isNumber())
                     runtimeError("The start bound of a range must be a number");
-                if (!peek(1).isNil() && !peek(1).isNumber()) 
+                if (!peek(1).isNil() && !peek(1).isNumber())
                     runtimeError("The stop bound of a range must be a number");
-                if (!peek(0).isNil() && !peek(0).isNumber()) 
+                if (!peek(0).isNil() && !peek(0).isNumber())
                     runtimeError("The step of a range must be a number");
                 auto rangeObj = rangeVal(peek(2),peek(1),peek(0),closed);
                 popN(3);
@@ -1796,6 +1911,12 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 push(objVal(objectTypeVal(name->s, /*isActor=*/false, /*isInterface=*/true)));
                 break;
             }
+            case asByte(OpCode::EnumerationType): {
+                ObjString* name = readString();
+                Value enumTypeVal = objVal(objectTypeVal(name->s, /*isActor=*/false, /*isInterface=*/false, /*isEnumeration=*/true));
+                push(enumTypeVal);
+                break;
+            }
             case asByte(OpCode::Property): {
                 try {
                     defineProperty(readString());
@@ -1808,6 +1929,15 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::Method): {
                 try {
                     defineMethod(readString());
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case asByte(OpCode::EnumLabel): {
+                try {
+                    defineEnumLabel(readString());
                 } catch (std::exception& e) {
                     runtimeError(e.what());
                     return errorReturn;
@@ -1880,7 +2010,7 @@ void VM::freeObjects()
         Obj::unrefedObjs.pop_back_and_apply([](Obj* obj) {
             delObj(obj);
         });
-    }    
+    }
 }
 
 
@@ -1911,7 +2041,7 @@ void VM::concatenate()
 
     UnicodeString lhsString { asUString(lhs) };
     UnicodeString rhsString {};
-    
+
     if (!isString(rhs)) {
         // convert RHS to a string
         // TODO: use canonical type -> string conversion using unicode instead
@@ -1941,7 +2071,7 @@ void VM::runtimeError(const std::string& format, ...)
     size_t instruction = frame->ip - frame->closure->function->chunk->code.begin() - 1;
     int line = frame->closure->function->chunk->getLine(instruction);
     fprintf(stderr, "[line %d] in script\n", line);
-    resetStack();    
+    resetStack();
 }
 
 
@@ -2006,16 +2136,16 @@ Value VM::len_builtin(int argCount, Value* args)
 
 Value VM::clone_builtin(int argCount, Value* args)
 {
-    if (argCount != 1) 
+    if (argCount != 1)
         throw std::invalid_argument("clone takes a single argument (the value to deep-copy)");
-    
+
     return args[0].clone();
 }
 
 
 Value VM::sleep_builtin(int argCount, Value* args)
 {
-    if ((argCount != 1) || !args[0].isNumber()) 
+    if ((argCount != 1) || !args[0].isNumber())
         throw std::invalid_argument("sleep expects single numeric argument (microsecs)");
 
     uint64_t nanosecs = uint64_t(args[0].asInt()) * 1000;
@@ -2029,7 +2159,7 @@ Value VM::sleep_builtin(int argCount, Value* args)
 
 Value VM::fork_builtin(int argCount, Value* args)
 {
-    if ((argCount != 1) || !isClosure(args[0])) 
+    if ((argCount != 1) || !isClosure(args[0]))
         throw std::invalid_argument("fork expects single callable argument (e.g. func or proc)");
 
     auto newThread = std::make_shared<Thread>();
@@ -2059,7 +2189,7 @@ Value VM::join_builtin(int argCount, Value* args)
 
 Value VM::threadid_builtin(int argCount, Value* args)
 {
-    if (argCount != 0) 
+    if (argCount != 0)
         throw std::invalid_argument("_threadid takes no arguments");
 
     int32_t id = int32_t(thread->id()); // FIXME: id is uint64
@@ -2126,7 +2256,7 @@ Value VM::clock_native(int argCount, Value* args)
 
 Value VM::usSleep_native(int argCount, Value* args)
 {
-    if ((argCount != 1) || !args[0].isNumber()) 
+    if ((argCount != 1) || !args[0].isNumber())
         throw std::invalid_argument("ussleep expects single numeric argument");
 
     std::this_thread::sleep_for(std::chrono::microseconds(args[0].asInt()));
@@ -2136,7 +2266,7 @@ Value VM::usSleep_native(int argCount, Value* args)
 
 Value VM::msSleep_native(int argCount, Value* args)
 {
-    if ((argCount != 1) || !args[0].isNumber()) 
+    if ((argCount != 1) || !args[0].isNumber())
         throw std::invalid_argument("mssleep expects single numeric argument");
 
     std::this_thread::sleep_for(std::chrono::milliseconds(args[0].asInt()));
@@ -2146,7 +2276,7 @@ Value VM::msSleep_native(int argCount, Value* args)
 
 Value VM::sleep_native(int argCount, Value* args)
 {
-    if ((argCount != 1) || !args[0].isNumber()) 
+    if ((argCount != 1) || !args[0].isNumber())
         throw std::invalid_argument("sleep expects single numeric argument");
 
     std::this_thread::sleep_for(std::chrono::seconds(args[0].asInt()));
@@ -2156,7 +2286,7 @@ Value VM::sleep_native(int argCount, Value* args)
 
 Value VM::sin_native(int argCount, Value* args)
 {
-    if ((argCount != 1) || !args[0].isNumber()) 
+    if ((argCount != 1) || !args[0].isNumber())
         throw std::invalid_argument("sin expects single numeric argument");
 
     return Value(sin(args[0].asReal()));
@@ -2164,9 +2294,8 @@ Value VM::sin_native(int argCount, Value* args)
 
 Value VM::cos_native(int argCount, Value* args)
 {
-    if ((argCount != 1) || !args[0].isNumber()) 
+    if ((argCount != 1) || !args[0].isNumber())
         throw std::invalid_argument("cos expects single numeric argument");
 
     return Value(cos(args[0].asReal()));
 }
-

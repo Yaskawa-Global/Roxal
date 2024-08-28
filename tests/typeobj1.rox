@@ -1,8 +1,8 @@
-type object Class1:
+type Class1 object:
   func method():
     print("hi from class1")
 
-type object Class2:
+type Class2 object:
   func method():
     print('hi from class2')
 

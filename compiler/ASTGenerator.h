@@ -61,6 +61,8 @@ public:
 
     virtual std::any visitProperty(RoxalParser::PropertyContext *context);
 
+    virtual std::any visitEnum_label(RoxalParser::Enum_labelContext *context);
+
     virtual std::any visitAnnotation(RoxalParser::AnnotationContext *context);
 
     virtual std::any visitAnnot_argument(RoxalParser::Annot_argumentContext *context);

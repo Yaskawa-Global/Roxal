@@ -279,10 +279,14 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("ACTOR_TYPE", offset);
         case asByte(OpCode::InterfaceType):
             return constantInstruction("INTERFACE_TYPE", offset);
+        case asByte(OpCode::EnumerationType):
+            return constantInstruction("ENUMERATION_TYPE", offset);
         case asByte(OpCode::Property):
             return constantInstruction("PROPERTY", offset);
         case asByte(OpCode::Method):
             return constantInstruction("METHOD", offset);
+        case asByte(OpCode::EnumLabel):
+            return constantInstruction("ENUM_LABEL", offset);
         case asByte(OpCode::Extend):
             return simpleInstruction("EXTEND", offset);
         case asByte(OpCode::DefineGlobal):

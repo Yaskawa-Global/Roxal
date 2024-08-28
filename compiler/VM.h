@@ -83,6 +83,7 @@ public:
 
     void defineProperty(ObjString* name);
     void defineMethod(ObjString* name);
+    void defineEnumLabel(ObjString* name);
     void defineNative(const std::string& name, NativeFn function);
 
 

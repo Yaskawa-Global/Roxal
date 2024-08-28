@@ -67,7 +67,7 @@ Obj* Obj::clone() const
     else if (type == ObjType::Native)
         return mutableThis; // native functions are immutable
     else if (type == ObjType::Type) // complex types are immutable once declared
-        return mutableThis;    
+        return mutableThis;
     else if (type == ObjType::Instance)
         return cloneObjectInstance(static_cast<const ObjectInstance*>(this));
     else if (type == ObjType::Actor)
@@ -128,7 +128,7 @@ ObjString::~ObjString()
 
 Value ObjString::index(const Value& i) const
 {
-    if (!i.isNumber() && !isRange(i)) 
+    if (!i.isNumber() && !isRange(i))
         throw std::invalid_argument("String index must be a number or a range.");
 
     UnicodeString substr {};
@@ -152,7 +152,7 @@ Value ObjString::index(const Value& i) const
         //std::cout << "::index " << i << " len:" << rangeLen << std::endl;
         for(auto i=0; i<rangeLen; i++) {
             auto targetIndex = r->targetIndex(i,strLen);
-            //std::cout << " ti=" << targetIndex << std::endl;    
+            //std::cout << " ti=" << targetIndex << std::endl;
             if ((targetIndex >= 0) && (targetIndex < strLen))
                 substr += s.charAt(targetIndex);
         }
@@ -183,19 +183,19 @@ static uint32_t fnv1a32(const UnicodeString& s)
 }
 
 
-ObjString* roxal::stringVal(const UnicodeString& s) 
-{ 
+ObjString* roxal::stringVal(const UnicodeString& s)
+{
     int32_t hash = s.hashCode();
     auto objStr = strings.lookup(hash);
     if (!objStr.has_value()) { // not found
 
         // create new
-        return newObj<ObjString>(__func__,s); 
+        return newObj<ObjString>(__func__,s);
     }
     else { // found existing string
         return objStr.value();
     }
-} 
+}
 
 
 
@@ -216,10 +216,10 @@ ObjRange::ObjRange(const Value& rstart, const Value& rstop, const Value& rstep, 
 
 
 
-int32_t ObjRange::length(int32_t targetLen) const 
+int32_t ObjRange::length(int32_t targetLen) const
 {
     // handle common case of ints first
-    if (   (start.isInt() || start.isNil()) 
+    if (   (start.isInt() || start.isNil())
          && (stop.isInt() || stop.isNil())
          && (step.isInt() || step.isNil())) {
 
@@ -230,7 +230,7 @@ int32_t ObjRange::length(int32_t targetLen) const
             int32_t stopi = stop.isNil() ? targetLen : stop.asInt();
             if (starti < 0) starti = targetLen + starti;
             if (stopi < 0) stopi = targetLen + stopi;
-            
+
             if (!closed) {
                 //return abs(stopi - starti)/stepi;
                 if (starti >= stopi) return 0;
@@ -250,7 +250,7 @@ int32_t ObjRange::length(int32_t targetLen) const
 
             if (!closed)
                 return (starti - stopi - 1)/-stepi + 1;
-            else 
+            else
                 return (starti - (stopi-1) - 1)/-stepi + 1;
         }
     }
@@ -263,7 +263,7 @@ int32_t ObjRange::length(int32_t targetLen) const
 int32_t ObjRange::length() const
 {
     // handle common case of ints first
-    if (   (start.isInt() || start.isNil()) 
+    if (   (start.isInt() || start.isNil())
          && (stop.isInt() || stop.isNil())
          && (step.isInt() || step.isNil())) {
 
@@ -294,9 +294,9 @@ int32_t ObjRange::length() const
             //if ((starti < 0) || ((stopi < 0) && !stop.isNil())) return -1;
             //std::cout << " length() starti:" << starti << " stopi:" << stopi << " stepi:" << stepi << (closed?" closed":" open") << std::endl;
 
-            if (!closed) 
+            if (!closed)
                 return (starti - stopi - 1)/-stepi + 1;
-            else 
+            else
                 return (starti - (stopi-1) - 1)/-stepi + 1;
         }
     }
@@ -310,7 +310,7 @@ int32_t ObjRange::length() const
 int32_t ObjRange::targetIndex(int32_t index, int32_t targetLen) const
 {
     // handle common case of ints first
-    if (   (start.isInt() || start.isNil()) 
+    if (   (start.isInt() || start.isNil())
          && (stop.isInt() || stop.isNil())
          && (step.isInt() || step.isNil())) {
 
@@ -540,7 +540,7 @@ std::string roxal::objListToString(const ObjList* ol)
         if (isString(value)) valStr = "\""+valStr+"\"";
         os << valStr;
         if (it != list.end()-1)
-            os << ", ";                
+            os << ", ";
     }
     os << "]";
     return os.str();
@@ -638,7 +638,7 @@ std::string roxal::objToString(const Value& v)
             }
             else {
                 ObjObjectType* obj = asObjectType(v);
-                return std::string("<type ")+(obj->isActor ? "actor" :"object")+" "+toUTF8StdString(obj->name)+">";
+                return std::string("<type ")+(obj->isActor ? "actor" :(obj->isInterface ? "interface" : (obj->isEnumeration ? "enum" : "object")))+" "+toUTF8StdString(obj->name)+">";
             }
         }
         case ObjType::Instance: {
@@ -664,7 +664,7 @@ std::string roxal::objToString(const Value& v)
 
 
 
-std::string roxal::toString(FunctionType ft) 
+std::string roxal::toString(FunctionType ft)
 {
     switch (ft) {
         case FunctionType::Function: return "Function";
@@ -703,28 +703,46 @@ ObjNative* roxal::nativeVal(NativeFn function)
 
 
 
-ObjObjectType* roxal::objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface)
+
+std::unordered_map<uint16_t, roxal::ObjObjectType*> ObjObjectType::enumTypes {};
+
+ObjObjectType::ObjObjectType(const icu::UnicodeString& typeName, bool isactor, bool isinterface, bool isenumeration)
+    : name(typeName), isActor(isactor), isInterface(isinterface), isEnumeration(isenumeration)
 {
-    return newObj<ObjObjectType>(__func__, typeName, isActor, isInterface);
+    typeValue = ValueType::Object;
+    if (isActor)
+        typeValue = ValueType::Actor;
+    else if (isEnumeration) {
+        typeValue = ValueType::Enum;
+
+        // register ourselves in the global map of enum types, referenced in the enum values
+        enumTypeId = randomUint16(1); // generate unique random id (1..max)
+        while (ObjObjectType::enumTypes.find(enumTypeId) != ObjObjectType::enumTypes.end())
+            enumTypeId = randomUint16(1);
+        enumTypes[enumTypeId] = this;
+    }
+}
+
+ObjObjectType* roxal::objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface, bool isEnumeration)
+{
+    return newObj<ObjObjectType>(__func__, typeName, isActor, isInterface, isEnumeration);
 }
 
 
-ObjectInstance::ObjectInstance(ObjObjectType* objectType) 
-{ 
-    type = ObjType::Instance; 
+ObjectInstance::ObjectInstance(ObjObjectType* objectType)
+{
+    type = ObjType::Instance;
     instanceType = objectType;
     instanceType->incRef();
 
     for(const auto& property : objectType->properties) {
-        auto propNameTypeInitial { property.second };
-        auto propName { std::get<0>(propNameTypeInitial) };
-        //auto propType { std::get<1>(propNameTypeInitial) };
-        auto propInitialvalue { std::get<2>(propNameTypeInitial) };
-        properties[propName.hashCode()] = propInitialvalue;
+        const auto& prop { property.second };
+        auto propInitialvalue { prop.initialValue };
+        properties[prop.name.hashCode()] = propInitialvalue;
     }
 }
 
-ObjectInstance::~ObjectInstance() 
+ObjectInstance::~ObjectInstance()
 {
     instanceType->decRef();
 }
@@ -750,7 +768,7 @@ ObjectInstance* roxal::cloneObjectInstance(const ObjectInstance* obj)
         else if (isString(value)) {
             // strings are reference types, but immutable, so can copy reference
             newobj->properties[index] = value;
-        } 
+        }
         else if (isObjectInstance(value)) {
             auto propcopy = cloneObjectInstance(asObjectInstance(value));  // recurse
             newobj->properties[index] = Value(propcopy);
@@ -762,11 +780,11 @@ ObjectInstance* roxal::cloneObjectInstance(const ObjectInstance* obj)
 
         }
         // TODO: add explicit handling of internal types like closure, future, function etc (just shallow copy)
-        //       add explicit deep copying of builtin ref types like list and dict 
+        //       add explicit deep copying of builtin ref types like list and dict
         else {
             #ifdef DEBUG_BUILD
-            auto propName { std::get<0>(obj->instanceType->properties.at(index)) };
-            std::cerr << "shallow copying property " << toUTF8StdString(propName) << " :" << value.typeName() <<  " from " << Value(obj->instanceType) << std::endl;
+            const auto& prop { obj->instanceType->properties.at(index) };
+            std::cerr << "shallow copying property " << toUTF8StdString(prop.name) << " :" << value.typeName() <<  " from " << Value(obj->instanceType) << std::endl;
             std::cerr << " isPrimitive?" << (value.isPrimitive() ? "yes":"no") << std::endl;
             #endif
             newobj->properties[index] = value;
@@ -779,14 +797,14 @@ ObjectInstance* roxal::cloneObjectInstance(const ObjectInstance* obj)
 
 
 
-ActorInstance::ActorInstance(ObjObjectType* objectType) 
-{ 
-    type = ObjType::Actor; 
+ActorInstance::ActorInstance(ObjObjectType* objectType)
+{
+    type = ObjType::Actor;
     instanceType = objectType;
     instanceType->incRef();
 }
 
-ActorInstance::~ActorInstance() 
+ActorInstance::~ActorInstance()
 {
     instanceType->decRef();
 }
@@ -799,7 +817,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
     assert(isBoundMethod(callee));
     assert(isActorInstance(asBoundMethod(callee)->receiver));
     #endif
-    
+
     std::lock_guard<std::mutex> lock { queueMutex };
 
     // TODO: arrange for push to move to queue to avoid copy
@@ -846,7 +864,7 @@ ObjBoundMethod::ObjBoundMethod(const Value& instance, ObjClosure* closure)
     method->incRef();
 }
 
-ObjBoundMethod::~ObjBoundMethod() 
+ObjBoundMethod::~ObjBoundMethod()
 {
     method->decRef();
 }
@@ -869,7 +887,7 @@ bool roxal::objsEqual(const Value& l, const Value& r)
             auto ls = asString(l);
             auto rs = asString(r);
             if (ls == rs) // identical object
-                return true;            
+                return true;
 
             // Trust hash.  Possible different strings with has collision will
             //  compare as equal (low probability)
@@ -879,7 +897,7 @@ bool roxal::objsEqual(const Value& l, const Value& r)
             //     return false;
             // return ls->s == rs->s;
         } break;
-        default: 
+        default:
             throw std::runtime_error("Unimplemented object type for objEqual:"+std::to_string(int(objType(l))));
 
     }

@@ -13,8 +13,27 @@ using namespace roxal;
 #include <cstdlib>
 #include <memory>
 #include <cxxabi.h>
+#include <random>
 
-std::string roxal::demangle(const char* name) 
+
+uint16_t roxal::randomUint16(uint16_t min, uint16_t max)
+{
+    // Create a random device to seed the generator
+    static std::random_device rd;
+
+    // Initialize a Mersenne Twister random number generator
+    static std::mt19937 gen(rd());
+
+    // Define the distribution range for uint16_t
+    static std::uniform_int_distribution<uint16_t> dist(min, max);
+
+    // Generate and return the random number
+    return dist(gen);
+}
+
+
+
+std::string roxal::demangle(const char* name)
 {
 
     int status = -4; // some arbitrary value to eliminate the compiler warning
@@ -131,7 +150,7 @@ std::string roxal::insertStringLinesAtInterval(const std::string& s, const std::
     return cs;
 }
 
-std::string roxal::replace(const std::string& str, const std::string& from, const std::string& to) 
+std::string roxal::replace(const std::string& str, const std::string& from, const std::string& to)
 {
     size_t start_pos = str.find(from);
     if(start_pos == std::string::npos)
@@ -140,4 +159,3 @@ std::string roxal::replace(const std::string& str, const std::string& from, cons
     ret.replace(start_pos, from.length(), to);
     return ret;
 }
-

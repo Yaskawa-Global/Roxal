@@ -21,12 +21,13 @@ using namespace roxal;
 std::string roxal::to_string(ValueType t)
 {
     switch (t) {
-    case ValueType::Nil: return "nil"; break; 
-    case ValueType::Bool: return "bool"; break; 
-    case ValueType::Byte: return "byte"; break;  
+    case ValueType::Nil: return "nil"; break;
+    case ValueType::Bool: return "bool"; break;
+    case ValueType::Byte: return "byte"; break;
     case ValueType::Int: return "int"; break;
     case ValueType::Real: return "real"; break;
     case ValueType::Decimal: return "decimal"; break;
+    case ValueType::Enum: return "enum"; break;
     case ValueType::String: return "string"; break;
     case ValueType::Range: return "range"; break;
     case ValueType::Type: return "type"; break;
@@ -48,10 +49,10 @@ std::string roxal::to_string(ValueType t)
 #if defined(NAN_TAGGING)
 
 
-Value::Value(Obj* o) 
-{ 
-    o->incRef(); 
-    val = SignBit | QNAN | uint64_t(uintptr_t(o)); 
+Value::Value(Obj* o)
+{
+    o->incRef();
+    val = SignBit | QNAN | uint64_t(uintptr_t(o));
 }
 
 
@@ -59,7 +60,7 @@ void Value::box() {
     if (isBoxed() || !isBoxable()) return;
     // allocate value on heap
     Obj* obj;
-    if (isBool()) 
+    if (isBool())
         obj = newObj<ObjPrimitive>(__func__,asBool());
     else if (isInt())
         obj = newObj<ObjPrimitive>(__func__,asInt());
@@ -120,7 +121,7 @@ bool Value::asBool(bool strict) const
     if (!isBoxed()) {
         return val == (QNAN | TagTrue);
     }
-    else {        
+    else {
         switch (asObj()->type) {
         case ObjType::Bool: return asObjPrimitive(*this)->as.boolean;
         default: ;
@@ -181,6 +182,7 @@ int32_t Value::asInt(bool strict) const
 
     if (!v->isObj()) {
         switch (v->type()) {
+        case ValueType::Enum: return int32_t(asEnum());
         case ValueType::Int: { uint64_t i {v->val & ~(QNAN | TypeTag)} ; return *reinterpret_cast<int32_t*>(&i); }
         case ValueType::Real: return int32_t(*reinterpret_cast<const double*>(&val));
         case ValueType::Bool: return (val == (QNAN | TagTrue)) ? 1 : 0;
@@ -207,9 +209,17 @@ int32_t Value::asInt(bool strict) const
 }
 
 
+int16_t Value::asEnum() const
+{
+    // TODO: handle boxed enum value
+    if (isEnum())
+        return int16_t(val & 0xffff);
+    return 0;
+}
+
 
 double Value::asReal(bool strict) const
-{ 
+{
     Value unboxed;
     Value const* v { this };
     if (isBoxed()) {
@@ -257,12 +267,12 @@ ValueType Value::asType(bool strict) const
 
 
 
-ValueType Value::type() const { 
-    return isNil() ? ValueType::Nil 
-                    : (isBool() ? ValueType::Bool 
-                                : (isReal() ? ValueType::Real 
+ValueType Value::type() const {
+    return isNil() ? ValueType::Nil
+                    : (isBool() ? ValueType::Bool
+                                : (isReal() ? ValueType::Real
                                             : (isObj() ? asObj()->valueType()
-                                                        : ValueType((val & TypeTag) >> TypeTagOffset) ) ) ); 
+                                                        : ValueType((val & TypeTag) >> TypeTagOffset) ) ) );
 }
 
 
@@ -276,6 +286,8 @@ std::string Value::typeName() const
         return "int";
     else if (isReal())
         return "real";
+    else if (isEnum())
+        return "enum";
     else if (isType())
         return "type";
 
@@ -300,10 +312,10 @@ std::string Value::typeName() const
 
 #else
 
-roxal::Value::Value(Obj* o) 
-    : _type(ValueType::Object) 
-{ 
-    as.obj=o; o->incRef(); 
+roxal::Value::Value(Obj* o)
+    : _type(ValueType::Object)
+{
+    as.obj=o; o->incRef();
 }
 
 
@@ -311,7 +323,7 @@ void Value::box() {
     if (isBoxed() || !isBoxable()) return;
     _type = ValueType(int(_type) & int(ValueType::Boxed)); // mark boxed
     // allocate value on heap
-    if (isBool()) 
+    if (isBool())
         as.obj = newObj<ObjPrimitive>(__func__,as.boolean);
     else if (isInt())
         as.obj = newObj<ObjPrimitive>(__func__,as.integer);
@@ -421,7 +433,7 @@ int32_t Value::asInt(bool strict) const
 
 
 double Value::asReal(bool strict) const
-{ 
+{
     Value unboxed;
     Value const* v { this };
     if (isBoxed()) {
@@ -493,7 +505,7 @@ bool Value::operator==(const Value& rhs) const
 {
     // TODO: handle unboxing
 
-    if (isNil()) 
+    if (isNil())
         return rhs.isNil();
     if (rhs.isNil())
         return isNil();
@@ -544,16 +556,17 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::Int: return intVal(0);
         case ValueType::Real: return realVal(0.0);
         case ValueType::Decimal: throw std::runtime_error("decimal unimplemented");
+        case ValueType::Enum: throw std::runtime_error("Can't create default enum value without type"); // shouldn't be called for this t
         case ValueType::Type: return typeVal(ValueType::Nil);
         case ValueType::String: return Value(stringVal(UnicodeString()));
         case ValueType::Range: return Value(rangeVal());
         case ValueType::List: return Value(listVal());
         case ValueType::Dict: return Value(dictVal());
+        case ValueType::Stream: return Value(streamVal(0.0,intVal(0))); // manually (or runtime?) clocked seq of 0s
         case ValueType::Vector:
         case ValueType::Matrix:
         case ValueType::Tensor:
         case ValueType::Orient:
-        case ValueType::Stream:
         case ValueType::Object:
         case ValueType::Actor:
         default:
@@ -578,13 +591,13 @@ Value roxal::toType(ValueType t, Value v, bool strict)
             return v;
         Value unboxedv { v };
         unboxedv.unbox();
-        return toType(t, unboxedv, strict); 
+        return toType(t, unboxedv, strict);
     }
 
     switch (t) {
         case ValueType::Real: return realVal(v.asReal(strict));
         case ValueType::Int: return intVal(v.asInt(strict));
-        case ValueType::String: {            
+        case ValueType::String: {
             // TODO: use alternate 'non-debug' string conversion only utilizing UnicodeString
             return Value(stringVal(toUnicodeString(toString(v))));
         } break;
@@ -595,7 +608,7 @@ Value roxal::toType(ValueType t, Value v, bool strict)
                 return objVal(rangeVal(v,v,intVal(1),true));
         } break;
         case ValueType::List: {
-            if ((v.type() == ValueType::Range) && !strict) 
+            if ((v.type() == ValueType::Range) && !strict)
                 return objVal(listVal(asRange(v)));
         } break;
         case ValueType::Dict: {
@@ -608,11 +621,12 @@ Value roxal::toType(ValueType t, Value v, bool strict)
 
             if (isObjectInstance(v) && !strict) {
                 ObjDict* dictValue = dictVal({});
-  
+
                 ObjectInstance* vObj = asObjectInstance(v);
                 ObjObjectType* vObjType = vObj->instanceType;
                 for(const auto& property : vObjType->properties) {
-                    auto propName { stringVal(std::get<0>(property.second)) };
+                    const auto& prop { property.second };
+                    auto propName { stringVal(prop.name) };
                     #ifdef DEBUG_BUILD
                     assert(vObj->properties.find(propName->hash) != vObj->properties.end());
                     #endif
@@ -643,7 +657,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
             throw std::runtime_error("stream(initial=0,freq=1) constructor requires 0,1 or 2 arguments");
         return stream;
     }
-    if (end - 1 == begin) 
+    if (end - 1 == begin)
         // pass non-stict as this is an explicit construction/conversion
         return toType(type, *begin, /*strict=*/false);
     throw std::runtime_error("type constructors with >1 arg unimplemented");
@@ -661,7 +675,7 @@ ValueType roxal::binaryOpType(Value l, Value r)
     else if (l.isReal() || r.isReal())
         resultType = ValueType::Real;
     else if (l.isInt() || r.isInt())
-        resultType = ValueType::Int;        
+        resultType = ValueType::Int;
     // TODO: ... byte, decimal
     return resultType;
 }
@@ -689,7 +703,7 @@ bool roxal::valuesEqual(Value a, Value b)
             case ValueType::Int: return a.asInt() == b.asInt();
             case ValueType::Real: return a.asReal() == b.asReal();
             default: throw std::runtime_error("unimplemented equality test for types "+a.typeName()+" and "+b.typeName());
-        }        
+        }
     }
     else {
         switch (a.type()) {
@@ -697,6 +711,8 @@ bool roxal::valuesEqual(Value a, Value b)
             case ValueType::Nil:  return true; // only single Nil, so must both be Nil
             case ValueType::Int:  return a.asInt() == b.asInt();
             case ValueType::Real: return a.asReal() == b.asReal();
+            // same type & label value:
+            case ValueType::Enum: return (a.enumTypeId() == b.enumTypeId()) && (a.asEnum() == b.asEnum());
             case ValueType::Object: return objsEqual(a,b);
             default: throw std::runtime_error("unimplemented equality test for types "+a.typeName()+" and "+b.typeName());
         }
@@ -709,7 +725,7 @@ Value roxal::negate(Value v)
 {
     if (!v.isNumber() && !v.isBool())
         throw std::invalid_argument("Operand must be a number or bool");
-    
+
     if (v.isInt())
         return intVal(-v.asInt());
     else if (v.isReal())
@@ -892,11 +908,25 @@ std::string roxal::toString(const Value& v)
         return format("%g", v.asReal());
     else if (v.isBool())
         return v.asBool() ? "true" : "false";
+    else if (v.isEnum()) {
+        // lookup the enum type
+        uint16_t enumTypeId = v.enumTypeId();
+        auto enumIt = ObjObjectType::enumTypes.find(enumTypeId);
+        if (enumIt == ObjObjectType::enumTypes.end())
+            throw std::runtime_error("unknown enum type id: "+std::to_string(enumTypeId)+" value is "+std::to_string(v.asEnum()));
+        ObjObjectType* enumTypeObj = enumIt->second;
+        for(const auto& enumHashLabelValue : enumTypeObj->enumLabelValues) {
+            const auto& labelValue {enumHashLabelValue.second };
+            if (labelValue.second.asEnum() == v.asEnum())
+                return toUTF8StdString(labelValue.first);
+        }
+        return ""; // throw? return default enum value?
+    }
     else if (v.isType())
         return to_string(v.asType());
     else if (v.isNil())
         return "nil";
-    else if (v.isObj()) 
+    else if (v.isObj())
         return objToString(v);
     throw std::runtime_error("unimplemented toString() for type:"+v.typeName());
 }
@@ -960,5 +990,3 @@ void Value::testPrimitiveValues()
     #undef bin64v
 }
 #endif
-
-

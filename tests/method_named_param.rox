@@ -1,4 +1,4 @@
-type object MyObj:
+type MyObj object:
   func method(a: int, b: int=2, c: int, d = 4) -> int:
     return a*b+c+d
 

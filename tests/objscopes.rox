@@ -6,15 +6,15 @@ func f():
 
     var glocal = 'gl'
 
-    type object Obj:
+    type Obj object:
 
       var prop :int = 1
 
       func getPropFunc():
 
-	var tp = this.prop
+        var tp = this.prop
 
-        func gpfunc():        
+        func gpfunc():
           return flocal+' '+tp
 
         return gpfunc

@@ -1,4 +1,4 @@
-type actor A:
+type A actor:
   proc f(p0, p1, p2=4):
     print('from actor, p0='+p0+' p1='+p1+' p2='+p2)
 

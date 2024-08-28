@@ -1,4 +1,4 @@
-type actor A:
+type A actor:
   func f():
     print('f id:'+_threadid())
     return true
