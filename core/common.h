@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <limits>
 
+
 // ICU
 #include <unicode/unistr.h>
 
@@ -51,6 +52,8 @@ inline std::string format(const std::string& fmt...)
 
 #undef _CRT_NO_VA_START_VALIDATION
 
+bool startsWith(const std::string& str, const std::string& prefix);
+bool startsWith(const icu::UnicodeString& str, const icu::UnicodeString& prefix);
 
 inline std::string toUTF8StdString(const icu::UnicodeString& us) {
     std::string s {};
@@ -90,5 +93,11 @@ std::string deleteStringLinesAtInterval(const std::string& s, size_t startLine, 
 
 //delete lines (not substrings)
 std::string insertStringLinesAtInterval(const std::string& s, const std::string& insertS, size_t startLine, size_t startPos);
+
+std::string join(const std::vector<std::string>& strings, const std::string& separator = ", ");
+
+icu::UnicodeString join(const std::vector<icu::UnicodeString>& strings, const std::string& separator = ",");
+
+
 
 }

@@ -56,8 +56,8 @@ public:
     VM(VM const&) = delete;
     void operator=(VM const&) = delete;
 
-    void setDissasemblyOutput(bool outputBytecodeDissasembly);
-
+    void setDisassemblyOutput(bool outputBytecodeDisassembly);
+    void appendModulePaths(const std::vector<std::string>& modulePaths);
 
     enum class InterpretResult {
         OK,
@@ -71,7 +71,7 @@ public:
 
     bool call(ObjClosure* closure, const CallSpec& callSpec);
     bool call(ValueType builtinType, const CallSpec& callSpec);
-    bool callValue(const Value& callee, const CallSpec& callSpec);   
+    bool callValue(const Value& callee, const CallSpec& callSpec);
     bool invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec);
     bool invoke(ObjString* name, const CallSpec& callSpec);
     bool indexValue(const Value& indexable, int subscriptCount);
@@ -84,7 +84,7 @@ public:
     void defineProperty(ObjString* name);
     void defineMethod(ObjString* name);
     void defineEnumLabel(ObjString* name);
-    void defineNative(const std::string& name, NativeFn function);
+    void defineNative(ObjModuleType* moduleType, const std::string& name, NativeFn function);
 
 
     const int MaxStack = 1024;
@@ -98,7 +98,7 @@ public:
 
     class Thread : public std::enable_shared_from_this<Thread> {
     public:
-        Thread() 
+        Thread()
           : threadSleep(false), osthread(nullptr), state(State::Constructed) {
             thisid = nextId.fetch_add(1);
             actor=false;
@@ -167,30 +167,39 @@ protected:
 
     std::pair<InterpretResult,Value> execute();
 
-    bool outputBytecodeDissasembly;
+    bool outputBytecodeDisassembly;
     bool lineMode;
     std::istream* lineStream;
 
+    std::vector<std::string> modulePaths {};
 
     atomic_unordered_map<uint64_t, ptr<Thread>> threads;
 
 
+    ObjModuleType::VariablesMap& moduleVars() {
+        #ifdef DEBUG_BUILD
+        assert(thread != nullptr);
+        assert(!thread->frames.empty());
+        assert(thread->frames.back().closure != nullptr);
+        assert(thread->frames.back().closure->function != nullptr);
+        assert(isModuleType(thread->frames.back().closure->function->moduleType));
+        #endif
+        auto currentFrame { thread->frames.back() };
 
-    // FIXME: use something other than UnicodeString (ObjString* or Value??)
-    // map from name ObjString.hash to <name, value> pair
-    atomic_unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> globals;
+        return asModuleType(currentFrame.closure->function->moduleType)->vars;
+    }
 
     std::list<ObjUpvalue*> openUpvalues; // FIXME: move to Thread, figure out if cross-thread closures are an issue
 
     ObjString* initString;
 
-    // TODO: perhaps implement inheretance first, then pre-define
+    // TODO: perhaps implement inheritance first, then pre-define
     //  object type as root of class heirarchy and add clone() and other
     //  builtins to that
     // Builtin methods
     //  type name -> method-name,method-closure
     // Since methods are added to types as they're defined at runtime,
-    //  we need to 
+    //  we need to
     //std::map<icu::UnicodeString, std::pair<icu::UnicodeString, Value>> builtinMethods;
 
     void resetStack();
@@ -203,7 +212,7 @@ protected:
 
 
     // Builtin functions
-    void defineBuiltinFunctions();
+    void defineBuiltinFunctions(ObjModuleType* moduleType);
 
     Value print_builtin(int argCount, Value* args);
     Value len_builtin(int argCount, Value* args);
@@ -217,7 +226,7 @@ protected:
 
 
     // Native functions
-    void defineNativeFunctions();
+    void defineNativeFunctions(ObjModuleType* moduleType);
 
     Value clock_native(int argCount, Value* args);
     Value usSleep_native(int argCount, Value* args);

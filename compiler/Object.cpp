@@ -685,6 +685,11 @@ ObjFunction::ObjFunction(const icu::UnicodeString& packageName, const icu::Unico
 }
 
 
+ObjFunction::~ObjFunction()
+{
+}
+
+
 
 
 
@@ -727,6 +732,21 @@ ObjObjectType* roxal::objectTypeVal(const icu::UnicodeString& typeName, bool isA
 {
     return newObj<ObjObjectType>(__func__, typeName, isActor, isInterface, isEnumeration);
 }
+
+
+
+ObjModuleType::ObjModuleType(const icu::UnicodeString& typeName)
+    : name(typeName)
+{
+    typeValue = ValueType::Module;
+}
+
+ObjModuleType* roxal::moduleTypeVal(const icu::UnicodeString& typeName)
+{
+    return newObj<ObjModuleType>(__func__, typeName);
+}
+
+
 
 
 ObjectInstance::ObjectInstance(ObjObjectType* objectType)

@@ -129,11 +129,11 @@ Chunk::size_type Chunk::constantInstruction(const std::string& name, size_type o
 {
     uint8_t constant = code.at(offset+1);
     #ifdef DEBUG_BUILD
-    if (constant >= constants.size()) 
+    if (constant >= constants.size())
         throw std::runtime_error("Constant instruction at "+std::to_string(offset)+" references constant "+std::to_string(constant)+" but constant table size is "+std::to_string(constants.size()));
     #endif
     auto value = constants.at(constant);
-    std::cout << format("%-16s %4d '", name.c_str(), constant) 
+    std::cout << format("%-16s %4d '", name.c_str(), constant)
               << toString(value)
               << "':" << value.typeName() << std::endl;
     return offset+2;
@@ -143,7 +143,7 @@ Chunk::size_type Chunk::constantInstruction(const std::string& name, size_type o
 Chunk::size_type Chunk::constantInstruction2(const std::string& name, size_type offset) const
 {
     uint16_t constant = (code.at(offset+1) << 8) + code.at(offset+2); // LSByte last
-    std::cout << format("%-16s %4d '", name.c_str(), constant) 
+    std::cout << format("%-16s %4d '", name.c_str(), constant)
               << toString(constants.at(constant))
               << "'" << std::endl;
     return offset+3;
@@ -230,7 +230,7 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return jumpInstruction("LOOP", -1, offset);
         case asByte(OpCode::Call): {
             byteInstruction("CALL", offset);
-            // compute num of bytes to skip over CallSpec            
+            // compute num of bytes to skip over CallSpec
             auto ip = code.begin()+offset+1;
             CallSpec callSpec{ip};
             if (!callSpec.allPositional) {
@@ -267,7 +267,7 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
 
             return offset;
         }
-        case asByte(OpCode::CloseUpvalue): 
+        case asByte(OpCode::CloseUpvalue):
             return simpleInstruction("CLOSE_UPVALUE", offset);
         case asByte(OpCode::Return):
             return simpleInstruction("RETURN", offset);
@@ -289,22 +289,22 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("ENUM_LABEL", offset);
         case asByte(OpCode::Extend):
             return simpleInstruction("EXTEND", offset);
-        case asByte(OpCode::DefineGlobal):
-            return constantInstruction("DEFINE_GLOBAL", offset);
-        case asByte(OpCode::DefineGlobal2):
-            return constantInstruction2("DEFINE_GLOBAL2", offset);
-        case asByte(OpCode::GetGlobal):
-            return constantInstruction("GET_GLOBAL", offset);
-        case asByte(OpCode::GetGlobal2):
-            return constantInstruction2("GET_GLOBAL2", offset);
-        case asByte(OpCode::SetGlobal):
-            return constantInstruction("SET_GLOBAL", offset);
-        case asByte(OpCode::SetGlobal2):
-            return constantInstruction2("SET_GLOBAL2", offset);
-        case asByte(OpCode::SetNewGlobal):
-            return constantInstruction("SET_NEW_GLOBAL", offset);
-        case asByte(OpCode::SetNewGlobal2):
-            return constantInstruction2("SET_NEW_GLOBAL2", offset);
+        case asByte(OpCode::DefineModuleVar):
+            return constantInstruction("DEFINE_MODULE_VAR", offset);
+        case asByte(OpCode::DefineModuleVar2):
+            return constantInstruction2("DEFINE_MODULE_VAR2", offset);
+        case asByte(OpCode::GetModuleVar):
+            return constantInstruction("GET_MODULE_VAR", offset);
+        case asByte(OpCode::GetModuleVar2):
+            return constantInstruction2("GET_MODULE_VAR2", offset);
+        case asByte(OpCode::SetModuleVar):
+            return constantInstruction("SET_MODULE_VAR", offset);
+        case asByte(OpCode::SetModuleVar2):
+            return constantInstruction2("SET_MODULE_VAR2", offset);
+        case asByte(OpCode::SetNewModuleVar):
+            return constantInstruction("SET_NEW_MODULE_VAR", offset);
+        case asByte(OpCode::SetNewModuleVar2):
+            return constantInstruction2("SET_NEW_MODULE_VAR2", offset);
         case asByte(OpCode::GetLocal):
             return byteInstruction("GET_LOCAL", offset);
         case asByte(OpCode::GetLocal2):
@@ -399,7 +399,7 @@ std::vector<uint8_t> CallSpec::toBytes() const
         assert(argCount == args.size());
     #endif
 
-    if (allPositional) { 
+    if (allPositional) {
         // common (optimized) case of all-positional args
         if (argCount>127)
             throw std::runtime_error("Maximum of 127 call arguments exceeded");
@@ -593,7 +593,7 @@ void CallSpec::testParamPositions()
     pp = callSpec.paramPositions(type);
     assert((pp == std::vector<int8_t>{0,2,1,3,-1,-1}));
 
-    // f(a0,p1=,p2,p3=) - in-order, p4,p5 omitted, p2 unnamed 
+    // f(a0,p1=,p2,p3=) - in-order, p4,p5 omitted, p2 unnamed
     callSpec.args[1] = {false,argNameHash("p1")};
     callSpec.args[2] = {true,0};
     callSpec.args[3] = {false,argNameHash("p3")};

@@ -32,6 +32,7 @@ enum class ValueType {
     Stream,
     Object,
     Actor,
+    Module,
     Boxed = 0xff // not used with NAN tagging
 };
 

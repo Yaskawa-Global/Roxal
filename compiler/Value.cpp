@@ -40,6 +40,7 @@ std::string roxal::to_string(ValueType t)
     case ValueType::Stream: return "stream"; break;
     case ValueType::Object: return "object"; break;
     case ValueType::Actor: return "actor"; break;
+    case ValueType::Module: return "module"; break;
     default:
         throw std::runtime_error("Unhandled type for to_string "+std::to_string(int(t)));
     }

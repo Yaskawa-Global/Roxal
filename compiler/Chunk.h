@@ -12,7 +12,7 @@ namespace roxal {
 enum class OpCode {
     Nop,
     Constant,
-    Constant2, 
+    Constant2,
     ConstNil,
     ConstTrue,
     ConstFalse,
@@ -52,14 +52,14 @@ enum class OpCode {
     Method,
     EnumLabel,
     Extend,
-    DefineGlobal,
-    DefineGlobal2,
-    GetGlobal,
-    SetGlobal,
-    GetGlobal2,
-    SetGlobal2,
-    SetNewGlobal,
-    SetNewGlobal2,
+    DefineModuleVar,
+    DefineModuleVar2,
+    GetModuleVar,
+    SetModuleVar,
+    GetModuleVar2,
+    SetModuleVar2,
+    SetNewModuleVar,
+    SetNewModuleVar2,
     GetUpvalue,
     SetUpvalue,
     GetUpvalue2,
@@ -82,7 +82,7 @@ inline constexpr uint8_t asByte(OpCode op) { return uint8_t(op); }
 
 
 
-class Chunk 
+class Chunk
 {
 public:
     Chunk(const icu::UnicodeString& packageName_, const icu::UnicodeString& moduleName_);
@@ -166,7 +166,7 @@ struct CallSpec {
     bool namedArgs() const; // any named args?
 
     // given the type of the callee (e.g. for func this specifies the parameter name/order)
-    //  for this caller CallSpec, return vector in param order of arg positions (or -1 
+    //  for this caller CallSpec, return vector in param order of arg positions (or -1
     //   if arg value for param not supplied)
     //  (e.g. is [0]=3 -> first callee param is 4th arg pushed onto stack by caller)
     // if throwOnMissing is true and an argument is not supplied and not defaulted by the callee,

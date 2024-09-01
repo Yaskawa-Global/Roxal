@@ -389,11 +389,12 @@ enum class FunctionType {
 
 std::string toString(FunctionType ft);
 
+struct ObjModuleType; // forward
 
 struct ObjFunction : public Obj
 {
     ObjFunction(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName);
-    virtual ~ObjFunction() {}
+    virtual ~ObjFunction();
 
     UnicodeString name;
     std::optional<ptr<roxal::type::Type>> funcType;
@@ -406,6 +407,8 @@ struct ObjFunction : public Obj
     //  this is map from param name UnicodeString::hashCode() -> ObjFunction
     //  (where ObjFunction is a function that takes no params and returns the default value)
     std::map<int32_t, ObjFunction*> paramDefaultFunc;
+
+    Value moduleType; // ObjModuleType
 };
 
 inline bool isFunction(const Value& v) { return isObjType(v, ObjType::Function); }
@@ -587,6 +590,7 @@ std::string objTypeSpecToString(const ObjTypeSpec* ots);
 
 //
 // object|actor|interface|enum type
+// TODO: sperate enum out into its own ObjTypeSpec subclass
 
 struct ObjObjectType : public ObjTypeSpec
 {
@@ -631,6 +635,35 @@ inline ObjObjectType* asObjectType(const Value& v) { return static_cast<ObjObjec
 inline bool isEnumType(const Value& v) { return isObjType(v, ObjType::Type) && asTypeSpec(v)->typeValue == ValueType::Enum; }
 
 ObjObjectType* objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface = false, bool isEnumeration = false);
+
+
+struct ObjPackageType : public ObjTypeSpec
+{
+    // TODO
+};
+
+struct ObjModuleType : public ObjTypeSpec
+{
+    ObjModuleType(const icu::UnicodeString& typeName);
+
+    virtual ~ObjModuleType() {}
+
+    icu::UnicodeString name;
+
+    // variables declared at runtime via VM OpCode::DefineModuleVar
+    // map from name ObjString.hash to <name, value> pair
+    // FIXME: use something other than UnicodeString (ObjString* or Value??)
+    typedef atomic_unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> VariablesMap;
+    VariablesMap vars;
+};
+
+inline bool isModuleType(const Value& v) { return isObjType(v, ObjType::Type) && (asTypeSpec(v)->typeValue == ValueType::Module); }
+inline ObjModuleType* asModuleType(const Value& v) { return static_cast<ObjModuleType*>(v.asObj()); }
+
+ObjModuleType* moduleTypeVal(const icu::UnicodeString& typeName);
+
+
+
 
 
 //

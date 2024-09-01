@@ -21,8 +21,6 @@ VM::VM()
     : lineMode(false)
 {
     thread = nullptr;
-    defineBuiltinFunctions();
-    defineNativeFunctions();
     initString = stringVal(UnicodeString("init"));
     initString->incRef();
 
@@ -36,7 +34,7 @@ VM::VM()
 
 VM::~VM()
 {
-    globals.clear();
+    //globals.clear();
 
     initString->decRef();
 
@@ -48,9 +46,19 @@ VM::~VM()
 }
 
 
-void VM::setDissasemblyOutput(bool outputBytecodeDissasembly)
+void VM::setDisassemblyOutput(bool outputBytecodeDisassembly)
 {
-    this->outputBytecodeDissasembly = outputBytecodeDissasembly;
+    this->outputBytecodeDisassembly = outputBytecodeDisassembly;
+}
+
+void VM::appendModulePaths(const std::vector<std::string>& modulePaths)
+{
+    // insert into modulePaths, except if already present
+
+    for (const std::string& path : modulePaths) {
+        if (std::find(this->modulePaths.begin(), this->modulePaths.end(), path) == this->modulePaths.end())
+            this->modulePaths.push_back(path);
+    }
 }
 
 
@@ -62,7 +70,8 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
 
     try {
         RoxalCompiler compiler {};
-        compiler.setOutputBytecodeDissasembly(outputBytecodeDissasembly);
+        compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
+        compiler.setModulePaths(modulePaths);
 
         function = compiler.compile(source, name);
 
@@ -73,11 +82,21 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
     if (function == nullptr)
         return InterpretResult::CompileError;
 
+
+    // TODO: later, when these are moved into a sys or similar module, import their symbols into
+    //  this module (and move these calls to define the sys module itself)
+    //  see also OpCode::GetProp
+    assert(!function->moduleType.isNil());
+    defineBuiltinFunctions(asModuleType(function->moduleType));
+    defineNativeFunctions(asModuleType(function->moduleType));
+
     ObjClosure* closure = closureVal(function);
     Value closureValue { objVal(closure) };
 
     auto firstThread = std::make_shared<Thread>();
     threads.store(firstThread->id(), firstThread);
+
+    // go
     firstThread->spawn(closureValue);
 
     // join all threads
@@ -112,7 +131,7 @@ VM::InterpretResult VM::interpretLine(std::istream& linestream)
     ObjFunction* function { nullptr };
 
     static RoxalCompiler compiler {};
-    compiler.setOutputBytecodeDissasembly(outputBytecodeDissasembly);
+    compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
 
     try {
         function = compiler.compile(linestream, "cli");
@@ -1141,11 +1160,11 @@ void VM::defineEnumLabel(ObjString* name)
 
 
 
-void VM::defineNative(const std::string& name, NativeFn function)
+void VM::defineNative(ObjModuleType* moduleType, const std::string& name, NativeFn function)
 {
     UnicodeString uname { toUnicodeString(name) };
     Value funcVal { objVal(nativeVal(function)) };
-    globals.store(uname.hashCode(), std::make_pair(uname,funcVal));
+    moduleType->vars.store(uname.hashCode(), std::make_pair(uname,funcVal));
 }
 
 
@@ -1351,6 +1370,28 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
                     runtimeError("Undefined enum label '"+toUTF8StdString(name->s)+"' for enum type '"+toUTF8StdString(enumObjType->name)+"'.");
                     return errorReturn;
+                }
+                else if (isModuleType(inst)) {
+                    auto moduleType = asModuleType(inst);
+
+                    // no effect if already defined - see comments above
+                    //  TODO: for truly global built-ins, probably better to reintroduce globals map and
+                    //  have ObjModuleType have a lookup for modulevars that falls-back to looking in the globals
+                    defineBuiltinFunctions(moduleType);
+                    defineNativeFunctions(moduleType);
+
+                    ObjString* name = readString();
+
+                    if (moduleType->vars.containsKey(name->hash)) {
+                        Value value = moduleType->vars.at(name->hash).second;
+                        pop();
+                        push(value);
+                        break;
+                    }
+                    else {
+                        runtimeError("Undefined variable '"+name->toStdString()+"' in module "+toUTF8StdString(moduleType->name)+".");
+                        return errorReturn;
+                    }
                 }
 
                 runtimeError("Only object and actor instances have methods and only objects instances have properties.");
@@ -1759,20 +1800,21 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::DefineGlobal): {
+            case asByte(OpCode::DefineModuleVar): {
                 ObjString* name = readString();
-                globals.store(name->hash, std::make_pair(name->s,pop()));
+                moduleVars().store(name->hash, std::make_pair(name->s,pop()));
                 break;
             }
-            case asByte(OpCode::DefineGlobal2): {
+            case asByte(OpCode::DefineModuleVar2): {
                 ObjString* name = readString2();
-                globals.store(name->hash, std::make_pair(name->s,pop()));
+                moduleVars().store(name->hash, std::make_pair(name->s,pop()));
                 break;
             }
-            case asByte(OpCode::GetGlobal): {
+            case asByte(OpCode::GetModuleVar): {
                 ObjString* name = readString();
-                if (globals.containsKey(name->hash)) {
-                    Value value = globals.at(name->hash).second;
+                auto& vars { moduleVars() };
+                if (vars.containsKey(name->hash)) {
+                    Value value = vars.at(name->hash).second;
                     push(value);
                 }
                 else {
@@ -1781,10 +1823,11 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::GetGlobal2): {
+            case asByte(OpCode::GetModuleVar2): {
                 ObjString* name = readString2();
-                if (globals.containsKey(name->hash)) {
-                    Value value = globals.at(name->hash).second;
+                const auto& vars { moduleVars() };
+                if (vars.containsKey(name->hash)) {
+                    Value value = vars.at(name->hash).second;
                     push(value);
                 }
                 else {
@@ -1793,11 +1836,12 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::SetGlobal): {
+            case asByte(OpCode::SetModuleVar): {
                 ObjString* name = readString();
-                if (globals.containsKey(name->hash)) { // found
+                auto& vars { moduleVars() };
+                if (vars.containsKey(name->hash)) { // found
                     // set new value, but leave it on stack (as assignment is an expression)
-                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
+                    vars.store(name->hash, std::make_pair(name->s,peek(0)));
                 }
                 else {
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
@@ -1805,11 +1849,12 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::SetGlobal2): {
+            case asByte(OpCode::SetModuleVar2): {
                 ObjString* name = readString2();
-                if (globals.containsKey(name->hash)) { // found
+                auto& vars { moduleVars() };
+                if (vars.containsKey(name->hash)) { // found
                     // set new value, but leave it on stack (as assignment is an expression)
-                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
+                    vars.store(name->hash, std::make_pair(name->s,peek(0)));
                 }
                 else {
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
@@ -1817,29 +1862,31 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::SetNewGlobal): {
+            case asByte(OpCode::SetNewModuleVar): {
                 ObjString* name = readString();
-                if (globals.containsKey(name->hash)) { // found
+                auto& vars { moduleVars() };
+                if (vars.containsKey(name->hash)) { // found
                     // set new value, but leave it on stack (as assignment is an expression)
-                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
+                    vars.store(name->hash, std::make_pair(name->s,peek(0)));
                 }
                 else {
                     // only automatic declaration of globals on assignment when
                     //   at global/module level scope
-                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
+                    vars.store(name->hash, std::make_pair(name->s,peek(0)));
                 }
                 break;
             }
-            case asByte(OpCode::SetNewGlobal2): {
+            case asByte(OpCode::SetNewModuleVar2): {
                 ObjString* name = readString2();
-                if (globals.containsKey(name->hash)) { // found
+                auto& vars { moduleVars() };
+                if (vars.containsKey(name->hash)) { // found
                     // set new value, but leave it on stack (as assignment is an expression)
-                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
+                    vars.store(name->hash, std::make_pair(name->s,peek(0)));
                 }
                 else {
-                    // only automatic declaration of globals on assignment when
-                    //   at global/module level scope
-                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
+                    // only automatic declaration of module vars on assignment when
+                    //   at module level scope
+                    vars.store(name->hash, std::make_pair(name->s,peek(0)));
                 }
                 break;
             }
@@ -2079,16 +2126,19 @@ void VM::runtimeError(const std::string& format, ...)
 //
 // builtins
 
-void VM::defineBuiltinFunctions()
+void VM::defineBuiltinFunctions(ObjModuleType* moduleType)
 {
-    defineNative("print", &VM::print_builtin);
-    defineNative("len", &VM::len_builtin);
-    defineNative("clone", &VM::clone_builtin);
-    defineNative("sleep", &VM::sleep_builtin);
-    defineNative("fork", &VM::fork_builtin);
-    defineNative("join", &VM::join_builtin);
-    defineNative("_threadid", &VM::threadid_builtin);
-    defineNative("_wait", &VM::wait_builtin);
+    if (moduleType->vars.containsKey(toUnicodeString("print").hashCode()))
+        return; // already defined
+
+    defineNative(moduleType, "print", &VM::print_builtin);
+    defineNative(moduleType, "len", &VM::len_builtin);
+    defineNative(moduleType, "clone", &VM::clone_builtin);
+    defineNative(moduleType, "sleep", &VM::sleep_builtin);
+    defineNative(moduleType, "fork", &VM::fork_builtin);
+    defineNative(moduleType, "join", &VM::join_builtin);
+    defineNative(moduleType, "_threadid", &VM::threadid_builtin);
+    defineNative(moduleType, "_wait", &VM::wait_builtin);
 }
 
 
@@ -2238,14 +2288,17 @@ Value VM::wait_builtin(int argCount, Value* args)
 //
 // native
 
-void VM::defineNativeFunctions()
+void VM::defineNativeFunctions(ObjModuleType* moduleType)
 {
-    defineNative("_clock", &VM::clock_native);
-    defineNative("_ussleep", &VM::usSleep_native);
-    defineNative("_mssleep", &VM::msSleep_native);
-    //defineNative("_sleep", &VM::sleep_native);
-    defineNative("sin", &VM::sin_native);
-    defineNative("cos", &VM::cos_native);
+    if (moduleType->vars.containsKey(toUnicodeString("_clock").hashCode()))
+        return; // already defined
+
+    defineNative(moduleType, "_clock", &VM::clock_native);
+    defineNative(moduleType, "_ussleep", &VM::usSleep_native);
+    defineNative(moduleType, "_mssleep", &VM::msSleep_native);
+    //defineNative(moduleType, "_sleep", &VM::sleep_native);
+    defineNative(moduleType, "sin", &VM::sin_native);
+    defineNative(moduleType, "cos", &VM::cos_native);
 }
 
 

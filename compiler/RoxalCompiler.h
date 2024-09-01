@@ -11,6 +11,7 @@
 namespace roxal {
 
 
+
 class RoxalCompiler : public ast::ASTVisitor
 {
 public:
@@ -18,7 +19,8 @@ public:
 
     ObjFunction* compile(std::istream& source, const std::string& name);
 
-    void setOutputBytecodeDissasembly(bool outputBytecodeDissasembly);
+    void setOutputBytecodeDisassembly(bool outputBytecodeDisassembly);
+    void setModulePaths(const std::vector<std::string>& modulePaths);
 
     virtual TraversalOrder traversalOrder() const;
 
@@ -50,10 +52,23 @@ public:
     virtual std::any visit(ptr<ast::Num> ast);
     virtual std::any visit(ptr<ast::List> ast);
     virtual std::any visit(ptr<ast::Dict> ast);
-    
-   
+
+    struct ModuleInfo {
+        std::string modulePathRoot; // which module search path root is the module in? (from moduleRootPaths)
+        std::string packagePath;    // package path of the module
+        std::string name;           // name of the module
+        bool isPackage;
+        std::string filename;       // filename of the module (e.g. with .rox extension)
+    };
+
 protected:
-    bool outputBytecodeDissasembly;
+    bool outputBytecodeDisassembly;
+    std::vector<std::string> modulePaths;
+
+
+    // given the components of an import, such as "package.subpackage.module", return
+    //  the module path root that contains it, the relative path to the package and the module filename
+    ModuleInfo findImport(const std::vector<icu::UnicodeString>& components) const;
 
     struct Local {
         Local(const icu::UnicodeString& _name, int scopeDepth)
@@ -64,7 +79,7 @@ protected:
     };
 
     struct Upvalue {
-        Upvalue(uint8_t i, bool islocal) 
+        Upvalue(uint8_t i, bool islocal)
             : index(i), isLocal(islocal) {}
         uint8_t index;
         bool isLocal;
@@ -83,12 +98,12 @@ protected:
         };
 
         LexicalScope(ScopeType st, const icu::UnicodeString& n) : scopeType(st), name(n) {}
-        virtual ~LexicalScope() {} 
+        virtual ~LexicalScope() {}
 
         ScopeType scopeType;
         icu::UnicodeString name;
 
-        bool strict; 
+        bool strict;
 
         bool isGlobal() const { return scopeType==ScopeType::Global; }
         bool isModule() const { return scopeType==ScopeType::Module; }
@@ -109,16 +124,13 @@ protected:
     LexicalScopes lexicalScopes;
     void outputScopes();
 
-    void enterGlobalScope();
-    void exitGlobalScope();
-
     void enterModuleScope(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName);
     void exitModuleScope();
 
     void enterTypeScope(const icu::UnicodeString& typeName);
     void exitTypeScope();
 
-    void enterFuncScope(const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> type);
+    void enterFuncScope(Value moduleType, const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> type);
     void exitFuncScope();
 
     void enterLocalScope();
@@ -140,23 +152,25 @@ protected:
     Scope typeScope();
     Scope enclosingTypeScope(Scope s);
 
+    bool inModuleScope();
     Scope moduleScope();
+    Scope enclosingModuleScope(Scope s);
 
 
     // stack new states when we enter new functions to compile
     struct FunctionScope : public LexicalScope
     {
         FunctionScope(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName,
-                      const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> t) 
+                      const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> t)
             : LexicalScope(ScopeType::Func, funcName), scopeDepth(0), functionType(funcType), type(t)
         {
             strict = true;
             function = functionVal(packageName, moduleName);
             function->name = funcName;
             function->funcType = type; // store type for runtime
-            UnicodeString localName { (funcType==FunctionType::Method || funcType==FunctionType::Initializer) ? 
+            UnicodeString localName { (funcType==FunctionType::Method || funcType==FunctionType::Initializer) ?
                                         "this" : "" };
-            locals.push_back(Local(localName,0)); 
+            locals.push_back(Local(localName,0));
         }
 
         std::vector<Local> locals;
@@ -173,7 +187,7 @@ protected:
 
     ptr<FunctionScope> asFuncScope(Scope s) const { return std::dynamic_pointer_cast<FunctionScope>(*s); }
 
-    struct TypeScope : public LexicalScope 
+    struct TypeScope : public LexicalScope
     {
         TypeScope(const icu::UnicodeString& typeName)
           : LexicalScope(ScopeType::Type, typeName), hasSuperType(false) {}
@@ -193,13 +207,29 @@ protected:
             //this->functionType = FunctionType::Module;
             scopeType = ScopeType::Module;
             type->func = type::Type::FuncType();
+
+            // while modules are lexically static, variables are declared in them at runtime
+            // create a new ObjModuleType in which module vars are held
+            moduleType = Value(moduleTypeVal(moduleName_));
+
+            // since this scope only persists during compilation, store the moduleType
+            //  in the function for runtime access
+            function->moduleType = moduleType;
         }
+        virtual ~ModuleScope() {}
 
         icu::UnicodeString packageName;
         icu::UnicodeString moduleName;
+        Value moduleType;  // ObjModuleType
     };
 
     ptr<ModuleScope> asModuleScope(Scope s) const { return std::dynamic_pointer_cast<ModuleScope>(*s); }
+
+
+    //
+    // Global modules
+
+    std::vector<std::string> moduleRootPaths {};  // filesystem paths of top-level for package directories & module files
 
 
 
@@ -249,6 +279,9 @@ protected:
     bool namedVariable(const icu::UnicodeString& ident, bool assign=false);
 
 };
+
+
+std::ostream& operator<<(std::ostream& out, const RoxalCompiler::ModuleInfo& mi);
 
 
 }

@@ -114,7 +114,7 @@ suite
 
 type_decl
  : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE | ENUM)
-    // only enum can extend bool, byte or int
+    // only enum can extend byte or int
     (EXTENDS (IDENTIFIER | BYTE | INT))? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)?
     (   (':' NEWLINE INDENT (property|method)* DEDENT)
       // for enums, allow mixture of comma & line seperated labels
