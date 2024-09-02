@@ -370,9 +370,32 @@ std::any ASTGenerator::visitImport_stmt(RoxalParser::Import_stmtContext *context
         import->packages.push_back( component );
     }
 
+    if (context->STAR())
+        import->symbols.push_back("*");
+    else if (context->identifier_list()) {
+        auto symbols = anyas<std::vector<UnicodeString>>(visitIdentifier_list(context->identifier_list()));
+        import->symbols = symbols;
+    }
+
     return typeValue(import);
     visitEnd();
 }
+
+
+std::any ASTGenerator::visitIdentifier_list(RoxalParser::Identifier_listContext *context)
+{
+    visitStart();
+
+    std::vector<UnicodeString> symbols {};
+    for(auto i=0; i<context->IDENTIFIER().size(); i++) {
+        auto component { UnicodeString::fromUTF8(context->IDENTIFIER().at(i)->getText()) };
+        symbols.push_back(component);
+    }
+
+    return symbols;
+    visitEnd();
+}
+
 
 
 

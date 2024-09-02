@@ -1,0 +1,5 @@
+import importmodule2.*
+m2f()
+print(a)
+
+

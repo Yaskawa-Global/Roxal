@@ -1,6 +1,9 @@
 #pragma once
 #include <atomic>
 #include <optional>
+#include <unordered_map>
+#include <functional>
+
 #include <core/common.h>
 
 namespace roxal {
@@ -454,6 +457,157 @@ Value less(Value l, Value r);
 std::string toString(const Value& v);
 
 std::ostream& operator<<(std::ostream& out, const Value& v);
+
+
+
+
+// map of variables to values
+//  (use for each mnodule's variables; also maintains builtin globals)
+//  (all inline for performance)
+class VariablesMap
+{
+public:
+    VariablesMap() {}
+
+    typedef std::pair<icu::UnicodeString, Value> NameValue;
+
+    // module or global exists?
+    bool exists(int32_t nameHash) const
+    {
+        {
+            std::lock_guard<std::mutex> lock(varsLock);
+            auto it = vars.find(nameHash);
+            if (it != vars.end())
+                return true;
+        }
+        {
+            std::lock_guard<std::mutex> lock(globalsLock);
+            auto it = globals.find(nameHash);
+            if (it != vars.end())
+                return true;
+        }
+        return false;
+    }
+
+    // module or global exists?
+    bool exists(const icu::UnicodeString& name) const
+      { return exists(name.hashCode()); }
+
+    // global only exists?
+    bool existsGlobal(int32_t nameHash) const {
+        std::lock_guard<std::mutex> lock(globalsLock);
+        auto it = globals.find(nameHash);
+        return (it != vars.end());
+    }
+
+    bool existsGlobal(const icu::UnicodeString& name) const
+      { return existsGlobal(name.hashCode()); }
+
+
+    // return either module or global var, or nothing if not found
+    std::optional<Value> load(int32_t nameHash) const
+    {
+        {
+            std::lock_guard<std::mutex> lock(varsLock);
+
+            auto it = vars.find(nameHash);
+            if (it != vars.end())
+                return it->second.second;
+        }
+
+        // try globals
+        {
+            std::lock_guard<std::mutex> lock(globalsLock);
+
+            auto it = globals.find(nameHash);
+            if (it != vars.end())
+                return it->second.second;
+        }
+        return {};
+    }
+
+    // return either module or global var, or nothing if not found
+    std::optional<Value> load(const icu::UnicodeString& name) const
+      { return load(name.hashCode()); }
+
+
+    // store value as var
+    //  (module vars only, can't update global builtins)
+    // return: was stored (e.g. if exists and overwrite=false, returns false)
+    bool store(int32_t nameHash, const icu::UnicodeString& name, const Value& value, bool overwrite=false)
+    {
+        std::lock_guard<std::mutex> lock(varsLock);
+        if (overwrite)
+            vars.insert_or_assign(nameHash, std::make_pair(name,value));
+        else {
+            auto it = vars.find(nameHash);
+            if (it != vars.end())
+                return false;
+            vars.insert({nameHash, std::make_pair(name,value)});
+        }
+        return true;
+    }
+
+    bool store(const icu::UnicodeString& name, const Value& value, bool overwrite=false)
+    { return store(name.hashCode(), name, value, overwrite); }
+
+    bool store(const NameValue& nameValue, bool overwrite=false)
+    { return store(nameValue.first.hashCode(), nameValue.first, nameValue.second, overwrite); }
+
+    // only store if module var already exists
+    // returns if stored (i.e. exists).  globals not considered
+    bool storeIfExists(int32_t nameHash, const icu::UnicodeString& name, const Value& value)
+    {
+        std::lock_guard<std::mutex> lock(varsLock);
+        auto it = vars.find(nameHash);
+        if (it == vars.end())
+            return false;
+        it->second.second = value;
+        return true;
+    }
+
+
+    // store global var value (will overwrite, module vars not considered)
+    void storeGlobal(const icu::UnicodeString& name, const Value& value)
+    {
+        std::lock_guard<std::mutex> lock(globalsLock);
+        globals.insert_or_assign(name.hashCode(), std::make_pair(name,value));
+    }
+
+    // iterate over each module var and call f (with const).  globals not considered.
+    void forEach(std::function<void(const NameValue&)> f)
+    {
+        std::lock_guard<std::mutex> lock(varsLock);
+        for(const auto& entry : vars) {
+            try {
+                f(entry.second);
+            }
+            catch (...) {}
+        }
+    }
+
+    // list of module variable names (globals not considered)
+    std::vector<icu::UnicodeString> variableNames() const
+    {
+        std::lock_guard<std::mutex> lock(varsLock);
+        std::vector<icu::UnicodeString> keys;
+        for(const auto& entry : vars)
+            keys.push_back(entry.second.first);
+        return keys;
+    }
+
+protected:
+    // map from name ObjString.hash to <name, value> pair
+    // TODO: use something other than UnicodeString?? (ObjString* or Value??)
+    typedef std::unordered_map<int32_t, NameValue> VarsMap;
+
+    mutable std::mutex varsLock;
+    VarsMap vars;
+
+    static std::mutex globalsLock;
+    static VarsMap globals;
+};
+
 
 
 }

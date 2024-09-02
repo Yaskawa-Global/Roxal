@@ -1,0 +1,6 @@
+import module2a # imports module3 & increments var
+import module2b # imports module3 & increments var
+import module3
+print(module3.mod3var) # should show 2 (same module, not two module3's imported)
+
+

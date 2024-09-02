@@ -23,6 +23,8 @@ public:
 
     virtual std::any visitImport_stmt(RoxalParser::Import_stmtContext *context);
 
+    virtual std::any visitIdentifier_list(RoxalParser::Identifier_listContext *context);
+
     virtual std::any visitDeclaration(RoxalParser::DeclarationContext *context);
 
     virtual std::any visitStatement(RoxalParser::StatementContext *context);
@@ -118,7 +120,7 @@ public:
     virtual std::any visitNum(RoxalParser::NumContext *context);
 
     virtual std::any visitInteger(RoxalParser::IntegerContext *context);
-   
+
 
 protected:
     void setSourceInfo(ptr<ast::AST> ast, antlr4::ParserRuleContext* context);

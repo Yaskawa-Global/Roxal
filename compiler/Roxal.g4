@@ -29,7 +29,11 @@ single_input
 
 
 import_stmt
- : IMPORT IDENTIFIER (DOT IDENTIFIER)*
+ : IMPORT IDENTIFIER (DOT IDENTIFIER)* ( (DOT STAR)? | (DOT '[' identifier_list ']')? ) NEWLINE
+ ;
+
+identifier_list
+ : IDENTIFIER (COMMA IDENTIFIER)*
  ;
 
 

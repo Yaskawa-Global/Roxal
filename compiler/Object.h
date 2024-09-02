@@ -4,7 +4,6 @@
 #include <map>
 #include <vector>
 #include <sstream>
-#include <unordered_map>
 #include <atomic>
 #include <future>
 #include <condition_variable>
@@ -50,6 +49,9 @@ enum class ObjType {
     Dict,
     Stream
 };
+
+
+
 
 
 struct Obj {
@@ -651,9 +653,6 @@ struct ObjModuleType : public ObjTypeSpec
     icu::UnicodeString name;
 
     // variables declared at runtime via VM OpCode::DefineModuleVar
-    // map from name ObjString.hash to <name, value> pair
-    // FIXME: use something other than UnicodeString (ObjString* or Value??)
-    typedef atomic_unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> VariablesMap;
     VariablesMap vars;
 };
 

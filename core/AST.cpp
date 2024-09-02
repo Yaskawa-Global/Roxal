@@ -199,6 +199,20 @@ void Import::output(std::ostream& os, int indent) const
             if (i != packages.size()-1)
                 os << ".";
         }
+        if (symbols.size() > 0) {
+            os << ".";
+            if (symbols.at(0) != "*") {
+                os << "[";
+                for(auto i=0; i < symbols.size(); i++) {
+                    os << toUTF8StdString(symbols[i]);
+                    if (i != symbols.size()-1)
+                        os << ",";
+                }
+                os << "]";
+            }
+            else
+                os << "*";
+        }
         os << std::endl;
     }
 }

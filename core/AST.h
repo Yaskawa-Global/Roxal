@@ -214,8 +214,9 @@ struct Annotation : public AST {
 
 
 struct Import : public AST {
-    
+
     std::vector<icu::UnicodeString> packages; // [[package.]package.]module
+    std::vector<icu::UnicodeString> symbols;  // empty, or ["*"] or list
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

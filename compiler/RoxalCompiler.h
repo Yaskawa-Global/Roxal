@@ -59,12 +59,30 @@ public:
         std::string name;           // name of the module
         bool isPackage;
         std::string filename;       // filename of the module (e.g. with .rox extension)
+
+        // FIXME: make members protected, cache hashCode
+
+        int32_t hashCode() const {
+            // TODO: consider making the members UnicodeStrings
+            icu::UnicodeString packagePathU { toUnicodeString(packagePath) };
+            icu::UnicodeString nameU { toUnicodeString(name) };
+            return packagePathU.hashCode() ^ nameU.hashCode() ^ (isPackage ? 1 : 0);
+        }
+
+        bool operator==(const ModuleInfo& other) const {
+            // considered the same module if same package path & name (irrespective of module root)
+            return hashCode() == other.hashCode();
+        }
+        bool operator<(const ModuleInfo& other) const {
+            return hashCode() < other.hashCode();
+        }
     };
 
 protected:
     bool outputBytecodeDisassembly;
     std::vector<std::string> modulePaths;
 
+    std::map<ModuleInfo,Value> importedModules;
 
     // given the components of an import, such as "package.subpackage.module", return
     //  the module path root that contains it, the relative path to the package and the module filename

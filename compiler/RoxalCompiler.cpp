@@ -191,8 +191,6 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         return {};
     }
 
-    //std::cout << module << std::endl;
-
     std::string absoluteModuleFilePath = std::filesystem::canonical(std::filesystem::absolute(module.modulePathRoot + "/" + module.packagePath + '/' + module.filename));
 
     // extra check the module file exists
@@ -201,40 +199,84 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         return {};
     }
 
-    std::ifstream sourcestream(absoluteModuleFilePath);
+    // has this module already been imported?
+    auto importedEntry = importedModules.find(module);
+    bool imported = importedEntry != importedModules.end();
 
-    ObjFunction* function { nullptr };
+    //std::cout << module << std::endl;
 
-    try {
+    Value importedModuleType {};
+
+    if (!imported) {  // import it
+
+        // compile it, emit code to execute it
+        //std::cout << "importing " << absoluteModuleFilePath << std::endl;
+
         // compile to generate code for imported module
-        function = compile(sourcestream, module.name);
+        std::ifstream sourcestream(absoluteModuleFilePath);
 
-        // emit code to place module's main chunk on stack as closure
-        assert(function->upvalueCount == 0);
-        emitBytes(OpCode::Closure, makeConstant(objVal(function)));
+        ObjFunction* function { nullptr };
 
-        // call it to have it executed (which will result in module vars being declared)
-        CallSpec callSpec {};
-        callSpec.allPositional = true;
-        callSpec.argCount = 0;
-        auto bytes = callSpec.toBytes();
-        assert(bytes.size()==1);
-        emitBytes(OpCode::Call, bytes[0]);
+        try {
+            // compile to generate code for imported module
+            function = compile(sourcestream, module.name);
 
-        // define a variable in the importing module with the name of the imported module
-        //  that has the value of the ObjModuleType
-        uint16_t moduleNameConst = identifierConstant(toUnicodeString(module.name));
-        declareVariable(toUnicodeString(module.name));
+            importedModuleType = function->moduleType;
 
-        auto importedModuleType = function->moduleType;
-        emitConstant(importedModuleType, "module type "+module.name);
+            // emit code to place module's main chunk on stack as closure
+            assert(function->upvalueCount == 0);
+            emitBytes(OpCode::Closure, makeConstant(objVal(function)));
 
-        defineVariable(moduleNameConst);
+            // call it to have it executed (which will result in module vars being declared)
+            CallSpec callSpec {};
+            callSpec.allPositional = true;
+            callSpec.argCount = 0;
+            auto bytes = callSpec.toBytes();
+            assert(bytes.size()==1);
+            emitBytes(OpCode::Call, bytes[0]);
 
-    } catch (std::exception& e) {
-        error(e.what());
-        return {};
+            importedModules[module] = importedModuleType;
+
+        } catch (std::exception& e) {
+            error(e.what());
+            return {};
+        }
     }
+    else { // already previously imported
+        //std::cout << absoluteModuleFilePath << " already imported" << std::endl;
+        importedModuleType = importedEntry->second;
+    }
+
+    // define a variable in the importing module with the name of the imported module
+    //  that has the value of the ObjModuleType
+    //  (we can directly insert the var in the importing module since it is already existing static type)
+    const auto& importingModuleType = asFuncScope(funcScope())->function->moduleType;
+    auto& importingModuleVars = asModuleType(importingModuleType)->vars;
+    icu::UnicodeString moduleName { toUnicodeString(module.name) };
+    importingModuleVars.store(moduleName, importedModuleType);
+
+
+    // if any (or all) symbols are explicitly imported into the importing module scope,
+    //  create vars for those too
+    if (!ast->symbols.empty()) {
+
+        // convert AST symbols to a List of Values
+        std::vector<Value> symbolsList {};
+        for(const auto& symbol : ast->symbols)
+            symbolsList.push_back(objVal(stringVal(symbol)));
+
+        Value symbolsListVal { listVal() };
+        asList(symbolsListVal)->elts = symbolsList;
+
+        // Opcode::ImportModuleVars expects a list (of symbols) and the source module & target module
+        emitConstant(symbolsListVal, "import vars "+toUTF8StdString(join(ast->symbols)));
+
+        emitConstant(importedModuleType, "imported module type "+module.name);
+        emitConstant(importingModuleType, "importing module type "+toUTF8StdString(asModuleType(importingModuleType)->name));
+
+        emitByte(OpCode::ImportModuleVars);
+    }
+
 
     return {};
 }

@@ -24,6 +24,9 @@ VM::VM()
     initString = stringVal(UnicodeString("init"));
     initString->incRef();
 
+    defineBuiltinFunctions();
+    defineNativeFunctions();
+
     auto engine = StreamEngine::instance();
     //CallSpec::testParamPositions();
     //Value::testPrimitiveValues();
@@ -81,14 +84,6 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
 
     if (function == nullptr)
         return InterpretResult::CompileError;
-
-
-    // TODO: later, when these are moved into a sys or similar module, import their symbols into
-    //  this module (and move these calls to define the sys module itself)
-    //  see also OpCode::GetProp
-    assert(!function->moduleType.isNil());
-    defineBuiltinFunctions(asModuleType(function->moduleType));
-    defineNativeFunctions(asModuleType(function->moduleType));
 
     ObjClosure* closure = closureVal(function);
     Value closureValue { objVal(closure) };
@@ -1160,11 +1155,11 @@ void VM::defineEnumLabel(ObjString* name)
 
 
 
-void VM::defineNative(ObjModuleType* moduleType, const std::string& name, NativeFn function)
+void VM::defineNative(const std::string& name, NativeFn function)
 {
     UnicodeString uname { toUnicodeString(name) };
     Value funcVal { objVal(nativeVal(function)) };
-    moduleType->vars.store(uname.hashCode(), std::make_pair(uname,funcVal));
+    globals.storeGlobal(uname,funcVal);
 }
 
 
@@ -1374,16 +1369,11 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 else if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
 
-                    // no effect if already defined - see comments above
-                    //  TODO: for truly global built-ins, probably better to reintroduce globals map and
-                    //  have ObjModuleType have a lookup for modulevars that falls-back to looking in the globals
-                    defineBuiltinFunctions(moduleType);
-                    defineNativeFunctions(moduleType);
-
                     ObjString* name = readString();
 
-                    if (moduleType->vars.containsKey(name->hash)) {
-                        Value value = moduleType->vars.at(name->hash).second;
+                    auto optValue { moduleType->vars.load(name->hash) };
+                    if (optValue.has_value()) {
+                        Value value = optValue.value();
                         pop();
                         push(value);
                         break;
@@ -1401,35 +1391,59 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::SetProp): {
                 Value& inst { peek(1) };
                 inst.resolveFuture();
-                if (!isObjectInstance(inst)) {
-                    runtimeError("Only instances have properties.");
-                    return errorReturn;
-                }
-                ObjectInstance* objInst = asObjectInstance(inst);
-                ObjString* name = readString();
-                //std::cout << "setting prop " << toUTF8StdString(name->s) << " of " << toString(inst) << " to " << toString(peek(0)) << std::endl;//!!!
+                if (isObjectInstance(inst)) {
+                    ObjectInstance* objInst = asObjectInstance(inst);
+                    ObjString* name = readString();
+                    //std::cout << "setting prop " << toUTF8StdString(name->s) << " of " << toString(inst) << " to " << toString(peek(0)) << std::endl;
 
-                Value value { peek(0) };
+                    Value value { peek(0) };
 
-                if (!value.isNil()) {
-                    // if type object specified the property type in the declaration,
-                    //  convert the value to that type (if possible)
-                    const auto& properties { objInst->instanceType->properties };
-                    const auto& property = properties.find(name->hash);
-                    if (property != properties.end()) {
-                        const auto& prop { property->second };
-                        if (!prop.type.isNil() && isTypeSpec(prop.type)) {
-                            ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
-                            if (typeSpec->typeValue != ValueType::Nil)
-                                // TODO: implement & use a canConvertToType()
-                                value = toType(typeSpec->typeValue,value,/*strict=*/false);
+                    if (!value.isNil()) {
+                        // if type object specified the property type in the declaration,
+                        //  convert the value to that type (if possible)
+                        const auto& properties { objInst->instanceType->properties };
+                        const auto& property = properties.find(name->hash);
+                        if (property != properties.end()) {
+                            const auto& prop { property->second };
+                            if (!prop.type.isNil() && isTypeSpec(prop.type)) {
+                                ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
+                                if (typeSpec->typeValue != ValueType::Nil)
+                                    // TODO: implement & use a canConvertToType()
+                                    value = toType(typeSpec->typeValue,value,/*strict=*/false);
+                            }
                         }
                     }
-                }
 
-                objInst->properties[name->hash] = value;
-                popN(2); // pop original value & instance
-                push(value); // value (possibly converted)
+                    objInst->properties[name->hash] = value;
+                    popN(2); // pop original value & instance
+                    push(value); // value (possibly converted)
+                    break;
+                }
+                else if (isModuleType(inst)) {
+                    auto moduleType = asModuleType(inst);
+
+                    ObjString* name = readString();
+
+                    auto& vars { moduleType->vars };
+
+                    // TODO: consider if we should allow setting module vars from another module
+                    //  (maybe only if !strict?)
+
+                    if (vars.exists(name->hash)) {
+                        Value value { peek(0) };
+
+                        vars.store(name->hash, name->s, value, /*overwrite=*/true);
+                        popN(2); // pop original value & instance
+                        push(value); // value (possibly converted)
+                    }
+                    else {
+                        runtimeError("Declaring new module variables in another module ('"+toUTF8StdString(moduleType->name)+"') is not allowed.");
+                        return errorReturn;
+                    }
+                    break;
+                }
+                runtimeError("Only instances have properties.");
+                return errorReturn;
                 break;
             }
             case asByte(OpCode::GetProp2): {
@@ -1802,23 +1816,28 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::DefineModuleVar): {
                 ObjString* name = readString();
-                moduleVars().store(name->hash, std::make_pair(name->s,pop()));
+                moduleVars().store(name->hash, name->s,pop());
                 break;
             }
             case asByte(OpCode::DefineModuleVar2): {
                 ObjString* name = readString2();
-                moduleVars().store(name->hash, std::make_pair(name->s,pop()));
+                moduleVars().store(name->hash, name->s,pop());
                 break;
             }
             case asByte(OpCode::GetModuleVar): {
                 ObjString* name = readString();
                 auto& vars { moduleVars() };
-                if (vars.containsKey(name->hash)) {
-                    Value value = vars.at(name->hash).second;
+                auto optValue { vars.load(name->hash) };
+                if (optValue.has_value()) {
+                    Value value = optValue.value();
                     push(value);
                 }
                 else {
+                    #ifdef DEBUG_BUILD
+                    runtimeError("Undefined variable '"+name->toStdString()+"' in module "+toUTF8StdString(moduleType()->name));
+                    #else
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
+                    #endif
                     return errorReturn;
                 }
                 break;
@@ -1826,8 +1845,9 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::GetModuleVar2): {
                 ObjString* name = readString2();
                 const auto& vars { moduleVars() };
-                if (vars.containsKey(name->hash)) {
-                    Value value = vars.at(name->hash).second;
+                auto optValue { vars.load(name->hash) };
+                if (optValue.has_value()) {
+                    Value value = optValue.value();
                     push(value);
                 }
                 else {
@@ -1839,11 +1859,9 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::SetModuleVar): {
                 ObjString* name = readString();
                 auto& vars { moduleVars() };
-                if (vars.containsKey(name->hash)) { // found
-                    // set new value, but leave it on stack (as assignment is an expression)
-                    vars.store(name->hash, std::make_pair(name->s,peek(0)));
-                }
-                else {
+                // set new value, but leave it on stack (as assignment is an expression)
+                bool stored = vars.storeIfExists(name->hash, name->s,peek(0));
+                if (!stored) { // not stored, since not existing
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
                     return errorReturn;
                 }
@@ -1852,11 +1870,9 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::SetModuleVar2): {
                 ObjString* name = readString2();
                 auto& vars { moduleVars() };
-                if (vars.containsKey(name->hash)) { // found
-                    // set new value, but leave it on stack (as assignment is an expression)
-                    vars.store(name->hash, std::make_pair(name->s,peek(0)));
-                }
-                else {
+                // set new value, but leave it on stack (as assignment is an expression)
+                bool stored = vars.storeIfExists(name->hash, name->s,peek(0));
+                if (!stored) { // not stored, since not existing
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
                     return errorReturn;
                 }
@@ -1865,29 +1881,36 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::SetNewModuleVar): {
                 ObjString* name = readString();
                 auto& vars { moduleVars() };
-                if (vars.containsKey(name->hash)) { // found
-                    // set new value, but leave it on stack (as assignment is an expression)
-                    vars.store(name->hash, std::make_pair(name->s,peek(0)));
+
+                // only automatic declaration of globals on assignment when
+                //   at module level scope
+                bool moduleScope = true; // FIXME: set false if not in module scope
+
+                bool exists = vars.exists(name->hash);
+                if (!exists && !moduleScope) {
+                    runtimeError("Undefined variable '"+name->toStdString()+"'");
+                    return errorReturn;
                 }
-                else {
-                    // only automatic declaration of globals on assignment when
-                    //   at global/module level scope
-                    vars.store(name->hash, std::make_pair(name->s,peek(0)));
-                }
+
+                vars.store(name->hash, name->s,peek(0), /*overwrite=*/true);
+
                 break;
             }
             case asByte(OpCode::SetNewModuleVar2): {
                 ObjString* name = readString2();
                 auto& vars { moduleVars() };
-                if (vars.containsKey(name->hash)) { // found
-                    // set new value, but leave it on stack (as assignment is an expression)
-                    vars.store(name->hash, std::make_pair(name->s,peek(0)));
+
+                // only automatic declaration of globals on assignment when
+                //   at module level scope
+                bool moduleScope = true; // FIXME: set false if not in module scope
+
+                bool exists = vars.exists(name->hash);
+                if (!exists && !moduleScope) {
+                    runtimeError("Undefined variable '"+name->toStdString()+"'");
+                    return errorReturn;
                 }
-                else {
-                    // only automatic declaration of module vars on assignment when
-                    //   at module level scope
-                    vars.store(name->hash, std::make_pair(name->s,peek(0)));
-                }
+
+                vars.store(name->hash, name->s,peek(0), /*overwrite=*/true);
                 break;
             }
             case asByte(OpCode::GetUpvalue): {
@@ -2011,6 +2034,58 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 pop();
                 break;
             }
+            case asByte(OpCode::ImportModuleVars): {
+                // given a list of var identifiers and two module types, copy the list of vars from
+                //  one module's vars to the other (copy the declarations, not deep copying values)
+
+                Value symbolsList { peek(2) };
+                Value fromModule { peek(1) };
+                Value toModule { peek(0) };
+
+                //std::cout << "importing module vars " << objListToString(asList(symbolsList)) << " from " << fromModule << " to " << toModule << std::endl;
+
+                #ifdef DEBUG_BUILD
+                assert(isList(symbolsList));
+                assert(isModuleType(fromModule));
+                assert(isModuleType(toModule));
+                #endif
+
+                auto symbolsListObj { asList(symbolsList) };
+
+                if (symbolsListObj->length() > 0) {
+
+                    auto fromModuleType { asModuleType(fromModule) };
+                    auto toModuleType { asModuleType(toModule) };
+
+                    // special case, if list is just [*], then import all symbols
+                    const auto& firstElement { symbolsListObj->elts.at(0) };
+                    if (isString(firstElement) && asString(firstElement)->s == "*") {
+                        fromModuleType->vars.forEach(
+                            [&](const VariablesMap::NameValue& nameValue) {
+                                //const icu::UnicodeString& name { nameValue.first };
+                                toModuleType->vars.store(nameValue);
+                                //std::cout << "declaring " << toUTF8StdString(nameValue.first) << " into " << toUTF8StdString(toModuleType->name) << std::endl;//!!!
+                            });
+                    }
+                    else { // import the symbols explicitly listed
+                        for(const auto& symbol : symbolsListObj->elts.get()) {
+                            const auto& symbolString { asString(symbol) };
+                            auto optValue { fromModuleType->vars.load(symbolString->hash) };
+                            const auto& name { symbolString->s };
+
+                            if (!optValue.has_value()) {
+                                runtimeError("Symbol '"+toUTF8StdString(name)+"' not found in imported module "+toUTF8StdString(fromModuleType->name));
+                                return errorReturn;
+                            }
+                            toModuleType->vars.store(symbolString->hash, name, optValue.value());
+                            //std::cout << "declaring " << toUTF8StdString(name) << " into " << toUTF8StdString(toModuleType->name) << std::endl;//!!!
+                        }
+                    }
+                }
+
+                popN(3);
+                break;
+            }
             case asByte(OpCode::Nop): {
                 break;
             }
@@ -2126,19 +2201,19 @@ void VM::runtimeError(const std::string& format, ...)
 //
 // builtins
 
-void VM::defineBuiltinFunctions(ObjModuleType* moduleType)
+void VM::defineBuiltinFunctions()
 {
-    if (moduleType->vars.containsKey(toUnicodeString("print").hashCode()))
+    if (globals.existsGlobal(toUnicodeString("print")))
         return; // already defined
 
-    defineNative(moduleType, "print", &VM::print_builtin);
-    defineNative(moduleType, "len", &VM::len_builtin);
-    defineNative(moduleType, "clone", &VM::clone_builtin);
-    defineNative(moduleType, "sleep", &VM::sleep_builtin);
-    defineNative(moduleType, "fork", &VM::fork_builtin);
-    defineNative(moduleType, "join", &VM::join_builtin);
-    defineNative(moduleType, "_threadid", &VM::threadid_builtin);
-    defineNative(moduleType, "_wait", &VM::wait_builtin);
+    defineNative("print", &VM::print_builtin);
+    defineNative("len", &VM::len_builtin);
+    defineNative("clone", &VM::clone_builtin);
+    defineNative("sleep", &VM::sleep_builtin);
+    defineNative("fork", &VM::fork_builtin);
+    defineNative("join", &VM::join_builtin);
+    defineNative("_threadid", &VM::threadid_builtin);
+    defineNative("_wait", &VM::wait_builtin);
 }
 
 
@@ -2288,17 +2363,17 @@ Value VM::wait_builtin(int argCount, Value* args)
 //
 // native
 
-void VM::defineNativeFunctions(ObjModuleType* moduleType)
+void VM::defineNativeFunctions()
 {
-    if (moduleType->vars.containsKey(toUnicodeString("_clock").hashCode()))
+    if (globals.existsGlobal(toUnicodeString("_clock")))
         return; // already defined
 
-    defineNative(moduleType, "_clock", &VM::clock_native);
-    defineNative(moduleType, "_ussleep", &VM::usSleep_native);
-    defineNative(moduleType, "_mssleep", &VM::msSleep_native);
-    //defineNative(moduleType, "_sleep", &VM::sleep_native);
-    defineNative(moduleType, "sin", &VM::sin_native);
-    defineNative(moduleType, "cos", &VM::cos_native);
+    defineNative("_clock", &VM::clock_native);
+    defineNative("_ussleep", &VM::usSleep_native);
+    defineNative("_mssleep", &VM::msSleep_native);
+    //defineNative("_sleep", &VM::sleep_native);
+    defineNative("sin", &VM::sin_native);
+    defineNative("cos", &VM::cos_native);
 }
 
 

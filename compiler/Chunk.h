@@ -60,6 +60,7 @@ enum class OpCode {
     SetModuleVar2,
     SetNewModuleVar,
     SetNewModuleVar2,
+    ImportModuleVars,
     GetUpvalue,
     SetUpvalue,
     GetUpvalue2,

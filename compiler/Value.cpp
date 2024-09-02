@@ -940,6 +940,9 @@ std::ostream& roxal::operator<<(std::ostream& out, const Value& v)
 }
 
 
+std::mutex VariablesMap::globalsLock {};
+VariablesMap::VarsMap VariablesMap::globals {};
+
 
 
 

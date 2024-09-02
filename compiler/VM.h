@@ -84,7 +84,7 @@ public:
     void defineProperty(ObjString* name);
     void defineMethod(ObjString* name);
     void defineEnumLabel(ObjString* name);
-    void defineNative(ObjModuleType* moduleType, const std::string& name, NativeFn function);
+    void defineNative(const std::string& name, NativeFn function);
 
 
     const int MaxStack = 1024;
@@ -175,8 +175,8 @@ protected:
 
     atomic_unordered_map<uint64_t, ptr<Thread>> threads;
 
-
-    ObjModuleType::VariablesMap& moduleVars() {
+    ObjModuleType* moduleType()
+    {
         #ifdef DEBUG_BUILD
         assert(thread != nullptr);
         assert(!thread->frames.empty());
@@ -186,8 +186,12 @@ protected:
         #endif
         auto currentFrame { thread->frames.back() };
 
-        return asModuleType(currentFrame.closure->function->moduleType)->vars;
+        return asModuleType(currentFrame.closure->function->moduleType);
     }
+    inline VariablesMap& moduleVars() { return moduleType()->vars; }
+
+    // global vars cannot be created in the language, but represent builtin symbols available in all modules
+    VariablesMap globals;
 
     std::list<ObjUpvalue*> openUpvalues; // FIXME: move to Thread, figure out if cross-thread closures are an issue
 
@@ -212,7 +216,7 @@ protected:
 
 
     // Builtin functions
-    void defineBuiltinFunctions(ObjModuleType* moduleType);
+    void defineBuiltinFunctions();
 
     Value print_builtin(int argCount, Value* args);
     Value len_builtin(int argCount, Value* args);
@@ -226,7 +230,7 @@ protected:
 
 
     // Native functions
-    void defineNativeFunctions(ObjModuleType* moduleType);
+    void defineNativeFunctions();
 
     Value clock_native(int argCount, Value* args);
     Value usSleep_native(int argCount, Value* args);
