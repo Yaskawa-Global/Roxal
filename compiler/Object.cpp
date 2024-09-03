@@ -724,6 +724,7 @@ ObjObjectType::ObjObjectType(const icu::UnicodeString& typeName, bool isactor, b
         enumTypeId = randomUint16(1); // generate unique random id (1..max)
         while (ObjObjectType::enumTypes.find(enumTypeId) != ObjObjectType::enumTypes.end())
             enumTypeId = randomUint16(1);
+        //std::cout << "registered new enum id " << enumTypeId << std::endl;
         enumTypes[enumTypeId] = this;
     }
 }

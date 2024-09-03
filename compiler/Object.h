@@ -592,7 +592,7 @@ std::string objTypeSpecToString(const ObjTypeSpec* ots);
 
 //
 // object|actor|interface|enum type
-// TODO: sperate enum out into its own ObjTypeSpec subclass
+// TODO: separate enum out into its own ObjTypeSpec subclass
 
 struct ObjObjectType : public ObjTypeSpec
 {
@@ -600,8 +600,10 @@ struct ObjObjectType : public ObjTypeSpec
 
     virtual ~ObjObjectType()
     {
-        if (isEnumeration)
+        if (isEnumeration) {
+            //std::cout << "unregistering enum id " << enumTypeId << std::endl << std::flush;
             enumTypes.erase(enumTypeId);
+        }
     }
 
     icu::UnicodeString name;

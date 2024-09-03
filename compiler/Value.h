@@ -114,7 +114,7 @@ public:
     /// @param o The object pointer.
     explicit Value(Obj* o);
     explicit Value(int16_t enumLabelValue, uint16_t enumTypeId)
-        { val = QNAN | TagEnum | (0xffffffff & (*reinterpret_cast<uint64_t*>(&enumLabelValue) | (enumTypeId << 16))); }
+        { val = QNAN | TagEnum | (0xffffffff & (enumLabelValue | (uint64_t(enumTypeId) << 16))); }
 
 
     /// @brief Copy constructor.
@@ -221,7 +221,7 @@ public:
         #ifdef DEBUG_BUILD
         assert(isEnum());
         #endif
-        return uint16_t(val >> 16);
+        return uint16_t((val & 0xffff0000) >> 16);
     }
 
     /// @brief Checks if the value is a type.
@@ -417,7 +417,7 @@ inline Value intVal(int32_t i) { return Value(i); }
 
 inline Value realVal(double r) { return Value(r); }
 
-inline Value enumVal(int16_t labelVal, uint16_t enumTypeId) { return Value(labelVal, enumTypeId); }
+inline __attribute__((noinline)) Value enumVal(int16_t labelVal, uint16_t enumTypeId) { return Value(labelVal, enumTypeId); }
 
 inline Value typeVal(ValueType bt) { return Value(bt); }
 
@@ -470,6 +470,18 @@ public:
     VariablesMap() {}
 
     typedef std::pair<icu::UnicodeString, Value> NameValue;
+
+    void clearGlobals()
+    {
+        std::lock_guard<std::mutex> lock(globalsLock);
+        globals.clear();
+    }
+
+    void clear()
+    {
+        std::lock_guard<std::mutex> lock(varsLock);
+        vars.clear();
+    }
 
     // module or global exists?
     bool exists(int32_t nameHash) const

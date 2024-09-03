@@ -37,7 +37,7 @@ VM::VM()
 
 VM::~VM()
 {
-    //globals.clear();
+    globals.clearGlobals();
 
     initString->decRef();
 
@@ -687,7 +687,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             return false;
                         }
 
-                        // find enum type id for type (needed to costruct an enum value)
+                        // find enum type id for type (needed to construct an enum value)
                         uint16_t enumTypeId = 0; // valid ids can't be 0
                         for(auto& enumTypeIdObjType : ObjObjectType::enumTypes) {
                             if (enumTypeIdObjType.second == type) {
@@ -695,10 +695,16 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 break;
                             }
                         }
-                        #ifdef DEBUG_BUILD
+                        //!!!#ifdef DEBUG_BUILD
                         assert(enumTypeId != 0);
-                        #endif
+                        assert(ObjObjectType::enumTypes.find(enumTypeId) != ObjObjectType::enumTypes.end());
+                        //!!!#endif
                         value = enumVal(arg.asInt(), enumTypeId);
+                        //!!!#ifdef DEBUG_BUILD
+                        assert(value.isEnum());
+                        assert(value.enumTypeId() == enumTypeId);
+                        assert(value.asEnum() == arg.asInt());
+                        //!!!#endif
                     }
                     else {
                         runtimeError("Expected 0 or 1 argument for enum '"+toUTF8StdString(type->name)+"' type instantiation, provided "+std::to_string(callSpec.argCount));
@@ -777,7 +783,7 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
         return invokeFromType(instance->instanceType, name, callSpec);
     }
     else if (isActorInstance(receiver)) {
-        throw std::runtime_error("invoke() for actor instance unimplemented");//!!!
+        throw std::runtime_error("invoke() for actor instance unimplemented");//FIXME
     }
     else {
         runtimeError("Only object or actor instances have methods.");
@@ -1045,7 +1051,7 @@ Value VM::opReturn()
 
     if (!returningFrame.forwardStreamRefs.empty()) {
         auto funcName { returningFrame.closure->function->name };
-        //std::cout << "returning frame "+toUTF8StdString(funcName)+" has forward stream refs" << std::endl;//!!!
+        //std::cout << "returning frame "+toUTF8StdString(funcName)+" has forward stream refs" << std::endl;
         for(auto& forwardStreamRef : returningFrame.forwardStreamRefs) {
             const auto& name { forwardStreamRef.first };
             auto& stream { forwardStreamRef.second };
@@ -2064,7 +2070,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                             [&](const VariablesMap::NameValue& nameValue) {
                                 //const icu::UnicodeString& name { nameValue.first };
                                 toModuleType->vars.store(nameValue);
-                                //std::cout << "declaring " << toUTF8StdString(nameValue.first) << " into " << toUTF8StdString(toModuleType->name) << std::endl;//!!!
+                                //std::cout << "declaring " << toUTF8StdString(nameValue.first) << " into " << toUTF8StdString(toModuleType->name) << std::endl;
                             });
                     }
                     else { // import the symbols explicitly listed
@@ -2078,7 +2084,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                                 return errorReturn;
                             }
                             toModuleType->vars.store(symbolString->hash, name, optValue.value());
-                            //std::cout << "declaring " << toUTF8StdString(name) << " into " << toUTF8StdString(toModuleType->name) << std::endl;//!!!
+                            //std::cout << "declaring " << toUTF8StdString(name) << " into " << toUTF8StdString(toModuleType->name) << std::endl;
                         }
                     }
                 }
@@ -2252,6 +2258,7 @@ Value VM::len_builtin(int argCount, Value* args)
         #ifdef DEBUG_BUILD
         std::cerr << "Unhandled type in len():" << v.typeName() << std::endl;
         #endif
+        ;
     }
 
     return intVal(len);

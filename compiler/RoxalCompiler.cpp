@@ -1803,7 +1803,7 @@ int16_t RoxalCompiler::resolveUpvalue(Scope scopeState, const icu::UnicodeString
         #ifdef DEBUG_BUILD
         asFuncScope(enclosingFuncScope(scopeState))->locals.at(local).isCaptured = true;
         #else
-        enclosingFuncScope(scopeState)->locals[local].isCaptured = true;
+        asFuncScope(enclosingFuncScope(scopeState))->locals[local].isCaptured = true;
         #endif
         return addUpvalue(scopeState, uint8_t(local), true);
     }
