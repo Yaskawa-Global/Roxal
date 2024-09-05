@@ -24,11 +24,17 @@ list(APPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-linux")
 #
 # ANTLR4
 
+# Install runtime first via:
+# $ ./vcpkg install antlr4
+# and tools using: (see https://github.com/antlr/antlr4-tools)
+# $ pip install antlr4-tools
+# (check they are compatible)
+
 # Set ANTLR4_ROOT to the location where ANTLR4 is installed by vcpkg
 set(ANTLR4_ROOT "${VCPKG_ROOT}/installed/x64-linux")
 
 # Find ANTLR4 package
-find_package(antlr4-runtime CONFIG REQUIRED)
+find_package(antlr4-runtime 4.13.1 CONFIG REQUIRED)
 
 
 # Add the source files
@@ -88,10 +94,7 @@ include_directories(${CMAKE_HOME_DIRECTORY})
 
 # Add the include directories
 include_directories(
-#    core
     ${ANTLR4_ROOT}/include/antlr4-runtime
-    #${CMAKE_SOURCE_DIR}/cpp-gen
-    #${CMAKE_SOURCE_DIR}/..
     compiler/cpp-gen
 )
 
