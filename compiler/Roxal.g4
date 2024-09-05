@@ -51,7 +51,7 @@ compound_stmt
  | return_stmt
  | if_stmt
  | while_stmt
-//  | for_stmt
+ | for_stmt
 //  | with_stmt
  ;
 
@@ -74,9 +74,22 @@ while_stmt
  : WHILE expression ':' suite
  ;
 
+for_stmt
+ // the for can either assign a single lvalue identifier, or a list of them
+ //  (as in a binding assignment - for example to iterate over a dict or a list of lists)
+ : FOR (  ident_opt_type                                   // single ident with optional type
+        | '[' ident_opt_type (COMMA ident_opt_type)* ']'   // list of idents with optional types
+       )
+   IN expression ':' suite
+ ;
 
-var_decl
+
+var_decl // FIXME: use ident_opt_type
  : annotation* VAR IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)?
+ ;
+
+ident_opt_type
+ : IDENTIFIER (':' builtin_type | IDENTIFIER)?
  ;
 
 func_decl

@@ -59,7 +59,7 @@ private:
 
     //helpers for casting and inserting
     template<typename T> bool isChildA();
-    
+
     int findChildInSuite(std::vector<std::variant<ptr<roxal::ast::Declaration>, ptr<roxal::ast::Statement>>>& vec, ptr<roxal::ast::AST> toFind);
     void deleteFromSuite(std::vector<std::variant<ptr<roxal::ast::Declaration>, ptr<roxal::ast::Statement>>>& vec);
     void insertBeforeOrAfterIntoSuite(std::vector<std::variant<ptr<roxal::ast::Declaration>, ptr<roxal::ast::Statement>>>& vec, bool before);
@@ -70,13 +70,13 @@ private:
     //update the inserted source to use the full ast's source
     void updateInsertedNodeSource();
 
-    ptr<roxal::ast::AST> m_tree = nullptr; 
-    ptr<roxal::ast::AST> m_parent = nullptr; 
-    ptr<roxal::ast::AST> m_sibling = nullptr; 
+    ptr<roxal::ast::AST> m_tree = nullptr;
+    ptr<roxal::ast::AST> m_parent = nullptr;
+    ptr<roxal::ast::AST> m_sibling = nullptr;
     ptr<roxal::ast::AST> m_removed = nullptr;
     ptr<roxal::ast::AST> m_inserted = nullptr;
     std::mutex m_memberLock;
-    
+
 };
 
 //helper to run the same method on every Ast node
@@ -99,6 +99,7 @@ public:
     std::any visit(ptr<roxal::ast::ReturnStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::IfStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::WhileStatement> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::ForStatement> ast) override { throw std::runtime_error("Not implemented"); }
     std::any visit(ptr<roxal::ast::Function> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Parameter> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Assignment> ast) override { if(m_f) m_f(ast); return{}; }

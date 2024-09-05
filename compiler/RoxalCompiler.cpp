@@ -513,6 +513,13 @@ std::any RoxalCompiler::visit(ptr<ast::WhileStatement> ast)
 }
 
 
+std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
+{
+    //...!!!
+    return {};
+}
+
+
 std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 {
     currentNode = ast;

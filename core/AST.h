@@ -30,6 +30,7 @@ class ExpressionStatement;
 class ReturnStatement;
 class IfStatement;
 class WhileStatement;
+class ForStatement;
 class Function;
 class Parameter;
 class Assignment;
@@ -74,6 +75,7 @@ public:
     virtual std::any visit(ptr<ReturnStatement> ast) = 0;
     virtual std::any visit(ptr<IfStatement> ast) = 0;
     virtual std::any visit(ptr<WhileStatement> ast) = 0;
+    virtual std::any visit(ptr<ForStatement> ast) = 0;
     virtual std::any visit(ptr<Function> ast) = 0;
     virtual std::any visit(ptr<Parameter> ast) = 0;
     virtual std::any visit(ptr<Assignment> ast) = 0;
@@ -229,7 +231,8 @@ struct Statement : public AST {
         Expression,
         Return,
         If,
-        While
+        While,
+        For
     };
 
     Statement(StmtType st) : stmtType(st) {}
@@ -294,6 +297,20 @@ struct WhileStatement : public Statement {
     WhileStatement() : Statement(StmtType::While) {}
 
     ptr<ast::Expression> condition;
+    ptr<ast::Suite> body;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
+struct ForStatement : public Statement {
+    ForStatement() : Statement(StmtType::For) {}
+
+    std::vector<ptr<VarDecl>> targetList; // like var decl with name & optional type, but no initializer
+    ptr<ast::Expression> iterable;
     ptr<ast::Suite> body;
 
     virtual std::any accept(ASTVisitor& v);
@@ -370,6 +387,7 @@ struct TypeDecl : public Declaration {
     // pre-declared properties (same syntax as variable declarations)
     std::vector<ptr<VarDecl>> properties;
 
+    // only for enumerations
     std::vector<std::pair<icu::UnicodeString, ptr<Expression>>> enumLabels;
 
     virtual std::any accept(ASTVisitor& v);

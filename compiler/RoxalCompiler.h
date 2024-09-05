@@ -33,6 +33,7 @@ public:
     virtual std::any visit(ptr<ast::ReturnStatement> ast);
     virtual std::any visit(ptr<ast::IfStatement> ast);
     virtual std::any visit(ptr<ast::WhileStatement> ast);
+    virtual std::any visit(ptr<ast::ForStatement> ast);
     virtual std::any visit(ptr<ast::Function> ast);
     virtual std::any visit(ptr<ast::Parameter> ast);
     virtual std::any visit(ptr<ast::Assignment> ast);
@@ -49,8 +50,8 @@ public:
     virtual std::any visit(ptr<ast::Num> ast);
     virtual std::any visit(ptr<ast::List> ast);
     virtual std::any visit(ptr<ast::Dict> ast);
-    
-   
+
+
 protected:
     bool outputBytecodeDissasembly;
 
@@ -63,7 +64,7 @@ protected:
     };
 
     struct Upvalue {
-        Upvalue(uint8_t i, bool islocal) 
+        Upvalue(uint8_t i, bool islocal)
             : index(i), isLocal(islocal) {}
         uint8_t index;
         bool isLocal;
@@ -82,12 +83,12 @@ protected:
         };
 
         LexicalScope(ScopeType st, const icu::UnicodeString& n) : scopeType(st), name(n) {}
-        virtual ~LexicalScope() {} 
+        virtual ~LexicalScope() {}
 
         ScopeType scopeType;
         icu::UnicodeString name;
 
-        bool strict; 
+        bool strict;
 
         bool isGlobal() const { return scopeType==ScopeType::Global; }
         bool isModule() const { return scopeType==ScopeType::Module; }
@@ -145,16 +146,16 @@ protected:
     // stack new states when we enter new functions to compile
     struct FunctionScope : public LexicalScope
     {
-        FunctionScope(const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> t) 
+        FunctionScope(const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> t)
             : LexicalScope(ScopeType::Func, funcName), scopeDepth(0), functionType(funcType), type(t)
         {
             strict = true;
             function = functionVal();
             function->name = funcName;
             function->funcType = type; // store type for runtime
-            UnicodeString localName { (funcType==FunctionType::Method || funcType==FunctionType::Initializer) ? 
+            UnicodeString localName { (funcType==FunctionType::Method || funcType==FunctionType::Initializer) ?
                                         "this" : "" };
-            locals.push_back(Local(localName,0)); 
+            locals.push_back(Local(localName,0));
         }
 
         std::vector<Local> locals;
@@ -171,7 +172,7 @@ protected:
 
     ptr<FunctionScope> asFuncScope(Scope s) const { return std::dynamic_pointer_cast<FunctionScope>(*s); }
 
-    struct TypeScope : public LexicalScope 
+    struct TypeScope : public LexicalScope
     {
         TypeScope(const icu::UnicodeString& typeName)
           : LexicalScope(ScopeType::Type, typeName), hasSuperType(false) {}

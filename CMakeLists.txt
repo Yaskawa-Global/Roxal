@@ -10,6 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 #
 # vcpkg
+# (install at same level as project folder)
 
 # Set the relative path to vcpkg (assumed to be at same level as project folder)
 set(VCPKG_ROOT "${CMAKE_SOURCE_DIR}/../vcpkg")

@@ -26,6 +26,7 @@ public:
     virtual std::any visit(ptr<ast::ReturnStatement> ast);
     virtual std::any visit(ptr<ast::IfStatement> ast);
     virtual std::any visit(ptr<ast::WhileStatement> ast);
+    virtual std::any visit(ptr<ast::ForStatement> ast);
     virtual std::any visit(ptr<ast::Function> ast);
     virtual std::any visit(ptr<ast::Parameter> ast);
     virtual std::any visit(ptr<ast::Assignment> ast);

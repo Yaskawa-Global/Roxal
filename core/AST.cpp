@@ -399,6 +399,46 @@ void WhileStatement::output(std::ostream& os, int indent) const
 
 
 
+std::any ForStatement::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(std::dynamic_pointer_cast<ForStatement>(shared_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(std::dynamic_pointer_cast<ForStatement>(shared_from_this())) );
+
+    return results;
+}
+
+void ForStatement::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"for" << std::endl;
+    for(const auto& target : targetList)
+        target->output(os,indent+1);
+    os << spaces(indent)+" in:" << std::endl;
+    iterable->output(os,indent+2);
+    os << spaces(indent)+" body:" << std::endl;
+    body->output(os,indent+2);
+}
+
+void ForStatement::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    for(auto& target : targetList )
+        results.push_back( target->accept(v) );
+
+    results.push_back( iterable->accept(v) );
+    results.push_back( body->accept(v) );
+
+}
+
+
+
+
 
 std::any VarDecl::accept(ASTVisitor& v)
 {
@@ -425,7 +465,14 @@ void VarDecl::acceptChildren(ASTVisitor& v, Anys& results)
 
 void VarDecl::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"VarDecl " << toUTF8StdString(name) << std::endl;
+    os << spaces(indent)+"VarDecl " << toUTF8StdString(name);
+    if (varType.has_value()) {
+        if (std::holds_alternative<icu::UnicodeString>(varType.value()))
+            os << " :" << toUTF8StdString(std::get<icu::UnicodeString>(varType.value()));
+        else if (std::holds_alternative<BuiltinType>(varType.value()))
+            os << " :" << to_string(std::get<BuiltinType>(varType.value()));
+    }
+    os << std::endl;
 
     for(auto& annot : annotations)
         annot->output(os,indent+1);

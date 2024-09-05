@@ -398,6 +398,9 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
         else if (is<WhileStatement>(compound)) {
             stmt = as<WhileStatement>(compound);
         }
+        else if (is<ForStatement>(compound)) {
+            stmt = as<ForStatement>(compound);
+        }
         else if (is<IfStatement>(compound)) {
             stmt = as<IfStatement>(compound);
         }
@@ -458,6 +461,8 @@ std::any ASTGenerator::visitCompound_stmt(RoxalParser::Compound_stmtContext *con
         return visitIf_stmt(context->if_stmt());
     else if (context->while_stmt())
         return visitWhile_stmt(context->while_stmt());
+    else if (context->for_stmt())
+        return visitFor_stmt(context->for_stmt());
     else
         throw std::runtime_error("unimplemented compound statement alternative");
 
@@ -539,6 +544,40 @@ std::any ASTGenerator::visitWhile_stmt(RoxalParser::While_stmtContext *context)
 }
 
 
+std::any ASTGenerator::visitFor_stmt(RoxalParser::For_stmtContext *context)
+{
+    visitStart();
+
+    auto forStmt = std::make_shared<ForStatement>();
+    setSourceInfo(forStmt, context);
+
+    for(int i=0; i<context->ident_opt_type().size();i++) {
+        auto ident_opt_type_any = visitIdent_opt_type(context->ident_opt_type().at(i));
+
+        auto ident_opt_type = anyas<std::pair<icu::UnicodeString,std::variant<std::monostate,BuiltinType,icu::UnicodeString>>>(ident_opt_type_any);
+
+        ptr<VarDecl> vardecl = std::make_shared<VarDecl>();
+        vardecl->name = ident_opt_type.first;
+        if (std::holds_alternative<BuiltinType>(ident_opt_type.second))
+            vardecl->varType = std::get<BuiltinType>(ident_opt_type.second);
+        if (std::holds_alternative<icu::UnicodeString>(ident_opt_type.second))
+            vardecl->varType = std::get<icu::UnicodeString>(ident_opt_type.second);
+
+        forStmt->targetList.push_back(vardecl);
+    }
+
+    auto iterable = visitExpression(context->expression());
+    auto body = visitSuite(context->suite());
+
+    forStmt->iterable = as<Expression>(iterable);
+    forStmt->body = as<Suite>(body);
+
+    return typeValue(forStmt);
+    visitEnd();
+}
+
+
+
 
 std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
 {
@@ -580,6 +619,28 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
         vardecl->initializer = as<Expression>(visitExpression(context->expression()));
 
     return typeValue(vardecl);
+    visitEnd();
+}
+
+
+std::any ASTGenerator::visitIdent_opt_type(RoxalParser::Ident_opt_typeContext *context)
+{
+    visitStart();
+
+    auto ident { UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText()) };
+
+    if (context->COLON()) { // type specified
+        if (context->builtin_type())
+            return std::make_pair(ident, std::variant<std::monostate,BuiltinType,icu::UnicodeString>(anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()))));
+        else {
+            auto identType { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
+
+            return std::make_pair(ident, std::variant<std::monostate,BuiltinType,icu::UnicodeString>(identType));
+        }
+    }
+    else
+        return std::make_pair(ident, std::variant<std::monostate,BuiltinType,icu::UnicodeString>(std::monostate{}));
+
     visitEnd();
 }
 

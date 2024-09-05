@@ -27,6 +27,7 @@ public:
     virtual std::any visit(ptr<ast::ReturnStatement> ast);
     virtual std::any visit(ptr<ast::IfStatement> ast);
     virtual std::any visit(ptr<ast::WhileStatement> ast);
+    virtual std::any visit(ptr<ast::ForStatement> ast);
     virtual std::any visit(ptr<ast::Function> ast);
     virtual std::any visit(ptr<ast::Parameter> ast);
     virtual std::any visit(ptr<ast::Assignment> ast);
@@ -46,7 +47,7 @@ public:
 
 protected:
     // during visit traversal, children of each pushes then popped to create links
-    std::stack<std::string> stack; // stack of node names 
+    std::stack<std::string> stack; // stack of node names
     void stackPush(const std::string& s);
     std::string stackPop();
     void addLink(const std::string& fromNodeName, const std::string& toNodeName, const std::string& linkLabel="");

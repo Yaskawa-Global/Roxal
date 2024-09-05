@@ -100,7 +100,7 @@ std::string ASTGraphviz::generateGraphText(ptr<ast::AST> ast)
         ss << node.second << std::endl;
     // output in reverse order so that links visited in prefix ordering are defined top to bottom in the file
     //  and hence rendered left-right by graphviz (given the ordering=out above)
-    std::for_each( links.rbegin(), 
+    std::for_each( links.rbegin(),
                    links.rend(),
                    [&](const auto & link){
                       ss << "  " << std::get<0>(link) << " -> " << std::get<1>(link);
@@ -149,7 +149,7 @@ std::any ASTGraphviz::visit(ptr<ast::Annotation> ast)
 
     for(int i=0; i<ast->args.size();i++) {
         size_t argIndex = ast->args.size()-i-1;
-        std::string label = ast->args.at(argIndex).first.isEmpty() ? 
+        std::string label = ast->args.at(argIndex).first.isEmpty() ?
                                     std::to_string(argIndex)
                                   : toUTF8StdString(ast->args.at(argIndex).first)+"=";
         addLink(name, stackPop(), label);
@@ -259,7 +259,7 @@ std::any ASTGraphviz::visit(ptr<ast::ReturnStatement> ast)
     startVisit();
     auto name { uname(ast) };
 
-    if (ast->expr.has_value()) 
+    if (ast->expr.has_value())
         addLink(name, stackPop());
 
     nodes[name] = node(name,"Return");
@@ -299,6 +299,26 @@ std::any ASTGraphviz::visit(ptr<ast::WhileStatement> ast)
     addLink(name, stackPop(), "cond"); // condition
 
     nodes[name] = node(name, "While");
+    stackPush(name);
+
+    endVisit();
+    return {};
+}
+
+
+std::any ASTGraphviz::visit(ptr<ast::ForStatement> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+
+    addLink(name, stackPop(), "body"); // body
+    addLink(name, stackPop(), "iterable"); // iterable
+
+    auto n = ast->targetList.size();
+    for(int i=0; i<n;i++)
+        addLink(name, stackPop(), std::to_string(n-i-1));
+
+    nodes[name] = node(name, "for");
     stackPush(name);
 
     endVisit();
@@ -397,7 +417,7 @@ std::any ASTGraphviz::visit(ptr<ast::UnaryOp> ast)
 
     addLink(name, stackPop());
 
-    nodes[name] = node(name,ast->opString() 
+    nodes[name] = node(name,ast->opString()
                    + ((ast->op == UnaryOp::Op::Accessor) && ast->member.has_value() ? toUTF8StdString(ast->member.value()) : "?"));
     stackPush(name);
     endVisit();
@@ -424,7 +444,7 @@ std::any ASTGraphviz::visit(ptr<ast::Call> ast)
 
     for(int i=0; i<ast->args.size();i++) {
         size_t argIndex = ast->args.size()-i-1;
-        std::string label = ast->args.at(argIndex).first.isEmpty() ? 
+        std::string label = ast->args.at(argIndex).first.isEmpty() ?
                                     std::to_string(argIndex)
                                   : toUTF8StdString(ast->args.at(argIndex).first)+"=";
         addLink(name, stackPop(), label);
@@ -534,7 +554,7 @@ std::any ASTGraphviz::visit(ptr<ast::Num> ast)
     else if (std::holds_alternative<int32_t>(ast->num)) {
         nodes[name] = node(name,"int",std::to_string(std::get<int32_t>(ast->num)));
     }
-    else 
+    else
         throw std::runtime_error("unhandled Num type");
 
     stackPush(name);

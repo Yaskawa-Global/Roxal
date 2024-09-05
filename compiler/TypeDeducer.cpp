@@ -193,6 +193,14 @@ std::any TypeDeducer::visit(ptr<ast::WhileStatement> ast)
 }
 
 
+std::any TypeDeducer::visit(ptr<ast::ForStatement> ast)
+{
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
+}
+
+
 std::any TypeDeducer::visit(ptr<ast::Function> ast)
 {
     ast::Anys results {};
