@@ -515,7 +515,115 @@ std::any RoxalCompiler::visit(ptr<ast::WhileStatement> ast)
 
 std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
 {
-    //...!!!
+    currentNode = ast;
+
+    #ifdef DEBUG_BUILD
+    emitByte(OpCode::Nop, "for scope");
+    #endif
+    enterLocalScope();
+
+    // declare a local for the loop index
+    icu::UnicodeString iname = "__index__";
+    declareVariable(iname);
+    emitByte(OpCode::ConstInt0);
+    defineVariable();
+
+    // declare local vars for each for target
+    std::vector<icu::UnicodeString> targetVarNames {};
+
+    uint8_t numTargets = ast->targetList.size();
+    // just support a either single target or 2 targets for now
+    if (numTargets > 2) {
+        error("Too many target variables in for statement.");
+        return {};
+    }
+    for(auto i = 0; i < numTargets; i++) {
+        assert(isa<VarDecl>(ast->targetList.at(i)));
+        auto name = as<VarDecl>(ast->targetList.at(i))->name;
+        // TODO: store type
+        targetVarNames.push_back(name);
+        declareVariable(name);
+        emitByte(OpCode::ConstNil);
+        defineVariable();
+    }
+
+
+
+    // evaluate the iterable
+    ast->iterable->accept(*this);
+
+    // compute the length of the iterable
+
+    // first find built-in global "len" function
+    namedGlobalVariable("len");
+
+    // dup the iterable as arg for len
+    emitByte(OpCode::DupBelow);
+
+    // call it
+    CallSpec lenCallSpec { 1 };
+    auto lenCallSpecBytes = lenCallSpec.toBytes();
+    assert(lenCallSpecBytes.size() == 1);
+    emitBytes(OpCode::Call, lenCallSpecBytes[0]);
+
+    // now we have stack: [iterable, len(iterable)]
+
+    // check if len(iterable) == nil (e.g. for range, implies the range isn't definite)
+    emitByte(OpCode::Dup); // len
+    emitByte(OpCode::ConstNil);
+    emitByte(OpCode::Equal);
+    auto jumpToAbort = emitJump(OpCode::JumpIfTrue);
+    emitByte(OpCode::Pop, "abort cond");
+
+    auto loopStart = currentChunk()->code.size();
+    #ifdef DEBUG_BUILD
+    emitByte(OpCode::Nop, "for loop body");
+    #endif
+
+    // check condition iname < len(iterable)
+    namedVariable(iname);
+    emitByte(OpCode::DupBelow); // len
+    emitByte(OpCode::Less);
+    auto jumpToExit = emitJump(OpCode::JumpIfFalse);
+    emitByte(OpCode::Pop, "exit cond");
+
+
+    // index the iterable via the loop index
+    emitByte(OpCode::DupBelow); // iterable
+    namedVariable(iname);
+    emitBytes(OpCode::Index, 1); // single index/arg indexing
+
+    // if there is a single target, just assign the target the result of indexing the iterable (stack top)
+    if (numTargets == 1) {
+        namedVariable(targetVarNames.at(0),/*assign=*/true);
+        emitByte(OpCode::Pop, "index result"); // discard index
+    }
+    else {
+        // otherwise, index into the index result for the number of targets and assign each target
+        //...
+    }
+
+    // generate code for the body
+    ast->body->accept(*this);
+
+    // increment the loop index
+    //  TODO: add Inc opcode (or IncLocal?)
+    namedVariable(iname);
+    emitByte(OpCode::ConstInt1);
+    emitByte(OpCode::Add);
+    namedVariable(iname, /*assign=*/true);
+    emitByte(OpCode::Pop);
+
+    emitLoop(loopStart);
+
+    patchJump(jumpToExit);
+    patchJump(jumpToAbort);
+    emitByte(OpCode::Pop, "exit/abort cond");
+
+    emitBytes(OpCode::PopN, 2, "iterable & len"); // discard the iterable & it's length (necessary?)
+
+    exitLocalScope();
+
     return {};
 }
 
@@ -1640,7 +1748,7 @@ void RoxalCompiler::declareVariable(const icu::UnicodeString& name)
 }
 
 
-void RoxalCompiler::defineVariable(uint16_t var)
+void RoxalCompiler::defineVariable(uint16_t global)
 {
     // local variables are already on the stack
     if (asFuncScope(funcScope())->scopeDepth > 0) {
@@ -1650,10 +1758,10 @@ void RoxalCompiler::defineVariable(uint16_t var)
     }
 
     // emit code to define named global variable at runtime
-    if (var > 255) // TODO: remove when DefineGlobal2 supported
+    if (global > 255) // TODO: remove when DefineGlobal2 supported
         throw std::runtime_error("Max of 255 global vars supported");
 
-    emitBytes(OpCode::DefineGlobal, uint8_t(var));
+    emitBytes(OpCode::DefineGlobal, uint8_t(global));
 }
 
 
@@ -1716,4 +1824,31 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
     }
 
     return true;
+}
+
+
+void RoxalCompiler::namedGlobalVariable(const icu::UnicodeString& name, bool assign)
+{
+    OpCode getOp, setOp;
+
+    int16_t arg = identifierConstant(name);
+    getOp = (arg<=255) ? OpCode::GetGlobal : OpCode::GetGlobal2;
+    //  allow assigning without previously declaring, except within functions
+    if (asFuncScope(funcScope())->functionType != FunctionType::Module)
+        setOp = (arg<=255) ? OpCode::SetGlobal : OpCode::SetGlobal2;
+    else
+        setOp = (arg<=255) ? OpCode::SetNewGlobal : OpCode::SetNewGlobal2;
+
+    if (!assign) {
+        if (arg <= 255)
+            emitBytes(getOp, arg, toUTF8StdString(name));
+        else
+            emitBytes(getOp, arg>>8, arg%256, toUTF8StdString(name));
+    }
+    else {
+        if (arg <= 255)
+            emitBytes(setOp, arg, toUTF8StdString(name));
+        else
+            emitBytes(setOp, arg>>8, arg%256, toUTF8StdString(name));
+    }
 }

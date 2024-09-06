@@ -20,7 +20,7 @@ enum class ValueType {
     Enum,      // 1001
     Type,      // 1010
 
-    // Obj (pointer) types 
+    // Obj (pointer) types
     String,
     Range,
     List,
@@ -32,7 +32,7 @@ enum class ValueType {
     Stream,
     Object,
     Actor,
-    Boxed = 0xff // not used with NAN tagging 
+    Boxed = 0xff // not used with NAN tagging
 };
 
 std::string to_string(ValueType t);
@@ -46,13 +46,13 @@ class StreamEngine;
 #if defined(NAN_TAGGING)
 
 // If Values are real (IEEE C++ double), then no bit conversions necessary
-//  IEEE Quiet NAN values are used to place type tag in mantissa (bits 46..49) 
+//  IEEE Quiet NAN values are used to place type tag in mantissa (bits 46..49)
 //  If type is nil or bool tag is also literal value
 //  If type is other value types, value is stored in lower bits (max 32bits)
 //  If type if object, sign bit is set and pointer is stored in lower 48 bits
 //  The enum type is an exception - it is a value type with complex type information:
 //   the lower 32bits are divided into lower 16bits holding the enum int16_t value and the
-//   upper 16bits holding an enum type id, used to lookup the enum type information from a global table 
+//   upper 16bits holding an enum type id, used to lookup the enum type information from a global table
 
 // All IEEE doubles are Quiet NANs if these bits are all 1:
 const uint64_t QNAN = ((uint64_t)0x7ffc000000000000);
@@ -82,7 +82,7 @@ bool isObjPrimitive(const Value& v); // forward from Object.h
 
 class Value {
 public:
-    Value() : val(QNAN | TagNil) {}  
+    Value() : val(QNAN | TagNil) {}
 
     explicit Value(bool b) { val = b ? (QNAN | TagTrue) : (QNAN | TagFalse); }
     explicit Value(uint8_t b) { val = QNAN | TagByte | (0xff & *reinterpret_cast<uint8_t*>(&b)); }
@@ -90,15 +90,15 @@ public:
     explicit Value(int32_t i) { val = QNAN | TagInt | (0xffffffff & *reinterpret_cast<uint64_t*>(&i)); }
     explicit Value(ValueType bt) { val = QNAN | TagType | uint64_t(bt); }
     explicit Value(Obj* o);
-    explicit Value(int16_t enumLabelValue, uint16_t enumTypeId) 
+    explicit Value(int16_t enumLabelValue, uint16_t enumTypeId)
         { val = QNAN | TagEnum | (0xffffffff & (*reinterpret_cast<uint64_t*>(&enumLabelValue) | (enumTypeId << 16))); }
 
 
-    Value(const Value& v) 
+    Value(const Value& v)
     {
         val.store(v.val.load());
         if (isObj() || isBoxed())
-            incRefObj();    
+            incRefObj();
     }
 
 
@@ -141,17 +141,17 @@ public:
     int32_t asInt(bool strict=true) const;
 
     inline bool isReal() const { return (val&QNAN) != QNAN; }
-    double asReal(bool strict=true) const; 
+    double asReal(bool strict=true) const;
 
     inline bool isNumber() const { return isInt() || isReal() || isByte(); } // TODO: || isDecimal(v)
 
     inline bool isEnum() const { return (val & (QNAN | TypeTag)) == (QNAN | TagEnum); }
     int16_t asEnum() const;
-    uint16_t enumTypeId() const { 
+    uint16_t enumTypeId() const {
         #ifdef DEBUG_BUILD
         assert(isEnum());
         #endif
-        return uint16_t(val >> 16); 
+        return uint16_t(val >> 16);
     }
 
     inline bool isType() const { return (val & (QNAN | TypeTag)) == (QNAN | TagType); }
@@ -163,15 +163,15 @@ public:
     }
 
     inline bool isObj() const { return (val & (QNAN | SignBit)) == (QNAN | SignBit); }
-    inline Obj* asObj() const { 
+    inline Obj* asObj() const {
         #ifdef DEBUG_BUILD
         assert(isObj());
         #endif
-        return (Obj*)(uintptr_t)(val & ~(SignBit | QNAN)); 
+        return (Obj*)(uintptr_t)(val & ~(SignBit | QNAN));
     }
 
 
-    // if is ObjFuture, block waiting for value (and replace this with value) 
+    // if is ObjFuture, block waiting for value (and replace this with value)
     void resolveFuture();
 
     bool operator==(const Value& rhs) const;
@@ -213,7 +213,7 @@ public:
     explicit Value(ValueType bt) : _type(ValueType::Type) { as.btype=bt; }
     explicit Value(Obj* o);
 
-    Value(const Value& v) 
+    Value(const Value& v)
     {
         copyFrom(v);
     }
@@ -254,7 +254,7 @@ public:
     int32_t asInt(bool strict=true) const;
 
     inline bool isReal() const { return valueType(_type)==ValueType::Real; }
-    double asReal(bool strict=true) const; 
+    double asReal(bool strict=true) const;
 
     inline bool isNumber() const { return isInt() || isReal(); } // TODO: || isByte() || isDecimal(v)
 
@@ -288,7 +288,7 @@ protected:
             incRefObj();
         }
         else {
-            switch(valueType(_type)) {            
+            switch(valueType(_type)) {
                 case ValueType::Nil: break;
                 case ValueType::Bool: as.boolean = v.as.boolean; break;
                 case ValueType::Int: as.integer = v.as.integer; break;

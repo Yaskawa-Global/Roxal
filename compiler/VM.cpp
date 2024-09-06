@@ -777,9 +777,37 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
     if (indexable.isObj()) {
         // TODO: move some per-type indexing code into Object or Value
         switch (objType(indexable)) {
+            case ObjType::Range: {
+                if (subscriptCount != 1) {
+                    runtimeError("Range indexing requires a single index.");
+                    return false;
+                }
+                ObjRange* range = asRange(indexable);
+                Value index = pop();
+                if (!index.isInt()) { // TODO number?
+                    runtimeError("Range indexing requires int index.");
+                    return false;
+                }
+
+                auto rangeLen = range->length();
+                if (rangeLen == -1) {
+                    runtimeError("Range indexing requires a range with definite limits.");
+                    return false;
+                }
+
+                if (index.asInt() >= range->length()) {
+                    runtimeError("Range index "+toString(index)+" out of bounds.");
+                    return false;
+                }
+
+                Value value = Value(range->targetIndex(index.asInt()));
+                pop(); // discard indexable
+                push(value);
+                return true;
+            }
             case ObjType::String: {
                 if (subscriptCount != 1) {
-                    runtimeError("String indexing requires a single subscript.");
+                    runtimeError("String indexing requires a single index.");
                     return false;
                 }
                 ObjString* str = asString(indexable);
@@ -799,7 +827,7 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
             }
             case ObjType::List: {
                 if (subscriptCount != 1) {
-                    runtimeError("List indexing requires a single subscript.");
+                    runtimeError("List indexing requires a single index.");
                     return false;
                 }
                 ObjList* list = asList(indexable);
@@ -905,10 +933,10 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
             default:
                 break;
         }
-        runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed, not type "+objTypeName(indexable.asObj())+".");
+        runtimeError("Only strings, lists, ranges, [vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed, not type "+objTypeName(indexable.asObj())+".");
         return false;
     }
-    runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed, not type "+indexable.typeName()+".");
+    runtimeError("Only strings, lists, ranges,[vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed, not type "+indexable.typeName()+".");
     return false;
 }
 
@@ -918,13 +946,17 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
     if (indexable.isObj()) {
         // TODO: move some per-type indexing code into Object or Value
         switch (objType(indexable)) {
+            case ObjType::Range: {
+                runtimeError("Ranges are immutable - cannot be modified.");
+                return false;
+            }
             case ObjType::String: {
                 runtimeError("Strings are immutable - content cannot be modified.");
                 return false;
             } break;
             case ObjType::List: {
                 if (subscriptCount != 1) {
-                    runtimeError("List indexing requires a single subscript.");
+                    runtimeError("List indexing requires a single index.");
                     return false;
                 }
                 ObjList* list = asList(indexable);
@@ -941,7 +973,7 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
             } break;
             case ObjType::Dict: {
                 if (subscriptCount != 1) {
-                    runtimeError("Dict indexing requires a single subscript.");
+                    runtimeError("Dict indexing requires a single index.");
                     return false;
                 }
                 ObjDict* dict = asDict(indexable);
@@ -958,11 +990,11 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
             default:
                 break;
         }
-        runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed, not type "+objTypeName(indexable.asObj())+".");
+        runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed for assignment, not type "+objTypeName(indexable.asObj())+".");
         return false;
     }
 
-    runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed, not type "+indexable.typeName()+".");
+    runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed for assignment, not type "+indexable.typeName()+".");
     return false;
 }
 
@@ -1304,6 +1336,14 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 push(falseVal());
                 break;
             }
+            case asByte(OpCode::ConstInt0): {
+                push(intVal(0));
+                break;
+            }
+            case asByte(OpCode::ConstInt1): {
+                push(intVal(1));
+                break;
+            }
             case asByte(OpCode::GetProp): {
                 Value& inst { peek(0) };
                 inst.resolveFuture();
@@ -1589,6 +1629,11 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::Dup): {
                 auto value = peek(0);
+                push(value);
+                break;
+            }
+            case asByte(OpCode::DupBelow): {
+                auto value = peek(1);
                 push(value);
                 break;
             }

@@ -36,6 +36,8 @@ void Chunk::writeConsant(const Value& value, int line, const std::string& commen
 
 Chunk::size_type Chunk::addConstant(const Value& value)
 {
+    // TODO: perhaps seach and reuse consts?  (definitely if value types?)
+    //  worth it? as they're per-chunk
     constants.push_back(value);
     return constants.size()-1;
 }
@@ -128,11 +130,11 @@ Chunk::size_type Chunk::constantInstruction(const std::string& name, size_type o
 {
     uint8_t constant = code.at(offset+1);
     #ifdef DEBUG_BUILD
-    if (constant >= constants.size()) 
+    if (constant >= constants.size())
         throw std::runtime_error("Constant instruction at "+std::to_string(offset)+" references constant "+std::to_string(constant)+" but constant table size is "+std::to_string(constants.size()));
     #endif
     auto value = constants.at(constant);
-    std::cout << format("%-16s %4d '", name.c_str(), constant) 
+    std::cout << format("%-16s %4d '", name.c_str(), constant)
               << toString(value)
               << "':" << value.typeName() << std::endl;
     return offset+2;
@@ -142,7 +144,7 @@ Chunk::size_type Chunk::constantInstruction(const std::string& name, size_type o
 Chunk::size_type Chunk::constantInstruction2(const std::string& name, size_type offset) const
 {
     uint16_t constant = (code.at(offset+1) << 8) + code.at(offset+2); // LSByte last
-    std::cout << format("%-16s %4d '", name.c_str(), constant) 
+    std::cout << format("%-16s %4d '", name.c_str(), constant)
               << toString(constants.at(constant))
               << "'" << std::endl;
     return offset+3;
@@ -181,12 +183,16 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("CONSTANT", offset);
         case asByte(OpCode::Constant2):
             return constantInstruction2("CONSTANT2", offset);
+        case asByte(OpCode::ConstNil):
+            return simpleInstruction("CONST_NIL", offset);
         case asByte(OpCode::ConstTrue):
             return simpleInstruction("CONST_TRUE", offset);
         case asByte(OpCode::ConstFalse):
             return simpleInstruction("CONST_FALSE", offset);
-        case asByte(OpCode::ConstNil):
-            return simpleInstruction("CONST_NIL", offset);
+        case asByte(OpCode::ConstInt0):
+            return simpleInstruction("CONST_INT0", offset);
+        case asByte(OpCode::ConstInt1):
+            return simpleInstruction("CONST_INT1", offset);
         case asByte(OpCode::Equal):
             return simpleInstruction("EQUAL", offset);
         case asByte(OpCode::Greater):
@@ -217,6 +223,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return byteInstruction("POPN", offset);
         case asByte(OpCode::Dup):
             return simpleInstruction("DUP", offset);
+        case asByte(OpCode::DupBelow):
+            return simpleInstruction("DUP_BELOW", offset);
         case asByte(OpCode::Swap):
             return simpleInstruction("SWAP", offset);
         case asByte(OpCode::JumpIfFalse):
@@ -229,7 +237,7 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return jumpInstruction("LOOP", -1, offset);
         case asByte(OpCode::Call): {
             byteInstruction("CALL", offset);
-            // compute num of bytes to skip over CallSpec            
+            // compute num of bytes to skip over CallSpec
             auto ip = code.begin()+offset+1;
             CallSpec callSpec{ip};
             if (!callSpec.allPositional) {
@@ -266,7 +274,7 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
 
             return offset;
         }
-        case asByte(OpCode::CloseUpvalue): 
+        case asByte(OpCode::CloseUpvalue):
             return simpleInstruction("CLOSE_UPVALUE", offset);
         case asByte(OpCode::Return):
             return simpleInstruction("RETURN", offset);
@@ -382,7 +390,7 @@ std::vector<uint8_t> CallSpec::toBytes() const
         assert(argCount == args.size());
     #endif
 
-    if (allPositional) { 
+    if (allPositional) {
         // common (optimized) case of all-positional args
         if (argCount>127)
             throw std::runtime_error("Maximum of 127 call arguments exceeded");
@@ -571,7 +579,7 @@ void CallSpec::testParamPositions()
     pp = callSpec.paramPositions(type);
     assert((pp == std::vector<int8_t>{0,2,1,3,-1,-1}));
 
-    // f(a0,p1=,p2,p3=) - in-order, p4,p5 omitted, p2 unnamed 
+    // f(a0,p1=,p2,p3=) - in-order, p4,p5 omitted, p2 unnamed
     callSpec.args[1] = {false,argNameHash("p1")};
     callSpec.args[2] = {true,0};
     callSpec.args[3] = {false,argNameHash("p3")};

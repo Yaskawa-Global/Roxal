@@ -12,10 +12,12 @@ namespace roxal {
 enum class OpCode {
     Nop,
     Constant,
-    Constant2, 
+    Constant2,
     ConstNil,
     ConstTrue,
     ConstFalse,
+    ConstInt0,
+    ConstInt1,
     Equal,
     Greater,
     Less,
@@ -31,6 +33,7 @@ enum class OpCode {
     Pop,
     PopN,
     Dup,
+    DupBelow,
     Swap,
     JumpIfFalse,
     JumpIfTrue,
@@ -82,7 +85,7 @@ inline constexpr uint8_t asByte(OpCode op) { return uint8_t(op); }
 
 
 
-class Chunk 
+class Chunk
 {
 public:
     Chunk();
@@ -161,7 +164,7 @@ struct CallSpec {
     bool namedArgs() const; // any named args?
 
     // given the type of the callee (e.g. for func this specifies the parameter name/order)
-    //  for this caller CallSpec, return vector in param order of arg positions (or -1 
+    //  for this caller CallSpec, return vector in param order of arg positions (or -1
     //   if arg value for param not supplied)
     //  (e.g. is [0]=3 -> first callee param is 4th arg pushed onto stack by caller)
     // if throwOnMissing is true and an argument is not supplied and not defaulted by the callee,

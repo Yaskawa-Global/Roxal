@@ -240,8 +240,9 @@ protected:
     int addUpvalue(Scope scopeState, uint8_t index, bool isLocal);
     int16_t resolveUpvalue(Scope scopeState, const icu::UnicodeString& name);
     void declareVariable(const icu::UnicodeString& name);
-    void defineVariable(uint16_t global);
-    bool namedVariable(const icu::UnicodeString& ident, bool assign=false);
+    void defineVariable(uint16_t global = 0); // global unused if defining a local
+    bool namedVariable(const icu::UnicodeString& name, bool assign=false);
+    void namedGlobalVariable(const icu::UnicodeString& name, bool assign=false);
 
 };
 
