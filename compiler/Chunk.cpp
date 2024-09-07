@@ -344,6 +344,10 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return byteInstruction("NEWLIST", offset);
         case asByte(OpCode::NewDict):
             return byteInstruction("NEWDICT", offset);
+        case asByte(OpCode::IfDictToKeys):
+            return simpleInstruction("IF_DICT_TO_KEYS", offset);
+        case asByte(OpCode::IfDictToItems):
+            return simpleInstruction("IF_DICT_TO_ITEMS", offset);
         case asByte(OpCode::Nop):
             return simpleInstruction("NOP", offset);
         default:

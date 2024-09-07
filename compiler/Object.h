@@ -343,6 +343,15 @@ struct ObjDict : public Obj
         return m_keys;
     }
 
+    std::vector<std::pair<Value,Value>> items() const {
+        std::lock_guard<std::mutex> lock(m);
+        std::vector<std::pair<Value,Value>> keyvalues {};
+        // can't just iterate over the entries directly, as we want to preserve order according to m_keys
+        for(auto it=m_keys.cbegin(); it!=m_keys.cend(); it++)
+            keyvalues.push_back(std::pair<Value,Value>(*it,entries.at(*it)));
+        return keyvalues;
+    }
+
     void store(const Value& key, const Value& val) {
         std::lock_guard<std::mutex> lock(m);
         if (entries.find(key) == entries.end()) // key exists?
@@ -361,7 +370,7 @@ struct ObjDict : public Obj
 private:
     mutable std::mutex m;
     std::vector<Value> m_keys;
-    // TODO: transition to unordered_map by defining Value hash
+    // TODO: transition unordered map (since m_keys provides ordering) - Value hash?
     std::map<Value,Value,ValueComparitor> entries;
 };
 

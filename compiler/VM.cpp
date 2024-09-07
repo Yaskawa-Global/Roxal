@@ -1940,6 +1940,37 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 push(objVal(dictVal(entries)));
                 break;
             }
+            case asByte(OpCode::IfDictToKeys): {
+                Value& maybeDict = peek(0);
+                if (!isDict(maybeDict))
+                    maybeDict.resolveFuture();
+                if (isDict(maybeDict)) {
+                    Value d { maybeDict };
+                    pop();
+                    auto keys { asDict(d)->keys() };
+                    push(objVal(listVal(keys)));
+                }
+                break;
+            }
+            case asByte(OpCode::IfDictToItems): {
+                Value& maybeDict = peek(0);
+                if (!isDict(maybeDict))
+                    maybeDict.resolveFuture();
+                if (isDict(maybeDict)) {
+                    Value d { maybeDict };
+                    pop();
+                    auto vecItemPairs { asDict(d)->items() };
+                    ObjList* listItems { listVal() };
+                    for(const auto& item : vecItemPairs) {
+                        ObjList* itemList = listVal();
+                        itemList->elts.push_back(item.first);
+                        itemList->elts.push_back(item.second);
+                        listItems->elts.push_back(objVal(itemList));
+                    }
+                    push(objVal(listItems));
+                }
+                break;
+            }
             case asByte(OpCode::ObjectType): {
                 ObjString* name = readString();
                 push(objVal(objectTypeVal(name->s, /*isActor=*/false)));

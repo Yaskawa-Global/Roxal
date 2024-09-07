@@ -41,6 +41,8 @@ protected:
     static std::stack<std::pair<std::string,std::string>> parseStack;
 };
 
+std::stack<std::pair<std::string,std::string>> ParseTracer::parseStack {};
+
 
 
 void ASTGenerator::setSourceInfo(ptr<AST> ast, antlr4::ParserRuleContext* context)

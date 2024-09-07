@@ -78,7 +78,9 @@ enum class OpCode {
     GetSuper,
     NewRange,
     NewList,
-    NewDict
+    NewDict,
+    IfDictToKeys,
+    IfDictToItems
 };
 
 inline constexpr uint8_t asByte(OpCode op) { return uint8_t(op); }

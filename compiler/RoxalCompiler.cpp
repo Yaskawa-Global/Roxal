@@ -552,6 +552,14 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     // evaluate the iterable
     ast->iterable->accept(*this);
 
+    // special case for iterating over dicts:
+    //  if single target, convert to list of keys
+    //  if two targets, convert to list of key-value pairs (list of two elements)
+    if (numTargets == 1)
+        emitByte(OpCode::IfDictToKeys);
+    else if (numTargets == 2)
+        emitByte(OpCode::IfDictToItems);
+
     // compute the length of the iterable
 
     // first find built-in global "len" function
@@ -600,7 +608,22 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     }
     else {
         // otherwise, index into the index result for the number of targets and assign each target
-        //...
+        for(auto i = 0; i < numTargets; i++) {
+            emitByte(OpCode::Dup); // dup index result
+            if (i==0)
+                emitByte(OpCode::ConstInt0);
+            else if (i==1)
+                emitByte(OpCode::ConstInt1);
+            else
+                emitConstant(intVal(i));
+            emitBytes(OpCode::Index, 1);
+
+            // assign it to target
+            namedVariable(targetVarNames.at(i),/*assign=*/true);
+
+            emitByte(OpCode::Pop, "subindex result"); // discard index
+        }
+        emitByte(OpCode::Pop, "index result"); // discard index
     }
 
     // generate code for the body
