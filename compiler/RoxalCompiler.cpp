@@ -643,8 +643,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     std::vector<icu::UnicodeString> targetVarNames {};
 
     uint8_t numTargets = ast->targetList.size();
-    // just support a either single target or 2 targets for now
-    if (numTargets > 2) {
+    if (numTargets > 128) {
         error("Too many target variables in for statement.");
         return {};
     }
@@ -665,10 +664,10 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
 
     // special case for iterating over dicts:
     //  if single target, convert to list of keys
-    //  if two targets, convert to list of key-value pairs (list of two elements)
+    //  otherwise, convert to list of key-value pairs (list of two elements)
     if (numTargets == 1)
         emitByte(OpCode::IfDictToKeys);
-    else if (numTargets == 2)
+    else if (numTargets >= 2)
         emitByte(OpCode::IfDictToItems);
 
     // compute the length of the iterable
