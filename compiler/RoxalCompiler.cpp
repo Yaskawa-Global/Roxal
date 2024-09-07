@@ -1,4 +1,4 @@
-
+#include <filesystem>
 #include <boost/algorithm/string/replace.hpp>
 
 #include <core/common.h>
@@ -47,7 +47,7 @@ ptr<C> as(ptr<AST> p) {
 
 
 RoxalCompiler::RoxalCompiler()
-    : outputBytecodeDissasembly(false)
+    : outputBytecodeDisassembly(false)
 {}
 
 
@@ -84,7 +84,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 
     if (ast != nullptr) {
 
-        enterModuleScope(toUnicodeString(name));
+        enterModuleScope("",toUnicodeString(name));
 
         auto module { asModuleScope(moduleScope()) };
 
@@ -99,7 +99,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 
             assert(function != nullptr);
 
-            if (outputBytecodeDissasembly)
+            if (outputBytecodeDisassembly)
                 module->function->chunk->disassemble(module->function->name);
 
             //std::cout << "value:" << value->repr() << std::endl;
@@ -126,9 +126,14 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 }
 
 
-void RoxalCompiler::setOutputBytecodeDissasembly(bool outputBytecodeDissasembly)
+void RoxalCompiler::setOutputBytecodeDisassembly(bool outputBytecodeDisassembly)
 {
-    this->outputBytecodeDissasembly = outputBytecodeDissasembly;
+    this->outputBytecodeDisassembly = outputBytecodeDisassembly;
+}
+
+void RoxalCompiler::setModulePaths(const std::vector<std::string>& modulePaths)
+{
+    this->modulePaths = modulePaths;
 }
 
 
@@ -170,6 +175,112 @@ std::any RoxalCompiler::visit(ptr<ast::Annotation> ast)
     //ast->acceptChildren(*this);
     return {};
 }
+
+
+std::any RoxalCompiler::visit(ptr<ast::Import> ast)
+{
+
+    currentNode = ast;
+
+    // search the module paths (as package component roots)
+    //  for the specified module
+    ModuleInfo module = findImport(ast->packages);
+
+    if (module.name.empty()) {
+        error("import '"+toUTF8StdString(join(ast->packages,"."))+"' not found.");
+        return {};
+    }
+
+    std::string absoluteModuleFilePath = std::filesystem::canonical(std::filesystem::absolute(module.modulePathRoot + "/" + module.packagePath + '/' + module.filename));
+
+    // extra check the module file exists
+    if (!std::filesystem::exists(std::filesystem::path(absoluteModuleFilePath))) {
+        error("import file '"+module.packagePath + '/' + module.filename+"' not found.");
+        return {};
+    }
+
+    // has this module already been imported?
+    auto importedEntry = importedModules.find(module);
+    bool imported = importedEntry != importedModules.end();
+
+    //std::cout << module << std::endl;
+
+    Value importedModuleType {};
+
+    if (!imported) {  // import it
+
+        // compile it, emit code to execute it
+        //std::cout << "importing " << absoluteModuleFilePath << std::endl;
+
+        // compile to generate code for imported module
+        std::ifstream sourcestream(absoluteModuleFilePath);
+
+        ObjFunction* function { nullptr };
+
+        try {
+            // compile to generate code for imported module
+            function = compile(sourcestream, module.name);
+
+            importedModuleType = function->moduleType;
+
+            // emit code to place module's main chunk on stack as closure
+            assert(function->upvalueCount == 0);
+            emitBytes(OpCode::Closure, makeConstant(objVal(function)));
+
+            // call it to have it executed (which will result in module vars being declared)
+            CallSpec callSpec {};
+            callSpec.allPositional = true;
+            callSpec.argCount = 0;
+            auto bytes = callSpec.toBytes();
+            assert(bytes.size()==1);
+            emitBytes(OpCode::Call, bytes[0]);
+
+            importedModules[module] = importedModuleType;
+
+        } catch (std::exception& e) {
+            error(e.what());
+            return {};
+        }
+    }
+    else { // already previously imported
+        //std::cout << absoluteModuleFilePath << " already imported" << std::endl;
+        importedModuleType = importedEntry->second;
+    }
+
+    // define a variable in the importing module with the name of the imported module
+    //  that has the value of the ObjModuleType
+    //  (we can directly insert the var in the importing module since it is already existing static type)
+    const auto& importingModuleType = asFuncScope(funcScope())->function->moduleType;
+    auto& importingModuleVars = asModuleType(importingModuleType)->vars;
+    icu::UnicodeString moduleName { toUnicodeString(module.name) };
+    importingModuleVars.store(moduleName, importedModuleType);
+
+
+    // if any (or all) symbols are explicitly imported into the importing module scope,
+    //  create vars for those too
+    if (!ast->symbols.empty()) {
+
+        // convert AST symbols to a List of Values
+        std::vector<Value> symbolsList {};
+        for(const auto& symbol : ast->symbols)
+            symbolsList.push_back(objVal(stringVal(symbol)));
+
+        Value symbolsListVal { listVal() };
+        asList(symbolsListVal)->elts = symbolsList;
+
+        // Opcode::ImportModuleVars expects a list (of symbols) and the source module & target module
+        emitConstant(symbolsListVal, "import vars "+toUTF8StdString(join(ast->symbols)));
+
+        emitConstant(importedModuleType, "imported module type "+module.name);
+        emitConstant(importingModuleType, "importing module type "+toUTF8StdString(asModuleType(importingModuleType)->name));
+
+        emitByte(OpCode::ImportModuleVars);
+    }
+
+
+    return {};
+}
+
 
 
 std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
@@ -254,8 +365,8 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
                 emitConstant(typeValue, "prop "+toUTF8StdString(propName)+" type");
             }
-            else { // assume string names global (local?) type var
-                // will emit GetLocal or GetGlobal (or GetUpValue)
+            else { // assume string names module scope (local?) type var
+                // will emit GetLocal or GetModuleVar (or GetUpValue)
                 namedVariable( std::get<icu::UnicodeString>(varType), false );
             }
 
@@ -356,7 +467,7 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
     declareVariable(name);
 
     uint16_t var { 0 };
-    if (asFuncScope(funcScope())->scopeDepth == 0) // global variable
+    if (asFuncScope(funcScope())->scopeDepth == 0) // module variable
         var = identifierConstant(name); // create constant table entry for name
 
     if (asFuncScope(funcScope())->scopeDepth > 0) {
@@ -563,7 +674,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     // compute the length of the iterable
 
     // first find built-in global "len" function
-    namedGlobalVariable("len");
+    namedModuleVariable("len");
 
     // dup the iterable as arg for len
     emitByte(OpCode::DupBelow);
@@ -673,7 +784,10 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
                             : FunctionType::Function;
 
     assert(ast->type.has_value());
-    enterFuncScope(ast->name, ftype, ast->type.value());
+
+    auto enclosingModuleScope { asModuleScope(moduleScope()) };
+
+    enterFuncScope(enclosingModuleScope->moduleType, ast->name, ftype, ast->type.value());
 
     #ifdef DEBUG_BUILD
     emitByte(OpCode::Nop, "func "+toUTF8StdString(ast->name));
@@ -691,7 +805,7 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 
     emitReturn();
 
-    if (outputBytecodeDissasembly)
+    if (outputBytecodeDisassembly)
         asFuncScope(funcScope())->function->chunk->disassemble(asFuncScope(funcScope())->function->name);
 
     ObjFunction* function = asFuncScope(funcScope())->function;
@@ -736,7 +850,9 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
         defFuncType->func = type::Type::FuncType();
         // TODO: specify return type? (necessary?)
 
-        enterFuncScope(ast->name, FunctionType::Function, defFuncType);
+        auto enclosingModuleScope { asModuleScope(moduleScope()) };
+
+        enterFuncScope(enclosingModuleScope->moduleType, ast->name, FunctionType::Function, defFuncType);
 
         #ifdef DEBUG_BUILD
         emitByte(OpCode::Nop, "param_def "+toUTF8StdString(ast->name));
@@ -756,7 +872,7 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
         //  rather than leaving it on the stack
         emitByte(OpCode::ReturnStore);
 
-        if (outputBytecodeDissasembly)
+        if (outputBytecodeDisassembly)
             asFuncScope(funcScope())->function->chunk->disassemble(asFuncScope(funcScope())->function->name);
 
         ObjFunction* function = asFuncScope(funcScope())->function;
@@ -1187,6 +1303,79 @@ std::any RoxalCompiler::visit(ptr<ast::Dict> ast)
 }
 
 
+
+RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::UnicodeString>& components) const
+{
+    // search the module paths (as package component roots)
+    //  for the specified module
+    std::vector<std::filesystem::path> candidatePaths; // paths that match the prefix, thus far
+    for (const auto& modulePath : modulePaths)
+        candidatePaths.push_back(std::filesystem::canonical(std::filesystem::absolute(modulePath)));
+
+    //std::cout << "initial candidates:";
+    //for (const auto& path : candidatePaths)
+    //    std::cout << path << std::endl;
+
+    size_t importComponentIndex = 0;
+    // for each component of the import
+    while (importComponentIndex < components.size()) {
+        bool isLastComponent = (importComponentIndex == components.size()-1);
+
+        // filter for the paths from the candidates thus far that match upto the current component
+        std::vector<std::filesystem::path> newCandidatePaths {};
+        for (const auto& modulePath : candidatePaths) {
+            // list of folders and files in modulePath
+            for (const auto& entry : std::filesystem::directory_iterator(modulePath)) {
+                //std::cout << "considering " << entry.path() << " from module path" << modulePath << std::endl;
+                auto entryName = toUnicodeString(entry.path().filename().string());
+                if (entry.is_directory()) { // package
+                    if (entryName == components.at(importComponentIndex))
+                        newCandidatePaths.push_back(entry.path());
+                }
+                else if (isLastComponent && (entryName == components.at(importComponentIndex)+".rox")) {
+                    //std::cout << "found: " << entry.path() << std::endl;
+                    newCandidatePaths.push_back(entry.path());
+                    break; // found the module, no need to search further
+                }
+            }
+        }
+        candidatePaths = newCandidatePaths;
+        importComponentIndex++;
+    }
+
+
+    // debug - output candidate paths
+    //std::cout << "final candidates:";
+    //for (const auto& path : candidatePaths)
+    //    std::cout << path << std::endl;
+
+    if (candidatePaths.empty()) // not found
+        return {};
+
+
+    // found
+    auto path { candidatePaths.at(0) }; // take first (if multiple)
+    ModuleInfo module {};
+    module.filename = path.filename().string();
+    for (auto& modulePath : modulePaths) {
+        auto absModulePath = std::filesystem::canonical(std::filesystem::absolute(modulePath));
+        if (startsWith(path, absModulePath)) {
+            module.modulePathRoot = modulePath;
+            module.packagePath = std::filesystem::relative(path, absModulePath).parent_path().string();
+            module.isPackage = std::filesystem::is_directory(path); // FIXME: handle package module file above
+            module.filename = path.filename().string();
+            module.name = path.stem().string();
+            return module;
+        }
+    }
+
+    return {};
+}
+
+
+
+
+
 void RoxalCompiler::outputScopes()
 {
     std::cout << "Scopes: ";
@@ -1200,26 +1389,11 @@ void RoxalCompiler::outputScopes()
 
 
 
-void RoxalCompiler::enterGlobalScope()
+void RoxalCompiler::enterModuleScope(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName)
 {
-    #ifdef DEBUG_TRACE_SCOPES
-    std::cout << "enterGlobalScope()" << std::endl;
-    outputScopes();
-    #endif
-}
+    auto moduleScope { std::make_shared<ModuleScope>(packageName, moduleName) };
 
-void RoxalCompiler::exitGlobalScope()
-{
-    #ifdef DEBUG_TRACE_SCOPES
-    std::cout << "exitGlobalScope()" << std::endl;
-    outputScopes();
-    #endif
-}
-
-
-void RoxalCompiler::enterModuleScope(const icu::UnicodeString& moduleName)
-{
-    lexicalScopes.push_back(std::make_shared<ModuleScope>(moduleName));
+    lexicalScopes.push_back(moduleScope);
     #ifdef DEBUG_TRACE_SCOPES
     std::cout << "enterModuleScope(" << toUTF8StdString(moduleName) << ")" << std::endl;
     outputScopes();
@@ -1235,8 +1409,20 @@ void RoxalCompiler::exitModuleScope()
         throw std::runtime_error("exitModuleScope() - not in module scope");
     #endif
     #ifdef DEBUG_TRACE_SCOPES
-    std::cout << "exitModuleScope(" << toUTF8StdString(asModuleScope(moduleScope())->function->name) << ")" << std::endl;
+    auto module { asModuleScope(moduleScope() };
+    std::cout << "exitModuleScope("
+              << (!module->packageName.isEmpty() ? toUTF8StdString(module->packageName)+"." : "")
+              << toUTF8StdString(module->moduleName) << ")" << std::endl;
     #endif
+
+    // store the ObjModuleType for this module in its associated objFunction, so the VM
+    //  can access it at runtime to declare and access module variables
+    auto modScope { asModuleScope(scope()) };
+    #ifdef DEBUG_BUILD
+    assert(!modScope->moduleType.isNil() && modScope->moduleType.isObj());
+    assert(modScope->function != nullptr);
+    #endif
+    modScope->function->moduleType = modScope->moduleType;
 
     lexicalScopes.pop_back();
 
@@ -1276,9 +1462,17 @@ void RoxalCompiler::exitTypeScope()
 }
 
 
-void RoxalCompiler::enterFuncScope(const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> type)
+void RoxalCompiler::enterFuncScope(Value moduleType, const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> type)
 {
-    lexicalScopes.push_back(std::make_shared<FunctionScope>(funcName,funcType,type));
+    // function scopes only valid in a module
+    auto modScope { asModuleScope(moduleScope()) };
+
+    auto funcScope {std::make_shared<FunctionScope>(modScope->packageName, modScope->moduleName,
+                                                    funcName,funcType,type)};
+
+    funcScope->function->moduleType = moduleType;
+
+    lexicalScopes.push_back(funcScope);
 
     #ifdef DEBUG_TRACE_SCOPES
     std::cout << "enterFuncScope(" << toUTF8StdString(funcName) << ",funcType=" << toString(funcType) << ")" << std::endl;
@@ -1449,12 +1643,28 @@ RoxalCompiler::Scope RoxalCompiler::enclosingTypeScope(Scope s)
 }
 
 
+bool RoxalCompiler::inModuleScope()
+{
+    for(auto i = lexicalScopes.rbegin(); i != lexicalScopes.rend(); ++i)
+        if ((*i)->scopeType == LexicalScope::ScopeType::Module)
+            return true;
+    return false;
+}
+
 RoxalCompiler::Scope RoxalCompiler::moduleScope()
 {
     auto s = scope();
     while ((*s)->scopeType != LexicalScope::ScopeType::Module)
         s = enclosingScope(s);
     return s;
+}
+
+RoxalCompiler::Scope RoxalCompiler::enclosingModuleScope(Scope s)
+{
+    auto es = enclosingScope(s);
+    while ((*es)->scopeType != LexicalScope::ScopeType::Module)
+        es = enclosingScope(es);
+    return es;
 }
 
 
@@ -1731,7 +1941,7 @@ int16_t RoxalCompiler::resolveUpvalue(Scope scopeState, const icu::UnicodeString
         #ifdef DEBUG_BUILD
         asFuncScope(enclosingFuncScope(scopeState))->locals.at(local).isCaptured = true;
         #else
-        enclosingFuncScope(scopeState)->locals[local].isCaptured = true;
+        asFuncScope(enclosingFuncScope(scopeState))->locals[local].isCaptured = true;
         #endif
         return addUpvalue(scopeState, uint8_t(local), true);
     }
@@ -1771,7 +1981,7 @@ void RoxalCompiler::declareVariable(const icu::UnicodeString& name)
 }
 
 
-void RoxalCompiler::defineVariable(uint16_t global)
+void RoxalCompiler::defineVariable(uint16_t moduleVar)
 {
     // local variables are already on the stack
     if (asFuncScope(funcScope())->scopeDepth > 0) {
@@ -1780,11 +1990,11 @@ void RoxalCompiler::defineVariable(uint16_t global)
         return;
     }
 
-    // emit code to define named global variable at runtime
-    if (global > 255) // TODO: remove when DefineGlobal2 supported
-        throw std::runtime_error("Max of 255 global vars supported");
+    // emit code to define named module scope variable at runtime
+    if (moduleVar > 255) // TODO: remove when DefineModuleVar2 supported
+        throw std::runtime_error("Max of 255 module vars supported");
 
-    emitBytes(OpCode::DefineGlobal, uint8_t(global));
+    emitBytes(OpCode::DefineModuleVar, uint8_t(moduleVar));
 }
 
 
@@ -1823,14 +2033,14 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
     }
 
     if (!found) { // local, not found
-        // assume global
+        // assume module scope
         arg = identifierConstant(name);
-        getOp = (arg<=255) ? OpCode::GetGlobal : OpCode::GetGlobal2;
+        getOp = (arg<=255) ? OpCode::GetModuleVar : OpCode::GetModuleVar2;
         //  allow assigning without previously declaring, except within functions
         if (asFuncScope(funcScope())->functionType != FunctionType::Module)
-            setOp = (arg<=255) ? OpCode::SetGlobal : OpCode::SetGlobal2;
+            setOp = (arg<=255) ? OpCode::SetModuleVar : OpCode::SetModuleVar2;
         else
-            setOp = (arg<=255) ? OpCode::SetNewGlobal : OpCode::SetNewGlobal2;
+            setOp = (arg<=255) ? OpCode::SetNewModuleVar : OpCode::SetNewModuleVar2;
     }
 
     if (!assign) {
@@ -1850,17 +2060,17 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
 }
 
 
-void RoxalCompiler::namedGlobalVariable(const icu::UnicodeString& name, bool assign)
+void RoxalCompiler::namedModuleVariable(const icu::UnicodeString& name, bool assign)
 {
     OpCode getOp, setOp;
 
     int16_t arg = identifierConstant(name);
-    getOp = (arg<=255) ? OpCode::GetGlobal : OpCode::GetGlobal2;
+    getOp = (arg<=255) ? OpCode::GetModuleVar  : OpCode::GetModuleVar2;
     //  allow assigning without previously declaring, except within functions
     if (asFuncScope(funcScope())->functionType != FunctionType::Module)
-        setOp = (arg<=255) ? OpCode::SetGlobal : OpCode::SetGlobal2;
+        setOp = (arg<=255) ? OpCode::SetModuleVar : OpCode::SetModuleVar2;
     else
-        setOp = (arg<=255) ? OpCode::SetNewGlobal : OpCode::SetNewGlobal2;
+        setOp = (arg<=255) ? OpCode::SetNewModuleVar : OpCode::SetNewModuleVar2;
 
     if (!assign) {
         if (arg <= 255)
@@ -1874,4 +2084,16 @@ void RoxalCompiler::namedGlobalVariable(const icu::UnicodeString& name, bool ass
         else
             emitBytes(setOp, arg>>8, arg%256, toUTF8StdString(name));
     }
+}
+
+
+std::ostream& roxal::operator<<(std::ostream& out, const RoxalCompiler::ModuleInfo& mi) {
+    out << "ModuleInfo {"
+        << "modulePathRoot: " << mi.modulePathRoot << ", "
+        << "packagePath: " << mi.packagePath << ", "
+        << "name: " << mi.name << ", "
+        << "isPackage: " << (mi.isPackage ? "true" : "false") << ", "
+        << "filename: " << mi.filename
+        << "}";
+    return out;
 }

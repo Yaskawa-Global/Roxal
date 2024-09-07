@@ -21,10 +21,11 @@ VM::VM()
     : lineMode(false)
 {
     thread = nullptr;
-    defineBuiltinFunctions();
-    defineNativeFunctions();
     initString = stringVal(UnicodeString("init"));
     initString->incRef();
+
+    defineBuiltinFunctions();
+    defineNativeFunctions();
 
     auto engine = StreamEngine::instance();
     //CallSpec::testParamPositions();
@@ -36,7 +37,7 @@ VM::VM()
 
 VM::~VM()
 {
-    globals.clear();
+    globals.clearGlobals();
 
     initString->decRef();
 
@@ -48,9 +49,19 @@ VM::~VM()
 }
 
 
-void VM::setDissasemblyOutput(bool outputBytecodeDissasembly)
+void VM::setDisassemblyOutput(bool outputBytecodeDisassembly)
 {
-    this->outputBytecodeDissasembly = outputBytecodeDissasembly;
+    this->outputBytecodeDisassembly = outputBytecodeDisassembly;
+}
+
+void VM::appendModulePaths(const std::vector<std::string>& modulePaths)
+{
+    // insert into modulePaths, except if already present
+
+    for (const std::string& path : modulePaths) {
+        if (std::find(this->modulePaths.begin(), this->modulePaths.end(), path) == this->modulePaths.end())
+            this->modulePaths.push_back(path);
+    }
 }
 
 
@@ -62,7 +73,8 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
 
     try {
         RoxalCompiler compiler {};
-        compiler.setOutputBytecodeDissasembly(outputBytecodeDissasembly);
+        compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
+        compiler.setModulePaths(modulePaths);
 
         function = compiler.compile(source, name);
 
@@ -78,6 +90,8 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
 
     auto firstThread = std::make_shared<Thread>();
     threads.store(firstThread->id(), firstThread);
+
+    // go
     firstThread->spawn(closureValue);
 
     // join all threads
@@ -112,7 +126,7 @@ VM::InterpretResult VM::interpretLine(std::istream& linestream)
     ObjFunction* function { nullptr };
 
     static RoxalCompiler compiler {};
-    compiler.setOutputBytecodeDissasembly(outputBytecodeDissasembly);
+    compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
 
     try {
         function = compiler.compile(linestream, "cli");
@@ -673,7 +687,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             return false;
                         }
 
-                        // find enum type id for type (needed to costruct an enum value)
+                        // find enum type id for type (needed to construct an enum value)
                         uint16_t enumTypeId = 0; // valid ids can't be 0
                         for(auto& enumTypeIdObjType : ObjObjectType::enumTypes) {
                             if (enumTypeIdObjType.second == type) {
@@ -681,10 +695,16 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 break;
                             }
                         }
-                        #ifdef DEBUG_BUILD
+                        //!!!#ifdef DEBUG_BUILD
                         assert(enumTypeId != 0);
-                        #endif
+                        assert(ObjObjectType::enumTypes.find(enumTypeId) != ObjObjectType::enumTypes.end());
+                        //!!!#endif
                         value = enumVal(arg.asInt(), enumTypeId);
+                        //!!!#ifdef DEBUG_BUILD
+                        assert(value.isEnum());
+                        assert(value.enumTypeId() == enumTypeId);
+                        assert(value.asEnum() == arg.asInt());
+                        //!!!#endif
                     }
                     else {
                         runtimeError("Expected 0 or 1 argument for enum '"+toUTF8StdString(type->name)+"' type instantiation, provided "+std::to_string(callSpec.argCount));
@@ -763,7 +783,7 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
         return invokeFromType(instance->instanceType, name, callSpec);
     }
     else if (isActorInstance(receiver)) {
-        throw std::runtime_error("invoke() for actor instance unimplemented");//!!!
+        throw std::runtime_error("invoke() for actor instance unimplemented");//FIXME
     }
     else {
         runtimeError("Only object or actor instances have methods.");
@@ -1063,7 +1083,7 @@ Value VM::opReturn()
 
     if (!returningFrame.forwardStreamRefs.empty()) {
         auto funcName { returningFrame.closure->function->name };
-        //std::cout << "returning frame "+toUTF8StdString(funcName)+" has forward stream refs" << std::endl;//!!!
+        //std::cout << "returning frame "+toUTF8StdString(funcName)+" has forward stream refs" << std::endl;
         for(auto& forwardStreamRef : returningFrame.forwardStreamRefs) {
             const auto& name { forwardStreamRef.first };
             auto& stream { forwardStreamRef.second };
@@ -1177,7 +1197,7 @@ void VM::defineNative(const std::string& name, NativeFn function)
 {
     UnicodeString uname { toUnicodeString(name) };
     Value funcVal { objVal(nativeVal(function)) };
-    globals.store(uname.hashCode(), std::make_pair(uname,funcVal));
+    globals.storeGlobal(uname,funcVal);
 }
 
 
@@ -1392,6 +1412,23 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     runtimeError("Undefined enum label '"+toUTF8StdString(name->s)+"' for enum type '"+toUTF8StdString(enumObjType->name)+"'.");
                     return errorReturn;
                 }
+                else if (isModuleType(inst)) {
+                    auto moduleType = asModuleType(inst);
+
+                    ObjString* name = readString();
+
+                    auto optValue { moduleType->vars.load(name->hash) };
+                    if (optValue.has_value()) {
+                        Value value = optValue.value();
+                        pop();
+                        push(value);
+                        break;
+                    }
+                    else {
+                        runtimeError("Undefined variable '"+name->toStdString()+"' in module "+toUTF8StdString(moduleType->name)+".");
+                        return errorReturn;
+                    }
+                }
 
                 runtimeError("Only object and actor instances have methods and only objects instances have properties.");
                 return errorReturn;
@@ -1400,35 +1437,59 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::SetProp): {
                 Value& inst { peek(1) };
                 inst.resolveFuture();
-                if (!isObjectInstance(inst)) {
-                    runtimeError("Only instances have properties.");
-                    return errorReturn;
-                }
-                ObjectInstance* objInst = asObjectInstance(inst);
-                ObjString* name = readString();
-                //std::cout << "setting prop " << toUTF8StdString(name->s) << " of " << toString(inst) << " to " << toString(peek(0)) << std::endl;//!!!
+                if (isObjectInstance(inst)) {
+                    ObjectInstance* objInst = asObjectInstance(inst);
+                    ObjString* name = readString();
+                    //std::cout << "setting prop " << toUTF8StdString(name->s) << " of " << toString(inst) << " to " << toString(peek(0)) << std::endl;
 
-                Value value { peek(0) };
+                    Value value { peek(0) };
 
-                if (!value.isNil()) {
-                    // if type object specified the property type in the declaration,
-                    //  convert the value to that type (if possible)
-                    const auto& properties { objInst->instanceType->properties };
-                    const auto& property = properties.find(name->hash);
-                    if (property != properties.end()) {
-                        const auto& prop { property->second };
-                        if (!prop.type.isNil() && isTypeSpec(prop.type)) {
-                            ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
-                            if (typeSpec->typeValue != ValueType::Nil)
-                                // TODO: implement & use a canConvertToType()
-                                value = toType(typeSpec->typeValue,value,/*strict=*/false);
+                    if (!value.isNil()) {
+                        // if type object specified the property type in the declaration,
+                        //  convert the value to that type (if possible)
+                        const auto& properties { objInst->instanceType->properties };
+                        const auto& property = properties.find(name->hash);
+                        if (property != properties.end()) {
+                            const auto& prop { property->second };
+                            if (!prop.type.isNil() && isTypeSpec(prop.type)) {
+                                ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
+                                if (typeSpec->typeValue != ValueType::Nil)
+                                    // TODO: implement & use a canConvertToType()
+                                    value = toType(typeSpec->typeValue,value,/*strict=*/false);
+                            }
                         }
                     }
-                }
 
-                objInst->properties[name->hash] = value;
-                popN(2); // pop original value & instance
-                push(value); // value (possibly converted)
+                    objInst->properties[name->hash] = value;
+                    popN(2); // pop original value & instance
+                    push(value); // value (possibly converted)
+                    break;
+                }
+                else if (isModuleType(inst)) {
+                    auto moduleType = asModuleType(inst);
+
+                    ObjString* name = readString();
+
+                    auto& vars { moduleType->vars };
+
+                    // TODO: consider if we should allow setting module vars from another module
+                    //  (maybe only if !strict?)
+
+                    if (vars.exists(name->hash)) {
+                        Value value { peek(0) };
+
+                        vars.store(name->hash, name->s, value, /*overwrite=*/true);
+                        popN(2); // pop original value & instance
+                        push(value); // value (possibly converted)
+                    }
+                    else {
+                        runtimeError("Declaring new module variables in another module ('"+toUTF8StdString(moduleType->name)+"') is not allowed.");
+                        return errorReturn;
+                    }
+                    break;
+                }
+                runtimeError("Only instances have properties.");
+                return errorReturn;
                 break;
             }
             case asByte(OpCode::GetProp2): {
@@ -1804,20 +1865,40 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::DefineGlobal): {
+            case asByte(OpCode::DefineModuleVar): {
                 ObjString* name = readString();
-                globals.store(name->hash, std::make_pair(name->s,pop()));
+                moduleVars().store(name->hash, name->s,pop());
                 break;
             }
-            case asByte(OpCode::DefineGlobal2): {
+            case asByte(OpCode::DefineModuleVar2): {
                 ObjString* name = readString2();
-                globals.store(name->hash, std::make_pair(name->s,pop()));
+                moduleVars().store(name->hash, name->s,pop());
                 break;
             }
-            case asByte(OpCode::GetGlobal): {
+            case asByte(OpCode::GetModuleVar): {
                 ObjString* name = readString();
-                if (globals.containsKey(name->hash)) {
-                    Value value = globals.at(name->hash).second;
+                auto& vars { moduleVars() };
+                auto optValue { vars.load(name->hash) };
+                if (optValue.has_value()) {
+                    Value value = optValue.value();
+                    push(value);
+                }
+                else {
+                    #ifdef DEBUG_BUILD
+                    runtimeError("Undefined variable '"+name->toStdString()+"' in module "+toUTF8StdString(moduleType()->name));
+                    #else
+                    runtimeError("Undefined variable '"+name->toStdString()+"'");
+                    #endif
+                    return errorReturn;
+                }
+                break;
+            }
+            case asByte(OpCode::GetModuleVar2): {
+                ObjString* name = readString2();
+                const auto& vars { moduleVars() };
+                auto optValue { vars.load(name->hash) };
+                if (optValue.has_value()) {
+                    Value value = optValue.value();
                     push(value);
                 }
                 else {
@@ -1826,66 +1907,61 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::GetGlobal2): {
-                ObjString* name = readString2();
-                if (globals.containsKey(name->hash)) {
-                    Value value = globals.at(name->hash).second;
-                    push(value);
-                }
-                else {
-                    runtimeError("Undefined variable '"+name->toStdString()+"'");
-                    return errorReturn;
-                }
-                break;
-            }
-            case asByte(OpCode::SetGlobal): {
+            case asByte(OpCode::SetModuleVar): {
                 ObjString* name = readString();
-                if (globals.containsKey(name->hash)) { // found
-                    // set new value, but leave it on stack (as assignment is an expression)
-                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
-                }
-                else {
+                auto& vars { moduleVars() };
+                // set new value, but leave it on stack (as assignment is an expression)
+                bool stored = vars.storeIfExists(name->hash, name->s,peek(0));
+                if (!stored) { // not stored, since not existing
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
                     return errorReturn;
                 }
                 break;
             }
-            case asByte(OpCode::SetGlobal2): {
+            case asByte(OpCode::SetModuleVar2): {
                 ObjString* name = readString2();
-                if (globals.containsKey(name->hash)) { // found
-                    // set new value, but leave it on stack (as assignment is an expression)
-                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
-                }
-                else {
+                auto& vars { moduleVars() };
+                // set new value, but leave it on stack (as assignment is an expression)
+                bool stored = vars.storeIfExists(name->hash, name->s,peek(0));
+                if (!stored) { // not stored, since not existing
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
                     return errorReturn;
                 }
                 break;
             }
-            case asByte(OpCode::SetNewGlobal): {
+            case asByte(OpCode::SetNewModuleVar): {
                 ObjString* name = readString();
-                if (globals.containsKey(name->hash)) { // found
-                    // set new value, but leave it on stack (as assignment is an expression)
-                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
+                auto& vars { moduleVars() };
+
+                // only automatic declaration of globals on assignment when
+                //   at module level scope
+                bool moduleScope = true; // FIXME: set false if not in module scope
+
+                bool exists = vars.exists(name->hash);
+                if (!exists && !moduleScope) {
+                    runtimeError("Undefined variable '"+name->toStdString()+"'");
+                    return errorReturn;
                 }
-                else {
-                    // only automatic declaration of globals on assignment when
-                    //   at global/module level scope
-                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
-                }
+
+                vars.store(name->hash, name->s,peek(0), /*overwrite=*/true);
+
                 break;
             }
-            case asByte(OpCode::SetNewGlobal2): {
+            case asByte(OpCode::SetNewModuleVar2): {
                 ObjString* name = readString2();
-                if (globals.containsKey(name->hash)) { // found
-                    // set new value, but leave it on stack (as assignment is an expression)
-                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
+                auto& vars { moduleVars() };
+
+                // only automatic declaration of globals on assignment when
+                //   at module level scope
+                bool moduleScope = true; // FIXME: set false if not in module scope
+
+                bool exists = vars.exists(name->hash);
+                if (!exists && !moduleScope) {
+                    runtimeError("Undefined variable '"+name->toStdString()+"'");
+                    return errorReturn;
                 }
-                else {
-                    // only automatic declaration of globals on assignment when
-                    //   at global/module level scope
-                    globals.store(name->hash, std::make_pair(name->s,peek(0)));
-                }
+
+                vars.store(name->hash, name->s,peek(0), /*overwrite=*/true);
                 break;
             }
             case asByte(OpCode::GetUpvalue): {
@@ -2040,6 +2116,58 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 pop();
                 break;
             }
+            case asByte(OpCode::ImportModuleVars): {
+                // given a list of var identifiers and two module types, copy the list of vars from
+                //  one module's vars to the other (copy the declarations, not deep copying values)
+
+                Value symbolsList { peek(2) };
+                Value fromModule { peek(1) };
+                Value toModule { peek(0) };
+
+                //std::cout << "importing module vars " << objListToString(asList(symbolsList)) << " from " << fromModule << " to " << toModule << std::endl;
+
+                #ifdef DEBUG_BUILD
+                assert(isList(symbolsList));
+                assert(isModuleType(fromModule));
+                assert(isModuleType(toModule));
+                #endif
+
+                auto symbolsListObj { asList(symbolsList) };
+
+                if (symbolsListObj->length() > 0) {
+
+                    auto fromModuleType { asModuleType(fromModule) };
+                    auto toModuleType { asModuleType(toModule) };
+
+                    // special case, if list is just [*], then import all symbols
+                    const auto& firstElement { symbolsListObj->elts.at(0) };
+                    if (isString(firstElement) && asString(firstElement)->s == "*") {
+                        fromModuleType->vars.forEach(
+                            [&](const VariablesMap::NameValue& nameValue) {
+                                //const icu::UnicodeString& name { nameValue.first };
+                                toModuleType->vars.store(nameValue);
+                                //std::cout << "declaring " << toUTF8StdString(nameValue.first) << " into " << toUTF8StdString(toModuleType->name) << std::endl;
+                            });
+                    }
+                    else { // import the symbols explicitly listed
+                        for(const auto& symbol : symbolsListObj->elts.get()) {
+                            const auto& symbolString { asString(symbol) };
+                            auto optValue { fromModuleType->vars.load(symbolString->hash) };
+                            const auto& name { symbolString->s };
+
+                            if (!optValue.has_value()) {
+                                runtimeError("Symbol '"+toUTF8StdString(name)+"' not found in imported module "+toUTF8StdString(fromModuleType->name));
+                                return errorReturn;
+                            }
+                            toModuleType->vars.store(symbolString->hash, name, optValue.value());
+                            //std::cout << "declaring " << toUTF8StdString(name) << " into " << toUTF8StdString(toModuleType->name) << std::endl;
+                        }
+                    }
+                }
+
+                popN(3);
+                break;
+            }
             case asByte(OpCode::Nop): {
                 break;
             }
@@ -2157,6 +2285,9 @@ void VM::runtimeError(const std::string& format, ...)
 
 void VM::defineBuiltinFunctions()
 {
+    if (globals.existsGlobal(toUnicodeString("print")))
+        return; // already defined
+
     defineNative("print", &VM::print_builtin);
     defineNative("len", &VM::len_builtin);
     defineNative("clone", &VM::clone_builtin);
@@ -2203,6 +2334,7 @@ Value VM::len_builtin(int argCount, Value* args)
         #ifdef DEBUG_BUILD
         std::cerr << "Unhandled type in len():" << v.typeName() << std::endl;
         #endif
+        ;
     }
 
     return intVal(len);
@@ -2316,6 +2448,9 @@ Value VM::wait_builtin(int argCount, Value* args)
 
 void VM::defineNativeFunctions()
 {
+    if (globals.existsGlobal(toUnicodeString("_clock")))
+        return; // already defined
+
     defineNative("_clock", &VM::clock_native);
     defineNative("_ussleep", &VM::usSleep_native);
     defineNative("_mssleep", &VM::msSleep_native);

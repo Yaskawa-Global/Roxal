@@ -40,6 +40,7 @@ std::string roxal::to_string(ValueType t)
     case ValueType::Stream: return "stream"; break;
     case ValueType::Object: return "object"; break;
     case ValueType::Actor: return "actor"; break;
+    case ValueType::Module: return "module"; break;
     default:
         throw std::runtime_error("Unhandled type for to_string "+std::to_string(int(t)));
     }
@@ -938,6 +939,9 @@ std::ostream& roxal::operator<<(std::ostream& out, const Value& v)
     return out;
 }
 
+
+std::mutex VariablesMap::globalsLock {};
+VariablesMap::VarsMap VariablesMap::globals {};
 
 
 

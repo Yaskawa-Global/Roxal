@@ -1,0 +1,4 @@
+func m2f():
+  print('hi from module2')
+
+var a = 1

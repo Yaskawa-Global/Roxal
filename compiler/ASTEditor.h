@@ -91,6 +91,7 @@ public:
     std::any visit(ptr<roxal::ast::File> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::SingleInput> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Annotation> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::Import> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::TypeDecl> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::FuncDecl> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::VarDecl> ast) override { if(m_f) m_f(ast); return{}; }

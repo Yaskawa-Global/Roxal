@@ -677,11 +677,16 @@ std::string roxal::toString(FunctionType ft)
 
 
 
-ObjFunction::ObjFunction()
+ObjFunction::ObjFunction(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName)
     : arity(0), upvalueCount(0), name()
 {
     type = ObjType::Function;
-    chunk = std::make_shared<Chunk>();
+    chunk = std::make_shared<Chunk>(packageName, moduleName);
+}
+
+
+ObjFunction::~ObjFunction()
+{
 }
 
 
@@ -719,6 +724,7 @@ ObjObjectType::ObjObjectType(const icu::UnicodeString& typeName, bool isactor, b
         enumTypeId = randomUint16(1); // generate unique random id (1..max)
         while (ObjObjectType::enumTypes.find(enumTypeId) != ObjObjectType::enumTypes.end())
             enumTypeId = randomUint16(1);
+        //std::cout << "registered new enum id " << enumTypeId << std::endl;
         enumTypes[enumTypeId] = this;
     }
 }
@@ -727,6 +733,21 @@ ObjObjectType* roxal::objectTypeVal(const icu::UnicodeString& typeName, bool isA
 {
     return newObj<ObjObjectType>(__func__, typeName, isActor, isInterface, isEnumeration);
 }
+
+
+
+ObjModuleType::ObjModuleType(const icu::UnicodeString& typeName)
+    : name(typeName)
+{
+    typeValue = ValueType::Module;
+}
+
+ObjModuleType* roxal::moduleTypeVal(const icu::UnicodeString& typeName)
+{
+    return newObj<ObjModuleType>(__func__, typeName);
+}
+
+
 
 
 ObjectInstance::ObjectInstance(ObjObjectType* objectType)

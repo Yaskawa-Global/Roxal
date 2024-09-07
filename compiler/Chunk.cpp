@@ -8,7 +8,8 @@
 using namespace roxal;
 
 
-Chunk::Chunk()
+Chunk::Chunk(const icu::UnicodeString& packageName_, const icu::UnicodeString& moduleName_)
+    : packageName(packageName_), moduleName(moduleName_)
 {
     code.reserve(8);
 }
@@ -296,22 +297,24 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("ENUM_LABEL", offset);
         case asByte(OpCode::Extend):
             return simpleInstruction("EXTEND", offset);
-        case asByte(OpCode::DefineGlobal):
-            return constantInstruction("DEFINE_GLOBAL", offset);
-        case asByte(OpCode::DefineGlobal2):
-            return constantInstruction2("DEFINE_GLOBAL2", offset);
-        case asByte(OpCode::GetGlobal):
-            return constantInstruction("GET_GLOBAL", offset);
-        case asByte(OpCode::GetGlobal2):
-            return constantInstruction2("GET_GLOBAL2", offset);
-        case asByte(OpCode::SetGlobal):
-            return constantInstruction("SET_GLOBAL", offset);
-        case asByte(OpCode::SetGlobal2):
-            return constantInstruction2("SET_GLOBAL2", offset);
-        case asByte(OpCode::SetNewGlobal):
-            return constantInstruction("SET_NEW_GLOBAL", offset);
-        case asByte(OpCode::SetNewGlobal2):
-            return constantInstruction2("SET_NEW_GLOBAL2", offset);
+        case asByte(OpCode::DefineModuleVar):
+            return constantInstruction("DEFINE_MODULE_VAR", offset);
+        case asByte(OpCode::DefineModuleVar2):
+            return constantInstruction2("DEFINE_MODULE_VAR2", offset);
+        case asByte(OpCode::GetModuleVar):
+            return constantInstruction("GET_MODULE_VAR", offset);
+        case asByte(OpCode::GetModuleVar2):
+            return constantInstruction2("GET_MODULE_VAR2", offset);
+        case asByte(OpCode::SetModuleVar):
+            return constantInstruction("SET_MODULE_VAR", offset);
+        case asByte(OpCode::SetModuleVar2):
+            return constantInstruction2("SET_MODULE_VAR2", offset);
+        case asByte(OpCode::SetNewModuleVar):
+            return constantInstruction("SET_NEW_MODULE_VAR", offset);
+        case asByte(OpCode::SetNewModuleVar2):
+            return constantInstruction2("SET_NEW_MODULE_VAR2", offset);
+        case asByte(OpCode::ImportModuleVars):
+            return simpleInstruction("IMPORT_MODULE_VARS", offset);
         case asByte(OpCode::GetLocal):
             return byteInstruction("GET_LOCAL", offset);
         case asByte(OpCode::GetLocal2):
@@ -384,6 +387,22 @@ CallSpec::CallSpec(Chunk::iterator& ci)
 }
 
 
+/**
+ * @brief Serializes the CallSpec into a vector of bytes.
+ *
+ * The function serializes the `CallSpec` object into a byte vector format that can be used by the `Chunk` bytecode.
+ * If `allPositional` is true, it means all the arguments are positional and the byte vector starts with
+ * the argument count (masked with 0x7F to ensure it's within 7 bits). If `allPositional` is false,
+ * it means there are named arguments and each argument will be represented with either one or two bytes
+ * following the argument count byte (which has the MSB set to 1).
+ *
+ * For positional arguments, a single byte with the value 0 is used. For named arguments, two bytes are used
+ * to represent the 15-bit hash code of the argument name. The first byte is the higher part of the hash code,
+ * and the second byte is the lower part. The MSB of the first byte is set to 1 to indicate that this is a named argument.
+ *
+ * @return A vector of bytes representing the serialized CallSpec.
+ * @throw std::runtime_error If the argument count exceeds 127 in a debug build.
+ */
 std::vector<uint8_t> CallSpec::toBytes() const
 {
     std::vector<uint8_t> bytes {};
@@ -419,6 +438,11 @@ std::vector<uint8_t> CallSpec::toBytes() const
 }
 
 
+/**
+ * @brief A function that checks if any argument in the CallSpec object is not positional (i.e. is named).
+ *
+ * @return true if there is at least one argument that is not positional, false otherwise
+ */
 bool CallSpec::namedArgs() const
 {
     for(auto& arg : args)

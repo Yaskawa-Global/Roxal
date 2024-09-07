@@ -303,7 +303,7 @@ std::any ASTGenerator::visitFile_input(RoxalParser::File_inputContext *context)
 
     if (context->annotation().size() > 0) {
 
-        for(size_t i=0; i< context->annotation().size();i++) {
+        for(size_t i=0; i < context->annotation().size();i++) {
 
             auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
 
@@ -314,6 +314,16 @@ std::any ASTGenerator::visitFile_input(RoxalParser::File_inputContext *context)
             file->annotations.push_back(annotation);
         }
     }
+
+
+    if (context->import_stmt().size() > 0) {
+
+        for(size_t i=0; i < context->import_stmt().size(); i++) {
+            auto import = as<Import>(visitImport_stmt(context->import_stmt().at(i)));
+            file->imports.push_back(import);
+        }
+    }
+
 
     for(auto& declaration : context->declaration()) {
         auto declOrStmt { visitDeclaration(declaration) };
@@ -345,6 +355,46 @@ std::any ASTGenerator::visitSingle_input(RoxalParser::Single_inputContext *conte
 
     return typeValue(std::make_shared<AST>());
 
+    visitEnd();
+}
+
+
+
+std::any ASTGenerator::visitImport_stmt(RoxalParser::Import_stmtContext *context)
+{
+    visitStart();
+
+    auto import = std::make_shared<Import>();
+    setSourceInfo(import, context);
+
+    for(auto i=0; i<context->IDENTIFIER().size(); i++) {
+        auto component { UnicodeString::fromUTF8(context->IDENTIFIER().at(i)->getText()) };
+        import->packages.push_back( component );
+    }
+
+    if (context->STAR())
+        import->symbols.push_back("*");
+    else if (context->identifier_list()) {
+        auto symbols = anyas<std::vector<UnicodeString>>(visitIdentifier_list(context->identifier_list()));
+        import->symbols = symbols;
+    }
+
+    return typeValue(import);
+    visitEnd();
+}
+
+
+std::any ASTGenerator::visitIdentifier_list(RoxalParser::Identifier_listContext *context)
+{
+    visitStart();
+
+    std::vector<UnicodeString> symbols {};
+    for(auto i=0; i<context->IDENTIFIER().size(); i++) {
+        auto component { UnicodeString::fromUTF8(context->IDENTIFIER().at(i)->getText()) };
+        symbols.push_back(component);
+    }
+
+    return symbols;
     visitEnd();
 }
 

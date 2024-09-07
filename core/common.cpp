@@ -16,6 +16,17 @@ using namespace roxal;
 #include <random>
 
 
+bool roxal::startsWith(const std::string& str, const std::string& prefix) {
+    return str.size() >= prefix.size() && str.compare(0, prefix.size(), prefix) == 0;
+}
+
+// Function for icu::UnicodeString
+bool roxal::startsWith(const icu::UnicodeString& str, const icu::UnicodeString& prefix) {
+    return str.length() >= prefix.length() && str.startsWith(prefix);
+}
+
+
+
 uint16_t roxal::randomUint16(uint16_t min, uint16_t max)
 {
     // Create a random device to seed the generator
@@ -158,4 +169,24 @@ std::string roxal::replace(const std::string& str, const std::string& from, cons
     auto ret { str };
     ret.replace(start_pos, from.length(), to);
     return ret;
+}
+
+
+std::string roxal::join(const std::vector<std::string>& strings, const std::string& separator)
+{
+    return std::accumulate(strings.begin() + 1, strings.end(), strings[0],
+                            [&separator](const std::string& a, const std::string& b) {
+                                return a + separator + b;
+                            });
+};
+
+
+icu::UnicodeString roxal::join(const std::vector<icu::UnicodeString>& strings, const std::string& separator)
+{
+    if (strings.empty()) return icu::UnicodeString(); // Return an empty UnicodeString if the vector is empty
+    auto usep = toUnicodeString(separator);
+    return std::accumulate(strings.begin() + 1, strings.end(), strings[0],
+                            [&usep](const icu::UnicodeString& a, const icu::UnicodeString& b) {
+                                return a + usep + b;
+                            });
 }

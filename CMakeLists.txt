@@ -132,15 +132,16 @@ target_link_libraries(roxal
 )
 
 
+# Set compile options based on the build type
 target_compile_options(roxal PRIVATE
-    -fPIC
-    -Wno-attributes
-    -Werror=return-type
-    -g
-    -fmax-errors=1
+    $<$<CONFIG:DEBUG>:-fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1>
+    $<$<CONFIG:RELEASE>:-O3>
 )
 
-target_compile_definitions(roxal PRIVATE DEBUG_BUILD)
+# Set compile definitions based on the build type
+target_compile_definitions(roxal PRIVATE
+    $<$<CONFIG:DEBUG>:DEBUG_BUILD>
+)
 
 
 #

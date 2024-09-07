@@ -19,6 +19,7 @@ using roxal::type::to_string;
 class File;
 class SingleInput;
 class Annotation;
+class Import;
 class Declaration;
 class Statement;
 class TypeDecl;
@@ -67,6 +68,7 @@ public:
     virtual std::any visit(ptr<File> ast) = 0;
     virtual std::any visit(ptr<SingleInput> ast) = 0;
     virtual std::any visit(ptr<Annotation> ast) = 0;
+    virtual std::any visit(ptr<Import> ast) = 0;
     virtual std::any visit(ptr<TypeDecl> ast) = 0;
     virtual std::any visit(ptr<FuncDecl> ast) = 0;
     virtual std::any visit(ptr<VarDecl> ast) = 0;
@@ -175,6 +177,9 @@ std::ostream& operator<<(std::ostream& os, const AST& ast);
 
 
 struct File : public AST {
+
+    std::vector<ptr<Import>> imports;
+
     std::vector<std::variant<ptr<Declaration>, ptr<Statement>>> declsOrStmts;
 
     virtual std::any accept(ASTVisitor& v);
@@ -208,6 +213,19 @@ struct Annotation : public AST {
 
     void acceptChildren(ASTVisitor& v, Anys& results);
 };
+
+
+struct Import : public AST {
+
+    std::vector<icu::UnicodeString> packages; // [[package.]package.]module
+    std::vector<icu::UnicodeString> symbols;  // empty, or ["*"] or list
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
 
 
 struct Declaration : public AST {

@@ -22,7 +22,7 @@ using namespace roxal;
 namespace po = boost::program_options;
 
 
-static void repl() 
+static void repl()
 {
     linenoiseHistorySetMaxLen(1000);
 
@@ -52,18 +52,18 @@ static void repl()
             } catch (std::exception& e) {
                 std::cout << std::string("error: ") << e.what() << std::endl;
             }
-            
+
         }
         if (cline != NULL) {
             linenoiseFree(cline);
-        }            
+        }
 
     }
 
 }
 
 
-static void runFile(const std::string& path, bool outputBytecodeDissasembly=false) 
+static void runFile(const std::string& path, const std::vector<std::string>& modulePaths, bool outputBytecodeDisassembly=false)
 {
 
     std::ifstream sourcestream(path); // assumed UTF-8
@@ -71,8 +71,16 @@ static void runFile(const std::string& path, bool outputBytecodeDissasembly=fals
     std::filesystem::path fileAndPath(path);
     std::string name { fileAndPath.stem().filename().string() };
 
+    // construct a relative directory path containing the file, from the current working directory
+    std::filesystem::path absolutePath = std::filesystem::absolute(path);
+    std::filesystem::path currentPath = std::filesystem::current_path();
+    std::filesystem::path parentPath = absolutePath.parent_path();
+    std::filesystem::path relativePath = std::filesystem::relative(parentPath, currentPath);
+
     VM& vm { VM::instance() };
-    vm.setDissasemblyOutput(outputBytecodeDissasembly);
+    vm.setDisassemblyOutput(outputBytecodeDisassembly);
+    vm.appendModulePaths({relativePath.string()}); // folder containing the script is first in the search path
+    vm.appendModulePaths(modulePaths);
     vm.interpret(sourcestream, name);
 }
 
@@ -89,7 +97,7 @@ static void generateAST(const std::string& inputPath, bool graph, const std::str
         ASTGenerator astGenerator {};
         ast = astGenerator.ast(sourcestream, name);
     } catch (std::exception& e) {
-        std::cout << "Exception in parsing - " << std::string(e.what()) << std::endl; 
+        std::cout << "Exception in parsing - " << std::string(e.what()) << std::endl;
         return;
     }
     if (ast == nullptr) // must have been a parse or AST gen error (already reported?)
@@ -99,7 +107,7 @@ static void generateAST(const std::string& inputPath, bool graph, const std::str
         TypeDeducer typeDeducer {};
         typeDeducer.visit(std::dynamic_pointer_cast<ast::File>(ast));
     } catch (std::exception& e) {
-        std::cout << "Exception during type inference - " << std::string(e.what()) << std::endl; 
+        std::cout << "Exception during type inference - " << std::string(e.what()) << std::endl;
         return;
     }
 
@@ -117,12 +125,13 @@ static void generateAST(const std::string& inputPath, bool graph, const std::str
 }
 
 
-int main(int argc, const char* argv[]) 
+int main(int argc, const char* argv[])
 {
     po::options_description desc("Allowed options");
     desc.add_options()
         ("help,h", "options help")
         ("input-file,f", po::value< std::vector<std::string> >(), "input .rox file to execute (run)")
+        ("module-paths,p", po::value< std::vector<std::string> >(), "module search paths")
         ("dis", "output dissasembly of VM bytecodes during compilation")
         ("ast", "parse only and output text Abstract Syntax Tree (AST)")
         ("astgraph", po::value< std::vector<std::string> >(), "parse only and output GraphViz dot file")
@@ -133,12 +142,17 @@ int main(int argc, const char* argv[])
 
     po::variables_map vmap;
     po::store(po::command_line_parser(argc, argv).options(desc).positional(pos).run(), vmap);
-    po::notify(vmap);    
+    po::notify(vmap);
 
     if (vmap.count("help")) {
         std::cout << desc << std::endl;
         return 1;
     }
+
+    std::vector<std::string> modulePaths;
+    if (vmap.count("module-paths") > 0)
+        modulePaths = vmap["module-paths"].as<std::vector<std::string>>();
+
 
     if (vmap.count("input-file")==0) {
         repl();
@@ -153,8 +167,8 @@ int main(int argc, const char* argv[])
             else if (vmap.count("astgraph"))
                 generateAST(filename, true, vmap["astgraph"].as<std::vector<std::string>>().at(0));
             else {
-                bool outputBytecodeDissasembly = (vmap.count("dis") > 0);
-                runFile(filename, outputBytecodeDissasembly);
+                bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
+                runFile(filename, modulePaths, outputBytecodeDisassembly);
             }
         } catch (std::exception& e) {
             std::cerr << "Runtime error: " << e.what() << std::endl;
@@ -168,5 +182,3 @@ int main(int argc, const char* argv[])
 
     return 0;
 }
- 
-

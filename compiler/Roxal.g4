@@ -17,7 +17,7 @@ tokens { INDENT, DEDENT }
  */
 
 file_input
- : annotation* ( NEWLINE | declaration )* EOF
+ : annotation* import_stmt* ( NEWLINE | declaration )* EOF
  ;
 
 
@@ -25,6 +25,15 @@ single_input
  : NEWLINE
  | statement
  | compound_stmt NEWLINE
+ ;
+
+
+import_stmt
+ : IMPORT IDENTIFIER (DOT IDENTIFIER)* ( (DOT STAR)? | (DOT '[' identifier_list ']')? ) NEWLINE
+ ;
+
+identifier_list
+ : IDENTIFIER (COMMA IDENTIFIER)*
  ;
 
 
@@ -123,7 +132,7 @@ suite
 
 type_decl
  : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE | ENUM)
-    // only enum can extend bool, byte or int
+    // only enum can extend byte or int
     (EXTENDS (IDENTIFIER | BYTE | INT))? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)?
     (   (':' NEWLINE INDENT (property|method)* DEDENT)
       // for enums, allow mixture of comma & line seperated labels
@@ -313,6 +322,7 @@ IMPLEMENTS: 'implements';
 EXTENDS: 'extends';
 THIS: 'this';
 SUPER: 'super';
+IMPORT : 'import';
 
 
 // Types

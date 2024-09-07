@@ -39,6 +39,14 @@ std::any TypeDeducer::visit(ptr<ast::Annotation> ast)
 }
 
 
+std::any TypeDeducer::visit(ptr<ast::Import> ast)
+{
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
+}
+
+
 std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
 {
     ast::Anys results {};

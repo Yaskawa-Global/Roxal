@@ -1,0 +1,11 @@
+import importmodule2
+
+func f():
+  print('this is f()')
+
+print('hi from importmodule1')
+
+importmodule2.m2f()
+
+print(importmodule2.a)
+

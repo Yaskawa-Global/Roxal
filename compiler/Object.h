@@ -4,7 +4,6 @@
 #include <map>
 #include <vector>
 #include <sstream>
-#include <unordered_map>
 #include <atomic>
 #include <future>
 #include <condition_variable>
@@ -50,6 +49,9 @@ enum class ObjType {
     Dict,
     Stream
 };
+
+
+
 
 
 struct Obj {
@@ -398,11 +400,12 @@ enum class FunctionType {
 
 std::string toString(FunctionType ft);
 
+struct ObjModuleType; // forward
 
 struct ObjFunction : public Obj
 {
-    ObjFunction();
-    virtual ~ObjFunction() {}
+    ObjFunction(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName);
+    virtual ~ObjFunction();
 
     UnicodeString name;
     std::optional<ptr<roxal::type::Type>> funcType;
@@ -415,6 +418,8 @@ struct ObjFunction : public Obj
     //  this is map from param name UnicodeString::hashCode() -> ObjFunction
     //  (where ObjFunction is a function that takes no params and returns the default value)
     std::map<int32_t, ObjFunction*> paramDefaultFunc;
+
+    Value moduleType; // ObjModuleType
 };
 
 inline bool isFunction(const Value& v) { return isObjType(v, ObjType::Function); }
@@ -427,8 +432,8 @@ inline ObjFunction* asFunction(const Value& v) {
 }
 
 
-inline ObjFunction* functionVal() {
-    return newObj<ObjFunction>(__func__);
+inline ObjFunction* functionVal(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName) {
+    return newObj<ObjFunction>(__func__, packageName, moduleName);
 }
 
 std::string objFunctionToString(const ObjFunction* of);
@@ -596,6 +601,7 @@ std::string objTypeSpecToString(const ObjTypeSpec* ots);
 
 //
 // object|actor|interface|enum type
+// TODO: separate enum out into its own ObjTypeSpec subclass
 
 struct ObjObjectType : public ObjTypeSpec
 {
@@ -603,8 +609,10 @@ struct ObjObjectType : public ObjTypeSpec
 
     virtual ~ObjObjectType()
     {
-        if (isEnumeration)
+        if (isEnumeration) {
+            //std::cout << "unregistering enum id " << enumTypeId << std::endl << std::flush;
             enumTypes.erase(enumTypeId);
+        }
     }
 
     icu::UnicodeString name;
@@ -640,6 +648,32 @@ inline ObjObjectType* asObjectType(const Value& v) { return static_cast<ObjObjec
 inline bool isEnumType(const Value& v) { return isObjType(v, ObjType::Type) && asTypeSpec(v)->typeValue == ValueType::Enum; }
 
 ObjObjectType* objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface = false, bool isEnumeration = false);
+
+
+struct ObjPackageType : public ObjTypeSpec
+{
+    // TODO
+};
+
+struct ObjModuleType : public ObjTypeSpec
+{
+    ObjModuleType(const icu::UnicodeString& typeName);
+
+    virtual ~ObjModuleType() {}
+
+    icu::UnicodeString name;
+
+    // variables declared at runtime via VM OpCode::DefineModuleVar
+    VariablesMap vars;
+};
+
+inline bool isModuleType(const Value& v) { return isObjType(v, ObjType::Type) && (asTypeSpec(v)->typeValue == ValueType::Module); }
+inline ObjModuleType* asModuleType(const Value& v) { return static_cast<ObjModuleType*>(v.asObj()); }
+
+ObjModuleType* moduleTypeVal(const icu::UnicodeString& typeName);
+
+
+
 
 
 //

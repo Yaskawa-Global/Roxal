@@ -1,0 +1,3 @@
+print("module3 init")
+var mod3var = 0
+
