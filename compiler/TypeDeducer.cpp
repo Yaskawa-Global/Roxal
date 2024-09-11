@@ -339,6 +339,15 @@ std::any TypeDeducer::visit(ptr<ast::Index> ast)
 }
 
 
+std::any TypeDeducer::visit(ptr<ast::LambdaFunc> ast)
+{
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+
+    return results;
+}
+
+
 std::any TypeDeducer::visit(ptr<ast::Literal> ast)
 {
     // non-Nil typed literals handled by specialized visit methods

@@ -41,6 +41,7 @@ class Variable;
 class Call;
 class Range;
 class Index;
+class LambdaFunc;
 class Literal;
 class Bool;
 class Str;
@@ -87,6 +88,7 @@ public:
     virtual std::any visit(ptr<Call> ast) = 0;
     virtual std::any visit(ptr<Range> ast) = 0;
     virtual std::any visit(ptr<Index> ast) = 0;
+    virtual std::any visit(ptr<LambdaFunc> ast) = 0;
     virtual std::any visit(ptr<Literal> ast) = 0;
     virtual std::any visit(ptr<Bool> ast) = 0;
     virtual std::any visit(ptr<Str> ast) = 0;
@@ -366,10 +368,10 @@ struct FuncDecl : public Declaration {
 
 struct Function : public AST {
     bool isProc;
-    icu::UnicodeString name;
+    std::optional<icu::UnicodeString> name; // none if lambda func
     std::vector<ptr<Parameter>> params;
     std::optional<std::variant<BuiltinType,icu::UnicodeString>> returnType;
-    std::optional<ptr<Suite>> body; // no body if abstract
+    std::variant<ptr<Suite>, ptr<Expression>, std::monostate> body; // no body if abstract
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -424,7 +426,8 @@ struct Expression : public AST {
         Variable,
         Call,
         Range,
-        Index
+        Index,
+        LambdaFunc
     };
     Expression(ExprType et) : exprType(et) {}
 
@@ -559,6 +562,18 @@ struct Index : public Expression {
 
     ptr<Expression> indexable;
     std::vector<ptr<Expression>> args;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
+struct LambdaFunc : public Expression {
+    LambdaFunc() : Expression(ExprType::LambdaFunc) {}
+
+    ptr<Function> func;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

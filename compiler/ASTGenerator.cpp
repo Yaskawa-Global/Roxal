@@ -963,7 +963,7 @@ std::any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
         function->body = as<Suite>(body);
     }
     else // abstract method
-        function->body.reset();
+        function->body = std::monostate();
 
 
     // TODO: should visitAnnotation before visitFunction?
@@ -1074,6 +1074,51 @@ std::any ASTGenerator::visitAnnot_argument(RoxalParser::Annot_argumentContext *c
     visitEnd();
 }
 
+
+std::any ASTGenerator::visitLambda_func(RoxalParser::Lambda_funcContext *context)
+{
+    visitStart();
+
+    auto func = std::make_shared<Function>();
+    setSourceInfo(func,context);
+    func->isProc = false;
+    func->name.reset();
+
+    if (context->parameters()) {
+        auto params = visitParameters(context->parameters());
+        func->params = *anyas<ptr<std::vector<ptr<Parameter>>>>(params);
+    }
+
+    // return type (optional)
+    if (context->builtin_type()) {
+        auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
+        func->returnType = builtinType;
+    }
+    else if (context->IDENTIFIER()) {
+        auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
+        func->returnType = typeIdent;
+    }
+
+    if (context->suite()) {
+        auto suite = visitSuite(context->suite());
+        func->body = as<Suite>(suite); // suite;
+    }
+    else if (context->expression()) {
+        auto expr = visitExpression(context->expression());
+        func->body = as<Expression>(expr);
+    }
+    else {
+        // abstract
+        func->body = std::monostate();
+    }
+
+    auto lambdaFunc = std::make_shared<LambdaFunc>();
+    lambdaFunc->func = func;
+
+    return typeValue(lambdaFunc);
+
+    visitEnd();
+}
 
 
 std::any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *context)
@@ -1704,6 +1749,8 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
     }
     else if (context->OPEN_PAREN())
         return visitExpression(context->expression());
+    else if (context->lambda_func())
+        return visitLambda_func(context->lambda_func());
     else if (context->list())
         return visitList(context->list());
     else if (context->dict())

@@ -168,6 +168,11 @@ annot_argument
  ;
 
 
+lambda_func
+ : FUNC '(' parameters? ')' (YIELDS (builtin_type | IDENTIFIER))? ':' (expression | suite)
+ ;
+
+
 //TODO: assignment is an expression, but maybe we don't want assignments
 // in places like if conditions?
 
@@ -280,6 +285,7 @@ primary
  | dict
  | IDENTIFIER
  | OPEN_PAREN expression CLOSE_PAREN
+ | lambda_func
  | SUPER '.' IDENTIFIER
  | builtin_type
  ;

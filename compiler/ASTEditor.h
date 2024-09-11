@@ -40,6 +40,7 @@ public:
     virtual std::any visit(ptr<ast::Call> ast);
     virtual std::any visit(ptr<ast::Range> ast);
     virtual std::any visit(ptr<ast::Index> ast);
+    virtual std::any visit(ptr<ast::LambdaFunc> ast);
     virtual std::any visit(ptr<ast::Literal> ast);
     virtual std::any visit(ptr<ast::Bool> ast);
     virtual std::any visit(ptr<ast::Str> ast);
@@ -110,6 +111,7 @@ public:
     std::any visit(ptr<roxal::ast::Call> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Range> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Index> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::LambdaFunc> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Literal> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Bool> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Type> ast) override { if(m_f) m_f(ast); return{}; }

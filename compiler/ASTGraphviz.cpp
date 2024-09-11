@@ -355,7 +355,7 @@ std::any ASTGraphviz::visit(ptr<ast::Function> ast)
 
     addLink(name, stackPop(), "body"); // body
 
-    auto nameReturn = toUTF8StdString(ast->name);
+    auto nameReturn = ast->name.has_value() ? toUTF8StdString(ast->name.value()) : "";
 
     if (ast->returnType.has_value()) {
         if (std::holds_alternative<BuiltinType>(ast->returnType.value())) {
@@ -515,6 +515,16 @@ std::any ASTGraphviz::visit(ptr<ast::Index> ast)
     endVisit();
     return {};
 }
+
+
+std::any ASTGraphviz::visit(ptr<ast::LambdaFunc> ast)
+{
+    startVisit();
+    throw std::runtime_error("ASTGraphviz::visit(ptr<ast::LambdaFunc>) unimplemented");
+    endVisit();
+    return {};
+}
+
 
 
 std::any ASTGraphviz::visit(ptr<ast::Literal> ast)

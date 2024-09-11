@@ -35,6 +35,14 @@ void Chunk::writeConsant(const Value& value, int line, const std::string& commen
 }
 
 
+uint8_t Chunk::lastByte() const
+{
+    if (code.empty())
+        return uint8_t(OpCode::Nop);
+    return code.back();
+}
+
+
 Chunk::size_type Chunk::addConstant(const Value& value)
 {
     // TODO: perhaps seach and reuse consts?  (definitely if value types?)

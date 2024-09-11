@@ -46,6 +46,7 @@ public:
     virtual std::any visit(ptr<ast::Call> ast);
     virtual std::any visit(ptr<ast::Range> ast);
     virtual std::any visit(ptr<ast::Index> ast);
+    virtual std::any visit(ptr<ast::LambdaFunc> ast);
     virtual std::any visit(ptr<ast::Literal> ast);
     virtual std::any visit(ptr<ast::Bool> ast);
     virtual std::any visit(ptr<ast::Str> ast);
@@ -274,6 +275,7 @@ protected:
     void emitBytes(uint8_t byte1, uint8_t byte2, const std::string& comment = "");
     void emitBytes(OpCode op, uint8_t byte2, const std::string& comment = "");
     void emitBytes(OpCode op, uint8_t byte2, uint8_t byte3, const std::string& comment = "");
+    uint8_t lastByte();
 
     void emitLoop(Chunk::size_type loopStart, const std::string& comment = "");
 

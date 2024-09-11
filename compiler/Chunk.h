@@ -114,6 +114,7 @@ public:
     void write(uint8_t byte, int line, const std::string& comment = "");
     void write(OpCode byte, int line, const std::string& comment = "") { write(uint8_t(byte), line, comment); }
     void writeConsant(const Value& value, int line, const std::string& comment = "");
+    uint8_t lastByte() const; // last byte written
 
     size_type addConstant(const Value& value);
 

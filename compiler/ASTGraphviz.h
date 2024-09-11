@@ -38,6 +38,7 @@ public:
     virtual std::any visit(ptr<ast::Call> ast);
     virtual std::any visit(ptr<ast::Range> ast);
     virtual std::any visit(ptr<ast::Index> ast);
+    virtual std::any visit(ptr<ast::LambdaFunc> ast);
     virtual std::any visit(ptr<ast::Literal> ast);
     virtual std::any visit(ptr<ast::Bool> ast);
     virtual std::any visit(ptr<ast::Str> ast);

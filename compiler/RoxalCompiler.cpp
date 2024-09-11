@@ -396,7 +396,8 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         auto func { ast->methods.at(i) };
 
-        auto methodName { func->name };
+        assert(func->name.has_value()); // methods must have names
+        auto methodName { func->name.value() };
         int16_t methodNameConstant = identifierConstant(methodName);
         if (methodNameConstant >= 255)
             error("Too many methods for one actor or object type.");
@@ -462,7 +463,9 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
 {
     currentNode = ast;
 
-    auto name { as<Function>(ast->func)->name };
+    auto func {as<Function>(ast->func) };
+    assert(func->name.has_value()); // func declarations must have names
+    auto name { func->name.value() };
 
     declareVariable(name);
 
@@ -786,10 +789,19 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 
     auto enclosingModuleScope { asModuleScope(moduleScope()) };
 
-    enterFuncScope(enclosingModuleScope->moduleType, ast->name, ftype, ast->type.value());
+    icu::UnicodeString funcName;
+    if (ast->name.has_value())
+        funcName = ast->name.value();
+    else { // lambda func? create unique name using module name and source line position
+        funcName = icu::UnicodeString::fromUTF8("__func_" + toUTF8StdString(enclosingModuleScope->moduleName)
+                    +"_"+std::to_string(ast->interval.first.line)
+                    +"_"+std::to_string(ast->interval.first.pos));
+    }
+
+    enterFuncScope(enclosingModuleScope->moduleType, funcName, ftype, ast->type.value());
 
     #ifdef DEBUG_BUILD
-    emitByte(OpCode::Nop, "func "+toUTF8StdString(ast->name));
+    emitByte(OpCode::Nop, "func "+toUTF8StdString(funcName));
     #endif
     enterLocalScope();
 
@@ -800,9 +812,14 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     Anys results {};
     ast->acceptChildren(*this, results);
 
+    // if the body is an expression (e.g. lambda func), leaves the result on the stack, so return it
+    if (std::holds_alternative<ptr<Expression>>(ast->body))
+        emitByte(OpCode::Return);
+
     //exitLocalScope();
 
-    emitReturn();
+    if (lastByte() != uint8_t(OpCode::Return)) // if the code didn't conclude with a return, add one
+        emitReturn();
 
     if (outputBytecodeDisassembly)
         asFuncScope(funcScope())->function->chunk->disassemble(asFuncScope(funcScope())->function->name);
@@ -811,7 +828,7 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 
     auto functionScope { *asFuncScope(funcScope()) };
 
-    exitFuncScope(); // back to surrpounding scope
+    exitFuncScope(); // back to surrounding scope
 
     // std::cout << "Closure " << toUTF8StdString(function->name) << ": #" << function->upvalueCount << std::endl;
     // std::cout << "   #" << functionState.upvalues.size() << std::endl;
@@ -1208,6 +1225,22 @@ std::any RoxalCompiler::visit(ptr<ast::Index> ast)
     if (argCount > 255)
         error("Number of indices is limited to 255");
     emitBytes(OpCode::Index, argCount);
+    return {};
+}
+
+
+std::any RoxalCompiler::visit(ptr<ast::LambdaFunc> ast)
+{
+    currentNode = ast;
+
+    auto func {as<Function>(ast->func) };
+
+    Anys results {};
+    ast->acceptChildren(*this, results);
+
+    // unwrap ObjFunction* returned by visit(ptr<Function>)
+    auto function = std::any_cast<ObjFunction*>(std::any_cast<Anys>(results.at(0)).at(0));
+
     return {};
 }
 
@@ -1737,6 +1770,12 @@ void RoxalCompiler::emitBytes(OpCode op, uint8_t byte2, uint8_t byte3, const std
     currentChunk()->write(byte2, currentNode->interval.first.line);
     currentChunk()->write(byte3, currentNode->interval.first.line);
 }
+
+uint8_t RoxalCompiler::lastByte()
+{
+    return currentChunk()->lastByte();
+}
+
 
 
 

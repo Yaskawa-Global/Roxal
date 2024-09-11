@@ -31,8 +31,6 @@ public:
 
     virtual std::any visitExpr_stmt(RoxalParser::Expr_stmtContext *context);
 
-    virtual std::any visitExpression(RoxalParser::ExpressionContext *context);
-
     virtual std::any visitCompound_stmt(RoxalParser::Compound_stmtContext *context);
 
     virtual std::any visitBlock_stmt(RoxalParser::Block_stmtContext *context);
@@ -72,6 +70,10 @@ public:
     virtual std::any visitAnnotation(RoxalParser::AnnotationContext *context);
 
     virtual std::any visitAnnot_argument(RoxalParser::Annot_argumentContext *context);
+
+    virtual std::any visitLambda_func(RoxalParser::Lambda_funcContext *context);
+
+    virtual std::any visitExpression(RoxalParser::ExpressionContext *context);
 
     virtual std::any visitAssignment(RoxalParser::AssignmentContext *context);
 

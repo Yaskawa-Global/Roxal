@@ -590,16 +590,24 @@ void Function::acceptChildren(ASTVisitor& v, Anys& results)
 {
     for(auto& param : params)
         results.push_back( param->accept(v) );
-    if (body.has_value()) { // abstract & interface methods have no function body
-        assert(body.value() != nullptr);
-        results.push_back( body.value()->accept(v) );
+    if (std::holds_alternative<ptr<Suite>>(body)) { // abstract & interface methods have no function body
+        auto suite = std::get<ptr<Suite>>(body);
+        assert(suite != nullptr);
+        results.push_back( suite->accept(v) );
     }
+    else if (std::holds_alternative<ptr<Expression>>(body)) {
+        auto expr = std::get<ptr<Expression>>(body);
+        assert(expr != nullptr);
+        results.push_back( expr->accept(v) );
+    }
+    else if (!std::holds_alternative<std::monostate>(body))
+        throw std::runtime_error("Function body must be a suite or an expression (or nothing if abstract)");
 }
 
 
 void Function::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"Function" << (isProc? " (proc)" : "") << " " << toUTF8StdString(name);
+    os << spaces(indent)+"Function" << (isProc? " (proc)" : "") << " " << (name.has_value() ? toUTF8StdString(name.value()) : "");
     if (returnType.has_value()) {
         os << " → ";
         if (std::holds_alternative<BuiltinType>(returnType.value()))
@@ -615,10 +623,17 @@ void Function::output(std::ostream& os, int indent) const
         for(auto& param : params)
             param->output(os,indent+2);
     }
-    if (body.has_value()) {
-        assert(body.value() != nullptr);
+    if (std::holds_alternative<ptr<Suite>>(body)) {
+        auto suite = std::get<ptr<Suite>>(body);
+        assert(suite != nullptr);
         os << spaces(indent)+" body:" << std::endl;
-        body.value()->output(os,indent+2);
+        suite->output(os,indent+2);
+    }
+    else if (std::holds_alternative<ptr<Expression>>(body)) {
+        auto expr = std::get<ptr<Expression>>(body);
+        assert(expr != nullptr);
+        os << spaces(indent)+" body:" << std::endl;
+        expr->output(os,indent+2);
     }
 }
 
@@ -1071,6 +1086,34 @@ void Index::output(std::ostream& os, int indent) const
     os << spaces(indent)+" indices:" << std::endl;
     for(auto& arg : args)
         arg->output(os,indent+2);
+}
+
+
+
+std::any LambdaFunc::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(std::dynamic_pointer_cast<LambdaFunc>(shared_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(std::dynamic_pointer_cast<LambdaFunc>(shared_from_this())) );
+
+    return results;
+}
+
+void LambdaFunc::output(std::ostream& os, int indent) const
+{
+    func->output(os,indent+1);
+}
+
+void LambdaFunc::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    results.push_back( func->accept(v) );
 }
 
 

@@ -29,7 +29,7 @@ bool ASTEditor::isChildA()
             childIsAT = true;
         }
     }
-    
+
     return childIsAT;
 }
 
@@ -41,12 +41,12 @@ int ASTEditor::findChildInSuite(std::vector<std::variant<ptr<Declaration>, ptr<S
     if((isChildA<Statement>() == false) && (isChildA<Declaration>() == false))
         return -1;
 
-    
+
     if (std::dynamic_pointer_cast<Declaration>(toFind))
     {
         for(const auto& child:vec)
         {
-            if((std::holds_alternative<ptr<Declaration>>(child)) && 
+            if((std::holds_alternative<ptr<Declaration>>(child)) &&
             (std::get<ptr<Declaration>>(child) == std::dynamic_pointer_cast<Declaration>(toFind)))
             {
                 found = true;
@@ -59,7 +59,7 @@ int ASTEditor::findChildInSuite(std::vector<std::variant<ptr<Declaration>, ptr<S
     {
         for(const auto& child:vec)
         {
-            if((std::holds_alternative<ptr<Statement>>(child)) && 
+            if((std::holds_alternative<ptr<Statement>>(child)) &&
             (std::get<ptr<Statement>>(child) == std::dynamic_pointer_cast<Statement>(toFind)))
             {
                 found = true;
@@ -76,7 +76,7 @@ int ASTEditor::findChildInSuite(std::vector<std::variant<ptr<Declaration>, ptr<S
 }
 
 void ASTEditor::deleteFromSuite(std::vector<std::variant<ptr<Declaration>, ptr<Statement>>>& vec)
-{   
+{
     //find the iterator to sibling
     int position = findChildInSuite(vec, m_removed);
     bool found = (position > -1);
@@ -92,7 +92,7 @@ void ASTEditor::deleteFromSuite(std::vector<std::variant<ptr<Declaration>, ptr<S
         //update line positions
         int linedelta = m_removed->interval.second.line - m_removed->interval.first.line + 1;
         updateAstLinePositions(m_tree, m_removed->interval.first.line, 0, -1*linedelta, 0);
-        
+
         //erase the ast node
         vec.erase(vec.begin() + position);
 
@@ -101,12 +101,12 @@ void ASTEditor::deleteFromSuite(std::vector<std::variant<ptr<Declaration>, ptr<S
 }
 
 void ASTEditor::insertBeforeOrAfterIntoSuite(std::vector<std::variant<ptr<Declaration>, ptr<Statement>>>& vec, bool before)
-{   
+{
     //find the position of the sibling
     int position = findChildInSuite(vec, m_sibling);
     bool found = (position > -1);
 
-    
+
     //if not before, increment the position
     if(before == false)
     {
@@ -125,7 +125,7 @@ void ASTEditor::insertBeforeOrAfterIntoSuite(std::vector<std::variant<ptr<Declar
             updateAstLinePositions(m_inserted, 0, 0, m_sibling->interval.first.line - m_inserted->interval.first.line, m_sibling->interval.first.pos);
 
             //fix the main tree before inserting the new node
-            //line fix includes sibling for inserting before 
+            //line fix includes sibling for inserting before
             updateAstLinePositions(m_tree, m_sibling->interval.first.line, 0, numInsertedLines, 0);
         }
         else
@@ -135,7 +135,7 @@ void ASTEditor::insertBeforeOrAfterIntoSuite(std::vector<std::variant<ptr<Declar
             updateAstLinePositions(m_inserted, 0, 0, m_sibling->interval.second.line + 1 - m_inserted->interval.first.line, m_sibling->interval.first.pos);
 
             //fix the main tree before inserting the new node
-            //line fix includes everything after sibling for inserting after 
+            //line fix includes everything after sibling for inserting after
             updateAstLinePositions(m_tree, m_sibling->interval.second.line + 1, 0, numInsertedLines, 0);
         }
 
@@ -165,13 +165,13 @@ void ASTEditor::insertSubtreeAfter(ptr<roxal::ast::AST> tree, ptr<roxal::ast::AS
     std::lock_guard<std::mutex> guard(m_memberLock);
 
     m_tree = tree;
-    m_parent = parent; 
-    m_sibling = sibling; 
+    m_parent = parent;
+    m_sibling = sibling;
     m_removed = nullptr;
     m_inserted = toInsert;
 
     m_activeOperation = AstOperation::InsertAfter;
-    m_parent->accept(*this);    
+    m_parent->accept(*this);
 }
 
 void ASTEditor::insertSubtreeBefore(ptr<roxal::ast::AST> tree, ptr<roxal::ast::AST> parent, ptr<roxal::ast::AST> sibling, ptr<roxal::ast::AST> toInsert)
@@ -179,13 +179,13 @@ void ASTEditor::insertSubtreeBefore(ptr<roxal::ast::AST> tree, ptr<roxal::ast::A
     std::lock_guard<std::mutex> guard(m_memberLock);
 
     m_tree = tree;
-    m_parent = parent; 
-    m_sibling = sibling; 
+    m_parent = parent;
+    m_sibling = sibling;
     m_removed = nullptr;
     m_inserted = toInsert;
 
     m_activeOperation = AstOperation::InsertBefore;
-    m_parent->accept(*this);    
+    m_parent->accept(*this);
 }
 
 void ASTEditor::deleteSubtree(ptr<roxal::ast::AST> tree, ptr<roxal::ast::AST> parent, ptr<roxal::ast::AST> toRemove)
@@ -193,13 +193,13 @@ void ASTEditor::deleteSubtree(ptr<roxal::ast::AST> tree, ptr<roxal::ast::AST> pa
     std::lock_guard<std::mutex> guard(m_memberLock);
 
     m_tree = tree;
-    m_parent = parent; 
-    m_sibling = nullptr; 
+    m_parent = parent;
+    m_sibling = nullptr;
     m_removed = toRemove;
     m_inserted = nullptr;
 
     m_activeOperation = AstOperation::Delete;
-    m_parent->accept(*this);    
+    m_parent->accept(*this);
 }
 
 void ASTEditor::replaceSubtree(ptr<roxal::ast::AST> tree, ptr<roxal::ast::AST> parent, ptr<roxal::ast::AST> toRemove, ptr<roxal::ast::AST> toInsert)
@@ -217,7 +217,7 @@ std::any ASTEditor::visit(ptr<ast::File> ast)
     switch(m_activeOperation)
     {
         case AstOperation::InsertBefore:
-        {  
+        {
             insertBeforeOrAfterIntoSuite(ast->declsOrStmts, true);
             break;
         }
@@ -291,7 +291,7 @@ std::any ASTEditor::visit(ptr<ast::Suite> ast)
     switch(m_activeOperation)
     {
         case AstOperation::InsertBefore:
-        {  
+        {
             insertBeforeOrAfterIntoSuite(ast->declsOrStmts, true);
             break;
         }
@@ -334,7 +334,7 @@ std::any ASTEditor::visit(ptr<ast::IfStatement> ast)
     //need to handle expressions in conditionalSuites
     //std::vector<std::pair<ptr<ast::Expression>, ptr<ast::Suite>>> conditionalSuites;
     //std::optional<ptr<ast::Suite>> elseSuite;
-    
+
     if(isChildA<Expression>())
     {
         //modify expression
@@ -378,8 +378,17 @@ std::any ASTEditor::visit(ptr<ast::Function> ast)
     //ptr<Suite> body;
 
     //insert into suite
-    if (ast->body.has_value())
-        ast->body.value()->accept(*this);
+    if (std::holds_alternative<ptr<Suite>>(ast->body)) {
+        auto suite = std::get<ptr<Suite>>(ast->body);
+        suite->accept(*this);
+    }
+    else if (std::holds_alternative<ptr<Expression>>(ast->body)) {
+        auto expr = std::get<ptr<Expression>>(ast->body);
+        expr->accept(*this);
+    }
+    else if (!std::holds_alternative<std::monostate>(ast->body)) {
+        throw std::runtime_error("invalid function body");
+    }
     return {};
 }
 
@@ -430,8 +439,8 @@ std::any ASTEditor::visit(ptr<ast::Call> ast)
 std::any ASTEditor::visit(ptr<ast::Range> ast)
 {
     //ptr<Expression> start;
-    //ptr<Expression> stop; 
-    //ptr<Expression> step;  
+    //ptr<Expression> stop;
+    //ptr<Expression> step;
     return {};
 }
 
@@ -439,6 +448,12 @@ std::any ASTEditor::visit(ptr<ast::Index> ast)
 {
     //ptr<Expression> indexable;
     //std::vector<ptr<Expression>> args;
+    return {};
+}
+
+std::any ASTEditor::visit(ptr<ast::LambdaFunc> ast)
+{
+    throw std::runtime_error("LambdaFunc unimplemented");
     return {};
 }
 
