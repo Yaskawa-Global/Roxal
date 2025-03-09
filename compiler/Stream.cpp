@@ -322,7 +322,7 @@ Value Stream::add(Value lhs, Value rhs)
     auto lhsexpr = isStream(lhs) ? asStream(lhs)->expr : std::make_shared<StreamExpr>(lhs);
     auto rhsexpr = isStream(rhs) ? asStream(rhs)->expr : std::make_shared<StreamExpr>(rhs);
 
-    Value result { objVal(newObj<Stream>(__func__,periodic,freq,std::make_shared<StreamExpr>(StreamExpr::Add, lhsexpr, rhsexpr))) };
+    Value result { objVal(newObj(Stream,periodic,freq,std::make_shared<StreamExpr>(StreamExpr::Add, lhsexpr, rhsexpr))) };
 
     return result;
 }
@@ -508,12 +508,12 @@ uint64_t StreamEngine::timeSinceBoot() const
 
 Stream* roxal::streamVal(double freq, Value initial)
 {
-    return newObj<Stream>(__func__,freq,initial);
+    return newObj(Stream,freq,initial);
 }
 
 Stream* roxal::streamVal(Value initial, Value rest)
 {
-    return newObj<Stream>(__func__,initial, rest);
+    return newObj(Stream,initial, rest);
 }
 
 

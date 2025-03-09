@@ -12,7 +12,7 @@ using namespace roxal;
 atomic_vector<Obj*> Obj::unrefedObjs {};
 
 #ifdef DEBUG_TRACE_MEMORY
-atomic_map<Obj*, const char*> Obj::allocatedObjs {};
+atomic_map<Obj*, std::source_location> Obj::allocatedObjs {};
 #endif
 
 
@@ -100,7 +100,7 @@ void Obj::unregisterStream()
 
 
 // interned strings table
-static atomic_unordered_map<int32_t, ObjString*> strings {};
+atomic_unordered_map<int32_t, ObjString*> roxal::strings {};
 
 
 ObjString::ObjString(const UnicodeString& us)
@@ -182,20 +182,6 @@ static uint32_t fnv1a32(const UnicodeString& s)
     return h;
 }
 
-
-ObjString* roxal::stringVal(const UnicodeString& s)
-{
-    int32_t hash = s.hashCode();
-    auto objStr = strings.lookup(hash);
-    if (!objStr.has_value()) { // not found
-
-        // create new
-        return newObj<ObjString>(__func__,s);
-    }
-    else { // found existing string
-        return objStr.value();
-    }
-}
 
 
 
@@ -347,17 +333,6 @@ int32_t ObjRange::targetIndex(int32_t index, int32_t targetLen) const
 }
 
 
-ObjRange* roxal::rangeVal()
-{
-    return newObj<ObjRange>(__func__);
-}
-
-
-ObjRange* roxal::rangeVal(const Value& start, const Value& stop, const Value& step, bool closed)
-{
-    return newObj<ObjRange>(__func__,start,stop,step,closed);
-}
-
 
 std::string roxal::objRangeToString(const ObjRange* r)
 {
@@ -377,28 +352,17 @@ std::string roxal::objRangeToString(const ObjRange* r)
 
 ObjRange* roxal::cloneRange(const ObjRange* r)
 {
-    return newObj<ObjRange>(__func__,
-                           r->start.clone(),
-                           r->stop.clone(),
-                           r->step.clone(),
-                           r->closed);
+    return newObj(ObjRange,
+                  r->start.clone(),
+                  r->stop.clone(),
+                  r->step.clone(),
+                  r->closed);
 }
 
 
 
 
 // runtime types
-
-ObjTypeSpec* roxal::typeSpecVal(ValueType t)
-{
-    #ifdef DEBUG_BUILD
-    assert(t != ValueType::Object && t != ValueType::Actor);
-    #endif
-    auto ts = newObj<ObjTypeSpec>(__func__);
-    ts->typeValue = t;
-    return ts;
-}
-
 
 
 
@@ -441,7 +405,7 @@ Value ObjList::index(const Value& i) const
         return elts.at(index);
     }
     else if (isRange(i)) {
-        auto sublist = listVal();
+        auto sublist = emptyListVal();
         auto r = asRange(i);
         auto listLen = length();
         auto rangeLen = r->length(listLen);
@@ -497,30 +461,12 @@ void ObjList::setIndex(const Value& i, const Value& v)
 
 
 
-ObjList* roxal::listVal()
-{
-    return newObj<ObjList>(__func__);
-}
-
-
-ObjList* roxal::listVal(const ObjRange* r)
-{
-    return newObj<ObjList>(__func__,r);
-}
-
-ObjList* roxal::listVal(const std::vector<Value>& elts)
-{
-    auto l = newObj<ObjList>(__func__);
-    for(const auto& elt : elts)
-        l->elts.push_back(elt);
-    return l;
-}
 
 
 ObjList* roxal::cloneList(const ObjList* l)
 {
     // TODO: optimize
-    auto newl = newObj<ObjList>(__func__);
+    auto newl = newObj(ObjList);
     auto lsize = l->elts.size();
     for(auto i=0; i<lsize; i++)
         newl->elts.push_back(l->elts.at(i).clone());
@@ -546,26 +492,9 @@ std::string roxal::objListToString(const ObjList* ol)
     return os.str();
 }
 
-
-
-
-
-ObjDict* roxal::dictVal()
-{
-    return newObj<ObjDict>(__func__);
-}
-
-ObjDict* roxal::dictVal(const std::vector<std::pair<Value,Value>>& entries)
-{
-    auto d = newObj<ObjDict>(__func__);
-    for(const auto& entry : entries)
-        d->store(entry.first, entry.second);
-    return d;
-}
-
 ObjDict* roxal::cloneDict(const ObjDict* d)
 {
-    auto newd = newObj<ObjDict>(__func__);
+    auto newd = newObj(ObjDict);
     const auto dkeys = d->keys();
     for(const auto& dkey : dkeys)
         newd->store(dkey.clone(), d->at(dkey).clone());
@@ -701,12 +630,6 @@ ObjNative::ObjNative(NativeFn _function)
 }
 
 
-ObjNative* roxal::nativeVal(NativeFn function)
-{
-    return newObj<ObjNative>(__func__,function);
-}
-
-
 
 
 std::unordered_map<uint16_t, roxal::ObjObjectType*> ObjObjectType::enumTypes {};
@@ -729,11 +652,6 @@ ObjObjectType::ObjObjectType(const icu::UnicodeString& typeName, bool isactor, b
     }
 }
 
-ObjObjectType* roxal::objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface, bool isEnumeration)
-{
-    return newObj<ObjObjectType>(__func__, typeName, isActor, isInterface, isEnumeration);
-}
-
 
 
 ObjModuleType::ObjModuleType(const icu::UnicodeString& typeName)
@@ -742,10 +660,6 @@ ObjModuleType::ObjModuleType(const icu::UnicodeString& typeName)
     typeValue = ValueType::Module;
 }
 
-ObjModuleType* roxal::moduleTypeVal(const icu::UnicodeString& typeName)
-{
-    return newObj<ObjModuleType>(__func__, typeName);
-}
 
 
 
@@ -767,13 +681,6 @@ ObjectInstance::~ObjectInstance()
 {
     instanceType->decRef();
 }
-
-
-ObjectInstance* roxal::objectInstanceVal(ObjObjectType* objectType)
-{
-    return newObj<ObjectInstance>(__func__, objectType);
-}
-
 
 ObjectInstance* roxal::cloneObjectInstance(const ObjectInstance* obj)
 {
@@ -871,12 +778,6 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
 }
 
 
-ActorInstance* roxal::actorInstanceVal(ObjObjectType* objectType)
-{
-    return newObj<ActorInstance>(__func__, objectType);
-}
-
-
 
 ObjBoundMethod::ObjBoundMethod(const Value& instance, ObjClosure* closure)
     : receiver(instance), method(closure)
@@ -959,7 +860,7 @@ void roxal::testObjectValues()
     Value i1 { 6 };
     Value i2 { 8 };
 
-    Value l1 { listVal(std::vector<Value>{i0,i1,i2}) };
+    Value l1 { listVal((std::vector<Value>{i0,i1,i2})) };
 
     assert(isList(l1));
     assert(!l1.isNil());

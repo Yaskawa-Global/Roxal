@@ -38,6 +38,8 @@ VM::VM()
 VM::~VM()
 {
     globals.clearGlobals();
+    threads.clear();
+    thread = nullptr;
 
     initString->decRef();
 
@@ -45,6 +47,9 @@ VM::~VM()
 
     #ifdef DEBUG_TRACE_MEMORY
     outputAllocatedObjs();
+
+    if (openUpvalues.size() > 0)
+        std::cout << "Warning: openUpvalues.size() > 0: " << openUpvalues.size() << std::endl;
     #endif
 }
 
@@ -69,7 +74,7 @@ void VM::appendModulePaths(const std::vector<std::string>& modulePaths)
 
 VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
 {
-    ObjFunction* function { nullptr };
+    Value function {};
 
     try {
         RoxalCompiler compiler {};
@@ -82,10 +87,10 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
         return InterpretResult::CompileError;
     }
 
-    if (function == nullptr)
+    if (function.isNil())
         return InterpretResult::CompileError;
 
-    ObjClosure* closure = closureVal(function);
+    ObjClosure* closure = closureVal(asFunction(function));
     Value closureValue { objVal(closure) };
 
     auto firstThread = std::make_shared<Thread>();
@@ -106,16 +111,25 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
     threads.clear();
 
     InterpretResult result = firstThread->result;
+    firstThread = nullptr;
+    closureValue = nilVal();
+    function = nilVal();
 
     #if defined(DEBUG_TRACE_EXECUTION)
-    if (globals.size() > 0) {
-        std::cout << std::endl << "== globals ==" << std::endl;
-        for(const auto& global : globals.get())
-            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second) << std::endl;
-    }
+    //std::cout << "Stack size: " << ValueStack.size() << std::endl;
+    // auto globalvars { VariablesMap::globalVariableNames() };
+    // if (globalvars.size() > 0) {
+    //     std::cout << std::endl << "== globals ==" << std::endl;
+    //     for(const auto& global : globalvars)
+    //         std::cout << toUTF8StdString(global) /*<< " = " << toString(global.second.second)*/ << std::endl;
+    // }
     #endif
 
     freeObjects();
+    #if defined(DEBUG_TRACE_MEMORY)
+    if (Obj::unrefedObjs.size())
+        std::cout << "Warning: " << Obj::unrefedObjs.size() << " unrefed objects" << std::endl;
+    #endif
 
     return result;
 }
@@ -123,7 +137,7 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
 
 VM::InterpretResult VM::interpretLine(std::istream& linestream)
 {
-    ObjFunction* function { nullptr };
+    Value function {};
 
     static RoxalCompiler compiler {};
     compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
@@ -135,13 +149,13 @@ VM::InterpretResult VM::interpretLine(std::istream& linestream)
         return InterpretResult::CompileError;
     }
 
-    if (function == nullptr)
+    if (function.isNil())
         return InterpretResult::CompileError;
 
     lineMode = true;
     lineStream = &linestream;
 
-    ObjClosure* closure = closureVal(function);
+    ObjClosure* closure = closureVal(asFunction(function));
     Value closureValue { objVal(closure) };
 
     auto newThread = std::make_shared<Thread>();
@@ -153,11 +167,11 @@ VM::InterpretResult VM::interpretLine(std::istream& linestream)
     InterpretResult result = newThread->result;
 
     #if defined(DEBUG_TRACE_EXECUTION)
-    if (globals.size() > 0) {
-        std::cout << std::endl << "== globals ==" << std::endl;
-        for(const auto& global : globals.get())
-            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second) << std::endl;
-    }
+    // if (globals.size() > 0) {
+    //     std::cout << std::endl << "== globals ==" << std::endl;
+    //     for(const auto& global : globals.get())
+    //         std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second) << std::endl;
+    // }
     #endif
 
     return result;
@@ -422,7 +436,7 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
                     assert(funcIt != closure->function->paramDefaultFunc.cend());
                     #endif
 
-                    ObjFunction* defValFunc = funcIt->second;
+                    ObjFunction* defValFunc = asFunction(funcIt->second);
 
                     // call it, which will leave the returned default val on the stack as an arg for this call
                     ObjClosure* defValClosure = closureVal(defValFunc);
@@ -2036,9 +2050,9 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     Value d { maybeDict };
                     pop();
                     auto vecItemPairs { asDict(d)->items() };
-                    ObjList* listItems { listVal() };
+                    ObjList* listItems { emptyListVal() };
                     for(const auto& item : vecItemPairs) {
-                        ObjList* itemList = listVal();
+                        ObjList* itemList = emptyListVal();
                         itemList->elts.push_back(item.first);
                         itemList->elts.push_back(item.second);
                         listItems->elts.push_back(objVal(itemList));
@@ -2049,18 +2063,18 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::ObjectType): {
                 ObjString* name = readString();
-                push(objVal(objectTypeVal(name->s, /*isActor=*/false)));
+                push(objVal(objectTypeVal(name->s, /*isActor=*/false, /*isInterface=*/false, /*isEnumeration=*/false)));
                 break;
             }
             case asByte(OpCode::ActorType): {
                 ObjString* name = readString();
-                push(objVal(objectTypeVal(name->s, /*isActor=*/true)));
+                push(objVal(objectTypeVal(name->s, /*isActor=*/true, /*isInterface=*/false, /*isEnumeration=*/false)));
                 break;
             }
             case asByte(OpCode::InterfaceType): {
                 // interface types are represented as object types (but are abstract - all abstract methods)
                 ObjString* name = readString();
-                push(objVal(objectTypeVal(name->s, /*isActor=*/false, /*isInterface=*/true)));
+                push(objVal(objectTypeVal(name->s, /*isActor=*/false, /*isInterface=*/true, /*isEnumeration=*/false)));
                 break;
             }
             case asByte(OpCode::EnumerationType): {
@@ -2222,10 +2236,12 @@ void VM::outputAllocatedObjs()
 {
     #ifdef DEBUG_TRACE_MEMORY
     if (Obj::allocatedObjs.size()>0) {
-        std::cout << std::hex;
         std::cout << "== allocated Objs (" << Obj::allocatedObjs.size() << ")==" << std::endl;
         for(const auto& p : Obj::allocatedObjs.get()) {
-            std::cout << "  " << uint64_t(p.first) << " " << p.second << std::endl;
+            const auto& loc { p.second };
+            std::cout << "  " << std::hex << uint64_t(p.first) << std::dec << " " 
+                      << "  " << loc.function_name()
+                      << " [" << loc.file_name() << ":" << loc.line() << "]" << std::endl;
         }
         std::cout << std::dec;
     }

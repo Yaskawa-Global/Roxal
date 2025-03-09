@@ -62,13 +62,13 @@ void Value::box() {
     // allocate value on heap
     Obj* obj;
     if (isBool())
-        obj = newObj<ObjPrimitive>(__func__,asBool());
+        obj = newObj(ObjPrimitive,asBool());
     else if (isInt())
-        obj = newObj<ObjPrimitive>(__func__,asInt());
+        obj = newObj(ObjPrimitive,asInt());
     else if (isReal())
-        obj = newObj<ObjPrimitive>(__func__,asReal());
+        obj = newObj(ObjPrimitive,asReal());
     else if (isType())
-        obj = newObj<ObjPrimitive>(__func__,asType());
+        obj = newObj(ObjPrimitive,asType());
     else
         throw std::runtime_error("Unsupported type for auto-boxing "+typeName());
 
@@ -560,9 +560,9 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::Enum: throw std::runtime_error("Can't create default enum value without type"); // shouldn't be called for this t
         case ValueType::Type: return typeVal(ValueType::Nil);
         case ValueType::String: return Value(stringVal(UnicodeString()));
-        case ValueType::Range: return Value(rangeVal());
-        case ValueType::List: return Value(listVal());
-        case ValueType::Dict: return Value(dictVal());
+        case ValueType::Range: return Value(emptyRangeVal());
+        case ValueType::List: return Value(emptyListVal());
+        case ValueType::Dict: return Value(emptyDictVal());
         case ValueType::Stream: return Value(streamVal(0.0,intVal(0))); // manually (or runtime?) clocked seq of 0s
         case ValueType::Vector:
         case ValueType::Matrix:
@@ -610,7 +610,7 @@ Value roxal::toType(ValueType t, Value v, bool strict)
         } break;
         case ValueType::List: {
             if ((v.type() == ValueType::Range) && !strict)
-                return objVal(listVal(asRange(v)));
+                return objVal(rangeListVal(asRange(v)));
         } break;
         case ValueType::Dict: {
             // can convert objects to dict of property, value pairs (non-strict only)
@@ -621,7 +621,7 @@ Value roxal::toType(ValueType t, Value v, bool strict)
             //  included in the dict!
 
             if (isObjectInstance(v) && !strict) {
-                ObjDict* dictValue = dictVal({});
+                ObjDict* dictValue = emptyDictVal();
 
                 ObjectInstance* vObj = asObjectInstance(v);
                 ObjObjectType* vObjType = vObj->instanceType;

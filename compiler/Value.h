@@ -462,7 +462,7 @@ std::ostream& operator<<(std::ostream& out, const Value& v);
 
 
 // map of variables to values
-//  (use for each mnodule's variables; also maintains builtin globals)
+//  (use for each module's variables; also maintains builtin globals)
 //  (all inline for performance)
 class VariablesMap
 {
@@ -604,6 +604,16 @@ public:
         std::lock_guard<std::mutex> lock(varsLock);
         std::vector<icu::UnicodeString> keys;
         for(const auto& entry : vars)
+            keys.push_back(entry.second.first);
+        return keys;
+    }
+
+    // list of global variable names (module vars not considered)
+    static std::vector<icu::UnicodeString> globalVariableNames()
+    {
+        std::lock_guard<std::mutex> lock(globalsLock);
+        std::vector<icu::UnicodeString> keys;
+        for(const auto& entry : globals)
             keys.push_back(entry.second.first);
         return keys;
     }

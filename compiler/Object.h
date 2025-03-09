@@ -7,6 +7,8 @@
 #include <atomic>
 #include <future>
 #include <condition_variable>
+#include <source_location>
+
 #include <unicode/ustring.h>
 
 #include <core/common.h>
@@ -89,23 +91,39 @@ struct Obj {
     static atomic_vector<Obj*> unrefedObjs;
 
     #ifdef DEBUG_TRACE_MEMORY
-    static atomic_map<Obj*, const char*> allocatedObjs;
+    // may from allocated object address to source-file-name, source-line, comment 
+    static atomic_map<Obj*, std::source_location> allocatedObjs;
     #endif
 };
 
 
+// Create a new instance of a class that derives from Obj
+//  (if tracing memory, include calls params for the source file & line by wrapping in a macro)
 template<typename T, typename... Args>
-inline T* newObj(const char* comment, Args&&... args) {
+#ifdef DEBUG_TRACE_MEMORY
+inline T* _newObj(const std::source_location& loc, Args&&... args) 
+#else
+inline T* _newObj(Args&&... args) 
+#endif
+{
     #ifdef DEBUG_TRACE_MEMORY
     T* o = new T(std::forward<Args>(args)...);
     if (Obj::allocatedObjs.containsKey(o))
         throw std::runtime_error("new Obj* yielded address already allocated: "+toString(o));
-    Obj::allocatedObjs.store(o, comment);
+    Obj::allocatedObjs.store(o, loc);
     return o;
     #else
     return new T(std::forward<Args>(args)...);
     #endif
 }
+
+#ifdef DEBUG_TRACE_MEMORY
+// NB: The ## syntax is a G++ & clang non-standard extension to allow empty VA ARGS
+#define newObj(type, ...) _newObj<type>(std::source_location::current(), ##__VA_ARGS__)
+#else
+#define newObj(type, ...) _newObj<type>(__VA_ARGS__)
+#endif
+
 
 template<typename T>
 inline void delObj(T* o) {
@@ -189,17 +207,17 @@ inline ObjPrimitive* asObjPrimitive(const Value& v) { return static_cast<ObjPrim
 
 inline ObjPrimitive* cloneObjPrimitive(const ObjPrimitive* op) {
     if (op->type == ObjType::Bool)
-        return newObj<ObjPrimitive>(__func__,op->as.boolean);
+        return newObj(ObjPrimitive, op->as.boolean);
     else if (op->type == ObjType::Int)
-        return newObj<ObjPrimitive>(__func__,op->as.integer);
+        return newObj(ObjPrimitive, op->as.integer);
     else if (op->type == ObjType::Real)
-        return newObj<ObjPrimitive>(__func__,op->as.real);
+        return newObj(ObjPrimitive, op->as.real);
     else if (op->type == ObjType::Type)
-        return newObj<ObjPrimitive>(__func__,op->as.btype);
+        return newObj(ObjPrimitive, op->as.btype);
     #ifdef DEBUG_BUILD
     throw std::runtime_error("Unsupported ObjPrimitive Type "+std::to_string(int(op->type)));
     #endif
-    return newObj<ObjPrimitive>(__func__,false);
+    return newObj(ObjPrimitive,false);
 }
 
 
@@ -231,8 +249,20 @@ inline bool isString(const Value& v) { return isObjType(v, ObjType::String); }
 inline ObjString* asString(const Value& v) { return static_cast<ObjString*>(v.asObj()); }
 inline UnicodeString asUString(const Value& v) { return asString(v)->s; }
 
+// interned strings table
+extern atomic_unordered_map<int32_t, ObjString*> strings;
+
 // allocate new ObjString on heap and copy s (or return existing interned string)
-ObjString* stringVal(const UnicodeString& s);
+// ObjString* stringVal(const UnicodeString& s);
+#define stringVal(s) ([&](auto _s) -> ObjString* { \
+    int32_t _hash = _s.hashCode();                 \
+    auto _objStr = strings.lookup(_hash);          \
+    if (!_objStr.has_value()) {                    \
+         return newObj(ObjString, _s);             \
+    } else {                                       \
+         return _objStr.value();                   \
+    }                                              \
+}(s))
 
 std::string objStringToString(const ObjString* os);
 
@@ -274,8 +304,11 @@ struct ObjRange : public Obj
 inline bool isRange(const Value& v) { return isObjType(v, ObjType::Range); }
 inline ObjRange* asRange(const Value& v) { return static_cast<ObjRange*>(v.asObj()); }
 
-ObjRange* rangeVal(); // empty range
-ObjRange* rangeVal(const Value& start, const Value& stop, const Value& step, bool closed);
+#define emptyRangeVal() newObj(ObjRange) 
+
+// ObjRange* roxal::rangeVal(const Value& start, const Value& stop, const Value& step, bool closed)
+#define rangeVal(start, stop, step, closed) \
+  newObj(ObjRange,start,stop,step,closed)
 
 std::string objRangeToString(const ObjRange* r);
 ObjRange* cloneRange(const ObjRange* r); // deep copy
@@ -305,9 +338,22 @@ struct ObjList : public Obj
 inline bool isList(const Value& v) { return isObjType(v, ObjType::List); }
 inline ObjList* asList(const Value& v) { return static_cast<ObjList*>(v.asObj()); }
 
-ObjList* listVal();
-ObjList* listVal(const ObjRange* r);
-ObjList* listVal(const std::vector<Value>& elts);
+
+#define emptyListVal() newObj(ObjList) 
+
+// ObjList* rangeListVal(const ObjRange* r)
+#define rangeListVal(r) newObj(ObjList,r)
+
+// ObjList* listVal(const std::vector<Value>& elts)
+#define listVal(_elts) \
+  ([&]() -> ObjList* { \
+      auto _l = newObj(ObjList); \
+      for (const auto& _elt : (_elts)) { \
+          _l->elts.push_back(_elt); \
+      } \
+      return _l; \
+  }())
+
 ObjList* cloneList(const ObjList* l); // deep copy
 
 std::string objListToString(const ObjList* ol);
@@ -380,8 +426,18 @@ private:
 inline bool isDict(const Value& v) { return isObjType(v, ObjType::Dict); }
 inline ObjDict* asDict(const Value& v) { return static_cast<ObjDict*>(v.asObj()); }
 
-ObjDict* dictVal();
-ObjDict* dictVal(const std::vector<std::pair<Value,Value>>& entries);
+#define emptyDictVal() newObj(ObjDict)
+
+// ObjDict* dictVal(const std::vector<std::pair<Value,Value>>& entries) 
+#define dictVal(entries) \
+  ([&]() -> ObjDict* { \
+      auto d = newObj(ObjDict); \
+      for (const auto& entry : (entries)) { \
+          d->store(entry.first, entry.second); \
+      } \
+      return d; \
+  }())
+
 ObjDict* cloneDict(const ObjDict* d);
 
 std::string objDictToString(const ObjDict* od);
@@ -417,7 +473,7 @@ struct ObjFunction : public Obj
     // for parameters with default values that must be re-evaluated on each call
     //  this is map from param name UnicodeString::hashCode() -> ObjFunction
     //  (where ObjFunction is a function that takes no params and returns the default value)
-    std::map<int32_t, ObjFunction*> paramDefaultFunc;
+    std::map<int32_t, Value> paramDefaultFunc;
 
     Value moduleType; // ObjModuleType
 };
@@ -431,10 +487,9 @@ inline ObjFunction* asFunction(const Value& v) {
     return static_cast<ObjFunction*>(v.asObj());
 }
 
-
-inline ObjFunction* functionVal(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName) {
-    return newObj<ObjFunction>(__func__, packageName, moduleName);
-}
+// functionVal(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName)
+#define functionVal(packageName, moduleName) \
+   newObj(ObjFunction, packageName, moduleName)
 
 std::string objFunctionToString(const ObjFunction* of);
 
@@ -457,12 +512,12 @@ struct ObjUpvalue : public Obj {
 inline bool isUpvalue(const Value& v) { return isObjType(v, ObjType::Upvalue); }
 inline ObjUpvalue* asUpvalue(const Value& v) { return static_cast<ObjUpvalue*>(v.asObj()); }
 
-inline ObjUpvalue* upvalueVal(Value* v) {
-    return newObj<ObjUpvalue>(__func__,v);
-}
+// upvalueVal(Value* v)
+#define upvalueVal(v) \
+  newObj(ObjUpvalue,v)
 
 inline ObjUpvalue* cloneUpvalue(const ObjUpvalue* u) {
-    ObjUpvalue* newup = newObj<ObjUpvalue>(__func__,u->location);
+    ObjUpvalue* newup = newObj(ObjUpvalue,u->location);
     // clone value (this Upvalue is now closed)
     newup->closed = newup->location->clone();
     newup->location = &newup->closed;
@@ -502,12 +557,13 @@ inline ObjClosure* asClosure(const Value& v) {
     return static_cast<ObjClosure*>(v.asObj());
 }
 
-inline ObjClosure* closureVal(ObjFunction* function) {
-    return newObj<ObjClosure>(__func__,function);
-}
+// ObjClosure* closureVal(ObjFunction* function)
+#define closureVal(function) \
+  newObj(ObjClosure,function)
+
 
 inline ObjClosure* cloneClosure(const ObjClosure* c) {
-    ObjClosure* newc = newObj<ObjClosure>(__func__,c->function);
+    ObjClosure* newc = newObj(ObjClosure,c->function);
     newc->upvalues.resize(c->upvalues.size());
     for(auto i=0; i<c->upvalues.size();i++)
         newc->upvalues[i] = cloneUpvalue(c->upvalues.at(i));
@@ -541,9 +597,10 @@ inline ObjFuture* asFuture(const Value& v) {
     return static_cast<ObjFuture*>(v.asObj());
 }
 
-inline ObjFuture* futureVal(const std::shared_future<Value>& fv) {
-    return newObj<ObjFuture>(__func__, fv);
-}
+// ObjFuture* futureVal(const std::shared_future<Value>& fv)
+#define futureVal(fv) \
+  newObj(ObjFuture, fv)
+
 
 
 
@@ -569,7 +626,9 @@ struct ObjNative : public Obj
 inline bool isNative(const Value& v) { return isObjType(v, ObjType::Native); }
 inline ObjNative* asNative(const Value& v) { return static_cast<ObjNative*>(v.asObj()); }
 
-ObjNative* nativeVal(NativeFn function);
+
+// ObjNative* nativeVal(NativeFn function)
+#define nativeVal(function) newObj(ObjNative,function)
 
 
 
@@ -594,7 +653,21 @@ struct ObjTypeSpec : public Obj
 inline bool isTypeSpec(const Value& v) { return isObjType(v,ObjType::Type); }
 inline ObjTypeSpec* asTypeSpec(const Value& v) { return static_cast<ObjTypeSpec*>(v.asObj()); }
 
-ObjTypeSpec* typeSpecVal(ValueType t); // primitive
+// helper for below
+#ifdef DEBUG_BUILD
+#define TYPE_SPEC_ASSERT(t) assert((t) != ValueType::Object && (t) != ValueType::Actor)
+#else
+#define TYPE_SPEC_ASSERT(t)
+#endif
+
+// ObjTypeSpec* roxal::typeSpecVal(ValueType t)
+#define typeSpecVal(t) \
+  ([&]() -> ObjTypeSpec* { \
+      TYPE_SPEC_ASSERT(t); \
+      auto ts = newObj(ObjTypeSpec); \
+      ts->typeValue = (t); \
+      return ts; \
+  }())
 
 std::string objTypeSpecToString(const ObjTypeSpec* ots);
 
@@ -647,7 +720,10 @@ inline ObjObjectType* asObjectType(const Value& v) { return static_cast<ObjObjec
 
 inline bool isEnumType(const Value& v) { return isObjType(v, ObjType::Type) && asTypeSpec(v)->typeValue == ValueType::Enum; }
 
-ObjObjectType* objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface = false, bool isEnumeration = false);
+
+// ObjObjectType* objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface, bool isEnumeration)
+#define objectTypeVal(typeName, isActor, isInterface, isEnumeration) \
+  newObj(ObjObjectType, typeName, isActor, isInterface, isEnumeration)
 
 
 struct ObjPackageType : public ObjTypeSpec
@@ -670,7 +746,8 @@ struct ObjModuleType : public ObjTypeSpec
 inline bool isModuleType(const Value& v) { return isObjType(v, ObjType::Type) && (asTypeSpec(v)->typeValue == ValueType::Module); }
 inline ObjModuleType* asModuleType(const Value& v) { return static_cast<ObjModuleType*>(v.asObj()); }
 
-ObjModuleType* moduleTypeVal(const icu::UnicodeString& typeName);
+// ObjModuleType* moduleTypeVal(const icu::UnicodeString& typeName)
+#define moduleTypeVal(typeName) newObj(ObjModuleType, typeName)
 
 
 
@@ -691,7 +768,10 @@ struct ObjectInstance : public Obj
 inline bool isObjectInstance(const Value& v) { return isObjType(v, ObjType::Instance); }
 inline ObjectInstance* asObjectInstance(const Value& v) { return static_cast<ObjectInstance*>(v.asObj()); }
 
-ObjectInstance* objectInstanceVal(ObjObjectType* objectType);
+
+// ObjectInstance* objectInstanceVal(ObjObjectType* objectType)
+#define objectInstanceVal(objectType) newObj(ObjectInstance, objectType)
+
 ObjectInstance* cloneObjectInstance(const ObjectInstance* obj); // deep copy
 
 
@@ -732,7 +812,9 @@ struct ActorInstance : public Obj
 inline bool isActorInstance(const Value& v) { return isObjType(v, ObjType::Actor); }
 inline ActorInstance* asActorInstance(const Value& v) { return static_cast<ActorInstance*>(v.asObj()); }
 
-ActorInstance* actorInstanceVal(ObjObjectType* objectType);
+
+// ActorInstance* actorInstanceVal(ObjObjectType* objectType)
+#define actorInstanceVal(objectType) newObj(ActorInstance, objectType)
 
 
 
@@ -751,12 +833,13 @@ struct ObjBoundMethod : public Obj
 inline bool isBoundMethod(const Value& v) { return isObjType(v, ObjType::BoundMethod); }
 inline ObjBoundMethod* asBoundMethod(const Value& v) { return static_cast<ObjBoundMethod*>(v.asObj()); }
 
-inline ObjBoundMethod* boundMethodVal(const Value& instance, ObjClosure* closure) {
-    return newObj<ObjBoundMethod>(__func__,instance, closure);
-}
+// ObjBoundMethod* boundMethodVal(const Value& instance, ObjClosure* closure)
+#define boundMethodVal(instance, closure) \
+  newObj(ObjBoundMethod, instance, closure)
+
 
 inline ObjBoundMethod* cloneBoundMethod(const ObjBoundMethod* bm) {
-    auto newmb = newObj<ObjBoundMethod>(__func__,bm->receiver, bm->method);
+    auto newmb = newObj(ObjBoundMethod,bm->receiver, bm->method);
     newmb->receiver = newmb->receiver.clone();
     return newmb;
 }

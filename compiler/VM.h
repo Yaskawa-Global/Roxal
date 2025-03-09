@@ -105,7 +105,14 @@ public:
             quit=false;
           }
         Thread(Thread&) = delete;
-        virtual ~Thread() {}
+        virtual ~Thread() {
+            #if defined(DEBUG_TRACE_MEMORY)
+            if (!stack.empty())
+                std::cout << "Warning: Thread " << id() << " stack size (at destruction) > 0: " << stack.size() << std::endl;
+            if (!frames.empty())
+                std::cout << "Warning: Thread " << id() << " frames size (at destruction) > 0: " << frames.size() << std::endl;
+            #endif
+        }
 
         uint64_t id() { return thisid; }
 
