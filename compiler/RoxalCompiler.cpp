@@ -296,7 +296,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     // inherit property registry from super type if available
     if (ast->extends.has_value()) {
         auto superName = ast->extends.value();
-        auto it = typePropertyRegistry.find(toUTF8StdString(superName));
+        auto it = typePropertyRegistry.find(superName);
         if (it != typePropertyRegistry.end())
             asTypeScope(typeScope())->propertyNames.insert(it->second.begin(), it->second.end());
     }
@@ -364,7 +364,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             error("Too many properties for one actor or object type.");
 
         // record property name for implicit access within methods
-        asTypeScope(typeScope())->propertyNames.insert(toUTF8StdString(propName));
+        asTypeScope(typeScope())->propertyNames.insert(propName);
 
         // type
         if (prop->varType.has_value()) {
@@ -409,7 +409,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         assert(func->name.has_value()); // methods must have names
         auto methodName { func->name.value() };
-        asTypeScope(typeScope())->propertyNames.insert(toUTF8StdString(methodName));
+        asTypeScope(typeScope())->propertyNames.insert(methodName);
         int16_t methodNameConstant = identifierConstant(methodName);
         if (methodNameConstant >= 255)
             error("Too many methods for one actor or object type.");
@@ -466,7 +466,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         exitLocalScope();
 
     // record collected property names for this type for use by derived types
-    typePropertyRegistry[toUTF8StdString(ast->name)] = asTypeScope(typeScope())->propertyNames;
+    typePropertyRegistry[ast->name] = asTypeScope(typeScope())->propertyNames;
 
     exitTypeScope();
 
@@ -2102,7 +2102,7 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
             asFuncScope(funcScope())->functionType == FunctionType::Initializer) {
             int16_t thisLocal = resolveLocal(funcScope(), UnicodeString("this"));
             if (thisLocal != -1 &&
-                asTypeScope(typeScope())->propertyNames.count(toUTF8StdString(name))>0) {
+                asTypeScope(typeScope())->propertyNames.count(name)>0) {
                 // treat as property access
                 if (!assign) {
                     namedVariable(UnicodeString("this"), false);
