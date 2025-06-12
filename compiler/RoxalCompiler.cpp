@@ -293,6 +293,14 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     enterTypeScope(ast->name);
 
+    // inherit property registry from super type if available
+    if (ast->extends.has_value()) {
+        auto superName = ast->extends.value();
+        auto it = typePropertyRegistry.find(toUTF8StdString(superName));
+        if (it != typePropertyRegistry.end())
+            asTypeScope(typeScope())->propertyNames.insert(it->second.begin(), it->second.end());
+    }
+
     int16_t typeNameConstant = identifierConstant(ast->name);
     declareVariable(ast->name);
 
@@ -456,6 +464,9 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     if (asTypeScope(typeScope())->hasSuperType)
         exitLocalScope();
+
+    // record collected property names for this type for use by derived types
+    typePropertyRegistry[toUTF8StdString(ast->name)] = asTypeScope(typeScope())->propertyNames;
 
     exitTypeScope();
 

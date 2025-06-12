@@ -2,6 +2,7 @@
 
 #include <stack>
 #include <unordered_set>
+#include <unordered_map>
 
 #include <core/AST.h>
 
@@ -218,6 +219,9 @@ protected:
     };
 
     ptr<TypeScope> asTypeScope(Scope s) const { return std::dynamic_pointer_cast<TypeScope>(*s); }
+
+    // map type name -> registered member names (properties and methods)
+    std::unordered_map<std::string, std::unordered_set<std::string>> typePropertyRegistry;
 
 
     struct ModuleScope : public FunctionScope
