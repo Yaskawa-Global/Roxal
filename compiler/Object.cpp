@@ -689,6 +689,11 @@ ObjFunction::ObjFunction(const icu::UnicodeString& packageName, const icu::Unico
 
 ObjFunction::~ObjFunction()
 {
+    for (auto& entry : paramDefaultFunc) {
+        if (entry.second != nullptr)
+            entry.second->decRef();
+    }
+    paramDefaultFunc.clear();
 }
 
 

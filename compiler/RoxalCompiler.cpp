@@ -897,6 +897,7 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
 
         // store the func that evaluates the default param value in the function
         //  for which it is a param
+        function->incRef();
         asFuncScope(funcScope())->function->paramDefaultFunc[ast->name.hashCode()] = function;
     }
     return {};
