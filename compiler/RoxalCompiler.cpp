@@ -293,6 +293,14 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     enterTypeScope(ast->name);
 
+    // inherit property registry from super type if available
+    if (ast->extends.has_value()) {
+        auto superName = ast->extends.value();
+        auto it = typePropertyRegistry.find(superName);
+        if (it != typePropertyRegistry.end())
+            asTypeScope(typeScope())->propertyNames.insert(it->second.begin(), it->second.end());
+    }
+
     int16_t typeNameConstant = identifierConstant(ast->name);
     declareVariable(ast->name);
 
@@ -355,6 +363,9 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         if (propNameConstant >= 255)
             error("Too many properties for one actor or object type.");
 
+        // record property name for implicit access within methods
+        asTypeScope(typeScope())->propertyNames.insert(propName);
+
         // type
         if (prop->varType.has_value()) {
             auto varType { prop->varType.value() };
@@ -398,6 +409,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         assert(func->name.has_value()); // methods must have names
         auto methodName { func->name.value() };
+        asTypeScope(typeScope())->propertyNames.insert(methodName);
         int16_t methodNameConstant = identifierConstant(methodName);
         if (methodNameConstant >= 255)
             error("Too many methods for one actor or object type.");
@@ -452,6 +464,9 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     if (asTypeScope(typeScope())->hasSuperType)
         exitLocalScope();
+
+    // record collected property names for this type for use by derived types
+    typePropertyRegistry[ast->name] = asTypeScope(typeScope())->propertyNames;
 
     exitTypeScope();
 
@@ -2071,8 +2086,8 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
         setOp = (arg<=255) ? OpCode::SetUpvalue : OpCode::SetUpvalue2;
     }
 
-    if (!found) { // local, not found
-        // assume module scope
+    if (!found) { // local or upvalue not found
+        // try module scope first
         arg = identifierConstant(name);
         getOp = (arg<=255) ? OpCode::GetModuleVar : OpCode::GetModuleVar2;
         //  allow assigning without previously declaring, except within functions
@@ -2080,6 +2095,26 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
             setOp = (arg<=255) ? OpCode::SetModuleVar : OpCode::SetModuleVar2;
         else
             setOp = (arg<=255) ? OpCode::SetNewModuleVar : OpCode::SetNewModuleVar2;
+
+        // if module variable isn't found at runtime, the VM will raise an error.
+        // to allow implicit property access, check for 'this' method context as fallback
+        if (asFuncScope(funcScope())->functionType == FunctionType::Method ||
+            asFuncScope(funcScope())->functionType == FunctionType::Initializer) {
+            int16_t thisLocal = resolveLocal(funcScope(), UnicodeString("this"));
+            if (thisLocal != -1 &&
+                asTypeScope(typeScope())->propertyNames.count(name)>0) {
+                // treat as property access
+                if (!assign) {
+                    namedVariable(UnicodeString("this"), false);
+                    emitBytes(arg<=255 ? OpCode::GetProp : OpCode::GetProp2, arg);
+                } else {
+                    namedVariable(UnicodeString("this"), false);
+                    emitByte(OpCode::Swap);
+                    emitBytes(arg<=255 ? OpCode::SetProp : OpCode::SetProp2, arg);
+                }
+                return true;
+            }
+        }
     }
 
     if (!assign) {

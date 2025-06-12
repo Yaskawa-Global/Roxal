@@ -99,5 +99,14 @@ std::string join(const std::vector<std::string>& strings, const std::string& sep
 icu::UnicodeString join(const std::vector<icu::UnicodeString>& strings, const std::string& separator = ",");
 
 
+}
 
+namespace std {
+    template<>
+    struct hash<icu::UnicodeString>
+    {
+        size_t operator()(const icu::UnicodeString& s) const noexcept {
+            return static_cast<size_t>(s.hashCode());
+        }
+    };
 }
