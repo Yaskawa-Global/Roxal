@@ -659,12 +659,14 @@ struct ObjModuleType : public ObjTypeSpec
 {
     ObjModuleType(const icu::UnicodeString& typeName);
 
-    virtual ~ObjModuleType() {}
+    virtual ~ObjModuleType();
 
     icu::UnicodeString name;
 
     // variables declared at runtime via VM OpCode::DefineModuleVar
     VariablesMap vars;
+
+    static atomic_vector<ObjModuleType*> allModules;
 };
 
 inline bool isModuleType(const Value& v) { return isObjType(v, ObjType::Type) && (asTypeSpec(v)->typeValue == ValueType::Module); }
