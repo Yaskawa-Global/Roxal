@@ -11,7 +11,7 @@ add_compile_definitions(
 #    DEBUG_TRACE_PARSE
 #    DEBUG_TRACE_SCOPES
 #    DEBUG_TRACE_NAME_RESOLUTION
-#    DEBUG_TRACE_MEMORY
+    DEBUG_TRACE_MEMORY
 #    DEBUG_TRACE_EXECUTION
 )
 
@@ -71,24 +71,28 @@ set(SOURCES
     compiler/VM.cpp
     compiler/linenoise.c
     compiler/roxal.cpp
-    compiler/cpp-gen/RoxalBaseVisitor.cpp
-    compiler/cpp-gen/RoxalLexer.cpp
-    compiler/cpp-gen/RoxalParser.cpp
-    compiler/cpp-gen/RoxalVisitor.cpp
 )
 
 
 #
 # Custom command to generate ANTLR4 parser and lexer
 
+set(GENERATED_DIR ${CMAKE_SOURCE_DIR}/compiler/cpp-gen)
+
+# List every file ANTLR will create
+set(GENERATED_SOURCES
+    ${GENERATED_DIR}/RoxalLexer.cpp
+    ${GENERATED_DIR}/RoxalParser.cpp
+    ${GENERATED_DIR}/RoxalVisitor.cpp
+    ${GENERATED_DIR}/RoxalBaseVisitor.cpp)
+
 # Path to the .g4 file
 set(GRAMMAR_FILE ${CMAKE_SOURCE_DIR}/compiler/Roxal.g4)
 
-set(GENERATED_DIR ${CMAKE_SOURCE_DIR}/compiler/cpp-gen)
 
 # Custom command to generate ANTLR4 parser and lexer
 add_custom_command(
-    OUTPUT ${GENERATED_DIR}/RoxalLexer.cpp ${GENERATED_DIR}/RoxalParser.cpp
+    OUTPUT ${GENERATED_SOURCES}
     COMMAND antlr4 -Dlanguage=Cpp -package "roxal" -no-listener -visitor ${GRAMMAR_FILE} -o ${GENERATED_DIR}
     DEPENDS ${GRAMMAR_FILE}
     COMMENT "Generating ANTLR4 parser and lexer from Roxal.g4"
@@ -96,7 +100,7 @@ add_custom_command(
 
 # Custom target to tie the generated files to a target
 add_custom_target(generate_parser
-    DEPENDS ${GENERATED_DIR}/RoxalLexer.cpp ${GENERATED_DIR}/RoxalParser.cpp
+    DEPENDS ${GENERATED_SOURCES}
 )
 
 
@@ -116,7 +120,7 @@ link_directories(
 )
 
 # Add the executable target
-add_executable(roxal ${CORE_SOURCES} ${SOURCES})
+add_executable(roxal ${CORE_SOURCES} ${SOURCES} ${GENERATED_SOURCES})
 
 add_dependencies(roxal generate_parser)
 
