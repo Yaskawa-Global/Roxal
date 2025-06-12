@@ -15,6 +15,8 @@ atomic_vector<Obj*> Obj::unrefedObjs {};
 atomic_map<Obj*, const char*> Obj::allocatedObjs {};
 #endif
 
+atomic_vector<ObjModuleType*> ObjModuleType::allModules {};
+
 
 ValueType Obj::valueType() const
 {
@@ -740,11 +742,17 @@ ObjModuleType::ObjModuleType(const icu::UnicodeString& typeName)
     : name(typeName)
 {
     typeValue = ValueType::Module;
+    allModules.push_back(this);
 }
 
 ObjModuleType* roxal::moduleTypeVal(const icu::UnicodeString& typeName)
 {
     return newObj<ObjModuleType>(__func__, typeName);
+}
+
+ObjModuleType::~ObjModuleType()
+{
+    allModules.erase(this);
 }
 
 

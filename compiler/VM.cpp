@@ -37,6 +37,9 @@ VM::VM()
 
 VM::~VM()
 {
+    for(auto moduleType : ObjModuleType::allModules.get())
+        moduleType->vars.clear();
+
     globals.clearGlobals();
 
     initString->decRef();
