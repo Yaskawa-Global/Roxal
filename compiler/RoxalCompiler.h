@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stack>
+#include <unordered_set>
 
 #include <core/AST.h>
 
@@ -213,6 +214,7 @@ protected:
           : LexicalScope(ScopeType::Type, typeName), hasSuperType(false) {}
 
         bool hasSuperType;
+        std::unordered_set<std::string> propertyNames;
     };
 
     ptr<TypeScope> asTypeScope(Scope s) const { return std::dynamic_pointer_cast<TypeScope>(*s); }
