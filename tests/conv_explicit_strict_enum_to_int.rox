@@ -1,0 +1,9 @@
+type Color enum:
+  Red
+  Blue
+  Green
+
+func test():
+  var v = int(Color.Blue)
+  print(v)
+test()

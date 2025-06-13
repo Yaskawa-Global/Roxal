@@ -1,0 +1,4 @@
+func test():
+  var v = decimal(true)
+  print(v)
+test()

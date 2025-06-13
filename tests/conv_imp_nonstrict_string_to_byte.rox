@@ -1,0 +1,3 @@
+var v:byte
+v = "5"
+print(v)

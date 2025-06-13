@@ -1,0 +1,3 @@
+var v:byte
+v = decimal(5)
+print(v)

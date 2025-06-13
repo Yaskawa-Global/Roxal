@@ -1,0 +1,3 @@
+var v:decimal
+v = 5
+print(v)

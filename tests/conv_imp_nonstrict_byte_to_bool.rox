@@ -1,0 +1,3 @@
+var v:bool
+v = byte(5)
+print(v)

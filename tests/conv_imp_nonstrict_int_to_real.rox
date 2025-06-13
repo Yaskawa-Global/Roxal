@@ -1,0 +1,3 @@
+var v:real
+v = 5
+print(v)

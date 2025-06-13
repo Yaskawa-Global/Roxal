@@ -1,0 +1,3 @@
+var v:bool
+v = "true"
+print(v)
