@@ -186,16 +186,17 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     //  for the specified module
     ModuleInfo module = findImport(ast->packages);
 
-    if (module.name.empty()) {
+    if (module.name.isEmpty()) {
         error("import '"+toUTF8StdString(join(ast->packages,"."))+"' not found.");
         return {};
     }
 
-    std::string absoluteModuleFilePath = std::filesystem::canonical(std::filesystem::absolute(module.modulePathRoot + "/" + module.packagePath + '/' + module.filename));
+    std::string absoluteModuleFilePath = std::filesystem::canonical(std::filesystem::absolute(
+        module.modulePathRoot + "/" + toUTF8StdString(module.packagePath) + '/' + module.filename));
 
     // extra check the module file exists
     if (!std::filesystem::exists(std::filesystem::path(absoluteModuleFilePath))) {
-        error("import file '"+module.packagePath + '/' + module.filename+"' not found.");
+        error("import file '"+toUTF8StdString(module.packagePath) + '/' + module.filename+"' not found.");
         return {};
     }
 
@@ -219,7 +220,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 
         try {
             // compile to generate code for imported module
-            function = compile(sourcestream, module.name);
+            function = compile(sourcestream, toUTF8StdString(module.name));
 
             importedModuleType = function->moduleType;
 
@@ -252,7 +253,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     //  (we can directly insert the var in the importing module since it is already existing static type)
     const auto& importingModuleType = asFuncScope(funcScope())->function->moduleType;
     auto& importingModuleVars = asModuleType(importingModuleType)->vars;
-    icu::UnicodeString moduleName { toUnicodeString(module.name) };
+    icu::UnicodeString moduleName { module.name };
     importingModuleVars.store(moduleName, importedModuleType);
 
 
@@ -271,7 +272,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         // Opcode::ImportModuleVars expects a list (of symbols) and the source module & target module
         emitConstant(symbolsListVal, "import vars "+toUTF8StdString(join(ast->symbols)));
 
-        emitConstant(importedModuleType, "imported module type "+module.name);
+        emitConstant(importedModuleType, "imported module type "+toUTF8StdString(module.name));
         emitConstant(importingModuleType, "importing module type "+toUTF8StdString(asModuleType(importingModuleType)->name));
 
         emitByte(OpCode::ImportModuleVars);
@@ -1409,10 +1410,10 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
         auto absModulePath = std::filesystem::canonical(std::filesystem::absolute(modulePath));
         if (startsWith(path, absModulePath)) {
             module.modulePathRoot = modulePath;
-            module.packagePath = std::filesystem::relative(path, absModulePath).parent_path().string();
+            module.packagePath = toUnicodeString(std::filesystem::relative(path, absModulePath).parent_path().string());
             module.isPackage = std::filesystem::is_directory(path); // FIXME: handle package module file above
             module.filename = path.filename().string();
-            module.name = path.stem().string();
+            module.name = toUnicodeString(path.stem().string());
             return module;
         }
     }
@@ -2164,8 +2165,8 @@ void RoxalCompiler::namedModuleVariable(const icu::UnicodeString& name, bool ass
 std::ostream& roxal::operator<<(std::ostream& out, const RoxalCompiler::ModuleInfo& mi) {
     out << "ModuleInfo {"
         << "modulePathRoot: " << mi.modulePathRoot << ", "
-        << "packagePath: " << mi.packagePath << ", "
-        << "name: " << mi.name << ", "
+        << "packagePath: " << toUTF8StdString(mi.packagePath) << ", "
+        << "name: " << toUTF8StdString(mi.name) << ", "
         << "isPackage: " << (mi.isPackage ? "true" : "false") << ", "
         << "filename: " << mi.filename
         << "}";
