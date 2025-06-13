@@ -48,6 +48,18 @@ set(ANTLR4_ROOT "${VCPKG_ROOT}/installed/x64-linux")
 # Find ANTLR4 package
 find_package(antlr4-runtime 4.13.1 CONFIG REQUIRED)
 
+#
+# Eigen
+
+# Install via:
+# git clone https://gitlab.com/libeigen/eigen.git
+# git checkout 3.4.0
+# mkdir build && cd build && make && sudo make install
+find_package( Eigen3 REQUIRED )
+set(EIGEN3_INCLUDE_DIR "/usr/local/include/eigen3/")
+include_directories(${EIGEN3_INCLUDE_DIR})
+
+
 
 # Add the source files
 set(CORE_SOURCES
