@@ -1,0 +1,27 @@
+# Non-strict conversions using explicit constructors (no byte/decimal)
+var b = true
+print(int(b))
+print(real(b))
+print(string(b))
+
+var i = 260
+print(real(i))
+print(string(i))
+
+var r = 3.7
+print(string(r))
+print(int(r))
+
+var s = "123"
+print(int(s))
+print(real("5.5"))
+
+# enum conversions
+type E enum:
+  A
+  B=3
+  C
+
+var e = E.B
+print(int(e))
+print(string(e))

@@ -1,0 +1,28 @@
+# Strict conversions inside a function using explicit constructors (no byte/decimal)
+func run():
+  var b = true
+  print(int(b))
+  print(real(b))
+  print(string(b))
+
+  var i = 9
+  print(real(i))
+  print(string(i))
+
+  var r = 2.9
+  print(string(r))
+  print(int(r))
+
+  var s = "8"
+  print(int(s))
+
+  type E enum:
+    A
+    B=5
+    C
+
+  var e = E.C
+  print(int(e))
+  print(string(e))
+
+run()
