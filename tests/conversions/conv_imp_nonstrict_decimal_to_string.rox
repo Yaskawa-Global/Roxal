@@ -1,0 +1,3 @@
+var v:string
+v = decimal(5)
+print(v)

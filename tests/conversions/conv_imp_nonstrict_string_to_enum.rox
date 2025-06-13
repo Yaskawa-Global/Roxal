@@ -1,0 +1,8 @@
+type Color enum:
+  Red
+  Blue
+  Green
+
+var v:Color
+v = "Blue"
+print(v)

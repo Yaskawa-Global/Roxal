@@ -1,0 +1,3 @@
+var v:decimal
+v = true
+print(v)

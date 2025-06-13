@@ -1,0 +1,8 @@
+type Color enum:
+  Red
+  Blue
+  Green
+
+var v:int
+v = Color.Blue
+print(v)

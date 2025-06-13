@@ -1,0 +1,2 @@
+var v = bool("true")
+print(v)

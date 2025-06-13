@@ -1,0 +1,3 @@
+var v:real
+v = true
+print(v)

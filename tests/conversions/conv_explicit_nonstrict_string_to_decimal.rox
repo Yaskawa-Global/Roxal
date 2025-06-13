@@ -1,0 +1,2 @@
+var v = decimal("5")
+print(v)

@@ -1,0 +1,2 @@
+var v = bool(byte(5))
+print(v)

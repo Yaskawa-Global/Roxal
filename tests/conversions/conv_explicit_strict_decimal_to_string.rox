@@ -1,0 +1,4 @@
+func test():
+  var v = string(decimal(5))
+  print(v)
+test()

@@ -1,0 +1,2 @@
+var v = real(true)
+print(v)
