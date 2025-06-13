@@ -9,5 +9,5 @@ type A actor:
 var a = A()
 var l = [0]
 var fut = a.modify(l)
-_wait(fut)
+print(fut)
 print(l)
