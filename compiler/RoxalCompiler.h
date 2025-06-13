@@ -60,17 +60,16 @@ public:
     struct ModuleInfo {
         std::string modulePathRoot; // which module search path root is the module in? (from moduleRootPaths)
         std::string packagePath;    // package path of the module
-        std::string name;           // name of the module
+        icu::UnicodeString name;    // name of the module
         bool isPackage;
         std::string filename;       // filename of the module (e.g. with .rox extension)
 
         // FIXME: make members protected, cache hashCode
 
         int32_t hashCode() const {
-            // TODO: consider making the members UnicodeStrings
+            // TODO: consider making packagePath a UnicodeString as well
             icu::UnicodeString packagePathU { toUnicodeString(packagePath) };
-            icu::UnicodeString nameU { toUnicodeString(name) };
-            return packagePathU.hashCode() ^ nameU.hashCode() ^ (isPackage ? 1 : 0);
+            return packagePathU.hashCode() ^ name.hashCode() ^ (isPackage ? 1 : 0);
         }
 
         bool operator==(const ModuleInfo& other) const {
