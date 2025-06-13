@@ -41,3 +41,40 @@
 
 All conversions as in the implicit non-strict table are allowed,
 including those that will lose precision.
+
+
+## Operators
+
+### Primitives
+
+Plus (+), Minus (-), Multiply (*), Divide (/) and Modulo (%)
+
+| LHS     | RHS     | Result  |
+| ------- | ------- | ------- |
+| bool    | bool    | bool    |
+| bool    | byte    | int     |
+| bool    | int     | int     |
+| bool    | real    | real    |
+| bool    | decimal | decimal |
+| byte    | bool    | int     |
+| byte    | byte    | int     |
+| byte    | int     | int     |
+| byte    | real    | real    |
+| byte    | decimal | decimal |
+| int     | bool    | int     |
+| int     | byte    | int     |
+| int     | int     | int     |
+| int     | real    | real    |
+| int     | decimal | decimal |
+| real    | bool    | real    |
+| real    | byte    | real    |
+| real    | int     | real    |
+| real    | real    | real    |
+| real    | decimal | decimal |
+| decimal | bool    | decimal |
+| decimal | byte    | decimal |
+| decimal | int     | decimal |
+| decimal | real    | decimal |
+| decimal | decimal | decimal |
+
+Note for Modulo (%): Values are prompted to int first.
