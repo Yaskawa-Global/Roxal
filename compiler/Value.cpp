@@ -5,7 +5,6 @@
 #include "Value.h"
 
 #include "Object.h"
-#include "Stream.h"
 
 
 namespace roxal {
@@ -37,7 +36,6 @@ std::string roxal::to_string(ValueType t)
     case ValueType::Matrix: return "matrix"; break;
     case ValueType::Tensor: return "tensor"; break;
     case ValueType::Orient: return "orient"; break;
-    case ValueType::Stream: return "stream"; break;
     case ValueType::Object: return "object"; break;
     case ValueType::Actor: return "actor"; break;
     case ValueType::Module: return "module"; break;
@@ -563,7 +561,6 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::Range: return Value(rangeVal());
         case ValueType::List: return Value(listVal());
         case ValueType::Dict: return Value(dictVal());
-        case ValueType::Stream: return Value(streamVal(0.0,intVal(0))); // manually (or runtime?) clocked seq of 0s
         case ValueType::Vector:
         case ValueType::Matrix:
         case ValueType::Tensor:
@@ -645,19 +642,6 @@ Value roxal::toType(ValueType t, Value v, bool strict)
 
 Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin, std::vector<Value>::const_iterator end)
 {
-    auto argCount = end - begin;
-    if (type == ValueType::Stream) {
-        Value stream;
-        if (argCount == 0)
-            stream = objVal(streamVal(1.0,intVal(0)));
-        else if (argCount == 1)
-            stream = objVal(streamVal(1.0,*begin));
-        else if (argCount == 2)
-            stream = objVal(streamVal((begin+1)->asReal(false),*begin));
-        else
-            throw std::runtime_error("stream(initial=0,freq=1) constructor requires 0,1 or 2 arguments");
-        return stream;
-    }
     if (end - 1 == begin)
         // pass non-stict as this is an explicit construction/conversion
         return toType(type, *begin, /*strict=*/false);
@@ -750,9 +734,6 @@ Value roxal::add(Value l, Value r)
             //... decimal, byte
             default: ;
         }
-    }
-    else if (isStream(l) || isStream(r)) {
-        return Stream::add(l,r);
     }
     throw std::invalid_argument("unsupported operand types to add() - "+l.typeName()+" and "+r.typeName());
 }

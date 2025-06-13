@@ -182,11 +182,7 @@ expression
 assignment
  : ( call DOT )? IDENTIFIER EQUALS assignment
  | call EQUALS assignment
- | followed_by
- ;
-
-followed_by
- : logic_or ( FOLLOWEDBY logic_or )*
+ | logic_or
  ;
 
 
@@ -297,7 +293,7 @@ builtin_type
  | STRING | RANGE
  | LIST | DICT
  | VECTOR | MATRIX | TENSOR
- | ORIENT | STREAM
+| ORIENT
  ;
 
 
@@ -347,7 +343,6 @@ VECTOR: 'vector';
 MATRIX: 'matrix';
 TENSOR: 'tensor';
 ORIENT: 'orient';
-STREAM: 'stream';
 OBJECT: 'object';
 ACTOR : 'actor';
 INTERFACE : 'interface' ;
@@ -388,7 +383,6 @@ GT_EQ : '>=' | '\u2265' | '\u2A7E'; // ≥ ⩾
 ISEQUAL: '==' | '\u225F'; // ≟
 EQUALS: '=';
 ISNOTEQUALS: '!=' | '<>' | '\u2260'; // ≠
-FOLLOWEDBY: '|>' | '\u21A6'; // ↦
 YIELDS: '->' | '\u2192'; // →
 UNDERSCORE: '_' ;
 DASH: MINUS ;

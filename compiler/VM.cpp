@@ -12,9 +12,14 @@
 
 #include "VM.h"
 #include "Object.h"
-#include "Stream.h"
 
 using namespace roxal;
+
+static uint64_t currentTimeNs() {
+    struct timespec tp;
+    clock_gettime(CLOCK_MONOTONIC,&tp);
+    return uint64_t(tp.tv_sec)*1000000000ull + uint64_t(tp.tv_nsec);
+}
 
 
 VM::VM()
@@ -27,7 +32,6 @@ VM::VM()
     defineBuiltinFunctions();
     defineNativeFunctions();
 
-    auto engine = StreamEngine::instance();
     //CallSpec::testParamPositions();
     //Value::testPrimitiveValues();
     //testObjectValues();
@@ -360,18 +364,13 @@ void VM::Thread::outputStack()
         std::cout << "          ";
         for(auto vi = stack.begin(); vi < stackTop; vi++) {
             bool aString = vi->isObj() && isString(*vi);
-            bool aStream = vi->isObj() && isStream(*vi);
             std::cout << "[";
             if (!frames.empty() && (frames.end()-1)->slots == &(*vi) )
                 std::cout << "F^"; // show frame pointer
             std::cout << " ";
-            if (aStream)
-                std::cout << "<stream ";
             if (aString)
                 std::cout << "'"; // quote strings
             std::cout << toString(*vi);
-            if (aStream)
-                std::cout << ">";
             if (aString)
                 std::cout << "'";
             if (vi->isNumber()) // show numeric type
@@ -879,79 +878,10 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                 push(result);
                 return true;
             }
-            case ObjType::Stream: {
-                if (subscriptCount != 1) {
-                    runtimeError("Stream indexing requires a single numeric index <= 0.");
-                    return false;
-                }
-                Value index = pop();
-                if (!index.isNumber() || index.asInt() > 0) {
-                    runtimeError("Stream indexing requires a single numeric index <= 0.");
-                    return false;
-                }
-                auto n = index.asInt();
-                Stream* stream = asStream(indexable);
-                Value result;
-                if (n==0)
-                    result = indexable;
-                else if (n==-1) {
-                    try {
-                        result = Stream::prev(n,indexable);
-                    } catch (std::exception& e) {
-                        runtimeError(e.what());
-                    }
-                }
-                else {
-                    runtimeError("Stream index "+std::to_string(n)+" out of range.");
-                    return false;
-                }
-                pop(); // discard indexable
-                push(result);
-                return true;
-            }
-            // indexing a closure occurs in special case of a function that returns a stream,
-            //  where the function name is used to refer to the returned stream (e.g. f[-1] is prev value)
             case ObjType::Closure: {
-                if (subscriptCount != 1) {
-                    runtimeError("Stream indexing requires a single numeric index <= 0.");
-                    return false;
-                }
-                Value index = pop();
-                if (!index.isNumber() || index.asInt() > 0) {
-                    runtimeError("Stream indexing requires a single numeric index <= 0.");
-                    return false;
-                }
-                auto n = index.asInt();
-                if (n==0) {
-                    runtimeError("Can't access the current value of a stream func in its evaluation (only previous values).");
-                    return false;
-                }
-
-                // since the returned stream doesn't exist yet, create a named stream proxy
-                //  using the function name
-                auto frame { thread->frames.end()-1 };
-                auto func { frame->closure->function };
-                // TODO: check this is a func not a proc
-
-                // string name var/placeholder for stream as it doesn't exist yet
-                Value indexable { stringVal(func->name) };
-
-                if (n==-1) {
-                    try {
-                        Value stream { Stream::prev(n,indexable) };
-                        frame->forwardStreamRefs[func->name] = stream;
-                        //std::cout << "Added forward stream ref " << toUTF8StdString(func->name) << std::endl;
-                        pop(); // discard indexable
-                        push(stream);
-                    } catch (std::exception& e) {
-                        runtimeError(e.what());
-                    }
-                }
-                else {
-                    runtimeError("Stream index "+std::to_string(n)+" out of range.");
-                    return false;
-                }
-                return true;
+                // indexing a closure occurs in special case of a function that returns a list or dict etc.
+                // currently unsupported
+                break;
             }
             default:
                 break;
@@ -1084,22 +1014,6 @@ Value VM::opReturn()
     Value result = pop();
     closeUpvalues(returningFrame.slots);
 
-    if (!returningFrame.forwardStreamRefs.empty()) {
-        auto funcName { returningFrame.closure->function->name };
-        //std::cout << "returning frame "+toUTF8StdString(funcName)+" has forward stream refs" << std::endl;
-        for(auto& forwardStreamRef : returningFrame.forwardStreamRefs) {
-            const auto& name { forwardStreamRef.first };
-            auto& stream { forwardStreamRef.second };
-            #ifdef DEBUG_BUILD
-            assert(isStream(stream));
-            if (name != funcName) // shouldn't happen
-                throw std::runtime_error("invalid forward stream reference "+toUTF8StdString(name)+" in func "+toUTF8StdString(funcName));
-            #endif
-            if (!isStream(result))
-                throw std::runtime_error("Func '"+toUTF8StdString(funcName)+"' must return a stream (not type "+result.typeName()+")");
-            asStream(stream)->patch(name,result);
-        }
-    }
 
     thread->popFrame();
 
@@ -1291,11 +1205,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
         #endif
 
-        StreamEngine::instance()->updateStreamStates();
-
-
         if (thread->threadSleep) {
-            if (StreamEngine::instance()->currentTime() >= thread->threadSleepUntil) {
+            if (currentTimeNs() >= thread->threadSleepUntil) {
                 thread->threadSleep = false;
             }
             else
@@ -1561,8 +1472,6 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 else if (isString(peek(1))) {
                     concatenate();
                 }
-                else if (isStream(peek(0)) || isStream(peek(1)))
-                    binaryOp([](Value a, Value b) -> Value { return add(a,b); });
                 else {
                     runtimeError("Operands of + must be two numbers or a strings LHS");
                     return errorReturn;
@@ -1673,12 +1582,6 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
                 binaryOp([](Value a, Value b) -> Value { return lor(a,b); });
-                break;
-            }
-            case asByte(OpCode::FollowedBy): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
-                binaryOp([](Value a, Value b) -> Value { return followedBy(a,b); });
                 break;
             }
             case asByte(OpCode::Pop): {
@@ -2362,7 +2265,7 @@ Value VM::sleep_builtin(int argCount, Value* args)
     uint64_t nanosecs = uint64_t(args[0].asInt()) * 1000;
 
     thread->threadSleep = true;
-    thread->threadSleepUntil = StreamEngine::instance()->currentTime() + nanosecs;
+    thread->threadSleepUntil = currentTimeNs() + nanosecs;
 
     return nilVal();
 }

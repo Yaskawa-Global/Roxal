@@ -1125,10 +1125,7 @@ std::any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *context)
 {
     visitStart();
 
-    if (context->followed_by()) {
-        return visitFollowed_by(context->followed_by());
-    }
-    else if (context->EQUALS()) { // assignment
+    if (context->EQUALS()) { // assignment
 
         auto assign = std::make_shared<Assignment>();
         setSourceInfo(assign, context);
@@ -1162,44 +1159,15 @@ std::any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *context)
 
         return typeValue(assign);
     }
-    else
-        throw std::runtime_error("unhandled assignment alternative");
-
-    visitEnd();
-}
-
-
-
-std::any ASTGenerator::visitFollowed_by(RoxalParser::Followed_byContext *context)
-{
-    visitStart();
-
-    auto logicOr = visitLogic_or(context->logic_or().at(0));
-    if (context->FOLLOWEDBY().size() == 0)
-        return logicOr;
-
-    auto lhs = as<Expression>(logicOr);
-
-    ptr<BinaryOp> followOp;
-
-    if (context->logic_or().size() > 1) {
-
-        for(auto i=1; i<context->logic_or().size(); i++) {
-            followOp = std::make_shared<BinaryOp>(BinaryOp::FollowedBy);
-            setSourceInfo(followOp,context);//!!!
-            followOp->lhs = lhs;
-
-            auto rhs = visitLogic_or(context->logic_or().at(i));
-            followOp->rhs = as<Expression>(rhs);
-
-            lhs = followOp;
-        }
+    else {
+        return visitLogic_or(context->logic_or());
     }
 
-    return typeValue(followOp);
-
     visitEnd();
 }
+
+
+
 
 
 std::any ASTGenerator::visitLogic_or(RoxalParser::Logic_orContext *context)
@@ -1805,8 +1773,6 @@ std::any ASTGenerator::visitBuiltin_type(RoxalParser::Builtin_typeContext *conte
         type = BuiltinType::Tensor;
     else if (context->ORIENT())
         type = BuiltinType::Orient;
-    else if (context->STREAM())
-        type = BuiltinType::Stream;
     else
         throw std::runtime_error("unhandled BuiltinType alternative");
 
