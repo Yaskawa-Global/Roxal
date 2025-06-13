@@ -837,8 +837,12 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
     MethodCallInfo callInfo {};
     callInfo.callee = callee;
     callInfo.callSpec = callSpec;
-    for(auto i=0; i<callSpec.argCount; i++)
-        callInfo.args.push_back( *(argsStackTop - i - 1) );
+    for(auto i=0; i<callSpec.argCount; i++) {
+        Value arg = *(argsStackTop - i - 1);
+        if (!arg.isPrimitive())
+            arg = arg.clone();
+        callInfo.args.push_back(arg);
+    }
     callInfo.returnPromise = nullptr;
 
     // if method is a func, create promise for return value
