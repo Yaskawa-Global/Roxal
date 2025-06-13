@@ -1,0 +1,21 @@
+// Ensure actor return value is cloned so later modifications by actor do not affect caller's copy
+
+var gl = []
+
+type A actor:
+  func make():
+    gl = [0]
+    return gl
+
+  func change():
+    gl[0] = 1
+    print('actor changed')
+    return true
+
+var a = A()
+var l = a.make()
+print(l)
+var fut = a.change()
+_wait(fut)
+print(l)
+print(gl)
