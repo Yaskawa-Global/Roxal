@@ -1,0 +1,18 @@
+var val = 'global'
+
+func showGlobal():
+  print(val)
+
+
+type Obj object:
+  var val = 'prop'
+
+  func test():
+    print(val)
+    var val = 'local'
+    print(val)
+    showGlobal()
+    print(this.val)
+
+var o = Obj()
+o.test()
