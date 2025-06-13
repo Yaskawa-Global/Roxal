@@ -1,0 +1,13 @@
+// Ensure actor receives clone of argument and modifications inside actor do not affect original list
+
+type A actor:
+  func modify(lst):
+    lst[0] = 1
+    print('actor sees:'+lst[0])
+    return true
+
+var a = A()
+var l = [0]
+var fut = a.modify(l)
+print(fut)
+print(l)

@@ -272,8 +272,12 @@ void VM::Thread::act(Value actorInstance)
 
                 if (result.first == InterpretResult::OK) {
 
-                    if (callInfo.returnPromise != nullptr)
-                        callInfo.returnPromise->set_value(result.second);
+                    if (callInfo.returnPromise != nullptr) {
+                        Value ret = result.second;
+                        if (!ret.isPrimitive())
+                            ret = ret.clone();
+                        callInfo.returnPromise->set_value(ret);
+                    }
 
                 }
                 else {
