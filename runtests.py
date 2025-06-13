@@ -2,6 +2,12 @@
 
 import os
 import subprocess
+import argparse
+
+# Parse command-line arguments
+parser = argparse.ArgumentParser(description="Run Roxal tests.")
+parser.add_argument('--convs', action='store_true', help='Include tests/conversions/* tests')
+args = parser.parse_args()
 
 # for each names test, run the <test>.rox file in the tests folder
 #  and compare its output with <test>.out and issue error on mismatch
@@ -23,31 +29,18 @@ tests = [
     'method_named_param',
     'annot1', 'generic', 'objscopes',
     'threads1', 'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8',
-    'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4',
-    'conv_explicit_nonstrict_bool_to_byte', 'conv_explicit_nonstrict_bool_to_decimal', 'conv_explicit_nonstrict_bool_to_int', 'conv_explicit_nonstrict_bool_to_real', 'conv_explicit_nonstrict_bool_to_string',
-    'conv_explicit_nonstrict_byte_to_bool', 'conv_explicit_nonstrict_byte_to_decimal', 'conv_explicit_nonstrict_byte_to_int', 'conv_explicit_nonstrict_byte_to_real', 'conv_explicit_nonstrict_byte_to_string',
-    'conv_explicit_nonstrict_decimal_to_bool', 'conv_explicit_nonstrict_decimal_to_byte', 'conv_explicit_nonstrict_decimal_to_int', 'conv_explicit_nonstrict_decimal_to_real', 'conv_explicit_nonstrict_decimal_to_string',
-    'conv_explicit_nonstrict_enum_to_int', 'conv_explicit_nonstrict_enum_to_string', 'conv_explicit_nonstrict_int_to_bool', 'conv_explicit_nonstrict_int_to_byte', 'conv_explicit_nonstrict_int_to_decimal',
-    'conv_explicit_nonstrict_int_to_real', 'conv_explicit_nonstrict_int_to_string', 'conv_explicit_nonstrict_real_to_bool', 'conv_explicit_nonstrict_real_to_byte', 'conv_explicit_nonstrict_real_to_decimal',
-    'conv_explicit_nonstrict_real_to_int', 'conv_explicit_nonstrict_real_to_string', 'conv_explicit_nonstrict_string_to_bool', 'conv_explicit_nonstrict_string_to_byte', 'conv_explicit_nonstrict_string_to_decimal',
-    'conv_explicit_nonstrict_string_to_enum', 'conv_explicit_nonstrict_string_to_int', 'conv_explicit_nonstrict_string_to_real', 'conv_explicit_strict_bool_to_byte', 'conv_explicit_strict_bool_to_decimal',
-    'conv_explicit_strict_bool_to_int', 'conv_explicit_strict_bool_to_real', 'conv_explicit_strict_bool_to_string', 'conv_explicit_strict_byte_to_bool', 'conv_explicit_strict_byte_to_decimal',
-    'conv_explicit_strict_byte_to_int', 'conv_explicit_strict_byte_to_real', 'conv_explicit_strict_byte_to_string', 'conv_explicit_strict_decimal_to_bool', 'conv_explicit_strict_decimal_to_byte',
-    'conv_explicit_strict_decimal_to_int', 'conv_explicit_strict_decimal_to_real', 'conv_explicit_strict_decimal_to_string', 'conv_explicit_strict_enum_to_int', 'conv_explicit_strict_enum_to_string',
-    'conv_explicit_strict_int_to_bool', 'conv_explicit_strict_int_to_byte', 'conv_explicit_strict_int_to_decimal', 'conv_explicit_strict_int_to_real', 'conv_explicit_strict_int_to_string',
-    'conv_explicit_strict_real_to_bool', 'conv_explicit_strict_real_to_byte', 'conv_explicit_strict_real_to_decimal', 'conv_explicit_strict_real_to_int', 'conv_explicit_strict_real_to_string',
-    'conv_explicit_strict_string_to_bool', 'conv_explicit_strict_string_to_byte', 'conv_explicit_strict_string_to_decimal', 'conv_explicit_strict_string_to_enum', 'conv_explicit_strict_string_to_int',
-    'conv_explicit_strict_string_to_real', 'conv_imp_nonstrict_bool_to_byte', 'conv_imp_nonstrict_bool_to_decimal', 'conv_imp_nonstrict_bool_to_int', 'conv_imp_nonstrict_bool_to_real',
-    'conv_imp_nonstrict_bool_to_string', 'conv_imp_nonstrict_byte_to_bool', 'conv_imp_nonstrict_byte_to_decimal', 'conv_imp_nonstrict_byte_to_int', 'conv_imp_nonstrict_byte_to_real',
-    'conv_imp_nonstrict_byte_to_string', 'conv_imp_nonstrict_decimal_to_bool', 'conv_imp_nonstrict_decimal_to_byte', 'conv_imp_nonstrict_decimal_to_int', 'conv_imp_nonstrict_decimal_to_real',
-    'conv_imp_nonstrict_decimal_to_string', 'conv_imp_nonstrict_enum_to_int', 'conv_imp_nonstrict_enum_to_string', 'conv_imp_nonstrict_int_to_bool', 'conv_imp_nonstrict_int_to_byte',
-    'conv_imp_nonstrict_int_to_decimal', 'conv_imp_nonstrict_int_to_real', 'conv_imp_nonstrict_int_to_string', 'conv_imp_nonstrict_real_to_bool', 'conv_imp_nonstrict_real_to_byte',
-    'conv_imp_nonstrict_real_to_decimal', 'conv_imp_nonstrict_real_to_int', 'conv_imp_nonstrict_real_to_string', 'conv_imp_nonstrict_string_to_bool', 'conv_imp_nonstrict_string_to_byte',
-    'conv_imp_nonstrict_string_to_decimal', 'conv_imp_nonstrict_string_to_enum', 'conv_imp_nonstrict_string_to_int', 'conv_imp_nonstrict_string_to_real', 'conv_imp_strict_bool_to_byte',
-    'conv_imp_strict_bool_to_decimal', 'conv_imp_strict_bool_to_int', 'conv_imp_strict_bool_to_real', 'conv_imp_strict_bool_to_string', 'conv_imp_strict_byte_to_decimal',
-    'conv_imp_strict_byte_to_int', 'conv_imp_strict_byte_to_real', 'conv_imp_strict_byte_to_string', 'conv_imp_strict_decimal_to_string', 'conv_imp_strict_enum_to_int',
-    'conv_imp_strict_enum_to_string', 'conv_imp_strict_int_to_decimal', 'conv_imp_strict_int_to_real', 'conv_imp_strict_int_to_string', 'conv_imp_strict_real_to_string',
+    'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4'
 ]
+
+if args.convs:
+    conv_test_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tests/conversions')
+    conv_tests = sorted([
+        os.path.join('conversions',os.path.splitext(f)[0])
+        for f in os.listdir(conv_test_dir)
+        if f.endswith('.rox') and os.path.exists(os.path.join(conv_test_dir, os.path.splitext(f)[0] + '.out'))
+    ])
+    tests += conv_tests
+
 
 # implementation doesn't yet allow these tests to pass
 failing_tests = []
