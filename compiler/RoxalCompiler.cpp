@@ -191,11 +191,12 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         return {};
     }
 
-    std::string absoluteModuleFilePath = std::filesystem::canonical(std::filesystem::absolute(module.modulePathRoot + "/" + module.packagePath + '/' + module.filename));
+    std::string absoluteModuleFilePath = std::filesystem::canonical(std::filesystem::absolute(
+        module.modulePathRoot + "/" + toUTF8StdString(module.packagePath) + '/' + module.filename));
 
     // extra check the module file exists
     if (!std::filesystem::exists(std::filesystem::path(absoluteModuleFilePath))) {
-        error("import file '"+module.packagePath + '/' + module.filename+"' not found.");
+        error("import file '"+toUTF8StdString(module.packagePath) + '/' + module.filename+"' not found.");
         return {};
     }
 
@@ -1409,7 +1410,7 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
         auto absModulePath = std::filesystem::canonical(std::filesystem::absolute(modulePath));
         if (startsWith(path, absModulePath)) {
             module.modulePathRoot = modulePath;
-            module.packagePath = std::filesystem::relative(path, absModulePath).parent_path().string();
+            module.packagePath = toUnicodeString(std::filesystem::relative(path, absModulePath).parent_path().string());
             module.isPackage = std::filesystem::is_directory(path); // FIXME: handle package module file above
             module.filename = path.filename().string();
             module.name = toUnicodeString(path.stem().string());
@@ -2164,7 +2165,7 @@ void RoxalCompiler::namedModuleVariable(const icu::UnicodeString& name, bool ass
 std::ostream& roxal::operator<<(std::ostream& out, const RoxalCompiler::ModuleInfo& mi) {
     out << "ModuleInfo {"
         << "modulePathRoot: " << mi.modulePathRoot << ", "
-        << "packagePath: " << mi.packagePath << ", "
+        << "packagePath: " << toUTF8StdString(mi.packagePath) << ", "
         << "name: " << toUTF8StdString(mi.name) << ", "
         << "isPackage: " << (mi.isPackage ? "true" : "false") << ", "
         << "filename: " << mi.filename
