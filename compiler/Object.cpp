@@ -4,7 +4,6 @@
 
 #include <core/types.h>
 #include "Object.h"
-#include "Stream.h"
 
 using namespace roxal;
 
@@ -30,7 +29,6 @@ ValueType Obj::valueType() const
         case ObjType::Type: return ValueType::Type; // TODO: need to return more specific ObjectType for type object & type actor?
         case ObjType::List: return ValueType::List;
         case ObjType::Dict: return ValueType::Dict;
-        case ObjType::Stream: return ValueType::Stream;
         case ObjType::Instance: return static_cast<const ObjObjectType*>(this)->isActor ? ValueType::Actor : ValueType::Object;
         default: return ValueType::Nil;
     }
@@ -82,21 +80,6 @@ Obj* Obj::clone() const
 }
 
 
-void Obj::registerStream()
-{
-    if (type==ObjType::Stream)
-        StreamEngine::instance()->registerStream(static_cast<Stream*>(this));
-    else
-        throw std::runtime_error("can't call registerStream on non-stream object "+objTypeName(this));
-}
-
-void Obj::unregisterStream()
-{
-    if (type==ObjType::Stream)
-        StreamEngine::instance()->unregisterStream(static_cast<Stream*>(this));
-    else
-        throw std::runtime_error("can't call unregisterStream on non-stream object "+objTypeName(this));
-}
 
 
 
@@ -628,10 +611,6 @@ std::string roxal::objToString(const Value& v)
         }
         case ObjType::Dict: {
             return objDictToString(asDict(v));
-        }
-        case ObjType::Stream: {
-            // converting a stream to a string actually converts its current value to a string
-            return toString(asStream(v)->currentValue());
         }
         case ObjType::Type: {
             ObjTypeSpec* ts = asTypeSpec(v);

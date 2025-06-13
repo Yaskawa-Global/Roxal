@@ -77,7 +77,6 @@ public:
 
     virtual std::any visitAssignment(RoxalParser::AssignmentContext *context);
 
-    virtual std::any visitFollowed_by(RoxalParser::Followed_byContext *context);
 
     virtual std::any visitLogic_or(RoxalParser::Logic_orContext *context);
 

@@ -32,7 +32,6 @@ enum class ValueType {
     Matrix,
     Tensor,
     Orient,
-    Stream,
     Object,
     Actor,
     Module,
@@ -44,7 +43,6 @@ std::string to_string(ValueType t);
 
 struct Obj;
 struct ObjString;
-class StreamEngine;
 
 
 #if defined(NAN_TAGGING)

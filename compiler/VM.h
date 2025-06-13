@@ -33,12 +33,8 @@ struct CallFrame {
 
     // if not empty, used to reorder call arguments on the stack
     std::vector<int8_t> reorderArgs; // reordering
-
-    // TODO: optimized this for common case where it is empty (ptr?)
-    std::map<UnicodeString,Value> forwardStreamRefs;
 };
 
-class StreamEngine;
 
 
 // The Virtual Machine (singleton)

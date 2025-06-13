@@ -65,7 +65,6 @@ set(SOURCES
     compiler/Object.cpp
     compiler/RoxalCompiler.cpp
     compiler/RoxalIndentationLexer.cpp
-    compiler/Stream.cpp
     compiler/TypeDeducer.cpp
     compiler/Value.cpp
     compiler/VM.cpp

@@ -46,8 +46,7 @@ enum class ObjType {
     Range,
     Type,
     List,
-    Dict,
-    Stream
+    Dict
 };
 
 
@@ -68,23 +67,16 @@ struct Obj {
 
     inline void incRef()
     {
-        auto prevCount = refCount.fetch_add(1,std::memory_order_relaxed);
-        if (prevCount==0 && type==ObjType::Stream)
-            registerStream();
+        refCount.fetch_add(1,std::memory_order_relaxed);
     }
 
     inline void decRef()
     {
         auto prevCount = refCount.fetch_sub(1,std::memory_order_relaxed);
-        if (prevCount <= 1) {
-            if (type==ObjType::Stream)
-                unregisterStream();
+        if (prevCount <= 1)
             unrefedObjs.push_back(this);
-        }
     }
 
-    void registerStream();
-    void unregisterStream();
 
     static atomic_vector<Obj*> unrefedObjs;
 

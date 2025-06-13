@@ -443,8 +443,7 @@ struct BinaryOp : public Expression {
         Add, Subtract, Multiply, Divide, Modulo,
         And, Or,
         Equal, NotEqual,
-        LessThan, GreaterThan, LessOrEqual, GreaterOrEqual,
-        FollowedBy
+        LessThan, GreaterThan, LessOrEqual, GreaterOrEqual
     };
 
     BinaryOp() : Expression(ExprType::BinaryOp), op(None) {}

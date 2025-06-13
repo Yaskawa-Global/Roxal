@@ -19,8 +19,8 @@ enum class BuiltinType {
     Bool, Byte, Number, Int, Real, Decimal, 
     String, Range, Enum,
     List, Dict, 
-    Vector, Matrix, Tensor, 
-    Orient, Stream,
+    Vector, Matrix, Tensor,
+    Orient,
     Func,
     Object, Actor,
     Type
