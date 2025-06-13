@@ -3,6 +3,7 @@
 Roxal is a programming language intended for robotics applications.
 It is currently in development and hence incomplete.
 The superficial syntax has some similarities with Python.  You can see examples of the syntax in the Roxal .rox scripts in the tests/ subdirecctory.
+For builtin type conversion rules, see conversions.md
 
 It uses an Antlr4 parser to parse the source code into an AST tree. This is then compiled to custom VM bytecodes and then executed by the VM.
 
