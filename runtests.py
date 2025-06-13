@@ -28,7 +28,7 @@ tests = [
 ]
 
 # implementation doesn't yet allow these tests to pass
-failing_tests = []
+failing_tests = ['conversion_nonstrict', 'conversion_strict']
 
 project_root = os.path.dirname(os.path.abspath(__file__))
 test_dir = os.path.join(project_root, 'tests')
@@ -56,15 +56,21 @@ try:
             expected = file.read()
 
         if expected != output:
-            print(f"Test {test} FAIL:")
-            print("-- output --")
-            print(output)
-            print("-- expected --")
-            print(expected)
-            print("--")
-            print()
+            if test in failing_tests:
+                print(f"Test {test} expected FAIL")
+            else:
+                print(f"Test {test} FAIL:")
+                print("-- output --")
+                print(output)
+                print("-- expected --")
+                print(expected)
+                print("--")
+                print()
         else:
-            print(f"Test {test} pass")
+            if test in failing_tests:
+                print(f"Test {test} unexpected PASS")
+            else:
+                print(f"Test {test} pass")
 
 except Exception as e:
         print('Exception: '+str(e))

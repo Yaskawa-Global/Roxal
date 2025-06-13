@@ -1,4 +1,4 @@
-# Non-strict conversions using explicit constructors (no byte/decimal)
+# Non-strict conversions using explicit constructors and implicit assignments
 var b = true
 print(int(b))
 print(real(b))
@@ -25,3 +25,26 @@ type E enum:
 var e = E.B
 print(int(e))
 print(string(e))
+
+# byte conversions
+var by = byte(255)
+print(int(by))
+print(real(by))
+print(string(by))
+
+var i2: int
+i2 = byte(1)
+print(i2)
+
+# decimal conversions
+var d = decimal(3.14)
+print(real(d))
+print(string(d))
+
+var r3: real
+r3 = decimal(2.5)
+print(r3)
+
+var i3: int
+i3 = decimal(2.5)
+print(i3)

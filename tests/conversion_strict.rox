@@ -1,4 +1,4 @@
-# Strict conversions inside a function using explicit constructors (no byte/decimal)
+# Strict conversions inside a function using explicit constructors and implicit assignments
 func run():
   var b = true
   print(int(b))
@@ -24,5 +24,28 @@ func run():
   var e = E.C
   print(int(e))
   print(string(e))
+
+  # byte conversions
+  var byt = byte(5)
+  print(int(byt))
+  print(real(byt))
+  print(string(byt))
+
+  var i2: int
+  i2 = byte(1)
+  print(i2)
+
+  # decimal conversions
+  var d = decimal(4.2)
+  print(real(d))
+  print(string(d))
+
+  var r3: real
+  r3 = decimal(1.5)
+  print(r3)
+
+  var i3: int
+  i3 = decimal(1.5)
+  print(i3)
 
 run()
