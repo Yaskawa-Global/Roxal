@@ -287,6 +287,60 @@ std::any TypeDeducer::visit(ptr<ast::BinaryOp> ast)
 {
     ast::Anys results {};
     ast->acceptChildren(*this, results);
+
+    if (ast->lhs->type.has_value() && ast->rhs->type.has_value()) {
+        auto lhsType { ast->lhs->type.value()->builtin };
+        auto rhsType { ast->rhs->type.value()->builtin };
+
+        auto isNumericOrBool = [](BuiltinType t) {
+            return t==BuiltinType::Bool || t==BuiltinType::Byte || t==BuiltinType::Int ||
+                   t==BuiltinType::Real || t==BuiltinType::Decimal;
+        };
+
+        auto numericResultType = [&](BuiltinType a, BuiltinType b) -> BuiltinType {
+            if (a == BuiltinType::Bool && b == BuiltinType::Bool)
+                return BuiltinType::Bool;
+            if (a == BuiltinType::Decimal || b == BuiltinType::Decimal)
+                return BuiltinType::Decimal;
+            if (a == BuiltinType::Real || b == BuiltinType::Real)
+                return BuiltinType::Real;
+            return BuiltinType::Int;
+        };
+
+        switch(ast->op) {
+            case ast::BinaryOp::Add:
+            case ast::BinaryOp::Subtract:
+            case ast::BinaryOp::Multiply:
+            case ast::BinaryOp::Divide:
+                if (ast->op == ast::BinaryOp::Add &&
+                        (lhsType == BuiltinType::String || rhsType == BuiltinType::String)) {
+                    ast->type = std::make_shared<Type>(BuiltinType::String);
+                }
+                else if (isNumericOrBool(lhsType) && isNumericOrBool(rhsType)) {
+                    ast->type = std::make_shared<Type>(numericResultType(lhsType, rhsType));
+                }
+                break;
+            case ast::BinaryOp::Modulo:
+                if (isNumericOrBool(lhsType) && isNumericOrBool(rhsType))
+                    ast->type = std::make_shared<Type>(BuiltinType::Int);
+                break;
+            case ast::BinaryOp::And:
+            case ast::BinaryOp::Or:
+                if (lhsType==BuiltinType::Bool && rhsType==BuiltinType::Bool)
+                    ast->type = std::make_shared<Type>(BuiltinType::Bool);
+                break;
+            case ast::BinaryOp::Equal:
+            case ast::BinaryOp::NotEqual:
+            case ast::BinaryOp::LessThan:
+            case ast::BinaryOp::GreaterThan:
+            case ast::BinaryOp::LessOrEqual:
+            case ast::BinaryOp::GreaterOrEqual:
+                ast->type = std::make_shared<Type>(BuiltinType::Bool);
+                break;
+            default: break;
+        }
+    }
+
     return results;
 }
 
@@ -295,6 +349,28 @@ std::any TypeDeducer::visit(ptr<ast::UnaryOp> ast)
 {
     ast::Anys results {};
     ast->acceptChildren(*this, results);
+
+    if (ast->arg->type.has_value()) {
+        auto argType { ast->arg->type.value()->builtin };
+        switch(ast->op) {
+            case ast::UnaryOp::Not:
+                ast->type = std::make_shared<Type>(BuiltinType::Bool);
+                break;
+            case ast::UnaryOp::Negate:
+                if (argType==BuiltinType::Int || argType==BuiltinType::Byte)
+                    ast->type = std::make_shared<Type>(BuiltinType::Int);
+                else if (argType==BuiltinType::Real)
+                    ast->type = std::make_shared<Type>(BuiltinType::Real);
+                else if (argType==BuiltinType::Bool)
+                    ast->type = std::make_shared<Type>(BuiltinType::Bool);
+                break;
+            case ast::UnaryOp::Accessor:
+                break;
+            default:
+                break;
+        }
+    }
+
     return results;
 }
 
@@ -310,6 +386,21 @@ std::any TypeDeducer::visit(ptr<ast::Call> ast)
 {
     ast::Anys results {};
     ast->acceptChildren(*this, results);
+
+    if (ast->callable->type.has_value()) {
+        auto ctype { ast->callable->type.value() };
+        if (ctype->builtin == BuiltinType::Func && ctype->func.has_value()) {
+            auto f = ctype->func.value();
+            if (f.returnType.has_value())
+                ast->type = f.returnType.value();
+        }
+        else if (ctype->builtin == BuiltinType::Type) {
+            auto typeLit = std::dynamic_pointer_cast<ast::Type>(ast->callable);
+            if (typeLit != nullptr)
+                ast->type = std::make_shared<Type>(typeLit->t);
+        }
+    }
+
     return results;
 }
 
@@ -343,6 +434,9 @@ std::any TypeDeducer::visit(ptr<ast::LambdaFunc> ast)
 {
     ast::Anys results {};
     ast->acceptChildren(*this, results);
+
+    if (ast->func->type.has_value())
+        ast->type = ast->func->type;
 
     return results;
 }
