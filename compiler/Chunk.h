@@ -80,7 +80,9 @@ enum class OpCode {
     NewList,
     NewDict,
     IfDictToKeys,
-    IfDictToItems
+    IfDictToItems,
+    ToType,
+    ToTypeStrict
 };
 
 inline constexpr uint8_t asByte(OpCode op) { return uint8_t(op); }
