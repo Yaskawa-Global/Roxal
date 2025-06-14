@@ -117,13 +117,39 @@ void roxal::Value::decRefObj()
 
 bool Value::asBool(bool strict) const
 {
-    if (!isBoxed()) {
-        return val == (QNAN | TagTrue);
+    Value unboxed;
+    const Value* v { this };
+    if (isBoxed()) {
+        unboxed = *this;
+        unboxed.unbox();
+        v = &unboxed;
+    }
+
+    if (!v->isObj()) {
+        switch (v->type()) {
+        case ValueType::Bool:
+            return v->val == (QNAN | TagTrue);
+        case ValueType::Byte:
+            if (!strict) return v->asByte(false) != 0; break;
+        case ValueType::Int:
+            if (!strict) return v->asInt(false) != 0; break;
+        case ValueType::Real:
+            if (!strict) return v->asReal(false) != 0.0; break;
+        case ValueType::Decimal:
+            throw std::runtime_error("decimal unimplemented");
+        default: ;
+        }
     }
     else {
-        switch (asObj()->type) {
-        case ObjType::Bool: return asObjPrimitive(*this)->as.boolean;
-        default: ;
+        if (isString(*v) && !strict) {
+            auto str { toUTF8StdString(asString(*v)->s) };
+            return !str.empty();
+        }
+        else if (v->isBoxed()) {
+            // boxed primitive handled above after unboxing
+        }
+        else if (v->asObj()->type == ObjType::Bool) {
+            return asObjPrimitive(*v)->as.boolean;
         }
     }
     return false;
@@ -143,10 +169,25 @@ uint8_t Value::asByte(bool strict) const
 
     if (!v->isObj()) {
         switch (v->type()) {
-        case ValueType::Int: { uint64_t i {v->val & ~(QNAN | TypeTag)} ; return *reinterpret_cast<uint8_t*>(&i); }
-        case ValueType::Real: return uint8_t(*reinterpret_cast<const double*>(&val));
-        case ValueType::Bool: return (val == (QNAN | TagTrue)) ? 1 : 0;
-        case ValueType::Decimal: return 0; // TODO: implement
+        case ValueType::Byte:
+            return uint8_t(v->val & 0xff);
+        case ValueType::Int:
+            if (!strict) {
+                uint64_t i { v->val & ~(QNAN | TypeTag) };
+                return uint8_t(*reinterpret_cast<int32_t*>(&i));
+            }
+            break;
+        case ValueType::Real:
+            if (!strict) {
+                uint64_t bits = v->val.load();
+                double d = *reinterpret_cast<double*>(&bits);
+                return uint8_t(int32_t(d));
+            }
+            break;
+        case ValueType::Bool:
+            return (v->val == (QNAN | TagTrue)) ? 1 : 0;
+        case ValueType::Decimal:
+            throw std::runtime_error("decimal unimplemented");
         default: ;
         }
     } else {
@@ -182,10 +223,17 @@ int32_t Value::asInt(bool strict) const
     if (!v->isObj()) {
         switch (v->type()) {
         case ValueType::Enum: return int32_t(asEnum());
+        case ValueType::Byte: return int32_t(uint8_t(v->val & 0xff));
         case ValueType::Int: { uint64_t i {v->val & ~(QNAN | TypeTag)} ; return *reinterpret_cast<int32_t*>(&i); }
-        case ValueType::Real: return int32_t(*reinterpret_cast<const double*>(&val));
-        case ValueType::Bool: return (val == (QNAN | TagTrue)) ? 1 : 0;
-        case ValueType::Decimal: return 0; // TODO: implement
+        case ValueType::Real:
+            if (!strict) {
+                uint64_t bits = v->val.load();
+                double d = *reinterpret_cast<double*>(&bits);
+                return int32_t(d);
+            }
+            break;
+        case ValueType::Bool: return (v->val == (QNAN | TagTrue)) ? 1 : 0;
+        case ValueType::Decimal: throw std::runtime_error("decimal unimplemented");
         default: ;
         }
     } else {
@@ -229,10 +277,18 @@ double Value::asReal(bool strict) const
 
     if (!v->isObj()) {
         switch (v->type()) {
-        case ValueType::Real: return *reinterpret_cast<const double*>(&val);
-        case ValueType::Int: { uint64_t i {v->val & ~(QNAN | TypeTag)}; return double(*reinterpret_cast<int32_t*>(&i)); }
-        case ValueType::Bool: return (val == (QNAN | TagTrue)) ? 1.0 : 0.0;
-        case ValueType::Decimal: return 0.0; // TODO: implement
+        case ValueType::Real:
+            {
+                uint64_t bits = v->val.load();
+                return *reinterpret_cast<double*>(&bits);
+            }
+        case ValueType::Int: {
+                uint64_t i { v->val & ~(QNAN | TypeTag) };
+                return double(*reinterpret_cast<int32_t*>(&i)); }
+        case ValueType::Byte:
+                return double(uint8_t(v->val & 0xff));
+        case ValueType::Bool: return (v->val == (QNAN | TagTrue)) ? 1.0 : 0.0;
+        case ValueType::Decimal: throw std::runtime_error("decimal unimplemented");
         default: ;
         }
     }
@@ -377,13 +433,36 @@ void roxal::Value::decRefObj()
 
 bool Value::asBool(bool strict) const
 {
-    if (!isBoxed()) {
-        return as.boolean; // TODO: should this convert?
+    Value unboxed;
+    const Value* v { this };
+    if (isBoxed()) {
+        unboxed = *this;
+        unboxed.unbox();
+        v = &unboxed;
+    }
+
+    if (!isObj()) {
+        switch(valueType(v->_type)) {
+            case ValueType::Bool:
+                return v->as.boolean;
+            case ValueType::Int:
+                if (!strict) return v->as.integer != 0;
+                break;
+            case ValueType::Real:
+                if (!strict) return v->as.real != 0.0;
+                break;
+            case ValueType::Decimal:
+                throw std::runtime_error("decimal unimplemented");
+            default: break;
+        }
     }
     else {
-        switch (valueType(_type)) {
-        case ValueType::Bool: return asPrimitive(*this)->as.boolean;
-        default: ;
+        if (isString(*v) && !strict) {
+            auto str { toUTF8StdString(asString(*v)->s) };
+            return !str.empty();
+        }
+        else if (valueType(v->_type) == ValueType::Bool) {
+            return asPrimitive(*v)->as.boolean;
         }
     }
     return false;
@@ -406,9 +485,12 @@ int32_t Value::asInt(bool strict) const
     if (!v->isObj()) {
         switch (v->_type) {
         case ValueType::Int: return v->as.integer;
-        case ValueType::Real: return int32_t(v->as.real);
+        case ValueType::Real:
+            if (!strict)
+                return int32_t(v->as.real);
+            break;
         case ValueType::Bool: return v->as.boolean ? 1 : 0;
-        case ValueType::Decimal: return 0; // TODO: implement
+        case ValueType::Decimal: throw std::runtime_error("decimal unimplemented");
         default: ;
         }
     } else {
@@ -446,7 +528,7 @@ double Value::asReal(bool strict) const
         case ValueType::Real: return v->as.real;
         case ValueType::Int: return double(v->as.integer);
         case ValueType::Bool: return v->as.boolean ? 1.0 : 0.0;
-        case ValueType::Decimal: return 0.0; // TODO: implement
+        case ValueType::Decimal: throw std::runtime_error("decimal unimplemented");
         default: ;
         }
     }
@@ -593,6 +675,8 @@ Value roxal::toType(ValueType t, Value v, bool strict)
     }
 
     switch (t) {
+        case ValueType::Bool: return boolVal(v.asBool(strict));
+        case ValueType::Byte: return byteVal(v.asByte(strict));
         case ValueType::Real: return realVal(v.asReal(strict));
         case ValueType::Int: return intVal(v.asInt(strict));
         case ValueType::String: {
@@ -888,6 +972,8 @@ std::string roxal::toString(const Value& v)
         return std::to_string(v.asInt());
     else if (v.isReal())
         return format("%g", v.asReal());
+    else if (v.isByte())
+        return std::to_string(v.asByte());
     else if (v.isBool())
         return v.asBool() ? "true" : "false";
     else if (v.isEnum()) {
