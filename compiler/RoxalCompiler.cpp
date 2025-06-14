@@ -514,18 +514,29 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
 {
     currentNode = ast;
 
-    declareVariable(ast->name);
-    uint16_t var { 0 };
-    if (asFuncScope(funcScope())->scopeDepth == 0) // global variable
-        var = identifierConstant(ast->name); // create constant table entry for name
+    std::optional<ValueType> declType{};
+    if (ast->varType.has_value() && std::holds_alternative<BuiltinType>(ast->varType.value()))
+        declType = builtinToValueType(std::get<BuiltinType>(ast->varType.value()));
 
-    // TODO: support type spec
+    declareVariable(ast->name, declType);
+    uint16_t var { 0 };
+    if (asFuncScope(funcScope())->scopeDepth == 0) { // global variable
+        var = identifierConstant(ast->name); // create constant table entry for name
+        if (declType.has_value())
+            asModuleScope(moduleScope())->moduleVarTypes[ast->name] = declType.value();
+    }
 
     if (ast->initializer.has_value()) {
         ast->initializer.value()->accept(*this);
+        if (declType.has_value())
+            emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                      uint8_t(declType.value()));
+    } else {
+        if (declType.has_value())
+            emitConstant(defaultValue(declType.value()));
+        else
+            emitByte(OpCode::ConstNil);
     }
-    else
-        emitByte(OpCode::ConstNil);
 
     defineVariable(var);
 
@@ -660,6 +671,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
 
     // declare local vars for each for target
     std::vector<icu::UnicodeString> targetVarNames {};
+    std::vector<std::optional<ValueType>> targetVarTypes {};
 
     uint8_t numTargets = ast->targetList.size();
     if (numTargets > 128) {
@@ -668,11 +680,18 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     }
     for(auto i = 0; i < numTargets; i++) {
         assert(isa<VarDecl>(ast->targetList.at(i)));
-        auto name = as<VarDecl>(ast->targetList.at(i))->name;
-        // TODO: store type
+        auto vdecl = as<VarDecl>(ast->targetList.at(i));
+        auto name = vdecl->name;
+        std::optional<ValueType> vtype{};
+        if (vdecl->varType.has_value() && std::holds_alternative<BuiltinType>(vdecl->varType.value()))
+            vtype = builtinToValueType(std::get<BuiltinType>(vdecl->varType.value()));
         targetVarNames.push_back(name);
-        declareVariable(name);
-        emitByte(OpCode::ConstNil);
+        targetVarTypes.push_back(vtype);
+        declareVariable(name, vtype);
+        if (vtype.has_value())
+            emitConstant(defaultValue(vtype.value()));
+        else
+            emitByte(OpCode::ConstNil);
         defineVariable();
     }
 
@@ -731,7 +750,11 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     emitBytes(OpCode::Index, 1); // single index/arg indexing
 
     // if there is a single target, just assign the target the result of indexing the iterable (stack top)
+    bool strict = asFuncScope(funcScope())->strict;
     if (numTargets == 1) {
+        if (targetVarTypes.at(0).has_value())
+            emitBytes(strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                      uint8_t(targetVarTypes.at(0).value()));
         namedVariable(targetVarNames.at(0),/*assign=*/true);
         emitByte(OpCode::Pop, "index result"); // discard index
     }
@@ -748,6 +771,9 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
             emitBytes(OpCode::Index, 1);
 
             // assign it to target
+            if (targetVarTypes.at(i).has_value())
+                emitBytes(strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                          uint8_t(targetVarTypes.at(i).value()));
             namedVariable(targetVarNames.at(i),/*assign=*/true);
 
             emitByte(OpCode::Pop, "subindex result"); // discard index
@@ -928,9 +954,14 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
         ast->rhs->accept(*this);
 
-        // we don't visit the LHS Variable, since that will emit code to evaluate it
-
         auto name { as<Variable>(ast->lhs)->name };
+
+        auto vtype = localVarType(name);
+        if (!vtype.has_value())
+            vtype = moduleVarType(name);
+        if (vtype.has_value())
+            emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                      uint8_t(vtype.value()));
 
         namedVariable(name, /*assign=*/true);
     }
@@ -984,6 +1015,12 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             if (isa<Variable>(lhsElt)) {
                 auto varname { as<Variable>(lhsElt)->name };
 
+                auto vtype = localVarType(varname);
+                if (!vtype.has_value())
+                    vtype = moduleVarType(varname);
+                if (vtype.has_value())
+                    emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                              uint8_t(vtype.value()));
                 namedVariable(varname, /*assign=*/true);
 
             }
@@ -1887,7 +1924,7 @@ int16_t RoxalCompiler::identifierConstant(const icu::UnicodeString& ident)
 }
 
 
-void RoxalCompiler::addLocal(const icu::UnicodeString& name)
+void RoxalCompiler::addLocal(const icu::UnicodeString& name, std::optional<ValueType> type)
 {
     //std::cout << (&(*state()) - &(*states.begin())) << " addLocal(" << toUTF8StdString(name) << ")" << std::endl;
     if (asFuncScope(funcScope())->locals.size() == 255) {
@@ -1898,7 +1935,7 @@ void RoxalCompiler::addLocal(const icu::UnicodeString& name)
     std::cout << "addLocal(" << toUTF8StdString(name) << ")" << std::endl;
     #endif
 
-    asFuncScope(funcScope())->locals.push_back(Local(name, -1)); // scopeDepth=-1 --> uninitialized
+    asFuncScope(funcScope())->locals.push_back(Local(name, -1, type)); // scopeDepth=-1 --> uninitialized
 
     #ifdef DEBUG_BUILD
     auto index { asFuncScope(funcScope())->locals.size()-1 };
@@ -2015,7 +2052,7 @@ int16_t RoxalCompiler::resolveUpvalue(Scope scopeState, const icu::UnicodeString
 
 
 
-void RoxalCompiler::declareVariable(const icu::UnicodeString& name)
+void RoxalCompiler::declareVariable(const icu::UnicodeString& name, std::optional<ValueType> type)
 {
     if (asFuncScope(funcScope())->scopeDepth == 0)
         return;
@@ -2030,7 +2067,31 @@ void RoxalCompiler::declareVariable(const icu::UnicodeString& name)
         }
     }
 
-    addLocal(name);
+    addLocal(name, type);
+}
+
+std::optional<ValueType> RoxalCompiler::localVarType(const icu::UnicodeString& name)
+{
+    auto& locals { asFuncScope(funcScope())->locals };
+    if (!locals.empty()) {
+        for(int i = locals.size()-1; i>=0; i--) {
+            if (locals[i].name == name) {
+                if (locals[i].typed)
+                    return locals[i].type;
+                break;
+            }
+        }
+    }
+    return {};
+}
+
+std::optional<ValueType> RoxalCompiler::moduleVarType(const icu::UnicodeString& name)
+{
+    auto module = asModuleScope(moduleScope());
+    auto it = module->moduleVarTypes.find(name);
+    if (it != module->moduleVarTypes.end())
+        return it->second;
+    return {};
 }
 
 

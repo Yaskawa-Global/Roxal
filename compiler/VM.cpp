@@ -1943,6 +1943,26 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 }
                 break;
             }
+            case asByte(OpCode::ToType): {
+                uint8_t typeByte = readByte();
+                try {
+                    peek(0) = toType(ValueType(typeByte), peek(0), /*strict=*/false);
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case asByte(OpCode::ToTypeStrict): {
+                uint8_t typeByte = readByte();
+                try {
+                    peek(0) = toType(ValueType(typeByte), peek(0), /*strict=*/false);
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
             case asByte(OpCode::ObjectType): {
                 ObjString* name = readString();
                 push(objVal(objectTypeVal(name->s, /*isActor=*/false)));

@@ -3,6 +3,7 @@
 #include <stack>
 #include <unordered_set>
 #include <unordered_map>
+#include <optional>
 
 #include <core/AST.h>
 
@@ -90,11 +91,16 @@ protected:
     ModuleInfo findImport(const std::vector<icu::UnicodeString>& components) const;
 
     struct Local {
-        Local(const icu::UnicodeString& _name, int scopeDepth)
-            : name(_name), depth(scopeDepth), isCaptured(false) {}
+        Local(const icu::UnicodeString& _name, int scopeDepth, std::optional<ValueType> t = std::nullopt)
+            : name(_name), depth(scopeDepth), isCaptured(false), type(ValueType::Nil), typed(false)
+        {
+            if (t.has_value()) { type = t.value(); typed = true; }
+        }
         icu::UnicodeString name;
         int depth;
         bool isCaptured;
+        ValueType type;
+        bool typed;
     };
 
     struct Upvalue {
@@ -244,6 +250,7 @@ protected:
         icu::UnicodeString packageName;
         icu::UnicodeString moduleName;
         Value moduleType;  // ObjModuleType
+        std::unordered_map<icu::UnicodeString, ValueType> moduleVarTypes;
     };
 
     ptr<ModuleScope> asModuleScope(Scope s) const { return std::dynamic_pointer_cast<ModuleScope>(*s); }
@@ -294,14 +301,17 @@ protected:
     // keep track of which chunk string constants table entires are for identifiers and re-use them
     int16_t identifierConstant(const icu::UnicodeString& ident);
 
-    void addLocal(const icu::UnicodeString& name);
+    void addLocal(const icu::UnicodeString& name, std::optional<ValueType> type = std::nullopt);
     int16_t resolveLocal(Scope scopeState, const icu::UnicodeString& name);
     int addUpvalue(Scope scopeState, uint8_t index, bool isLocal);
     int16_t resolveUpvalue(Scope scopeState, const icu::UnicodeString& name);
-    void declareVariable(const icu::UnicodeString& name);
+    void declareVariable(const icu::UnicodeString& name, std::optional<ValueType> type = std::nullopt);
     void defineVariable(uint16_t moduleVar = 0); // moduleVar unused if defining a local
     bool namedVariable(const icu::UnicodeString& name, bool assign=false);
     void namedModuleVariable(const icu::UnicodeString& name, bool assign=false);
+
+    std::optional<ValueType> localVarType(const icu::UnicodeString& name);
+    std::optional<ValueType> moduleVarType(const icu::UnicodeString& name);
 
 };
 
