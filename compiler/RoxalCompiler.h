@@ -250,6 +250,7 @@ protected:
         icu::UnicodeString packageName;
         icu::UnicodeString moduleName;
         Value moduleType;  // ObjModuleType
+        std::unordered_map<icu::UnicodeString, ValueType> moduleVarTypes;
     };
 
     ptr<ModuleScope> asModuleScope(Scope s) const { return std::dynamic_pointer_cast<ModuleScope>(*s); }
@@ -310,6 +311,7 @@ protected:
     void namedModuleVariable(const icu::UnicodeString& name, bool assign=false);
 
     std::optional<ValueType> localVarType(const icu::UnicodeString& name);
+    std::optional<ValueType> moduleVarType(const icu::UnicodeString& name);
 
 };
 

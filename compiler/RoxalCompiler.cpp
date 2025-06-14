@@ -520,8 +520,11 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
 
     declareVariable(ast->name, declType);
     uint16_t var { 0 };
-    if (asFuncScope(funcScope())->scopeDepth == 0) // global variable
+    if (asFuncScope(funcScope())->scopeDepth == 0) { // global variable
         var = identifierConstant(ast->name); // create constant table entry for name
+        if (declType.has_value())
+            asModuleScope(moduleScope())->moduleVarTypes[ast->name] = declType.value();
+    }
 
     if (ast->initializer.has_value()) {
         ast->initializer.value()->accept(*this);
@@ -949,6 +952,8 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
         auto name { as<Variable>(ast->lhs)->name };
 
         auto vtype = localVarType(name);
+        if (!vtype.has_value())
+            vtype = moduleVarType(name);
         if (vtype.has_value())
             emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
                       uint8_t(vtype.value()));
@@ -1006,6 +1011,8 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                 auto varname { as<Variable>(lhsElt)->name };
 
                 auto vtype = localVarType(varname);
+                if (!vtype.has_value())
+                    vtype = moduleVarType(varname);
                 if (vtype.has_value())
                     emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
                               uint8_t(vtype.value()));
@@ -2070,6 +2077,15 @@ std::optional<ValueType> RoxalCompiler::localVarType(const icu::UnicodeString& n
             }
         }
     }
+    return {};
+}
+
+std::optional<ValueType> RoxalCompiler::moduleVarType(const icu::UnicodeString& name)
+{
+    auto module = asModuleScope(moduleScope());
+    auto it = module->moduleVarTypes.find(name);
+    if (it != module->moduleVarTypes.end())
+        return it->second;
     return {};
 }
 
