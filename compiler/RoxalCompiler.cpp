@@ -528,12 +528,14 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
 
     if (ast->initializer.has_value()) {
         ast->initializer.value()->accept(*this);
-    } else
-        emitByte(OpCode::ConstNil);
-
-    if (declType.has_value()) {
-        emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
-                  uint8_t(declType.value()));
+        if (declType.has_value())
+            emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                      uint8_t(declType.value()));
+    } else {
+        if (declType.has_value())
+            emitConstant(defaultValue(declType.value()));
+        else
+            emitByte(OpCode::ConstNil);
     }
 
     defineVariable(var);
@@ -686,7 +688,10 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
         targetVarNames.push_back(name);
         targetVarTypes.push_back(vtype);
         declareVariable(name, vtype);
-        emitByte(OpCode::ConstNil);
+        if (vtype.has_value())
+            emitConstant(defaultValue(vtype.value()));
+        else
+            emitByte(OpCode::ConstNil);
         defineVariable();
     }
 

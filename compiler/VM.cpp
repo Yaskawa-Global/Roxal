@@ -1956,7 +1956,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::ToTypeStrict): {
                 uint8_t typeByte = readByte();
                 try {
-                    peek(0) = toType(ValueType(typeByte), peek(0), /*strict=*/true);
+                    peek(0) = toType(ValueType(typeByte), peek(0), /*strict=*/false);
                 } catch (std::exception& e) {
                     runtimeError(e.what());
                     return errorReturn;

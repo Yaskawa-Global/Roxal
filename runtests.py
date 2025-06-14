@@ -30,7 +30,8 @@ tests = [
     'annot1', 'generic', 'objscopes',
     'threads1', 'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8',
     'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4',
-    'typededucer_binop', 'typededucer_ops'
+    'typededucer_binop', 'typededucer_ops',
+    'typeassign1', 'typeassign2'
 ]
 
 if args.convs:

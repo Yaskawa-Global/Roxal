@@ -1,0 +1,6 @@
+func f():
+  var i2:int
+  i2 = 2.1
+  print(i2)
+
+f()
