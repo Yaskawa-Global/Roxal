@@ -29,7 +29,8 @@ tests = [
     'method_named_param',
     'annot1', 'generic', 'objscopes',
     'threads1', 'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8',
-    'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4'
+    'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4',
+    'typededucer_binop', 'typededucer_ops'
 ]
 
 if args.convs:
@@ -64,7 +65,10 @@ try:
         if not os.path.exists(testout):
             raise RuntimeError(f"Test expected output {testout} not found.")
 
-        compProc = subprocess.run([roxal,testrox], capture_output=True, shell=False)
+        cmd = [roxal, testrox]
+        if test.startswith('typededucer_'):
+            cmd = [roxal, '--ast', testrox]
+        compProc = subprocess.run(cmd, capture_output=True, shell=False)
         output = compProc.stdout
 
         with open(testout, mode='rb') as file:
