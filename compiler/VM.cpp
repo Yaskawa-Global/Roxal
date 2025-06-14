@@ -674,43 +674,29 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     }
                     else if (callSpec.argCount == 1) {
                         Value arg { peek(0) };
-                        if (!arg.isInt() && !arg.isByte()) {
-                            runtimeError("Type enum '"+toUTF8StdString(type->name)+"' instantiation requires an int or byte.");
+                        if (arg.isInt() || arg.isByte()) {
+                            int intVal = arg.asInt();
+                            auto it = std::find_if(type->enumLabelValues.begin(), type->enumLabelValues.end(),
+                                                   [intVal](const auto& p){ return p.second.second.asInt() == intVal; });
+                            if (it == type->enumLabelValues.end()) {
+                                runtimeError("enum type '"+toUTF8StdString(type->name)+"' has no label with value "+std::to_string(intVal));
+                                return false;
+                            }
+                            value = it->second.second;
+                        }
+                        else if (isString(arg)) {
+                            auto hash = asString(arg)->hash;
+                            auto it = type->enumLabelValues.find(hash);
+                            if (it == type->enumLabelValues.end() || it->second.first != asString(arg)->s) {
+                                runtimeError("enum type '"+toUTF8StdString(type->name)+"' has no label '"+toUTF8StdString(asString(arg)->s)+"'");
+                                return false;
+                            }
+                            value = it->second.second;
+                        }
+                        else {
+                            runtimeError("Type enum '"+toUTF8StdString(type->name)+"' instantiation requires an int, byte or string label.");
                             return false;
                         }
-
-                        // first, see if this int value correspoinds to one of the enum label values
-                        bool found = false;
-                        for(auto& hashLabelValue : type->enumLabelValues) {
-                            const auto& labelValue { hashLabelValue.second };
-                            if (labelValue.second.asInt() == arg.asInt()) {
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found) {
-                            runtimeError("enum type '"+toUTF8StdString(type->name)+"' has no label with value "+std::to_string(arg.asInt()));
-                            return false;
-                        }
-
-                        // find enum type id for type (needed to construct an enum value)
-                        uint16_t enumTypeId = 0; // valid ids can't be 0
-                        for(auto& enumTypeIdObjType : ObjObjectType::enumTypes) {
-                            if (enumTypeIdObjType.second == type) {
-                                enumTypeId = enumTypeIdObjType.first;
-                                break;
-                            }
-                        }
-                        //!!!#ifdef DEBUG_BUILD
-                        assert(enumTypeId != 0);
-                        assert(ObjObjectType::enumTypes.find(enumTypeId) != ObjObjectType::enumTypes.end());
-                        //!!!#endif
-                        value = enumVal(arg.asInt(), enumTypeId);
-                        //!!!#ifdef DEBUG_BUILD
-                        assert(value.isEnum());
-                        assert(value.enumTypeId() == enumTypeId);
-                        assert(value.asEnum() == arg.asInt());
-                        //!!!#endif
                     }
                     else {
                         runtimeError("Expected 0 or 1 argument for enum '"+toUTF8StdString(type->name)+"' type instantiation, provided "+std::to_string(callSpec.argCount));
