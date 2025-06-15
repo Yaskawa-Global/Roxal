@@ -49,22 +49,12 @@ set(DATAFLOW_TEST_SOURCES
 # include the project root directory
 include_directories(${CMAKE_HOME_DIRECTORY})
 
-# Add the include directories
-include_directories(
-    ${PROJECT_SOURCE_DIR}/src/External/yascore/include
-)
-
-link_directories(
-)
-
 # Build the library containing the engine implementation
 add_library(dataflow ${DATAFLOW_SOURCES})
 
 target_link_libraries(dataflow
     PUBLIC
         pthread
-        yiax-yascore
-        #boost_program_options
 )
 
 # Optional standalone test executable (mirrors the original build)
