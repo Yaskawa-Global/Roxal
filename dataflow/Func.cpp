@@ -334,7 +334,7 @@ Values Split::operator()(const Values& inputValues)
 
     Values outValues {};
     for (int i = 0; i < m_dim; i++)
-        outValues.push_back(Value(inVec->at(i)));
+        outValues.push_back(Value((*inVec)(i)));
 
     return outValues;
 }
@@ -361,10 +361,9 @@ Values Join::operator()(const Values& inputValues)
     if (inputValues.size() != m_dim)
         throw std::runtime_error("Join "+name()+": expected "+std::to_string(m_dim)+" input values, got "+std::to_string(inputValues.size()));
 
-    auto outelts { make_ptr<std::vector<Value>>() }; ;
-    outelts->reserve(m_dim);
+    auto outelts { make_ptr<Eigen::VectorXd>(m_dim) }; ;
     for (int i = 0; i < m_dim; i++)
-        outelts->push_back(inputValues.at(i));
+        (*outelts)(i) = inputValues.at(i).asReal();
 
     return {Value(outelts)};
 }

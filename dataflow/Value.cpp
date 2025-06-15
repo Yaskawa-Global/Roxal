@@ -38,7 +38,7 @@ Value::Value(double real)
     value_ = real;
 }
 
-Value::Value(const ptr<std::vector<Value>> vec)
+Value::Value(const ptr<Eigen::VectorXd> vec)
 {
     type_ = ValueType::Vector;
     value_ = vec;
@@ -47,10 +47,9 @@ Value::Value(const ptr<std::vector<Value>> vec)
 
 Value Value::doubleVector(const std::vector<double>& elts)
 {
-    auto vec = make_ptr<std::vector<Value>>();
-    vec->reserve(elts.size());
-    for (auto& elt : elts)
-        vec->push_back(Value(elt));
+    auto vec = make_ptr<Eigen::VectorXd>(elts.size());
+    for (size_t i = 0; i < elts.size(); ++i)
+        (*vec)(i) = elts[i];
     return Value(vec);
 }
 
@@ -71,7 +70,14 @@ bool Value::operator==(const Value& v) const
         return false;
     }
     else if (type_ == ValueType::Vector) {
-        return *std::get<ptr<std::vector<Value>>>(value_) == *std::get<ptr<std::vector<Value>>>(v.value_);
+        const auto& lhs = *std::get<ptr<Eigen::VectorXd>>(value_);
+        const auto& rhs = *std::get<ptr<Eigen::VectorXd>>(v.value_);
+        if (lhs.size() != rhs.size())
+            return false;
+        for (int i = 0; i < lhs.size(); ++i)
+            if (lhs[i] != rhs[i])
+                return false;
+        return true;
     }
     return value_ == v.value_;
 }
@@ -88,13 +94,12 @@ bool Value::equals(const Value& v, double eps) const
     if (bothReal)
         return std::abs(std::get<double>(value_) - std::get<double>(v.value_)) < eps;
 
-    if (std::get<ptr<std::vector<Value>>>(value_)->size() != std::get<ptr<std::vector<Value>>>(v.value_)->size())
+    const auto& value { *std::get<ptr<Eigen::VectorXd>>(value_) };
+    const auto& other { *std::get<ptr<Eigen::VectorXd>>(v.value_) };
+    if (value.size() != other.size())
         return false;
-
-    const auto& value { std::get<ptr<std::vector<Value>>>(value_) };
-    const auto& other { std::get<ptr<std::vector<Value>>>(v.value_) };
-    for (size_t i = 0; i < value->size(); ++i) {
-        if (!value->at(i).equals(other->at(i), eps))
+    for (int i = 0; i < value.size(); ++i) {
+        if (std::abs(value[i] - other[i]) >= eps)
             return false;
     }
     return true;
@@ -116,7 +121,7 @@ bool Value::asBool() const
         return std::get<double>(value_) != 0;
     }
     else if (type_ == ValueType::Vector) {
-        return !std::get<ptr<std::vector<Value>>>(value_)->empty();
+        return std::get<ptr<Eigen::VectorXd>>(value_)->size() > 0;
     }
     return false;
 }
@@ -181,22 +186,30 @@ double Value::asReal() const
     return 0;
 }
 
-ptr<std::vector<Value>> Value::asVector() const
+ptr<Eigen::VectorXd> Value::asVector() const
 {
     if (type_ == ValueType::Vector) {
-        return std::get<ptr<std::vector<Value>>>(value_);
+        return std::get<ptr<Eigen::VectorXd>>(value_);
     }
     else if (type_ == ValueType::Bool) {
-        return std::make_shared<std::vector<Value>>(1, Value(std::get<bool>(value_)));
+        auto vec = make_ptr<Eigen::VectorXd>(1);
+        (*vec)(0) = std::get<bool>(value_) ? 1.0 : 0.0;
+        return vec;
     }
     else if (type_ == ValueType::Byte) {
-        return std::make_shared<std::vector<Value>>(1, Value(std::get<uint8_t>(value_)));
+        auto vec = make_ptr<Eigen::VectorXd>(1);
+        (*vec)(0) = std::get<uint8_t>(value_);
+        return vec;
     }
     else if (type_ == ValueType::Int) {
-        return std::make_shared<std::vector<Value>>(1, Value(std::get<int32_t>(value_)));
+        auto vec = make_ptr<Eigen::VectorXd>(1);
+        (*vec)(0) = std::get<int32_t>(value_);
+        return vec;
     }
     else if (type_ == ValueType::Real) {
-        return std::make_shared<std::vector<Value>>(1, Value(std::get<double>(value_)));
+        auto vec = make_ptr<Eigen::VectorXd>(1);
+        (*vec)(0) = std::get<double>(value_);
+        return vec;
     }
     throw std::runtime_error("Cannot convert value to vector");
 }
@@ -205,7 +218,7 @@ ptr<std::vector<Value>> Value::asVector() const
 size_t Value::vectorSize() const
 {
     if (type_ == ValueType::Vector)
-        return std::get<ptr<std::vector<Value>>>(value_)->size();
+        return std::get<ptr<Eigen::VectorXd>>(value_)->size();
     return 1;
 }
 
@@ -214,11 +227,12 @@ std::string Value::toString() const
 {
     if (type_ == ValueType::Vector) {
         std::stringstream ss;
+        const auto& vec = *std::get<ptr<Eigen::VectorXd>>(value_);
         ss << "[";
-        for (size_t i = 0; i < std::get<ptr<std::vector<Value>>>(value_)->size(); i++) {
+        for (int i = 0; i < vec.size(); i++) {
             if (i > 0)
                 ss << ", ";
-            ss << std::get<ptr<std::vector<Value>>>(value_)->at(i).toString();
+            ss << vec[i];
         }
         ss << "]";
         return ss.str();
@@ -258,24 +272,8 @@ Value df::vecMult(double s, const Value& v)
     if (s==1.0) return v;
     assert(v.isVector());
     const auto& vec { v.asVector() };
-    if (!vec->at(0).isNumber())
-        throw std::runtime_error("Cannot multiply scalar & non-numeric vector");
-    auto resultVec = std::make_shared<std::vector<Value>>();
-    resultVec->resize(vec->size());
-    // if all elements of vector are ints, keep int result elements
-    //  otherwise, convert everything to real
-    bool areAllInt = (int(s) == s);
-    if (areAllInt)
-        for (size_t i = 0; i < vec->size(); i++) {
-            if (!vec->at(i).isInt())
-                areAllInt = false;
-        }
-    for (size_t i = 0; i < vec->size(); i++) {
-        if (areAllInt)
-            resultVec->at(i) = Value(int32_t(s * vec->at(i).asInt()));
-        else
-            resultVec->at(i) = Value(double(s * vec->at(i).asReal()));
-    }
+    auto resultVec = make_ptr<Eigen::VectorXd>(vec->size());
+    *resultVec = (*vec) * s;
     return Value(resultVec);
 }
 
@@ -285,23 +283,8 @@ Value df::vecMult(int32_t s, const Value& v)
     if (s==1) return v;
     assert(v.isVector());
     const auto& vec { v.asVector() };
-    if (!vec->at(0).isNumber())
-        throw std::runtime_error("Cannot multiply scalar & non-numeric vector");
-    auto resultVec = std::make_shared<std::vector<Value>>();
-    resultVec->resize(vec->size());
-    // if all elements of vector are ints, keep int result elements
-    //  otherwise, convert everything to real
-    bool areAllInt = true;
-    for (size_t i = 0; i < vec->size(); i++) {
-        if (!vec->at(i).isInt())
-            areAllInt = false;
-    }
-    for (size_t i = 0; i < vec->size(); i++) {
-        if (areAllInt)
-            resultVec->at(i) = Value(int32_t(s * vec->at(i).asInt()));
-        else
-            resultVec->at(i) = Value(double(s * vec->at(i).asReal()));
-    }
+    auto resultVec = make_ptr<Eigen::VectorXd>(vec->size());
+    *resultVec = (*vec) * static_cast<double>(s);
     return Value(resultVec);
 }
 
@@ -314,21 +297,8 @@ Value df::vecAdd(const Value& v1, const Value& v2)
     const auto& vec1 { v1.asVector() };
     const auto& vec2 { v2.asVector() };
     assert(vec1->size() == vec2->size());
-    auto resultVec = std::make_shared<std::vector<Value>>();
-    // if all elements of both vectors are ints, keep int result elements
-    //  otherwise, convert everything to real
-    bool areAllInt = true;
-    for (size_t i = 0; i < vec1->size(); i++) {
-        if (!vec1->at(i).isInt() || !vec2->at(i).isInt())
-            areAllInt = false;
-    }
-    resultVec->resize(vec1->size());
-    for (size_t i = 0; i < vec1->size(); i++) {
-        if (areAllInt)
-            resultVec->at(i) = Value(vec1->at(i).asInt() + vec2->at(i).asInt());
-        else
-            resultVec->at(i) = Value(vec1->at(i).asReal() + vec2->at(i).asReal());
-    }
+    auto resultVec = make_ptr<Eigen::VectorXd>(vec1->size());
+    *resultVec = (*vec1) + (*vec2);
     return Value(resultVec);
 }
 
