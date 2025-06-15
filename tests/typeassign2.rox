@@ -1,6 +1,24 @@
 func f():
-  var i2:int
-  i2 = 2.1
-  print(i2)
+
+  var b:bool
+  b = 1    // int -> bool
+  print(b) // true
+  b = 1.0  // real -> bool
+  print(b) // true
+
+  var bt:byte
+  bt = 255.0    // real -> byte
+  print(bt)     // 255
+  bt = "255.0"  // string -> byte
+  print(bt)     // 255
+
+  var i:int
+  i = 2.1       // real -> int
+  print(i)      // 2
+  i = "2.2"     // string -> int
+  print(i)      // 2
+  i = b         // byte -> int
+  print(i)      // 1
+
 
 f()
