@@ -44,6 +44,8 @@ static void repl()
         else if (!line.empty()) {
 
             try {
+                stream.str("");
+                stream.clear();
                 stream << line << std::endl << std::flush;
 
                 vm.interpretLine(stream);
