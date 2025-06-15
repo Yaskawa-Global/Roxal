@@ -59,6 +59,9 @@ find_package( Eigen3 REQUIRED )
 set(EIGEN3_INCLUDE_DIR "/usr/local/include/eigen3/")
 include_directories(${EIGEN3_INCLUDE_DIR})
 
+# Build the dataflow engine library
+add_subdirectory(dataflow)
+
 
 
 # Add the source files
@@ -144,6 +147,7 @@ target_link_libraries(roxal
     icudata
     pthread
     boost_program_options
+    dataflow
 )
 
 

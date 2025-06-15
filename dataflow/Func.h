@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "Utils.h"
+#include "core/common.h"
 
 #include "Signal.h"
 
@@ -24,7 +24,7 @@ public:
     static ptr<FuncType> newFunc(const std::string& funcName, Args&&... args) {
         static_assert(std::is_base_of_v<Func, FuncType>, "FuncType must be derived from Func");
 
-        auto func = core::make_ptr<FuncType>(funcName, std::forward<Args>(args)...);
+        auto func = roxal::make_ptr<FuncType>(funcName, std::forward<Args>(args)...);
         func->addToEngine();
         return func;
     }

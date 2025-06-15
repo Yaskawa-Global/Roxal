@@ -7,6 +7,8 @@
 
 #include "core/common.h"
 
+using roxal::ptr;
+
 #include <cassert>
 
 // NB: this will be switched for roxal::Value in the future

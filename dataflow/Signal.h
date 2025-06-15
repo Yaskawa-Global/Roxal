@@ -2,9 +2,9 @@
 
 #include <map>
 
-#include "Utils.h"
-#include "TimePoint.h"
-#include "TimeDuration.h"
+#include "core/common.h"
+#include "core/TimePoint.h"
+#include "core/TimeDuration.h"
 
 #include "Value.h"
 
@@ -12,9 +12,9 @@ namespace df {
 
 class DataflowEngine;
 
-using core::ptr;
-using core::TimePoint;
-using core::TimeDuration;
+using roxal::ptr;
+using roxal::TimePoint;
+using roxal::TimeDuration;
 
 
 class Signal
