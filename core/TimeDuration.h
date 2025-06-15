@@ -52,4 +52,3 @@ inline std::ostream& operator<<(std::ostream& os, const TimeDuration& d) {
 }
 
 } // namespace roxal
-

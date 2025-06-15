@@ -48,4 +48,3 @@ inline std::ostream& operator<<(std::ostream& os, const TimePoint& t) {
 }
 
 } // namespace roxal
-

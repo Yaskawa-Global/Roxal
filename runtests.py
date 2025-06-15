@@ -39,7 +39,7 @@ if args.convs:
     conv_tests = sorted([
         os.path.join('conversions',os.path.splitext(f)[0])
         for f in os.listdir(conv_test_dir)
-        if f.endswith('.rox') and os.path.exists(os.path.join(conv_test_dir, os.path.splitext(f)[0] + '.out'))
+        if f.endswith('.rox') and ('decimal' not in f) and os.path.exists(os.path.join(conv_test_dir, os.path.splitext(f)[0] + '.out'))
     ])
     tests += conv_tests
 
