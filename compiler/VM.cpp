@@ -134,17 +134,21 @@ VM::InterpretResult VM::interpretLine(std::istream& linestream)
     ObjFunction* function { nullptr };
 
     static RoxalCompiler compiler {};
+    static ObjModuleType* replModule { nullptr };
     compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
 
     try {
-        function = compiler.compile(linestream, "cli");
-
+        function = compiler.compile(linestream, "cli", replModule);
+    
     } catch (std::exception& e) {
         return InterpretResult::CompileError;
     }
 
     if (function == nullptr)
         return InterpretResult::CompileError;
+
+    if (replModule == nullptr)
+        replModule = asModuleType(function->moduleType);
 
     lineMode = true;
     lineStream = &linestream;

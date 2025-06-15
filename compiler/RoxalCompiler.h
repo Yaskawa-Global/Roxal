@@ -20,7 +20,8 @@ class RoxalCompiler : public ast::ASTVisitor
 public:
     RoxalCompiler();
 
-    ObjFunction* compile(std::istream& source, const std::string& name);
+    ObjFunction* compile(std::istream& source, const std::string& name,
+                         ObjModuleType* existingModule = nullptr);
 
     void setOutputBytecodeDisassembly(bool outputBytecodeDisassembly);
     void setModulePaths(const std::vector<std::string>& modulePaths);
@@ -149,7 +150,9 @@ protected:
     LexicalScopes lexicalScopes;
     void outputScopes();
 
-    void enterModuleScope(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName);
+    void enterModuleScope(const icu::UnicodeString& packageName,
+                          const icu::UnicodeString& moduleName,
+                          ObjModuleType* existingModule = nullptr);
     void exitModuleScope();
 
     void enterTypeScope(const icu::UnicodeString& typeName);
@@ -230,8 +233,12 @@ protected:
 
     struct ModuleScope : public FunctionScope
     {
-        ModuleScope(const icu::UnicodeString& packageName_, const icu::UnicodeString& moduleName_)
-            : FunctionScope(packageName_, moduleName_, moduleName_, FunctionType::Module, std::make_shared<type::Type>(type::BuiltinType::Func)),
+        ModuleScope(const icu::UnicodeString& packageName_,
+                    const icu::UnicodeString& moduleName_,
+                    ObjModuleType* existing = nullptr)
+            : FunctionScope(packageName_, moduleName_, moduleName_,
+                            FunctionType::Module,
+                            std::make_shared<type::Type>(type::BuiltinType::Func)),
               packageName(packageName_), moduleName(moduleName_)
         {
             //this->functionType = FunctionType::Module;
@@ -240,7 +247,10 @@ protected:
 
             // while modules are lexically static, variables are declared in them at runtime
             // create a new ObjModuleType in which module vars are held
-            moduleType = Value(moduleTypeVal(moduleName_));
+            if (existing)
+                moduleType = Value(existing);
+            else
+                moduleType = Value(moduleTypeVal(moduleName_));
 
             // since this scope only persists during compilation, store the moduleType
             //  in the function for runtime access

@@ -52,7 +52,8 @@ RoxalCompiler::RoxalCompiler()
 
 
 
-ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& name)
+ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& name,
+                                    ObjModuleType* existingModule)
 {
     ObjFunction* function { nullptr };
 
@@ -84,7 +85,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 
     if (ast != nullptr) {
 
-        enterModuleScope("",toUnicodeString(name));
+        enterModuleScope("",toUnicodeString(name), existingModule);
 
         auto module { asModuleScope(moduleScope()) };
 
@@ -1475,9 +1476,12 @@ void RoxalCompiler::outputScopes()
 
 
 
-void RoxalCompiler::enterModuleScope(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName)
+void RoxalCompiler::enterModuleScope(const icu::UnicodeString& packageName,
+                                    const icu::UnicodeString& moduleName,
+                                    ObjModuleType* existingModule)
 {
-    auto moduleScope { std::make_shared<ModuleScope>(packageName, moduleName) };
+    auto moduleScope { std::make_shared<ModuleScope>(packageName, moduleName,
+                                                     existingModule) };
 
     lexicalScopes.push_back(moduleScope);
     #ifdef DEBUG_TRACE_SCOPES
