@@ -3,14 +3,15 @@
 import os
 import subprocess
 import argparse
+import re
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Run Roxal tests.")
 parser.add_argument('--convs', action='store_true', help='Include tests/conversions/* tests')
 args = parser.parse_args()
 
-# for each names test, run the <test>.rox file in the tests folder
-#  and compare its output with <test>.out and issue error on mismatch
+# for each named test, run the <test>.rox file in the tests folder
+# and compare its output with <test>.out (stdout) and <test>.err (stderr regex)
 
 tests = [
     'comments', 'primitive1', 'constants', 'scopetest2', 'scopetest3',
@@ -37,12 +38,11 @@ tests = [
 if args.convs:
     conv_test_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tests/conversions')
     conv_tests = sorted([
-        os.path.join('conversions',os.path.splitext(f)[0])
+        os.path.join('conversions', os.path.splitext(f)[0])
         for f in os.listdir(conv_test_dir)
         if f.endswith('.rox') and ('decimal' not in f) and os.path.exists(os.path.join(conv_test_dir, os.path.splitext(f)[0] + '.out'))
     ])
     tests += conv_tests
-
 
 # implementation doesn't yet allow these tests to pass
 failing_tests = []
@@ -54,39 +54,54 @@ roxalpath = 'build'
 roxal = './roxal'
 
 cwd = os.getcwd()
-os.chdir(os.path.join(project_root,roxalpath))
+os.chdir(os.path.join(project_root, roxalpath))
 
 try:
     for test in tests:
-        testrox = os.path.join(test_dir,test+'.rox')
-        testout = os.path.join(test_dir,test+'.out')
+        testrox = os.path.join(test_dir, test + '.rox')
+        testout = os.path.join(test_dir, test + '.out')
+        testerr = os.path.join(test_dir, test + '.err')
         if not os.path.exists(testrox):
             raise RuntimeError(f"Test {testrox} not found.")
 
-        if not os.path.exists(testout):
-            raise RuntimeError(f"Test expected output {testout} not found.")
+        if not (os.path.exists(testout) or os.path.exists(testerr)):
+            raise RuntimeError(f"Test expected output {testout} or {testerr} not found.")
 
         cmd = [roxal, testrox]
         if test.startswith('typededucer_'):
             cmd = [roxal, '--ast', testrox]
         compProc = subprocess.run(cmd, capture_output=True, shell=False)
-        output = compProc.stdout
 
-        with open(testout, mode='rb') as file:
-            expected = file.read()
-
-        if expected != output:
-            print(f"Test {test} FAIL:")
-            print("-- output --")
-            print(output)
-            print("-- expected --")
-            print(expected)
-            print("--")
-            print()
-        else:
+        passed = True
+        if os.path.exists(testout):
+            with open(testout, mode='rb') as file:
+                expected = file.read()
+            if expected != compProc.stdout:
+                print(f"Test {test} FAIL:")
+                print("-- stdout --")
+                print(compProc.stdout)
+                print("-- expected stdout --")
+                print(expected)
+                print("--")
+                print()
+                passed = False
+        if os.path.exists(testerr):
+            with open(testerr, 'r') as file:
+                err_re = file.read().strip()
+            stderr_str = compProc.stderr.decode()
+            if re.search(err_re, stderr_str) is None:
+                print(f"Test {test} FAIL:")
+                print("-- stderr --")
+                print(stderr_str)
+                print("-- expected regex --")
+                print(err_re)
+                print("--")
+                print()
+                passed = False
+        if passed:
             print(f"Test {test} pass")
 
 except Exception as e:
-        print('Exception: '+str(e))
+    print('Exception: ' + str(e))
 
 os.chdir(cwd)
