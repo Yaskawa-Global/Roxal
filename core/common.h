@@ -33,6 +33,12 @@ namespace roxal {
 template<class T>
 using ptr = std::shared_ptr<T>;
 
+template<typename T, typename... Args>
+ptr<T> make_ptr(Args&&... args) {
+    return ptr<T>(std::make_shared<T>(std::forward<Args>(args)...));
+}
+
+
 
 #define _CRT_NO_VA_START_VALIDATION
 
