@@ -1,0 +1,2 @@
+// invoke built-in C++ tests
+_runtests('dataflow')
