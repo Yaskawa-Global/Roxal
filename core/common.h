@@ -33,6 +33,20 @@ namespace roxal {
 template<class T>
 using ptr = std::shared_ptr<T>;
 
+template<class T, class... Args>
+inline ptr<T> make_ptr(Args&&... args) {
+    return std::make_shared<T>(std::forward<Args>(args)...);
+}
+
+template<class Map>
+inline auto mapValues(const Map& m) {
+    using ValueType = typename Map::mapped_type;
+    std::vector<ValueType> vec;
+    vec.reserve(m.size());
+    for (const auto& kv : m) vec.push_back(kv.second);
+    return vec;
+}
+
 
 #define _CRT_NO_VA_START_VALIDATION
 

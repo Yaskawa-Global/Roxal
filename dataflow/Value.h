@@ -5,7 +5,9 @@
 #include <variant>
 #include <map>
 
-#include <Utils.h>
+#include "core/common.h"
+
+using roxal::ptr;
 
 #include <cassert>
 

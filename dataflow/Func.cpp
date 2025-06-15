@@ -4,14 +4,14 @@
 #include <iostream>
 #include <regex>
 
-#include "Utils.h"
+#include "core/common.h"
 
 #include "DataflowEngine.h"
 
 
 using namespace df;
 
-using core::make_ptr;
+using roxal::make_ptr;
 
 
 Func::Func(const std::string& name)
@@ -120,7 +120,7 @@ Signals Func::operator()(const Signals& signals, const std::optional<ParamMap>& 
         };
 
 
-        const auto& paramValues = core::mapValues(signalsToParams.value());
+        const auto& paramValues = roxal::mapValues(signalsToParams.value());
         for (auto& inputName : inputNames()) {
 
             // look for a provided input signal to map to this input
@@ -131,7 +131,7 @@ Signals Func::operator()(const Signals& signals, const std::optional<ParamMap>& 
                     parseInputSignalName(fromToName.first, inputSignalName, index);
                     auto inputSignal = findSignalWithName(inputSignalName);
                     if (!inputSignal)
-                        throw std::invalid_argument("Func '"+name()+"' input signal '"+inputSignalName+"' not found in signals: "+core::join(inputNames(), ", "));
+                        throw std::invalid_argument("Func '"+name()+"' input signal '"+inputSignalName+"' not found in signals: "+roxal::join(inputNames(), ", "));
                     addInput(inputName, inputSignal, index);
                     break;
                 }
@@ -298,7 +298,7 @@ std::string funcNames(const std::vector<ptr<Func>>& funcs)
     names.reserve(funcs.size());
     for (auto& func : funcs)
         names.push_back(func->name());
-    return core::join(names);
+    return roxal::join(names);
 }
 
 

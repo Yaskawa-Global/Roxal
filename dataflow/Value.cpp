@@ -5,8 +5,8 @@
 
 using namespace df;
 
-using core::ptr;
-using core::make_ptr;
+using roxal::ptr;
+using roxal::make_ptr;
 
 
 Value::Value()
