@@ -80,13 +80,13 @@ bool df::executionSeqTest1()
     auto clockSignal = Signal::newClockSignal(1000.0, "clock");
 
     auto const1 = Func::newFunc<ConstFunc>("const1",Value(1)); // 1
-    auto const1Out = const1(Signals{clockSignal}).at(0);
+    auto const1Out = (*const1)(Signals{clockSignal}).at(0);
 
     auto add1 = Func::newFunc<AddConstFunc>("add1",Value(1)); // +1
-    auto add1Out = add1(Signals{const1Out}).at(0);
+    auto add1Out = (*add1)(Signals{const1Out}).at(0);
 
     auto add1b = Func::newFunc<AddConstFunc>("add1b",Value(1)); // +1
-    auto add1bOut = add1b(Signals{add1Out}).at(0); // = 3
+    auto add1bOut = (*add1b)(Signals{add1Out}).at(0); // = 3
 
     std::vector<Value> outValues;
 
@@ -128,25 +128,25 @@ bool df::skipConnectionTest()
 
     // Path 1: Clock -> Add 2 -> Multiply by 2
     auto add2 = Func::newFunc<AddConstFunc>("add2", Value(2));
-    auto add2Out = add2(Signals{clockSignal}).at(0)->rename("add2Out");
+    auto add2Out = (*add2)(Signals{clockSignal}).at(0)->rename("add2Out");
 
     auto multiplyBy2 = Func::newFunc<MultiplyConst>("multiplyBy2", Value(2.0));
-    auto multipliedSinOut = multiplyBy2(Signals{/*sinOut*/add2Out}).at(0)->rename("mult2Out");;
+    auto multipliedSinOut = (*multiplyBy2)(Signals{/*sinOut*/add2Out}).at(0)->rename("mult2Out");;
 
     // Path 2: Clock -> Add 1 -> Multiply by 3
     auto add1 = Func::newFunc<AddConstFunc>("add1", Value(1));
-    auto add1Out = add1(Signals{clockSignal}).at(0)->rename("add1Out");
+    auto add1Out = (*add1)(Signals{clockSignal}).at(0)->rename("add1Out");
 
     auto multiplyBy3 = Func::newFunc<MultiplyConst>("multiplyBy3", Value(3.0));
-    auto multipliedAdd1Out = multiplyBy3(Signals{add1Out}).at(0)->rename("mult3Out");
+    auto multipliedAdd1Out = (*multiplyBy3)(Signals{add1Out}).at(0)->rename("mult3Out");
 
     // Combine the two paths
     auto addResults = Func::newFunc<SumFunc>("addResults",2); // combine the signals
-    auto combinedResult = addResults(Signals{multipliedSinOut, multipliedAdd1Out}).at(0)->rename("resultSum");
+    auto combinedResult = (*addResults)(Signals{multipliedSinOut, multipliedAdd1Out}).at(0)->rename("resultSum");
 
     // Skip connection: Direct clock to final addition
     auto finalAdd = Func::newFunc<SumFunc>("finalAdd",2); // combine the signals
-    auto finalOutput = finalAdd(Signals{combinedResult, clockSignal}).at(0);
+    auto finalOutput = (*finalAdd)(Signals{combinedResult, clockSignal}).at(0);
 
     // Collect output values
     std::vector<Value> outValues;
@@ -226,16 +226,16 @@ bool df::simpleLatencyTest()
     auto clockSignal = Signal::newClockSignal(100.0, "clock");
 
     auto add1 = Func::newFunc<AddConstFunc>("add1", Value(1));
-    auto add1Out = add1(Signals{clockSignal}).at(0);
+    auto add1Out = (*add1)(Signals{clockSignal}).at(0);
 
     auto add1b = Func::newFunc<AddConstFunc>("add1b", Value(1));
-    auto add1bOut = add1b(Signals{add1Out}).at(0);
+    auto add1bOut = (*add1b)(Signals{add1Out}).at(0);
 
     auto add1delayed = Func::newFunc<AddConstFunc>("add1delayed", Value(1));
-    auto add1delayedOut = add1delayed(Signals{add1Out},Func::ParamMap{{"output[-1]","input"}}).at(0);
+    auto add1delayedOut = (*add1delayed)(Signals{add1Out},Func::ParamMap{{"output[-1]","input"}}).at(0);
 
     auto finalAdd = Func::newFunc<SumFunc>("finalAdd",2); // combine the signals
-    auto finalOutput = finalAdd(Signals{add1bOut, add1delayedOut}).at(0);
+    auto finalOutput = (*finalAdd)(Signals{add1bOut, add1delayedOut}).at(0);
 
     // Collect output values
     std::vector<Value> outValues;
@@ -308,18 +308,18 @@ bool df::feedbackTest()
     // Create a clock signal at 100 Hz
     auto clockSignal = Signal::newClockSignal(100.0, "clock");
     auto add1 = Func::newFunc<AddConstFunc>("add1", Value(1));
-    auto add1Out = add1(Signals{clockSignal}).at(0)->rename("add1Out");
+    auto add1Out = (*add1)(Signals{clockSignal}).at(0)->rename("add1Out");
 
     auto sum1 = Func::newFunc<SumFunc>("sum1",2);
     auto sum2 = Func::newFunc<SumFunc>("sum2",2); // combine the signals
 
-    auto sum1Out = sum1(Signals{add1Out, sum2->outputs().at(0)},Func::ParamMap{{"add1Out","input0"},{"sum[-1]","input1"}}).at(0)->rename("sum1Out");
+    auto sum1Out = (*sum1)(Signals{add1Out, sum2->outputs().at(0)},Func::ParamMap{{"add1Out","input0"},{"sum[-1]","input1"}}).at(0)->rename("sum1Out");
     sum1->setInputDefault("input1", Value(0)); // default for input1 since value not initially available due to feedback loop
 
-    auto sum2Out = sum2(Signals{add1Out, sum1Out}).at(0)->rename("sum2Out");
+    auto sum2Out = (*sum2)(Signals{add1Out, sum1Out}).at(0)->rename("sum2Out");
 
     auto add2 = Func::newFunc<AddConstFunc>("add2", Value(1));
-    auto add2Out = add2(Signals{sum2Out}).at(0)->rename("add2Out");
+    auto add2Out = (*add2)(Signals{sum2Out}).at(0)->rename("add2Out");
 
     // Collect output values
     std::vector<Value> outValues;
@@ -389,7 +389,7 @@ bool df::restartEngineTest()
     // Create a clock signal at 100 Hz
     auto clockSignal = Signal::newClockSignal(100.0, "clock");
     auto add1 = Func::newFunc<AddConstFunc>("add1", Value(1));
-    auto add1Out = add1(Signals{clockSignal}).at(0)->rename("add1Out");
+    auto add1Out = (*add1)(Signals{clockSignal}).at(0)->rename("add1Out");
 
     engine->runFor(TimeDuration::milliSecs(100));
 
@@ -438,13 +438,13 @@ bool df::testSplitJoin()
     auto clockSignal = Signal::newClockSignal(100.0, "clock");  // 100Hz
 
     auto const1 = Func::newFunc<ConstFunc>("const1", Value::doubleVector({1.0,2.0,3.0,4.0}));
-    auto const1Out = const1(Signals{clockSignal}).at(0);
+    auto const1Out = (*const1)(Signals{clockSignal}).at(0);
 
     auto split = Func::newFunc<Split>("split",4);
-    auto splitOut = split(Signals{const1Out}); // 4 signals
+    auto splitOut = (*split)(Signals{const1Out}); // 4 signals
 
     auto join = Func::newFunc<Join>("join",4);
-    auto joinOut = join(splitOut).at(0);
+    auto joinOut = (*join)(splitOut).at(0);
 
     engine->tick();
 
@@ -462,22 +462,22 @@ bool df::testVectorOperations()
     auto clockSignal = Signal::newClockSignal(100.0, "clock");  // 100Hz
 
     auto const1 = Func::newFunc<ConstFunc>("const1", Value::doubleVector({1.1,2.2,3.3,4.4}));
-    auto const1Out = const1(Signals{clockSignal}).at(0);
+    auto const1Out = (*const1)(Signals{clockSignal}).at(0);
 
     auto const2 = Func::newFunc<ConstFunc>("const2", Value::doubleVector({4.4,3.3,2.2,1.1}));
-    auto const2Out = const2(Signals{clockSignal}).at(0);
+    auto const2Out = (*const2)(Signals{clockSignal}).at(0);
 
     auto add = Func::newFunc<Add>("add");
-    auto addOut = add(Signals{const1Out,const2Out}).at(0);
+    auto addOut = (*add)(Signals{const1Out,const2Out}).at(0);
 
     auto sub = Func::newFunc<Subtract>("sub");
-    auto subOut = sub(Signals{const1Out,const2Out}).at(0);
+    auto subOut = (*sub)(Signals{const1Out,const2Out}).at(0);
 
     auto sconst = Func::newFunc<ConstFunc>("sconst", Value(2.0));
-    auto sconstOut = sconst(Signals{clockSignal}).at(0);
+    auto sconstOut = (*sconst)(Signals{clockSignal}).at(0);
 
     auto scalarMulit = Func::newFunc<Multiply>("scalarMult");
-    auto scalarMulitOut = scalarMulit(Signals{sconstOut,const1Out}).at(0);
+    auto scalarMulitOut = (*scalarMulit)(Signals{sconstOut,const1Out}).at(0);
 
     engine->tick();
 
