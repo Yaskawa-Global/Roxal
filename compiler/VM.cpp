@@ -1361,8 +1361,13 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                             if (!prop.type.isNil() && isTypeSpec(prop.type)) {
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
-                                    // TODO: implement & use a canConvertToType()
-                                    value = toType(typeSpec->typeValue,value, strictConv);
+                                    try {
+                                        // TODO: implement & use a canConvertToType()
+                                        value = toType(typeSpec->typeValue,value, strictConv);
+                                    } catch(std::exception& e) {
+                                        runtimeError(e.what());
+                                        return errorReturn;
+                                    }
                             }
                         }
                     }
