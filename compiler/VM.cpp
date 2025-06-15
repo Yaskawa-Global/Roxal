@@ -508,6 +508,7 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
     callframe.closure = closure;
     callframe.startIp = callframe.ip = closure->function->chunk->code.begin();
     callframe.slots = &(*(thread->stackTop - argCount - 1));
+    callframe.strict = closure->function->strict;
     thread->pushFrame(callframe);
     thread->frameStart = true;
 
@@ -1350,6 +1351,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
+                        bool strictConv = frame->closure->function->strict;
                         // if type object specified the property type in the declaration,
                         //  convert the value to that type (if possible)
                         const auto& properties { objInst->instanceType->properties };
@@ -1360,7 +1362,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
                                     // TODO: implement & use a canConvertToType()
-                                    value = toType(typeSpec->typeValue,value,/*strict=*/false);
+                                    value = toType(typeSpec->typeValue,value, strictConv);
                             }
                         }
                     }
@@ -1957,7 +1959,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::ToTypeStrict): {
                 uint8_t typeByte = readByte();
                 try {
-                    peek(0) = toType(ValueType(typeByte), peek(0), /*strict=*/false);
+                    peek(0) = toType(ValueType(typeByte), peek(0), /*strict=*/true);
                 } catch (std::exception& e) {
                     runtimeError(e.what());
                     return errorReturn;

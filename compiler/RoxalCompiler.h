@@ -193,6 +193,7 @@ protected:
             function = functionVal(packageName, moduleName);
             function->name = funcName;
             function->funcType = type; // store type for runtime
+            function->strict = strict;
             UnicodeString localName { (funcType==FunctionType::Method || funcType==FunctionType::Initializer) ?
                                         "this" : "" };
             locals.push_back(Local(localName,0));
