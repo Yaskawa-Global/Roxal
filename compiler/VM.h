@@ -222,6 +222,7 @@ protected:
     Value join_builtin(int argCount, Value* args);
     Value threadid_builtin(int argCount, Value* args);
     Value wait_builtin(int argCount, Value* args);
+    Value runtests_builtin(int argCount, Value* args);
 
 
 

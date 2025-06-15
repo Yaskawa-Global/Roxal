@@ -4,6 +4,8 @@
 #include <functional>
 #include <variant>
 #include <map>
+#include <vector>
+#include <Eigen/Dense>
 
 #include "core/common.h"
 
@@ -31,7 +33,7 @@ public:
     explicit Value(uint8_t byte);
     explicit Value(int32_t integer);
     explicit Value(double real);
-    explicit Value(const ptr<std::vector<Value>> vec);
+    explicit Value(const ptr<Eigen::VectorXd> vec);
 
     static Value doubleVector(const std::vector<double>& elts);
 
@@ -48,7 +50,7 @@ public:
     uint8_t asByte() const;
     int32_t asInt() const;
     double asReal() const;
-    ptr<std::vector<Value>> asVector() const;
+    ptr<Eigen::VectorXd> asVector() const;
 
     size_t vectorSize() const;
 
@@ -62,7 +64,7 @@ public:
 
 protected:
     ValueType type_;
-    std::variant<bool, uint8_t, int32_t, double, ptr<std::vector<Value>>> value_;
+    std::variant<bool, uint8_t, int32_t, double, ptr<Eigen::VectorXd>> value_;
 
     friend class DataflowEngine;
 };

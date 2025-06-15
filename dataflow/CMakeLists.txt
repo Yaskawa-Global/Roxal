@@ -37,6 +37,7 @@ set(DATAFLOW_SOURCES
     Signal.cpp
     Func.cpp
     DataflowEngine.cpp
+    Tests.cpp
 )
 
 set(DATAFLOW_TEST_SOURCES

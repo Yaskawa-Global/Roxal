@@ -9,6 +9,7 @@
 #include "ASTGenerator.h"
 #include "ASTGraphviz.h"
 #include "RoxalCompiler.h"
+#include "dataflow/Tests.h"
 
 #include "VM.h"
 #include "Object.h"
@@ -2212,6 +2213,7 @@ void VM::defineBuiltinFunctions()
     defineNative("join", &VM::join_builtin);
     defineNative("_threadid", &VM::threadid_builtin);
     defineNative("_wait", &VM::wait_builtin);
+    defineNative("_runtests", &VM::runtests_builtin);
 }
 
 
@@ -2355,6 +2357,39 @@ Value VM::wait_builtin(int argCount, Value* args)
     }
 
     return intVal(numFuturesResolved);
+}
+
+
+Value VM::runtests_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isString(args[0]))
+        throw std::invalid_argument("_runtests expects single string argument");
+
+    auto suite = toUTF8StdString(asString(args[0])->s);
+
+    if (suite == "dataflow") {
+        auto results = df::runTests(false, false);
+
+        int passes = 0;
+        int fails = 0;
+        for (const auto& result : results) {
+            std::cout << "Test: " << std::get<0>(result) << " ";
+            bool passed = std::get<1>(result);
+            if (passed) {
+                std::cout << "passed";
+                passes++;
+            }
+            else {
+                std::cout << "failed";
+                fails++;
+            }
+            std::cout << " " << std::get<2>(result) << std::endl;
+        }
+
+        std::cout << "Passed " << passes << " failed " << fails << std::endl;
+    }
+
+    return nilVal();
 }
 
 
