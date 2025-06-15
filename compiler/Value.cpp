@@ -130,11 +130,17 @@ bool Value::asBool(bool strict) const
         case ValueType::Bool:
             return v->val == (QNAN | TagTrue);
         case ValueType::Byte:
-            if (!strict) return v->asByte(false) != 0; break;
+            if (!strict)
+                return v->asByte(false) != 0;
+            throw std::invalid_argument("unable to convert byte to bool in strict mode");
         case ValueType::Int:
-            if (!strict) return v->asInt(false) != 0; break;
+            if (!strict)
+                return v->asInt(false) != 0;
+            throw std::invalid_argument("unable to convert int to bool in strict mode");
         case ValueType::Real:
-            if (!strict) return v->asReal(false) != 0.0; break;
+            if (!strict)
+                return v->asReal(false) != 0.0;
+            throw std::invalid_argument("unable to convert real to bool in strict mode");
         case ValueType::Decimal:
             throw std::runtime_error("decimal unimplemented");
         default: ;
@@ -176,14 +182,14 @@ uint8_t Value::asByte(bool strict) const
                 uint64_t i { v->val & ~(QNAN | TypeTag) };
                 return uint8_t(*reinterpret_cast<int32_t*>(&i));
             }
-            break;
+            throw std::invalid_argument("unable to convert int to byte in strict mode");
         case ValueType::Real:
             if (!strict) {
                 uint64_t bits = v->val.load();
                 double d = *reinterpret_cast<double*>(&bits);
                 return uint8_t(int32_t(d));
             }
-            break;
+            throw std::invalid_argument("unable to convert real to byte in strict mode");
         case ValueType::Bool:
             return (v->val == (QNAN | TagTrue)) ? 1 : 0;
         case ValueType::Decimal:
@@ -206,6 +212,8 @@ uint8_t Value::asByte(bool strict) const
             } catch(...) { return 0; }
         }
     }
+    if (strict)
+        throw std::invalid_argument("unable to convert value to byte in strict mode");
     return 0;
 }
 
@@ -231,7 +239,7 @@ int32_t Value::asInt(bool strict) const
                 double d = *reinterpret_cast<double*>(&bits);
                 return int32_t(d);
             }
-            break;
+            throw std::invalid_argument("unable to convert real to int in strict mode");
         case ValueType::Bool: return (v->val == (QNAN | TagTrue)) ? 1 : 0;
         case ValueType::Decimal: throw std::runtime_error("decimal unimplemented");
         default: ;
@@ -252,6 +260,8 @@ int32_t Value::asInt(bool strict) const
             } catch(...) { return 0; }
         }
     }
+    if (strict)
+        throw std::invalid_argument("unable to convert value to int in strict mode");
     return 0;
 }
 
@@ -300,6 +310,8 @@ double Value::asReal(bool strict) const
             } catch(...) { return 0.0; }
         }
     }
+    if (strict)
+        throw std::invalid_argument("unable to convert value to real in strict mode");
     return 0.0;
 }
 
@@ -447,10 +459,10 @@ bool Value::asBool(bool strict) const
                 return v->as.boolean;
             case ValueType::Int:
                 if (!strict) return v->as.integer != 0;
-                break;
+                throw std::invalid_argument("unable to convert int to bool in strict mode");
             case ValueType::Real:
                 if (!strict) return v->as.real != 0.0;
-                break;
+                throw std::invalid_argument("unable to convert real to bool in strict mode");
             case ValueType::Decimal:
                 throw std::runtime_error("decimal unimplemented");
             default: break;
@@ -488,7 +500,7 @@ int32_t Value::asInt(bool strict) const
         case ValueType::Real:
             if (!strict)
                 return int32_t(v->as.real);
-            break;
+            throw std::invalid_argument("unable to convert real to int in strict mode");
         case ValueType::Bool: return v->as.boolean ? 1 : 0;
         case ValueType::Decimal: throw std::runtime_error("decimal unimplemented");
         default: ;
@@ -509,6 +521,8 @@ int32_t Value::asInt(bool strict) const
             } catch(...) { return 0; }
         }
     }
+    if (strict)
+        throw std::invalid_argument("unable to convert value to int in strict mode");
     return 0;
 }
 
@@ -540,6 +554,8 @@ double Value::asReal(bool strict) const
             } catch(...) { return 0.0; }
         }
     }
+    if (strict)
+        throw std::invalid_argument("unable to convert value to real in strict mode");
     return 0.0;
 }
 

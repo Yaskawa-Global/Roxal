@@ -406,6 +406,8 @@ struct ObjFunction : public Obj
     ptr<Chunk> chunk;
     std::vector<ptr<ast::Annotation>> annotations;
 
+    bool strict;        // true if function was compiled in strict mode
+
     // for parameters with default values that must be re-evaluated on each call
     //  this is map from param name UnicodeString::hashCode() -> ObjFunction
     //  (where ObjFunction is a function that takes no params and returns the default value)

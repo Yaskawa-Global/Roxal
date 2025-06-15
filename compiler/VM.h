@@ -18,7 +18,9 @@ typedef std::vector<CallFrame> CallFrames;
 
 struct CallFrame {
     #ifdef DEBUG_BUILD
-    CallFrame() : closure(nullptr), slots(nullptr) {}
+    CallFrame() : closure(nullptr), slots(nullptr), strict(false) {}
+    #else
+    CallFrame() : closure(nullptr), strict(false) {}
     #endif
     ObjClosure* closure;
     Chunk::iterator startIp;
@@ -26,6 +28,8 @@ struct CallFrame {
     Value* slots;
 
     CallFrames::iterator parent;
+
+    bool strict; // whether current frame executes in strict mode
 
     // on frame start, move argument Value (second) to end of the frame's
     //  argument list (in existing stack arg placeholder slots)

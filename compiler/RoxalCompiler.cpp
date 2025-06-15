@@ -89,6 +89,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
         auto module { asModuleScope(moduleScope()) };
 
         module->strict = false;
+        module->function->strict = false;
 
         try {
             auto file = as<File>(ast);
