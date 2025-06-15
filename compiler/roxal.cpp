@@ -22,46 +22,86 @@ using namespace roxal;
 namespace po = boost::program_options;
 
 
+static int indentationLength(const std::string& line)
+{
+    int count = 0;
+    for(char ch : line) {
+        if (ch == ' ')
+            count++;
+        else if (ch == '\t')
+            count += 8 - (count % 8);
+        else
+            break;
+    }
+    return count;
+}
+
+static std::string rstrip(const std::string& s)
+{
+    size_t end = s.find_last_not_of(" \t");
+    if (end == std::string::npos)
+        return "";
+    return s.substr(0,end+1);
+}
+
 static void repl()
 {
     linenoiseHistorySetMaxLen(1000);
 
     std::stringstream stream;
-
     VM& vm { VM::instance() };
 
-    char* cline;
-    std::string line;
-    //int indent = 0;
-    bool quit=false;
-    while(!quit && ((cline = linenoise("rox> ")) != nullptr)) {
+    std::string buffer;
+    std::vector<int> indents {0};
+    bool waitingIndent = false;
+    bool quit = false;
+
+    while(!quit) {
+        const char* prompt = (waitingIndent || indents.size()>1) ? "...> " : "rox> ";
+        char* cline = linenoise(prompt);
+        if (!cline)
+            break;
 
         linenoiseHistoryAdd(cline);
+        std::string line(cline);
+        linenoiseFree(cline);
 
-        line = std::string(cline);
-        if ((line=="end")||(line=="END"))
-            quit=true;
-        else if (!line.empty()) {
+        if ((line=="end")||(line=="END")) {
+            break;
+        }
 
+        int indent = indentationLength(line);
+        while(indent < indents.back())
+            indents.pop_back();
+        if (waitingIndent && indent > indents.back()) {
+            indents.push_back(indent);
+            waitingIndent = false;
+        } else if (!waitingIndent && indent > indents.back()) {
+            indents.push_back(indent);
+        }
+
+        buffer += line + "\n";
+
+        std::string trimmed = rstrip(line);
+        bool endsWithColon = !trimmed.empty() && trimmed.back() == ':';
+        if (endsWithColon)
+            waitingIndent = true;
+
+        bool complete = !waitingIndent && indents.size()==1 && ( !trimmed.empty() || line.empty() );
+
+        if (complete) {
             try {
                 stream.str("");
                 stream.clear();
-                stream << line << std::endl << std::flush;
-
+                stream << buffer << std::flush;
                 vm.interpretLine(stream);
-
-                //std::cout << value->repr() << std::endl;
             } catch (std::exception& e) {
                 std::cout << std::string("error: ") << e.what() << std::endl;
             }
-
+            buffer.clear();
+            indents.assign(1,0);
         }
-        if (cline != NULL) {
-            linenoiseFree(cline);
-        }
-
     }
-
 }
 
 
