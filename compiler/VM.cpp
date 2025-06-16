@@ -13,8 +13,31 @@
 
 #include "VM.h"
 #include "Object.h"
+#include <core/types.h>
 
 using namespace roxal;
+
+static ValueType builtinToValueType(type::BuiltinType bt)
+{
+    switch (bt) {
+        case type::BuiltinType::Nil:     return ValueType::Nil;
+        case type::BuiltinType::Bool:    return ValueType::Bool;
+        case type::BuiltinType::Byte:    return ValueType::Byte;
+        case type::BuiltinType::Int:     return ValueType::Int;
+        case type::BuiltinType::Real:    return ValueType::Real;
+        case type::BuiltinType::Decimal: return ValueType::Decimal;
+        case type::BuiltinType::String:  return ValueType::String;
+        case type::BuiltinType::Range:   return ValueType::Range;
+        case type::BuiltinType::List:    return ValueType::List;
+        case type::BuiltinType::Dict:    return ValueType::Dict;
+        case type::BuiltinType::Vector:  return ValueType::Vector;
+        case type::BuiltinType::Matrix:  return ValueType::Matrix;
+        case type::BuiltinType::Tensor:  return ValueType::Tensor;
+        case type::BuiltinType::Orient:  return ValueType::Orient;
+        default:
+            throw std::runtime_error("unhandled builtin type");
+    }
+}
 
 static uint64_t currentTimeNs() {
     struct timespec tp;
@@ -1249,6 +1272,26 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 }
 
                 frame->reorderArgs.clear();
+            }
+
+            // convert arguments to parameter types if specified
+            if (frame->closure->function->funcType.has_value()) {
+                const auto& params = frame->closure->function->funcType.value()->func.value().params;
+                bool strictConv = false;
+                if (thread->frames.size() >= 2)
+                    strictConv = (thread->frames.end()-2)->strict;
+                for(size_t pi=0; pi<params.size(); ++pi) {
+                    const auto& paramOpt = params[pi];
+                    if (paramOpt.has_value() && paramOpt->type.has_value()) {
+                        ValueType vt = builtinToValueType(paramOpt->type.value()->builtin);
+                        try {
+                            *(frame->slots + 1 + pi) = toType(vt, *(frame->slots + 1 + pi), strictConv);
+                        } catch(std::exception& e) {
+                            runtimeError(e.what());
+                            return std::make_pair(InterpretResult::RuntimeError,nilVal());
+                        }
+                    }
+                }
             }
 
 

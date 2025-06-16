@@ -1,0 +1,9 @@
+func add(a:int) -> int:
+  return a+1
+
+func caller():
+  print("start")
+  print(add("2"))
+  print("end")
+
+caller()
