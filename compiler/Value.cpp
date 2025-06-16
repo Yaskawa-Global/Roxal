@@ -213,7 +213,7 @@ uint8_t Value::asByte(bool strict) const
         }
     }
     if (strict)
-        throw std::invalid_argument("unable to convert value to byte in strict mode");
+        throw std::invalid_argument("unable to convert " + to_string(v->type()) + " to byte in strict mode");
     return 0;
 }
 
@@ -261,7 +261,7 @@ int32_t Value::asInt(bool strict) const
         }
     }
     if (strict)
-        throw std::invalid_argument("unable to convert value to int in strict mode");
+        throw std::invalid_argument("unable to convert " + to_string(v->type()) + " to int in strict mode");
     return 0;
 }
 
@@ -311,7 +311,7 @@ double Value::asReal(bool strict) const
         }
     }
     if (strict)
-        throw std::invalid_argument("unable to convert value to real in strict mode");
+        throw std::invalid_argument("unable to convert " + to_string(v->type()) + " to real in strict mode");
     return 0.0;
 }
 
@@ -522,7 +522,7 @@ int32_t Value::asInt(bool strict) const
         }
     }
     if (strict)
-        throw std::invalid_argument("unable to convert value to int in strict mode");
+        throw std::invalid_argument("unable to convert " + to_string(v->type()) + " to int in strict mode");
     return 0;
 }
 
@@ -555,7 +555,7 @@ double Value::asReal(bool strict) const
         }
     }
     if (strict)
-        throw std::invalid_argument("unable to convert value to real in strict mode");
+        throw std::invalid_argument("unable to convert " + to_string(v->type()) + " to real in strict mode");
     return 0.0;
 }
 
