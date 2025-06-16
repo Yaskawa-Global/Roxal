@@ -1686,11 +1686,11 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 // TODO: support decimal
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
-                if (!peek(0).isInt()) {
+                if (!peek(0).isNumber() && !peek(0).isBool()) {
                     runtimeError("Operand of '%' must be an integer");
                     return errorReturn;
                 }
-                if (!peek(1).isInt()) {
+                if (!peek(1).isNumber() && !peek(1).isBool()) {
                     runtimeError("Operand of '%' must be an integer");
                     return errorReturn;
                 }
