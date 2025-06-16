@@ -1604,14 +1604,17 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::Add): {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
-                if (peek(0).isNumber() && peek(1).isNumber()) {
+                if (isVector(peek(0)) && isVector(peek(1))) {
+                    binaryOp([](Value a, Value b) -> Value { return add(a,b); });
+                }
+                else if (peek(0).isNumber() && peek(1).isNumber()) {
                     binaryOp([](Value a, Value b) -> Value { return add(a,b); });
                 }
                 else if (isString(peek(1))) {
                     concatenate();
                 }
                 else {
-                    runtimeError("Operands of + must be two numbers or a strings LHS");
+                    runtimeError("Operands of + must be two numbers, two vectors or a strings LHS");
                     return errorReturn;
                 }
                 break;
@@ -1619,29 +1622,29 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::Subtract): {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
-                if (!peek(0).isNumber()) {
-                    runtimeError("Operand of - must be a number");
+                if (isVector(peek(0)) && isVector(peek(1))) {
+                    binaryOp([](Value a, Value b) -> Value { return subtract(a,b); });
+                } else if (peek(0).isNumber() && peek(1).isNumber()) {
+                    binaryOp([](Value a, Value b) -> Value { return subtract(a,b); });
+                } else {
+                    runtimeError("Operands of - must be two numbers or two vectors");
                     return errorReturn;
                 }
-                if (!peek(1).isNumber()) {
-                    runtimeError("Operand of - must be a number");
-                    return errorReturn;
-                }
-                binaryOp([](Value a, Value b) -> Value { return subtract(a,b); });
                 break;
             }
             case asByte(OpCode::Multiply): {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
-                if (!peek(0).isNumber()) {
-                    runtimeError("Operand of * must be a number");
+                if ( (isVector(peek(0)) && isVector(peek(1))) ||
+                     (isVector(peek(0)) && peek(1).isNumber()) ||
+                     (peek(0).isNumber() && isVector(peek(1))) ) {
+                    binaryOp([](Value a, Value b) -> Value { return multiply(a,b); });
+                } else if (peek(0).isNumber() && peek(1).isNumber()) {
+                    binaryOp([](Value a, Value b) -> Value { return multiply(a,b); });
+                } else {
+                    runtimeError("Operands of * must be numbers or vectors with scalar");
                     return errorReturn;
                 }
-                if (!peek(1).isNumber()) {
-                    runtimeError("Operand of * must be a number");
-                    return errorReturn;
-                }
-                binaryOp([](Value a, Value b) -> Value { return multiply(a,b); });
                 break;
             }
             case asByte(OpCode::Divide): {
