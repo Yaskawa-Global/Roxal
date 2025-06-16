@@ -21,6 +21,7 @@ tests = [
     'unicode', 'dataflow1',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'lambda1',
     'conversion1',
+    'call_param_type_nonstrict', 'call_param_type_strict',
     'linkedlist', 'structbindassign',
     'if', 'for1',
     'func_param_default', 'func_param_default2', 'func_param_default3','func_param_default4',
