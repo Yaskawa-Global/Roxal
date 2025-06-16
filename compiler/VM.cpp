@@ -2500,13 +2500,52 @@ void VM::defineNativeFunctions()
     addSys("_mssleep", &VM::msSleep_native);
     //addSys("_sleep", &VM::sleep_native);
 
-    auto addMath = [&](const std::string& name, void* fnPtr){
-        void* spec = createFFIWrapper(fnPtr, &ffi_type_double, {&ffi_type_double});
-        mathModule->vars.store(toUnicodeString(name), objVal(nativeVal(&VM::ffi_native, spec)));
+    auto addMath = [&](const std::string& name, void* fnPtr,
+                       std::vector<ffi_type*> args){
+        void* spec = createFFIWrapper(fnPtr, &ffi_type_double, args);
+        mathModule->vars.store(toUnicodeString(name),
+                               objVal(nativeVal(&VM::ffi_native, spec)));
     };
 
-    addMath("sin", (void*)(double (*)(double))sin);
-    addMath("cos", (void*)(double (*)(double))cos);
+    addMath("sin",  (void*)(double (*)(double))sin,  {&ffi_type_double});
+    addMath("cos",  (void*)(double (*)(double))cos,  {&ffi_type_double});
+    addMath("tan",  (void*)(double (*)(double))tan,  {&ffi_type_double});
+    addMath("asin", (void*)(double (*)(double))asin, {&ffi_type_double});
+    addMath("acos", (void*)(double (*)(double))acos, {&ffi_type_double});
+    addMath("atan", (void*)(double (*)(double))atan, {&ffi_type_double});
+    addMath("atan2", (void*)(double (*)(double,double))atan2,
+             {&ffi_type_double, &ffi_type_double});
+    addMath("sinh", (void*)(double (*)(double))sinh, {&ffi_type_double});
+    addMath("cosh", (void*)(double (*)(double))cosh, {&ffi_type_double});
+    addMath("tanh", (void*)(double (*)(double))tanh, {&ffi_type_double});
+    addMath("asinh", (void*)(double (*)(double))asinh, {&ffi_type_double});
+    addMath("acosh", (void*)(double (*)(double))acosh, {&ffi_type_double});
+    addMath("atanh", (void*)(double (*)(double))atanh, {&ffi_type_double});
+    addMath("exp",  (void*)(double (*)(double))exp,  {&ffi_type_double});
+    addMath("log",  (void*)(double (*)(double))log,  {&ffi_type_double});
+    addMath("log10",(void*)(double (*)(double))log10,{&ffi_type_double});
+    addMath("log2", (void*)(double (*)(double))log2, {&ffi_type_double});
+    addMath("sqrt", (void*)(double (*)(double))sqrt, {&ffi_type_double});
+    addMath("cbrt", (void*)(double (*)(double))cbrt, {&ffi_type_double});
+    addMath("ceil", (void*)(double (*)(double))ceil, {&ffi_type_double});
+    addMath("floor",(void*)(double (*)(double))floor,{&ffi_type_double});
+    addMath("round",(void*)(double (*)(double))round,{&ffi_type_double});
+    addMath("trunc",(void*)(double (*)(double))trunc,{&ffi_type_double});
+    addMath("fabs", (void*)(double (*)(double))fabs, {&ffi_type_double});
+    addMath("hypot",(void*)(double (*)(double,double))hypot,
+             {&ffi_type_double, &ffi_type_double});
+    addMath("fmod", (void*)(double (*)(double,double))fmod,
+             {&ffi_type_double, &ffi_type_double});
+    addMath("remainder", (void*)(double (*)(double,double))remainder,
+             {&ffi_type_double, &ffi_type_double});
+    addMath("fmax", (void*)(double (*)(double,double))fmax,
+             {&ffi_type_double, &ffi_type_double});
+    addMath("fmin", (void*)(double (*)(double,double))fmin,
+             {&ffi_type_double, &ffi_type_double});
+    addMath("pow",  (void*)(double (*)(double,double))pow,
+             {&ffi_type_double, &ffi_type_double});
+    addMath("fma",  (void*)(double (*)(double,double,double))fma,
+             {&ffi_type_double, &ffi_type_double, &ffi_type_double});
 }
 
 
