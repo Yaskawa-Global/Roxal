@@ -216,6 +216,66 @@ ObjVector::ObjVector(int32_t size)
     vec.setZero();
 }
 
+Value ObjVector::index(const Value& i) const
+{
+    if (i.isNumber()) {
+        auto index = i.asInt();
+        if (index < 0 || index >= length())
+            throw std::invalid_argument("Vector index out-of-range.");
+        return realVal(vec[index]);
+    }
+    else if (isRange(i)) {
+        auto r = asRange(i);
+        auto vecLen = length();
+        auto rangeLen = r->length(vecLen);
+        std::vector<double> elts;
+        elts.reserve(rangeLen);
+        for(int32_t j=0; j<rangeLen; ++j) {
+            auto targetIndex = r->targetIndex(j, vecLen);
+            if ((targetIndex >= 0) && (targetIndex < vecLen))
+                elts.push_back(vec[targetIndex]);
+        }
+        Eigen::VectorXd vals(elts.size());
+        for(size_t k=0; k<elts.size(); ++k)
+            vals[k] = elts[k];
+        return objVal(vectorVal(vals));
+    }
+    else
+        throw std::invalid_argument("Vector indexing subscript must be a number or a range.");
+    return nilVal();
+}
+
+void ObjVector::setIndex(const Value& i, const Value& v)
+{
+    if (i.isNumber()) {
+        auto index = i.asInt();
+        if (index < 0 || index >= length())
+            throw std::invalid_argument("Vector index out-of-range.");
+        Value rv = toType(ValueType::Real, v, /*strict=*/false);
+        vec[index] = rv.asReal();
+    }
+    else if (isRange(i)) {
+        if (!isVector(v))
+            throw std::invalid_argument("Assignment to vector with range requires a vector on the RHS.");
+        const ObjVector* rhsVec = asVector(v);
+        auto r = asRange(i);
+        auto vecLen = length();
+        auto rangeLen = r->length(vecLen);
+        if (rhsVec->length() != rangeLen)
+            throw std::invalid_argument("Assignment to vector with range requires a vector on RHS of same length ("+std::to_string(rangeLen)+") as the range being assigned (len RHS is "+std::to_string(rhsVec->length())+" ).");
+        for(int32_t j=0; j<rangeLen; ++j) {
+            auto targetIndex = r->targetIndex(j, vecLen);
+            if ((targetIndex >= 0) && (targetIndex < vecLen)) {
+                if (j < rhsVec->length())
+                    vec[targetIndex] = rhsVec->vec[j];
+            }
+        }
+    }
+    else {
+        throw std::invalid_argument("Vector indexing subscript must be a number or a range (not "+to_string(i.type())+").");
+    }
+}
+
 
 
 int32_t ObjRange::length(int32_t targetLen) const

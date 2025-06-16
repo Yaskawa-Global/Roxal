@@ -942,6 +942,24 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                 }
                 return true;
             }
+            case ObjType::Vector: {
+                if (subscriptCount != 1) {
+                    runtimeError("Vector indexing requires a single index.");
+                    return false;
+                }
+                ObjVector* vec = asVector(indexable);
+                Value index = pop();
+                try {
+                    Value subvec { vec->index(index) };
+                    pop(); // discard indexable
+                    push(subvec);
+
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return false;
+                }
+                return true;
+            }
             case ObjType::Dict: {
                 if (subscriptCount != 1) {
                     runtimeError("Dict lookup requires a single key index.");
@@ -994,6 +1012,23 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                 try {
                     if (isRange(index) && !isList(value)) value.resolveFuture();
                     list->setIndex(index, value);
+                    pop(); // discard indexable
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return false;
+                }
+                return true;
+            } break;
+            case ObjType::Vector: {
+                if (subscriptCount != 1) {
+                    runtimeError("Vector indexing requires a single index.");
+                    return false;
+                }
+                ObjVector* vec = asVector(indexable);
+                Value index = pop();
+                try {
+                    if (isRange(index) && !isVector(value)) value.resolveFuture();
+                    vec->setIndex(index, value);
                     pop(); // discard indexable
                 } catch (std::exception& e) {
                     runtimeError(e.what());

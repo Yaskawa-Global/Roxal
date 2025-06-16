@@ -1,0 +1,6 @@
+var v = vector([1,2,3,4])
+print(v[2])
+v[2] = 33
+print(v[2])
+v[1..2] = vector([11,22])
+print(v)
