@@ -29,6 +29,7 @@ ValueType Obj::valueType() const
         case ObjType::Type: return ValueType::Type; // TODO: need to return more specific ObjectType for type object & type actor?
         case ObjType::List: return ValueType::List;
         case ObjType::Dict: return ValueType::Dict;
+        case ObjType::Vector: return ValueType::Vector;
         case ObjType::Instance: return static_cast<const ObjObjectType*>(this)->isActor ? ValueType::Actor : ValueType::Object;
         default: return ValueType::Nil;
     }
@@ -51,6 +52,8 @@ Obj* Obj::clone() const
         return cloneList(static_cast<const ObjList*>(this));
     else if (type == ObjType::Dict)
         return cloneDict(static_cast<const ObjDict*>(this));
+    else if (type == ObjType::Vector)
+        return cloneVector(static_cast<const ObjVector*>(this));
     else if (type == ObjType::Function) // code is immutable, can copy reference
         return mutableThis;
     else if (type == ObjType::Upvalue)
@@ -197,6 +200,20 @@ ObjRange::ObjRange(const Value& rstart, const Value& rstop, const Value& rstep, 
     : start(rstart), stop(rstop), step(rstep), closed(rclosed)
 {
     type = ObjType::Range;
+}
+
+
+ObjVector::ObjVector(const Eigen::VectorXd& values)
+    : vec(values)
+{
+    type = ObjType::Vector;
+}
+
+ObjVector::ObjVector(int32_t size)
+    : vec(size)
+{
+    type = ObjType::Vector;
+    vec.setZero();
 }
 
 
@@ -580,6 +597,45 @@ std::string roxal::objDictToString(const ObjDict* od)
 }
 
 
+ObjVector* roxal::vectorVal()
+{
+    return newObj<ObjVector>(__func__);
+}
+
+ObjVector* roxal::vectorVal(int32_t size)
+{
+    auto v = newObj<ObjVector>(__func__, size);
+    return v;
+}
+
+ObjVector* roxal::vectorVal(const Eigen::VectorXd& values)
+{
+    auto v = newObj<ObjVector>(__func__, values);
+    return v;
+}
+
+ObjVector* roxal::cloneVector(const ObjVector* v)
+{
+    auto newv = newObj<ObjVector>(__func__, v->vec.size());
+    newv->vec = v->vec;
+    return newv;
+}
+
+
+std::string roxal::objVectorToString(const ObjVector* ov)
+{
+    std::ostringstream os;
+    os << "<";
+    for(int i=0; i<ov->vec.size(); ++i) {
+        os << ov->vec[i];
+        if (i != ov->vec.size()-1)
+            os << ", ";
+    }
+    os << ">";
+    return os.str();
+}
+
+
 
 
 
@@ -611,6 +667,9 @@ std::string roxal::objToString(const Value& v)
         }
         case ObjType::Dict: {
             return objDictToString(asDict(v));
+        }
+        case ObjType::Vector: {
+            return objVectorToString(asVector(v));
         }
         case ObjType::Type: {
             ObjTypeSpec* ts = asTypeSpec(v);
@@ -942,6 +1001,8 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::Real: return "real";
     case ObjType::String: return "string";
     case ObjType::List: return "list";
+    case ObjType::Dict: return "dict";
+    case ObjType::Vector: return "vector";
     }
     return "unknown";
 }

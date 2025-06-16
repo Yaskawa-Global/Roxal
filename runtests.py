@@ -33,7 +33,8 @@ tests = [
     'threads1', 'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8',
     'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4',
     'typededucer_binop', 'typededucer_ops',
-    'typeassign1', 'typeassign2', 'typeassign3'
+    'typeassign1', 'typeassign2', 'typeassign3',
+    'vector1'
 ]
 
 if args.convs:

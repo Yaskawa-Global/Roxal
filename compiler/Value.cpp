@@ -5,6 +5,7 @@
 #include "Value.h"
 
 #include "Object.h"
+#include <Eigen/Dense>
 
 
 namespace roxal {
@@ -659,7 +660,7 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::Range: return Value(rangeVal());
         case ValueType::List: return Value(listVal());
         case ValueType::Dict: return Value(dictVal());
-        case ValueType::Vector:
+        case ValueType::Vector: return Value(vectorVal());
         case ValueType::Matrix:
         case ValueType::Tensor:
         case ValueType::Orient:
@@ -742,6 +743,27 @@ Value roxal::toType(ValueType t, Value v, bool strict)
 
 Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin, std::vector<Value>::const_iterator end)
 {
+    if (type == ValueType::Vector) {
+        size_t count = end - begin;
+        if (count == 0) {
+            return objVal(vectorVal());
+        } else if (count == 1) {
+            Value arg = *begin;
+            if (arg.isInt())
+                return objVal(vectorVal(arg.asInt()));
+            if (isList(arg)) {
+                auto listVals = asList(arg)->elts.get();
+                Eigen::VectorXd vals(listVals.size());
+                for(size_t i=0; i<listVals.size(); ++i)
+                    vals[i] = toType(ValueType::Real, listVals[i], false).asReal();
+                return objVal(vectorVal(vals));
+            }
+            throw std::runtime_error("vector constructor expects int length or list of reals");
+        } else {
+            throw std::runtime_error("vector constructor with >1 arg unimplemented");
+        }
+    }
+
     if (end - 1 == begin)
         // pass non-stict as this is an explicit construction/conversion
         return toType(type, *begin, /*strict=*/false);

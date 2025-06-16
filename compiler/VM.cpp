@@ -13,6 +13,7 @@
 
 #include "VM.h"
 #include "Object.h"
+#include <Eigen/Dense>
 #include <core/types.h>
 
 using namespace roxal;
@@ -743,6 +744,34 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     *(thread->stackTop - callSpec.argCount - 1) = value;
                     popN(callSpec.argCount);
 
+                    return true;
+                }
+                else if (ts->typeValue == ValueType::Vector) {
+                    ObjVector* vec = nullptr;
+                    if (callSpec.argCount == 0) {
+                        vec = vectorVal();
+                    }
+                    else if (callSpec.argCount == 1) {
+                        Value arg { peek(0) };
+                        if (arg.isInt()) {
+                            vec = vectorVal(arg.asInt());
+                        }
+                        else if (isList(arg)) {
+                            auto listVals = asList(arg)->elts.get();
+                            Eigen::VectorXd vals(listVals.size());
+                            for(size_t i=0;i<listVals.size();++i)
+                                vals[i] = toType(ValueType::Real, listVals[i], false).asReal();
+                            vec = vectorVal(vals);
+                        } else {
+                            runtimeError("Vector constructor expects int length or list of reals.");
+                            return false;
+                        }
+                    } else {
+                        runtimeError("Expected 0 or 1 argument for vector type instantiation, provided "+std::to_string(callSpec.argCount));
+                        return false;
+                    }
+                    *(thread->stackTop - callSpec.argCount - 1) = objVal(vec);
+                    popN(callSpec.argCount);
                     return true;
                 }
                 else {
@@ -2311,6 +2340,7 @@ Value VM::len_builtin(int argCount, Value* args)
         case ValueType::String: len = asString(v)->length(); break;
         case ValueType::List: len = asList(v)->length(); break;
         case ValueType::Dict: len = asDict(v)->length(); break;
+        case ValueType::Vector: len = asVector(v)->length(); break;
         case ValueType::Range: {
             len = asRange(v)->length();
             if (len<0) return nilVal(); // has no defined length
