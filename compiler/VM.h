@@ -8,6 +8,7 @@
 #include "core/atomic.h"
 #include "Chunk.h"
 #include "Value.h"
+#include <ffi.h>
 
 namespace roxal {
 
@@ -243,8 +244,10 @@ protected:
     Value usSleep_native(int argCount, Value* args);
     Value msSleep_native(int argCount, Value* args);
     Value sleep_native(int argCount, Value* args);
-    Value sin_native(int argCount, Value* args);
-    Value cos_native(int argCount, Value* args);
+    Value ffi_native(int argCount, Value* args);
+
+    void* createFFIWrapper(void* fn, ffi_type* retType,
+                           const std::vector<ffi_type*>& argTypes);
 
 };
 

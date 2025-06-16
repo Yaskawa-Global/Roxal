@@ -4,6 +4,7 @@
 #include <chrono>
 #include <thread>
 #include <utility>
+#include <ffi.h>
 
 
 #include "ASTGenerator.h"
@@ -15,6 +16,13 @@
 #include "Object.h"
 #include <Eigen/Dense>
 #include <core/types.h>
+
+struct FFIWrapper {
+    ffi_cif cif;
+    void* fn;
+    std::vector<ffi_type*> argTypes;
+    ffi_type* retType;
+};
 
 using namespace roxal;
 
@@ -44,6 +52,19 @@ static uint64_t currentTimeNs() {
     struct timespec tp;
     clock_gettime(CLOCK_MONOTONIC,&tp);
     return uint64_t(tp.tv_sec)*1000000000ull + uint64_t(tp.tv_nsec);
+}
+
+void* VM::createFFIWrapper(void* fn, ffi_type* retType,
+                           const std::vector<ffi_type*>& argTypes)
+{
+    FFIWrapper* spec = new FFIWrapper;
+    spec->fn = fn;
+    spec->retType = retType;
+    spec->argTypes = argTypes;
+    if (ffi_prep_cif(&spec->cif, FFI_DEFAULT_ABI, argTypes.size(), retType,
+                     spec->argTypes.data()) != FFI_OK)
+        throw std::runtime_error("ffi_prep_cif failed");
+    return spec;
 }
 
 
@@ -2509,12 +2530,52 @@ void VM::defineNativeFunctions()
     addSys("_mssleep", &VM::msSleep_native);
     //addSys("_sleep", &VM::sleep_native);
 
-    auto addMath = [&](const std::string& name, NativeFn fn){
-        mathModule->vars.store(toUnicodeString(name), objVal(nativeVal(fn)));
+    auto addMath = [&](const std::string& name, void* fnPtr,
+                       std::vector<ffi_type*> args){
+        void* spec = createFFIWrapper(fnPtr, &ffi_type_double, args);
+        mathModule->vars.store(toUnicodeString(name),
+                               objVal(nativeVal(&VM::ffi_native, spec)));
     };
 
-    addMath("sin", &VM::sin_native);
-    addMath("cos", &VM::cos_native);
+    addMath("sin",  (void*)(double (*)(double))sin,  {&ffi_type_double});
+    addMath("cos",  (void*)(double (*)(double))cos,  {&ffi_type_double});
+    addMath("tan",  (void*)(double (*)(double))tan,  {&ffi_type_double});
+    addMath("asin", (void*)(double (*)(double))asin, {&ffi_type_double});
+    addMath("acos", (void*)(double (*)(double))acos, {&ffi_type_double});
+    addMath("atan", (void*)(double (*)(double))atan, {&ffi_type_double});
+    addMath("atan2", (void*)(double (*)(double,double))atan2,
+             {&ffi_type_double, &ffi_type_double});
+    addMath("sinh", (void*)(double (*)(double))sinh, {&ffi_type_double});
+    addMath("cosh", (void*)(double (*)(double))cosh, {&ffi_type_double});
+    addMath("tanh", (void*)(double (*)(double))tanh, {&ffi_type_double});
+    addMath("asinh", (void*)(double (*)(double))asinh, {&ffi_type_double});
+    addMath("acosh", (void*)(double (*)(double))acosh, {&ffi_type_double});
+    addMath("atanh", (void*)(double (*)(double))atanh, {&ffi_type_double});
+    addMath("exp",  (void*)(double (*)(double))exp,  {&ffi_type_double});
+    addMath("log",  (void*)(double (*)(double))log,  {&ffi_type_double});
+    addMath("log10",(void*)(double (*)(double))log10,{&ffi_type_double});
+    addMath("log2", (void*)(double (*)(double))log2, {&ffi_type_double});
+    addMath("sqrt", (void*)(double (*)(double))sqrt, {&ffi_type_double});
+    addMath("cbrt", (void*)(double (*)(double))cbrt, {&ffi_type_double});
+    addMath("ceil", (void*)(double (*)(double))ceil, {&ffi_type_double});
+    addMath("floor",(void*)(double (*)(double))floor,{&ffi_type_double});
+    addMath("round",(void*)(double (*)(double))round,{&ffi_type_double});
+    addMath("trunc",(void*)(double (*)(double))trunc,{&ffi_type_double});
+    addMath("fabs", (void*)(double (*)(double))fabs, {&ffi_type_double});
+    addMath("hypot",(void*)(double (*)(double,double))hypot,
+             {&ffi_type_double, &ffi_type_double});
+    addMath("fmod", (void*)(double (*)(double,double))fmod,
+             {&ffi_type_double, &ffi_type_double});
+    addMath("remainder", (void*)(double (*)(double,double))remainder,
+             {&ffi_type_double, &ffi_type_double});
+    addMath("fmax", (void*)(double (*)(double,double))fmax,
+             {&ffi_type_double, &ffi_type_double});
+    addMath("fmin", (void*)(double (*)(double,double))fmin,
+             {&ffi_type_double, &ffi_type_double});
+    addMath("pow",  (void*)(double (*)(double,double))pow,
+             {&ffi_type_double, &ffi_type_double});
+    addMath("fma",  (void*)(double (*)(double,double,double))fma,
+             {&ffi_type_double, &ffi_type_double, &ffi_type_double});
 }
 
 
@@ -2553,20 +2614,36 @@ Value VM::sleep_native(int argCount, Value* args)
     return nilVal();
 }
 
-Value VM::sin_native(int argCount, Value* args)
+Value VM::ffi_native(int argCount, Value* args)
 {
-    if ((argCount != 1) || !args[0].isNumber())
-        throw std::invalid_argument("sin expects single numeric argument");
+    ObjNative* native = asNative(*(args-1));
+    FFIWrapper* spec = static_cast<FFIWrapper*>(native->data);
+    if (!spec)
+        throw std::runtime_error("ffi_native called without spec");
+    if (argCount != (int)spec->argTypes.size())
+        throw std::invalid_argument("invalid argument count for ffi function");
 
-    return Value(sin(args[0].asReal()));
-}
+    std::vector<void*> argValues(argCount);
+    std::vector<double> realVals(argCount);
 
-Value VM::cos_native(int argCount, Value* args)
-{
-    if ((argCount != 1) || !args[0].isNumber())
-        throw std::invalid_argument("cos expects single numeric argument");
+    for(int i=0;i<argCount;i++) {
+        if (spec->argTypes[i] == &ffi_type_double) {
+            if (!args[i].isNumber())
+                throw std::invalid_argument("ffi argument not number");
+            realVals[i] = args[i].asReal();
+            argValues[i] = &realVals[i];
+        } else {
+            throw std::runtime_error("unsupported ffi arg type");
+        }
+    }
 
-    return Value(cos(args[0].asReal()));
+    double ret = 0;
+    ffi_call(&spec->cif, FFI_FN(spec->fn), &ret, argValues.data());
+
+    if (spec->retType == &ffi_type_double)
+        return Value(ret);
+    else
+        throw std::runtime_error("unsupported ffi return type");
 }
 
 ObjModuleType* VM::getBuiltinModule(const icu::UnicodeString& name)
