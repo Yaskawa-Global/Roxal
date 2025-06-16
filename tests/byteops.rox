@@ -1,0 +1,6 @@
+print(byte(1)+byte(2))
+print(byte(5)-byte(2))
+print(byte(3)*byte(4))
+print(byte(8)/byte(2))
+print(byte(7)%byte(4))
+print(-byte(1))
