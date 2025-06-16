@@ -394,6 +394,9 @@ struct ObjVector : public Obj
 
     int32_t length() const { return vec.size(); }
 
+    Value index(const Value& i) const;
+    void setIndex(const Value& i, const Value& v);
+
     Eigen::VectorXd vec;
 };
 
