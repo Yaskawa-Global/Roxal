@@ -855,6 +855,14 @@ Value roxal::negate(Value v)
 
 Value roxal::add(Value l, Value r)
 {
+    if (isVector(l) && isVector(r)) {
+        const ObjVector* lv = asVector(l);
+        const ObjVector* rv = asVector(r);
+        if (lv->length() != rv->length())
+            throw std::invalid_argument("Vector addition requires vectors of same length");
+        Eigen::VectorXd result = lv->vec + rv->vec;
+        return objVal(vectorVal(result));
+    }
     if (l.isNumber() && r.isNumber()) {
 
         ValueType resultType(binaryOpType(l,r));
@@ -871,6 +879,15 @@ Value roxal::add(Value l, Value r)
 
 Value roxal::subtract(Value l, Value r)
 {
+    if (isVector(l) && isVector(r)) {
+        const ObjVector* lv = asVector(l);
+        const ObjVector* rv = asVector(r);
+        if (lv->length() != rv->length())
+            throw std::invalid_argument("Vector subtraction requires vectors of same length");
+        Eigen::VectorXd result = lv->vec - rv->vec;
+        return objVal(vectorVal(result));
+    }
+
     if (!l.isNumber())
         throw std::invalid_argument("LHS must be a number");
     if (!r.isNumber())
@@ -889,6 +906,27 @@ Value roxal::subtract(Value l, Value r)
 
 Value roxal::multiply(Value l, Value r)
 {
+    if (isVector(l) && isVector(r)) {
+        const ObjVector* lv = asVector(l);
+        const ObjVector* rv = asVector(r);
+        if (lv->length() != rv->length())
+            throw std::invalid_argument("Vector dot product requires vectors of same length");
+        double dot = lv->vec.dot(rv->vec);
+        return realVal(dot);
+    }
+    if (isVector(l) && r.isNumber()) {
+        const ObjVector* lv = asVector(l);
+        double scalar = toType(ValueType::Real, r, false).asReal();
+        Eigen::VectorXd result = lv->vec * scalar;
+        return objVal(vectorVal(result));
+    }
+    if (l.isNumber() && isVector(r)) {
+        const ObjVector* rv = asVector(r);
+        double scalar = toType(ValueType::Real, l, false).asReal();
+        Eigen::VectorXd result = rv->vec * scalar;
+        return objVal(vectorVal(result));
+    }
+
     if (!l.isNumber())
         throw std::invalid_argument("LHS must be a number");
     if (!r.isNumber())

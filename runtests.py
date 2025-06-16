@@ -35,7 +35,7 @@ tests = [
     'typededucer_binop', 'typededucer_ops',
     'mathfuncs',
     'typeassign1', 'typeassign2', 'typeassign3',
-    'vector1', 'vector2'
+    'vector1', 'vector2', 'vector3'
 ]
 
 if args.convs:
