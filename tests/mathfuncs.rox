@@ -1,0 +1,10 @@
+import math
+print(math.sqrt(9))
+print(math.pow(2,5))
+print(math.floor(1.9))
+print(math.ceil(1.1))
+print(math.fmod(5.5,2))
+print(math.trunc(3.8))
+print(math.round(2.3))
+print(math.log10(1000))
+print(math.hypot(3,4))
