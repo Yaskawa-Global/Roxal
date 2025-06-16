@@ -2576,6 +2576,24 @@ void VM::defineNativeFunctions()
              {&ffi_type_double, &ffi_type_double});
     addMath("fma",  (void*)(double (*)(double,double,double))fma,
              {&ffi_type_double, &ffi_type_double, &ffi_type_double});
+
+    addMath("copysign", (void*)(double (*)(double,double))copysign,
+            {&ffi_type_double, &ffi_type_double});
+    addMath("erf",  (void*)(double (*)(double))erf,  {&ffi_type_double});
+    addMath("erfc", (void*)(double (*)(double))erfc, {&ffi_type_double});
+    addMath("exp2", (void*)(double (*)(double))exp2, {&ffi_type_double});
+    addMath("expm1", (void*)(double (*)(double))expm1, {&ffi_type_double});
+    addMath("fdim", (void*)(double (*)(double,double))fdim,
+            {&ffi_type_double, &ffi_type_double});
+    addMath("lgamma", (void*)(double (*)(double))lgamma, {&ffi_type_double});
+    addMath("log1p", (void*)(double (*)(double))log1p, {&ffi_type_double});
+    addMath("logb", (void*)(double (*)(double))logb, {&ffi_type_double});
+    addMath("nearbyint", (void*)(double (*)(double))nearbyint,
+            {&ffi_type_double});
+    addMath("nextafter", (void*)(double (*)(double,double))nextafter,
+            {&ffi_type_double, &ffi_type_double});
+    addMath("rint", (void*)(double (*)(double))rint, {&ffi_type_double});
+    addMath("tgamma", (void*)(double (*)(double))tgamma, {&ffi_type_double});
 }
 
 
