@@ -22,6 +22,61 @@ std::string roxal::type::to_string(BuiltinType t)
     return builtinTypeToString[size_t(t)];
 }
 
+bool roxal::type::convertibleTo(BuiltinType from, BuiltinType to, bool strict)
+{
+    if (from == to)
+        return true;
+
+    auto idx = [](BuiltinType t) -> int {
+        switch(t) {
+            case BuiltinType::Bool:    return 0;
+            case BuiltinType::Byte:    return 1;
+            case BuiltinType::Int:     return 2;
+            case BuiltinType::Real:    return 3;
+            case BuiltinType::Decimal: return 4;
+            case BuiltinType::String:  return 5;
+            case BuiltinType::Enum:    return 6;
+            default: return -1;
+        }
+    };
+
+    int fi = idx(from);
+    int ti = idx(to);
+    if (fi >= 0 && ti >= 0) {
+        static const bool nonStrict[7][7] = {
+            // to:  bool, byte, int, real, decimal, string, enum
+            /*bool*/   {true, true, true, true, true, true, false},
+            /*byte*/   {true, true, true, true, true, true, false},
+            /*int*/    {true, true, true, true, true, true, false},
+            /*real*/   {true, true, true, true, true, true, false},
+            /*decimal*/{true, true, true, true, true, true, false},
+            /*string*/ {true, true, true, true, true, true, true},
+            /*enum*/   {false,false,true,false,false,true,true}
+        };
+
+        static const bool strictTab[7][7] = {
+            /*bool*/   {true, true, true, true, true, true, false},
+            /*byte*/   {false,true, true, true, true, true, false},
+            /*int*/    {false,false,true, true, true, true, false},
+            /*real*/   {false,false,false,true,false, true, false},
+            /*decimal*/{false,false,false,false,true, true, false},
+            /*string*/ {false,false,false,false,false,true, false},
+            /*enum*/   {false,false,true, false,false,true, true}
+        };
+
+        return strict ? strictTab[fi][ti] : nonStrict[fi][ti];
+    }
+
+    if (to == BuiltinType::Range)
+        return !strict; // any type to range in non-strict mode
+    if (to == BuiltinType::List && from == BuiltinType::Range)
+        return !strict;
+    if (to == BuiltinType::Dict && from == BuiltinType::Object)
+        return !strict;
+
+    return false;
+}
+
 
 std::string Type::toString() const
 {

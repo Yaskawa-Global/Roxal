@@ -28,6 +28,11 @@ enum class BuiltinType {
 
 std::string to_string(BuiltinType t);
 
+// check if a value of builtin type `from` can be converted to builtin type
+// `to` using the same rules as `toType` in compiler/Value.cpp. The strict flag
+// determines whether strict conversions are required (as per conversions.md).
+bool convertibleTo(BuiltinType from, BuiltinType to, bool strict=true);
+
 
 
 struct Type {

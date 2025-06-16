@@ -11,7 +11,7 @@
 | int       | ✓^1^ | ✓^3^ | –    | ✓    | ✓       | ✓      | No   |
 | real      | ✓^1^ | ✓^2^ | ✓^2^ | –    | ✓       | ✓      | No   |
 | decimal   | ✓^1^ | ✓^2^ | ✓^2^ | ✓    | –       | ✓      | No   |
-| string    | ✓^1^ | ✓    | ✓    | ✓    | ✓       | –      | ✓    |
+| string    | ✓^1^ | ✓^7^ | ✓^7^ | ✓^7^ | ✓^7^    | –      | ✓    |
 | enum      | No   | No   | ✓    | No   | No      | ✓^6^   | –    |
 
 ### Strict (e.g. function scope)
@@ -33,6 +33,7 @@
 ^4^ True is 1 and False is 0
 ^5^ "true" or "false"
 ^6^ The enum label
+^7^ Strings converting to numeric types parse the same formats as numeric literals (prefixes like 0x for hex). In non-strict mode invalid strings yield zero; strict mode disallows such conversions.
 
 
 ## Explicit (explicit cast/constructor used)

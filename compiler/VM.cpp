@@ -2544,6 +2544,27 @@ Value VM::runtests_builtin(int argCount, Value* args)
 
         std::cout << "Passed " << passes << " failed " << fails << std::endl;
     }
+    else if (suite == "conversions") {
+        auto results = testConversions();
+
+        int passes = 0;
+        int fails = 0;
+        for (const auto& result : results) {
+            std::cout << "Test: " << std::get<0>(result) << " ";
+            bool passed = std::get<1>(result);
+            if (passed) {
+                std::cout << "passed";
+                passes++;
+            }
+            else {
+                std::cout << "failed";
+                fails++;
+            }
+            std::cout << " " << std::get<2>(result) << std::endl;
+        }
+
+        std::cout << "Passed " << passes << " failed " << fails << std::endl;
+    }
 
     return nilVal();
 }

@@ -5,6 +5,7 @@
 #include "Value.h"
 
 #include "Object.h"
+#include <core/types.h>
 #include <Eigen/Dense>
 
 
@@ -633,6 +634,67 @@ Value Value::clone() const
         return Value(asObj()->clone());
 
     throw std::runtime_error("unhandled clone()");
+}
+
+static type::BuiltinType valueTypeToBuiltin(ValueType t)
+{
+    using namespace type;
+    switch (t) {
+        case ValueType::Nil:     return BuiltinType::Nil;
+        case ValueType::Bool:    return BuiltinType::Bool;
+        case ValueType::Byte:    return BuiltinType::Byte;
+        case ValueType::Int:     return BuiltinType::Int;
+        case ValueType::Real:    return BuiltinType::Real;
+        case ValueType::Decimal: return BuiltinType::Decimal;
+        case ValueType::String:  return BuiltinType::String;
+        case ValueType::Range:   return BuiltinType::Range;
+        case ValueType::Enum:    return BuiltinType::Enum;
+        case ValueType::List:    return BuiltinType::List;
+        case ValueType::Dict:    return BuiltinType::Dict;
+        case ValueType::Vector:  return BuiltinType::Vector;
+        case ValueType::Matrix:  return BuiltinType::Matrix;
+        case ValueType::Tensor:  return BuiltinType::Tensor;
+        case ValueType::Orient:  return BuiltinType::Orient;
+        case ValueType::Object:  return BuiltinType::Object;
+        case ValueType::Actor:   return BuiltinType::Actor;
+        case ValueType::Type:    return BuiltinType::Type;
+        default:                 return BuiltinType::Nil;
+    }
+}
+
+bool roxal::convertibleTo(ValueType from, ValueType to, bool strict)
+{
+    return type::convertibleTo(valueTypeToBuiltin(from),
+                               valueTypeToBuiltin(to), strict);
+}
+
+bool Value::convertibleTo(ValueType to, bool strict) const
+{
+    return roxal::convertibleTo(type(), to, strict);
+}
+
+std::vector<std::tuple<std::string,bool,std::string>> roxal::testConversions()
+{
+    auto testConvertible = []() -> bool {
+        using VT = ValueType;
+        bool ok = true;
+        ok = ok && convertibleTo(VT::Int, VT::Real, true);
+        ok = ok && !convertibleTo(VT::Int, VT::Bool, true);
+        ok = ok && convertibleTo(VT::String, VT::Int, false);
+        ok = ok && !convertibleTo(VT::String, VT::Int, true);
+        ok = ok && convertibleTo(VT::Range, VT::List, false);
+        ok = ok && !convertibleTo(VT::Range, VT::List, true);
+        return ok;
+    };
+
+    std::vector<std::tuple<std::string,bool,std::string>> results;
+    try {
+        bool pass = testConvertible();
+        results.push_back({"convertibleTo", pass, pass ? "ok" : "failed"});
+    } catch (std::exception& e) {
+        results.push_back({"convertibleTo", false, std::string("exception: ")+e.what()});
+    }
+    return results;
 }
 
 

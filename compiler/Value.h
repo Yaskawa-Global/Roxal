@@ -3,6 +3,8 @@
 #include <optional>
 #include <unordered_map>
 #include <functional>
+#include <vector>
+#include <tuple>
 
 #include <core/common.h>
 
@@ -274,6 +276,9 @@ public:
     /// @return The cloned value.
     Value clone() const;
 
+    /// @brief Determine if this value's type can be converted to another type.
+    bool convertibleTo(ValueType to, bool strict=true) const;
+
 protected:
     std::atomic_uint64_t val;
 
@@ -314,6 +319,13 @@ Value construct(ValueType type, std::vector<Value>::const_iterator begin, std::v
 
 
 ValueType binaryOpType(Value l, Value r);
+
+// check if a value of type `from` can be converted to `to` according to the
+// conversion rules in conversions.md.
+bool convertibleTo(ValueType from, ValueType to, bool strict=true);
+
+// run conversion unit tests used by the runtime '_runtests' builtin
+std::vector<std::tuple<std::string,bool,std::string>> testConversions();
 
 bool isFalsey(const Value& v);
 bool isTruthy(const Value& v);
