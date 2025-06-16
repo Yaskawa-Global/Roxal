@@ -776,15 +776,23 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
 
 ValueType roxal::binaryOpType(Value l, Value r)
 {
-    ValueType resultType { ValueType::Real };
-    if (l.type() == r.type())
-        resultType = l.type();
-    else if (l.isReal() || r.isReal())
-        resultType = ValueType::Real;
-    else if (l.isInt() || r.isInt())
-        resultType = ValueType::Int;
-    // TODO: ... byte, decimal
-    return resultType;
+    // Determine result builtin type of numeric/bool binary operations
+    // according to conversions.md.
+
+    // bool op bool -> bool
+    if (l.isBool() && r.isBool())
+        return ValueType::Bool;
+
+    // Decimal has highest precedence after bool/bool
+    if (l.type() == ValueType::Decimal || r.type() == ValueType::Decimal)
+        return ValueType::Decimal;
+
+    // Next is real if either operand is real
+    if (l.isReal() || r.isReal())
+        return ValueType::Real;
+
+    // All remaining numeric combinations yield int
+    return ValueType::Int;
 }
 
 
