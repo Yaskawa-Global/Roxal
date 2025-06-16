@@ -45,8 +45,6 @@ struct Obj;
 struct ObjString;
 
 
-#if defined(NAN_TAGGING)
-
 // If Values are real (IEEE C++ double), then no bit conversions necessary
 //  IEEE Quiet NAN values are used to place type tag in mantissa (bits 46..49)
 //  If type is nil or bool tag is also literal value
@@ -283,123 +281,6 @@ protected:
     void decRefObj();
 };
 
-
-#else
-
-inline ValueType valueType(ValueType t) { return ValueType(int(t) & 0x7f); }
-inline bool isBoxed(ValueType t) { return (int(t) & 0x80) != 0; }
-
-
-class Value {
-public:
-    Value() : _type(ValueType::Nil) {}
-
-    explicit Value(bool b) : _type(ValueType::Bool) { as.boolean = b; }
-    explicit Value(double r) : _type(ValueType::Real) { as.real=r; }
-    explicit Value(int32_t i) : _type(ValueType::Int) { as.integer=i; }
-    explicit Value(ValueType bt) : _type(ValueType::Type) { as.btype=bt; }
-    explicit Value(Obj* o);
-
-    Value(const Value& v)
-    {
-        copyFrom(v);
-    }
-
-
-    Value& operator=(const Value& v)
-    {
-        if (isObj() || isBoxed())
-            decRefObj();
-
-        copyFrom(v);
-
-        return *this;
-    }
-
-
-    ~Value() {
-        if (isObj() || isBoxed())
-            decRefObj();
-    }
-
-
-    void box();
-    void unbox();
-    bool isBoxed() const { return roxal::isBoxed(_type); }
-    bool isBoxable() const { return !isBoxed() && (isBool() || isInt() || isReal()); }
-
-
-    inline ValueType type() const { return _type; }
-    std::string typeName() const;
-
-    inline bool isNil() const { return _type == ValueType::Nil; }
-
-    inline bool isBool() const { return valueType(_type) == ValueType::Bool; }
-    bool asBool(bool strict=true) const;
-
-    inline bool isInt() const { return valueType(_type) == ValueType::Int; }
-    int32_t asInt(bool strict=true) const;
-
-    inline bool isReal() const { return valueType(_type)==ValueType::Real; }
-    double asReal(bool strict=true) const;
-
-    inline bool isNumber() const { return isInt() || isReal(); } // TODO: || isByte() || isDecimal(v)
-
-    inline bool isType() const { return valueType(_type)==ValueType::Type; }
-    ValueType asType(bool strict=true) const;
-
-    inline bool isObj() const { return _type == ValueType::Object; }
-    inline Obj* asObj() const { return as.obj; }
-
-
-    bool operator==(const Value& rhs) const;
-
-protected:
-    ValueType _type;
-    union {
-        bool boolean;
-        double real;
-        int32_t integer;
-        ValueType btype; // Value is a type (builtins only)
-        Obj* obj;
-    } as;
-
-    void copyFrom(const Value& v) {
-
-
-        // TODO: optimize with union copy (memcpy?)
-        _type = v._type;
-
-        if (roxal::isBoxed(_type)) {
-            as.obj = v.as.obj;
-            incRefObj();
-        }
-        else {
-            switch(valueType(_type)) {
-                case ValueType::Nil: break;
-                case ValueType::Bool: as.boolean = v.as.boolean; break;
-                case ValueType::Int: as.integer = v.as.integer; break;
-                case ValueType::Real: as.real = v.as.real; break;
-                case ValueType::Type: as.btype = v.as.btype; break;
-                case ValueType::Object: {
-                    #ifdef DEBUG_TRACE_MEMORY
-                    if (v.as.obj == nullptr)
-                        throw std::runtime_error("Value constructed of assigned from invalid null Obj*");
-                    #endif
-                    as.obj = v.as.obj;
-                    incRefObj();
-                } break;
-                default: throw std::runtime_error("unhandled Value type copy "+typeName());
-            }
-        }
-    }
-
-    void incRefObj();
-    void decRefObj();
-};
-
-
-#endif
 
 
 // value factories
