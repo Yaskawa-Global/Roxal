@@ -151,6 +151,8 @@ bool Value::asBool(bool strict) const
     else {
         if (isString(*v) && !strict) {
             auto str { toUTF8StdString(asString(*v)->s) };
+            // TODO: warn if the string contains "false", since it'll evaluate to true but that may not be the intent
+            //  (make such warnings suppressable per-instance)
             return !str.empty();
         }
         else if (v->isBoxed()) {

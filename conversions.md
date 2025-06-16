@@ -27,7 +27,7 @@
 | enum      | No   | No   | ✓    | No   | No      | ✓^6^   | –    |
 
 
-^1^ Non-zero numeric values are true. A non-empty string is true
+^1^ Non-zero numeric values are true. The empty string is false, non-empty strings are true.
 ^2^ Round toward zero if in range.  Combined with wrap/modulo if out of range.
 ^3^ Wrap/modulo
 ^4^ True is 1 and False is 0
@@ -49,6 +49,8 @@ including those that will lose precision.
 ### Primitives
 
 Plus (+), Minus (-), Multiply (*), Divide (/) and Modulo (%)
+
+Note: "numeric" is shorthand for byte, int, real or decimal
 
 | LHS     | RHS     | Result  |
 | ------- | ------- | ------- |
@@ -83,9 +85,9 @@ Plus (+), Minus (-), Multiply (*), Divide (/) and Modulo (%)
 | string  | real    | string  |  (+ string concatenation)
 | string  | decimal | string  |  (+ string concatenation)
 | string  | string  | string  |  (+ string concatenation)
+| X       | string  | No      |  (error)
+| vector  | vector  | vector  |  (dims must match)
+| vector  | numeric | vector  |  (* and / only - scalar multiply or divide)
+| numeric | vector  | vector  |  (* and / only - scalar multiply or divide)
 
-Note1: for Modulo (%): Values are prompted to int first.
-Note2: for each of the above, when RHS is a string, in non-strict context, it will be
-       converted into the LHS type and then the above table applied (for strict, this
-       may be a compile or runtime error if not convertable)
-
+Note1: for Modulo (%): Values are promoted to int first.

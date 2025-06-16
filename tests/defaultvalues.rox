@@ -9,6 +9,7 @@ var s :string
 var ra: range
 var l :list
 var d :dict
+var v: vector
 
 print(b)  // false
 print(bt) // 0
@@ -19,3 +20,5 @@ print(s)  // nothing
 print(ra) // 0..<0
 print(l)  // []
 print(d)  // {}
+print(v)  // []
+print(len(v)) // 0
