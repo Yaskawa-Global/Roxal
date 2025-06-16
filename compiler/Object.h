@@ -554,16 +554,17 @@ typedef Value (VM::*NativeFn)(int,Value*);
 
 struct ObjNative : public Obj
 {
-    ObjNative(NativeFn function);
+    ObjNative(NativeFn function, void* data=nullptr);
     virtual ~ObjNative() {}
 
     NativeFn function;
+    void* data;
 };
 
 inline bool isNative(const Value& v) { return isObjType(v, ObjType::Native); }
 inline ObjNative* asNative(const Value& v) { return static_cast<ObjNative*>(v.asObj()); }
 
-ObjNative* nativeVal(NativeFn function);
+ObjNative* nativeVal(NativeFn function, void* data=nullptr);
 
 
 

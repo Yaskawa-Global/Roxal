@@ -148,6 +148,7 @@ target_link_libraries(roxal
     pthread
     boost_program_options
     dataflow
+    ffi
 )
 
 
