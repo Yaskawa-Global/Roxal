@@ -34,7 +34,8 @@ tests = [
     'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4',
     'typededucer_binop', 'typededucer_ops',
     'mathfuncs',
-    'typeassign1', 'typeassign2', 'typeassign3'
+    'typeassign1', 'typeassign2', 'typeassign3',
+    'vector1'
 ]
 
 if args.convs:

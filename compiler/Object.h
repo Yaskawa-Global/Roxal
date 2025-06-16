@@ -13,6 +13,7 @@
 #include <core/atomic.h>
 #include "Chunk.h"
 #include "Value.h"
+#include <Eigen/Dense>
 
 
 // forward decls
@@ -46,7 +47,8 @@ enum class ObjType {
     Range,
     Type,
     List,
-    Dict
+    Dict,
+    Vector
 };
 
 
@@ -378,6 +380,32 @@ ObjDict* cloneDict(const ObjDict* d);
 
 std::string objDictToString(const ObjDict* od);
 
+
+
+//
+// vector
+
+struct ObjVector : public Obj
+{
+    ObjVector() { type = ObjType::Vector; }
+    ObjVector(const Eigen::VectorXd& values);
+    ObjVector(int32_t size);
+    virtual ~ObjVector() {}
+
+    int32_t length() const { return vec.size(); }
+
+    Eigen::VectorXd vec;
+};
+
+inline bool isVector(const Value& v) { return isObjType(v, ObjType::Vector); }
+inline ObjVector* asVector(const Value& v) { return static_cast<ObjVector*>(v.asObj()); }
+
+ObjVector* vectorVal();
+ObjVector* vectorVal(int32_t size);
+ObjVector* vectorVal(const Eigen::VectorXd& values);
+ObjVector* cloneVector(const ObjVector* v);
+
+std::string objVectorToString(const ObjVector* ov);
 
 
 //
