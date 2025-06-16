@@ -28,4 +28,6 @@ It can be used to invoke a Roxal script (.rox) via:
 One testing mechanism is to run the runtests.py Python script.  It invokes roxal on the .rox test scripts in the tests/ folder and 
 compares their output with the corresponding .out file.  It will output each test script name and "pass" if they match.
 When creating new language features, create some tests to add to the tests/ and runtests.py script.
+If a test is expected to generate a runtime error, there is a mechanism to provide an .err file containing a regex to match the expected stderr output.
+Some tests also use the --ast option to compare the AST dump with the .out file.
 
