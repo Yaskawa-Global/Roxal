@@ -30,6 +30,12 @@ VM::VM()
     initString = stringVal(UnicodeString("init"));
     initString->incRef();
 
+    sysModule = moduleTypeVal(UnicodeString("sys"));
+    mathModule = moduleTypeVal(UnicodeString("math"));
+
+    sysModule->incRef();
+    mathModule->incRef();
+
     defineBuiltinFunctions();
     defineNativeFunctions();
 
@@ -48,6 +54,8 @@ VM::~VM()
     globals.clearGlobals();
 
     initString->decRef();
+    sysModule->decRef();
+    mathModule->decRef();
 
     freeObjects();
 
@@ -2216,15 +2224,20 @@ void VM::defineBuiltinFunctions()
     if (globals.existsGlobal(toUnicodeString("print")))
         return; // already defined
 
-    defineNative("print", &VM::print_builtin);
-    defineNative("len", &VM::len_builtin);
-    defineNative("clone", &VM::clone_builtin);
-    defineNative("sleep", &VM::sleep_builtin);
-    defineNative("fork", &VM::fork_builtin);
-    defineNative("join", &VM::join_builtin);
-    defineNative("_threadid", &VM::threadid_builtin);
-    defineNative("_wait", &VM::wait_builtin);
-    defineNative("_runtests", &VM::runtests_builtin);
+    auto addSys = [&](const std::string& name, NativeFn fn){
+        defineNative(name, fn);
+        sysModule->vars.store(toUnicodeString(name), objVal(nativeVal(fn)));
+    };
+
+    addSys("print", &VM::print_builtin);
+    addSys("len", &VM::len_builtin);
+    addSys("clone", &VM::clone_builtin);
+    addSys("sleep", &VM::sleep_builtin);
+    addSys("fork", &VM::fork_builtin);
+    addSys("join", &VM::join_builtin);
+    addSys("_threadid", &VM::threadid_builtin);
+    addSys("_wait", &VM::wait_builtin);
+    addSys("_runtests", &VM::runtests_builtin);
 }
 
 
@@ -2413,12 +2426,22 @@ void VM::defineNativeFunctions()
     if (globals.existsGlobal(toUnicodeString("_clock")))
         return; // already defined
 
-    defineNative("_clock", &VM::clock_native);
-    defineNative("_ussleep", &VM::usSleep_native);
-    defineNative("_mssleep", &VM::msSleep_native);
-    //defineNative("_sleep", &VM::sleep_native);
-    defineNative("sin", &VM::sin_native);
-    defineNative("cos", &VM::cos_native);
+    auto addSys = [&](const std::string& name, NativeFn fn){
+        defineNative(name, fn);
+        sysModule->vars.store(toUnicodeString(name), objVal(nativeVal(fn)));
+    };
+
+    addSys("_clock", &VM::clock_native);
+    addSys("_ussleep", &VM::usSleep_native);
+    addSys("_mssleep", &VM::msSleep_native);
+    //addSys("_sleep", &VM::sleep_native);
+
+    auto addMath = [&](const std::string& name, NativeFn fn){
+        mathModule->vars.store(toUnicodeString(name), objVal(nativeVal(fn)));
+    };
+
+    addMath("sin", &VM::sin_native);
+    addMath("cos", &VM::cos_native);
 }
 
 
@@ -2471,4 +2494,13 @@ Value VM::cos_native(int argCount, Value* args)
         throw std::invalid_argument("cos expects single numeric argument");
 
     return Value(cos(args[0].asReal()));
+}
+
+ObjModuleType* VM::getBuiltinModule(const icu::UnicodeString& name)
+{
+    if (name == UnicodeString("sys"))
+        return sysModule;
+    if (name == UnicodeString("math"))
+        return mathModule;
+    return nullptr;
 }
