@@ -1,0 +1,7 @@
+import sys.*
+sys.print('hello from sys')
+print('hello from global')
+print(len([1,2,3]))
+print(sys.len([1,2,3]))
+import math
+print(math.cos(0))

@@ -59,6 +59,8 @@ public:
     void setDisassemblyOutput(bool outputBytecodeDisassembly);
     void appendModulePaths(const std::vector<std::string>& modulePaths);
 
+    ObjModuleType* getBuiltinModule(const icu::UnicodeString& name);
+
     enum class InterpretResult {
         OK,
         CompileError,
@@ -192,6 +194,10 @@ protected:
 
     // global vars cannot be created in the language, but represent builtin symbols available in all modules
     VariablesMap globals;
+
+    // builtin modules
+    ObjModuleType* sysModule;
+    ObjModuleType* mathModule;
 
     std::list<ObjUpvalue*> openUpvalues; // FIXME: move to Thread, figure out if cross-thread closures are an issue
 

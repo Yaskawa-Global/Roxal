@@ -7,6 +7,7 @@
 
 #include "ASTGenerator.h"
 #include "TypeDeducer.h"
+#include "VM.h"
 
 #include "RoxalCompiler.h"
 
@@ -187,19 +188,32 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     // search the module paths (as package component roots)
     //  for the specified module
     ModuleInfo module = findImport(ast->packages);
+    bool builtinModule = false;
 
     if (module.name.isEmpty()) {
-        error("import '"+toUTF8StdString(join(ast->packages,"."))+"' not found.");
-        return {};
+        if (ast->packages.size() == 1) {
+            icu::UnicodeString modName { ast->packages[0] };
+            if (VM::instance().getBuiltinModule(modName) != nullptr) {
+                module.name = modName;
+                builtinModule = true;
+            }
+        }
+        if (!builtinModule) {
+            error("import '"+toUTF8StdString(join(ast->packages,"."))+"' not found.");
+            return {};
+        }
     }
 
-    std::string absoluteModuleFilePath = std::filesystem::canonical(std::filesystem::absolute(
-        module.modulePathRoot + "/" + toUTF8StdString(module.packagePath) + '/' + module.filename));
+    std::string absoluteModuleFilePath;
+    if (!builtinModule) {
+        absoluteModuleFilePath = std::filesystem::canonical(std::filesystem::absolute(
+            module.modulePathRoot + "/" + toUTF8StdString(module.packagePath) + '/' + module.filename));
 
-    // extra check the module file exists
-    if (!std::filesystem::exists(std::filesystem::path(absoluteModuleFilePath))) {
-        error("import file '"+toUTF8StdString(module.packagePath) + '/' + module.filename+"' not found.");
-        return {};
+        // extra check the module file exists
+        if (!std::filesystem::exists(std::filesystem::path(absoluteModuleFilePath))) {
+            error("import file '"+toUTF8StdString(module.packagePath) + '/' + module.filename+"' not found.");
+            return {};
+        }
     }
 
     // has this module already been imported?
@@ -211,42 +225,40 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     Value importedModuleType {};
 
     if (!imported) {  // import it
-
-        // compile it, emit code to execute it
-        //std::cout << "importing " << absoluteModuleFilePath << std::endl;
-
-        // compile to generate code for imported module
-        std::ifstream sourcestream(absoluteModuleFilePath);
-
-        ObjFunction* function { nullptr };
-
-        try {
-            // compile to generate code for imported module
-            function = compile(sourcestream, toUTF8StdString(module.name));
-
-            importedModuleType = function->moduleType;
-
-            // emit code to place module's main chunk on stack as closure
-            assert(function->upvalueCount == 0);
-            emitBytes(OpCode::Closure, makeConstant(objVal(function)));
-
-            // call it to have it executed (which will result in module vars being declared)
-            CallSpec callSpec {};
-            callSpec.allPositional = true;
-            callSpec.argCount = 0;
-            auto bytes = callSpec.toBytes();
-            assert(bytes.size()==1);
-            emitBytes(OpCode::Call, bytes[0]);
-
+        if (builtinModule) {
+            importedModuleType = objVal(VM::instance().getBuiltinModule(module.name));
             importedModules[module] = importedModuleType;
+        } else {
+            // compile it, emit code to execute it
+            std::ifstream sourcestream(absoluteModuleFilePath);
 
-        } catch (std::exception& e) {
-            error(e.what());
-            return {};
+            ObjFunction* function { nullptr };
+
+            try {
+                function = compile(sourcestream, toUTF8StdString(module.name));
+
+                importedModuleType = function->moduleType;
+
+                // emit code to place module's main chunk on stack as closure
+                assert(function->upvalueCount == 0);
+                emitBytes(OpCode::Closure, makeConstant(objVal(function)));
+
+                // call it to have it executed (which will result in module vars being declared)
+                CallSpec callSpec {};
+                callSpec.allPositional = true;
+                callSpec.argCount = 0;
+                auto bytes = callSpec.toBytes();
+                assert(bytes.size()==1);
+                emitBytes(OpCode::Call, bytes[0]);
+
+                importedModules[module] = importedModuleType;
+
+            } catch (std::exception& e) {
+                error(e.what());
+                return {};
+            }
         }
-    }
-    else { // already previously imported
-        //std::cout << absoluteModuleFilePath << " already imported" << std::endl;
+    } else { // already previously imported
         importedModuleType = importedEntry->second;
     }
 
