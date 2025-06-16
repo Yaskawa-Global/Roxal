@@ -18,7 +18,7 @@ tests = [
     'andtest', 'ortest', 'not',
     'arith', 'factorial', 'defaultvalues',
     'dict', 'dict2', 'list', 'list2', 'range', 'range2', 'enum1', 'enum2', 'enum3',
-    'unicode', 'dataflow1',
+    'unicode', 'dataflow1', 'conversions1',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'lambda1',
     'conversion1',
     'call_param_type_nonstrict', 'call_param_type_strict',
