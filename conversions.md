@@ -76,5 +76,15 @@ Plus (+), Minus (-), Multiply (*), Divide (/) and Modulo (%)
 | decimal | int     | decimal |
 | decimal | real    | decimal |
 | decimal | decimal | decimal |
+| string  | bool    | string  |  (+ string concatenation - RHS -> string)
+| string  | byte    | string  |  (+ string concatenation)
+| string  | int     | string  |  (+ string concatenation)
+| string  | real    | string  |  (+ string concatenation)
+| string  | decimal | string  |  (+ string concatenation)
+| string  | string  | string  |  (+ string concatenation)
 
-Note for Modulo (%): Values are prompted to int first.
+Note1: for Modulo (%): Values are prompted to int first.
+Note2: for each of the above, when RHS is a string, in non-strict context, it will be
+       converted into the LHS type and then the above table applied (for strict, this
+       may be a compile or runtime error if not convertable)
+
