@@ -625,13 +625,13 @@ ObjVector* roxal::cloneVector(const ObjVector* v)
 std::string roxal::objVectorToString(const ObjVector* ov)
 {
     std::ostringstream os;
-    os << "<";
+    os << "[";
     for(int i=0; i<ov->vec.size(); ++i) {
         os << ov->vec[i];
         if (i != ov->vec.size()-1)
-            os << ", ";
+            os << ' ';
     }
-    os << ">";
+    os << "]";
     return os.str();
 }
 
