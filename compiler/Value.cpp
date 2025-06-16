@@ -903,7 +903,7 @@ Value roxal::negate(Value v)
     if (!v.isNumber() && !v.isBool())
         throw std::invalid_argument("Operand must be a number or bool");
 
-    if (v.isInt())
+    if (v.isInt() || v.isByte())
         return intVal(-v.asInt());
     else if (v.isReal())
         return realVal(-v.asReal());
@@ -931,7 +931,8 @@ Value roxal::add(Value l, Value r)
         switch (resultType) {
             case ValueType::Int: return intVal(l.asInt()+r.asInt());
             case ValueType::Real: return realVal(l.asReal()+r.asReal());
-            //... decimal, byte
+            case ValueType::Byte: return byteVal(l.asByte()+r.asByte());
+            //... decimal
             default: ;
         }
     }
@@ -959,7 +960,8 @@ Value roxal::subtract(Value l, Value r)
     switch (resultType) {
         case ValueType::Int: return intVal(l.asInt()-r.asInt());
         case ValueType::Real: return realVal(l.asReal()-r.asReal());
-        //... decimal, byte
+        case ValueType::Byte: return byteVal(l.asByte()-r.asByte());
+        //... decimal
         default: ;
     }
     return Value();
@@ -998,7 +1000,8 @@ Value roxal::multiply(Value l, Value r)
     switch (resultType) {
         case ValueType::Int: return intVal(l.asInt()*r.asInt());
         case ValueType::Real: return realVal(l.asReal()*r.asReal());
-        //... decimal, byte
+        case ValueType::Byte: return byteVal(l.asByte()*r.asByte());
+        //... decimal
         default: ;
     }
     return Value();
@@ -1016,7 +1019,8 @@ Value roxal::divide(Value l, Value r)
     switch (resultType) {
         case ValueType::Int: return intVal(l.asInt()/r.asInt());
         case ValueType::Real: return realVal(l.asReal()/r.asReal());
-        //... decimal, byte
+        case ValueType::Byte: return byteVal(l.asByte()/r.asByte());
+        //... decimal
         default: ;
     }
     return Value();
@@ -1026,12 +1030,15 @@ Value roxal::divide(Value l, Value r)
 Value roxal::mod(Value l, Value r)
 {
     // TODO: support Decimal
-    if (!l.isInt())
+
+    if (!l.isNumber() && !l.isBool())
         throw std::invalid_argument("LHS must be an integer");
-    if (!r.isInt())
+    if (!r.isNumber() && !r.isBool())
         throw std::invalid_argument("RHS must be an integer");
 
-    return intVal(l.asInt() % r.asInt());
+    int32_t lhs = toType(ValueType::Int, l, false).asInt();
+    int32_t rhs = toType(ValueType::Int, r, false).asInt();
+    return intVal(lhs % rhs);
 }
 
 
@@ -1065,7 +1072,8 @@ Value roxal::greater(Value l, Value r)
         switch (resultType) {
             case ValueType::Int: return boolVal(l.asInt() > r.asInt());
             case ValueType::Real: return boolVal(l.asReal() > r.asReal());
-            //... decimal, byte
+            case ValueType::Byte: return boolVal(l.asByte() > r.asByte());
+            //... decimal
             default: return falseVal();
         }
     }
@@ -1092,7 +1100,8 @@ Value roxal::less(Value l, Value r)
         switch (resultType) {
             case ValueType::Int: return boolVal(l.asInt() < r.asInt());
             case ValueType::Real: return boolVal(l.asReal() < r.asReal());
-            //... decimal, byte
+            case ValueType::Byte: return boolVal(l.asByte() < r.asByte());
+            //... decimal
             default: return falseVal();
         }
     }
