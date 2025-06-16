@@ -53,6 +53,10 @@ test_dir = os.path.join(project_root, 'tests')
 roxalpath = 'build'
 roxal = './roxal'
 
+# Track how many tests pass or fail
+passed_count = 0
+failed_count = 0
+
 cwd = os.getcwd()
 os.chdir(os.path.join(project_root, roxalpath))
 
@@ -100,8 +104,13 @@ try:
                 passed = False
         if passed:
             print(f"Test {test} pass")
+            passed_count += 1
+        else:
+            failed_count += 1
 
 except Exception as e:
     print('Exception: ' + str(e))
+
+print(f"{passed_count} tests passed, {failed_count} failed")
 
 os.chdir(cwd)
