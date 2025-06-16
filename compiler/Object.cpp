@@ -78,6 +78,8 @@ Obj* Obj::clone() const
     else if (type == ObjType::BoundMethod)
         // NB: this clones the reciever object
         return cloneBoundMethod(static_cast<const ObjBoundMethod*>(this));
+    else if (type == ObjType::BoundNative)
+        return cloneBoundNative(static_cast<const ObjBoundNative*>(this));
 
     throw std::runtime_error("clone() unimplemented for type "+std::to_string(int(this->type)));
 }
@@ -752,6 +754,9 @@ std::string roxal::objToString(const Value& v)
         case ObjType::BoundMethod: {
             return objFunctionToString(asBoundMethod(v)->method->function);
         }
+        case ObjType::BoundNative: {
+            return std::string("<native method>");
+        }
         case ObjType::Future: {
             ObjFuture* fut = asFuture(v);
             Value v = fut->future.get(); // will block if promise not fulfilled
@@ -1051,6 +1056,7 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::Instance: return "object";
     case ObjType::Actor: return "actor";
     case ObjType::BoundMethod: return "function";
+    case ObjType::BoundNative: return "function";
     case ObjType::Closure: return "closure";
     case ObjType::Function: return "function";
     case ObjType::Native: return "native";

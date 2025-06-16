@@ -4,6 +4,7 @@
 #include <thread>
 #include <atomic>
 #include <list>
+#include <unordered_map>
 
 #include "core/atomic.h"
 #include "Chunk.h"
@@ -207,11 +208,8 @@ protected:
     // TODO: perhaps implement inheritance first, then pre-define
     //  object type as root of class heirarchy and add clone() and other
     //  builtins to that
-    // Builtin methods
-    //  type name -> method-name,method-closure
-    // Since methods are added to types as they're defined at runtime,
-    //  we need to
-    //std::map<icu::UnicodeString, std::pair<icu::UnicodeString, Value>> builtinMethods;
+    // Builtin methods: builtin value type -> method name hash -> NativeFn
+    std::unordered_map<ValueType, std::unordered_map<int32_t, NativeFn>> builtinMethods;
 
     void resetStack();
     void freeObjects();
@@ -224,6 +222,11 @@ protected:
 
     // Builtin functions
     void defineBuiltinFunctions();
+
+    void defineBuiltinMethods();
+    void defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn);
+
+    Value vector_norm_builtin(int argCount, Value* args);
 
     Value print_builtin(int argCount, Value* args);
     Value len_builtin(int argCount, Value* args);
