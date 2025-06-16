@@ -33,6 +33,7 @@ using icu::UnicodeString;
 enum class ObjType {
     None = 0,
     BoundMethod,
+    BoundNative,
     Closure,
     Function,
     Instance,
@@ -787,6 +788,28 @@ inline ObjBoundMethod* cloneBoundMethod(const ObjBoundMethod* bm) {
     auto newmb = newObj<ObjBoundMethod>(__func__,bm->receiver, bm->method);
     newmb->receiver = newmb->receiver.clone();
     return newmb;
+}
+
+//
+// native method bound to builtin instance
+
+struct ObjBoundNative : public Obj
+{
+    ObjBoundNative(const Value& instance, NativeFn fn)
+      : receiver(instance), function(fn) { type = ObjType::BoundNative; }
+    virtual ~ObjBoundNative() {}
+
+    Value receiver;
+    NativeFn function;
+};
+
+inline bool isBoundNative(const Value& v) { return isObjType(v, ObjType::BoundNative); }
+inline ObjBoundNative* asBoundNative(const Value& v) { return static_cast<ObjBoundNative*>(v.asObj()); }
+inline ObjBoundNative* boundNativeVal(const Value& instance, NativeFn fn) { return newObj<ObjBoundNative>(__func__, instance, fn); }
+inline ObjBoundNative* cloneBoundNative(const ObjBoundNative* bm) {
+    auto newbm = newObj<ObjBoundNative>(__func__, bm->receiver, bm->function);
+    newbm->receiver = newbm->receiver.clone();
+    return newbm;
 }
 
 
