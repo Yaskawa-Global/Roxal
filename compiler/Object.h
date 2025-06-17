@@ -49,7 +49,8 @@ enum class ObjType {
     Type,
     List,
     Dict,
-    Vector
+    Vector,
+    Matrix
 };
 
 
@@ -410,6 +411,33 @@ ObjVector* vectorVal(const Eigen::VectorXd& values);
 ObjVector* cloneVector(const ObjVector* v);
 
 std::string objVectorToString(const ObjVector* ov);
+
+
+//
+// matrix
+
+struct ObjMatrix : public Obj
+{
+    ObjMatrix() { type = ObjType::Matrix; }
+    ObjMatrix(const Eigen::MatrixXd& values);
+    ObjMatrix(int32_t rows, int32_t cols);
+    virtual ~ObjMatrix() {}
+
+    int32_t rows() const { return mat.rows(); }
+    int32_t cols() const { return mat.cols(); }
+
+    Eigen::MatrixXd mat;
+};
+
+inline bool isMatrix(const Value& v) { return isObjType(v, ObjType::Matrix); }
+inline ObjMatrix* asMatrix(const Value& v) { return static_cast<ObjMatrix*>(v.asObj()); }
+
+ObjMatrix* matrixVal();
+ObjMatrix* matrixVal(int32_t rows, int32_t cols);
+ObjMatrix* matrixVal(const Eigen::MatrixXd& values);
+ObjMatrix* cloneMatrix(const ObjMatrix* m);
+
+std::string objMatrixToString(const ObjMatrix* om);
 
 
 //
