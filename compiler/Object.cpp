@@ -741,6 +741,102 @@ ObjMatrix* roxal::cloneMatrix(const ObjMatrix* m)
     return newm;
 }
 
+Value ObjMatrix::index(const Value& row) const
+{
+    if (row.isNumber()) {
+        int r = row.asInt();
+        if (r < 0 || r >= rows())
+            throw std::invalid_argument("Matrix row index out-of-range.");
+        Eigen::VectorXd vals = mat.row(r);
+        return objVal(vectorVal(vals));
+    } else if (isRange(row)) {
+        ObjRange* rr = asRange(row);
+        int rowCount = rr->length(rows());
+        Eigen::MatrixXd m(rowCount, cols());
+        for(int i=0;i<rowCount;++i) {
+            int target = rr->targetIndex(i, rows());
+            if (target >=0 && target < rows())
+                m.row(i) = mat.row(target);
+        }
+        return objVal(matrixVal(m));
+    }
+    throw std::invalid_argument("Matrix indexing subscript must be a number or a range.");
+    return nilVal();
+}
+
+Value ObjMatrix::index(const Value& row, const Value& col) const
+{
+    bool rowRange = isRange(row);
+    bool colRange = isRange(col);
+
+    if (row.isNumber() && col.isNumber()) {
+        int r = row.asInt();
+        int c = col.asInt();
+        if (r < 0 || r >= rows() || c < 0 || c >= cols())
+            throw std::invalid_argument("Matrix index out-of-range.");
+        return realVal(mat(r,c));
+    }
+
+    std::vector<int> rowIdx;
+    if (row.isNumber()) {
+        int r = row.asInt();
+        if (r < 0 || r >= rows())
+            throw std::invalid_argument("Matrix row index out-of-range.");
+        rowIdx.push_back(r);
+    } else if (rowRange) {
+        ObjRange* rr = asRange(row);
+        int rowCount = rr->length(rows());
+        rowIdx.reserve(rowCount);
+        for(int i=0;i<rowCount;++i) {
+            int target = rr->targetIndex(i, rows());
+            if (target >=0 && target < rows())
+                rowIdx.push_back(target);
+        }
+    } else {
+        throw std::invalid_argument("Matrix row index must be a number or a range.");
+    }
+
+    std::vector<int> colIdx;
+    if (col.isNumber()) {
+        int c = col.asInt();
+        if (c < 0 || c >= cols())
+            throw std::invalid_argument("Matrix column index out-of-range.");
+        colIdx.push_back(c);
+    } else if (colRange) {
+        ObjRange* cr = asRange(col);
+        int colCount = cr->length(cols());
+        colIdx.reserve(colCount);
+        for(int i=0;i<colCount;++i) {
+            int target = cr->targetIndex(i, cols());
+            if (target >=0 && target < cols())
+                colIdx.push_back(target);
+        }
+    } else {
+        throw std::invalid_argument("Matrix column index must be a number or a range.");
+    }
+
+    if (rowIdx.size()==1 && colIdx.size()==1) {
+        return realVal(mat(rowIdx[0], colIdx[0]));
+    } else if (rowIdx.size()==1 && colIdx.size()>1) {
+        Eigen::VectorXd vals(colIdx.size());
+        for(size_t j=0;j<colIdx.size();++j)
+            vals[j] = mat(rowIdx[0], colIdx[j]);
+        return objVal(vectorVal(vals));
+    } else if (rowIdx.size()>1 && colIdx.size()==1) {
+        Eigen::VectorXd vals(rowIdx.size());
+        for(size_t i=0;i<rowIdx.size();++i)
+            vals[i] = mat(rowIdx[i], colIdx[0]);
+        return objVal(vectorVal(vals));
+    } else {
+        Eigen::MatrixXd sub(rowIdx.size(), colIdx.size());
+        for(size_t i=0;i<rowIdx.size();++i)
+            for(size_t j=0;j<colIdx.size();++j)
+                sub(i,j) = mat(rowIdx[i], colIdx[j]);
+        return objVal(matrixVal(sub));
+    }
+    return nilVal();
+}
+
 std::string roxal::objMatrixToString(const ObjMatrix* om)
 {
     using std::min;

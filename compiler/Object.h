@@ -426,6 +426,12 @@ struct ObjMatrix : public Obj
     int32_t rows() const { return mat.rows(); }
     int32_t cols() const { return mat.cols(); }
 
+    // single index returns a row (or range of rows)
+    Value index(const Value& row) const;
+    // two indices return an element, vector or submatrix depending on
+    // whether row and/or col are ranges
+    Value index(const Value& row, const Value& col) const;
+
     Eigen::MatrixXd mat;
 };
 

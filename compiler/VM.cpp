@@ -984,6 +984,37 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                 }
                 return true;
             }
+            case ObjType::Matrix: {
+                if (subscriptCount == 1) {
+                    ObjMatrix* mat = asMatrix(indexable);
+                    Value r = pop();
+                    try {
+                        Value row { mat->index(r) };
+                        pop();
+                        push(row);
+                    } catch (std::exception& e) {
+                        runtimeError(e.what());
+                        return false;
+                    }
+                    return true;
+                } else if (subscriptCount == 2) {
+                    ObjMatrix* mat = asMatrix(indexable);
+                    Value col = pop();
+                    Value row = pop();
+                    try {
+                        Value elt { mat->index(row, col) };
+                        pop();
+                        push(elt);
+                    } catch (std::exception& e) {
+                        runtimeError(e.what());
+                        return false;
+                    }
+                    return true;
+                } else {
+                    runtimeError("Matrix indexing requires one or two indices.");
+                    return false;
+                }
+            }
             case ObjType::Dict: {
                 if (subscriptCount != 1) {
                     runtimeError("Dict lookup requires a single key index.");
