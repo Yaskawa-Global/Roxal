@@ -2479,6 +2479,9 @@ void VM::defineBuiltinMethods()
         return;
 
     defineBuiltinMethod(ValueType::Vector, "norm", &VM::vector_norm_builtin);
+    defineBuiltinMethod(ValueType::Vector, "sum", &VM::vector_sum_builtin);
+    defineBuiltinMethod(ValueType::Vector, "normalized", &VM::vector_normalized_builtin);
+    defineBuiltinMethod(ValueType::Vector, "dot", &VM::vector_dot_builtin);
 
     defineBuiltinMethod(ValueType::Matrix, "rows", &VM::matrix_rows_builtin);
     defineBuiltinMethod(ValueType::Matrix, "cols", &VM::matrix_cols_builtin);
@@ -2704,6 +2707,40 @@ Value VM::vector_norm_builtin(int argCount, Value* args)
     return realVal(n);
 }
 
+Value VM::vector_sum_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isVector(args[0]))
+        throw std::invalid_argument("vector.sum expects no arguments");
+
+    ObjVector* vec = asVector(args[0]);
+    double s = vec->vec.sum();
+    return realVal(s);
+}
+
+Value VM::vector_normalized_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isVector(args[0]))
+        throw std::invalid_argument("vector.normalized expects no arguments");
+
+    ObjVector* vec = asVector(args[0]);
+    Eigen::VectorXd nvec = vec->vec.normalized();
+    return objVal(vectorVal(nvec));
+}
+
+Value VM::vector_dot_builtin(int argCount, Value* args)
+{
+    if (argCount != 2 || !isVector(args[0]) || !isVector(args[1]))
+        throw std::invalid_argument("vector.dot expects single vector argument");
+
+    ObjVector* v1 = asVector(args[0]);
+    ObjVector* v2 = asVector(args[1]);
+    if (v1->length() != v2->length())
+        throw std::invalid_argument("vector.dot requires vectors of same length");
+
+    double d = v1->vec.dot(v2->vec);
+    return realVal(d);
+}
+
 Value VM::matrix_rows_builtin(int argCount, Value* args)
 {
     if (argCount != 1 || !isMatrix(args[0]))
@@ -2820,6 +2857,35 @@ Value VM::math_ones_builtin(int argCount, Value* args)
     return objVal(matrixVal(m));
 }
 
+Value VM::math_dot_builtin(int argCount, Value* args)
+{
+    if (argCount != 2 || !isVector(args[0]) || !isVector(args[1]))
+        throw std::invalid_argument("math.dot expects two vector arguments");
+
+    ObjVector* v1 = asVector(args[0]);
+    ObjVector* v2 = asVector(args[1]);
+    if (v1->length() != v2->length())
+        throw std::invalid_argument("math.dot requires vectors of same length");
+
+    double d = v1->vec.dot(v2->vec);
+    return realVal(d);
+}
+
+Value VM::math_cross_builtin(int argCount, Value* args)
+{
+    if (argCount != 2 || !isVector(args[0]) || !isVector(args[1]))
+        throw std::invalid_argument("math.cross expects two vector arguments");
+
+    ObjVector* v1 = asVector(args[0]);
+    ObjVector* v2 = asVector(args[1]);
+    if (v1->length() != 3 || v2->length() != 3)
+        throw std::invalid_argument("math.cross requires 3 element vectors");
+
+    Eigen::Vector3d r = v1->vec.head<3>().cross(v2->vec.head<3>());
+    Eigen::VectorXd res = r;
+    return objVal(vectorVal(res));
+}
+
 
 
 //
@@ -2912,6 +2978,8 @@ void VM::defineNativeFunctions()
     addMathBuiltin("identity", &VM::math_identity_builtin);
     addMathBuiltin("zeros", &VM::math_zeros_builtin);
     addMathBuiltin("ones", &VM::math_ones_builtin);
+    addMathBuiltin("dot", &VM::math_dot_builtin);
+    addMathBuiltin("cross", &VM::math_cross_builtin);
 }
 
 
