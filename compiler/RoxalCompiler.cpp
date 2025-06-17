@@ -13,6 +13,7 @@
 
 using namespace roxal;
 using namespace roxal::ast;
+using ast::Access;
 
 
 
@@ -335,6 +336,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     // handle extension (inheritance)
     if (ast->extends.has_value() && !isEnumeration) {
         asTypeScope(typeScope())->hasSuperType = true;
+        asTypeScope(typeScope())->superTypeName = ast->extends.value();
 
         auto superTypeName = ast->extends.value();
 
@@ -362,16 +364,14 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             break;
         }
 
-        if (isActor) {
-            // TODO: once we have private properties, allow those and allow them
-            //  to be accessible by the actor's methods, but not from other threads
-            error("Actors cannot declare shared properties");
+        ptr<VarDecl> prop { ast->properties.at(i) };
+
+        if (isActor && prop->access != Access::Private) {
+            error("Actors cannot declare shared properties (use private)");
             break;
         }
 
         // emit code to push type & initial value (if any) on stack, then OpCode::Property
-
-        ptr<VarDecl> prop { ast->properties.at(i) };
 
         auto propName { prop->name };
         int16_t propNameConstant = identifierConstant(propName);
@@ -379,7 +379,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             error("Too many properties for one actor or object type.");
 
         // record property name for implicit access within methods
-        asTypeScope(typeScope())->propertyNames.insert(propName);
+        asTypeScope(typeScope())->propertyNames[propName] = prop->access;
 
         // type
         if (prop->varType.has_value()) {
@@ -424,7 +424,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         assert(func->name.has_value()); // methods must have names
         auto methodName { func->name.value() };
-        asTypeScope(typeScope())->propertyNames.insert(methodName);
+        asTypeScope(typeScope())->propertyNames[methodName] = func->access;
         int16_t methodNameConstant = identifierConstant(methodName);
         if (methodNameConstant >= 255)
             error("Too many methods for one actor or object type.");
@@ -1142,6 +1142,15 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
 
         if (!ast->member.has_value())
             throw std::runtime_error("super. accessor requires member name");
+
+        // check access of member in super type
+        auto superName = asTypeScope(typeScope())->superTypeName;
+        auto itType = typePropertyRegistry.find(superName);
+        if (itType != typePropertyRegistry.end()) {
+            auto itMem = itType->second.find(ast->member.value());
+            if (itMem != itType->second.end() && itMem->second == Access::Private)
+                error("Cannot access private member '"+toUTF8StdString(ast->member.value())+"' of super type");
+        }
 
         int16_t identConstant = identifierConstant(ast->member.value());
         if (identConstant > 255)
@@ -2211,7 +2220,7 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
             asFuncScope(funcScope())->functionType == FunctionType::Initializer) {
             int16_t thisLocal = resolveLocal(funcScope(), UnicodeString("this"));
             if (thisLocal != -1 &&
-                asTypeScope(typeScope())->propertyNames.count(name)>0) {
+                asTypeScope(typeScope())->propertyNames.find(name) != asTypeScope(typeScope())->propertyNames.end()) {
                 // treat as property access
                 if (!assign) {
                     namedVariable(UnicodeString("this"), false);

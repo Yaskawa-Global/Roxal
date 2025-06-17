@@ -520,7 +520,7 @@ void VarDecl::acceptChildren(ASTVisitor& v, Anys& results)
 
 void VarDecl::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"VarDecl " << toUTF8StdString(name);
+    os << spaces(indent)+"VarDecl " << (access==Access::Private?"private ":"") << toUTF8StdString(name);
     if (varType.has_value()) {
         if (std::holds_alternative<icu::UnicodeString>(varType.value()))
             os << " :" << toUTF8StdString(std::get<icu::UnicodeString>(varType.value()));
@@ -607,7 +607,9 @@ void Function::acceptChildren(ASTVisitor& v, Anys& results)
 
 void Function::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"Function" << (isProc? " (proc)" : "") << " " << (name.has_value() ? toUTF8StdString(name.value()) : "");
+    os << spaces(indent)+"Function" << (isProc? " (proc)" : "")
+       << (access==Access::Private?" private":"")
+       << " " << (name.has_value() ? toUTF8StdString(name.value()) : "");
     if (returnType.has_value()) {
         os << " → ";
         if (std::holds_alternative<BuiltinType>(returnType.value()))

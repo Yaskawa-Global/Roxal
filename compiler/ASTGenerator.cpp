@@ -956,6 +956,7 @@ std::any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
         throw std::runtime_error("Expected Function for methods of object or actor type");
 
     auto function = as<Function>(func);
+    function->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
 
     // has body suite?
     if (context->COLON()) {
@@ -993,6 +994,8 @@ std::any ASTGenerator::visitProperty(RoxalParser::PropertyContext *context)
 
     // a property looks like a variable declaration
     auto varDecl = std::make_shared<VarDecl>();
+
+    varDecl->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
 
     varDecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText());
 
