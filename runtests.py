@@ -36,8 +36,8 @@ tests = [
     'typededucer_binop', 'typededucer_ops',
     'mathfuncs',
     'typeassign1', 'typeassign2', 'typeassign3',
-    'vector1', 'vector2', 'vector3', 'vector4', 'vector5','vector_methods',
-    'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'matrix_index', 'matrix_methods', 'matrix_assign'
+    'vector1', 'vector2', 'vector3', 'vector4', 'vector5','vector_methods', 'vector_equal',
+    'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'matrix_index', 'matrix_methods', 'matrix_assign', 'matrix_equal'
 ]
 
 if args.convs:
