@@ -30,6 +30,7 @@ ValueType Obj::valueType() const
         case ObjType::List: return ValueType::List;
         case ObjType::Dict: return ValueType::Dict;
         case ObjType::Vector: return ValueType::Vector;
+        case ObjType::Matrix: return ValueType::Matrix;
         case ObjType::Instance: return static_cast<const ObjObjectType*>(this)->isActor ? ValueType::Actor : ValueType::Object;
         default: return ValueType::Nil;
     }
@@ -54,6 +55,8 @@ Obj* Obj::clone() const
         return cloneDict(static_cast<const ObjDict*>(this));
     else if (type == ObjType::Vector)
         return cloneVector(static_cast<const ObjVector*>(this));
+    else if (type == ObjType::Matrix)
+        return cloneMatrix(static_cast<const ObjMatrix*>(this));
     else if (type == ObjType::Function) // code is immutable, can copy reference
         return mutableThis;
     else if (type == ObjType::Upvalue)
@@ -698,6 +701,63 @@ std::string roxal::objVectorToString(const ObjVector* ov)
 }
 
 
+ObjMatrix::ObjMatrix(const Eigen::MatrixXd& values)
+    : mat(values)
+{
+    type = ObjType::Matrix;
+}
+
+ObjMatrix::ObjMatrix(int32_t rows, int32_t cols)
+    : mat(rows, cols)
+{
+    type = ObjType::Matrix;
+    mat.setZero();
+}
+
+ObjMatrix* roxal::matrixVal()
+{
+    return newObj<ObjMatrix>(__func__);
+}
+
+ObjMatrix* roxal::matrixVal(int32_t rows, int32_t cols)
+{
+    auto m = newObj<ObjMatrix>(__func__, rows, cols);
+    return m;
+}
+
+ObjMatrix* roxal::matrixVal(const Eigen::MatrixXd& values)
+{
+    auto m = newObj<ObjMatrix>(__func__, values);
+    return m;
+}
+
+ObjMatrix* roxal::cloneMatrix(const ObjMatrix* m)
+{
+    auto newm = newObj<ObjMatrix>(__func__, m->mat.rows(), m->mat.cols());
+    newm->mat = m->mat;
+    return newm;
+}
+
+std::string roxal::objMatrixToString(const ObjMatrix* om)
+{
+    std::ostringstream os;
+    os << "[";
+    for(int r=0; r<om->mat.rows(); ++r) {
+        os << "[";
+        for(int c=0; c<om->mat.cols(); ++c) {
+            os << om->mat(r,c);
+            if (c != om->mat.cols()-1)
+                os << ' ';
+        }
+        os << "]";
+        if (r != om->mat.rows()-1)
+            os << ' ';
+    }
+    os << "]";
+    return os.str();
+}
+
+
 
 
 
@@ -732,6 +792,9 @@ std::string roxal::objToString(const Value& v)
         }
         case ObjType::Vector: {
             return objVectorToString(asVector(v));
+        }
+        case ObjType::Matrix: {
+            return objMatrixToString(asMatrix(v));
         }
         case ObjType::Type: {
             ObjTypeSpec* ts = asTypeSpec(v);
@@ -1069,6 +1132,7 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::List: return "list";
     case ObjType::Dict: return "dict";
     case ObjType::Vector: return "vector";
+    case ObjType::Matrix: return "matrix";
     }
     return "unknown";
 }

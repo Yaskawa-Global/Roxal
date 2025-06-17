@@ -725,7 +725,7 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::List: return Value(listVal());
         case ValueType::Dict: return Value(dictVal());
         case ValueType::Vector: return Value(vectorVal());
-        case ValueType::Matrix:
+        case ValueType::Matrix: return Value(matrixVal());
         case ValueType::Tensor:
         case ValueType::Orient:
         case ValueType::Object:
@@ -825,6 +825,50 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
             throw std::runtime_error("vector constructor expects int length or list of reals");
         } else {
             throw std::runtime_error("vector constructor with >1 arg unimplemented");
+        }
+    }
+
+    if (type == ValueType::Matrix) {
+        size_t count = end - begin;
+        if (count == 1) {
+            Value arg = *begin;
+            if (isList(arg)) {
+                auto rowsVals = asList(arg)->elts.get();
+                if (rowsVals.size() == 0)
+                    return objVal(matrixVal());
+                size_t rowCount = rowsVals.size();
+                int colCount = -1;
+                // determine column count from first row
+                if (isList(rowsVals[0]))
+                    colCount = asList(rowsVals[0])->length();
+                else if (isVector(rowsVals[0]))
+                    colCount = asVector(rowsVals[0])->length();
+                else
+                    throw std::runtime_error("matrix constructor expects list of lists or vectors");
+                Eigen::MatrixXd vals(rowCount, colCount);
+                for(size_t r=0; r<rowCount; ++r) {
+                    auto rowVal = rowsVals[r];
+                    if (isList(rowVal)) {
+                        auto rowList = asList(rowVal)->elts.get();
+                        if ((int)rowList.size() != colCount)
+                            throw std::runtime_error("matrix rows must have equal length");
+                        for(int c=0; c<colCount; ++c)
+                            vals(r,c) = toType(ValueType::Real, rowList[c], false).asReal();
+                    } else if (isVector(rowVal)) {
+                        auto vec = asVector(rowVal);
+                        if (vec->length() != colCount)
+                            throw std::runtime_error("matrix rows must have equal length");
+                        for(int c=0; c<colCount; ++c)
+                            vals(r,c) = vec->vec[c];
+                    } else {
+                        throw std::runtime_error("matrix constructor expects list of lists or vectors");
+                    }
+                }
+                return objVal(matrixVal(vals));
+            }
+            throw std::runtime_error("matrix constructor expects list of lists or vectors");
+        } else {
+            throw std::runtime_error("matrix constructor with incorrect arg count");
         }
     }
 
