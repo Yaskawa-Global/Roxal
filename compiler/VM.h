@@ -227,6 +227,9 @@ protected:
     void defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn);
 
     Value vector_norm_builtin(int argCount, Value* args);
+    Value vector_sum_builtin(int argCount, Value* args);
+    Value vector_normalized_builtin(int argCount, Value* args);
+    Value vector_dot_builtin(int argCount, Value* args);
     Value matrix_rows_builtin(int argCount, Value* args);
     Value matrix_cols_builtin(int argCount, Value* args);
     Value matrix_transpose_builtin(int argCount, Value* args);
@@ -239,6 +242,8 @@ protected:
     Value math_identity_builtin(int argCount, Value* args);
     Value math_zeros_builtin(int argCount, Value* args);
     Value math_ones_builtin(int argCount, Value* args);
+    Value math_dot_builtin(int argCount, Value* args);
+    Value math_cross_builtin(int argCount, Value* args);
 
     Value print_builtin(int argCount, Value* args);
     Value len_builtin(int argCount, Value* args);
