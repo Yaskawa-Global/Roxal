@@ -40,17 +40,24 @@ std::unique_ptr<antlr4::Token> RoxalIndentationLexer::nextToken()
             case OPEN_BRACK:
             case OPEN_BRACE:
                 this->opened++;
+                this->openers.push(currentToken->getType());
                 this->pendingTokens.push_back(std::move(currentToken));  // insert the current open parentheses or square bracket or curly brace token
                 break;
             case CLOSE_PAREN:
             case CLOSE_BRACK:
             case CLOSE_BRACE:
                 this->opened--;
+                if (!this->openers.empty())
+                    this->openers.pop();
                 this->pendingTokens.push_back(std::move(currentToken));  // insert the current close parentheses or square bracket or curly brace token
                 break;
             case NEWLINE:
                 if (this->opened > 0) {                             //*** https://docs.python.org/3/reference/lexical_analysis.html#implicit-line-joining
-                    continue;  // We're inside an implicit line joining section, skip the NEWLINE token
+                    if (!this->openers.empty() && this->openers.top()==OPEN_BRACK) {
+                        this->pendingTokens.push_back(std::move(currentToken));
+                    } else {
+                        continue;  // We're inside an implicit line joining section, skip the NEWLINE token
+                    }
                 } else {
                     switch (_input->LA(1) /* next symbol */) {    //*** https://www.antlr.org/api/Java/org/antlr/v4/runtime/IntStream.html#LA(int)
                         case '\r':
