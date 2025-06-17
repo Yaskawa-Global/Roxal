@@ -308,7 +308,7 @@ vector
  ;
 
 matrix
- : '[' row (SEMI row)+ ']'
+ : '[' row ((SEMI | NEWLINE) row)+ NEWLINE? ']'
 ;
 
 row
