@@ -34,6 +34,8 @@ protected:
 
     // The amount of opened braces, brackets and parenthesis
     int opened;
+    // Stack of the open tokens to track bracket type
+    std::stack<int> openers;
 
     // Was there space char in the indentations?
     bool wasSpaceIndentation;

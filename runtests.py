@@ -37,7 +37,7 @@ tests = [
     'mathfuncs',
     'typeassign1', 'typeassign2', 'typeassign3',
     'vector1', 'vector2', 'vector3', 'vector4',
-    'matrix1', 'matrix_literal1', 'matrix_index', 'vector_matrix_negative'
+    'matrix1', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'matrix_index'
 ]
 
 if args.convs:
