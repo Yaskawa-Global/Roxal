@@ -778,7 +778,7 @@ std::string roxal::objMatrixToString(const ObjMatrix* om)
             os << ";\n ";
         for(int c=0; c<firstCols; ++c) {
             std::string s = format("%g", om->mat(r,c));
-            os << std::setw(colWidthFirst[c]) << s;
+            os << std::left << std::setw(colWidthFirst[c]) << s;
             if(c != firstCols-1 || cols > firstCols)
                 os << ' ';
         }
@@ -786,7 +786,7 @@ std::string roxal::objMatrixToString(const ObjMatrix* om)
             os << "... ";
         for(int c=0; c<lastCols; ++c) {
             std::string s = format("%g", om->mat(r, cols-lastCols+c));
-            os << std::setw(colWidthLast[c]) << s;
+            os << std::left << std::setw(colWidthLast[c]) << s;
             if(c != lastCols-1)
                 os << ' ';
         }
