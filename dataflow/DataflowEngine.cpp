@@ -59,7 +59,7 @@ DataflowEngine::DataflowEngine()
 
 DataflowEngine::~DataflowEngine()
 {
-
+    clear();
 }
 
 

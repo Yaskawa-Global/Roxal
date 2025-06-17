@@ -2702,6 +2702,7 @@ Value VM::runtests_builtin(int argCount, Value* args)
         }
 
         std::cout << "Passed " << passes << " failed " << fails << std::endl;
+        df::DataflowEngine::instance()->clear();
     }
     else if (suite == "conversions") {
         auto results = testConversions();
