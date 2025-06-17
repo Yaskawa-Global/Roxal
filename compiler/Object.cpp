@@ -871,7 +871,7 @@ std::string roxal::objMatrixToString(const ObjMatrix* om)
 
     auto outputRow = [&](int r) {
         if(r > 0)
-            os << ";\n ";
+            os << "\n ";
         for(int c=0; c<firstCols; ++c) {
             std::string s = format("%g", om->mat(r,c));
             os << std::left << std::setw(colWidthFirst[c]) << s;
@@ -892,7 +892,7 @@ std::string roxal::objMatrixToString(const ObjMatrix* om)
         outputRow(r);
 
     if(rows > 32) {
-        os << ";\n ...\n ";
+        os << "\n ...\n ";
         for(int r=rows-lastRows; r<rows; ++r)
             outputRow(r);
     }
