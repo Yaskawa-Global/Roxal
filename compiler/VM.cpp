@@ -2479,6 +2479,15 @@ void VM::defineBuiltinMethods()
         return;
 
     defineBuiltinMethod(ValueType::Vector, "norm", &VM::vector_norm_builtin);
+
+    defineBuiltinMethod(ValueType::Matrix, "rows", &VM::matrix_rows_builtin);
+    defineBuiltinMethod(ValueType::Matrix, "cols", &VM::matrix_cols_builtin);
+    defineBuiltinMethod(ValueType::Matrix, "transpose", &VM::matrix_transpose_builtin);
+    defineBuiltinMethod(ValueType::Matrix, "determinant", &VM::matrix_determinant_builtin);
+    defineBuiltinMethod(ValueType::Matrix, "inverse", &VM::matrix_inverse_builtin);
+    defineBuiltinMethod(ValueType::Matrix, "trace", &VM::matrix_trace_builtin);
+    defineBuiltinMethod(ValueType::Matrix, "norm", &VM::matrix_norm_builtin);
+    defineBuiltinMethod(ValueType::Matrix, "sum", &VM::matrix_sum_builtin);
 }
 
 void VM::defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn)
@@ -2695,6 +2704,122 @@ Value VM::vector_norm_builtin(int argCount, Value* args)
     return realVal(n);
 }
 
+Value VM::matrix_rows_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isMatrix(args[0]))
+        throw std::invalid_argument("matrix.rows expects no arguments");
+
+    ObjMatrix* mat = asMatrix(args[0]);
+    return intVal(mat->rows());
+}
+
+Value VM::matrix_cols_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isMatrix(args[0]))
+        throw std::invalid_argument("matrix.cols expects no arguments");
+
+    ObjMatrix* mat = asMatrix(args[0]);
+    return intVal(mat->cols());
+}
+
+Value VM::matrix_transpose_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isMatrix(args[0]))
+        throw std::invalid_argument("matrix.transpose expects no arguments");
+
+    ObjMatrix* mat = asMatrix(args[0]);
+    Eigen::MatrixXd tr = mat->mat.transpose();
+    return objVal(matrixVal(tr));
+}
+
+Value VM::matrix_determinant_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isMatrix(args[0]))
+        throw std::invalid_argument("matrix.determinant expects no arguments");
+
+    ObjMatrix* mat = asMatrix(args[0]);
+    if (mat->rows() != mat->cols())
+        throw std::invalid_argument("matrix.determinant requires a square matrix");
+
+    double det = mat->mat.determinant();
+    return realVal(det);
+}
+
+Value VM::matrix_inverse_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isMatrix(args[0]))
+        throw std::invalid_argument("matrix.inverse expects no arguments");
+
+    ObjMatrix* mat = asMatrix(args[0]);
+    if (mat->rows() != mat->cols())
+        throw std::invalid_argument("matrix.inverse requires a square matrix");
+
+    Eigen::MatrixXd inv = mat->mat.inverse();
+    return objVal(matrixVal(inv));
+}
+
+Value VM::matrix_trace_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isMatrix(args[0]))
+        throw std::invalid_argument("matrix.trace expects no arguments");
+
+    ObjMatrix* mat = asMatrix(args[0]);
+    double tr = mat->mat.trace();
+    return realVal(tr);
+}
+
+Value VM::matrix_norm_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isMatrix(args[0]))
+        throw std::invalid_argument("matrix.norm expects no arguments");
+
+    ObjMatrix* mat = asMatrix(args[0]);
+    double n = mat->mat.norm();
+    return realVal(n);
+}
+
+Value VM::matrix_sum_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isMatrix(args[0]))
+        throw std::invalid_argument("matrix.sum expects no arguments");
+
+    ObjMatrix* mat = asMatrix(args[0]);
+    double s = mat->mat.sum();
+    return realVal(s);
+}
+
+Value VM::math_identity_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !args[0].isNumber())
+        throw std::invalid_argument("math.identity expects single integer size");
+
+    int n = toType(ValueType::Int, args[0], false).asInt();
+    Eigen::MatrixXd m = Eigen::MatrixXd::Identity(n, n);
+    return objVal(matrixVal(m));
+}
+
+Value VM::math_zeros_builtin(int argCount, Value* args)
+{
+    if (argCount != 2 || !args[0].isNumber() || !args[1].isNumber())
+        throw std::invalid_argument("math.zeros expects two integer arguments");
+
+    int r = toType(ValueType::Int, args[0], false).asInt();
+    int c = toType(ValueType::Int, args[1], false).asInt();
+    Eigen::MatrixXd m = Eigen::MatrixXd::Zero(r, c);
+    return objVal(matrixVal(m));
+}
+
+Value VM::math_ones_builtin(int argCount, Value* args)
+{
+    if (argCount != 2 || !args[0].isNumber() || !args[1].isNumber())
+        throw std::invalid_argument("math.ones expects two integer arguments");
+
+    int r = toType(ValueType::Int, args[0], false).asInt();
+    int c = toType(ValueType::Int, args[1], false).asInt();
+    Eigen::MatrixXd m = Eigen::MatrixXd::Ones(r, c);
+    return objVal(matrixVal(m));
+}
+
 
 
 //
@@ -2720,6 +2845,10 @@ void VM::defineNativeFunctions()
         void* spec = createFFIWrapper(fnPtr, &ffi_type_double, args);
         mathModule->vars.store(toUnicodeString(name),
                                objVal(nativeVal(&VM::ffi_native, spec)));
+    };
+
+    auto addMathBuiltin = [&](const std::string& name, NativeFn fn){
+        mathModule->vars.store(toUnicodeString(name), objVal(nativeVal(fn)));
     };
 
     addMath("sin",  (void*)(double (*)(double))sin,  {&ffi_type_double});
@@ -2779,6 +2908,10 @@ void VM::defineNativeFunctions()
             {&ffi_type_double, &ffi_type_double});
     addMath("rint", (void*)(double (*)(double))rint, {&ffi_type_double});
     addMath("tgamma", (void*)(double (*)(double))tgamma, {&ffi_type_double});
+
+    addMathBuiltin("identity", &VM::math_identity_builtin);
+    addMathBuiltin("zeros", &VM::math_zeros_builtin);
+    addMathBuiltin("ones", &VM::math_ones_builtin);
 }
 
 
