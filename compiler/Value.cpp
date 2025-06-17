@@ -822,7 +822,10 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                     vals[i] = toType(ValueType::Real, listVals[i], false).asReal();
                 return objVal(vectorVal(vals));
             }
-            throw std::runtime_error("vector constructor expects int length or list of reals");
+            if (isVector(arg)) {
+                return objVal(cloneVector(asVector(arg)));
+            }
+            throw std::runtime_error("vector constructor expects int length, list of reals, or vector");
         } else {
             throw std::runtime_error("vector constructor with >1 arg unimplemented");
         }
@@ -836,6 +839,15 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 auto rowsVals = asList(arg)->elts.get();
                 if (rowsVals.size() == 0)
                     return objVal(matrixVal());
+
+                if (!isList(rowsVals[0]) && !isVector(rowsVals[0])) {
+                    int colCount = rowsVals.size();
+                    Eigen::MatrixXd vals(1, colCount);
+                    for(int c=0; c<colCount; ++c)
+                        vals(0,c) = toType(ValueType::Real, rowsVals[c], false).asReal();
+                    return objVal(matrixVal(vals));
+                }
+
                 size_t rowCount = rowsVals.size();
                 int colCount = -1;
                 // determine column count from first row
@@ -866,7 +878,17 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 }
                 return objVal(matrixVal(vals));
             }
-            throw std::runtime_error("matrix constructor expects list of lists or vectors");
+            if (isVector(arg)) {
+                auto vec = asVector(arg);
+                Eigen::MatrixXd vals(1, vec->length());
+                for(int c=0; c<vec->length(); ++c)
+                    vals(0,c) = vec->vec[c];
+                return objVal(matrixVal(vals));
+            }
+            if (isMatrix(arg)) {
+                return objVal(cloneMatrix(asMatrix(arg)));
+            }
+            throw std::runtime_error("matrix constructor expects list, vector, or matrix");
         } else {
             throw std::runtime_error("matrix constructor with incorrect arg count");
         }
