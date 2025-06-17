@@ -611,6 +611,22 @@ std::any ASTGraphviz::visit(ptr<ast::List> ast)
 }
 
 
+std::any ASTGraphviz::visit(ptr<ast::Vector> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+
+    auto n = ast->elements.size();
+    for(int i=0; i<n;i++)
+        addLink(name, stackPop(), std::to_string(n-i-1));
+
+    nodes[name] = node(name,"vector");
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
+
 std::any ASTGraphviz::visit(ptr<ast::Dict> ast)
 {
     startVisit();

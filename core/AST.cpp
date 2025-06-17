@@ -1268,3 +1268,33 @@ void Dict::acceptChildren(ASTVisitor& v, Anys& results)
         results.push_back( entry.second->accept(v) );
     }
 }
+
+
+std::any Vector::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(std::dynamic_pointer_cast<Vector>(shared_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(std::dynamic_pointer_cast<Vector>(shared_from_this())) );
+
+    return {};
+}
+
+void Vector::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"Vector" << std::endl;
+    for(auto& element : elements)
+        element->output(os,indent+2);
+}
+
+void Vector::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    for(auto& element : elements)
+        results.push_back( element->accept(v) );
+}

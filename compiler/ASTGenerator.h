@@ -118,6 +118,8 @@ public:
 
     virtual std::any visitList(RoxalParser::ListContext *context);
 
+    virtual std::any visitVector(RoxalParser::VectorContext *context);
+
     virtual std::any visitDict(RoxalParser::DictContext *context);
 
     virtual std::any visitStr(RoxalParser::StrContext *context);

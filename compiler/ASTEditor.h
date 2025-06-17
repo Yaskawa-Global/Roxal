@@ -47,6 +47,7 @@ public:
     virtual std::any visit(ptr<ast::Type> ast);
     virtual std::any visit(ptr<ast::Num> ast);
     virtual std::any visit(ptr<ast::List> ast);
+    virtual std::any visit(ptr<ast::Vector> ast);
     virtual std::any visit(ptr<ast::Dict> ast);
 private:
     enum class AstOperation
@@ -118,6 +119,7 @@ public:
     std::any visit(ptr<roxal::ast::Str> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Num> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::List> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::Vector> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Dict> ast) override { if(m_f) m_f(ast); return{}; }
 private:
     std::function<void(ptr<roxal::ast::AST>)> m_f;
