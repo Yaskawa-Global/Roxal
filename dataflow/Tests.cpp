@@ -66,8 +66,7 @@ bool df::clockTest1()
         }
     );
 
-    engine->runFor(TimeDuration::milliSecs(140)); // time for 3 ticks, not 4
-
+    engine->runFor(TimeDuration::milliSecs(130)); // time for exactly 3 ticks
     return values == std::vector<Value>{Value(1),Value(2),Value(3)};
 }
 
@@ -450,7 +449,7 @@ bool df::testSplitJoin()
 
     auto joinOutVal = joinOut->lastValue();
 
-    bool correctValue = (joinOutVal == df::doubleVector({1.0,2.0,3.0,4.0}));
+    bool correctValue = df::equals(joinOutVal, df::doubleVector({1.0,2.0,3.0,4.0}));
 
     return correctValue;
 }
