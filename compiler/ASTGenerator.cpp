@@ -1806,8 +1806,8 @@ std::any ASTGenerator::visitVector(RoxalParser::VectorContext *context)
 
     auto vec = std::make_shared<Vector>();
     setSourceInfo(vec,context);
-    for(int i=0; i<context->num().size(); ++i)
-        vec->elements.push_back(as<Num>(visitNum(context->num().at(i))));
+    for(int i=0; i<context->signed_num().size(); ++i)
+        vec->elements.push_back(as<Num>(visitSigned_num(context->signed_num().at(i))));
 
     return typeValue(vec);
     visitEnd();
@@ -1832,10 +1832,26 @@ std::any ASTGenerator::visitRow(RoxalParser::RowContext *context)
 
     auto vec = std::make_shared<Vector>();
     setSourceInfo(vec,context);
-    for(int i=0; i<context->num().size(); ++i)
-        vec->elements.push_back(as<Num>(visitNum(context->num().at(i))));
+    for(int i=0; i<context->signed_num().size(); ++i)
+        vec->elements.push_back(as<Num>(visitSigned_num(context->signed_num().at(i))));
 
     return typeValue(vec);
+    visitEnd();
+}
+
+std::any ASTGenerator::visitSigned_num(RoxalParser::Signed_numContext *context)
+{
+    visitStart();
+
+    auto num = as<Num>(visitNum(context->num()));
+    if (context->MINUS()) {
+        if (std::holds_alternative<int32_t>(num->num))
+            num->num = -std::get<int32_t>(num->num);
+        else
+            num->num = -std::get<double>(num->num);
+    }
+
+    return typeValue(num);
     visitEnd();
 }
 

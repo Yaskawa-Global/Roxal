@@ -304,15 +304,19 @@ list
  ;
 
 vector
- : '[' num num (num)* ']'
+ : '[' signed_num signed_num (signed_num)* ']'
  ;
 
 matrix
  : '[' row (SEMI row)+ ']'
- ;
+;
 
 row
- : num (num)*
+ : signed_num (signed_num)*
+;
+
+signed_num
+ : MINUS? num
  ;
 
 
