@@ -432,6 +432,11 @@ struct ObjMatrix : public Obj
     // whether row and/or col are ranges
     Value index(const Value& row, const Value& col) const;
 
+    // assign to row(s) (or submatrix if range supplied)
+    void setIndex(const Value& row, const Value& value);
+    // assign to element, row/column vector or submatrix
+    void setIndex(const Value& row, const Value& col, const Value& value);
+
     Eigen::MatrixXd mat;
 };
 
