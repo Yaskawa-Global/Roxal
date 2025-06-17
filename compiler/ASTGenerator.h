@@ -124,6 +124,8 @@ public:
 
     virtual std::any visitRow(RoxalParser::RowContext *context);
 
+    virtual std::any visitSigned_num(RoxalParser::Signed_numContext *context);
+
     virtual std::any visitDict(RoxalParser::DictContext *context);
 
     virtual std::any visitStr(RoxalParser::StrContext *context);
