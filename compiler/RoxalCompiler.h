@@ -57,6 +57,7 @@ public:
     virtual std::any visit(ptr<ast::Type> ast);
     virtual std::any visit(ptr<ast::Num> ast);
     virtual std::any visit(ptr<ast::List> ast);
+    virtual std::any visit(ptr<ast::Vector> ast);
     virtual std::any visit(ptr<ast::Dict> ast);
 
     struct ModuleInfo {

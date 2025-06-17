@@ -1385,6 +1385,36 @@ std::any RoxalCompiler::visit(ptr<ast::List> ast)
 }
 
 
+std::any RoxalCompiler::visit(ptr<ast::Vector> ast)
+{
+    currentNode = ast;
+
+    // push builtin vector type
+    emitConstant(typeVal(ValueType::Vector));
+
+    // generate code to eval each element and leave on stack
+    for(auto& elt : ast->elements)
+        elt->accept(*this);
+
+    if (ast->elements.size() > 255)
+        error("Number of literal vector elements is limited to 255");
+
+    emitBytes(OpCode::NewList, ast->elements.size());
+
+    // call vector constructor with single positional argument (the list)
+    CallSpec callSpec { 1 };
+    auto bytes = callSpec.toBytes();
+    if (bytes.size() == 1)
+        emitBytes(OpCode::Call, bytes[0]);
+    else {
+        emitByte(OpCode::Call);
+        for(auto b : bytes)
+            emitByte(b);
+    }
+    return {};
+}
+
+
 std::any RoxalCompiler::visit(ptr<ast::Dict> ast)
 {
     currentNode = ast;

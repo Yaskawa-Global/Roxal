@@ -493,6 +493,12 @@ std::any ASTEditor::visit(ptr<ast::List> ast)
     return {};
 }
 
+std::any ASTEditor::visit(ptr<ast::Vector> ast)
+{
+    //std::vector<ptr<Num>> elements;
+    return {};
+}
+
 std::any ASTEditor::visit(ptr<ast::Dict> ast)
 {
     //std::vector<std::pair<ptr<Expression>,ptr<Expression>>> entries;

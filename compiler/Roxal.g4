@@ -278,6 +278,7 @@ primary
  | str   // str+ ?
  | RANGE '(' range ')'
  | list
+ | vector
  | dict
  | IDENTIFIER
  | OPEN_PAREN expression CLOSE_PAREN
@@ -291,14 +292,18 @@ builtin_type
  : LNIL
  | BOOL | BYTE | NUMBER | INT | REAL | DECIMAL
  | STRING | RANGE
- | LIST | DICT
- | VECTOR | MATRIX | TENSOR
+| LIST | DICT
+| VECTOR | MATRIX | TENSOR
 | ORIENT
- ;
+;
 
 
 list
  : '[' (expression ( ',' expression )*)? ']'
+ ;
+
+vector
+ : '[' num num (num)* ']'
  ;
 
 
