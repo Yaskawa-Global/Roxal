@@ -45,6 +45,7 @@ public:
     virtual std::any visit(ptr<ast::Num> ast);
     virtual std::any visit(ptr<ast::List> ast);
     virtual std::any visit(ptr<ast::Vector> ast);
+    virtual std::any visit(ptr<ast::Matrix> ast);
     virtual std::any visit(ptr<ast::Dict> ast);
 
     bool hasType(ptr<ast::AST> ast) const { return ast->existsAttr("type"); }

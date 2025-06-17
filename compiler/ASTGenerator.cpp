@@ -1723,6 +1723,8 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
         return visitList(context->list());
     else if (context->vector())
         return visitVector(context->vector());
+    else if (context->matrix())
+        return visitMatrix(context->matrix());
     else if (context->dict())
         return visitDict(context->dict());
     else if (context->builtin_type()) {
@@ -1799,6 +1801,32 @@ std::any ASTGenerator::visitList(RoxalParser::ListContext *context)
 
 
 std::any ASTGenerator::visitVector(RoxalParser::VectorContext *context)
+{
+    visitStart();
+
+    auto vec = std::make_shared<Vector>();
+    setSourceInfo(vec,context);
+    for(int i=0; i<context->num().size(); ++i)
+        vec->elements.push_back(as<Num>(visitNum(context->num().at(i))));
+
+    return typeValue(vec);
+    visitEnd();
+}
+
+std::any ASTGenerator::visitMatrix(RoxalParser::MatrixContext *context)
+{
+    visitStart();
+
+    auto mat = std::make_shared<Matrix>();
+    setSourceInfo(mat,context);
+    for(int i=0; i<context->row().size(); ++i)
+        mat->rows.push_back(as<Vector>(visitRow(context->row().at(i))));
+
+    return typeValue(mat);
+    visitEnd();
+}
+
+std::any ASTGenerator::visitRow(RoxalParser::RowContext *context)
 {
     visitStart();
 

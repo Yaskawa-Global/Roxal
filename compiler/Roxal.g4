@@ -279,6 +279,7 @@ primary
  | RANGE '(' range ')'
  | list
  | vector
+ | matrix
  | dict
  | IDENTIFIER
  | OPEN_PAREN expression CLOSE_PAREN
@@ -304,6 +305,14 @@ list
 
 vector
  : '[' num num (num)* ']'
+ ;
+
+matrix
+ : '[' row (SEMI row)+ ']'
+ ;
+
+row
+ : num (num)*
  ;
 
 
