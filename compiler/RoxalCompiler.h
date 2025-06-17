@@ -223,14 +223,16 @@ protected:
         TypeScope(const icu::UnicodeString& typeName)
           : LexicalScope(ScopeType::Type, typeName), hasSuperType(false) {}
 
+        icu::UnicodeString superTypeName;
+
         bool hasSuperType;
-        std::unordered_set<icu::UnicodeString> propertyNames;
+        std::unordered_map<icu::UnicodeString, ast::Access> propertyNames;
     };
 
     ptr<TypeScope> asTypeScope(Scope s) const { return std::dynamic_pointer_cast<TypeScope>(*s); }
 
     // map type name -> registered member names (properties and methods)
-    std::unordered_map<icu::UnicodeString, std::unordered_set<icu::UnicodeString>> typePropertyRegistry;
+    std::unordered_map<icu::UnicodeString, std::unordered_map<icu::UnicodeString, ast::Access>> typePropertyRegistry;
 
 
     struct ModuleScope : public FunctionScope

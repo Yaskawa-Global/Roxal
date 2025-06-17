@@ -143,13 +143,13 @@ type_decl
  ;
 
 method
- : annotation*
+ : annotation* PRIVATE? 
    func_sig
    ((':' suite) | NEWLINE)  // abstract methods have no body
  ;
 
 property
- : annotation* VAR IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)? NEWLINE
+ : annotation* PRIVATE? VAR IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)? NEWLINE
  ;
 
 enum_label
@@ -332,6 +332,7 @@ dict
 
 TYPE: 'type';
 VAR : 'var';
+PRIVATE: 'private';
 LET : 'let';
 FUNC: 'func';
 PROC: 'proc';

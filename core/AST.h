@@ -14,6 +14,8 @@ namespace roxal::ast {
 using roxal::type::BuiltinType;
 using roxal::type::to_string;
 
+enum class Access { Public, Private };
+
 
 
 class File;
@@ -350,6 +352,7 @@ struct VarDecl : public Declaration {
     icu::UnicodeString name;
     std::optional<ptr<Expression>> initializer;
     std::optional<std::variant<BuiltinType,icu::UnicodeString>> varType;
+    Access access { Access::Public };
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -376,6 +379,7 @@ struct Function : public AST {
     std::vector<ptr<Parameter>> params;
     std::optional<std::variant<BuiltinType,icu::UnicodeString>> returnType;
     std::variant<ptr<Suite>, ptr<Expression>, std::monostate> body; // no body if abstract
+    Access access { Access::Public };
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
