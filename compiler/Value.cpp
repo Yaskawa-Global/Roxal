@@ -939,6 +939,56 @@ bool roxal::isTruthy(const Value& v)
 
 bool roxal::valuesEqual(Value a, Value b)
 {
+    // handle matrix and vector comparisons first
+    if (isMatrix(a) || isMatrix(b)) {
+        try {
+            if (!isMatrix(a)) {
+                std::vector<Value> args{a};
+                a = construct(ValueType::Matrix, args.begin(), args.end());
+            }
+            if (!isMatrix(b)) {
+                std::vector<Value> args{b};
+                b = construct(ValueType::Matrix, args.begin(), args.end());
+            }
+        } catch (...) {
+            return false;
+        }
+
+        ObjMatrix* am = asMatrix(a);
+        ObjMatrix* bm = asMatrix(b);
+        if (am->rows() != bm->rows() || am->cols() != bm->cols())
+            return false;
+        for(int r=0;r<am->rows();++r)
+            for(int c=0;c<am->cols();++c)
+                if (am->mat(r,c) != bm->mat(r,c))
+                    return false;
+        return true;
+    }
+
+    if (isVector(a) || isVector(b)) {
+        try {
+            if (!isVector(a)) {
+                std::vector<Value> args{a};
+                a = construct(ValueType::Vector, args.begin(), args.end());
+            }
+            if (!isVector(b)) {
+                std::vector<Value> args{b};
+                b = construct(ValueType::Vector, args.begin(), args.end());
+            }
+        } catch (...) {
+            return false;
+        }
+
+        ObjVector* av = asVector(a);
+        ObjVector* bv = asVector(b);
+        if (av->length() != bv->length())
+            return false;
+        for(int i=0;i<av->length();++i)
+            if (av->vec[i] != bv->vec[i])
+                return false;
+        return true;
+    }
+
     if (a.type() != b.type()) {
         if (!a.isNumber() || !b.isNumber())
             return false;
