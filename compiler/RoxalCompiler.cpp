@@ -109,19 +109,41 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
             //std::cout << "value:" << value->repr() << std::endl;
         } catch (std::logic_error& e) {
             std::cerr << std::string("Compile error: ") << e.what() << std::endl;
+
+            while (!lexicalScopes.empty() && (*scope())->isFunc() && !(*scope())->isModule()) {
+                auto fs = asFuncScope(funcScope());
+                ObjFunction* f = fs->function;
+                exitFuncScope();
+                if (f != nullptr)
+                    delObj(f);
+            }
+
             while (inTypeScope())
                 exitTypeScope();
+
+            ObjFunction* modFunc = asModuleScope(moduleScope())->function;
             exitModuleScope();
-            if (function != nullptr)
-                delObj(function);
+            delObj(modFunc);
+
             return nullptr;
         } catch (std::exception& e) {
             std::cerr << std::string("Exception: ") << e.what() << std::endl;
+
+            while (!lexicalScopes.empty() && (*scope())->isFunc() && !(*scope())->isModule()) {
+                auto fs = asFuncScope(funcScope());
+                ObjFunction* f = fs->function;
+                exitFuncScope();
+                if (f != nullptr)
+                    delObj(f);
+            }
+
             while (inTypeScope())
                 exitTypeScope();
+
+            ObjFunction* modFunc = asModuleScope(moduleScope())->function;
             exitModuleScope();
-            if (function != nullptr)
-                delObj(function);
+            delObj(modFunc);
+
             throw e;
         }
 
