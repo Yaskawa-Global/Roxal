@@ -16,6 +16,7 @@
 #include "Object.h"
 #include <Eigen/Dense>
 #include <core/types.h>
+#include <core/AST.h>
 
 struct FFIWrapper {
     ffi_cif cif;
@@ -688,7 +689,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     }
                     auto it = type->methods.find(initString->hash);
                     if (it != type->methods.end()) {
-                        Value initializer { it->second.second };
+                        Value initializer { it->second.closure };
                         if (!type->isActor)
                             return call(asClosure(initializer), callSpec);
                         else
@@ -847,7 +848,12 @@ bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& ca
         runtimeError("Undefined property '%s'",toUTF8StdString(name->s).c_str());
         return false;
     }
-    Value method { it->second.second };
+    const auto& methodInfo = it->second;
+    if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
+        runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+        return false;
+    }
+    Value method { methodInfo.closure };
     return call(asClosure(method), callSpec);
 }
 
@@ -1156,7 +1162,13 @@ bool VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
     if (it == instanceType->methods.end())
         return false;
 
-    Value method { it->second.second };
+    const auto& methodInfo = it->second;
+    if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
+        runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+        return false;
+    }
+
+    Value method { methodInfo.closure };
 
     ObjBoundMethod* boundMethod { boundMethodVal(peek(0), asClosure(method)) };
 
@@ -1228,14 +1240,30 @@ Value VM::opReturn()
 }
 
 
+bool VM::isAccessAllowed(ObjObjectType* ownerType, ast::Access access)
+{
+    if (access == ast::Access::Public)
+        return true;
+
+    for(auto it = thread->frames.rbegin(); it != thread->frames.rend(); ++it) {
+        ObjFunction* fn = it->closure->function;
+        if (fn->ownerType != nullptr) {
+            if (fn->ownerType == ownerType)
+                return true;
+        }
+    }
+    return false;
+}
+
+
 
 void VM::defineProperty(ObjString* name)
 {
     #ifdef DEBUG_BUILD
-    if (!isObjectType(peek(2)))
+    if (!isObjectType(peek(3)))
         throw std::runtime_error("Can't create property without object or actor type on stack");
     #endif
-    ObjObjectType* objType = asObjectType(peek(2));
+    ObjObjectType* objType = asObjectType(peek(3));
     #ifdef DEBUG_BUILD
     if (objType->isInterface)
         throw std::runtime_error("Can't create property for an interface");
@@ -1244,8 +1272,9 @@ void VM::defineProperty(ObjString* name)
     if (objType->properties.contains(name->hash))
         throw std::runtime_error("Duplicate property '"+name->toStdString()+"' declared in type "+(objType->isActor?"actor":"object")+" "+toUTF8StdString(objType->name));
 
-    const Value& propertyType { peek(1) };
-    Value propertyInitial { peek(0) };
+    const Value& propertyType { peek(2) };
+    Value propertyInitial { peek(1) };
+    Value accessVal { peek(0) };
 
     if (!propertyInitial.isNil()) {
         // if the property type is specified, convert the initial value (if given) to the declared propType
@@ -1257,8 +1286,9 @@ void VM::defineProperty(ObjString* name)
         }
     }
 
-    objType->properties[name->hash] = {name->s,propertyType,propertyInitial};
-    popN(2);
+    ast::Access access = (!accessVal.isNil() && accessVal.isBool() && accessVal.asBool()) ? ast::Access::Private : ast::Access::Public;
+    objType->properties[name->hash] = {name->s,propertyType,propertyInitial,access,objType};
+    popN(3);
 }
 
 
@@ -1276,7 +1306,10 @@ void VM::defineMethod(ObjString* name)
     if (type->methods.contains(name->hash))
         throw std::runtime_error("Duplicate method '"+name->toStdString()+"' declared in type "+(type->isActor?"actor":"object")+" '"+toUTF8StdString(type->name)+"'");
 
-    type->methods[name->hash] = std::make_pair(name->s,method);
+    ObjClosure* closure = asClosure(method);
+    closure->function->ownerType = asObjectType(peek(1));
+
+    type->methods[name->hash] = {name->s, method, closure->function->access, asObjectType(peek(1))};
     pop();
 }
 
@@ -1505,6 +1538,17 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     // is it an instance property?
                     auto it = objInst->properties.find(name->hash);
                     if (it != objInst->properties.end()) { // exists
+                        auto pit = objInst->instanceType->properties.find(name->hash);
+                        ast::Access propAccess = ast::Access::Public;
+                        ObjObjectType* ownerT = objInst->instanceType;
+                        if (pit != objInst->instanceType->properties.end()) {
+                            propAccess = pit->second.access;
+                            ownerT = pit->second.ownerType;
+                        }
+                        if (!isAccessAllowed(ownerT, propAccess)) {
+                            runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+                            return errorReturn;
+                        }
                         pop();
                         push(it->second);
                         break;
@@ -1604,6 +1648,18 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                                     }
                             }
                         }
+                    }
+
+                    auto pit = objInst->instanceType->properties.find(name->hash);
+                    ast::Access propAccess = ast::Access::Public;
+                    ObjObjectType* ownerT = objInst->instanceType;
+                    if (pit != objInst->instanceType->properties.end()) {
+                        propAccess = pit->second.access;
+                        ownerT = pit->second.ownerType;
+                    }
+                    if (!isAccessAllowed(ownerT, propAccess)) {
+                        runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+                        return errorReturn;
                     }
 
                     objInst->properties[name->hash] = value;
@@ -1896,6 +1952,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::Closure): {
                 ObjFunction* function = asFunction(readConstant());
                 ObjClosure* closure = closureVal(function);
+                if (function->ownerType == nullptr && frame->closure->function->ownerType != nullptr)
+                    function->ownerType = frame->closure->function->ownerType;
                 push(objVal(closure));
                 for (int i = 0; i < closure->upvalues.size(); i++) {
                     uint8_t isLocal = readByte();

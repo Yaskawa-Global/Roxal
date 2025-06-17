@@ -199,6 +199,7 @@ protected:
             function->name = funcName;
             function->funcType = type; // store type for runtime
             function->strict = strict;
+            function->fnType = funcType;
             UnicodeString localName { (funcType==FunctionType::Method || funcType==FunctionType::Initializer) ?
                                         "this" : "" };
             locals.push_back(Local(localName,0));

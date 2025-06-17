@@ -1,0 +1,9 @@
+type P object:
+  private var x = 1
+
+type C object extends P:
+  func f():
+    print(x)
+
+var c = C()
+c.f()

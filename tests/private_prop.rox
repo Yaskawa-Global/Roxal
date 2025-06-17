@@ -1,0 +1,7 @@
+type Obj object:
+  private var secret = 1
+  func reveal():
+    print(secret)
+var o = Obj()
+o.reveal()
+o.secret

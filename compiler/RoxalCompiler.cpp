@@ -413,6 +413,8 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                 emitByte(OpCode::ConstNil);
         }
 
+        emitByte(prop->access == Access::Private ? OpCode::ConstTrue : OpCode::ConstFalse);
+
         emitBytes(OpCode::Property, uint8_t(propNameConstant), "property "+toUTF8StdString(propName));
 
     } // properties
@@ -855,6 +857,8 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     }
 
     enterFuncScope(enclosingModuleScope->moduleType, funcName, ftype, ast->type.value());
+
+    asFuncScope(funcScope())->function->access = ast->access;
 
     #ifdef DEBUG_BUILD
     emitByte(OpCode::Nop, "func "+toUTF8StdString(funcName));

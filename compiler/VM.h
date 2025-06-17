@@ -84,6 +84,7 @@ public:
     ObjUpvalue* captureUpvalue(Value& local);
     void closeUpvalues(Value* last);
     Value opReturn();
+    bool isAccessAllowed(ObjObjectType* ownerType, ast::Access access);
 
     void defineProperty(ObjString* name);
     void defineMethod(ObjString* name);
