@@ -1415,6 +1415,36 @@ std::any RoxalCompiler::visit(ptr<ast::Vector> ast)
 }
 
 
+std::any RoxalCompiler::visit(ptr<ast::Matrix> ast)
+{
+    currentNode = ast;
+
+    // push builtin matrix type
+    emitConstant(typeVal(ValueType::Matrix));
+
+    // generate code for each row vector
+    for(auto& row : ast->rows)
+        row->accept(*this);
+
+    if (ast->rows.size() > 255)
+        error("Number of literal matrix rows is limited to 255");
+
+    emitBytes(OpCode::NewList, ast->rows.size());
+
+    // call matrix constructor with single positional argument (the list)
+    CallSpec callSpec { 1 };
+    auto bytes = callSpec.toBytes();
+    if (bytes.size() == 1)
+        emitBytes(OpCode::Call, bytes[0]);
+    else {
+        emitByte(OpCode::Call);
+        for(auto b : bytes)
+            emitByte(b);
+    }
+    return {};
+}
+
+
 std::any RoxalCompiler::visit(ptr<ast::Dict> ast)
 {
     currentNode = ast;

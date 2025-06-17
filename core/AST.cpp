@@ -1298,3 +1298,33 @@ void Vector::acceptChildren(ASTVisitor& v, Anys& results)
     for(auto& element : elements)
         results.push_back( element->accept(v) );
 }
+
+
+std::any Matrix::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(std::dynamic_pointer_cast<Matrix>(shared_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(std::dynamic_pointer_cast<Matrix>(shared_from_this())) );
+
+    return {};
+}
+
+void Matrix::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"Matrix" << std::endl;
+    for(auto& row : rows)
+        row->output(os,indent+2);
+}
+
+void Matrix::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    for(auto& row : rows)
+        results.push_back( row->accept(v) );
+}

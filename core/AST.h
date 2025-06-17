@@ -49,6 +49,7 @@ class Type;
 class Num;
 class List;
 class Vector;
+class Matrix;
 class Dict;
 
 
@@ -97,6 +98,7 @@ public:
     virtual std::any visit(ptr<Num> ast) = 0;
     virtual std::any visit(ptr<List> ast) = 0;
     virtual std::any visit(ptr<Vector> ast) = 0;
+    virtual std::any visit(ptr<Matrix> ast) = 0;
     virtual std::any visit(ptr<Dict> ast) = 0;
 
 
@@ -592,7 +594,8 @@ struct Literal : public Expression {
         Type,
         List,
         Dict,
-        Vector
+        Vector,
+        Matrix
     };
     Literal() : Expression(ExprType::Literal), literalType(Nil) {}
 
@@ -667,6 +670,17 @@ struct Vector : public Literal {
     Vector() { literalType = LiteralType::Vector; }
 
     std::vector<ptr<ast::Num>> elements;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+struct Matrix : public Literal {
+    Matrix() { literalType = LiteralType::Matrix; }
+
+    std::vector<ptr<ast::Vector>> rows;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
