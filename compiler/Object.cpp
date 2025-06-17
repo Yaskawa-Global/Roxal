@@ -734,6 +734,24 @@ ObjMatrix* roxal::matrixVal(const Eigen::MatrixXd& values)
     return m;
 }
 
+static ObjVector* valueToVector(const Value& v)
+{
+    if (isVector(v))
+        return asVector(v);
+    std::vector<Value> args{v};
+    Value conv = construct(ValueType::Vector, args.begin(), args.end());
+    return asVector(conv);
+}
+
+static ObjMatrix* valueToMatrix(const Value& v)
+{
+    if (isMatrix(v))
+        return asMatrix(v);
+    std::vector<Value> args{v};
+    Value conv = construct(ValueType::Matrix, args.begin(), args.end());
+    return asMatrix(conv);
+}
+
 ObjMatrix* roxal::cloneMatrix(const ObjMatrix* m)
 {
     auto newm = newObj<ObjMatrix>(__func__, m->mat.rows(), m->mat.cols());
@@ -835,6 +853,117 @@ Value ObjMatrix::index(const Value& row, const Value& col) const
         return objVal(matrixVal(sub));
     }
     return nilVal();
+}
+
+void ObjMatrix::setIndex(const Value& row, const Value& value)
+{
+    std::vector<int> rowIdx;
+    if (row.isNumber()) {
+        int r = row.asInt();
+        if (r < 0 || r >= rows())
+            throw std::invalid_argument("Matrix row index out-of-range.");
+        rowIdx.push_back(r);
+    } else if (isRange(row)) {
+        ObjRange* rr = asRange(row);
+        int rowCount = rr->length(rows());
+        rowIdx.reserve(rowCount);
+        for(int i=0;i<rowCount;++i) {
+            int target = rr->targetIndex(i, rows());
+            if (target >=0 && target < rows())
+                rowIdx.push_back(target);
+        }
+    } else {
+        throw std::invalid_argument("Matrix row index must be a number or a range.");
+    }
+
+    if (rowIdx.size()==1) {
+        ObjVector* vec = valueToVector(value);
+        if (vec->length() != cols())
+            throw std::invalid_argument("Assignment to matrix row requires vector length " + std::to_string(cols()));
+        for(int c=0;c<cols();++c)
+            mat(rowIdx[0], c) = vec->vec[c];
+        return;
+    }
+
+    ObjMatrix* rhs = valueToMatrix(value);
+    if (rhs->cols() != cols() || rhs->rows() != (int)rowIdx.size())
+        throw std::invalid_argument("Assignment to matrix rows requires a matrix of size ("+std::to_string(rowIdx.size())+","+std::to_string(cols())+")");
+
+    for(size_t i=0;i<rowIdx.size();++i)
+        mat.row(rowIdx[i]) = rhs->mat.row(i);
+}
+
+void ObjMatrix::setIndex(const Value& row, const Value& col, const Value& value)
+{
+    bool rowRange = isRange(row);
+    bool colRange = isRange(col);
+
+    std::vector<int> rowIdx;
+    if (row.isNumber()) {
+        int r = row.asInt();
+        if (r < 0 || r >= rows())
+            throw std::invalid_argument("Matrix row index out-of-range.");
+        rowIdx.push_back(r);
+    } else if (rowRange) {
+        ObjRange* rr = asRange(row);
+        int rowCount = rr->length(rows());
+        rowIdx.reserve(rowCount);
+        for(int i=0;i<rowCount;++i) {
+            int target = rr->targetIndex(i, rows());
+            if (target >=0 && target < rows())
+                rowIdx.push_back(target);
+        }
+    } else {
+        throw std::invalid_argument("Matrix row index must be a number or a range.");
+    }
+
+    std::vector<int> colIdx;
+    if (col.isNumber()) {
+        int c = col.asInt();
+        if (c < 0 || c >= cols())
+            throw std::invalid_argument("Matrix column index out-of-range.");
+        colIdx.push_back(c);
+    } else if (colRange) {
+        ObjRange* cr = asRange(col);
+        int colCount = cr->length(cols());
+        colIdx.reserve(colCount);
+        for(int i=0;i<colCount;++i) {
+            int target = cr->targetIndex(i, cols());
+            if (target >=0 && target < cols())
+                colIdx.push_back(target);
+        }
+    } else {
+        throw std::invalid_argument("Matrix column index must be a number or a range.");
+    }
+
+    if (rowIdx.size()==1 && colIdx.size()==1) {
+        double scalar = toType(ValueType::Real, value, false).asReal();
+        mat(rowIdx[0], colIdx[0]) = scalar;
+        return;
+    }
+
+    if (rowIdx.size()==1) {
+        ObjVector* vec = valueToVector(value);
+        if (vec->length() != (int)colIdx.size())
+            throw std::invalid_argument("Assignment to matrix subrow requires vector length " + std::to_string(colIdx.size()));
+        for(size_t j=0;j<colIdx.size();++j)
+            mat(rowIdx[0], colIdx[j]) = vec->vec[j];
+        return;
+    } else if (colIdx.size()==1) {
+        ObjVector* vec = valueToVector(value);
+        if (vec->length() != (int)rowIdx.size())
+            throw std::invalid_argument("Assignment to matrix subcolumn requires vector length " + std::to_string(rowIdx.size()));
+        for(size_t i=0;i<rowIdx.size();++i)
+            mat(rowIdx[i], colIdx[0]) = vec->vec[i];
+        return;
+    } else {
+        ObjMatrix* rhs = valueToMatrix(value);
+        if (rhs->rows()!= (int)rowIdx.size() || rhs->cols()!= (int)colIdx.size())
+            throw std::invalid_argument("Assignment to matrix submatrix requires matrix of size ("+std::to_string(rowIdx.size())+","+std::to_string(colIdx.size())+")");
+        for(size_t i=0;i<rowIdx.size();++i)
+            for(size_t j=0;j<colIdx.size();++j)
+                mat(rowIdx[i], colIdx[j]) = rhs->mat(i,j);
+    }
 }
 
 std::string roxal::objMatrixToString(const ObjMatrix* om)
