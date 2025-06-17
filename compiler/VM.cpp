@@ -1538,17 +1538,6 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     // is it an instance property?
                     auto it = objInst->properties.find(name->hash);
                     if (it != objInst->properties.end()) { // exists
-                        auto pit = objInst->instanceType->properties.find(name->hash);
-                        ast::Access propAccess = ast::Access::Public;
-                        ObjObjectType* ownerT = objInst->instanceType;
-                        if (pit != objInst->instanceType->properties.end()) {
-                            propAccess = pit->second.access;
-                            ownerT = pit->second.ownerType;
-                        }
-                        if (!isAccessAllowed(ownerT, propAccess)) {
-                            runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
-                            return errorReturn;
-                        }
                         pop();
                         push(it->second);
                         break;
@@ -1618,6 +1607,87 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 return errorReturn;
                 break;
             }
+            case asByte(OpCode::GetPropCheck): {
+                Value& inst { peek(0) };
+                inst.resolveFuture();
+                ObjString* name = readString();
+                if (isObjectInstance(inst)) {
+                    ObjectInstance* objInst = asObjectInstance(inst);
+                    auto it = objInst->properties.find(name->hash);
+                    if (it != objInst->properties.end()) {
+                        auto pit = objInst->instanceType->properties.find(name->hash);
+                        ast::Access propAccess = ast::Access::Public;
+                        ObjObjectType* ownerT = objInst->instanceType;
+                        if (pit != objInst->instanceType->properties.end()) {
+                            propAccess = pit->second.access;
+                            ownerT = pit->second.ownerType;
+                        }
+                        if (!isAccessAllowed(ownerT, propAccess)) {
+                            runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+                            return errorReturn;
+                        }
+                        pop();
+                        push(it->second);
+                        break;
+                    } else {
+                        if (bindMethod(objInst->instanceType, name))
+                            break;
+
+                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(objInst->instanceType->name)+"'.");
+                        return errorReturn;
+                    }
+                } else if (isActorInstance(inst)) {
+                    ActorInstance* actorInst = asActorInstance(inst);
+                    if (bindMethod(actorInst->instanceType, name))
+                        break;
+
+                    runtimeError("Undefined method '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(actorInst->instanceType->name)+"'.");
+                    return errorReturn;
+
+                } else if (isEnumType(inst)) {
+                    auto enumObjType = asObjectType(inst);
+                    auto it = enumObjType->enumLabelValues.find(name->hash);
+                    if (it != enumObjType->enumLabelValues.end()) {
+                        pop();
+                        push(it->second.second);
+                        break;
+                    }
+
+                    runtimeError("Undefined enum label '"+toUTF8StdString(name->s)+"' for enum type '"+toUTF8StdString(enumObjType->name)+"'.");
+                    return errorReturn;
+                } else if (isModuleType(inst)) {
+                    auto moduleType = asModuleType(inst);
+
+                    auto optValue { moduleType->vars.load(name->hash) };
+                    if (optValue.has_value()) {
+                        Value value = optValue.value();
+                        pop();
+                        push(value);
+                        break;
+                    } else {
+                        runtimeError("Undefined variable '"+name->toStdString()+"' in module "+toUTF8StdString(moduleType->name)+".");
+                        return errorReturn;
+                    }
+                }
+
+                if (inst.isObj()) {
+                    auto vt = inst.type();
+                    auto mit = builtinMethods.find(vt);
+                    if (mit != builtinMethods.end()) {
+                        auto it2 = mit->second.find(name->hash);
+                        if (it2 != mit->second.end()) {
+                            ObjBoundNative* bm = boundNativeVal(inst, it2->second);
+                            pop();
+                            push(objVal(bm));
+                            break;
+                        }
+                    }
+                }
+
+                runtimeError("Only object and actor instances have methods and only objects instances have properties.");
+                return errorReturn;
+                break;
+            }
             case asByte(OpCode::SetProp): {
                 Value& inst { peek(1) };
                 inst.resolveFuture();
@@ -1650,17 +1720,6 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                         }
                     }
 
-                    auto pit = objInst->instanceType->properties.find(name->hash);
-                    ast::Access propAccess = ast::Access::Public;
-                    ObjObjectType* ownerT = objInst->instanceType;
-                    if (pit != objInst->instanceType->properties.end()) {
-                        propAccess = pit->second.access;
-                        ownerT = pit->second.ownerType;
-                    }
-                    if (!isAccessAllowed(ownerT, propAccess)) {
-                        runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
-                        return errorReturn;
-                    }
 
                     objInst->properties[name->hash] = value;
                     popN(2); // pop original value & instance
@@ -1685,6 +1744,73 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                         push(value); // value (possibly converted)
                     }
                     else {
+                        runtimeError("Declaring new module variables in another module ('"+toUTF8StdString(moduleType->name)+"') is not allowed.");
+                        return errorReturn;
+                    }
+                    break;
+                }
+                runtimeError("Only instances have properties.");
+                return errorReturn;
+                break;
+            }
+            case asByte(OpCode::SetPropCheck): {
+                Value& inst { peek(1) };
+                inst.resolveFuture();
+                if (isObjectInstance(inst)) {
+                    ObjectInstance* objInst = asObjectInstance(inst);
+                    ObjString* name = readString();
+
+                    Value value { peek(0) };
+
+                    if (!value.isNil()) {
+                        bool strictConv = frame->closure->function->strict;
+                        const auto& properties { objInst->instanceType->properties };
+                        const auto& property = properties.find(name->hash);
+                        if (property != properties.end()) {
+                            const auto& prop { property->second };
+                            if (!prop.type.isNil() && isTypeSpec(prop.type)) {
+                                ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
+                                if (typeSpec->typeValue != ValueType::Nil)
+                                    try {
+                                        value = toType(typeSpec->typeValue,value, strictConv);
+                                    } catch(std::exception& e) {
+                                        runtimeError(e.what());
+                                        return errorReturn;
+                                    }
+                            }
+                        }
+                    }
+
+                    auto pit = objInst->instanceType->properties.find(name->hash);
+                    ast::Access propAccess = ast::Access::Public;
+                    ObjObjectType* ownerT = objInst->instanceType;
+                    if (pit != objInst->instanceType->properties.end()) {
+                        propAccess = pit->second.access;
+                        ownerT = pit->second.ownerType;
+                    }
+                    if (!isAccessAllowed(ownerT, propAccess)) {
+                        runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+                        return errorReturn;
+                    }
+
+                    objInst->properties[name->hash] = value;
+                    popN(2);
+                    push(value);
+                    break;
+                } else if (isModuleType(inst)) {
+                    auto moduleType = asModuleType(inst);
+
+                    ObjString* name = readString();
+
+                    auto& vars { moduleType->vars };
+
+                    if (vars.exists(name->hash)) {
+                        Value value { peek(0) };
+
+                        vars.store(name->hash, name->s, value, /*overwrite=*/true);
+                        popN(2);
+                        push(value);
+                    } else {
                         runtimeError("Declaring new module variables in another module ('"+toUTF8StdString(moduleType->name)+"') is not allowed.");
                         return errorReturn;
                     }

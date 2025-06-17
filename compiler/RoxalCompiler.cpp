@@ -108,13 +108,13 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 
             //std::cout << "value:" << value->repr() << std::endl;
         } catch (std::logic_error& e) {
-            std::cout << std::string("Compile error: ") << e.what() << std::endl;
+            std::cerr << std::string("Compile error: ") << e.what() << std::endl;
             exitModuleScope();
             if (function != nullptr)
                 delObj(function);
             return nullptr;
         } catch (std::exception& e) {
-            std::cout << std::string("Exception: ") << e.what() << std::endl;
+            std::cerr << std::string("Exception: ") << e.what() << std::endl;
             exitModuleScope();
             if (function != nullptr)
                 delObj(function);
@@ -379,7 +379,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             error("Too many properties for one actor or object type.");
 
         // record property name for implicit access within methods
-        asTypeScope(typeScope())->propertyNames[propName] = prop->access;
+        asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name};
 
         // type
         if (prop->varType.has_value()) {
@@ -426,7 +426,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         assert(func->name.has_value()); // methods must have names
         auto methodName { func->name.value() };
-        asTypeScope(typeScope())->propertyNames[methodName] = func->access;
+        asTypeScope(typeScope())->propertyNames[methodName] = {func->access, ast->name};
         int16_t methodNameConstant = identifierConstant(methodName);
         if (methodNameConstant >= 255)
             error("Too many methods for one actor or object type.");
@@ -993,10 +993,24 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             throw std::runtime_error("accessor unary operator expects member name");
         int16_t propName = identifierConstant(accessor->member.value());
 
+        OpCode op = (propName <= 255 ? OpCode::SetPropCheck : OpCode::SetProp2);
+        if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
+            auto itType = typePropertyRegistry.find(asTypeScope(typeScope())->name);
+            if (itType != typePropertyRegistry.end()) {
+                auto itMem = itType->second.find(accessor->member.value());
+                if (itMem != itType->second.end()) {
+                    const auto& info = itMem->second;
+                    if (info.access == Access::Private && info.owner != asTypeScope(typeScope())->name)
+                        error("Cannot access private member '"+toUTF8StdString(accessor->member.value())+"'");
+                    op = (propName <= 255 ? OpCode::SetProp : OpCode::SetProp2);
+                }
+            }
+        }
+
         ast->rhs->accept(*this);
 
-        emitBytes(propName <= 255 ? OpCode::SetProp : OpCode::SetProp2, propName);
-    }
+        emitBytes(op, propName);
+    } 
     else if (isa<Index>(ast->lhs)) {
 
         // evaluate rhs
@@ -1152,7 +1166,7 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
         auto itType = typePropertyRegistry.find(superName);
         if (itType != typePropertyRegistry.end()) {
             auto itMem = itType->second.find(ast->member.value());
-            if (itMem != itType->second.end() && itMem->second == Access::Private)
+            if (itMem != itType->second.end() && itMem->second.access == Access::Private)
                 error("Cannot access private member '"+toUTF8StdString(ast->member.value())+"' of super type");
         }
 
@@ -1178,7 +1192,21 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
             int16_t identConstant = identifierConstant(ast->member.value());
             if (identConstant > 255)
                 error("Too many constants in scope");
-            emitBytes(OpCode::GetProp, uint8_t(identConstant));
+
+            OpCode op = OpCode::GetPropCheck;
+            if (isa<Variable>(ast->arg) && as<Variable>(ast->arg)->name == "this" && inTypeScope()) {
+                auto itType = typePropertyRegistry.find(asTypeScope(typeScope())->name);
+                if (itType != typePropertyRegistry.end()) {
+                    auto itMem = itType->second.find(ast->member.value());
+                    if (itMem != itType->second.end()) {
+                        const auto& info = itMem->second;
+                        if (info.access == Access::Private && info.owner != asTypeScope(typeScope())->name)
+                            error("Cannot access private member '"+toUTF8StdString(ast->member.value())+"'");
+                        op = OpCode::GetProp;
+                    }
+                }
+            }
+            emitBytes(op, uint8_t(identConstant));
         } break;
         default:
             throw std::runtime_error("unimplemented unary opertor:"+ast->opString());
@@ -2223,8 +2251,11 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
         if (asFuncScope(funcScope())->functionType == FunctionType::Method ||
             asFuncScope(funcScope())->functionType == FunctionType::Initializer) {
             int16_t thisLocal = resolveLocal(funcScope(), UnicodeString("this"));
-            if (thisLocal != -1 &&
-                asTypeScope(typeScope())->propertyNames.find(name) != asTypeScope(typeScope())->propertyNames.end()) {
+            auto itMem = asTypeScope(typeScope())->propertyNames.find(name);
+            if (thisLocal != -1 && itMem != asTypeScope(typeScope())->propertyNames.end()) {
+                const auto& info = itMem->second;
+                if (info.access == Access::Private && info.owner != asTypeScope(typeScope())->name)
+                    error("Cannot access private member '"+toUTF8StdString(name)+"'");
                 // treat as property access
                 if (!assign) {
                     namedVariable(UnicodeString("this"), false);
