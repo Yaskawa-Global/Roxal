@@ -82,6 +82,7 @@ VM::VM()
     mathModule->incRef();
 
     defineBuiltinFunctions();
+    defineBuiltinMethods();
     defineNativeFunctions();
 
     //CallSpec::testParamPositions();
@@ -808,6 +809,15 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 popN(callSpec.argCount);
                 return true;
             }
+            case ObjType::BoundNative: {
+                ObjBoundNative* bound { asBoundNative(callee) };
+                *(thread->stackTop - callSpec.argCount - 1) = bound->receiver;
+                NativeFn native = bound->function;
+                Value result { (this->*native)(callSpec.argCount+1, &(*thread->stackTop) - callSpec.argCount - 1) };
+                *(thread->stackTop - callSpec.argCount - 1) = result;
+                popN(callSpec.argCount);
+                return true;
+            }
             case ObjType::Instance: {
                 runtimeError("object instances are not callable.");
                 return false;
@@ -865,6 +875,20 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
         throw std::runtime_error("invoke() for actor instance unimplemented");//FIXME
     }
     else {
+        if (receiver.isObj()) {
+            auto vt = receiver.type();
+            auto mit = builtinMethods.find(vt);
+            if (mit != builtinMethods.end()) {
+                auto it = mit->second.find(name->hash);
+                if (it != mit->second.end()) {
+                    NativeFn fn = it->second;
+                    Value result { (this->*fn)(callSpec.argCount+1, &(*thread->stackTop) - callSpec.argCount - 1) };
+                    *(thread->stackTop - callSpec.argCount - 1) = result;
+                    popN(callSpec.argCount);
+                    return true;
+                }
+            }
+        }
         runtimeError("Only object or actor instances have methods.");
         return false;
     }
@@ -1413,9 +1437,9 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::GetProp): {
                 Value& inst { peek(0) };
                 inst.resolveFuture();
+                ObjString* name = readString();
                 if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
-                    ObjString* name = readString();
                     // is it an instance property?
                     auto it = objInst->properties.find(name->hash);
                     if (it != objInst->properties.end()) { // exists
@@ -1433,7 +1457,6 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     }
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
-                    ObjString* name = readString();
                     // check if it is a method name
                     if (bindMethod(actorInst->instanceType, name))
                         break;
@@ -1443,10 +1466,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
                 }
                 else if (isEnumType(inst)) {
-
                     auto enumObjType = asObjectType(inst);
-
-                    ObjString* name = readString();
                     // is it an existing enum label?
                     auto it = enumObjType->enumLabelValues.find(name->hash);
                     if (it != enumObjType->enumLabelValues.end()) { // exists
@@ -1461,8 +1481,6 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 else if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
 
-                    ObjString* name = readString();
-
                     auto optValue { moduleType->vars.load(name->hash) };
                     if (optValue.has_value()) {
                         Value value = optValue.value();
@@ -1473,6 +1491,20 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     else {
                         runtimeError("Undefined variable '"+name->toStdString()+"' in module "+toUTF8StdString(moduleType->name)+".");
                         return errorReturn;
+                    }
+                }
+
+                if (inst.isObj()) {
+                    auto vt = inst.type();
+                    auto mit = builtinMethods.find(vt);
+                    if (mit != builtinMethods.end()) {
+                        auto it2 = mit->second.find(name->hash);
+                        if (it2 != mit->second.end()) {
+                            ObjBoundNative* bm = boundNativeVal(inst, it2->second);
+                            pop();
+                            push(objVal(bm));
+                            break;
+                        }
                     }
                 }
 
@@ -2371,6 +2403,20 @@ void VM::defineBuiltinFunctions()
     addSys("_runtests", &VM::runtests_builtin);
 }
 
+void VM::defineBuiltinMethods()
+{
+    if (!builtinMethods.empty())
+        return;
+
+    defineBuiltinMethod(ValueType::Vector, "norm", &VM::vector_norm_builtin);
+}
+
+void VM::defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn)
+{
+    auto us = toUnicodeString(name);
+    builtinMethods[type][us.hashCode()] = fn;
+}
+
 
 Value VM::print_builtin(int argCount, Value* args)
 {
@@ -2567,6 +2613,16 @@ Value VM::runtests_builtin(int argCount, Value* args)
     }
 
     return nilVal();
+}
+
+Value VM::vector_norm_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isVector(args[0]))
+        throw std::invalid_argument("vector.norm expects no arguments");
+
+    ObjVector* vec = asVector(args[0]);
+    double n = vec->vec.norm();
+    return realVal(n);
 }
 
 
