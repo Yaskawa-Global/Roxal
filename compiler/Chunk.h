@@ -73,6 +73,8 @@ enum class OpCode {
     SetLocal2,
     SetProp,
     GetProp,
+    SetPropCheck,
+    GetPropCheck,
     SetProp2,
     GetProp2,
     GetSuper,

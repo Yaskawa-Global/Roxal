@@ -10,6 +10,7 @@
 #include <unicode/ustring.h>
 
 #include <core/common.h>
+#include <core/AST.h>
 #include <core/atomic.h>
 #include "Chunk.h"
 #include "Value.h"
@@ -22,6 +23,11 @@ namespace roxal::type {
 }
 namespace roxal::ast {
     struct Annotation;
+}
+
+
+namespace roxal {
+struct ObjObjectType; // forward
 }
 
 
@@ -479,6 +485,10 @@ struct ObjFunction : public Obj
 
     bool strict;        // true if function was compiled in strict mode
 
+    FunctionType fnType { FunctionType::Function };
+    ObjObjectType* ownerType { nullptr }; // owning type for methods
+    ast::Access access { ast::Access::Public };
+
     // for parameters with default values that must be re-evaluated on each call
     //  this is map from param name UnicodeString::hashCode() -> ObjFunction
     //  (where ObjFunction is a function that takes no params and returns the default value)
@@ -692,11 +702,18 @@ struct ObjObjectType : public ObjTypeSpec
         icu::UnicodeString name;
         Value type;
         Value initialValue;
+        ast::Access access { ast::Access::Public };
+        ObjObjectType* ownerType { nullptr };
     };
     std::unordered_map<int32_t, Property> properties;
 
-    // name -> closure
-    std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> methods;
+    struct Method {
+        icu::UnicodeString name;
+        Value closure;
+        ast::Access access { ast::Access::Public };
+        ObjObjectType* ownerType { nullptr };
+    };
+    std::unordered_map<int32_t, Method> methods;
 
     // name -> value
     std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> enumLabelValues;

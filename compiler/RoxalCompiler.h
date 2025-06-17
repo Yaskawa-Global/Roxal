@@ -199,6 +199,7 @@ protected:
             function->name = funcName;
             function->funcType = type; // store type for runtime
             function->strict = strict;
+            function->fnType = funcType;
             UnicodeString localName { (funcType==FunctionType::Method || funcType==FunctionType::Initializer) ?
                                         "this" : "" };
             locals.push_back(Local(localName,0));
@@ -226,13 +227,18 @@ protected:
         icu::UnicodeString superTypeName;
 
         bool hasSuperType;
-        std::unordered_map<icu::UnicodeString, ast::Access> propertyNames;
+        struct MemberInfo {
+            ast::Access access { ast::Access::Public };
+            icu::UnicodeString owner;
+        };
+        std::unordered_map<icu::UnicodeString, MemberInfo> propertyNames;
     };
 
     ptr<TypeScope> asTypeScope(Scope s) const { return std::dynamic_pointer_cast<TypeScope>(*s); }
 
     // map type name -> registered member names (properties and methods)
-    std::unordered_map<icu::UnicodeString, std::unordered_map<icu::UnicodeString, ast::Access>> typePropertyRegistry;
+    std::unordered_map<icu::UnicodeString,
+                       std::unordered_map<icu::UnicodeString, TypeScope::MemberInfo>> typePropertyRegistry;
 
 
     struct ModuleScope : public FunctionScope

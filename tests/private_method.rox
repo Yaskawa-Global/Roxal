@@ -1,0 +1,8 @@
+type Obj object:
+  private func hidden():
+    print('h')
+  func callHidden():
+    hidden()
+var o = Obj()
+o.callHidden()
+o.hidden()

@@ -16,6 +16,7 @@
 #include "Object.h"
 #include <Eigen/Dense>
 #include <core/types.h>
+#include <core/AST.h>
 
 struct FFIWrapper {
     ffi_cif cif;
@@ -688,7 +689,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     }
                     auto it = type->methods.find(initString->hash);
                     if (it != type->methods.end()) {
-                        Value initializer { it->second.second };
+                        Value initializer { it->second.closure };
                         if (!type->isActor)
                             return call(asClosure(initializer), callSpec);
                         else
@@ -847,7 +848,12 @@ bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& ca
         runtimeError("Undefined property '%s'",toUTF8StdString(name->s).c_str());
         return false;
     }
-    Value method { it->second.second };
+    const auto& methodInfo = it->second;
+    if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
+        runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+        return false;
+    }
+    Value method { methodInfo.closure };
     return call(asClosure(method), callSpec);
 }
 
@@ -1150,20 +1156,26 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
 }
 
 
-bool VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
+VM::BindResult VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
 {
     auto it = instanceType->methods.find(name->hash);
     if (it == instanceType->methods.end())
-        return false;
+        return BindResult::NotFound;
 
-    Value method { it->second.second };
+    const auto& methodInfo = it->second;
+    if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
+        runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+        return BindResult::Private;
+    }
+
+    Value method { methodInfo.closure };
 
     ObjBoundMethod* boundMethod { boundMethodVal(peek(0), asClosure(method)) };
 
     pop();
     push(objVal(boundMethod));
 
-    return true;
+    return BindResult::Bound;
 }
 
 
@@ -1228,14 +1240,30 @@ Value VM::opReturn()
 }
 
 
+bool VM::isAccessAllowed(ObjObjectType* ownerType, ast::Access access)
+{
+    if (access == ast::Access::Public)
+        return true;
+
+    for(auto it = thread->frames.rbegin(); it != thread->frames.rend(); ++it) {
+        ObjFunction* fn = it->closure->function;
+        if (fn->ownerType != nullptr) {
+            if (fn->ownerType == ownerType)
+                return true;
+        }
+    }
+    return false;
+}
+
+
 
 void VM::defineProperty(ObjString* name)
 {
     #ifdef DEBUG_BUILD
-    if (!isObjectType(peek(2)))
+    if (!isObjectType(peek(3)))
         throw std::runtime_error("Can't create property without object or actor type on stack");
     #endif
-    ObjObjectType* objType = asObjectType(peek(2));
+    ObjObjectType* objType = asObjectType(peek(3));
     #ifdef DEBUG_BUILD
     if (objType->isInterface)
         throw std::runtime_error("Can't create property for an interface");
@@ -1244,8 +1272,9 @@ void VM::defineProperty(ObjString* name)
     if (objType->properties.contains(name->hash))
         throw std::runtime_error("Duplicate property '"+name->toStdString()+"' declared in type "+(objType->isActor?"actor":"object")+" "+toUTF8StdString(objType->name));
 
-    const Value& propertyType { peek(1) };
-    Value propertyInitial { peek(0) };
+    const Value& propertyType { peek(2) };
+    Value propertyInitial { peek(1) };
+    Value accessVal { peek(0) };
 
     if (!propertyInitial.isNil()) {
         // if the property type is specified, convert the initial value (if given) to the declared propType
@@ -1257,8 +1286,9 @@ void VM::defineProperty(ObjString* name)
         }
     }
 
-    objType->properties[name->hash] = {name->s,propertyType,propertyInitial};
-    popN(2);
+    ast::Access access = (!accessVal.isNil() && accessVal.isBool() && accessVal.asBool()) ? ast::Access::Private : ast::Access::Public;
+    objType->properties[name->hash] = {name->s,propertyType,propertyInitial,access,objType};
+    popN(3);
 }
 
 
@@ -1276,7 +1306,10 @@ void VM::defineMethod(ObjString* name)
     if (type->methods.contains(name->hash))
         throw std::runtime_error("Duplicate method '"+name->toStdString()+"' declared in type "+(type->isActor?"actor":"object")+" '"+toUTF8StdString(type->name)+"'");
 
-    type->methods[name->hash] = std::make_pair(name->s,method);
+    ObjClosure* closure = asClosure(method);
+    closure->function->ownerType = asObjectType(peek(1));
+
+    type->methods[name->hash] = {name->s, method, closure->function->access, asObjectType(peek(1))};
     pop();
 }
 
@@ -1511,17 +1544,22 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     }
                     else { // no
                         // check if it is a method name
-                        if (bindMethod(objInst->instanceType, name))
+                        auto br = bindMethod(objInst->instanceType, name);
+                        if (br == BindResult::Bound)
                             break;
+                        if (br == BindResult::Private)
+                            return errorReturn;
 
                         runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(objInst->instanceType->name)+"'.");
                         return errorReturn;
                     }
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
-                    // check if it is a method name
-                    if (bindMethod(actorInst->instanceType, name))
+                    auto br = bindMethod(actorInst->instanceType, name);
+                    if (br == BindResult::Bound)
                         break;
+                    if (br == BindResult::Private)
+                        return errorReturn;
 
                     runtimeError("Undefined method '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(actorInst->instanceType->name)+"'.");
                     return errorReturn;
@@ -1551,6 +1589,93 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                         break;
                     }
                     else {
+                        runtimeError("Undefined variable '"+name->toStdString()+"' in module "+toUTF8StdString(moduleType->name)+".");
+                        return errorReturn;
+                    }
+                }
+
+                if (inst.isObj()) {
+                    auto vt = inst.type();
+                    auto mit = builtinMethods.find(vt);
+                    if (mit != builtinMethods.end()) {
+                        auto it2 = mit->second.find(name->hash);
+                        if (it2 != mit->second.end()) {
+                            ObjBoundNative* bm = boundNativeVal(inst, it2->second);
+                            pop();
+                            push(objVal(bm));
+                            break;
+                        }
+                    }
+                }
+
+                runtimeError("Only object and actor instances have methods and only objects instances have properties.");
+                return errorReturn;
+                break;
+            }
+            case asByte(OpCode::GetPropCheck): {
+                Value& inst { peek(0) };
+                inst.resolveFuture();
+                ObjString* name = readString();
+                if (isObjectInstance(inst)) {
+                    ObjectInstance* objInst = asObjectInstance(inst);
+                    auto it = objInst->properties.find(name->hash);
+                    if (it != objInst->properties.end()) {
+                        auto pit = objInst->instanceType->properties.find(name->hash);
+                        ast::Access propAccess = ast::Access::Public;
+                        ObjObjectType* ownerT = objInst->instanceType;
+                        if (pit != objInst->instanceType->properties.end()) {
+                            propAccess = pit->second.access;
+                            ownerT = pit->second.ownerType;
+                        }
+                        if (!isAccessAllowed(ownerT, propAccess)) {
+                            runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+                            return errorReturn;
+                        }
+                        pop();
+                        push(it->second);
+                        break;
+                    } else {
+                        auto br = bindMethod(objInst->instanceType, name);
+                        if (br == BindResult::Bound)
+                            break;
+                        if (br == BindResult::Private)
+                            return errorReturn;
+
+                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(objInst->instanceType->name)+"'.");
+                        return errorReturn;
+                    }
+                } else if (isActorInstance(inst)) {
+                    ActorInstance* actorInst = asActorInstance(inst);
+                    auto br = bindMethod(actorInst->instanceType, name);
+                    if (br == BindResult::Bound)
+                        break;
+                    if (br == BindResult::Private)
+                        return errorReturn;
+
+                    runtimeError("Undefined method '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(actorInst->instanceType->name)+"'.");
+                    return errorReturn;
+
+                } else if (isEnumType(inst)) {
+                    auto enumObjType = asObjectType(inst);
+                    auto it = enumObjType->enumLabelValues.find(name->hash);
+                    if (it != enumObjType->enumLabelValues.end()) {
+                        pop();
+                        push(it->second.second);
+                        break;
+                    }
+
+                    runtimeError("Undefined enum label '"+toUTF8StdString(name->s)+"' for enum type '"+toUTF8StdString(enumObjType->name)+"'.");
+                    return errorReturn;
+                } else if (isModuleType(inst)) {
+                    auto moduleType = asModuleType(inst);
+
+                    auto optValue { moduleType->vars.load(name->hash) };
+                    if (optValue.has_value()) {
+                        Value value = optValue.value();
+                        pop();
+                        push(value);
+                        break;
+                    } else {
                         runtimeError("Undefined variable '"+name->toStdString()+"' in module "+toUTF8StdString(moduleType->name)+".");
                         return errorReturn;
                     }
@@ -1606,6 +1731,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                         }
                     }
 
+
                     objInst->properties[name->hash] = value;
                     popN(2); // pop original value & instance
                     push(value); // value (possibly converted)
@@ -1638,6 +1764,73 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 return errorReturn;
                 break;
             }
+            case asByte(OpCode::SetPropCheck): {
+                Value& inst { peek(1) };
+                inst.resolveFuture();
+                if (isObjectInstance(inst)) {
+                    ObjectInstance* objInst = asObjectInstance(inst);
+                    ObjString* name = readString();
+
+                    Value value { peek(0) };
+
+                    if (!value.isNil()) {
+                        bool strictConv = frame->closure->function->strict;
+                        const auto& properties { objInst->instanceType->properties };
+                        const auto& property = properties.find(name->hash);
+                        if (property != properties.end()) {
+                            const auto& prop { property->second };
+                            if (!prop.type.isNil() && isTypeSpec(prop.type)) {
+                                ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
+                                if (typeSpec->typeValue != ValueType::Nil)
+                                    try {
+                                        value = toType(typeSpec->typeValue,value, strictConv);
+                                    } catch(std::exception& e) {
+                                        runtimeError(e.what());
+                                        return errorReturn;
+                                    }
+                            }
+                        }
+                    }
+
+                    auto pit = objInst->instanceType->properties.find(name->hash);
+                    ast::Access propAccess = ast::Access::Public;
+                    ObjObjectType* ownerT = objInst->instanceType;
+                    if (pit != objInst->instanceType->properties.end()) {
+                        propAccess = pit->second.access;
+                        ownerT = pit->second.ownerType;
+                    }
+                    if (!isAccessAllowed(ownerT, propAccess)) {
+                        runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+                        return errorReturn;
+                    }
+
+                    objInst->properties[name->hash] = value;
+                    popN(2);
+                    push(value);
+                    break;
+                } else if (isModuleType(inst)) {
+                    auto moduleType = asModuleType(inst);
+
+                    ObjString* name = readString();
+
+                    auto& vars { moduleType->vars };
+
+                    if (vars.exists(name->hash)) {
+                        Value value { peek(0) };
+
+                        vars.store(name->hash, name->s, value, /*overwrite=*/true);
+                        popN(2);
+                        push(value);
+                    } else {
+                        runtimeError("Declaring new module variables in another module ('"+toUTF8StdString(moduleType->name)+"') is not allowed.");
+                        return errorReturn;
+                    }
+                    break;
+                }
+                runtimeError("Only instances have properties.");
+                return errorReturn;
+                break;
+            }
             case asByte(OpCode::GetProp2): {
                 throw std::runtime_error("unimplemented");
                 break;
@@ -1654,7 +1847,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 #endif
 
                 ObjObjectType* superType = asObjectType(pop());
-                if (!bindMethod(superType,name))
+                auto br = bindMethod(superType,name);
+                if (br != BindResult::Bound)
                     return std::make_pair(InterpretResult::RuntimeError,nilVal());
 
                 break;
@@ -1896,6 +2090,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::Closure): {
                 ObjFunction* function = asFunction(readConstant());
                 ObjClosure* closure = closureVal(function);
+                if (function->ownerType == nullptr && frame->closure->function->ownerType != nullptr)
+                    function->ownerType = frame->closure->function->ownerType;
                 push(objVal(closure));
                 for (int i = 0; i < closure->upvalues.size(); i++) {
                     uint8_t isLocal = readByte();

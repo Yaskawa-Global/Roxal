@@ -80,10 +80,16 @@ public:
     bool invoke(ObjString* name, const CallSpec& callSpec);
     bool indexValue(const Value& indexable, int subscriptCount);
     bool setIndexValue(const Value& indexable, int subscriptCount, Value& value);
-    bool bindMethod(ObjObjectType* instanceType, ObjString* name);
+    enum class BindResult {
+        Bound,
+        NotFound,
+        Private
+    };
+    BindResult bindMethod(ObjObjectType* instanceType, ObjString* name);
     ObjUpvalue* captureUpvalue(Value& local);
     void closeUpvalues(Value* last);
     Value opReturn();
+    bool isAccessAllowed(ObjObjectType* ownerType, ast::Access access);
 
     void defineProperty(ObjString* name);
     void defineMethod(ObjString* name);
