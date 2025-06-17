@@ -2095,6 +2095,45 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 push(objVal(dictVal(entries)));
                 break;
             }
+            case asByte(OpCode::NewVector): {
+                int eltCount = readByte();
+                Eigen::VectorXd vals(eltCount);
+                for(int i=0; i<eltCount; i++)
+                    vals[i] = toType(ValueType::Real, peek(eltCount-i-1), false).asReal();
+                for(int i=0; i<eltCount; i++) pop();
+                push(objVal(vectorVal(vals)));
+                break;
+            }
+            case asByte(OpCode::NewMatrix): {
+                int rowCount = readByte();
+                if (rowCount == 0) {
+                    push(objVal(matrixVal()));
+                    break;
+                }
+                if (!isVector(peek(rowCount-1))) {
+                    runtimeError("matrix literal rows must be vectors");
+                    return errorReturn;
+                }
+                int colCount = asVector(peek(rowCount-1))->length();
+                Eigen::MatrixXd mat(rowCount, colCount);
+                for(int r=0; r<rowCount; ++r) {
+                    Value rowVal = peek(rowCount - r - 1);
+                    if (!isVector(rowVal)) {
+                        runtimeError("matrix literal rows must be vectors");
+                        return errorReturn;
+                    }
+                    ObjVector* vec = asVector(rowVal);
+                    if (vec->length() != colCount) {
+                        runtimeError("matrix rows must have equal length");
+                        return errorReturn;
+                    }
+                    for(int c=0; c<colCount; ++c)
+                        mat(r,c) = vec->vec[c];
+                }
+                for(int i=0; i<rowCount; ++i) pop();
+                push(objVal(matrixVal(mat)));
+                break;
+            }
             case asByte(OpCode::IfDictToKeys): {
                 Value& maybeDict = peek(0);
                 if (!isDict(maybeDict))
