@@ -1275,6 +1275,13 @@ ActorInstance::ActorInstance(ObjObjectType* objectType)
     type = ObjType::Actor;
     instanceType = objectType;
     instanceType->incRef();
+
+    // initialize instance properties from actor type definition
+    for(const auto& property : objectType->properties) {
+        const auto& prop { property.second };
+        auto propInitialvalue { prop.initialValue };
+        properties[prop.name.hashCode()] = propInitialvalue;
+    }
 }
 
 ActorInstance::~ActorInstance()
