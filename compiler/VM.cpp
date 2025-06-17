@@ -1555,14 +1555,21 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     }
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
-                    auto br = bindMethod(actorInst->instanceType, name);
-                    if (br == BindResult::Bound)
+                    auto it = actorInst->properties.find(name->hash);
+                    if (it != actorInst->properties.end()) {
+                        pop();
+                        push(it->second);
                         break;
-                    if (br == BindResult::Private)
-                        return errorReturn;
+                    } else {
+                        auto br = bindMethod(actorInst->instanceType, name);
+                        if (br == BindResult::Bound)
+                            break;
+                        if (br == BindResult::Private)
+                            return errorReturn;
 
-                    runtimeError("Undefined method '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(actorInst->instanceType->name)+"'.");
-                    return errorReturn;
+                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(actorInst->instanceType->name)+"'.");
+                        return errorReturn;
+                    }
 
                 }
                 else if (isEnumType(inst)) {
@@ -1646,14 +1653,32 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     }
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
-                    auto br = bindMethod(actorInst->instanceType, name);
-                    if (br == BindResult::Bound)
+                    auto pit = actorInst->instanceType->properties.find(name->hash);
+                    auto it = actorInst->properties.find(name->hash);
+                    if (it != actorInst->properties.end()) {
+                        ast::Access propAccess = ast::Access::Public;
+                        ObjObjectType* ownerT = actorInst->instanceType;
+                        if (pit != actorInst->instanceType->properties.end()) {
+                            propAccess = pit->second.access;
+                            ownerT = pit->second.ownerType;
+                        }
+                        if (!isAccessAllowed(ownerT, propAccess)) {
+                            runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+                            return errorReturn;
+                        }
+                        pop();
+                        push(it->second);
                         break;
-                    if (br == BindResult::Private)
-                        return errorReturn;
+                    } else {
+                        auto br = bindMethod(actorInst->instanceType, name);
+                        if (br == BindResult::Bound)
+                            break;
+                        if (br == BindResult::Private)
+                            return errorReturn;
 
-                    runtimeError("Undefined method '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(actorInst->instanceType->name)+"'.");
-                    return errorReturn;
+                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(actorInst->instanceType->name)+"'.");
+                        return errorReturn;
+                    }
 
                 } else if (isEnumType(inst)) {
                     auto enumObjType = asObjectType(inst);
@@ -1736,8 +1761,36 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     popN(2); // pop original value & instance
                     push(value); // value (possibly converted)
                     break;
-                }
-                else if (isModuleType(inst)) {
+                } else if (isActorInstance(inst)) {
+                    ActorInstance* actorInst = asActorInstance(inst);
+                    ObjString* name = readString();
+
+                    Value value { peek(0) };
+
+                    if (!value.isNil()) {
+                        bool strictConv = frame->closure->function->strict;
+                        const auto& properties { actorInst->instanceType->properties };
+                        const auto& property = properties.find(name->hash);
+                        if (property != properties.end()) {
+                            const auto& prop { property->second };
+                            if (!prop.type.isNil() && isTypeSpec(prop.type)) {
+                                ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
+                                if (typeSpec->typeValue != ValueType::Nil)
+                                    try {
+                                        value = toType(typeSpec->typeValue,value, strictConv);
+                                    } catch(std::exception& e) {
+                                        runtimeError(e.what());
+                                        return errorReturn;
+                                    }
+                            }
+                        }
+                    }
+
+                    actorInst->properties[name->hash] = value;
+                    popN(2);
+                    push(value);
+                    break;
+                } else if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
 
                     ObjString* name = readString();
@@ -1805,6 +1858,47 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     }
 
                     objInst->properties[name->hash] = value;
+                    popN(2);
+                    push(value);
+                    break;
+                } else if (isActorInstance(inst)) {
+                    ActorInstance* actorInst = asActorInstance(inst);
+                    ObjString* name = readString();
+
+                    Value value { peek(0) };
+
+                    if (!value.isNil()) {
+                        bool strictConv = frame->closure->function->strict;
+                        const auto& properties { actorInst->instanceType->properties };
+                        const auto& property = properties.find(name->hash);
+                        if (property != properties.end()) {
+                            const auto& prop { property->second };
+                            if (!prop.type.isNil() && isTypeSpec(prop.type)) {
+                                ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
+                                if (typeSpec->typeValue != ValueType::Nil)
+                                    try {
+                                        value = toType(typeSpec->typeValue,value, strictConv);
+                                    } catch(std::exception& e) {
+                                        runtimeError(e.what());
+                                        return errorReturn;
+                                    }
+                            }
+                        }
+                    }
+
+                    auto pit = actorInst->instanceType->properties.find(name->hash);
+                    ast::Access propAccess = ast::Access::Public;
+                    ObjObjectType* ownerT = actorInst->instanceType;
+                    if (pit != actorInst->instanceType->properties.end()) {
+                        propAccess = pit->second.access;
+                        ownerT = pit->second.ownerType;
+                    }
+                    if (!isAccessAllowed(ownerT, propAccess)) {
+                        runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+                        return errorReturn;
+                    }
+
+                    actorInst->properties[name->hash] = value;
                     popN(2);
                     push(value);
                     break;
