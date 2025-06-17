@@ -939,7 +939,53 @@ bool roxal::isTruthy(const Value& v)
 
 bool roxal::valuesEqual(Value a, Value b)
 {
-    // handle matrix and vector comparisons first
+    // First handle cases where both values are the same builtin type and
+    // that type is expected to be common.
+    if (a.type() == b.type()) {
+        switch (a.type()) {
+            case ValueType::Bool:   return a.asBool() == b.asBool();
+            case ValueType::Nil:    return true; // only single Nil value
+            case ValueType::Int:    return a.asInt() == b.asInt();
+            case ValueType::Real:   return a.asReal() == b.asReal();
+            case ValueType::Enum:   return (a.enumTypeId() == b.enumTypeId()) && (a.asEnum() == b.asEnum());
+            case ValueType::Object: return objsEqual(a,b);
+            case ValueType::Matrix: {
+                ObjMatrix* am = asMatrix(a);
+                ObjMatrix* bm = asMatrix(b);
+                if (am->rows() != bm->rows() || am->cols() != bm->cols())
+                    return false;
+                for(int r=0;r<am->rows();++r)
+                    for(int c=0;c<am->cols();++c)
+                        if (am->mat(r,c) != bm->mat(r,c))
+                            return false;
+                return true;
+            }
+            case ValueType::Vector: {
+                ObjVector* av = asVector(a);
+                ObjVector* bv = asVector(b);
+                if (av->length() != bv->length())
+                    return false;
+                for(int i=0;i<av->length();++i)
+                    if (av->vec[i] != bv->vec[i])
+                        return false;
+                return true;
+            }
+            default:
+                throw std::runtime_error("unimplemented equality test for types " + a.typeName() + " and " + b.typeName());
+        }
+    }
+
+    // If both are numbers but of different type, compare as common numeric type.
+    if (a.isNumber() && b.isNumber()) {
+        ValueType compType(binaryOpType(a,b));
+        switch(compType) {
+            case ValueType::Int:  return a.asInt() == b.asInt();
+            case ValueType::Real: return a.asReal() == b.asReal();
+            default: throw std::runtime_error("unimplemented equality test for types " + a.typeName() + " and " + b.typeName());
+        }
+    }
+
+    // Handle matrix and vector comparisons after common types.
     if (isMatrix(a) || isMatrix(b)) {
         try {
             if (!isMatrix(a)) {
@@ -989,29 +1035,6 @@ bool roxal::valuesEqual(Value a, Value b)
         return true;
     }
 
-    if (a.type() != b.type()) {
-        if (!a.isNumber() || !b.isNumber())
-            return false;
-
-        ValueType compType(binaryOpType(a,b));
-        switch(compType) {
-            case ValueType::Int: return a.asInt() == b.asInt();
-            case ValueType::Real: return a.asReal() == b.asReal();
-            default: throw std::runtime_error("unimplemented equality test for types "+a.typeName()+" and "+b.typeName());
-        }
-    }
-    else {
-        switch (a.type()) {
-            case ValueType::Bool: return a.asBool() == b.asBool();
-            case ValueType::Nil:  return true; // only single Nil, so must both be Nil
-            case ValueType::Int:  return a.asInt() == b.asInt();
-            case ValueType::Real: return a.asReal() == b.asReal();
-            // same type & label value:
-            case ValueType::Enum: return (a.enumTypeId() == b.enumTypeId()) && (a.asEnum() == b.asEnum());
-            case ValueType::Object: return objsEqual(a,b);
-            default: throw std::runtime_error("unimplemented equality test for types "+a.typeName()+" and "+b.typeName());
-        }
-    }
     return false;
 }
 
