@@ -79,6 +79,8 @@ enum class OpCode {
     NewRange,
     NewList,
     NewDict,
+    NewVector,
+    NewMatrix,
     IfDictToKeys,
     IfDictToItems,
     ToType,

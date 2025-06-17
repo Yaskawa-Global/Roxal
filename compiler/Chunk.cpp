@@ -353,6 +353,10 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return byteInstruction("NEWLIST", offset);
         case asByte(OpCode::NewDict):
             return byteInstruction("NEWDICT", offset);
+        case asByte(OpCode::NewVector):
+            return byteInstruction("NEWVECTOR", offset);
+        case asByte(OpCode::NewMatrix):
+            return byteInstruction("NEWMATRIX", offset);
         case asByte(OpCode::IfDictToKeys):
             return simpleInstruction("IF_DICT_TO_KEYS", offset);
         case asByte(OpCode::IfDictToItems):
