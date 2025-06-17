@@ -728,7 +728,7 @@ std::string DataflowEngine::graphDot(const std::string& title, std::map<std::str
                 }
                 auto signalValueIt = signalValues.find(label);
                 if (signalValueIt != signalValues.end()) {
-                    label += " = " + signalValueIt->second.toString();
+                    label += " = " + roxal::toString(signalValueIt->second);
                 }
                 dot << "  \"" << signalName << "\" -> \"" << destFunc << "\" [label=\"" << label << "\"];\n";
             }
@@ -741,7 +741,7 @@ std::string DataflowEngine::graphDot(const std::string& title, std::map<std::str
                 }
                 auto signalValueIt = signalValues.find(label);
                 if (signalValueIt != signalValues.end()) {
-                    label += " = " + signalValueIt->second.toString();
+                    label += " = " + roxal::toString(signalValueIt->second);
                 }
                 dot << "  \"" << sourceFunc << "\" -> \"" << destFunc << "\" [label=\"" << label << "\"];\n";
             }
@@ -756,7 +756,7 @@ std::string DataflowEngine::graphDot(const std::string& title, std::map<std::str
             std::string label = signalName;
             auto signalValueIt = signalValues.find(label);
             if (signalValueIt != signalValues.end()) {
-                label += " = " + signalValueIt->second.toString();
+                label += " = " + roxal::toString(signalValueIt->second);
             }
 
             dot << "  \"" << sourceFunc << "\" -> \"" << signalName << "\" [label=\"" << label << "\"];\n";
