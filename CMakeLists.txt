@@ -59,6 +59,12 @@ find_package( Eigen3 REQUIRED )
 set(EIGEN3_INCLUDE_DIR "/usr/local/include/eigen3/")
 include_directories(${EIGEN3_INCLUDE_DIR})
 
+# Detect libffi via pkg-config so that include and library paths
+# are recorded explicitly and the build fails clearly if libffi is
+# missing.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBFFI REQUIRED libffi)
+
 # Build the dataflow engine library
 add_subdirectory(dataflow)
 
@@ -131,7 +137,11 @@ include_directories(
 link_directories(
     ${ANTLR4_ROOT}/lib
     ${CMAKE_SOURCE_DIR}/cpp-gen
+    ${LIBFFI_LIBRARY_DIRS}
 )
+
+# Add libffi include directories discovered via pkg-config
+include_directories(${LIBFFI_INCLUDE_DIRS})
 
 # Add the executable target
 add_executable(roxal ${CORE_SOURCES} ${SOURCES} ${GENERATED_SOURCES})
@@ -148,7 +158,7 @@ target_link_libraries(roxal
     pthread
     boost_program_options
     dataflow
-    ffi
+    ${LIBFFI_LIBRARIES}
 )
 
 
