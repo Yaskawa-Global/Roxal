@@ -109,12 +109,16 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
             //std::cout << "value:" << value->repr() << std::endl;
         } catch (std::logic_error& e) {
             std::cerr << std::string("Compile error: ") << e.what() << std::endl;
+            while (inTypeScope())
+                exitTypeScope();
             exitModuleScope();
             if (function != nullptr)
                 delObj(function);
             return nullptr;
         } catch (std::exception& e) {
             std::cerr << std::string("Exception: ") << e.what() << std::endl;
+            while (inTypeScope())
+                exitTypeScope();
             exitModuleScope();
             if (function != nullptr)
                 delObj(function);

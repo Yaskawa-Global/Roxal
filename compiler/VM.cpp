@@ -1156,16 +1156,16 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
 }
 
 
-bool VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
+VM::BindResult VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
 {
     auto it = instanceType->methods.find(name->hash);
     if (it == instanceType->methods.end())
-        return false;
+        return BindResult::NotFound;
 
     const auto& methodInfo = it->second;
     if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
         runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
-        return false;
+        return BindResult::Private;
     }
 
     Value method { methodInfo.closure };
@@ -1175,7 +1175,7 @@ bool VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
     pop();
     push(objVal(boundMethod));
 
-    return true;
+    return BindResult::Bound;
 }
 
 
@@ -1544,17 +1544,22 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     }
                     else { // no
                         // check if it is a method name
-                        if (bindMethod(objInst->instanceType, name))
+                        auto br = bindMethod(objInst->instanceType, name);
+                        if (br == BindResult::Bound)
                             break;
+                        if (br == BindResult::Private)
+                            return errorReturn;
 
                         runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(objInst->instanceType->name)+"'.");
                         return errorReturn;
                     }
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
-                    // check if it is a method name
-                    if (bindMethod(actorInst->instanceType, name))
+                    auto br = bindMethod(actorInst->instanceType, name);
+                    if (br == BindResult::Bound)
                         break;
+                    if (br == BindResult::Private)
+                        return errorReturn;
 
                     runtimeError("Undefined method '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(actorInst->instanceType->name)+"'.");
                     return errorReturn;
@@ -1630,16 +1635,22 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                         push(it->second);
                         break;
                     } else {
-                        if (bindMethod(objInst->instanceType, name))
+                        auto br = bindMethod(objInst->instanceType, name);
+                        if (br == BindResult::Bound)
                             break;
+                        if (br == BindResult::Private)
+                            return errorReturn;
 
                         runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(objInst->instanceType->name)+"'.");
                         return errorReturn;
                     }
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
-                    if (bindMethod(actorInst->instanceType, name))
+                    auto br = bindMethod(actorInst->instanceType, name);
+                    if (br == BindResult::Bound)
                         break;
+                    if (br == BindResult::Private)
+                        return errorReturn;
 
                     runtimeError("Undefined method '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(actorInst->instanceType->name)+"'.");
                     return errorReturn;
@@ -1836,7 +1847,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 #endif
 
                 ObjObjectType* superType = asObjectType(pop());
-                if (!bindMethod(superType,name))
+                auto br = bindMethod(superType,name);
+                if (br != BindResult::Bound)
                     return std::make_pair(InterpretResult::RuntimeError,nilVal());
 
                 break;
