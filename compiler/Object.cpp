@@ -1,6 +1,9 @@
 #include <stdexcept>
 #include <cassert>
 #include <unordered_map>
+#include <sstream>
+#include <algorithm>
+#include <iomanip>
 
 #include <core/types.h>
 #include "Object.h"
@@ -740,19 +743,64 @@ ObjMatrix* roxal::cloneMatrix(const ObjMatrix* m)
 
 std::string roxal::objMatrixToString(const ObjMatrix* om)
 {
+    using std::min;
+
+    const int rows = om->mat.rows();
+    const int cols = om->mat.cols();
+
+    const int firstRows = min(rows, 16);
+    const int lastRows  = rows > 32 ? 16 : (rows - firstRows);
+    const int firstCols = min(cols, 16);
+    const int lastCols  = cols > 32 ? 16 : (cols - firstCols);
+
+    std::vector<size_t> colWidthFirst(firstCols, 0);
+    std::vector<size_t> colWidthLast(lastCols, 0);
+
+    auto updateWidths = [&](int r) {
+        for(int c=0; c<firstCols; ++c) {
+            std::string s = format("%g", om->mat(r,c));
+            colWidthFirst[c] = std::max(colWidthFirst[c], s.size());
+        }
+        for(int c=0; c<lastCols; ++c) {
+            std::string s = format("%g", om->mat(r, cols-lastCols+c));
+            colWidthLast[c] = std::max(colWidthLast[c], s.size());
+        }
+    };
+
+    for(int r=0; r<rows; ++r)
+        updateWidths(r);
+
     std::ostringstream os;
     os << "[";
-    for(int r=0; r<om->mat.rows(); ++r) {
-        os << "[";
-        for(int c=0; c<om->mat.cols(); ++c) {
-            os << om->mat(r,c);
-            if (c != om->mat.cols()-1)
+
+    auto outputRow = [&](int r) {
+        if(r > 0)
+            os << ";\n ";
+        for(int c=0; c<firstCols; ++c) {
+            std::string s = format("%g", om->mat(r,c));
+            os << std::setw(colWidthFirst[c]) << s;
+            if(c != firstCols-1 || cols > firstCols)
                 os << ' ';
         }
-        os << "]";
-        if (r != om->mat.rows()-1)
-            os << ' ';
+        if(cols > 32)
+            os << "... ";
+        for(int c=0; c<lastCols; ++c) {
+            std::string s = format("%g", om->mat(r, cols-lastCols+c));
+            os << std::setw(colWidthLast[c]) << s;
+            if(c != lastCols-1)
+                os << ' ';
+        }
+    };
+
+    for(int r=0; r<firstRows; ++r)
+        outputRow(r);
+
+    if(rows > 32) {
+        os << ";\n ...\n ";
+        for(int r=rows-lastRows; r<rows; ++r)
+            outputRow(r);
     }
+
     os << "]";
     return os.str();
 }
