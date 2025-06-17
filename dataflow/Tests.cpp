@@ -187,7 +187,7 @@ bool df::skipConnectionTest()
     bool correctValues = !outValues.empty();
     if (correctValues) {
         for(auto i=0; i< std::min(outValues.size(), expected.size()); ++i) {
-            if (outValues[i].asInt() != expected[i].asInt()) {
+            if (outValues[i].asInt(false) != expected[i].asInt()) {
                 correctValues = false;
                 break;
             }
@@ -270,7 +270,7 @@ bool df::simpleLatencyTest()
     bool correctValues = !outValues.empty();
     if (correctValues) {
         for(auto i=0; i< std::min(outValues.size(), expected.size()); ++i) {
-            if (outValues[i].asInt() != expected[i].asInt()) {
+            if (outValues[i].asInt(false) != expected[i].asInt()) {
                 correctValues = false;
                 break;
             }
@@ -354,7 +354,7 @@ bool df::feedbackTest()
     bool correctValues = !outValues.empty();
     if (correctValues) {
         for(auto i=0; i< std::min(outValues.size(), expected.size()); ++i) {
-            if (outValues[i].asInt() != expected[i].asInt()) {
+            if (outValues[i].asInt(false) != expected[i].asInt()) {
                 correctValues = false;
                 break;
             }
@@ -437,7 +437,7 @@ bool df::testSplitJoin()
 {
     auto clockSignal = Signal::newClockSignal(100.0, "clock");  // 100Hz
 
-    auto const1 = Func::newFunc<ConstFunc>("const1", Value::doubleVector({1.0,2.0,3.0,4.0}));
+    auto const1 = Func::newFunc<ConstFunc>("const1", df::doubleVector({1.0,2.0,3.0,4.0}));
     auto const1Out = (*const1)(Signals{clockSignal}).at(0);
 
     auto split = Func::newFunc<Split>("split",4);
@@ -450,7 +450,7 @@ bool df::testSplitJoin()
 
     auto joinOutVal = joinOut->lastValue();
 
-    bool correctValue = (joinOutVal == Value::doubleVector({1.0,2.0,3.0,4.0}));
+    bool correctValue = (joinOutVal == df::doubleVector({1.0,2.0,3.0,4.0}));
 
     return correctValue;
 }
@@ -461,10 +461,10 @@ bool df::testVectorOperations()
 {
     auto clockSignal = Signal::newClockSignal(100.0, "clock");  // 100Hz
 
-    auto const1 = Func::newFunc<ConstFunc>("const1", Value::doubleVector({1.1,2.2,3.3,4.4}));
+    auto const1 = Func::newFunc<ConstFunc>("const1", df::doubleVector({1.1,2.2,3.3,4.4}));
     auto const1Out = (*const1)(Signals{clockSignal}).at(0);
 
-    auto const2 = Func::newFunc<ConstFunc>("const2", Value::doubleVector({4.4,3.3,2.2,1.1}));
+    auto const2 = Func::newFunc<ConstFunc>("const2", df::doubleVector({4.4,3.3,2.2,1.1}));
     auto const2Out = (*const2)(Signals{clockSignal}).at(0);
 
     auto add = Func::newFunc<Add>("add");
@@ -485,9 +485,9 @@ bool df::testVectorOperations()
     auto subOutVal = subOut->lastValue();
     auto scalarMulitOutVal = scalarMulitOut->lastValue();
 
-    bool correctAddValue = addOutVal.equals(Value::doubleVector({5.5,5.5,5.5,5.5}));
-    bool correctSubValue = subOutVal.equals(Value::doubleVector({-3.3,-1.1,1.1,3.3}));
-    bool correctMultValue = scalarMulitOutVal.equals(Value::doubleVector({2.2,4.4,6.6,8.8}));
+    bool correctAddValue = df::equals(addOutVal, df::doubleVector({5.5,5.5,5.5,5.5}));
+    bool correctSubValue = df::equals(subOutVal, df::doubleVector({-3.3,-1.1,1.1,3.3}));
+    bool correctMultValue = df::equals(scalarMulitOutVal, df::doubleVector({2.2,4.4,6.6,8.8}));
 
     return correctAddValue && correctSubValue && correctMultValue;
 }

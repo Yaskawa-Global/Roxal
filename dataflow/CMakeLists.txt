@@ -33,7 +33,6 @@ list(APPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-linux")
 # Add the source files
 
 set(DATAFLOW_SOURCES
-    Value.cpp
     Signal.cpp
     Func.cpp
     DataflowEngine.cpp

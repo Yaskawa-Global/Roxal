@@ -11,7 +11,6 @@
 
 using namespace df;
 
-using roxal::make_ptr;
 
 
 Func::Func(const std::string& name)
@@ -327,14 +326,14 @@ Values Split::operator()(const Values& inputValues)
 {
     if (inputValues.size() != 1)
         throw std::runtime_error("Split "+name()+": expected 1 input value, got "+std::to_string(inputValues.size()));
-    if (!inputValues[0].isVector())
+    if (!roxal::isVector(inputValues[0]))
         throw std::runtime_error("Split "+name()+": input value is not a vector");
 
-    auto inVec = inputValues[0].asVector();
+    const auto& inVec = roxal::asVector(inputValues[0])->vec;
 
     Values outValues {};
     for (int i = 0; i < m_dim; i++)
-        outValues.push_back(Value((*inVec)(i)));
+        outValues.push_back(Value(inVec(i)));
 
     return outValues;
 }
@@ -361,11 +360,11 @@ Values Join::operator()(const Values& inputValues)
     if (inputValues.size() != m_dim)
         throw std::runtime_error("Join "+name()+": expected "+std::to_string(m_dim)+" input values, got "+std::to_string(inputValues.size()));
 
-    auto outelts { make_ptr<Eigen::VectorXd>(m_dim) }; ;
+    Eigen::VectorXd outelts(m_dim);
     for (int i = 0; i < m_dim; i++)
-        (*outelts)(i) = inputValues.at(i).asReal();
+        outelts(i) = inputValues.at(i).asReal();
 
-    return {Value(outelts)};
+    return {Value(roxal::vectorVal(outelts))};
 }
 
 
@@ -394,10 +393,9 @@ Values Add::operator()(const Values& inputValues)
         }
         return {Value(lhs.asReal() + rhs.asReal())};
     }
-    else if (lhs.isVector() && rhs.isVector()) {
-        if (lhs.vectorSize() != rhs.vectorSize())
+    else if (roxal::isVector(lhs) && roxal::isVector(rhs)) {
+        if (df::vectorSize(lhs) != df::vectorSize(rhs))
             throw std::runtime_error("Add"+name()+": input vectors are not the same size");
-        // use vecAdd()
         return {vecAdd(lhs, rhs)};
     }
     else
@@ -430,8 +428,8 @@ Values Subtract::operator()(const Values& inputValues)
         }
         return {Value(lhs.asReal() - rhs.asReal())};
     }
-    else if (lhs.isVector() && rhs.isVector()) {
-        if (lhs.vectorSize() != rhs.vectorSize())
+    else if (roxal::isVector(lhs) && roxal::isVector(rhs)) {
+        if (df::vectorSize(lhs) != df::vectorSize(rhs))
             throw std::runtime_error("Subtract"+name()+": input vectors are not the same size");
         return {vecSub(lhs, rhs)};
     }
@@ -466,12 +464,12 @@ Values Multiply::operator()(const Values& inputValues)
         }
         return {Value(lhs.asReal() * rhs.asReal())};
     }
-    else if (lhs.isNumber() && rhs.isVector()) {
+    else if (lhs.isNumber() && roxal::isVector(rhs)) {
         if (lhs.isInt())
             return {vecMult(lhs.asInt(), rhs)};
         return {vecMult(lhs.asReal(), rhs)};
     }
-    else if (lhs.isVector() && rhs.isNumber()) {
+    else if (roxal::isVector(lhs) && rhs.isNumber()) {
         if (rhs.isInt())
             return {vecMult(rhs.asInt(), lhs)};
         return {vecMult(rhs.asReal(), lhs)};

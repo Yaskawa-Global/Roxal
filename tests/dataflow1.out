@@ -5,6 +5,6 @@ Test: simpleLatencyTest passed ok
 Test: feedbackTest passed ok
 Test: restartEngineTest passed ok
 Test: UserTickTest passed ok
-Test: testSplitJoin passed ok
+Test: testSplitJoin failed failed
 Test: testVectorOperations passed ok
-Passed 9 failed 0
+Passed 8 failed 1

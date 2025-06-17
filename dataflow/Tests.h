@@ -45,7 +45,7 @@ public:
             throw std::runtime_error("AddConstFunc: input value is nil");
         if (inValue.isInt()) {
             auto inInt = inputValues[0].asInt();
-            return {Value(inInt+m_v.asInt())};
+            return {Value(inInt+m_v.asInt(false))};
         }
         // assume real
         auto inReal = inputValues[0].asReal();
@@ -107,12 +107,12 @@ public:
 
         if (inputValues.at(0).isInt()) {
             int32_t sum = 0;
-            for (const auto& val : inputValues) sum += val.asInt();
+            for (const auto& val : inputValues) sum += val.asInt(false);
             return {Value(sum)};
         }
         else if (inputValues.at(0).isReal()) {
             double sum = 0;
-            for (const auto& val : inputValues) sum += val.asReal();
+            for (const auto& val : inputValues) sum += val.asReal(false);
             return {Value(sum)};
         }
         return {Value(0)};
