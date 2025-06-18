@@ -5,6 +5,7 @@
 #include "Value.h"
 
 #include "Object.h"
+#include "dataflow/Signal.h"
 #include <core/types.h>
 #include <Eigen/Dense>
 
@@ -36,6 +37,7 @@ std::string roxal::to_string(ValueType t)
     case ValueType::Dict: return "dict"; break;
     case ValueType::Vector: return "vector"; break;
     case ValueType::Matrix: return "matrix"; break;
+    case ValueType::Signal: return "signal"; break;
     case ValueType::Tensor: return "tensor"; break;
     case ValueType::Orient: return "orient"; break;
     case ValueType::Object: return "object"; break;
@@ -119,6 +121,8 @@ void roxal::Value::decRefObj()
 
 bool Value::asBool(bool strict) const
 {
+    if (isSignal(*this))
+        return asSignal(*this)->signal->lastValue().asBool(strict);
     Value unboxed;
     const Value* v { this };
     if (isBoxed()) {
@@ -169,6 +173,8 @@ bool Value::asBool(bool strict) const
 
 uint8_t Value::asByte(bool strict) const
 {
+    if (isSignal(*this))
+        return asSignal(*this)->signal->lastValue().asByte(strict);
     Value unboxed;
     Value const* v { this };
     if (isBoxed()) {
@@ -224,6 +230,8 @@ uint8_t Value::asByte(bool strict) const
 
 int32_t Value::asInt(bool strict) const
 {
+    if (isSignal(*this))
+        return asSignal(*this)->signal->lastValue().asInt(strict);
     Value unboxed;
     Value const* v { this };
     if (isBoxed()) {
@@ -281,6 +289,8 @@ int16_t Value::asEnum() const
 
 double Value::asReal(bool strict) const
 {
+    if (isSignal(*this))
+        return asSignal(*this)->signal->lastValue().asReal(strict);
     Value unboxed;
     Value const* v { this };
     if (isBoxed()) {
@@ -449,6 +459,8 @@ void roxal::Value::decRefObj()
 
 bool Value::asBool(bool strict) const
 {
+    if (isSignal(*this))
+        return asSignal(*this)->signal->lastValue().asBool(strict);
     Value unboxed;
     const Value* v { this };
     if (isBoxed()) {
@@ -490,6 +502,8 @@ bool Value::asBool(bool strict) const
 
 int32_t Value::asInt(bool strict) const
 {
+    if (isSignal(*this))
+        return asSignal(*this)->signal->lastValue().asInt(strict);
     Value unboxed;
     Value const* v { this };
     if (isBoxed()) {
@@ -533,6 +547,8 @@ int32_t Value::asInt(bool strict) const
 
 double Value::asReal(bool strict) const
 {
+    if (isSignal(*this))
+        return asSignal(*this)->signal->lastValue().asReal(strict);
     Value unboxed;
     Value const* v { this };
     if (isBoxed()) {
@@ -655,6 +671,7 @@ static type::BuiltinType valueTypeToBuiltin(ValueType t)
         case ValueType::Dict:    return BuiltinType::Dict;
         case ValueType::Vector:  return BuiltinType::Vector;
         case ValueType::Matrix:  return BuiltinType::Matrix;
+        case ValueType::Signal:  return BuiltinType::Signal;
         case ValueType::Tensor:  return BuiltinType::Tensor;
         case ValueType::Orient:  return BuiltinType::Orient;
         case ValueType::Object:  return BuiltinType::Object;
@@ -707,6 +724,12 @@ void Value::resolveFuture()
         *this = asFuture(*this)->asValue();
 }
 
+void Value::resolveSignal()
+{
+    if (isSignal(*this))
+        *this = asSignal(*this)->signal->lastValue();
+}
+
 
 
 Value roxal::defaultValue(ValueType t)
@@ -726,6 +749,7 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::Dict: return Value(dictVal());
         case ValueType::Vector: return Value(vectorVal());
         case ValueType::Matrix: return Value(matrixVal());
+        case ValueType::Signal: throw std::runtime_error("Can't default-construct signal");
         case ValueType::Tensor:
         case ValueType::Orient:
         case ValueType::Object:

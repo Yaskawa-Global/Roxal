@@ -7,6 +7,8 @@
 
 #include <core/types.h>
 #include "Object.h"
+#include "Value.h"
+#include "dataflow/Signal.h"
 
 using namespace roxal;
 
@@ -759,6 +761,22 @@ ObjMatrix* roxal::cloneMatrix(const ObjMatrix* m)
     return newm;
 }
 
+ObjSignal* roxal::signalVal(ptr<df::Signal> s)
+{
+    return newObj<ObjSignal>(__func__, s);
+}
+
+std::string roxal::objSignalToString(const ObjSignal* os)
+{
+    if (!os || !os->signal)
+        return "<signal nil>";
+    try {
+        return toString(os->signal->lastValue());
+    } catch (...) {
+        return "<signal>";
+    }
+}
+
 Value ObjMatrix::index(const Value& row) const
 {
     if (row.isNumber()) {
@@ -1068,6 +1086,9 @@ std::string roxal::objToString(const Value& v)
         }
         case ObjType::Matrix: {
             return objMatrixToString(asMatrix(v));
+        }
+        case ObjType::Signal: {
+            return objSignalToString(asSignal(v));
         }
         case ObjType::Type: {
             ObjTypeSpec* ts = asTypeSpec(v);
@@ -1406,6 +1427,7 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::Dict: return "dict";
     case ObjType::Vector: return "vector";
     case ObjType::Matrix: return "matrix";
+    case ObjType::Signal: return "signal";
     }
     return "unknown";
 }

@@ -270,6 +270,8 @@ protected:
     Value usSleep_native(int argCount, Value* args);
     Value msSleep_native(int argCount, Value* args);
     Value sleep_native(int argCount, Value* args);
+    Value clock_signal_native(int argCount, Value* args);
+    Value engine_tick_native(int argCount, Value* args);
     Value ffi_native(int argCount, Value* args);
 
     void* createFFIWrapper(void* fn, ffi_type* retType,

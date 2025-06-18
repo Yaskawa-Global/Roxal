@@ -1,0 +1,6 @@
+c = clock(10)
+_engine_tick()
+_engine_tick()
+print(c)
+_engine_tick()
+print(c + 1)

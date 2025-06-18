@@ -11,6 +11,8 @@
 #include "ASTGraphviz.h"
 #include "RoxalCompiler.h"
 #include "dataflow/Tests.h"
+#include "dataflow/Signal.h"
+#include "dataflow/DataflowEngine.h"
 
 #include "VM.h"
 #include "Object.h"
@@ -1892,6 +1894,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::Add): {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
+                peek(0).resolveSignal();
+                peek(1).resolveSignal();
                 if (isVector(peek(0)) && isVector(peek(1))) {
                     binaryOp([](Value a, Value b) -> Value { return add(a,b); });
                 }
@@ -3132,6 +3136,8 @@ void VM::defineNativeFunctions()
     addSys("_clock", &VM::clock_native);
     addSys("_ussleep", &VM::usSleep_native);
     addSys("_mssleep", &VM::msSleep_native);
+    addSys("clock", &VM::clock_signal_native);
+    addSys("_engine_tick", &VM::engine_tick_native);
     //addSys("_sleep", &VM::sleep_native);
 
     auto addMath = [&](const std::string& name, void* fnPtr,
@@ -3233,6 +3239,26 @@ Value VM::msSleep_native(int argCount, Value* args)
 
     std::this_thread::sleep_for(std::chrono::milliseconds(args[0].asInt()));
 
+    return nilVal();
+}
+
+Value VM::clock_signal_native(int argCount, Value* args)
+{
+    if ((argCount != 1) || !args[0].isNumber())
+        throw std::invalid_argument("clock expects single numeric argument");
+
+    double freq = args[0].asReal();
+    auto sig = df::Signal::newClockSignal(freq);
+    return objVal(signalVal(sig));
+}
+
+Value VM::engine_tick_native(int argCount, Value* args)
+{
+    int count = 1;
+    if (argCount == 1)
+        count = args[0].asInt();
+    for(int i=0;i<count;++i)
+        df::DataflowEngine::instance()->tick(false);
     return nilVal();
 }
 

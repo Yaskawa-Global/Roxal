@@ -11,7 +11,7 @@ using namespace roxal::type;
 const std::vector<std::string> builtinTypeToString = {
     "nil", "bool", "byte", "number", "int", "real", "decimal",
     "string", "range", "enum", "list", "dict", "vector", "matrix",
-    "tensor", "orient", "func", "object", "actor", "type"
+    "signal", "tensor", "orient", "func", "object", "actor", "type"
 };
 
 std::string roxal::type::to_string(BuiltinType t)

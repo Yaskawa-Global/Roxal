@@ -25,6 +25,8 @@ namespace roxal::ast {
     struct Annotation;
 }
 
+namespace df { class Signal; }
+
 
 namespace roxal {
 struct ObjObjectType; // forward
@@ -56,7 +58,8 @@ enum class ObjType {
     List,
     Dict,
     Vector,
-    Matrix
+    Matrix,
+    Signal
 };
 
 
@@ -455,6 +458,21 @@ ObjMatrix* matrixVal(const Eigen::MatrixXd& values);
 ObjMatrix* cloneMatrix(const ObjMatrix* m);
 
 std::string objMatrixToString(const ObjMatrix* om);
+
+//
+// signal (dataflow signal wrapper)
+
+struct ObjSignal : public Obj {
+    ObjSignal(ptr<df::Signal> s) : signal(s) { type = ObjType::Signal; }
+    virtual ~ObjSignal() {}
+    ptr<df::Signal> signal;
+};
+
+inline bool isSignal(const Value& v) { return isObjType(v, ObjType::Signal); }
+inline ObjSignal* asSignal(const Value& v) { return static_cast<ObjSignal*>(v.asObj()); }
+
+ObjSignal* signalVal(ptr<df::Signal> s);
+std::string objSignalToString(const ObjSignal* os);
 
 
 //
