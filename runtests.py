@@ -38,7 +38,7 @@ tests = [
     'mathfuncs',
     'typeassign1', 'typeassign2', 'typeassign3',
     'vector1', 'vector2', 'vector3', 'vector4', 'vector5','vector_methods', 'vector_equal',
-    'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'matrix_index', 'matrix_methods', 'matrix_assign', 'matrix_equal'
+    'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'matrix_index', 'matrix_methods', 'matrix_assign', 'matrix_equal', 'ffi1'
 ]
 
 if args.convs:
@@ -58,6 +58,18 @@ test_dir = os.path.join(project_root, 'tests')
 
 roxalpath = 'build'
 roxal = './roxal'
+
+# Ensure the FFI test shared library is built
+testlib_c = os.path.join(test_dir, 'testlib.c')
+testlib_so = os.path.join(test_dir, 'testlib.so')
+if os.path.exists(testlib_c):
+    if (not os.path.exists(testlib_so) or
+            os.path.getmtime(testlib_so) < os.path.getmtime(testlib_c)):
+        try:
+            subprocess.check_call(
+                ['gcc', '-shared', '-fPIC', '-o', testlib_so, testlib_c])
+        except Exception as e:
+            print('Failed to build testlib.so:', e)
 
 # Track how many tests pass or fail
 passed_count = 0

@@ -4,7 +4,9 @@
 #include <chrono>
 #include <thread>
 #include <utility>
+#include <memory>
 #include <ffi.h>
+#include <dlfcn.h>
 
 
 #include "ASTGenerator.h"
@@ -20,12 +22,6 @@
 #include <core/types.h>
 #include <core/AST.h>
 
-struct FFIWrapper {
-    ffi_cif cif;
-    void* fn;
-    std::vector<ffi_type*> argTypes;
-    ffi_type* retType;
-};
 
 using namespace roxal;
 
@@ -803,8 +799,20 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     throw std::runtime_error("unimplemented construction for type '"+to_string(ts->typeValue)+"'");
                 }
             }
-            case ObjType::Closure:
-                return call(asClosure(callee), callSpec);
+            case ObjType::Closure: {
+                ObjClosure* closure = asClosure(callee);
+                bool cfunc = false;
+                for(const auto& annot : closure->function->annotations) {
+                    if (annot->name == "cfunc") { cfunc = true; break; }
+                }
+                if (cfunc) {
+                    Value result { callCFunc(closure, callSpec) };
+                    *(thread->stackTop - callSpec.argCount - 1) = result;
+                    popN(callSpec.argCount);
+                    return true;
+                }
+                return call(closure, callSpec);
+            }
             case ObjType::Native: {
                 NativeFn native = asNative(callee)->function;
                 Value result { (this->*native)(callSpec.argCount, &(*thread->stackTop) - callSpec.argCount) };
@@ -3136,6 +3144,7 @@ void VM::defineNativeFunctions()
     addSys("_mssleep", &VM::msSleep_native);
     addSys("clock", &VM::clock_signal_native);
     addSys("_engine_tick", &VM::engine_tick_native);
+    addSys("loadlib", &VM::loadlib_native);
     //addSys("_sleep", &VM::sleep_native);
 
     auto addMath = [&](const std::string& name, void* fnPtr,
@@ -3260,6 +3269,19 @@ Value VM::engine_tick_native(int argCount, Value* args)
     return nilVal();
 }
 
+Value VM::loadlib_native(int argCount, Value* args)
+{
+    if (argCount != 1 || !isString(args[0]))
+        throw std::invalid_argument("loadlib expects single string argument");
+
+    std::string path = toUTF8StdString(asUString(args[0]));
+    void* h = dlopen(path.c_str(), RTLD_LAZY);
+    if (!h)
+        throw std::runtime_error(std::string("dlopen failed: ") + dlerror());
+
+    return objVal(libraryVal(h));
+}
+
 Value VM::sleep_native(int argCount, Value* args)
 {
     if ((argCount != 1) || !args[0].isNumber())
@@ -3281,25 +3303,208 @@ Value VM::ffi_native(int argCount, Value* args)
 
     std::vector<void*> argValues(argCount);
     std::vector<double> realVals(argCount);
+    std::vector<float> floatVals(argCount);
+    std::vector<int> intVals(argCount);
+    std::vector<uint8_t> boolVals(argCount);
 
     for(int i=0;i<argCount;i++) {
-        if (spec->argTypes[i] == &ffi_type_double) {
+        if (spec->argTypes[i] == &ffi_type_double || spec->argTypes[i] == &ffi_type_float) {
             if (!args[i].isNumber())
                 throw std::invalid_argument("ffi argument not number");
-            realVals[i] = args[i].asReal();
-            argValues[i] = &realVals[i];
+            if (spec->argTypes[i] == &ffi_type_double) {
+                realVals[i] = args[i].asReal();
+                argValues[i] = &realVals[i];
+            } else {
+                floatVals[i] = args[i].asReal();
+                argValues[i] = &floatVals[i];
+            }
+        } else if (spec->argTypes[i] == &ffi_type_sint32) {
+            if (!args[i].isNumber())
+                throw std::invalid_argument("ffi argument not int");
+            intVals[i] = args[i].asInt();
+            argValues[i] = &intVals[i];
+        } else if (spec->argTypes[i] == &ffi_type_uint8) {
+            if (!args[i].isBool())
+                throw std::invalid_argument("ffi argument not bool");
+            boolVals[i] = args[i].asBool() ? 1 : 0;
+            argValues[i] = &boolVals[i];
         } else {
             throw std::runtime_error("unsupported ffi arg type");
         }
     }
 
-    double ret = 0;
+    union {
+        double d;
+        int i;
+        uint8_t b;
+    } ret;
+
     ffi_call(&spec->cif, FFI_FN(spec->fn), &ret, argValues.data());
 
     if (spec->retType == &ffi_type_double)
-        return Value(ret);
+        return Value(ret.d);
+    else if (spec->retType == &ffi_type_sint32)
+        return Value(intVal(ret.i));
+    else if (spec->retType == &ffi_type_uint8)
+        return Value(boolVal(ret.b != 0));
     else
         throw std::runtime_error("unsupported ffi return type");
+}
+
+Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
+{
+    ObjFunction* function = closure->function;
+    FFIWrapper* spec = static_cast<FFIWrapper*>(function->nativeSpec);
+
+    if (!spec) {
+        // find annotation args
+        ptr<ast::Annotation> annot;
+        for(const auto& a : function->annotations)
+            if (a->name == "cfunc") { annot = a; break; }
+        if (!annot)
+            throw std::runtime_error("cfunc annotation missing");
+
+        ObjModuleType* mod = asModuleType(function->moduleType);
+
+        auto getArg = [&](const std::string& n) -> ptr<ast::Expression> {
+            for(const auto& an : annot->args)
+                if (toUTF8StdString(an.first) == n) return an.second;
+            return nullptr;
+        };
+
+        auto libExpr = getArg("lib");
+        auto cnameExpr = getArg("cname");
+        auto argsExpr = getArg("args");
+        auto retExpr = getArg("ret");
+        if (!libExpr || !cnameExpr)
+            throw std::runtime_error("cfunc annotation requires lib and cname");
+
+        auto evalExpr = [&](ptr<ast::Expression> expr) -> Value {
+            if (auto s = std::dynamic_pointer_cast<ast::Str>(expr)) {
+                return objVal(stringVal(s->str));
+            } else if (auto n = std::dynamic_pointer_cast<ast::Num>(expr)) {
+                if (std::holds_alternative<int32_t>(n->num))
+                    return Value(std::get<int32_t>(n->num));
+                else
+                    return Value(std::get<double>(n->num));
+            } else if (auto b = std::dynamic_pointer_cast<ast::Bool>(expr)) {
+                return boolVal(b->value);
+            } else if (auto v = std::dynamic_pointer_cast<ast::Variable>(expr)) {
+                auto name = v->name;
+                auto opt = mod->vars.load(name);
+                if (!opt.has_value())
+                    throw std::runtime_error("unknown variable in cfunc annotation: "+toUTF8StdString(name));
+                return opt.value();
+            } else {
+                throw std::runtime_error("unsupported expression in cfunc annotation");
+            }
+        };
+
+        Value libVal = evalExpr(libExpr);
+        if (!isLibrary(libVal))
+            throw std::runtime_error("lib argument not library handle");
+        void* handle = asLibrary(libVal)->handle;
+
+        Value cnameVal = evalExpr(cnameExpr);
+        std::string cname = toUTF8StdString(asUString(cnameVal));
+
+        std::vector<ffi_type*> argTypes;
+        if (argsExpr) {
+            std::string argsStr = toUTF8StdString(asUString(evalExpr(argsExpr)));
+            std::stringstream ss(argsStr);
+            std::string token;
+            while(std::getline(ss, token, ',')) {
+                token.erase(0, token.find_first_not_of(" \t"));
+                size_t space = token.find(' ');
+                std::string type = (space==std::string::npos)?token:token.substr(0,space);
+                if (type=="float")
+                    argTypes.push_back(&ffi_type_float);
+                else if (type=="double" || type=="real")
+                    argTypes.push_back(&ffi_type_double);
+                else if (type=="int")
+                    argTypes.push_back(&ffi_type_sint32);
+                else if (type=="bool")
+                    argTypes.push_back(&ffi_type_uint8);
+                else
+                    throw std::runtime_error("unsupported arg type: "+type);
+            }
+        }
+
+        ffi_type* retType = &ffi_type_void;
+        if (retExpr) {
+            std::string r = toUTF8StdString(asUString(evalExpr(retExpr)));
+            if (r=="float")
+                retType = &ffi_type_float;
+            else if (r=="double" || r=="real")
+                retType = &ffi_type_double;
+            else if (r=="int")
+                retType = &ffi_type_sint32;
+            else if (r=="bool")
+                retType = &ffi_type_uint8;
+            else if (r=="void")
+                retType = &ffi_type_void;
+            else
+                throw std::runtime_error("unsupported return type: "+r);
+        }
+
+        void* fnPtr = dlsym(handle, cname.c_str());
+        if (!fnPtr)
+            throw std::runtime_error(std::string("dlsym failed: ")+dlerror());
+
+        spec = static_cast<FFIWrapper*>(createFFIWrapper(fnPtr, retType, argTypes));
+        function->nativeSpec = spec;
+    }
+
+    if (callSpec.argCount != (int)spec->argTypes.size())
+        throw std::invalid_argument("invalid argument count for cfunc call");
+
+    std::vector<Value> argVector(callSpec.argCount);
+    for(int i=0;i<callSpec.argCount;i++)
+        argVector[i] = *(thread->stackTop - callSpec.argCount + i);
+
+    std::vector<void*> argValues(callSpec.argCount);
+    std::vector<double> realVals(callSpec.argCount);
+    std::vector<float> floatVals(callSpec.argCount);
+    std::vector<int> intVals(callSpec.argCount);
+    std::vector<uint8_t> boolVals(callSpec.argCount);
+
+    for(int i=0;i<callSpec.argCount;i++) {
+        if (spec->argTypes[i] == &ffi_type_double || spec->argTypes[i] == &ffi_type_float) {
+            if (!argVector[i].isNumber())
+                throw std::invalid_argument("ffi arg not number");
+            if (spec->argTypes[i] == &ffi_type_double) {
+                realVals[i] = argVector[i].asReal();
+                argValues[i] = &realVals[i];
+            } else {
+                floatVals[i] = argVector[i].asReal();
+                argValues[i] = &floatVals[i];
+            }
+        } else if (spec->argTypes[i] == &ffi_type_sint32) {
+            if (!argVector[i].isNumber())
+                throw std::invalid_argument("ffi arg not int");
+            intVals[i] = argVector[i].asInt();
+            argValues[i] = &intVals[i];
+        } else if (spec->argTypes[i] == &ffi_type_uint8) {
+            if (!argVector[i].isBool())
+                throw std::invalid_argument("ffi arg not bool");
+            boolVals[i] = argVector[i].asBool() ? 1 : 0;
+            argValues[i] = &boolVals[i];
+        } else {
+            throw std::runtime_error("unsupported ffi arg type");
+        }
+    }
+
+    union { double d; int i; uint8_t b; } ret;
+    ffi_call(&spec->cif, FFI_FN(spec->fn), &ret, argValues.data());
+
+    if (spec->retType == &ffi_type_double)
+        return Value(ret.d);
+    else if (spec->retType == &ffi_type_sint32)
+        return Value(intVal(ret.i));
+    else if (spec->retType == &ffi_type_uint8)
+        return Value(boolVal(ret.b != 0));
+    else
+        return nilVal();
 }
 
 ObjModuleType* VM::getBuiltinModule(const icu::UnicodeString& name)

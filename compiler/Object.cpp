@@ -4,9 +4,11 @@
 #include <sstream>
 #include <algorithm>
 #include <iomanip>
+#include <dlfcn.h>
 
 #include <core/types.h>
 #include "Object.h"
+#include "VM.h"
 #include "Value.h"
 #include "dataflow/Signal.h"
 
@@ -88,6 +90,8 @@ Obj* Obj::clone() const
         return cloneBoundMethod(static_cast<const ObjBoundMethod*>(this));
     else if (type == ObjType::BoundNative)
         return cloneBoundNative(static_cast<const ObjBoundNative*>(this));
+    else if (type == ObjType::Library)
+        return mutableThis;
 
     throw std::runtime_error("clone() unimplemented for type "+std::to_string(int(this->type)));
 }
@@ -777,6 +781,24 @@ std::string roxal::objSignalToString(const ObjSignal* os)
     }
 }
 
+ObjLibrary::~ObjLibrary()
+{
+    if (handle)
+        dlclose(handle);
+}
+
+ObjLibrary* roxal::libraryVal(void* handle)
+{
+    return newObj<ObjLibrary>(__func__, handle);
+}
+
+std::string roxal::objLibraryToString(const ObjLibrary* lib)
+{
+    std::ostringstream oss;
+    oss << "<library " << lib->handle << ">";
+    return oss.str();
+}
+
 Value ObjMatrix::index(const Value& row) const
 {
     if (row.isNumber()) {
@@ -1090,6 +1112,9 @@ std::string roxal::objToString(const Value& v)
         case ObjType::Signal: {
             return objSignalToString(asSignal(v));
         }
+        case ObjType::Library: {
+            return objLibraryToString(asLibrary(v));
+        }
         case ObjType::Type: {
             ObjTypeSpec* ts = asTypeSpec(v);
             if ((ts->typeValue != ValueType::Object) && (ts->typeValue != ValueType::Actor)) {
@@ -1154,6 +1179,10 @@ ObjFunction::~ObjFunction()
             entry.second->decRef();
     }
     paramDefaultFunc.clear();
+    if (nativeSpec) {
+        delete static_cast<FFIWrapper*>(nativeSpec);
+        nativeSpec = nullptr;
+    }
 }
 
 
@@ -1428,6 +1457,7 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::Vector: return "vector";
     case ObjType::Matrix: return "matrix";
     case ObjType::Signal: return "signal";
+    case ObjType::Library: return "library";
     }
     return "unknown";
 }
