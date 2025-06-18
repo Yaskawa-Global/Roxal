@@ -291,6 +291,9 @@ protected:
 
     Value callCFunc(ObjClosure* closure, const CallSpec& callSpec);
 
+    std::vector<uint8_t> objectToCStruct(ObjectInstance* instance);
+    ObjectInstance* objectFromCStruct(ObjObjectType* type, const void* data, size_t len);
+
 };
 
 

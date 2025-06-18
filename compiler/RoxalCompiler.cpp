@@ -333,6 +333,22 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     bool isInterface = ast->kind==TypeDecl::Interface;
     bool isEnumeration = ast->kind==TypeDecl::Enumeration;
 
+    // check for @cstruct annotation
+    for(const auto& annot : ast->annotations) {
+        if (annot->name == "cstruct") {
+            int arch = 64;
+            for(const auto& arg : annot->args) {
+                if (toUTF8StdString(arg.first) == "arch") {
+                    if (auto n = std::dynamic_pointer_cast<ast::Num>(arg.second)) {
+                        arch = std::get<int32_t>(n->num);
+                    }
+                }
+            }
+            ObjModuleType* mod = asModuleType(asModuleScope(moduleScope())->moduleType);
+            mod->cstructArch[ast->name.hashCode()] = arch;
+        }
+    }
+
     enterTypeScope(ast->name);
 
     // inherit property registry from super type if available
@@ -406,6 +422,20 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         // record property name for implicit access within methods
         asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name};
+
+        // store @ctype annotation
+        for(const auto& a : prop->annotations) {
+            if (a->name == "ctype") {
+                for(const auto& arg : a->args) {
+                    if (toUTF8StdString(arg.first) == "ctype") {
+                        if (auto s = std::dynamic_pointer_cast<ast::Str>(arg.second)) {
+                            ObjModuleType* mod = asModuleType(asModuleScope(moduleScope())->moduleType);
+                            mod->propertyCTypes[ast->name.hashCode()][propName.hashCode()] = s->str;
+                        }
+                    }
+                }
+            }
+        }
 
         // type
         if (prop->varType.has_value()) {

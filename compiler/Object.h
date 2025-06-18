@@ -730,6 +730,8 @@ struct ObjObjectType : public ObjTypeSpec
     bool isActor;
     bool isInterface;
     bool isEnumeration;
+    bool isCStruct { false };
+    int cstructArch { 64 };
     uint16_t enumTypeId;
 
     // name -> type, initial value
@@ -739,8 +741,10 @@ struct ObjObjectType : public ObjTypeSpec
         Value initialValue;
         ast::Access access { ast::Access::Public };
         ObjObjectType* ownerType { nullptr };
+        std::optional<icu::UnicodeString> ctype;
     };
     std::unordered_map<int32_t, Property> properties;
+    std::vector<int32_t> propertyOrder;
 
     struct Method {
         icu::UnicodeString name;
@@ -783,6 +787,11 @@ struct ObjModuleType : public ObjTypeSpec
 
     // variables declared at runtime via VM OpCode::DefineModuleVar
     VariablesMap vars;
+
+    // cstruct type annotations: type name hash -> arch (32 or 64)
+    std::unordered_map<int32_t, int> cstructArch;
+    // property ctype annotations: type name hash -> (prop name hash -> ctype)
+    std::unordered_map<int32_t, std::unordered_map<int32_t, icu::UnicodeString>> propertyCTypes;
 
     static atomic_vector<ObjModuleType*> allModules;
 };
