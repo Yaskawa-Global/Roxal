@@ -255,6 +255,7 @@ public:
     // @brief if is ObjFuture, block waiting for value (and replace this with value)
     void resolveFuture();
     void resolveSignal();
+    void resolve();
 
     /// @brief Equality operator.
     /// @param rhs The right-hand side value to compare.

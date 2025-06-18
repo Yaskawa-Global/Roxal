@@ -1073,7 +1073,7 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                 ObjList* list = asList(indexable);
                 Value index = pop();
                 try {
-                    if (isRange(index) && !isList(value)) value.resolveFuture();
+                    if (isRange(index) && !isList(value)) value.resolve();
                     list->setIndex(index, value);
                     pop(); // discard indexable
                 } catch (std::exception& e) {
@@ -1090,7 +1090,7 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                 ObjVector* vec = asVector(indexable);
                 Value index = pop();
                 try {
-                    if (isRange(index) && !isVector(value)) value.resolveFuture();
+                    if (isRange(index) && !isVector(value)) value.resolve();
                     vec->setIndex(index, value);
                     pop(); // discard indexable
                 } catch (std::exception& e) {
@@ -1104,7 +1104,7 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                     ObjMatrix* mat = asMatrix(indexable);
                     Value r = pop();
                     try {
-                        if (isRange(r) && !isMatrix(value)) value.resolveFuture();
+                        if (isRange(r) && !isMatrix(value)) value.resolve();
                         mat->setIndex(r, value);
                         pop();
                     } catch (std::exception& e) {
@@ -1117,7 +1117,7 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                     Value col = pop();
                     Value row = pop();
                     try {
-                        if ((isRange(row) || isRange(col)) && !isMatrix(value)) value.resolveFuture();
+                        if ((isRange(row) || isRange(col)) && !isMatrix(value)) value.resolve();
                         mat->setIndex(row, col, value);
                         pop();
                     } catch (std::exception& e) {
@@ -1533,7 +1533,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::GetProp): {
                 Value& inst { peek(0) };
-                inst.resolveFuture();
+                inst.resolve();
                 ObjString* name = readString();
                 if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
@@ -1616,7 +1616,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::GetPropCheck): {
                 Value& inst { peek(0) };
-                inst.resolveFuture();
+                inst.resolve();
                 ObjString* name = readString();
                 if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
@@ -1703,7 +1703,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::SetProp): {
                 Value& inst { peek(1) };
-                inst.resolveFuture();
+                inst.resolve();
                 if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjString* name = readString();
@@ -1768,7 +1768,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::SetPropCheck): {
                 Value& inst { peek(1) };
-                inst.resolveFuture();
+                inst.resolve();
                 if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjString* name = readString();
@@ -1858,14 +1858,14 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::Equal): {
                 Value b = pop();
                 Value a = pop();
-                a.resolveFuture();
-                b.resolveFuture();
+                a.resolve();
+                b.resolve();
                 push(boolVal(valuesEqual(a,b)));
                 break;
             }
             case asByte(OpCode::Greater): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if (!peek(0).isNumber()) {
                     runtimeError("Operand to > must be a number");
                     return errorReturn;
@@ -1878,8 +1878,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Less): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if (!peek(0).isNumber()) {
                     runtimeError("Operand to < must be a number");
                     return errorReturn;
@@ -1892,10 +1892,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Add): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
-                peek(0).resolveSignal();
-                peek(1).resolveSignal();
+                peek(0).resolve();
+                peek(1).resolve();
                 if (isVector(peek(0)) && isVector(peek(1))) {
                     binaryOp([](Value a, Value b) -> Value { return add(a,b); });
                 }
@@ -1912,8 +1910,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Subtract): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if (isVector(peek(0)) && isVector(peek(1))) {
                     binaryOp([](Value a, Value b) -> Value { return subtract(a,b); });
                 } else if (peek(0).isNumber() && peek(1).isNumber()) {
@@ -1925,8 +1923,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Multiply): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if ( (isVector(peek(0)) && isVector(peek(1))) ||
                      (isVector(peek(0)) && peek(1).isNumber()) ||
                      (peek(0).isNumber() && isVector(peek(1))) ) {
@@ -1940,8 +1938,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Divide): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if (!peek(0).isNumber()) {
                     runtimeError("Operand of / must be a number");
                     return errorReturn;
@@ -1959,7 +1957,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::Negate): {
                 Value& operand { peek(0) };
-                operand.resolveFuture();
+                operand.resolve();
 
                 if (operand.isNumber() || operand.isBool())
                     push(negate(pop()));
@@ -1976,8 +1974,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::Modulo): {
                 // TODO: support decimal
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if (!peek(0).isNumber() && !peek(0).isBool()) {
                     runtimeError("Operand of '%' must be an integer");
                     return errorReturn;
@@ -1990,8 +1988,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::And): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if (!peek(0).isBool()) {
                     runtimeError("Operand of 'and' must be a bool");
                     return errorReturn;
@@ -2004,8 +2002,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Or): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if (!peek(0).isBool()) {
                     runtimeError("Operand of 'or' must be a bool");
                     return errorReturn;
@@ -2043,14 +2041,14 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::JumpIfFalse): {
                 uint16_t jumpDist = readShort();
-                peek(0).resolveFuture();
+                peek(0).resolve();
                 if (isFalsey(peek(0)))
                     frame->ip += jumpDist;
                 break;
             }
             case asByte(OpCode::JumpIfTrue): {
                 uint16_t jumpDist = readShort();
-                peek(0).resolveFuture();
+                peek(0).resolve();
                 if (isTruthy(peek(0)))
                     frame->ip += jumpDist;
                 break;
@@ -2068,7 +2066,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::Call): {
                 CallSpec callSpec{frame->ip};
                 Value& callee { peek(callSpec.argCount) };
-                callee.resolveFuture();
+                callee.resolve();
                 if (!callValue(callee, callSpec))
                     return errorReturn;
                 frame = thread->frames.end()-1;
@@ -2076,7 +2074,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::Index): {
                 uint8_t argCount = readByte();
-                peek(argCount).resolveFuture(); // indexable
+                peek(argCount).resolve(); // indexable
                 if (!indexValue(peek(argCount), argCount))
                     return errorReturn;
                 break;
@@ -2195,7 +2193,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::SetIndex): {
                 uint8_t argCount = readByte();
-                peek(argCount).resolveFuture(); // indexable
+                peek(argCount).resolve(); // indexable
                 try {
                     Value& indexable { peek(argCount) };
                     Value& value { peek(argCount+1) };
@@ -2399,7 +2397,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::IfDictToKeys): {
                 Value& maybeDict = peek(0);
                 if (!isDict(maybeDict))
-                    maybeDict.resolveFuture();
+                    maybeDict.resolve();
                 if (isDict(maybeDict)) {
                     Value d { maybeDict };
                     pop();
@@ -2411,7 +2409,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::IfDictToItems): {
                 Value& maybeDict = peek(0);
                 if (!isDict(maybeDict))
-                    maybeDict.resolveFuture();
+                    maybeDict.resolve();
                 if (isDict(maybeDict)) {
                     Value d { maybeDict };
                     pop();
@@ -2850,14 +2848,14 @@ Value VM::wait_builtin(int argCount, Value* args)
     int32_t numFuturesResolved { 0 };
     if (argCount == 1) {
         if (isFuture(args[0])) {
-            args[0].resolveFuture();
+            args[0].resolve();
             numFuturesResolved++;
         }
         else if (isList(args[0])) {
 
             ObjList* l = asList(args[0]);
             for(auto& v : l->elts.get()) {
-                v.resolveFuture();
+                v.resolve();
                 numFuturesResolved++;
             }
         }
@@ -2865,7 +2863,7 @@ Value VM::wait_builtin(int argCount, Value* args)
     else {
         for(auto i=0; i<argCount; i++) {
             if (isFuture(args[i])) {
-                args[i].resolveFuture(); // may block
+                args[i].resolve(); // may block
                 numFuturesResolved++;
             }
         }

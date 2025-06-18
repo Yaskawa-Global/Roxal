@@ -730,6 +730,12 @@ void Value::resolveSignal()
         *this = asSignal(*this)->signal->lastValue();
 }
 
+void Value::resolve()
+{
+    resolveFuture();
+    resolveSignal();
+}
+
 
 
 Value roxal::defaultValue(ValueType t)
