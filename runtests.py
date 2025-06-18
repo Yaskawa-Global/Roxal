@@ -70,6 +70,12 @@ if os.path.exists(testlib_c):
                 ['gcc', '-shared', '-fPIC', '-o', testlib_so, testlib_c])
         except Exception as e:
             print('Failed to build testlib.so:', e)
+        if os.path.exists(testlib_so):
+            print('Built testlib.so')
+
+    if not os.path.exists(testlib_so):
+        raise 'testlib.so was not built'
+
 
 # Track how many tests pass or fail
 passed_count = 0
