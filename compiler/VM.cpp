@@ -15,11 +15,13 @@
 #include "dataflow/Tests.h"
 #include "dataflow/Signal.h"
 #include "dataflow/DataflowEngine.h"
+#include "dataflow/FuncNode.h"
 
 #include "VM.h"
 #include "Object.h"
 #include <Eigen/Dense>
 #include <core/types.h>
+#include <core/common.h>
 #include <core/AST.h>
 
 
@@ -634,6 +636,42 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
 
 bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 {
+    bool signalArg = false;
+    for(int i=0;i<callSpec.argCount;i++)
+        if (isSignal(peek(i))) { signalArg = true; break; }
+
+    if (signalArg && callee.isObj() && objType(callee) == ObjType::Closure) {
+        ObjClosure* closure = asClosure(callee);
+        std::vector<ptr<df::Signal>> sigArgs;
+        df::FuncNode::ConstArgMap constArgs;
+
+        if (closure->function->funcType.has_value()) {
+            auto calleeType = closure->function->funcType.value();
+            auto paramPositions = callSpec.paramPositions(calleeType, true);
+            const auto& funcType = calleeType->func.value();
+            for (size_t pi = 0; pi < paramPositions.size(); ++pi) {
+                int argIndex = paramPositions[pi];
+                if (argIndex == -1) continue;
+                Value arg = peek(callSpec.argCount - 1 - argIndex);
+                const auto& param = funcType.params[pi];
+                std::string pname = param.has_value() ?
+                                    toUTF8StdString(param->name) : std::to_string(pi);
+                if (isSignal(arg))
+                    sigArgs.push_back(asSignal(arg)->signal);
+                else {
+                    arg.resolve();
+                    constArgs[pname] = arg;
+                }
+            }
+        }
+
+        auto name = toUTF8StdString(closure->function->name);
+        auto node = df::Func::newFunc<df::FuncNode>(name, closure, constArgs, sigArgs);
+        popN(callSpec.argCount + 1);
+        push(nilVal());
+        return true;
+    }
+
     if (callee.isObj()) {
         switch (objType(callee)) {
             case ObjType::BoundMethod: {
@@ -847,6 +885,17 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
     }
     runtimeError("Only functions, builtin-types, objects and actors can be called.");
     return false;
+}
+
+std::pair<VM::InterpretResult,Value> VM::callAndExec(ObjClosure* closure, const std::vector<Value>& args)
+{
+    push(objVal(closure));
+    for(const auto& a : args)
+        push(a);
+    CallSpec spec(args.size());
+    if(!call(closure, spec))
+        return { InterpretResult::RuntimeError, nilVal() };
+    return execute();
 }
 
 
