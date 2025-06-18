@@ -731,7 +731,7 @@ struct ObjObjectType : public ObjTypeSpec
     bool isInterface;
     bool isEnumeration;
     bool isCStruct { false };
-    int cstructArch { 64 };
+    int cstructArch { hostArch };
     uint16_t enumTypeId;
 
     // name -> type, initial value

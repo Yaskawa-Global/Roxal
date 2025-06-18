@@ -336,7 +336,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     // check for @cstruct annotation
     for(const auto& annot : ast->annotations) {
         if (annot->name == "cstruct") {
-            int arch = 64;
+            int arch = hostArch;
             for(const auto& arg : annot->args) {
                 if (toUTF8StdString(arg.first) == "arch") {
                     if (auto n = std::dynamic_pointer_cast<ast::Num>(arg.second)) {

@@ -29,6 +29,8 @@
 
 namespace roxal {
 
+constexpr int hostArch = sizeof(void*) == 8 ? 64 : 32;
+
 
 template<class T>
 using ptr = std::shared_ptr<T>;

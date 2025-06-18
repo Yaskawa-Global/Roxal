@@ -1,7 +1,7 @@
 import sys
 mylib = sys.loadlib('../tests/testlib.so')
 
-@cstruct(arch=64)
+@cstruct()
 type MyStruct object:
   var i:int
   @ctype(ctype='float')
