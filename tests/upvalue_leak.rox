@@ -1,0 +1,36 @@
+// Create a closure in main thread that should keep upvalues open
+func outer():
+  var x = 42
+  var y = 100
+  
+  func inner1():
+    return x + y  // captures both x and y as upvalues
+  
+  func inner2():
+    return x * 2   // captures x as upvalue
+  
+  // Call inner1 to ensure upvalue is created and added to openUpvalues
+  print("Inner1 result: " + inner1())
+  
+  // Return inner2 but NOT inner1, so inner1's upvalues should stay in openUpvalues
+  return inner2
+
+// This creates upvalues and leaves some in openUpvalues list
+var closure = outer()
+
+// This should create an actor thread which calls resetStack() 
+// and clears openUpvalues without decRef(), causing leak
+type A actor:
+  proc work():
+    print('Actor working')
+
+print("Creating actor...")
+var a = A()
+a.work()
+
+sleep(50000) // let actor complete
+
+print("Calling closure after actor...")
+print("Closure result: " + closure())
+
+print("Done")
