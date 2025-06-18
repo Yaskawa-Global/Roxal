@@ -1,6 +1,7 @@
 #include "FuncNode.h"
 
 #include "core/common.h"
+#include <algorithm>
 #include "compiler/VM.h"
 
 using namespace df;
@@ -38,6 +39,16 @@ FuncNode::FuncNode(const std::string& name,
                     paramSignalIndex.push_back(-1);
                 }
             }
+            // compute max input frequency
+            double maxFreq = 0.0;
+            for (auto& sig : signalArgs)
+                maxFreq = std::max(maxFreq, sig->frequency());
+
+            if (maxFreq <= 0.0)
+                maxFreq = 1.0;
+
+            createOutputSignals(maxFreq);
+            m_operatorSignalsCalled = true;
         }
     }
 }
