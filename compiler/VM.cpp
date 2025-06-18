@@ -601,18 +601,6 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
     }
 
 
-    if (!closure->function->annotations.empty()) {
-        for(const auto& annot : closure->function->annotations) {
-            if (annot->name == "c") {
-                ObjFunction* function = closure->function;
-                // TODO: implement (consider if we do it here, which may require positional args in call,
-                //        or in dispatch loop if callframe.startIp == callframe.ip) or
-                //        modify the compiler to output a special CCALL OpCode
-                runtimeError("Calling C annotated functions unimplemented in call to "+toUTF8StdString(function->name));
-                return false;
-            }
-        }
-    }
 
     return true;
 }
