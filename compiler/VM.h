@@ -78,6 +78,9 @@ public:
     bool callValue(const Value& callee, const CallSpec& callSpec);
     bool invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec);
     bool invoke(ObjString* name, const CallSpec& callSpec);
+
+    // Convenience for C++ callers: execute closure with arguments
+    std::pair<InterpretResult,Value> callAndExec(ObjClosure* closure, const std::vector<Value>& args);
     bool indexValue(const Value& indexable, int subscriptCount);
     bool setIndexValue(const Value& indexable, int subscriptCount, Value& value);
     enum class BindResult {

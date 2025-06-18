@@ -879,6 +879,17 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
     return false;
 }
 
+std::pair<VM::InterpretResult,Value> VM::callAndExec(ObjClosure* closure, const std::vector<Value>& args)
+{
+    push(objVal(closure));
+    for(const auto& a : args)
+        push(a);
+    CallSpec spec(args.size());
+    if(!call(closure, spec))
+        return { InterpretResult::RuntimeError, nilVal() };
+    return execute();
+}
+
 
 
 bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec)
