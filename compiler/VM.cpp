@@ -4,13 +4,17 @@
 #include <chrono>
 #include <thread>
 #include <utility>
+#include <memory>
 #include <ffi.h>
+#include <dlfcn.h>
 
 
 #include "ASTGenerator.h"
 #include "ASTGraphviz.h"
 #include "RoxalCompiler.h"
 #include "dataflow/Tests.h"
+#include "dataflow/Signal.h"
+#include "dataflow/DataflowEngine.h"
 
 #include "VM.h"
 #include "Object.h"
@@ -18,12 +22,6 @@
 #include <core/types.h>
 #include <core/AST.h>
 
-struct FFIWrapper {
-    ffi_cif cif;
-    void* fn;
-    std::vector<ffi_type*> argTypes;
-    ffi_type* retType;
-};
 
 using namespace roxal;
 
@@ -801,8 +799,20 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     throw std::runtime_error("unimplemented construction for type '"+to_string(ts->typeValue)+"'");
                 }
             }
-            case ObjType::Closure:
-                return call(asClosure(callee), callSpec);
+            case ObjType::Closure: {
+                ObjClosure* closure = asClosure(callee);
+                bool cfunc = false;
+                for(const auto& annot : closure->function->annotations) {
+                    if (annot->name == "cfunc") { cfunc = true; break; }
+                }
+                if (cfunc) {
+                    Value result { callCFunc(closure, callSpec) };
+                    *(thread->stackTop - callSpec.argCount - 1) = result;
+                    popN(callSpec.argCount);
+                    return true;
+                }
+                return call(closure, callSpec);
+            }
             case ObjType::Native: {
                 NativeFn native = asNative(callee)->function;
                 Value result { (this->*native)(callSpec.argCount, &(*thread->stackTop) - callSpec.argCount) };
@@ -1071,7 +1081,7 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                 ObjList* list = asList(indexable);
                 Value index = pop();
                 try {
-                    if (isRange(index) && !isList(value)) value.resolveFuture();
+                    if (isRange(index) && !isList(value)) value.resolve();
                     list->setIndex(index, value);
                     pop(); // discard indexable
                 } catch (std::exception& e) {
@@ -1088,7 +1098,7 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                 ObjVector* vec = asVector(indexable);
                 Value index = pop();
                 try {
-                    if (isRange(index) && !isVector(value)) value.resolveFuture();
+                    if (isRange(index) && !isVector(value)) value.resolve();
                     vec->setIndex(index, value);
                     pop(); // discard indexable
                 } catch (std::exception& e) {
@@ -1102,7 +1112,7 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                     ObjMatrix* mat = asMatrix(indexable);
                     Value r = pop();
                     try {
-                        if (isRange(r) && !isMatrix(value)) value.resolveFuture();
+                        if (isRange(r) && !isMatrix(value)) value.resolve();
                         mat->setIndex(r, value);
                         pop();
                     } catch (std::exception& e) {
@@ -1115,7 +1125,7 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                     Value col = pop();
                     Value row = pop();
                     try {
-                        if ((isRange(row) || isRange(col)) && !isMatrix(value)) value.resolveFuture();
+                        if ((isRange(row) || isRange(col)) && !isMatrix(value)) value.resolve();
                         mat->setIndex(row, col, value);
                         pop();
                     } catch (std::exception& e) {
@@ -1531,7 +1541,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::GetProp): {
                 Value& inst { peek(0) };
-                inst.resolveFuture();
+                inst.resolve();
                 ObjString* name = readString();
                 if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
@@ -1621,7 +1631,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::GetPropCheck): {
                 Value& inst { peek(0) };
-                inst.resolveFuture();
+                inst.resolve();
                 ObjString* name = readString();
                 if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
@@ -1726,7 +1736,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::SetProp): {
                 Value& inst { peek(1) };
-                inst.resolveFuture();
+                inst.resolve();
                 if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjString* name = readString();
@@ -1819,7 +1829,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::SetPropCheck): {
                 Value& inst { peek(1) };
-                inst.resolveFuture();
+                inst.resolve();
                 if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjString* name = readString();
@@ -1950,14 +1960,14 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::Equal): {
                 Value b = pop();
                 Value a = pop();
-                a.resolveFuture();
-                b.resolveFuture();
+                a.resolve();
+                b.resolve();
                 push(boolVal(valuesEqual(a,b)));
                 break;
             }
             case asByte(OpCode::Greater): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if (!peek(0).isNumber()) {
                     runtimeError("Operand to > must be a number");
                     return errorReturn;
@@ -1970,8 +1980,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Less): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if (!peek(0).isNumber()) {
                     runtimeError("Operand to < must be a number");
                     return errorReturn;
@@ -1984,8 +1994,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Add): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if (isVector(peek(0)) && isVector(peek(1))) {
                     binaryOp([](Value a, Value b) -> Value { return add(a,b); });
                 }
@@ -2002,8 +2012,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Subtract): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if (isVector(peek(0)) && isVector(peek(1))) {
                     binaryOp([](Value a, Value b) -> Value { return subtract(a,b); });
                 } else if (peek(0).isNumber() && peek(1).isNumber()) {
@@ -2015,8 +2025,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Multiply): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if ( (isVector(peek(0)) && isVector(peek(1))) ||
                      (isVector(peek(0)) && peek(1).isNumber()) ||
                      (peek(0).isNumber() && isVector(peek(1))) ) {
@@ -2030,8 +2040,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Divide): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if (!peek(0).isNumber()) {
                     runtimeError("Operand of / must be a number");
                     return errorReturn;
@@ -2049,7 +2059,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::Negate): {
                 Value& operand { peek(0) };
-                operand.resolveFuture();
+                operand.resolve();
 
                 if (operand.isNumber() || operand.isBool())
                     push(negate(pop()));
@@ -2066,8 +2076,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::Modulo): {
                 // TODO: support decimal
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if (!peek(0).isNumber() && !peek(0).isBool()) {
                     runtimeError("Operand of '%' must be an integer");
                     return errorReturn;
@@ -2080,8 +2090,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::And): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if (!peek(0).isBool()) {
                     runtimeError("Operand of 'and' must be a bool");
                     return errorReturn;
@@ -2094,8 +2104,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Or): {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                peek(0).resolve();
+                peek(1).resolve();
                 if (!peek(0).isBool()) {
                     runtimeError("Operand of 'or' must be a bool");
                     return errorReturn;
@@ -2133,14 +2143,14 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::JumpIfFalse): {
                 uint16_t jumpDist = readShort();
-                peek(0).resolveFuture();
+                peek(0).resolve();
                 if (isFalsey(peek(0)))
                     frame->ip += jumpDist;
                 break;
             }
             case asByte(OpCode::JumpIfTrue): {
                 uint16_t jumpDist = readShort();
-                peek(0).resolveFuture();
+                peek(0).resolve();
                 if (isTruthy(peek(0)))
                     frame->ip += jumpDist;
                 break;
@@ -2158,7 +2168,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::Call): {
                 CallSpec callSpec{frame->ip};
                 Value& callee { peek(callSpec.argCount) };
-                callee.resolveFuture();
+                callee.resolve();
                 if (!callValue(callee, callSpec))
                     return errorReturn;
                 frame = thread->frames.end()-1;
@@ -2166,7 +2176,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::Index): {
                 uint8_t argCount = readByte();
-                peek(argCount).resolveFuture(); // indexable
+                peek(argCount).resolve(); // indexable
                 if (!indexValue(peek(argCount), argCount))
                     return errorReturn;
                 break;
@@ -2285,7 +2295,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::SetIndex): {
                 uint8_t argCount = readByte();
-                peek(argCount).resolveFuture(); // indexable
+                peek(argCount).resolve(); // indexable
                 try {
                     Value& indexable { peek(argCount) };
                     Value& value { peek(argCount+1) };
@@ -2489,7 +2499,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::IfDictToKeys): {
                 Value& maybeDict = peek(0);
                 if (!isDict(maybeDict))
-                    maybeDict.resolveFuture();
+                    maybeDict.resolve();
                 if (isDict(maybeDict)) {
                     Value d { maybeDict };
                     pop();
@@ -2501,7 +2511,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::IfDictToItems): {
                 Value& maybeDict = peek(0);
                 if (!isDict(maybeDict))
-                    maybeDict.resolveFuture();
+                    maybeDict.resolve();
                 if (isDict(maybeDict)) {
                     Value d { maybeDict };
                     pop();
@@ -2940,14 +2950,14 @@ Value VM::wait_builtin(int argCount, Value* args)
     int32_t numFuturesResolved { 0 };
     if (argCount == 1) {
         if (isFuture(args[0])) {
-            args[0].resolveFuture();
+            args[0].resolve();
             numFuturesResolved++;
         }
         else if (isList(args[0])) {
 
             ObjList* l = asList(args[0]);
             for(auto& v : l->elts.get()) {
-                v.resolveFuture();
+                v.resolve();
                 numFuturesResolved++;
             }
         }
@@ -2955,7 +2965,7 @@ Value VM::wait_builtin(int argCount, Value* args)
     else {
         for(auto i=0; i<argCount; i++) {
             if (isFuture(args[i])) {
-                args[i].resolveFuture(); // may block
+                args[i].resolve(); // may block
                 numFuturesResolved++;
             }
         }
@@ -3226,6 +3236,9 @@ void VM::defineNativeFunctions()
     addSys("_clock", &VM::clock_native);
     addSys("_ussleep", &VM::usSleep_native);
     addSys("_mssleep", &VM::msSleep_native);
+    addSys("clock", &VM::clock_signal_native);
+    addSys("_engine_tick", &VM::engine_tick_native);
+    addSys("loadlib", &VM::loadlib_native);
     //addSys("_sleep", &VM::sleep_native);
 
     auto addMath = [&](const std::string& name, void* fnPtr,
@@ -3330,6 +3343,39 @@ Value VM::msSleep_native(int argCount, Value* args)
     return nilVal();
 }
 
+Value VM::clock_signal_native(int argCount, Value* args)
+{
+    if ((argCount != 1) || !args[0].isNumber())
+        throw std::invalid_argument("clock expects single numeric argument");
+
+    double freq = args[0].asReal();
+    auto sig = df::Signal::newClockSignal(freq);
+    return objVal(signalVal(sig));
+}
+
+Value VM::engine_tick_native(int argCount, Value* args)
+{
+    int count = 1;
+    if (argCount == 1)
+        count = args[0].asInt();
+    for(int i=0;i<count;++i)
+        df::DataflowEngine::instance()->tick(false);
+    return nilVal();
+}
+
+Value VM::loadlib_native(int argCount, Value* args)
+{
+    if (argCount != 1 || !isString(args[0]))
+        throw std::invalid_argument("loadlib expects single string argument");
+
+    std::string path = toUTF8StdString(asUString(args[0]));
+    void* h = dlopen(path.c_str(), RTLD_LAZY);
+    if (!h)
+        throw std::runtime_error(std::string("dlopen failed: ") + dlerror());
+
+    return objVal(libraryVal(h));
+}
+
 Value VM::sleep_native(int argCount, Value* args)
 {
     if ((argCount != 1) || !args[0].isNumber())
@@ -3351,25 +3397,208 @@ Value VM::ffi_native(int argCount, Value* args)
 
     std::vector<void*> argValues(argCount);
     std::vector<double> realVals(argCount);
+    std::vector<float> floatVals(argCount);
+    std::vector<int> intVals(argCount);
+    std::vector<uint8_t> boolVals(argCount);
 
     for(int i=0;i<argCount;i++) {
-        if (spec->argTypes[i] == &ffi_type_double) {
+        if (spec->argTypes[i] == &ffi_type_double || spec->argTypes[i] == &ffi_type_float) {
             if (!args[i].isNumber())
                 throw std::invalid_argument("ffi argument not number");
-            realVals[i] = args[i].asReal();
-            argValues[i] = &realVals[i];
+            if (spec->argTypes[i] == &ffi_type_double) {
+                realVals[i] = args[i].asReal();
+                argValues[i] = &realVals[i];
+            } else {
+                floatVals[i] = args[i].asReal();
+                argValues[i] = &floatVals[i];
+            }
+        } else if (spec->argTypes[i] == &ffi_type_sint32) {
+            if (!args[i].isNumber())
+                throw std::invalid_argument("ffi argument not int");
+            intVals[i] = args[i].asInt();
+            argValues[i] = &intVals[i];
+        } else if (spec->argTypes[i] == &ffi_type_uint8) {
+            if (!args[i].isBool())
+                throw std::invalid_argument("ffi argument not bool");
+            boolVals[i] = args[i].asBool() ? 1 : 0;
+            argValues[i] = &boolVals[i];
         } else {
             throw std::runtime_error("unsupported ffi arg type");
         }
     }
 
-    double ret = 0;
+    union {
+        double d;
+        int i;
+        uint8_t b;
+    } ret;
+
     ffi_call(&spec->cif, FFI_FN(spec->fn), &ret, argValues.data());
 
     if (spec->retType == &ffi_type_double)
-        return Value(ret);
+        return Value(ret.d);
+    else if (spec->retType == &ffi_type_sint32)
+        return Value(intVal(ret.i));
+    else if (spec->retType == &ffi_type_uint8)
+        return Value(boolVal(ret.b != 0));
     else
         throw std::runtime_error("unsupported ffi return type");
+}
+
+Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
+{
+    ObjFunction* function = closure->function;
+    FFIWrapper* spec = static_cast<FFIWrapper*>(function->nativeSpec);
+
+    if (!spec) {
+        // find annotation args
+        ptr<ast::Annotation> annot;
+        for(const auto& a : function->annotations)
+            if (a->name == "cfunc") { annot = a; break; }
+        if (!annot)
+            throw std::runtime_error("cfunc annotation missing");
+
+        ObjModuleType* mod = asModuleType(function->moduleType);
+
+        auto getArg = [&](const std::string& n) -> ptr<ast::Expression> {
+            for(const auto& an : annot->args)
+                if (toUTF8StdString(an.first) == n) return an.second;
+            return nullptr;
+        };
+
+        auto libExpr = getArg("lib");
+        auto cnameExpr = getArg("cname");
+        auto argsExpr = getArg("args");
+        auto retExpr = getArg("ret");
+        if (!libExpr || !cnameExpr)
+            throw std::runtime_error("cfunc annotation requires lib and cname");
+
+        auto evalExpr = [&](ptr<ast::Expression> expr) -> Value {
+            if (auto s = std::dynamic_pointer_cast<ast::Str>(expr)) {
+                return objVal(stringVal(s->str));
+            } else if (auto n = std::dynamic_pointer_cast<ast::Num>(expr)) {
+                if (std::holds_alternative<int32_t>(n->num))
+                    return Value(std::get<int32_t>(n->num));
+                else
+                    return Value(std::get<double>(n->num));
+            } else if (auto b = std::dynamic_pointer_cast<ast::Bool>(expr)) {
+                return boolVal(b->value);
+            } else if (auto v = std::dynamic_pointer_cast<ast::Variable>(expr)) {
+                auto name = v->name;
+                auto opt = mod->vars.load(name);
+                if (!opt.has_value())
+                    throw std::runtime_error("unknown variable in cfunc annotation: "+toUTF8StdString(name));
+                return opt.value();
+            } else {
+                throw std::runtime_error("unsupported expression in cfunc annotation");
+            }
+        };
+
+        Value libVal = evalExpr(libExpr);
+        if (!isLibrary(libVal))
+            throw std::runtime_error("lib argument not library handle");
+        void* handle = asLibrary(libVal)->handle;
+
+        Value cnameVal = evalExpr(cnameExpr);
+        std::string cname = toUTF8StdString(asUString(cnameVal));
+
+        std::vector<ffi_type*> argTypes;
+        if (argsExpr) {
+            std::string argsStr = toUTF8StdString(asUString(evalExpr(argsExpr)));
+            std::stringstream ss(argsStr);
+            std::string token;
+            while(std::getline(ss, token, ',')) {
+                token.erase(0, token.find_first_not_of(" \t"));
+                size_t space = token.find(' ');
+                std::string type = (space==std::string::npos)?token:token.substr(0,space);
+                if (type=="float")
+                    argTypes.push_back(&ffi_type_float);
+                else if (type=="double" || type=="real")
+                    argTypes.push_back(&ffi_type_double);
+                else if (type=="int")
+                    argTypes.push_back(&ffi_type_sint32);
+                else if (type=="bool")
+                    argTypes.push_back(&ffi_type_uint8);
+                else
+                    throw std::runtime_error("unsupported arg type: "+type);
+            }
+        }
+
+        ffi_type* retType = &ffi_type_void;
+        if (retExpr) {
+            std::string r = toUTF8StdString(asUString(evalExpr(retExpr)));
+            if (r=="float")
+                retType = &ffi_type_float;
+            else if (r=="double" || r=="real")
+                retType = &ffi_type_double;
+            else if (r=="int")
+                retType = &ffi_type_sint32;
+            else if (r=="bool")
+                retType = &ffi_type_uint8;
+            else if (r=="void")
+                retType = &ffi_type_void;
+            else
+                throw std::runtime_error("unsupported return type: "+r);
+        }
+
+        void* fnPtr = dlsym(handle, cname.c_str());
+        if (!fnPtr)
+            throw std::runtime_error(std::string("dlsym failed: ")+dlerror());
+
+        spec = static_cast<FFIWrapper*>(createFFIWrapper(fnPtr, retType, argTypes));
+        function->nativeSpec = spec;
+    }
+
+    if (callSpec.argCount != (int)spec->argTypes.size())
+        throw std::invalid_argument("invalid argument count for cfunc call");
+
+    std::vector<Value> argVector(callSpec.argCount);
+    for(int i=0;i<callSpec.argCount;i++)
+        argVector[i] = *(thread->stackTop - callSpec.argCount + i);
+
+    std::vector<void*> argValues(callSpec.argCount);
+    std::vector<double> realVals(callSpec.argCount);
+    std::vector<float> floatVals(callSpec.argCount);
+    std::vector<int> intVals(callSpec.argCount);
+    std::vector<uint8_t> boolVals(callSpec.argCount);
+
+    for(int i=0;i<callSpec.argCount;i++) {
+        if (spec->argTypes[i] == &ffi_type_double || spec->argTypes[i] == &ffi_type_float) {
+            if (!argVector[i].isNumber())
+                throw std::invalid_argument("ffi arg not number");
+            if (spec->argTypes[i] == &ffi_type_double) {
+                realVals[i] = argVector[i].asReal();
+                argValues[i] = &realVals[i];
+            } else {
+                floatVals[i] = argVector[i].asReal();
+                argValues[i] = &floatVals[i];
+            }
+        } else if (spec->argTypes[i] == &ffi_type_sint32) {
+            if (!argVector[i].isNumber())
+                throw std::invalid_argument("ffi arg not int");
+            intVals[i] = argVector[i].asInt();
+            argValues[i] = &intVals[i];
+        } else if (spec->argTypes[i] == &ffi_type_uint8) {
+            if (!argVector[i].isBool())
+                throw std::invalid_argument("ffi arg not bool");
+            boolVals[i] = argVector[i].asBool() ? 1 : 0;
+            argValues[i] = &boolVals[i];
+        } else {
+            throw std::runtime_error("unsupported ffi arg type");
+        }
+    }
+
+    union { double d; int i; uint8_t b; } ret;
+    ffi_call(&spec->cif, FFI_FN(spec->fn), &ret, argValues.data());
+
+    if (spec->retType == &ffi_type_double)
+        return Value(ret.d);
+    else if (spec->retType == &ffi_type_sint32)
+        return Value(intVal(ret.i));
+    else if (spec->retType == &ffi_type_uint8)
+        return Value(boolVal(ret.b != 0));
+    else
+        return nilVal();
 }
 
 ObjModuleType* VM::getBuiltinModule(const icu::UnicodeString& name)
