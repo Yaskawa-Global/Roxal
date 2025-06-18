@@ -998,8 +998,15 @@ std::any ASTGenerator::visitProperty(RoxalParser::PropertyContext *context)
     varDecl->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
 
     varDecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText());
-
-    // FIXME: visit annotations
+    if (context->annotation().size() > 0) {
+        for(size_t i=0; i<context->annotation().size(); i++) {
+            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
+            auto annotation = std::make_shared<Annotation>();
+            annotation->name = annotInfo->accessed;
+            annotation->args = *annotInfo->args;
+            varDecl->annotations.push_back(annotation);
+        }
+    }
 
     if (context->builtin_type()) {
         auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));

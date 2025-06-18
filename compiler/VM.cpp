@@ -3658,3 +3658,19 @@ ObjModuleType* VM::getBuiltinModule(const icu::UnicodeString& name)
         return mathModule;
     return nullptr;
 }
+
+std::vector<uint8_t> VM::objectToCStruct(ObjectInstance* instance)
+{
+    (void)instance;
+    // TODO: implement struct serialization
+    return {};
+}
+
+ObjectInstance* VM::objectFromCStruct(ObjObjectType* type, const void* data, size_t len)
+{
+    (void)type;
+    (void)data;
+    (void)len;
+    // TODO: implement struct deserialization
+    return nullptr;
+}

@@ -730,6 +730,7 @@ struct ObjObjectType : public ObjTypeSpec
     bool isActor;
     bool isInterface;
     bool isEnumeration;
+    bool isCStruct { false };
     uint16_t enumTypeId;
 
     // name -> type, initial value
@@ -739,6 +740,7 @@ struct ObjObjectType : public ObjTypeSpec
         Value initialValue;
         ast::Access access { ast::Access::Public };
         ObjObjectType* ownerType { nullptr };
+        std::optional<icu::UnicodeString> ctype;
     };
     std::unordered_map<int32_t, Property> properties;
 
