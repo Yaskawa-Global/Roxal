@@ -1,0 +1,9 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cfunc(lib=mylib, cname='mydoitfunction', args='float x,float y', ret='bool')
+func doit(x: real, y: real) -> bool:
+  _
+
+print(doit(2.0, 1.0))
+print(doit(1.0, 2.0))

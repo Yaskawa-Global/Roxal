@@ -59,7 +59,8 @@ enum class ObjType {
     Dict,
     Vector,
     Matrix,
-    Signal
+    Signal,
+    Library
 };
 
 
@@ -474,6 +475,21 @@ inline ObjSignal* asSignal(const Value& v) { return static_cast<ObjSignal*>(v.as
 ObjSignal* signalVal(ptr<df::Signal> s);
 std::string objSignalToString(const ObjSignal* os);
 
+//
+// dynamic library handle
+
+struct ObjLibrary : public Obj {
+    ObjLibrary(void* h) : handle(h) { type = ObjType::Library; }
+    virtual ~ObjLibrary();
+    void* handle;
+};
+
+inline bool isLibrary(const Value& v) { return isObjType(v, ObjType::Library); }
+inline ObjLibrary* asLibrary(const Value& v) { return static_cast<ObjLibrary*>(v.asObj()); }
+
+ObjLibrary* libraryVal(void* handle);
+std::string objLibraryToString(const ObjLibrary* lib);
+
 
 //
 // function
@@ -500,6 +516,7 @@ struct ObjFunction : public Obj
     int upvalueCount;
     ptr<Chunk> chunk;
     std::vector<ptr<ast::Annotation>> annotations;
+    void* nativeSpec { nullptr }; // for ffi or other native info
 
     bool strict;        // true if function was compiled in strict mode
 

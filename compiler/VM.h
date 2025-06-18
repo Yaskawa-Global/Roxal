@@ -10,6 +10,14 @@
 #include "Chunk.h"
 #include "Value.h"
 #include <ffi.h>
+#include <vector>
+
+struct FFIWrapper {
+    ffi_cif cif;
+    void* fn;
+    std::vector<ffi_type*> argTypes;
+    ffi_type* retType;
+};
 
 namespace roxal {
 
@@ -272,10 +280,13 @@ protected:
     Value sleep_native(int argCount, Value* args);
     Value clock_signal_native(int argCount, Value* args);
     Value engine_tick_native(int argCount, Value* args);
+    Value loadlib_native(int argCount, Value* args);
     Value ffi_native(int argCount, Value* args);
 
     void* createFFIWrapper(void* fn, ffi_type* retType,
                            const std::vector<ffi_type*>& argTypes);
+
+    Value callCFunc(ObjClosure* closure, const CallSpec& callSpec);
 
 };
 
