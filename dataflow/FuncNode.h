@@ -17,7 +17,8 @@ public:
              const std::vector<ptr<Signal>>& signalArgs);
 
     virtual Names inputNames() const override { return m_inputNames; }
-    virtual Names outputNames() const override { return {}; }
+    virtual Names outputNames() const override { return {"result"}; }
+    virtual bool isPure() const override { return true; }
     virtual Values operator()(const Values& inputValues) override;
 
     roxal::ObjClosure* closure;
