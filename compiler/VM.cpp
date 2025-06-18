@@ -104,6 +104,8 @@ VM::~VM()
     sysModule->decRef();
     mathModule->decRef();
 
+    df::DataflowEngine::instance()->clear();
+
     freeObjects();
 
     #ifdef DEBUG_TRACE_MEMORY
@@ -641,12 +643,12 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
         if (isSignal(peek(i))) { signalArg = true; break; }
 
     if (signalArg && callee.isObj() && objType(callee) == ObjType::Closure) {
-        ObjClosure* closure = asClosure(callee);
+        Value closureVal = callee;
         std::vector<ptr<df::Signal>> sigArgs;
         df::FuncNode::ConstArgMap constArgs;
 
-        if (closure->function->funcType.has_value()) {
-            auto calleeType = closure->function->funcType.value();
+        if (roxal::asClosure(closureVal)->function->funcType.has_value()) {
+            auto calleeType = roxal::asClosure(closureVal)->function->funcType.value();
             auto paramPositions = callSpec.paramPositions(calleeType, true);
             const auto& funcType = calleeType->func.value();
             for (size_t pi = 0; pi < paramPositions.size(); ++pi) {
@@ -665,8 +667,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             }
         }
 
-        auto name = toUTF8StdString(closure->function->name);
-        auto node = df::Func::newFunc<df::FuncNode>(name, closure, constArgs, sigArgs);
+        auto name = toUTF8StdString(roxal::asClosure(closureVal)->function->name);
+        auto node = df::Func::newFunc<df::FuncNode>(name, closureVal, constArgs, sigArgs);
         popN(callSpec.argCount + 1);
         push(nilVal());
         return true;

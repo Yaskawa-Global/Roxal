@@ -6,13 +6,13 @@
 using namespace df;
 
 FuncNode::FuncNode(const std::string& name,
-                   roxal::ObjClosure* closure_,
+                   const roxal::Value& closure_,
                    const ConstArgMap& constArgs_,
                    const std::vector<ptr<Signal>>& signalArgs_)
   : Func(name), closure(closure_), constArgs(constArgs_), signalArgs(signalArgs_)
 {
-    if (closure && closure->function->funcType.has_value()) {
-        auto funcTypePtr = closure->function->funcType.value();
+    if (roxal::isClosure(closure) && roxal::asClosure(closure)->function->funcType.has_value()) {
+        auto funcTypePtr = roxal::asClosure(closure)->function->funcType.value();
         if (funcTypePtr->func.has_value()) {
             const auto& funcType = funcTypePtr->func.value();
             size_t sigIndex = 0;
@@ -62,7 +62,7 @@ Values FuncNode::operator()(const Values& inputValues)
         }
     }
 
-    auto result = vm.callAndExec(closure, args);
+    auto result = vm.callAndExec(roxal::asClosure(closure), args);
 
     return { result.second };
 }
