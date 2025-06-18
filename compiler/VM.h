@@ -289,6 +289,9 @@ protected:
     Value sleep_native(int argCount, Value* args);
     Value clock_signal_native(int argCount, Value* args);
     Value engine_tick_native(int argCount, Value* args);
+public:
+    Value engine_tick_actor_native(int argCount, Value* args);
+protected:
     Value loadlib_native(int argCount, Value* args);
     Value ffi_native(int argCount, Value* args);
 
