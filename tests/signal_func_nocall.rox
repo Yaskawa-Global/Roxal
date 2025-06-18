@@ -1,0 +1,7 @@
+func add(x: int, y: int) -> int:
+  print("add called")
+  return x + y
+
+c = clock(10)
+r = add(c, 1)
+print("end")
