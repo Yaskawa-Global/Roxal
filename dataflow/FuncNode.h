@@ -12,7 +12,7 @@ public:
     using ConstArgMap = std::map<std::string, roxal::Value>;
 
     FuncNode(const std::string& name,
-             roxal::ObjClosure* closure,
+             const roxal::Value& closure,
              const ConstArgMap& constArgs,
              const std::vector<ptr<Signal>>& signalArgs);
 
@@ -20,7 +20,7 @@ public:
     virtual Names outputNames() const override { return {}; }
     virtual Values operator()(const Values& inputValues) override;
 
-    roxal::ObjClosure* closure;
+    roxal::Value closure;
     ConstArgMap constArgs;
     std::vector<ptr<Signal>> signalArgs;
 
