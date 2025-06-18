@@ -10,14 +10,15 @@
 #include "ASTGenerator.h"
 #include "ASTGraphviz.h"
 #include "RoxalCompiler.h"
-#include "dataflow/Tests.h"
 #include "dataflow/Signal.h"
 #include "dataflow/DataflowEngine.h"
+#include "dataflow/FuncNode.h"
 
 #include "VM.h"
 #include "Object.h"
 #include <Eigen/Dense>
 #include <core/types.h>
+#include <core/common.h>
 #include <core/AST.h>
 
 struct FFIWrapper {
@@ -638,6 +639,42 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
 
 bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 {
+    bool signalArg = false;
+    for(int i=0;i<callSpec.argCount;i++)
+        if (isSignal(peek(i))) { signalArg = true; break; }
+
+    if (signalArg && callee.isObj() && objType(callee) == ObjType::Closure) {
+        ObjClosure* closure = asClosure(callee);
+        std::vector<ptr<df::Signal>> sigArgs;
+        df::FuncNode::ConstArgMap constArgs;
+
+        if (closure->function->funcType.has_value()) {
+            auto calleeType = closure->function->funcType.value();
+            auto paramPositions = callSpec.paramPositions(calleeType, true);
+            const auto& funcType = calleeType->func.value();
+            for (size_t pi = 0; pi < paramPositions.size(); ++pi) {
+                int argIndex = paramPositions[pi];
+                if (argIndex == -1) continue;
+                Value arg = peek(callSpec.argCount - 1 - argIndex);
+                const auto& param = funcType.params[pi];
+                std::string pname = param.has_value() ?
+                                    toUTF8StdString(param->name) : std::to_string(pi);
+                if (isSignal(arg))
+                    sigArgs.push_back(asSignal(arg)->signal);
+                else {
+                    arg.resolve();
+                    constArgs[pname] = arg;
+                }
+            }
+        }
+
+        auto name = toUTF8StdString(closure->function->name);
+        auto node = roxal::make_ptr<df::FuncNode>(name, closure, constArgs, sigArgs);
+        popN(callSpec.argCount + 1);
+        push(nilVal());
+        return true;
+    }
+
     if (callee.isObj()) {
         switch (objType(callee)) {
             case ObjType::BoundMethod: {
@@ -839,6 +876,17 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
     }
     runtimeError("Only functions, builtin-types, objects and actors can be called.");
     return false;
+}
+
+std::pair<VM::InterpretResult,Value> VM::callAndExec(ObjClosure* closure, const std::vector<Value>& args)
+{
+    push(objVal(closure));
+    for(const auto& a : args)
+        push(a);
+    CallSpec spec(args.size());
+    if(!call(closure, spec))
+        return { InterpretResult::RuntimeError, nilVal() };
+    return execute();
 }
 
 
@@ -2880,29 +2928,7 @@ Value VM::runtests_builtin(int argCount, Value* args)
 
     auto suite = toUTF8StdString(asString(args[0])->s);
 
-    if (suite == "dataflow") {
-        auto results = df::runTests(false, false);
-
-        int passes = 0;
-        int fails = 0;
-        for (const auto& result : results) {
-            std::cout << "Test: " << std::get<0>(result) << " ";
-            bool passed = std::get<1>(result);
-            if (passed) {
-                std::cout << "passed";
-                passes++;
-            }
-            else {
-                std::cout << "failed";
-                fails++;
-            }
-            std::cout << " " << std::get<2>(result) << std::endl;
-        }
-
-        std::cout << "Passed " << passes << " failed " << fails << std::endl;
-        df::DataflowEngine::instance()->clear();
-    }
-    else if (suite == "conversions") {
+    if (suite == "conversions") {
         auto results = testConversions();
 
         int passes = 0;
@@ -3135,7 +3161,6 @@ void VM::defineNativeFunctions()
     addSys("_ussleep", &VM::usSleep_native);
     addSys("_mssleep", &VM::msSleep_native);
     addSys("clock", &VM::clock_signal_native);
-    addSys("_engine_tick", &VM::engine_tick_native);
     //addSys("_sleep", &VM::sleep_native);
 
     auto addMath = [&](const std::string& name, void* fnPtr,
@@ -3250,15 +3275,6 @@ Value VM::clock_signal_native(int argCount, Value* args)
     return objVal(signalVal(sig));
 }
 
-Value VM::engine_tick_native(int argCount, Value* args)
-{
-    int count = 1;
-    if (argCount == 1)
-        count = args[0].asInt();
-    for(int i=0;i<count;++i)
-        df::DataflowEngine::instance()->tick(false);
-    return nilVal();
-}
 
 Value VM::sleep_native(int argCount, Value* args)
 {
