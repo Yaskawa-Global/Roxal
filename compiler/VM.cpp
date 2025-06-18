@@ -3631,6 +3631,9 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
         }
 
         ffi_type* retType = &ffi_type_void;
+        ObjObjectType* retObjType = nullptr;
+        std::vector<ffi_type*> retElems;
+        ffi_type retStruct;
         if (retExpr) {
             std::string r = toUTF8StdString(asUString(evalExpr(retExpr)));
             if (r=="float")
@@ -3643,15 +3646,71 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                 retType = &ffi_type_uint8;
             else if (r=="void")
                 retType = &ffi_type_void;
-            else
-                throw std::runtime_error("unsupported return type: "+r);
+            else {
+                auto opt = mod->vars.load(toUnicodeString(r));
+                if (opt.has_value() && isObjectType(opt.value())) {
+                    ObjObjectType* t = asObjectType(opt.value());
+                    if (!t->isCStruct)
+                        throw std::runtime_error("return type not cstruct: "+r);
+                    retObjType = t;
+                    for (int32_t h : t->propertyOrder) {
+                        const auto& prop = t->properties.at(h);
+                        std::string ct;
+                        if (prop.ctype.has_value())
+                            ct = toUTF8StdString(prop.ctype.value());
+                        auto byName = [&](const std::string& n) -> ffi_type* {
+                            if (n=="float") return &ffi_type_float;
+                            if (n=="double" || n=="real") return &ffi_type_double;
+                            if (n=="int") return &ffi_type_sint32;
+                            if (n=="bool") return &ffi_type_uint8;
+                            return nullptr;
+                        };
+                        ffi_type* et = nullptr;
+                        if (!ct.empty()) {
+                            et = byName(ct);
+                        } else if (isTypeSpec(prop.type)) {
+                            ObjTypeSpec* ts = asTypeSpec(prop.type);
+                            switch(ts->typeValue) {
+                                case ValueType::Bool: et=&ffi_type_uint8; break;
+                                case ValueType::Byte: et=&ffi_type_uint8; break;
+                                case ValueType::Int: et=&ffi_type_sint32; break;
+                                case ValueType::Real: et=&ffi_type_double; break;
+                                case ValueType::Enum: et=&ffi_type_sint32; break;
+                                default: break;
+                            }
+                        }
+                        if (!et)
+                            throw std::runtime_error("unsupported struct field type");
+                        retElems.push_back(et);
+                    }
+                    retElems.push_back(nullptr);
+                    retStruct.size = 0; retStruct.alignment = 0; retStruct.type = FFI_TYPE_STRUCT;
+                    retStruct.elements = retElems.data();
+                    retType = &retStruct;
+                } else {
+                    throw std::runtime_error("unsupported return type: "+r);
+                }
+            }
         }
 
         void* fnPtr = dlsym(handle, cname.c_str());
         if (!fnPtr)
             throw std::runtime_error(std::string("dlsym failed: ")+dlerror());
 
-        spec = static_cast<FFIWrapper*>(createFFIWrapper(fnPtr, retType, argTypes));
+        spec = new FFIWrapper;
+        spec->fn = fnPtr;
+        spec->argTypes = argTypes;
+        spec->retType = retType;
+        spec->retObjType = retObjType;
+        if (retObjType) {
+            spec->retStructElems = retElems;
+            spec->retStructType = retStruct;
+            spec->retStructType.elements = spec->retStructElems.data();
+            spec->retType = &spec->retStructType;
+        }
+        if (ffi_prep_cif(&spec->cif, FFI_DEFAULT_ABI, argTypes.size(), spec->retType,
+                         spec->argTypes.data()) != FFI_OK)
+            throw std::runtime_error("ffi_prep_cif failed");
         function->nativeSpec = spec;
     }
 
@@ -3703,10 +3762,19 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
         }
     }
 
-    union { double d; float f; int i; uint8_t b; } ret;
-    ffi_call(&spec->cif, FFI_FN(spec->fn), &ret, argValues.data());
+    union { double d; float f; int i; uint8_t b; void* p; } ret;
+    void* retPtr = &ret;
+    std::vector<uint8_t> retBuf;
+    if (spec->retObjType) {
+        retBuf.resize(spec->cif.rtype->size);
+        retPtr = retBuf.data();
+    }
+    ffi_call(&spec->cif, FFI_FN(spec->fn), retPtr, argValues.data());
 
-    if (spec->retType == &ffi_type_double)
+    if (spec->retObjType) {
+        ObjectInstance* inst = objectFromCStruct(spec->retObjType, retBuf.data(), retBuf.size());
+        return Value(inst);
+    } else if (spec->retType == &ffi_type_double)
         return Value(ret.d);
     else if (spec->retType == &ffi_type_float)
         return Value(double(ret.f));
