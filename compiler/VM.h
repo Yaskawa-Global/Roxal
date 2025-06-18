@@ -12,11 +12,17 @@
 #include <ffi.h>
 #include <vector>
 
+namespace roxal { struct ObjObjectType; }
+using roxal::ObjObjectType;
+
 struct FFIWrapper {
     ffi_cif cif;
     void* fn;
     std::vector<ffi_type*> argTypes;
     ffi_type* retType;
+    ObjObjectType* retObjType { nullptr };
+    std::vector<ffi_type*> retStructElems;
+    ffi_type retStructType;
 };
 
 namespace roxal {
