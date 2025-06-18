@@ -3661,9 +3661,72 @@ ObjModuleType* VM::getBuiltinModule(const icu::UnicodeString& name)
 
 std::vector<uint8_t> VM::objectToCStruct(ObjectInstance* instance)
 {
-    (void)instance;
-    // TODO: implement struct serialization
-    return {};
+    if (!instance)
+        throw std::invalid_argument("objectToCStruct null instance");
+
+    ObjObjectType* type = instance->instanceType;
+    if (!type->isCStruct)
+        throw std::runtime_error("objectToCStruct called on non-cstruct type");
+
+    std::vector<uint8_t> buffer;
+    auto append = [&buffer](auto value) {
+        uint8_t* p = reinterpret_cast<uint8_t*>(&value);
+        buffer.insert(buffer.end(), p, p + sizeof(value));
+    };
+
+    for (const auto& kv : type->properties) {
+        const auto& prop = kv.second;
+        auto it = instance->properties.find(prop.name.hashCode());
+        if (it == instance->properties.end())
+            throw std::runtime_error("instance missing property in objectToCStruct");
+
+        Value val = it->second;
+
+        std::string ctypeStr;
+        if (prop.ctype.has_value())
+            ctypeStr = toUTF8StdString(prop.ctype.value());
+
+        auto writeByName = [&](const std::string& ctype) -> bool {
+            if (ctype == "float") { append(float(val.asReal())); return true; }
+            if (ctype == "double" || ctype == "real") { append(double(val.asReal())); return true; }
+            if (ctype == "int") { append(int32_t(val.asInt())); return true; }
+            if (ctype == "bool") { append(uint8_t(val.asBool() ? 1 : 0)); return true; }
+            return false;
+        };
+
+        if (!ctypeStr.empty()) {
+            if (writeByName(ctypeStr))
+                continue;
+            throw std::runtime_error("unsupported ctype annotation: " + ctypeStr);
+        }
+
+        if (isTypeSpec(prop.type)) {
+            ObjTypeSpec* ts = asTypeSpec(prop.type);
+            switch (ts->typeValue) {
+                case ValueType::Bool:
+                    append(uint8_t(val.asBool()));
+                    break;
+                case ValueType::Byte:
+                    append(uint8_t(val.asByte()));
+                    break;
+                case ValueType::Int:
+                    append(int32_t(val.asInt()));
+                    break;
+                case ValueType::Real:
+                    append(double(val.asReal()));
+                    break;
+                case ValueType::Enum:
+                    append(int16_t(val.asEnum()));
+                    break;
+                default:
+                    throw std::runtime_error("unsupported struct property type");
+            }
+        } else {
+            throw std::runtime_error("struct property has no builtin type");
+        }
+    }
+
+    return buffer;
 }
 
 ObjectInstance* VM::objectFromCStruct(ObjObjectType* type, const void* data, size_t len)
