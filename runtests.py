@@ -101,6 +101,31 @@ try:
         compProc = subprocess.run(cmd, capture_output=True, shell=False)
 
         passed = True
+        if compProc.returncode != 0:
+            print(f"Test {test} FAIL:")
+            print(f"-- return code {compProc.returncode} --")
+            if compProc.returncode < 0:
+                import signal
+                signum = -compProc.returncode
+                try:
+                    sig_name = signal.Signals(signum).name
+                except ValueError:
+                    sig_name = str(signum)
+                print(f"Process terminated by signal: {sig_name}")
+            print()
+            passed = False
+
+        crash_output = (b'segmentation fault' in compProc.stdout.lower() or
+                        b'segmentation fault' in compProc.stderr.lower() or
+                        b'abort' in compProc.stdout.lower() or
+                        b'abort' in compProc.stderr.lower())
+        if crash_output and passed:
+            print(f"Test {test} FAIL:")
+            print("-- abnormal termination message detected --")
+            print(compProc.stdout)
+            print(compProc.stderr)
+            print("--")
+            passed = False
         if os.path.exists(testout):
             with open(testout, mode='rb') as file:
                 expected = file.read()
