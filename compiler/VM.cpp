@@ -1347,6 +1347,19 @@ void VM::defineProperty(ObjString* name)
 
     ast::Access access = (!accessVal.isNil() && accessVal.isBool() && accessVal.asBool()) ? ast::Access::Private : ast::Access::Public;
     objType->properties[name->hash] = {name->s,propertyType,propertyInitial,access,objType};
+    objType->propertyOrder.push_back(name->hash);
+
+    // check module annotations for ctype
+    if (!thread->frames.empty()) {
+        auto frame = thread->frames.end()-1;
+        ObjModuleType* mod = asModuleType(frame->closure->function->moduleType);
+        auto itType = mod->propertyCTypes.find(objType->name.hashCode());
+        if (itType != mod->propertyCTypes.end()) {
+            auto itProp = itType->second.find(name->hash);
+            if (itProp != itType->second.end())
+                objType->properties[name->hash].ctype = itProp->second;
+        }
+    }
     popN(3);
 }
 
@@ -2598,24 +2611,63 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::ObjectType): {
                 ObjString* name = readString();
-                push(objVal(objectTypeVal(name->s, /*isActor=*/false)));
+                ObjObjectType* t = objectTypeVal(name->s, false);
+                if (!thread->frames.empty()) {
+                    auto frame = thread->frames.end()-1;
+                    ObjModuleType* mod = asModuleType(frame->closure->function->moduleType);
+                    auto it = mod->cstructArch.find(name->hash);
+                    if (it != mod->cstructArch.end()) {
+                        t->isCStruct = true;
+                        t->cstructArch = it->second;
+                    }
+                }
+                push(objVal(t));
                 break;
             }
             case asByte(OpCode::ActorType): {
                 ObjString* name = readString();
-                push(objVal(objectTypeVal(name->s, /*isActor=*/true)));
+                ObjObjectType* t = objectTypeVal(name->s, true);
+                if (!thread->frames.empty()) {
+                    auto frame = thread->frames.end()-1;
+                    ObjModuleType* mod = asModuleType(frame->closure->function->moduleType);
+                    auto it = mod->cstructArch.find(name->hash);
+                    if (it != mod->cstructArch.end()) {
+                        t->isCStruct = true;
+                        t->cstructArch = it->second;
+                    }
+                }
+                push(objVal(t));
                 break;
             }
             case asByte(OpCode::InterfaceType): {
                 // interface types are represented as object types (but are abstract - all abstract methods)
                 ObjString* name = readString();
-                push(objVal(objectTypeVal(name->s, /*isActor=*/false, /*isInterface=*/true)));
+                ObjObjectType* t = objectTypeVal(name->s, false, true);
+                if (!thread->frames.empty()) {
+                    auto frame = thread->frames.end()-1;
+                    ObjModuleType* mod = asModuleType(frame->closure->function->moduleType);
+                    auto it = mod->cstructArch.find(name->hash);
+                    if (it != mod->cstructArch.end()) {
+                        t->isCStruct = true;
+                        t->cstructArch = it->second;
+                    }
+                }
+                push(objVal(t));
                 break;
             }
             case asByte(OpCode::EnumerationType): {
                 ObjString* name = readString();
-                Value enumTypeVal = objVal(objectTypeVal(name->s, /*isActor=*/false, /*isInterface=*/false, /*isEnumeration=*/true));
-                push(enumTypeVal);
+                ObjObjectType* t = objectTypeVal(name->s, false, false, true);
+                if (!thread->frames.empty()) {
+                    auto frame = thread->frames.end()-1;
+                    ObjModuleType* mod = asModuleType(frame->closure->function->moduleType);
+                    auto it = mod->cstructArch.find(name->hash);
+                    if (it != mod->cstructArch.end()) {
+                        t->isCStruct = true;
+                        t->cstructArch = it->second;
+                    }
+                }
+                push(objVal(t));
                 break;
             }
             case asByte(OpCode::Property): {
@@ -3568,6 +3620,8 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                     argTypes.push_back(&ffi_type_sint32);
                 else if (type=="bool")
                     argTypes.push_back(&ffi_type_uint8);
+                else if (!type.empty() && type.back()=='*')
+                    argTypes.push_back(&ffi_type_pointer);
                 else
                     throw std::runtime_error("unsupported arg type: "+type);
             }
@@ -3610,6 +3664,7 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
     std::vector<float> floatVals(callSpec.argCount);
     std::vector<int> intVals(callSpec.argCount);
     std::vector<uint8_t> boolVals(callSpec.argCount);
+    std::vector<std::vector<uint8_t>> structBuffers(callSpec.argCount);
 
     for(int i=0;i<callSpec.argCount;i++) {
         if (spec->argTypes[i] == &ffi_type_double || spec->argTypes[i] == &ffi_type_float) {
@@ -3632,6 +3687,12 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                 throw std::invalid_argument("ffi arg not bool");
             boolVals[i] = argVector[i].asBool() ? 1 : 0;
             argValues[i] = &boolVals[i];
+        } else if (spec->argTypes[i] == &ffi_type_pointer) {
+            if (!isObjectInstance(argVector[i]))
+                throw std::invalid_argument("ffi arg not object instance for pointer");
+            ObjectInstance* inst = asObjectInstance(argVector[i]);
+            structBuffers[i] = objectToCStruct(inst);
+            argValues[i] = structBuffers[i].data();
         } else {
             throw std::runtime_error("unsupported ffi arg type");
         }
@@ -3669,13 +3730,20 @@ std::vector<uint8_t> VM::objectToCStruct(ObjectInstance* instance)
         throw std::runtime_error("objectToCStruct called on non-cstruct type");
 
     std::vector<uint8_t> buffer;
-    auto append = [&buffer](auto value) {
-        uint8_t* p = reinterpret_cast<uint8_t*>(&value);
-        buffer.insert(buffer.end(), p, p + sizeof(value));
+    size_t offset = 0;
+    size_t structAlign = 1;
+
+    auto appendPadded = [&](const void* data, size_t size, size_t align) {
+        size_t padding = (align - (offset % align)) % align;
+        buffer.insert(buffer.end(), padding, 0);
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(data);
+        buffer.insert(buffer.end(), p, p + size);
+        offset += padding + size;
+        structAlign = std::max(structAlign, align);
     };
 
-    for (const auto& kv : type->properties) {
-        const auto& prop = kv.second;
+    for (int32_t hash : type->propertyOrder) {
+        const auto& prop = type->properties.at(hash);
         auto it = instance->properties.find(prop.name.hashCode());
         if (it == instance->properties.end())
             throw std::runtime_error("instance missing property in objectToCStruct");
@@ -3687,10 +3755,10 @@ std::vector<uint8_t> VM::objectToCStruct(ObjectInstance* instance)
             ctypeStr = toUTF8StdString(prop.ctype.value());
 
         auto writeByName = [&](const std::string& ctype) -> bool {
-            if (ctype == "float") { append(float(val.asReal())); return true; }
-            if (ctype == "double" || ctype == "real") { append(double(val.asReal())); return true; }
-            if (ctype == "int") { append(int32_t(val.asInt())); return true; }
-            if (ctype == "bool") { append(uint8_t(val.asBool() ? 1 : 0)); return true; }
+            if (ctype == "float") { float f = float(val.asReal()); appendPadded(&f, sizeof(f), 4); return true; }
+            if (ctype == "double" || ctype == "real") { double d = val.asReal(); appendPadded(&d, sizeof(d), 8); return true; }
+            if (ctype == "int") { int32_t i = val.asInt(); appendPadded(&i, sizeof(i), 4); return true; }
+            if (ctype == "bool") { uint8_t b = val.asBool()?1:0; appendPadded(&b, sizeof(b),1); return true; }
             return false;
         };
 
@@ -3703,21 +3771,26 @@ std::vector<uint8_t> VM::objectToCStruct(ObjectInstance* instance)
         if (isTypeSpec(prop.type)) {
             ObjTypeSpec* ts = asTypeSpec(prop.type);
             switch (ts->typeValue) {
-                case ValueType::Bool:
-                    append(uint8_t(val.asBool()));
-                    break;
-                case ValueType::Byte:
-                    append(uint8_t(val.asByte()));
-                    break;
-                case ValueType::Int:
-                    append(int32_t(val.asInt()));
-                    break;
-                case ValueType::Real:
-                    append(double(val.asReal()));
-                    break;
-                case ValueType::Enum:
-                    append(int16_t(val.asEnum()));
-                    break;
+                case ValueType::Bool: {
+                    uint8_t b = val.asBool();
+                    appendPadded(&b, sizeof(b), 1);
+                    break; }
+                case ValueType::Byte: {
+                    uint8_t v = val.asByte();
+                    appendPadded(&v, sizeof(v), 1);
+                    break; }
+                case ValueType::Int: {
+                    int32_t i = val.asInt();
+                    appendPadded(&i, sizeof(i), 4);
+                    break; }
+                case ValueType::Real: {
+                    double d = val.asReal();
+                    appendPadded(&d, sizeof(d), 8);
+                    break; }
+                case ValueType::Enum: {
+                    int32_t e = val.asEnum();
+                    appendPadded(&e, sizeof(e), 4);
+                    break; }
                 default:
                     throw std::runtime_error("unsupported struct property type");
             }
@@ -3725,6 +3798,9 @@ std::vector<uint8_t> VM::objectToCStruct(ObjectInstance* instance)
             throw std::runtime_error("struct property has no builtin type");
         }
     }
+
+    size_t finalPad = (structAlign - (buffer.size() % structAlign)) % structAlign;
+    buffer.insert(buffer.end(), finalPad, 0);
 
     return buffer;
 }
