@@ -1089,7 +1089,10 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                 }
                 ObjDict* dict = asDict(indexable);
                 Value index = pop();
-                // TODO: bounds check
+                if (!dict->contains(index)) {
+                    runtimeError("KeyError: key '" + toString(index) + "' not found in dict.");
+                    return false;
+                }
                 Value result { dict->at(index) };
                 pop(); // discard indexable
                 push(result);

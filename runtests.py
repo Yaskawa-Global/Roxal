@@ -17,7 +17,7 @@ tests = [
     'comments', 'primitive1', 'constants', 'scopetest2', 'scopetest3',
     'andtest', 'ortest', 'not',
     'arith', 'factorial', 'defaultvalues',
-    'dict', 'dict2', 'list', 'list2', 'range', 'range2', 'enum1', 'enum2', 'enum3',
+    'dict', 'dict2', 'dict_keyerror', 'list', 'list2', 'range', 'range2', 'enum1', 'enum2', 'enum3',
     'unicode', 'dataflow1', 'signal_clock', 'signal_func_nocall', 'signal_func_exec', 'conversions1',
     'byteops',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'lambda1',
