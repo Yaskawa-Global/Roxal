@@ -5,6 +5,7 @@
 #include <functional>
 #include <vector>
 #include <tuple>
+#include <cassert>
 
 #include <core/common.h>
 
