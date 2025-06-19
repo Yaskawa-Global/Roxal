@@ -2817,6 +2817,9 @@ void VM::resetStack()
     thread->frames.reserve(128);
     thread->frameStart = false;
 
+    for (auto* upvalue : thread->openUpvalues) {
+        upvalue->decRef();
+    }
     thread->openUpvalues.clear();
 }
 
