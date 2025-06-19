@@ -843,19 +843,29 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             }
             case ObjType::Native: {
                 NativeFn native = asNative(callee)->function;
-                Value result { (this->*native)(callSpec.argCount, &(*thread->stackTop) - callSpec.argCount) };
-                *(thread->stackTop - callSpec.argCount - 1) = result;
-                popN(callSpec.argCount);
-                return true;
+                try {
+                    Value result { (this->*native)(callSpec.argCount, &(*thread->stackTop) - callSpec.argCount) };
+                    *(thread->stackTop - callSpec.argCount - 1) = result;
+                    popN(callSpec.argCount);
+                    return true;
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return false;
+                }
             }
             case ObjType::BoundNative: {
                 ObjBoundNative* bound { asBoundNative(callee) };
                 *(thread->stackTop - callSpec.argCount - 1) = bound->receiver;
                 NativeFn native = bound->function;
-                Value result { (this->*native)(callSpec.argCount+1, &(*thread->stackTop) - callSpec.argCount - 1) };
-                *(thread->stackTop - callSpec.argCount - 1) = result;
-                popN(callSpec.argCount);
-                return true;
+                try {
+                    Value result { (this->*native)(callSpec.argCount+1, &(*thread->stackTop) - callSpec.argCount - 1) };
+                    *(thread->stackTop - callSpec.argCount - 1) = result;
+                    popN(callSpec.argCount);
+                    return true;
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return false;
+                }
             }
             case ObjType::Instance: {
                 runtimeError("object instances are not callable.");
@@ -2996,6 +3006,14 @@ Value VM::fork_builtin(int argCount, Value* args)
 {
     if ((argCount != 1) || !isClosure(args[0]))
         throw std::invalid_argument("fork expects single callable argument (e.g. func or proc)");
+
+    ObjClosure* closure = asClosure(args[0]);
+    
+    // Check if closure captures any outer variables (has upvalues)
+    if (!closure->upvalues.empty()) {
+        throw std::runtime_error("fork cannot execute functions that capture variables from outer scopes. "
+                                "The function must only use its parameters and global variables.");
+    }
 
     auto newThread = std::make_shared<Thread>();
     threads.store(newThread->id(), newThread);
