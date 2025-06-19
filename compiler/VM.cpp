@@ -2795,7 +2795,7 @@ void VM::resetStack()
     thread->frames.reserve(128);
     thread->frameStart = false;
 
-    openUpvalues.clear(); // TODO: need to deref or delete?
+    openUpvalues.clear();
 }
 
 
