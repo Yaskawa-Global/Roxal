@@ -62,6 +62,18 @@ DataflowEngine::DataflowEngine()
     m_actorInstance = roxal::nilVal();
 }
 
+void DataflowEngine::startActor()
+{
+    if (m_actorThread != nullptr)
+        return;
+
+    auto& vm = roxal::VM::instance();
+    roxal::ObjObjectType* t = roxal::objectTypeVal(roxal::toUnicodeString("_EngineActor"), true);
+    m_actorInstance = roxal::objVal(roxal::actorInstanceVal(t));
+    m_actorThread = std::make_shared<roxal::VM::Thread>();
+    m_actorThread->act(m_actorInstance);
+}
+
 DataflowEngine::~DataflowEngine()
 {
     clear();
@@ -279,13 +291,10 @@ void DataflowEngine::tick(bool waitForTickStart)
 void DataflowEngine::queueTicks(int count)
 {
     if (count <= 0) return;
+
+    startActor();
+
     auto& vm = roxal::VM::instance();
-    if (m_actorThread == nullptr) {
-        roxal::ObjObjectType* t = roxal::objectTypeVal(roxal::toUnicodeString("_EngineActor"), true);
-        m_actorInstance = roxal::objVal(roxal::actorInstanceVal(t));
-        m_actorThread = std::make_shared<roxal::VM::Thread>();
-        m_actorThread->act(m_actorInstance);
-    }
     roxal::ActorInstance* inst = roxal::asActorInstance(m_actorInstance);
     for(int i=0;i<count;i++) {
         roxal::ObjBoundNative* bn = roxal::boundNativeVal(m_actorInstance, &roxal::VM::engine_tick_actor_native);

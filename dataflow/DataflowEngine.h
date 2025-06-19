@@ -49,8 +49,13 @@ public:
     //  will rebuild network and restart tick count if network modified
     void tick(bool waitForTickStart = true);
 
+    // start the engine actor thread
+    void startActor();
+
     // queue ticks to be executed on the engine actor thread
     void queueTicks(int count = 1);
+
+    roxal::Value actorInstance() const { return m_actorInstance; }
 
     // clear everything ready for new network to be instantiated
     void clear();

@@ -1,4 +1,5 @@
 c = clock(10)
+_engine_start()
 _engine_tick()
 sleep(5000)
 _engine_tick()

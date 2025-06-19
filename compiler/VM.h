@@ -294,9 +294,14 @@ protected:
     Value msSleep_native(int argCount, Value* args);
     Value sleep_native(int argCount, Value* args);
     Value clock_signal_native(int argCount, Value* args);
+    Value engine_start_native(int argCount, Value* args);
     Value engine_tick_native(int argCount, Value* args);
+    Value engine_run_native(int argCount, Value* args);
+    Value engine_run_for_native(int argCount, Value* args);
 public:
     Value engine_tick_actor_native(int argCount, Value* args);
+    Value engine_run_actor_native(int argCount, Value* args);
+    Value engine_run_for_actor_native(int argCount, Value* args);
 protected:
     Value loadlib_native(int argCount, Value* args);
     Value ffi_native(int argCount, Value* args);
