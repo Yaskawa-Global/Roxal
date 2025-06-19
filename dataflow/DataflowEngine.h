@@ -2,8 +2,10 @@
 
 #include "Signal.h"
 #include "Func.h"
+#include "compiler/VM.h"
 
 #include <set>
+#include <memory>
 
 namespace df {
 
@@ -46,6 +48,9 @@ public:
     //  (if waitForTickStart==true and currentTime() is not yet tick-number*tick-period, wait until then)
     //  will rebuild network and restart tick count if network modified
     void tick(bool waitForTickStart = true);
+
+    // queue ticks to be executed on the engine actor thread
+    void queueTicks(int count = 1);
 
     // clear everything ready for new network to be instantiated
     void clear();
@@ -145,6 +150,9 @@ private:
 
     TimePoint nextPeriodOnPeriodBoundary(TimeDuration periodMicrosecs) const;
     TimePoint nextPeriodOnPeriodBoundary(double freq) const;
+
+    roxal::Value m_actorInstance;
+    std::shared_ptr<roxal::VM::Thread> m_actorThread;
 
 
     friend class Signal;

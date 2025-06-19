@@ -322,34 +322,44 @@ void VM::Thread::act(Value actorInstance)
 
             if (callInfo.valid()) {
 
-                auto closure = asBoundMethod(callInfo.callee)->method;
+                if (isBoundMethod(callInfo.callee)) {
+                    auto closure = asBoundMethod(callInfo.callee)->method;
 
+                    for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
+                        push(*it);
 
-                for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
-                    push(*it);
+                    vm.call(closure, callInfo.callSpec);
 
-                vm.call(closure,callInfo.callSpec);
+                    auto result = vm.execute();
 
-                auto result = vm.execute();
-
-                if (result.first == InterpretResult::OK) {
-
-                    if (callInfo.returnPromise != nullptr) {
-                        Value ret = result.second;
-                        if (!ret.isPrimitive())
-                            ret = ret.clone();
-                        callInfo.returnPromise->set_value(ret);
+                    if (result.first == InterpretResult::OK) {
+                        if (callInfo.returnPromise != nullptr) {
+                            Value ret = result.second;
+                            if (!ret.isPrimitive())
+                                ret = ret.clone();
+                            callInfo.returnPromise->set_value(ret);
+                        }
+                    } else {
+                        if (callInfo.returnPromise != nullptr)
+                            callInfo.returnPromise->set_value(nilVal());
+                        quit = true;
+                        break;
                     }
 
-                }
-                else {
-                    // error occured, terminate actor (thread)
-                    if (callInfo.returnPromise != nullptr)
-                        callInfo.returnPromise->set_value(nilVal());
-                    quit = true;
-                    break;
-                }
+                    popN(callInfo.callSpec.argCount);
 
+                } else if (isBoundNative(callInfo.callee)) {
+                    ObjBoundNative* bn = asBoundNative(callInfo.callee);
+
+                    for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
+                        push(*it);
+
+                    NativeFn native = bn->function;
+                    (vm.*native)(callInfo.callSpec.argCount + 1,
+                                &(*thread->stackTop) - callInfo.callSpec.argCount - 1);
+
+                    popN(callInfo.callSpec.argCount);
+                }
 
             }
 
@@ -3470,8 +3480,13 @@ Value VM::engine_tick_native(int argCount, Value* args)
     int count = 1;
     if (argCount == 1)
         count = args[0].asInt();
-    for(int i=0;i<count;++i)
-        df::DataflowEngine::instance()->tick(false);
+    df::DataflowEngine::instance()->queueTicks(count);
+    return nilVal();
+}
+
+Value VM::engine_tick_actor_native(int argCount, Value* args)
+{
+    df::DataflowEngine::instance()->tick(false);
     return nilVal();
 }
 

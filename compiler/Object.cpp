@@ -1344,8 +1344,9 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
 {
     // queue producer for consumer Thread::act()
     #ifdef DEBUG_BUILD
-    assert(isBoundMethod(callee));
-    assert(isActorInstance(asBoundMethod(callee)->receiver));
+    assert(isBoundMethod(callee) || isBoundNative(callee));
+    Value recv = isBoundMethod(callee) ? asBoundMethod(callee)->receiver : asBoundNative(callee)->receiver;
+    assert(isActorInstance(recv));
     #endif
 
     std::lock_guard<std::mutex> lock { queueMutex };
@@ -1362,13 +1363,14 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
     }
     callInfo.returnPromise = nullptr;
 
-    // if method is a func, create promise for return value
-    auto funcObj = asBoundMethod(callee)->method->function;
-    if (funcObj->funcType.has_value()) {
-        ptr<roxal::type::Type> funcType { funcObj->funcType.value() };
-        assert(funcType->func.has_value());
-        if (!funcType->func.value().isProc) {
-            callInfo.returnPromise = std::make_shared<std::promise<Value>>();
+    if (isBoundMethod(callee)) {
+        auto funcObj = asBoundMethod(callee)->method->function;
+        if (funcObj->funcType.has_value()) {
+            ptr<roxal::type::Type> funcType { funcObj->funcType.value() };
+            assert(funcType->func.has_value());
+            if (!funcType->func.value().isProc) {
+                callInfo.returnPromise = std::make_shared<std::promise<Value>>();
+            }
         }
     }
 
