@@ -132,7 +132,12 @@ public:
             quit=false;
           }
         Thread(Thread&) = delete;
-        virtual ~Thread() {}
+        virtual ~Thread() {
+            // Clean up any remaining open upvalues
+            for (auto* upvalue : openUpvalues) {
+                upvalue->decRef();
+            }
+        }
 
         uint64_t id() { return thisid; }
 
@@ -173,6 +178,8 @@ public:
         uint64_t threadSleepUntil;
 
         InterpretResult result;
+
+        std::list<ObjUpvalue*> openUpvalues;
 
     private:
         ptr<std::thread> osthread;
@@ -224,7 +231,6 @@ protected:
     ObjModuleType* sysModule;
     ObjModuleType* mathModule;
 
-    std::list<ObjUpvalue*> openUpvalues; // FIXME: move to Thread, figure out if cross-thread closures are an issue
 
     ObjString* initString;
 

@@ -1254,6 +1254,7 @@ VM::BindResult VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
 
 ObjUpvalue* VM::captureUpvalue(Value& local)
 {
+    auto& openUpvalues = thread->openUpvalues;
     auto begin = openUpvalues.begin();
     auto end = openUpvalues.end();
     auto it { begin };
@@ -1277,6 +1278,7 @@ ObjUpvalue* VM::captureUpvalue(Value& local)
 
 void VM::closeUpvalues(Value* last)
 {
+    auto& openUpvalues = thread->openUpvalues;
     while (!openUpvalues.empty() && (openUpvalues.front()->location >= last)) {
         ObjUpvalue* upvalue = openUpvalues.front();
         upvalue->closed = *upvalue->location;
@@ -2815,7 +2817,7 @@ void VM::resetStack()
     thread->frames.reserve(128);
     thread->frameStart = false;
 
-    openUpvalues.clear();
+    thread->openUpvalues.clear();
 }
 
 
