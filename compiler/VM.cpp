@@ -2416,10 +2416,20 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     push(result);
 
                     // For nested execute() calls, only terminate when we return to entry depth
-                    if (thread->frames.size() <= frame_depth_on_entry) {
+                    if (thread->execute_depth > 1 && thread->frames.size() <= frame_depth_on_entry) {
                         Value returnVal = pop();
 
                         freeObjects(); // Always cleanup objects on scope exit for deterministic destruction
+                        
+                        thread->execute_depth--;
+                        return std::make_pair(InterpretResult::OK,returnVal);
+                    }
+                    
+                    // For top-level execute(), use original termination logic
+                    if (thread->execute_depth == 1 && thread->frames.empty()) {
+                        Value returnVal = pop();
+
+                        freeObjects();
                         
                         thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,returnVal);
@@ -2442,8 +2452,16 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     Value result = opReturn();
 
                     // For nested execute() calls, only terminate when we return to entry depth
-                    if (thread->frames.size() <= frame_depth_on_entry) {
+                    if (thread->execute_depth > 1 && thread->frames.size() <= frame_depth_on_entry) {
                         freeObjects(); // Always cleanup objects on scope exit for deterministic destruction
+                        
+                        thread->execute_depth--;
+                        return std::make_pair(InterpretResult::OK,result);
+                    }
+                    
+                    // For top-level execute(), use original termination logic
+                    if (thread->execute_depth == 1 && thread->frames.empty()) {
+                        freeObjects();
                         
                         thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,result);
