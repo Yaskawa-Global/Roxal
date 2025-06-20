@@ -15,6 +15,8 @@
 namespace roxal { struct ObjObjectType; }
 using roxal::ObjObjectType;
 
+namespace df { class DataflowEngine; }
+
 struct FFIWrapper {
     ffi_cif cif;
     void* fn;
@@ -231,6 +233,10 @@ protected:
     ObjModuleType* sysModule;
     ObjModuleType* mathModule;
 
+    // builtin dataflow engine actor
+    std::shared_ptr<df::DataflowEngine> dataflowEngine;
+    Value dataflowEngineActor;
+    std::shared_ptr<VM::Thread> dataflowEngineThread;
 
     ObjString* initString;
 
@@ -294,14 +300,13 @@ protected:
     Value msSleep_native(int argCount, Value* args);
     Value sleep_native(int argCount, Value* args);
     Value clock_signal_native(int argCount, Value* args);
-    Value engine_start_native(int argCount, Value* args);
-    Value engine_tick_native(int argCount, Value* args);
-    Value engine_run_native(int argCount, Value* args);
-    Value engine_run_for_native(int argCount, Value* args);
+    Value engine_stop_native(int argCount, Value* args);
+    
+    // DataflowEngine actor native methods
+    Value dataflow_tick_native(int argCount, Value* args);
+    Value dataflow_run_native(int argCount, Value* args);
+    Value dataflow_run_for_native(int argCount, Value* args);
 public:
-    Value engine_tick_actor_native(int argCount, Value* args);
-    Value engine_run_actor_native(int argCount, Value* args);
-    Value engine_run_for_actor_native(int argCount, Value* args);
 protected:
     Value loadlib_native(int argCount, Value* args);
     Value ffi_native(int argCount, Value* args);

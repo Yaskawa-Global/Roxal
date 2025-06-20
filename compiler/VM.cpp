@@ -82,6 +82,16 @@ VM::VM()
     sysModule->incRef();
     mathModule->incRef();
 
+    // Initialize dataflow engine as builtin actor
+    dataflowEngine = df::DataflowEngine::instance();
+    ObjObjectType* dataflowType = objectTypeVal(toUnicodeString("_DataflowEngine"), true);
+    dataflowEngineActor = objVal(actorInstanceVal(dataflowType));
+    dataflowEngineThread = std::make_shared<VM::Thread>();
+    dataflowEngineThread->act(dataflowEngineActor);
+    
+    // Make dataflow engine available as global variable
+    globals.storeGlobal(toUnicodeString("_dataflow"), dataflowEngineActor);
+
     defineBuiltinFunctions();
     defineBuiltinMethods();
     defineNativeFunctions();
@@ -97,6 +107,10 @@ VM::~VM()
 {
     for(auto moduleType : ObjModuleType::allModules.get())
         moduleType->vars.clear();
+
+    // Clean up dataflow engine resources before globals cleanup
+    dataflowEngineActor = nilVal();  // This will call decRef() via Value destructor
+    dataflowEngineThread.reset();    // Release the thread
 
     globals.clearGlobals();
 
@@ -2941,6 +2955,10 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Matrix, "trace", &VM::matrix_trace_builtin);
     defineBuiltinMethod(ValueType::Matrix, "norm", &VM::matrix_norm_builtin);
     defineBuiltinMethod(ValueType::Matrix, "sum", &VM::matrix_sum_builtin);
+
+    defineBuiltinMethod(ValueType::Actor, "tick", &VM::dataflow_tick_native);
+    defineBuiltinMethod(ValueType::Actor, "run", &VM::dataflow_run_native);
+    defineBuiltinMethod(ValueType::Actor, "runFor", &VM::dataflow_run_for_native);
 }
 
 void VM::defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn)
@@ -3364,10 +3382,7 @@ void VM::defineNativeFunctions()
     addSys("_ussleep", &VM::usSleep_native);
     addSys("_mssleep", &VM::msSleep_native);
     addSys("clock", &VM::clock_signal_native);
-    addSys("_engine_start", &VM::engine_start_native);
-    addSys("_engine_tick", &VM::engine_tick_native);
-    addSys("_engine_run", &VM::engine_run_native);
-    addSys("_engine_run_for", &VM::engine_run_for_native);
+    addSys("_engine_stop", &VM::engine_stop_native);
     addSys("loadlib", &VM::loadlib_native);
     //addSys("_sleep", &VM::sleep_native);
 
@@ -3483,64 +3498,30 @@ Value VM::clock_signal_native(int argCount, Value* args)
     return objVal(signalVal(sig));
 }
 
-Value VM::engine_start_native(int argCount, Value* args)
+Value VM::engine_stop_native(int argCount, Value* args)
 {
-    df::DataflowEngine::instance()->startActor();
+    df::DataflowEngine::instance()->stop();
     return nilVal();
 }
 
-Value VM::engine_tick_native(int argCount, Value* args)
-{
-    int count = 1;
-    if (argCount == 1)
-        count = args[0].asInt();
-    df::DataflowEngine::instance()->queueTicks(count);
-    return nilVal();
-}
-
-Value VM::engine_run_native(int argCount, Value* args)
-{
-    auto engine = df::DataflowEngine::instance();
-    engine->startActor();
-    auto& vm = VM::instance();
-    roxal::ActorInstance* inst = roxal::asActorInstance(engine->actorInstance());
-    roxal::ObjBoundNative* bn = roxal::boundNativeVal(engine->actorInstance(), &VM::engine_run_actor_native);
-    inst->queueCall(roxal::objVal(bn), roxal::CallSpec(0), &*vm.thread->stackTop);
-    return nilVal();
-}
-
-Value VM::engine_run_for_native(int argCount, Value* args)
-{
-    if (argCount != 1 || !args[0].isNumber())
-        throw std::invalid_argument("_engine_run_for expects single numeric argument");
-
-    auto engine = df::DataflowEngine::instance();
-    engine->startActor();
-    auto& vm = VM::instance();
-    roxal::ActorInstance* inst = roxal::asActorInstance(engine->actorInstance());
-    roxal::ObjBoundNative* bn = roxal::boundNativeVal(engine->actorInstance(), &VM::engine_run_for_actor_native);
-    inst->queueCall(roxal::objVal(bn), roxal::CallSpec(1), &*vm.thread->stackTop);
-    return nilVal();
-}
-
-Value VM::engine_tick_actor_native(int argCount, Value* args)
+Value VM::dataflow_tick_native(int argCount, Value* args)
 {
     df::DataflowEngine::instance()->tick(false);
     return nilVal();
 }
 
-Value VM::engine_run_actor_native(int argCount, Value* args)
+Value VM::dataflow_run_native(int argCount, Value* args)
 {
     df::DataflowEngine::instance()->run();
     return nilVal();
 }
 
-Value VM::engine_run_for_actor_native(int argCount, Value* args)
+Value VM::dataflow_run_for_native(int argCount, Value* args)
 {
     if (argCount != 2 || !args[1].isNumber())
-        throw std::invalid_argument("_engine_run_for expects single numeric argument");
+        throw std::invalid_argument("runFor expects single numeric argument");
 
-    auto duration = roxal::TimeDuration::microSecs(args[1].asInt());
+    auto duration = df::TimeDuration::microSecs(args[1].asInt());
     df::DataflowEngine::instance()->runFor(duration);
     return nilVal();
 }

@@ -39,6 +39,7 @@ ValueType Obj::valueType() const
         case ObjType::Vector: return ValueType::Vector;
         case ObjType::Matrix: return ValueType::Matrix;
         case ObjType::Instance: return static_cast<const ObjObjectType*>(this)->isActor ? ValueType::Actor : ValueType::Object;
+        case ObjType::Actor: return ValueType::Actor;
         default: return ValueType::Nil;
     }
 }

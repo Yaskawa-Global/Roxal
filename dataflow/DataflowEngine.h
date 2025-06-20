@@ -43,19 +43,15 @@ public:
     // Run the engine
     void run(); // call tick() forever
     void runFor(TimeDuration duration); // call tick() for the duration
+    
+    // Stop the engine (causes run() to exit)
+    void stop();
 
     // run for single engine tick (GCD of all clock signals)
     //  (if waitForTickStart==true and currentTime() is not yet tick-number*tick-period, wait until then)
     //  will rebuild network and restart tick count if network modified
     void tick(bool waitForTickStart = true);
 
-    // start the engine actor thread
-    void startActor();
-
-    // queue ticks to be executed on the engine actor thread
-    void queueTicks(int count = 1);
-
-    roxal::Value actorInstance() const { return m_actorInstance; }
 
     // clear everything ready for new network to be instantiated
     void clear();
@@ -103,6 +99,7 @@ private:
     void invokeTickCallbacks();
 
     bool m_networkModified;
+    std::atomic<bool> m_shouldStop{false};
 
     void addSignal(ptr<Signal> signal);
     void addFunc(ptr<Func> func);
@@ -155,9 +152,6 @@ private:
 
     TimePoint nextPeriodOnPeriodBoundary(TimeDuration periodMicrosecs) const;
     TimePoint nextPeriodOnPeriodBoundary(double freq) const;
-
-    roxal::Value m_actorInstance;
-    std::shared_ptr<roxal::VM::Thread> m_actorThread;
 
 
     friend class Signal;

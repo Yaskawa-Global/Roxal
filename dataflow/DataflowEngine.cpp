@@ -58,21 +58,8 @@ DataflowEngine::DataflowEngine()
     assert(TimeDuration::secs(1).frequency() == 1.0);
     m_runStart = TimePoint::zero();
     m_tickNumber = 0;
-
-    m_actorInstance = roxal::nilVal();
 }
 
-void DataflowEngine::startActor()
-{
-    if (m_actorThread != nullptr)
-        return;
-
-    auto& vm = roxal::VM::instance();
-    roxal::ObjObjectType* t = roxal::objectTypeVal(roxal::toUnicodeString("_EngineActor"), true);
-    m_actorInstance = roxal::objVal(roxal::actorInstanceVal(t));
-    m_actorThread = std::make_shared<roxal::VM::Thread>();
-    m_actorThread->act(m_actorInstance);
-}
 
 DataflowEngine::~DataflowEngine()
 {
@@ -105,12 +92,11 @@ void DataflowEngine::clear()
     m_tickPeriod = TimeDuration::zero();
     m_runStart = TimePoint::zero();
     m_tickNumber = 0;
+}
 
-    if (m_actorThread) {
-        m_actorThread->join();
-        m_actorThread.reset();
-    }
-    m_actorInstance = roxal::nilVal();
+void DataflowEngine::stop()
+{
+    m_shouldStop = true;
 }
 
 
@@ -125,6 +111,7 @@ TimeDuration DataflowEngine::tickPeriod() const
 
 
 void DataflowEngine::run() {
+    m_shouldStop = false;  // Reset the stop flag
     runFor(TimeDuration::max());
 }
 
@@ -143,8 +130,8 @@ void DataflowEngine::runFor(TimeDuration duration)
     #endif
 
 
-    // keep running until we are out of time
-    while (currentTime() < runUntil) {
+    // keep running until we are out of time or stop is requested
+    while (currentTime() < runUntil && !m_shouldStop) {
 
         m_tickStart = m_runStart + m_tickPeriod*m_tickNumber;
         //auto nextTickStart = m_tickStart + m_tickPeriod;
@@ -288,19 +275,6 @@ void DataflowEngine::tick(bool waitForTickStart)
     m_tickNumber++;
 }
 
-void DataflowEngine::queueTicks(int count)
-{
-    if (count <= 0) return;
-
-    startActor();
-
-    auto& vm = roxal::VM::instance();
-    roxal::ActorInstance* inst = roxal::asActorInstance(m_actorInstance);
-    for(int i=0;i<count;i++) {
-        roxal::ObjBoundNative* bn = roxal::boundNativeVal(m_actorInstance, &roxal::VM::engine_tick_actor_native);
-        inst->queueCall(roxal::objVal(bn), roxal::CallSpec(0), &*vm.thread->stackTop);
-    }
-}
 
 
 
