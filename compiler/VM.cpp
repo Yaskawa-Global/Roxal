@@ -2421,7 +2421,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
                         freeObjects(); // Always cleanup objects on scope exit for deterministic destruction
                         
-                        thread->execute_depth--;
+                        if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,returnVal);
                     }
                     
@@ -2431,7 +2431,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
                         freeObjects();
                         
-                        thread->execute_depth--;
+                        if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,returnVal);
                     }
 
@@ -2455,7 +2455,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     if (thread->execute_depth > 1 && thread->frames.size() <= frame_depth_on_entry) {
                         freeObjects(); // Always cleanup objects on scope exit for deterministic destruction
                         
-                        thread->execute_depth--;
+                        if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,result);
                     }
                     
@@ -2463,7 +2463,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     if (thread->execute_depth == 1 && thread->frames.empty()) {
                         freeObjects();
                         
-                        thread->execute_depth--;
+                        if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,result);
                     }
 
@@ -2939,7 +2939,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
     } // for
 
-    thread->execute_depth--;
+    if (thread->execute_depth > 0) thread->execute_depth--;
     return std::make_pair(InterpretResult::OK,nilVal());
 
 }
