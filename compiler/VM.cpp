@@ -693,8 +693,19 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
         auto name = toUTF8StdString(roxal::asClosure(closureVal)->function->name);
         auto node = df::Func::newFunc<df::FuncNode>(name, closureVal, constArgs, sigArgs);
+        auto outputs = node->outputs();
         popN(callSpec.argCount + 1);
-        push(nilVal());
+        if (outputs.size() == 1) {
+            push(objVal(signalVal(outputs[0])));
+        } else if (outputs.empty()) {
+            push(nilVal());
+        } else {
+            std::vector<Value> outVals;
+            outVals.reserve(outputs.size());
+            for(const auto& s : outputs)
+                outVals.push_back(objVal(signalVal(s)));
+            push(objVal(listVal(outVals)));
+        }
         return true;
     }
 
