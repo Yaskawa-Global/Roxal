@@ -1,4 +1,4 @@
-hello from f1() thread id:2
-hello from f2() thread id:3
+hello from f1() thread id:3
+hello from f2() thread id:4
 f2 exited
 f1 exited

@@ -3,9 +3,8 @@ func add(x:int, y:int) -> int:
   return x + y
 
 c = clock(10)
-_engine_start()
 add(c, 1)
-_engine_tick()
+_dataflow.tick()
 _ussleep(1000)
-_engine_tick()
+_dataflow.tick()
 _ussleep(1000)

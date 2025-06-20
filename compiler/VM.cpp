@@ -109,8 +109,15 @@ VM::~VM()
         moduleType->vars.clear();
 
     // Clean up dataflow engine resources before globals cleanup
+    // First stop the dataflow engine and its actor thread properly
+    if (dataflowEngine) {
+        dataflowEngine->stop(); // Stop the engine's run loop
+    }
+    if (dataflowEngineThread) {
+        dataflowEngineThread->join(); // This will set quit=true and wait for thread to finish
+        dataflowEngineThread.reset(); // Release the thread
+    }
     dataflowEngineActor = nilVal();  // This will call decRef() via Value destructor
-    dataflowEngineThread.reset();    // Release the thread
 
     globals.clearGlobals();
 
@@ -121,8 +128,13 @@ VM::~VM()
     df::DataflowEngine::instance()->clear();
 
     freeObjects();
+    
+    // Final cleanup pass for any objects that became unreferenced during destructor
+    freeObjects();
 
     #ifdef DEBUG_TRACE_MEMORY
+    // Try one more cleanup pass right before reporting
+    freeObjects();
     outputAllocatedObjs();
     #endif
 }
@@ -961,7 +973,57 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
         return invokeFromType(instance->instanceType, name, callSpec);
     }
     else if (isActorInstance(receiver)) {
-        throw std::runtime_error("invoke() for actor instance unimplemented");//FIXME
+        ActorInstance* instance = asActorInstance(receiver);
+
+        // check to ensure name isn't a prop with a func in it
+        auto propIt = instance->properties.find(name->hash);
+        if (propIt != instance->properties.end()) { // it is a prop
+            Value value { propIt->second };
+            *(thread->stackTop - callSpec.argCount - 1) = value;
+            return callValue(value, callSpec);
+        }
+
+        // Try to invoke from the actor's type (user-defined methods)
+        auto methodIt = instance->instanceType->methods.find(name->hash);
+        if (methodIt != instance->instanceType->methods.end()) {
+            const auto& methodInfo = methodIt->second;
+            if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
+                runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+                return false;
+            }
+            Value method { methodInfo.closure };
+            return call(asClosure(method), callSpec);
+        }
+
+        // Check builtin methods (actors, vectors, matrices, etc.)
+        auto vt = receiver.type();
+        auto mit = builtinMethods.find(vt);
+        if (mit != builtinMethods.end()) {
+            auto it = mit->second.find(name->hash);
+            if (it != mit->second.end()) {
+                NativeFn fn = it->second;
+                
+                if (std::this_thread::get_id() == instance->thread_id) {
+                    // Same thread - call directly
+                    Value result { (this->*fn)(callSpec.argCount+1, &(*thread->stackTop) - callSpec.argCount - 1) };
+                    *(thread->stackTop - callSpec.argCount - 1) = result;
+                    popN(callSpec.argCount);
+                    return true;
+                } else {
+                    // Different thread - queue the call
+                    ObjBoundNative* boundNative = boundNativeVal(receiver, fn);
+                    Value callee = objVal(boundNative);
+                    Value future = instance->queueCall(callee, callSpec, &(*thread->stackTop));
+                    
+                    popN(callSpec.argCount + 1); // args & receiver
+                    push(future);
+                    return true;
+                }
+            }
+        }
+
+        runtimeError("Undefined method or property '%s' for actor instance.", toUTF8StdString(name->s).c_str());
+        return false;
     }
     else {
         if (receiver.isObj()) {
@@ -1668,6 +1730,20 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                         if (br == BindResult::Private)
                             return errorReturn;
 
+                        // Check builtin methods (actors, vectors, matrices, etc.)
+                        auto vt = inst.type();
+                        auto mit = builtinMethods.find(vt);
+                        if (mit != builtinMethods.end()) {
+                            auto methodIt = mit->second.find(name->hash);
+                            if (methodIt != mit->second.end()) {
+                                NativeFn fn = methodIt->second;
+                                ObjBoundNative* boundNative = boundNativeVal(inst, fn);
+                                pop();
+                                push(objVal(boundNative));
+                                break;
+                            }
+                        }
+
                         runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(actorInst->instanceType->name)+"'.");
                         return errorReturn;
                     }
@@ -1776,6 +1852,20 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                             break;
                         if (br == BindResult::Private)
                             return errorReturn;
+
+                        // Check builtin methods (actors, vectors, matrices, etc.)
+                        auto vt = inst.type();
+                        auto mit = builtinMethods.find(vt);
+                        if (mit != builtinMethods.end()) {
+                            auto methodIt = mit->second.find(name->hash);
+                            if (methodIt != mit->second.end()) {
+                                NativeFn fn = methodIt->second;
+                                ObjBoundNative* boundNative = boundNativeVal(inst, fn);
+                                pop();
+                                push(objVal(boundNative));
+                                break;
+                            }
+                        }
 
                         runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(actorInst->instanceType->name)+"'.");
                         return errorReturn;
