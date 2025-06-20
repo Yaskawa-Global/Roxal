@@ -88,7 +88,7 @@ VM::VM()
     dataflowEngineActor = objVal(actorInstanceVal(dataflowType));
     dataflowEngineThread = std::make_shared<VM::Thread>();
     dataflowEngineThread->act(dataflowEngineActor);
-    
+
     // Make dataflow engine available as global variable
     globals.storeGlobal(toUnicodeString("_dataflow"), dataflowEngineActor);
 
@@ -128,7 +128,7 @@ VM::~VM()
     df::DataflowEngine::instance()->clear();
 
     freeObjects();
-    
+
     // Final cleanup pass for any objects that became unreferenced during destructor
     freeObjects();
 
@@ -222,7 +222,7 @@ VM::InterpretResult VM::interpretLine(std::istream& linestream)
 
     try {
         function = compiler.compile(linestream, "cli", replModule);
-    
+
     } catch (std::exception& e) {
         return InterpretResult::CompileError;
     }
@@ -925,13 +925,22 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
 std::pair<VM::InterpretResult,Value> VM::callAndExec(ObjClosure* closure, const std::vector<Value>& args)
 {
-    push(objVal(closure));
+    // Push arguments first, then closure (to match OpCode::Call stack layout)
     for(const auto& a : args)
         push(a);
+    push(objVal(closure));
     CallSpec spec(args.size());
     if(!call(closure, spec))
         return { InterpretResult::RuntimeError, nilVal() };
-    return execute();
+
+    auto result = execute();
+
+    // Clean up arguments from stack (following Thread::act() pattern)
+    if (result.first == InterpretResult::OK) {
+        popN(spec.argCount);
+    }
+
+    return result;
 }
 
 
@@ -1002,7 +1011,7 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
             auto it = mit->second.find(name->hash);
             if (it != mit->second.end()) {
                 NativeFn fn = it->second;
-                
+
                 if (std::this_thread::get_id() == instance->thread_id) {
                     // Same thread - call directly
                     Value result { (this->*fn)(callSpec.argCount+1, &(*thread->stackTop) - callSpec.argCount - 1) };
@@ -1014,7 +1023,7 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                     ObjBoundNative* boundNative = boundNativeVal(receiver, fn);
                     Value callee = objVal(boundNative);
                     Value future = instance->queueCall(callee, callSpec, &(*thread->stackTop));
-                    
+
                     popN(callSpec.argCount + 1); // args & receiver
                     push(future);
                     return true;
@@ -1512,11 +1521,14 @@ void VM::defineNative(const std::string& name, NativeFn function)
 }
 
 
-
 std::pair<VM::InterpretResult,Value> VM::execute()
 {
     if (thread->frames.empty() || thread->frames.back().closure->function->chunk->code.size()==0)
         return std::make_pair(InterpretResult::OK,nilVal()); // nothing to execute
+
+    // Track execution depth for nested calls
+    thread->execute_depth++;
+    size_t frame_depth_on_entry = thread->frames.size();
 
     auto frame { thread->frames.end()-1 };
 
@@ -2403,11 +2415,13 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
                     push(result);
 
-                    if (thread->frames.empty()) {
+                    // For nested execute() calls, only terminate when we return to entry depth
+                    if (thread->frames.size() <= frame_depth_on_entry) {
                         Value returnVal = pop();
 
-                        freeObjects();
-
+                        freeObjects(); // Always cleanup objects on scope exit for deterministic destruction
+                        
+                        thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,returnVal);
                     }
 
@@ -2427,9 +2441,11 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 try {
                     Value result = opReturn();
 
-                    if (thread->frames.empty()) {
-                        freeObjects();
-
+                    // For nested execute() calls, only terminate when we return to entry depth
+                    if (thread->frames.size() <= frame_depth_on_entry) {
+                        freeObjects(); // Always cleanup objects on scope exit for deterministic destruction
+                        
+                        thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,result);
                     }
 
@@ -2905,7 +2921,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
     } // for
 
-
+    thread->execute_depth--;
     return std::make_pair(InterpretResult::OK,nilVal());
 
 }
@@ -3131,7 +3147,7 @@ Value VM::fork_builtin(int argCount, Value* args)
         throw std::invalid_argument("fork expects single callable argument (e.g. func or proc)");
 
     ObjClosure* closure = asClosure(args[0]);
-    
+
     // Check if closure captures any outer variables (has upvalues)
     if (!closure->upvalues.empty()) {
         throw std::runtime_error("fork cannot execute functions that capture variables from outer scopes. "

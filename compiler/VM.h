@@ -128,10 +128,11 @@ public:
     class Thread : public std::enable_shared_from_this<Thread> {
     public:
         Thread()
-          : threadSleep(false), osthread(nullptr), state(State::Constructed) {
+          : threadSleep(false), osthread(nullptr), state(State::Constructed), execute_depth(0) {
             thisid = nextId.fetch_add(1);
             actor=false;
             quit=false;
+            frames.reserve(256);  // Prevent reallocations for most use cases
           }
         Thread(Thread&) = delete;
         virtual ~Thread() {
@@ -182,6 +183,9 @@ public:
         InterpretResult result;
 
         std::list<ObjUpvalue*> openUpvalues;
+        
+        // execution depth tracking for nested execute() calls
+        int execute_depth;
 
     private:
         ptr<std::thread> osthread;
