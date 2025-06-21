@@ -1,0 +1,24 @@
+// Reproduce clockTest1 from dataflow/Tests.cpp
+// Creates a 20Hz clock signal and verifies it produces values [1, 2, 3] 
+
+c = clock(20.0)  // 20Hz clock signal
+
+values = []
+
+// Use tick() to step through and collect values as they're emitted
+// Note: Use arithmetic to force signal resolution (0 + c resolves signal immediately)
+
+_dataflow.tick()
+values.append(0 + c)  // Should be 1
+
+_dataflow.tick() 
+values.append(0 + c)  // Should be 2
+
+_dataflow.tick()
+values.append(0 + c)  // Should be 3
+
+// Verify we got [1, 2, 3]
+if len(values) == 3 and values[0] == 1 and values[1] == 2 and values[2] == 3:
+    print("PASS: clockTest1")
+else:
+    print("FAIL: clockTest1 - expected [1, 2, 3], got " + values)

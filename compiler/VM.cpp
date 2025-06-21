@@ -3091,6 +3091,8 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Matrix, "norm", &VM::matrix_norm_builtin);
     defineBuiltinMethod(ValueType::Matrix, "sum", &VM::matrix_sum_builtin);
 
+    defineBuiltinMethod(ValueType::List, "append", &VM::list_append_builtin);
+
     defineBuiltinMethod(ValueType::Actor, "tick", &VM::dataflow_tick_native);
     defineBuiltinMethod(ValueType::Actor, "run", &VM::dataflow_run_native);
     defineBuiltinMethod(ValueType::Actor, "runFor", &VM::dataflow_run_for_native);
@@ -3418,6 +3420,16 @@ Value VM::matrix_sum_builtin(int argCount, Value* args)
     ObjMatrix* mat = asMatrix(args[0]);
     double s = mat->mat.sum();
     return realVal(s);
+}
+
+Value VM::list_append_builtin(int argCount, Value* args)
+{
+    if (argCount != 2 || !isList(args[0]))
+        throw std::invalid_argument("list.append expects single argument");
+
+    ObjList* list = asList(args[0]);
+    list->elts.push_back(args[1]);
+    return nilVal();
 }
 
 Value VM::math_identity_builtin(int argCount, Value* args)

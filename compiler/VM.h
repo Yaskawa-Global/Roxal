@@ -278,6 +278,8 @@ protected:
     Value matrix_norm_builtin(int argCount, Value* args);
     Value matrix_sum_builtin(int argCount, Value* args);
 
+    Value list_append_builtin(int argCount, Value* args);
+
     Value math_identity_builtin(int argCount, Value* args);
     Value math_zeros_builtin(int argCount, Value* args);
     Value math_ones_builtin(int argCount, Value* args);
