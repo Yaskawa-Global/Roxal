@@ -902,16 +902,50 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             }
             case ObjType::BoundNative: {
                 ObjBoundNative* bound { asBoundNative(callee) };
-                *(thread->stackTop - callSpec.argCount - 1) = bound->receiver;
-                NativeFn native = bound->function;
-                try {
-                    Value result { (this->*native)(callSpec.argCount+1, &(*thread->stackTop) - callSpec.argCount - 1) };
-                    *(thread->stackTop - callSpec.argCount - 1) = result;
-                    popN(callSpec.argCount);
-                    return true;
-                } catch (std::exception& e) {
-                    runtimeError(e.what());
-                    return false;
+
+                if (!isActorInstance(bound->receiver)) {
+                    *(thread->stackTop - callSpec.argCount - 1) = bound->receiver;
+                    NativeFn native = bound->function;
+                    try {
+                        Value result { (this->*native)(callSpec.argCount+1, &(*thread->stackTop) - callSpec.argCount - 1) };
+                        *(thread->stackTop - callSpec.argCount - 1) = result;
+                        popN(callSpec.argCount);
+                        return true;
+                    } catch (std::exception& e) {
+                        runtimeError(e.what());
+                        return false;
+                    }
+                }
+                else {
+                    // call to actor native method.
+                    //  If the caller is the same actor, treat like regular method call
+                    //  otherwise, instead of calling on this thread,
+                    //  queue the call for the actor thread to handle
+
+                    ActorInstance* inst = asActorInstance(bound->receiver);
+
+                    if (std::this_thread::get_id() == inst->thread_id) {
+                        // actor to this/self native method call
+                        *(thread->stackTop - callSpec.argCount - 1) = bound->receiver;
+                        NativeFn native = bound->function;
+                        try {
+                            Value result { (this->*native)(callSpec.argCount+1, &(*thread->stackTop) - callSpec.argCount - 1) };
+                            *(thread->stackTop - callSpec.argCount - 1) = result;
+                            popN(callSpec.argCount);
+                            return true;
+                        } catch (std::exception& e) {
+                            runtimeError(e.what());
+                            return false;
+                        }
+                    } else {
+                        // call to other actor
+                        Value future = inst->queueCall(callee, callSpec, &(*thread->stackTop) );
+
+                        popN(callSpec.argCount + 1); // args & callee
+
+                        push(future);
+                        return true;
+                    }
                 }
             }
             case ObjType::Instance: {
@@ -1021,7 +1055,8 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
         if (mit != builtinMethods.end()) {
             auto it = mit->second.find(name->hash);
             if (it != mit->second.end()) {
-                NativeFn fn = it->second;
+                const BuiltinMethodInfo& methodInfo = it->second;
+                NativeFn fn = methodInfo.function;
 
                 if (std::this_thread::get_id() == instance->thread_id) {
                     // Same thread - call directly
@@ -1031,7 +1066,7 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                     return true;
                 } else {
                     // Different thread - queue the call
-                    ObjBoundNative* boundNative = boundNativeVal(receiver, fn);
+                    ObjBoundNative* boundNative = boundNativeVal(receiver, fn, methodInfo.isProc);
                     Value callee = objVal(boundNative);
                     Value future = instance->queueCall(callee, callSpec, &(*thread->stackTop));
 
@@ -1052,7 +1087,8 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
             if (mit != builtinMethods.end()) {
                 auto it = mit->second.find(name->hash);
                 if (it != mit->second.end()) {
-                    NativeFn fn = it->second;
+                    const BuiltinMethodInfo& methodInfo = it->second;
+                    NativeFn fn = methodInfo.function;
                     Value result { (this->*fn)(callSpec.argCount+1, &(*thread->stackTop) - callSpec.argCount - 1) };
                     *(thread->stackTop - callSpec.argCount - 1) = result;
                     popN(callSpec.argCount);
@@ -1759,8 +1795,9 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                         if (mit != builtinMethods.end()) {
                             auto methodIt = mit->second.find(name->hash);
                             if (methodIt != mit->second.end()) {
-                                NativeFn fn = methodIt->second;
-                                ObjBoundNative* boundNative = boundNativeVal(inst, fn);
+                                const BuiltinMethodInfo& methodInfo = methodIt->second;
+                                NativeFn fn = methodInfo.function;
+                                ObjBoundNative* boundNative = boundNativeVal(inst, fn, methodInfo.isProc);
                                 pop();
                                 push(objVal(boundNative));
                                 break;
@@ -1807,7 +1844,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     if (mit != builtinMethods.end()) {
                         auto it2 = mit->second.find(name->hash);
                         if (it2 != mit->second.end()) {
-                            ObjBoundNative* bm = boundNativeVal(inst, it2->second);
+                            const BuiltinMethodInfo& methodInfo = it2->second;
+                            ObjBoundNative* bm = boundNativeVal(inst, methodInfo.function, methodInfo.isProc);
                             pop();
                             push(objVal(bm));
                             break;
@@ -1882,8 +1920,9 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                         if (mit != builtinMethods.end()) {
                             auto methodIt = mit->second.find(name->hash);
                             if (methodIt != mit->second.end()) {
-                                NativeFn fn = methodIt->second;
-                                ObjBoundNative* boundNative = boundNativeVal(inst, fn);
+                                const BuiltinMethodInfo& methodInfo = methodIt->second;
+                                NativeFn fn = methodInfo.function;
+                                ObjBoundNative* boundNative = boundNativeVal(inst, fn, methodInfo.isProc);
                                 pop();
                                 push(objVal(boundNative));
                                 break;
@@ -1926,7 +1965,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     if (mit != builtinMethods.end()) {
                         auto it2 = mit->second.find(name->hash);
                         if (it2 != mit->second.end()) {
-                            ObjBoundNative* bm = boundNativeVal(inst, it2->second);
+                            const BuiltinMethodInfo& methodInfo = it2->second;
+                            ObjBoundNative* bm = boundNativeVal(inst, methodInfo.function, methodInfo.isProc);
                             pop();
                             push(objVal(bm));
                             break;
@@ -3093,15 +3133,15 @@ void VM::defineBuiltinMethods()
 
     defineBuiltinMethod(ValueType::List, "append", &VM::list_append_builtin);
 
-    defineBuiltinMethod(ValueType::Actor, "tick", &VM::dataflow_tick_native);
-    defineBuiltinMethod(ValueType::Actor, "run", &VM::dataflow_run_native);
-    defineBuiltinMethod(ValueType::Actor, "runFor", &VM::dataflow_run_for_native);
+    defineBuiltinMethod(ValueType::Actor, "tick", &VM::dataflow_tick_native, true);  // proc
+    defineBuiltinMethod(ValueType::Actor, "run", &VM::dataflow_run_native, true);   // proc  
+    defineBuiltinMethod(ValueType::Actor, "runFor", &VM::dataflow_run_for_native, true);  // proc
 }
 
-void VM::defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn)
+void VM::defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn, bool isProc)
 {
     auto us = toUnicodeString(name);
-    builtinMethods[type][us.hashCode()] = fn;
+    builtinMethods[type][us.hashCode()] = BuiltinMethodInfo(fn, isProc);
 }
 
 
@@ -3427,6 +3467,8 @@ Value VM::list_append_builtin(int argCount, Value* args)
     if (argCount != 2 || !isList(args[0]))
         throw std::invalid_argument("list.append expects single argument");
 
+    // TODO: Signal values should be resolved when passed as function arguments
+    // Currently signals may not be resolved immediately, requiring workarounds like arithmetic (0 + signal)
     ObjList* list = asList(args[0]);
     list->elts.push_back(args[1]);
     return nilVal();
@@ -3651,6 +3693,8 @@ Value VM::dataflow_run_for_native(int argCount, Value* args)
     if (argCount != 2 || !args[1].isNumber())
         throw std::invalid_argument("runFor expects single numeric argument");
 
+    // TODO: _dataflow.runFor currently blocks the script thread instead of being asynchronous
+    // This should be fixed so runFor sends a message to the dataflow actor thread and returns immediately
     auto duration = df::TimeDuration::microSecs(args[1].asInt());
     df::DataflowEngine::instance()->runFor(duration);
     return nilVal();

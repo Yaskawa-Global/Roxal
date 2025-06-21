@@ -1374,6 +1374,15 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
             }
         }
     }
+    else if (isBoundNative(callee)) {
+        // For builtin methods, check if it's a proc or func
+        auto bound = asBoundNative(callee);
+        
+        // Only create a return promise if it's NOT a proc (i.e., it's a func)
+        if (!bound->isProc) {
+            callInfo.returnPromise = std::make_shared<std::promise<Value>>();
+        }
+    }
 
     callQueue.push(callInfo);
 

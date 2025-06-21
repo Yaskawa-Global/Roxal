@@ -895,19 +895,20 @@ inline ObjBoundMethod* cloneBoundMethod(const ObjBoundMethod* bm) {
 
 struct ObjBoundNative : public Obj
 {
-    ObjBoundNative(const Value& instance, NativeFn fn)
-      : receiver(instance), function(fn) { type = ObjType::BoundNative; }
+    ObjBoundNative(const Value& instance, NativeFn fn, bool proc = false)
+      : receiver(instance), function(fn), isProc(proc) { type = ObjType::BoundNative; }
     virtual ~ObjBoundNative() {}
 
     Value receiver;
     NativeFn function;
+    bool isProc;  // true for proc methods, false for func methods
 };
 
 inline bool isBoundNative(const Value& v) { return isObjType(v, ObjType::BoundNative); }
 inline ObjBoundNative* asBoundNative(const Value& v) { return static_cast<ObjBoundNative*>(v.asObj()); }
-inline ObjBoundNative* boundNativeVal(const Value& instance, NativeFn fn) { return newObj<ObjBoundNative>(__func__, instance, fn); }
+inline ObjBoundNative* boundNativeVal(const Value& instance, NativeFn fn, bool isProc = false) { return newObj<ObjBoundNative>(__func__, instance, fn, isProc); }
 inline ObjBoundNative* cloneBoundNative(const ObjBoundNative* bm) {
-    auto newbm = newObj<ObjBoundNative>(__func__, bm->receiver, bm->function);
+    auto newbm = newObj<ObjBoundNative>(__func__, bm->receiver, bm->function, bm->isProc);
     newbm->receiver = newbm->receiver.clone();
     return newbm;
 }

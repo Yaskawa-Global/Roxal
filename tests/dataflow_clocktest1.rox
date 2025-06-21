@@ -7,14 +7,18 @@ values = []
 
 // Use tick() to step through and collect values as they're emitted
 // Note: Use arithmetic to force signal resolution (0 + c resolves signal immediately)
+// Since tick() is now async, we need to wait for each tick to complete
 
 _dataflow.tick()
+_ussleep(10000)  // Wait 10ms for tick to complete
 values.append(0 + c)  // Should be 1
 
 _dataflow.tick() 
+_ussleep(10000)  // Wait 10ms for tick to complete
 values.append(0 + c)  // Should be 2
 
 _dataflow.tick()
+_ussleep(10000)  // Wait 10ms for tick to complete
 values.append(0 + c)  // Should be 3
 
 // Verify we got [1, 2, 3]

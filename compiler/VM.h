@@ -247,8 +247,17 @@ protected:
     // TODO: perhaps implement inheritance first, then pre-define
     //  object type as root of class heirarchy and add clone() and other
     //  builtins to that
-    // Builtin methods: builtin value type -> method name hash -> NativeFn
-    std::unordered_map<ValueType, std::unordered_map<int32_t, NativeFn>> builtinMethods;
+    // Builtin method info structure
+    struct BuiltinMethodInfo {
+        NativeFn function;
+        bool isProc;  // true for proc methods, false for func methods
+        
+        BuiltinMethodInfo() : function(nullptr), isProc(false) {}
+        BuiltinMethodInfo(NativeFn fn, bool proc = false) : function(fn), isProc(proc) {}
+    };
+    
+    // Builtin methods: builtin value type -> method name hash -> BuiltinMethodInfo
+    std::unordered_map<ValueType, std::unordered_map<int32_t, BuiltinMethodInfo>> builtinMethods;
 
     void resetStack();
     void freeObjects();
@@ -263,7 +272,7 @@ protected:
     void defineBuiltinFunctions();
 
     void defineBuiltinMethods();
-    void defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn);
+    void defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn, bool isProc = false);
 
     Value vector_norm_builtin(int argCount, Value* args);
     Value vector_sum_builtin(int argCount, Value* args);
