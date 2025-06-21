@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Signal.h"
-#include "Func.h"
 #include "compiler/VM.h"
 
 #include <set>
@@ -9,6 +8,7 @@
 
 namespace df {
 
+class FuncNode; // forward declaration
 
 //
 // Singleton DataflowEngine keeps references to all active signals
@@ -18,8 +18,8 @@ class DataflowEngine
 {
 public:
     enum class ExecutionScheme {
-        Strict,     // throws exception if Func execution can't be completed within the engine clock period (default)
-        BestEffort  // warn, but continue executing if Func execution falls behind (may catch up if caused by transient longer func execution times)
+        Strict,     // throws exception if FuncNode execution can't be completed within the engine clock period (default)
+        BestEffort  // warn, but continue executing if FuncNode execution falls behind (may catch up if caused by transient longer func execution times)
     };
 
     static ptr<DataflowEngine> instance()
@@ -102,15 +102,15 @@ private:
     std::atomic<bool> m_shouldStop{false};
 
     void addSignal(ptr<Signal> signal);
-    void addFunc(ptr<Func> func);
+    void addFunc(ptr<FuncNode> func);
 
 
     std::vector<ptr<Signal>> signals;
-    std::map<std::string, ptr<Func>> funcs;
+    std::map<std::string, ptr<FuncNode>> funcs;
 
     // Mapping from signals to functions that consume them
     struct FuncInputInfo {
-        ptr<Func> func;
+        ptr<FuncNode> func;
         TimeDuration latency;
     };
     std::map<ptr<Signal>, std::vector<FuncInputInfo>> signalConsumers;
@@ -120,14 +120,14 @@ private:
     void precomputeFuncPeriods();
 
     // For precomputed execution orders
-    typedef std::map<ptr<Func>, std::set<ptr<Func>>> DependencyGraph;
-    std::map<TimeDuration, std::vector<ptr<Func>>> precomputedExecutionOrders;
+    typedef std::map<ptr<FuncNode>, std::set<ptr<FuncNode>>> DependencyGraph;
+    std::map<TimeDuration, std::vector<ptr<FuncNode>>> precomputedExecutionOrders;
 
     void precomputeExecutionOrders();
 
     bool topologicalSort(
         const DependencyGraph& depGraph,
-        std::vector<ptr<Func>>& sortedFuncs
+        std::vector<ptr<FuncNode>>& sortedFuncs
     );
 
 
@@ -137,13 +137,13 @@ private:
 
     // call processFunctionExecuteEvent() for each func,
     //  in the order they appear in precomputedExecutionOrders for their interval (LCM if input signal periods)
-    void executeFunctionsInOrder(const std::vector<ptr<Func>>& funcsToExecute);
+    void executeFunctionsInOrder(const std::vector<ptr<FuncNode>>& funcsToExecute);
 
     // longest period which divides all periods (GCD)
     //  e.g. 4,6,12 -> 2
     TimeDuration longestDividingPeriod(const std::set<TimeDuration>& periods);
 
-    TimeDuration computeExecutionInterval(ptr<Func> func);
+    TimeDuration computeExecutionInterval(ptr<FuncNode> func);
 
 
     uint64_t microSecsSinceBoot() const; // microsecs since boot
@@ -155,7 +155,7 @@ private:
 
 
     friend class Signal;
-    friend class Func;
+    friend class FuncNode;
 };
 
 

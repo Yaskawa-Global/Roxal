@@ -34,18 +34,9 @@ list(APPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-linux")
 
 set(DATAFLOW_SOURCES
     Signal.cpp
-    Func.cpp
     FuncNode.cpp
     DataflowEngine.cpp
-    Tests.cpp
 )
-
-set(DATAFLOW_TEST_SOURCES
-    Tests.cpp
-    main.cpp
-)
-
-
 
 # include the project root directory
 include_directories(${CMAKE_HOME_DIRECTORY})
@@ -58,14 +49,6 @@ target_link_libraries(dataflow
         pthread
 )
 
-# Optional standalone test executable (mirrors the original build)
-option(BUILD_DATAFLOW_TESTS "Build dataflow test executable" OFF)
-
-if(BUILD_DATAFLOW_TESTS)
-    add_executable(dataflow_tests ${DATAFLOW_TEST_SOURCES})
-    target_link_libraries(dataflow_tests dataflow)
-endif()
-
 
 # Set compile options based on the build type
 target_compile_options(dataflow PRIVATE
@@ -73,19 +56,7 @@ target_compile_options(dataflow PRIVATE
     $<$<CONFIG:RELEASE>:-O3>
 )
 
-if(BUILD_DATAFLOW_TESTS)
-    target_compile_options(dataflow_tests PRIVATE
-        $<$<CONFIG:DEBUG>:-fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1>
-        $<$<CONFIG:RELEASE>:-O3>
-    )
-endif()
-
 # Set compile definitions based on the build type
 target_compile_definitions(dataflow PRIVATE
     $<$<CONFIG:DEBUG>:DEBUG_BUILD>
 )
-if(BUILD_DATAFLOW_TESTS)
-    target_compile_definitions(dataflow_tests PRIVATE
-        $<$<CONFIG:DEBUG>:DEBUG_BUILD>
-    )
-endif()

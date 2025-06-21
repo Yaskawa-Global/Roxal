@@ -1,4 +1,5 @@
 #include "DataflowEngine.h"
+#include "FuncNode.h"
 #include "compiler/VM.h"
 #include "compiler/Object.h"
 #include "core/common.h"
@@ -18,13 +19,13 @@ using namespace df;
 #ifdef TRACE_EXECUTION
 struct TraceEntry {
     TraceEntry(TimePoint occurred_, std::string log) : occurred(occurred_), log(log) {}
-    TraceEntry(TimePoint occurred_, std::string log, std::optional<TimePoint> time_, std::optional<ptr<Func>> func_, std::optional<ptr<Signal>> signal_)
+    TraceEntry(TimePoint occurred_, std::string log, std::optional<TimePoint> time_, std::optional<ptr<FuncNode>> func_, std::optional<ptr<Signal>> signal_)
       : occurred(occurred_), log(log), time(time_), func(func_), signal(signal_) {}
 
     TimePoint occurred;
     std::string log;
     std::optional<TimePoint> time;
-    std::optional<ptr<Func>> func;
+    std::optional<ptr<FuncNode>> func;
     std::optional<ptr<Signal>> signal;
 
     std::string toString() const {
@@ -73,7 +74,7 @@ void DataflowEngine::addSignal(ptr<Signal> signal)
     m_networkModified = true;
 }
 
-void DataflowEngine::addFunc(ptr<Func> func)
+void DataflowEngine::addFunc(ptr<FuncNode> func)
 {
     funcs[func->name()] = func;
     m_networkModified = true;
@@ -221,7 +222,7 @@ void DataflowEngine::tick(bool waitForTickStart)
             //  will produce the inputs of the next one tested for readiness
             // So, loop over the funcs grouped from shortest to longest period and in dependency order for each group
 
-            auto executeFuncIfinputsAvailable = [&](const ptr<Func>& func) {
+            auto executeFuncIfinputsAvailable = [&](const ptr<FuncNode>& func) {
 
                 if (func->inputsAvailableAt(m_tickStart)) {
                     if (func->conditionallyExecute(m_tickStart)) {
@@ -282,7 +283,7 @@ void DataflowEngine::buildSignalConsumers()
 {
     signalConsumers.clear();
     for(auto& funcNamePtr : funcs) {
-        ptr<Func> func = funcNamePtr.second;
+        ptr<FuncNode> func = funcNamePtr.second;
         // Build the signalConsumers mapping
         for (const auto& input : func->m_inputs) {
             TimeDuration latency = input.signal->period() * -input.index;
@@ -299,7 +300,7 @@ void DataflowEngine::buildSignalConsumers()
 void DataflowEngine::precomputeFuncPeriods()
 {
     for (const auto& funcPair : funcs) {
-        ptr<Func> func = funcPair.second;
+        ptr<FuncNode> func = funcPair.second;
 
         // Collect input periods
         std::set<TimeDuration> inputPeriods {};
@@ -323,11 +324,11 @@ void DataflowEngine::precomputeExecutionOrders()
     precomputedExecutionOrders.clear();
 
     // Map from execution intervals to functions
-    std::map<TimeDuration, std::vector<ptr<Func>>> executionGroups;
+    std::map<TimeDuration, std::vector<ptr<FuncNode>>> executionGroups;
 
     // group orderings by execution interval
     for (const auto& funcPair : funcs) {
-        ptr<Func> func = funcPair.second;
+        ptr<FuncNode> func = funcPair.second;
 
         // Add the function to the execution group corresponding to its interval
         executionGroups[func->m_period].push_back(func);
@@ -336,7 +337,7 @@ void DataflowEngine::precomputeExecutionOrders()
     // For each execution group, precompute the execution order
     for (const auto& groupPair : executionGroups) {
         TimeDuration interval = groupPair.first;
-        const std::vector<ptr<Func>>& funcsInGroup = groupPair.second;
+        const std::vector<ptr<FuncNode>>& funcsInGroup = groupPair.second;
 
         // Build the dependency graph for this group
         DependencyGraph depGraph;
@@ -364,7 +365,7 @@ void DataflowEngine::precomputeExecutionOrders()
         }
 
         // Perform topological sort on the dependency graph
-        std::vector<ptr<Func>> sortedFuncs {};
+        std::vector<ptr<FuncNode>> sortedFuncs {};
         if (!topologicalSort(depGraph, sortedFuncs)) {
             throw std::runtime_error("Cyclic dependency detected among functions in execution group.");
         }
@@ -379,7 +380,7 @@ void DataflowEngine::precomputeExecutionOrders()
 
     for (const auto& groupPair : executionGroups) {
         TimeDuration interval = groupPair.first;
-        const std::vector<ptr<Func>>& funcsInGroup = groupPair.second;
+        const std::vector<ptr<FuncNode>>& funcsInGroup = groupPair.second;
 
         std::cout << "Interval: " << interval.microSecs() << " microseconds" << std::endl;
         std::cout << "Functions in this group:" << std::endl;
@@ -411,13 +412,13 @@ void DataflowEngine::precomputeExecutionOrders()
 
 
 bool DataflowEngine::topologicalSort(const DependencyGraph& depGraph,
-                                   std::vector<ptr<Func>>& sortedFuncs)
+                                   std::vector<ptr<FuncNode>>& sortedFuncs)
 {
-    std::map<ptr<Func>, bool> tempMark {};
-    std::map<ptr<Func>, bool> permMark {};
+    std::map<ptr<FuncNode>, bool> tempMark {};
+    std::map<ptr<FuncNode>, bool> permMark {};
     sortedFuncs.clear();
 
-    std::function<bool(ptr<Func>)> visit = [&](ptr<Func> node) {
+    std::function<bool(ptr<FuncNode>)> visit = [&](ptr<FuncNode> node) {
         if (permMark[node]) {
             return true; // Already visited
         }
@@ -454,7 +455,7 @@ void DataflowEngine::updateSignalConsumerInputAvailability(ptr<Signal> signal, T
     // For each function that consumes this signal
     auto consumers = signalConsumers[signal];
     for (auto& inputInfo : consumers) {
-        ptr<Func> func = inputInfo.func;
+        ptr<FuncNode> func = inputInfo.func;
         //auto latency = inputInfo.latency;
 
         // Update the input port's latest available time
@@ -467,7 +468,7 @@ void DataflowEngine::updateSignalConsumerInputAvailability(ptr<Signal> signal, T
 }
 
 
-void DataflowEngine::executeFunctionsInOrder(const std::vector<ptr<Func>>& funcsToExecute) {
+void DataflowEngine::executeFunctionsInOrder(const std::vector<ptr<FuncNode>>& funcsToExecute) {
     if (funcsToExecute.empty()) return;
 
     // Determine the interval for these functions
@@ -512,7 +513,7 @@ TimeDuration DataflowEngine::longestDividingPeriod(const std::set<TimeDuration>&
 }
 
 
-TimeDuration DataflowEngine::computeExecutionInterval(ptr<Func> func) {
+TimeDuration DataflowEngine::computeExecutionInterval(ptr<FuncNode> func) {
     // Compute the function's execution interval based on input signal periods
     std::set<TimeDuration> inputPeriods {};
     for (const auto& input : func->m_inputs) {
