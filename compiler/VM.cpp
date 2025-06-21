@@ -936,20 +936,20 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
 std::pair<VM::InterpretResult,Value> VM::callAndExec(ObjClosure* closure, const std::vector<Value>& args)
 {
-    // Push arguments first, then closure (to match OpCode::Call stack layout)
+
+    // Push closure first, then arguments (to match OpCode::Call stack layout)
+    push(objVal(closure));
     for(const auto& a : args)
         push(a);
-    push(objVal(closure));
     CallSpec spec(args.size());
     if(!call(closure, spec))
         return { InterpretResult::RuntimeError, nilVal() };
 
     auto result = execute();
 
-    // Clean up arguments from stack (following Thread::act() pattern)
-    if (result.first == InterpretResult::OK) {
-        popN(spec.argCount);
-    }
+    // Note: execute() should have handled the cleanup when the function returned,
+    // but for safety in nested calls, we don't need additional cleanup here
+    // since the call() and execute() sequence manages the stack properly
 
     return result;
 }

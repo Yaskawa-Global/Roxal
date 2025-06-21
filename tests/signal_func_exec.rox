@@ -1,10 +1,12 @@
 func add(x:int, y:int) -> int:
-  print(x + y)
+  print("in add(x,y) x="+x+" y="+y+" returning "+(x+y))
   return x + y
 
 c = clock(10)
-add(c, 1)
+inc = add(c, 1)
 _dataflow.tick()
-_ussleep(1000)
+_ussleep(10000)
 _dataflow.tick()
-_ussleep(1000)
+_ussleep(10000)
+print("inc="+inc)
+
