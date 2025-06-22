@@ -303,6 +303,10 @@ struct ObjList : public Obj
 
     Value index(const Value& i) const;
     void setIndex(const Value& i, const Value& v);
+    
+    // List operations (in-place)
+    void concatenate(const ObjList* other);  // Concatenate other list to this list
+    void append(const Value& value);         // Append value to this list
 
     atomic_vector<Value> elts;
 };

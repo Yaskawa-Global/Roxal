@@ -572,6 +572,18 @@ void ObjList::setIndex(const Value& i, const Value& v)
         throw std::invalid_argument("List indexing subscript must be a number or a range (not "+to_string(i.type())+").");
 }
 
+void ObjList::concatenate(const ObjList* other)
+{
+    // Efficiently append all elements from other list in one lock
+    // (atomic_vector::append handles the reserve internally)
+    elts.append(other->elts);
+}
+
+void ObjList::append(const Value& value)
+{
+    elts.push_back(value);
+}
+
 
 
 ObjList* roxal::listVal()

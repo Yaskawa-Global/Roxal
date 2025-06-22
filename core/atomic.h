@@ -171,10 +171,33 @@ public:
         v.resize(s);
     }
 
+    void reserve(size_t s)
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        v.reserve(s);
+    }
+
     void push_back(const T& value)
     {
         std::lock_guard<std::mutex> lock(m_lock);
         v.push_back(value);
+    }
+
+    // Append multiple elements efficiently in one lock
+    void append(const std::vector<T>& values)
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        v.reserve(v.size() + values.size());
+        v.insert(v.end(), values.begin(), values.end());
+    }
+
+    // Append elements from another atomic_vector efficiently
+    void append(const atomic_vector<T>& other)
+    {
+        std::vector<T> otherValues = other.get();
+        std::lock_guard<std::mutex> lock(m_lock);
+        v.reserve(v.size() + otherValues.size());
+        v.insert(v.end(), otherValues.begin(), otherValues.end());
     }
 
     T back() const 

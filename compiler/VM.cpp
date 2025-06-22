@@ -2240,17 +2240,17 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             case asByte(OpCode::Add): {
                 peek(0).resolve();
                 peek(1).resolve();
-                if (isVector(peek(0)) && isVector(peek(1))) {
-                    binaryOp([](Value a, Value b) -> Value { return add(a,b); });
-                }
-                else if (peek(0).isNumber() && peek(1).isNumber()) {
+                if ((peek(0).isNumber() && peek(1).isNumber()) ||
+                    (isVector(peek(0)) && isVector(peek(1))) ||
+                    (isList(peek(1)) && isList(peek(0))) ||
+                    isList(peek(1))) {
                     binaryOp([](Value a, Value b) -> Value { return add(a,b); });
                 }
                 else if (isString(peek(1))) {
                     concatenate();
                 }
                 else {
-                    runtimeError("Operands of + must be two numbers, two vectors or a strings LHS");
+                    runtimeError("Operands of + must be two numbers, two vectors, two lists, list + value, or strings LHS");
                     return errorReturn;
                 }
                 break;

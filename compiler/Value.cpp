@@ -1088,16 +1088,7 @@ Value roxal::negate(Value v)
 
 Value roxal::add(Value l, Value r)
 {
-    if (isVector(l) && isVector(r)) {
-        const ObjVector* lv = asVector(l);
-        const ObjVector* rv = asVector(r);
-        if (lv->length() != rv->length())
-            throw std::invalid_argument("Vector addition requires vectors of same length");
-        Eigen::VectorXd result = lv->vec + rv->vec;
-        return objVal(vectorVal(result));
-    }
     if (l.isNumber() && r.isNumber()) {
-
         ValueType resultType(binaryOpType(l,r));
         switch (resultType) {
             case ValueType::Int: return intVal(l.asInt()+r.asInt());
@@ -1106,6 +1097,33 @@ Value roxal::add(Value l, Value r)
             //... decimal
             default: ;
         }
+    }
+    else if (isVector(l) && isVector(r)) {
+        const ObjVector* lv = asVector(l);
+        const ObjVector* rv = asVector(r);
+        if (lv->length() != rv->length())
+            throw std::invalid_argument("Vector addition requires vectors of same length");
+        Eigen::VectorXd result = lv->vec + rv->vec;
+        return objVal(vectorVal(result));
+    }
+    else if (isList(l) && isList(r)) {
+        // List + List → concatenation (clone LHS, then concatenate RHS)
+        ObjList* lv = asList(l);
+        const ObjList* rv = asList(r);
+        
+        ObjList* result = cloneList(lv);  // Clone LHS for by-value semantics
+        result->concatenate(rv);          // Concatenate RHS in-place
+        
+        return objVal(result);
+    }
+    else if (isList(l)) {
+        // List + anything → append (clone LHS, then append RHS)
+        ObjList* lv = asList(l);
+        
+        ObjList* result = cloneList(lv);  // Clone LHS for by-value semantics
+        result->append(r);                // Append RHS in-place
+        
+        return objVal(result);
     }
     throw std::invalid_argument("unsupported operand types to add() - "+l.typeName()+" and "+r.typeName());
 }
