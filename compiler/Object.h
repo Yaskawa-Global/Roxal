@@ -412,6 +412,8 @@ struct ObjVector : public Obj
 
     Value index(const Value& i) const;
     void setIndex(const Value& i, const Value& v);
+    
+    bool equals(const ObjVector* other, double eps = 1e-15) const;
 
     Eigen::VectorXd vec;
 };
@@ -450,6 +452,8 @@ struct ObjMatrix : public Obj
     void setIndex(const Value& row, const Value& value);
     // assign to element, row/column vector or submatrix
     void setIndex(const Value& row, const Value& col, const Value& value);
+    
+    bool equals(const ObjMatrix* other, double eps = 1e-15) const;
 
     Eigen::MatrixXd mat;
 };

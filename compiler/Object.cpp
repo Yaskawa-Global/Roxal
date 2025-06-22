@@ -722,6 +722,19 @@ std::string roxal::objVectorToString(const ObjVector* ov)
     return os.str();
 }
 
+bool ObjVector::equals(const ObjVector* other, double eps) const
+{
+    if (other == nullptr)
+        return false;
+    
+    // Check if dimensions match
+    if (vec.size() != other->vec.size())
+        return false;
+    
+    // Use Eigen's isApprox for element-wise comparison with tolerance
+    return vec.isApprox(other->vec, eps);
+}
+
 
 ObjMatrix::ObjMatrix(const Eigen::MatrixXd& values)
     : mat(values)
@@ -1017,6 +1030,19 @@ void ObjMatrix::setIndex(const Value& row, const Value& col, const Value& value)
             for(size_t j=0;j<colIdx.size();++j)
                 mat(rowIdx[i], colIdx[j]) = rhs->mat(i,j);
     }
+}
+
+bool ObjMatrix::equals(const ObjMatrix* other, double eps) const
+{
+    if (other == nullptr)
+        return false;
+    
+    // Check if dimensions match
+    if (mat.rows() != other->mat.rows() || mat.cols() != other->mat.cols())
+        return false;
+    
+    // Use Eigen's isApprox for element-wise comparison with tolerance
+    return mat.isApprox(other->mat, eps);
 }
 
 std::string roxal::objMatrixToString(const ObjMatrix* om)

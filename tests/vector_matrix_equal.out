@@ -1,0 +1,15 @@
+=== Vector Equality Tests ===
+v1 == v2: true
+v1 == v3: false
+empty vector == []: true
+[5.0] vector == [5.0] list: true
+[5.0] vector == [6.0] list: false
+vector == multi-element list: false
+vector == non-numeric list: false
+=== Matrix Equality Tests ===
+m1 == m2: true
+m1 == m3: false
+empty matrix == []: true
+[7.0] matrix == [5.0] list: false
+[7.0] matrix == [7.0] list: true
+matrix == multi-element list: false

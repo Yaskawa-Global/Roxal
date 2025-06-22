@@ -637,6 +637,73 @@ bool Value::operator==(const Value& rhs) const
         return asType() == rhs.asType();
     else if (isString(*this))
         return objsEqual(*this,rhs); // compares strings intelligently (e.g. using immutability & hash)
+    else if (isVector(*this) && isVector(rhs)) {
+        // Deep equality for vectors - compare elements
+        return asVector(*this)->equals(asVector(rhs));
+    }
+    else if (isVector(*this) && isList(rhs)) {
+        // Vector compared to list - auto-convert list if it has 0 or 1 numeric elements
+        ObjList* rhsList = asList(rhs);
+        if (rhsList->length() <= 1) {
+            bool allNumeric = true;
+            for (int i = 0; i < rhsList->length(); i++) {
+                if (!rhsList->elts.at(i).isNumber()) {
+                    allNumeric = false;
+                    break;
+                }
+            }
+            if (allNumeric) {
+                // Convert list to vector and compare
+                ObjVector* lhsVec = asVector(*this);
+                if (lhsVec->length() != rhsList->length())
+                    return false;
+                for (int i = 0; i < rhsList->length(); i++) {
+                    if (std::abs(lhsVec->vec[i] - rhsList->elts.at(i).asReal()) > 1e-15)
+                        return false;
+                }
+                return true;
+            }
+        }
+        // Multi-element lists or non-numeric lists should not auto-convert
+        return false;
+    }
+    else if (isList(*this) && isVector(rhs)) {
+        // List compared to vector - symmetric case
+        return rhs == *this;  // Use the vector-list comparison above
+    }
+    else if (isMatrix(*this) && isMatrix(rhs)) {
+        // Deep equality for matrices - compare elements  
+        return asMatrix(*this)->equals(asMatrix(rhs));
+    }
+    else if (isMatrix(*this) && isList(rhs)) {
+        // Matrix compared to list - auto-convert list if it has 0 or 1 numeric elements
+        ObjList* rhsList = asList(rhs);
+        if (rhsList->length() <= 1) {
+            bool allNumeric = true;
+            for (int i = 0; i < rhsList->length(); i++) {
+                if (!rhsList->elts.at(i).isNumber()) {
+                    allNumeric = false;
+                    break;
+                }
+            }
+            if (allNumeric) {
+                // Convert list to matrix and compare
+                ObjMatrix* lhsMat = asMatrix(*this);
+                int expectedSize = rhsList->length();
+                if (expectedSize == 0) {
+                    return (lhsMat->rows() == 0 && lhsMat->cols() == 0);
+                } else if (expectedSize == 1) {
+                    return (lhsMat->rows() == 1 && lhsMat->cols() == 1 && 
+                            std::abs(lhsMat->mat(0,0) - rhsList->elts.at(0).asReal()) <= 1e-15);
+                }
+            }
+        }
+        return false;
+    }
+    else if (isList(*this) && isMatrix(rhs)) {
+        // List compared to matrix - symmetric case
+        return rhs == *this;  // Use the matrix-list comparison above
+    }
     else if (isObj())
         return rhs.isObj() && (asObj() == rhs.asObj()); // identity (by ptr/address)
     return false;
