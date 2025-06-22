@@ -147,6 +147,17 @@ void Signal::tick(TimePoint t)
 }
 
 
+void Signal::evaluate(TimePoint t)
+{
+    if (isClock) {
+        // For clock signals, set initial value without advancing clockCount
+        // Use current clockCount value (starts at 0)
+        Value val {int32_t(clockCount)};
+        setValueAt(t, val);
+    }
+}
+
+
 
 Value Signal::lastValue() const
 {

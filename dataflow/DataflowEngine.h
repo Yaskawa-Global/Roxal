@@ -52,6 +52,9 @@ public:
     //  will rebuild network and restart tick count if network modified
     void tick(bool waitForTickStart = true);
 
+    // evaluate the network without advancing time or ticking clocks
+    // useful for initializing signal values when new nodes are added
+    void evaluate();
 
     // clear everything ready for new network to be instantiated
     void clear();
@@ -134,6 +137,8 @@ private:
     // set the input signal availability time for each func consuming this signal to its ticked time
     void updateSignalConsumerInputAvailability(ptr<Signal> signal, TimePoint signalTickedTime);
 
+    // execute functions whose inputs are available, without advancing time
+    void evaluateNetwork(TimePoint evaluationTime);
 
     // call processFunctionExecuteEvent() for each func,
     //  in the order they appear in precomputedExecutionOrders for their interval (LCM if input signal periods)

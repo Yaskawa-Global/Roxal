@@ -693,7 +693,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
         auto name = toUTF8StdString(roxal::asClosure(closureVal)->function->name);
         auto node = roxal::make_ptr<df::FuncNode>(name, closureVal, constArgs, sigArgs);
         node->addToEngine();
-        auto outputs = node->outputs();
+        auto outputs = node->outputs(); // creates output signals if they don't exist
+        dataflowEngine->evaluate(); // Initialize signal values for new node
         popN(callSpec.argCount + 1);
         if (outputs.size() == 1) {
             push(objVal(signalVal(outputs[0])));

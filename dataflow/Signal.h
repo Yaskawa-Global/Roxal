@@ -42,6 +42,9 @@ public:
 
     // For source signals: generate next value
     void tick(TimePoint t);
+    
+    // set initial value without advancing clock state (for evaluation)
+    void evaluate(TimePoint t);
 
     // Get the period of the signal based on its frequency
     TimeDuration period() const { return m_period; }

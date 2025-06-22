@@ -209,55 +209,7 @@ void DataflowEngine::tick(bool waitForTickStart)
         }
     }
 
-    // pass over the network executing funcs who's inputs are available, until
-    //  there are no more functions that can be executed
-    uint64_t functionsExecuted;
-    int32_t iterations = 0;
-    if (!funcs.empty())
-        do {
-            functionsExecuted = 0;
-
-            // although we can iterate over the funcs in any order, it is more likely they'll
-            //  be ready to execute if they're executed in their dependency order, since each that is executed
-            //  will produce the inputs of the next one tested for readiness
-            // So, loop over the funcs grouped from shortest to longest period and in dependency order for each group
-
-            auto executeFuncIfinputsAvailable = [&](const ptr<FuncNode>& func) {
-
-                if (func->inputsAvailableAt(m_tickStart)) {
-                    if (func->conditionallyExecute(m_tickStart)) {
-                        functionsExecuted++;
-
-                        // update the consumer input availability
-                        for(auto& output : func->m_outputs)
-                            updateSignalConsumerInputAvailability(output.signal, m_tickStart);
-
-                        // is func execution is over the allotted time for this tick?
-                        if (currentTime() > nextTickStart) {
-                            std::string message = "Engine tick period "+m_tickPeriod.humanString()+" exceeded (last Func executed was '"+func->name()+"')";
-
-                            if (m_executionScheme == ExecutionScheme::Strict)
-                                throw std::runtime_error(message);
-                            else
-                                std::cerr << message << std::endl;
-                        }
-                    }
-                }
-            };
-
-
-            for(const auto& periodFuncs : precomputedExecutionOrders) {
-                auto& funcs { periodFuncs.second };
-                for(auto func : funcs) {
-                    executeFuncIfinputsAvailable(func);
-                }
-            }
-
-            iterations++;
-            if (iterations > funcs.size()*100) // FIXME: need to account for fact that loopPeriod may be much shorter than longest func exec period, fudge for now
-                throw std::runtime_error("DataflowEngine: func execution didn't terminate - check for signal dependency cycles");
-
-        } while (functionsExecuted > 0);
+    evaluateNetwork(m_tickStart);
 
     #if 0
     std::cout << "iterations for tick " << tick << ": " << iterations << std::endl;
@@ -277,6 +229,67 @@ void DataflowEngine::tick(bool waitForTickStart)
 }
 
 
+void DataflowEngine::evaluateNetwork(TimePoint evaluationTime)
+{
+    // pass over the network executing funcs whose inputs are available, until
+    //  there are no more functions that can be executed
+    uint64_t functionsExecuted;
+    int32_t iterations = 0;
+    if (!funcs.empty())
+        do {
+            functionsExecuted = 0;
+
+            // although we can iterate over the funcs in any order, it is more likely they'll
+            //  be ready to execute if they're executed in their dependency order, since each that is executed
+            //  will produce the inputs of the next one tested for readiness
+            // So, loop over the funcs grouped from shortest to longest period and in dependency order for each group
+
+            auto executeFuncIfinputsAvailable = [&](const ptr<FuncNode>& func) {
+
+                if (func->inputsAvailableAt(evaluationTime)) {
+                    if (func->conditionallyExecute(evaluationTime)) {
+                        functionsExecuted++;
+
+                        // update the consumer input availability
+                        for(auto& output : func->m_outputs)
+                            updateSignalConsumerInputAvailability(output.signal, evaluationTime);
+                    }
+                }
+            };
+
+
+            for(const auto& periodFuncs : precomputedExecutionOrders) {
+                auto& funcs { periodFuncs.second };
+                for(auto func : funcs) {
+                    executeFuncIfinputsAvailable(func);
+                }
+            }
+
+            iterations++;
+            if (iterations > funcs.size()*100) // FIXME: need to account for fact that loopPeriod may be much shorter than longest func exec period, fudge for now
+                throw std::runtime_error("DataflowEngine: func execution didn't terminate - check for signal dependency cycles");
+
+        } while (functionsExecuted > 0);
+}
+
+
+void DataflowEngine::evaluate()
+{
+    if (m_networkModified)
+        buildNetworkCacheData();
+
+    // For evaluation, use time zero and ensure all source signals have initial values
+    TimePoint evalTime = TimePoint::zero();
+    
+    // Ensure all source signals have values at evaluation time
+    for(const auto& signal : signals) {
+        if (signal->isSourceSignal()) {
+            signal->evaluate(evalTime);
+        }
+    }
+
+    evaluateNetwork(evalTime);
+}
 
 
 void DataflowEngine::buildSignalConsumers()

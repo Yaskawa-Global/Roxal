@@ -1,0 +1,37 @@
+
+var c :signal = clock(10)
+
+var v :vector = [1 2 3 4 5 6]
+
+// split vector into list of its elements
+func split(v :vector) -> list:
+  var l :list
+  for e in v:
+    l.append(e)
+  return l
+
+// join a list of values into a vector
+func join(l :list) -> vector:
+  return vector(l)
+
+func addToElt0(v :vector, i: int) -> vector:
+  v[0] = v[0] + i
+  return v
+
+[out0, out1, out2, out3, out4, out5] = split(addToElt0(v,c))
+
+//out = join([out0, out1, out2, out3, out4, out5])
+
+_dataflow.tick()
+sleep(100000)
+
+print(out0)
+
+
+//print(out)
+//_dataflow.tick()
+//sleep(100000)
+//print(out)
+
+
+
