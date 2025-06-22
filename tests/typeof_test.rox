@@ -1,0 +1,23 @@
+// Test typeof() builtin function with different value types
+
+print("nil: " + typeof(nil))
+print("bool: " + typeof(true))
+print("int: " + typeof(42))
+print("real: " + typeof(3.14))
+print("string: " + typeof("hello"))
+print("list: " + typeof([1, 2, 3]))
+print("vector: " + typeof([1 2 3]))
+print("range: " + typeof(range(1..5)))
+
+var c = clock(10)
+print("signal: " + typeof(c))
+
+func test():
+  return 42
+
+var result = test()
+print("function result: " + typeof(result))
+
+// Test with dict
+var d = {"key": "value"}
+print("dict: " + typeof(d))

@@ -3556,6 +3556,7 @@ void VM::defineNativeFunctions()
     addSys("_mssleep", &VM::msSleep_native);
     addSys("clock", &VM::clock_signal_native);
     addSys("_engine_stop", &VM::engine_stop_native);
+    addSys("typeof", &VM::typeof_native);
     addSys("loadlib", &VM::loadlib_native);
     //addSys("_sleep", &VM::sleep_native);
 
@@ -3675,6 +3676,44 @@ Value VM::engine_stop_native(int argCount, Value* args)
 {
     df::DataflowEngine::instance()->stop();
     return nilVal();
+}
+
+Value VM::typeof_native(int argCount, Value* args)
+{
+    if (argCount != 1)
+        throw std::invalid_argument("typeof expects single argument");
+
+    Value val = args[0];
+    ValueType valueType;
+
+    // Determine the ValueType of the argument
+    if (val.isNil()) {
+        valueType = ValueType::Nil;
+    } else if (val.isBool()) {
+        valueType = ValueType::Bool;
+    } else if (val.isByte()) {
+        valueType = ValueType::Byte;
+    } else if (val.isInt()) {
+        valueType = ValueType::Int;
+    } else if (val.isReal()) {
+        valueType = ValueType::Real;
+    } else if (val.isEnum()) {
+        valueType = ValueType::Enum;
+    } else if (val.isType()) {
+        valueType = ValueType::Type;
+    } else if (isSignal(val)) {
+        valueType = ValueType::Signal;
+    } else if (val.isObj()) {
+        // For object types, get the type from the object
+        valueType = val.asObj()->valueType();
+    } else {
+        // Fallback
+        valueType = ValueType::Nil;
+    }
+
+    // Create and return a type object
+    ObjTypeSpec* typeObj = typeSpecVal(valueType);
+    return objVal(typeObj);
 }
 
 Value VM::dataflow_tick_native(int argCount, Value* args)

@@ -316,6 +316,7 @@ protected:
     Value sleep_native(int argCount, Value* args);
     Value clock_signal_native(int argCount, Value* args);
     Value engine_stop_native(int argCount, Value* args);
+    Value typeof_native(int argCount, Value* args);
     
     // DataflowEngine actor native methods
     Value dataflow_tick_native(int argCount, Value* args);
