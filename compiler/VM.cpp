@@ -779,9 +779,9 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     return true;
                 }
                 else if (ts->typeValue == ValueType::Enum) {
-                    // construct a default enun value for this enum type
+                    // construct a default enum value for this enum type
                     //  either the label corresponding to 0, or if none, any label
-                    //  TODO: add member to type for devault value (in OpCode::EnumLabel can store value of first or 0 if declared)
+                    //  TODO: add member to type for default value (in OpCode::EnumLabel can store value of first or 0 if declared)
                     ObjObjectType* type = asObjectType(callee);
                     #ifdef DEBUG_BUILD
                     assert(type->isEnumeration);
@@ -820,6 +820,10 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             }
                             value = it->second.second;
                         }
+                        // if single arg is an enum of the same type, that is ok, copy it
+                        else if (arg.isEnum() && (arg.enumTypeId() == type->enumTypeId)) {
+                            value = arg; // fall through to storing return & poping arg below
+                        }
                         else if (isString(arg)) {
                             auto hash = asString(arg)->hash;
                             auto it = type->enumLabelValues.find(hash);
@@ -829,8 +833,15 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             }
                             value = it->second.second;
                         }
+                        else if (isSignal(arg)) {
+                            // if a signal, sample it and see if we can construct an enum from that
+                            auto sample = asSignal(arg)->signal->lastValue();
+                            pop(); // switch the arg for the sample
+                            push(sample);
+                            return callValue(callee, callSpec); // re-call with the sample value
+                        }
                         else {
-                            runtimeError("Type enum '"+toUTF8StdString(type->name)+"' instantiation requires an int, byte or string label.");
+                            runtimeError("Type enum '"+toUTF8StdString(type->name)+"' instantiation requires an int, byte or string label (not "+arg.typeName()+").");
                             return false;
                         }
                     }

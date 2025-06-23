@@ -349,8 +349,8 @@ ValueType Value::asType(bool strict) const
 
 
 ValueType Value::type() const {
-    // FIXME: For efficiency, the enum values between ValueType and ObjType should be synchronized 
-    // and the Value::type() made efficient by returning a cast from ObjType -> ValueType for all 
+    // FIXME: For efficiency, the enum values between ValueType and ObjType should be synchronized
+    // and the Value::type() made efficient by returning a cast from ObjType -> ValueType for all
     // object cases to avoid a cascade of is*() checks for every single type.
     return isNil() ? ValueType::Nil
                     : (isBool() ? ValueType::Bool
@@ -668,7 +668,7 @@ bool Value::equals(const Value& rhs, bool strict) const
             // In strict mode, only allow 0 or 1 element lists (due to [] and [1] ambiguity)
             return false;
         }
-        
+
         // Check if all elements are numeric
         bool allNumeric = true;
         for (int i = 0; i < rhsList->length(); i++) {
@@ -677,7 +677,7 @@ bool Value::equals(const Value& rhs, bool strict) const
                 break;
             }
         }
-        
+
         if (allNumeric) {
             // In non-strict mode, try to convert list to vector using construct()
             if (!strict && rhsList->length() > 1) {
@@ -708,7 +708,7 @@ bool Value::equals(const Value& rhs, bool strict) const
     }
     // Matrix comparisons
     else if (isMatrix(*this) && isMatrix(rhs)) {
-        // Deep equality for matrices - compare elements  
+        // Deep equality for matrices - compare elements
         return asMatrix(*this)->equals(asMatrix(rhs));
     }
     else if (isMatrix(*this) && isList(rhs)) {
@@ -718,7 +718,7 @@ bool Value::equals(const Value& rhs, bool strict) const
             // In strict mode, only allow 0 or 1 element lists (due to [] and [1] ambiguity)
             return false;
         }
-        
+
         // Check if all elements are numeric
         bool allNumeric = true;
         for (int i = 0; i < rhsList->length(); i++) {
@@ -727,7 +727,7 @@ bool Value::equals(const Value& rhs, bool strict) const
                 break;
             }
         }
-        
+
         if (allNumeric) {
             // In non-strict mode, try to convert list to matrix using construct()
             if (!strict && rhsList->length() > 1) {
@@ -745,7 +745,7 @@ bool Value::equals(const Value& rhs, bool strict) const
                 if (expectedSize == 0) {
                     return (lhsMat->rows() == 0 && lhsMat->cols() == 0);
                 } else if (expectedSize == 1) {
-                    return (lhsMat->rows() == 1 && lhsMat->cols() == 1 && 
+                    return (lhsMat->rows() == 1 && lhsMat->cols() == 1 &&
                             std::abs(lhsMat->mat(0,0) - rhsList->elts.at(0).asReal()) <= 1e-15);
                 }
             }
@@ -961,6 +961,22 @@ Value roxal::toType(ValueType t, Value v, bool strict)
 
 Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin, std::vector<Value>::const_iterator end)
 {
+    // If a single signal of the target built-in type is passed, sample it and use its value.
+    if ((end - begin) == 1 && type != ValueType::Signal) {
+        const Value& arg0 = *begin;
+        if (isSignal(arg0)) {
+            Value sample = asSignal(arg0)->signal->lastValue();
+            if (sample.type() == type) {
+                // If the sampled value is an object, make a fresh copy via its constructor;
+                // otherwise return the primitive value directly.
+                if (sample.isObj()) {
+                    std::vector<Value> sampleArg{sample};
+                    return construct(type, sampleArg.begin(), sampleArg.end());
+                }
+                return sample;
+            }
+        }
+    }
     if (type == ValueType::Vector) {
         size_t count = end - begin;
         if (count == 0) {
@@ -1134,19 +1150,19 @@ Value roxal::add(Value l, Value r)
         // List + List → concatenation (clone LHS, then concatenate RHS)
         ObjList* lv = asList(l);
         const ObjList* rv = asList(r);
-        
+
         ObjList* result = cloneList(lv);  // Clone LHS for by-value semantics
         result->concatenate(rv);          // Concatenate RHS in-place
-        
+
         return objVal(result);
     }
     else if (isList(l)) {
         // List + anything → append (clone LHS, then append RHS)
         ObjList* lv = asList(l);
-        
+
         ObjList* result = cloneList(lv);  // Clone LHS for by-value semantics
         result->append(r);                // Append RHS in-place
-        
+
         return objVal(result);
     }
     throw std::invalid_argument("unsupported operand types to add() - "+l.typeName()+" and "+r.typeName());
