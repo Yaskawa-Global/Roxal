@@ -218,13 +218,24 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
     type->builtin = BuiltinType::Func;
     type->func = Type::FuncType();
     type->func->isProc = ast->isProc;
-    if (ast->returnType.has_value()) {
-        if (std::holds_alternative<BuiltinType>(ast->returnType.value())) {
-            type->func->returnType = std::make_shared<Type>(std::get<BuiltinType>(ast->returnType.value()));
+    if (ast->returnTypes.has_value()) {
+        auto& returnTypes = ast->returnTypes.value();
+        for (const auto& returnType : returnTypes) {
+            if (std::holds_alternative<BuiltinType>(returnType)) {
+                type->func->returnTypes.push_back(std::make_shared<Type>(std::get<BuiltinType>(returnType)));
+            }
+            else if (std::holds_alternative<icu::UnicodeString>(returnType)) {
+                // lookup name - for now create a placeholder
+                // TODO: implement proper name lookup
+                auto placeholderType = std::make_shared<Type>(BuiltinType::Object);
+                type->func->returnTypes.push_back(placeholderType);
+            }
         }
-        else if (std::holds_alternative<icu::UnicodeString>(ast->returnType.value())) {
-            // lookup name
-            //...
+        
+        if (returnTypes.size() > 1) {
+            // Multiple return types - not yet fully supported in call type deduction
+            // But we can still record them in the function type
+            // TODO: implement proper multi-return call handling
         }
     }
 
@@ -391,8 +402,15 @@ std::any TypeDeducer::visit(ptr<ast::Call> ast)
         auto ctype { ast->callable->type.value() };
         if (ctype->builtin == BuiltinType::Func && ctype->func.has_value()) {
             auto f = ctype->func.value();
-            if (f.returnType.has_value())
-                ast->type = f.returnType.value();
+            if (!f.returnTypes.empty()) {
+                if (f.returnTypes.size() == 1) {
+                    ast->type = f.returnTypes[0];
+                } else {
+                    // Multiple return types - for now just use the first one
+                    // TODO: implement proper multi-return type handling
+                    ast->type = f.returnTypes[0];
+                }
+            }
         }
         else if (ctype->builtin == BuiltinType::Type) {
             auto typeLit = std::dynamic_pointer_cast<ast::Type>(ast->callable);

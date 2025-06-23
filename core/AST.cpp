@@ -610,12 +610,25 @@ void Function::output(std::ostream& os, int indent) const
     os << spaces(indent)+"Function" << (isProc? " (proc)" : "")
        << (access==Access::Private?" private":"")
        << " " << (name.has_value() ? toUTF8StdString(name.value()) : "");
-    if (returnType.has_value()) {
+    if (returnTypes.has_value()) {
         os << " → ";
-        if (std::holds_alternative<BuiltinType>(returnType.value()))
-            os << to_string(std::get<BuiltinType>(returnType.value()));
-        else if (std::holds_alternative<icu::UnicodeString>(returnType.value()))
-            os << toUTF8StdString(std::get<icu::UnicodeString>(returnType.value()));
+        auto& types = returnTypes.value();
+        if (types.size() == 1) {
+            if (std::holds_alternative<BuiltinType>(types[0]))
+                os << to_string(std::get<BuiltinType>(types[0]));
+            else if (std::holds_alternative<icu::UnicodeString>(types[0]))
+                os << toUTF8StdString(std::get<icu::UnicodeString>(types[0]));
+        } else {
+            os << "[";
+            for (size_t i = 0; i < types.size(); i++) {
+                if (i > 0) os << ", ";
+                if (std::holds_alternative<BuiltinType>(types[i]))
+                    os << to_string(std::get<BuiltinType>(types[i]));
+                else if (std::holds_alternative<icu::UnicodeString>(types[i]))
+                    os << toUTF8StdString(std::get<icu::UnicodeString>(types[i]));
+            }
+            os << "]";
+        }
     }
     os << std::endl;
     for(auto& annot : annotations)

@@ -580,7 +580,7 @@ void CallSpec::testParamPositions()
     // create type for func (p0,p1,p2:real,p3,p4=,p5:real=) -> int
     auto type { std::make_shared<type::Type>(type::BuiltinType::Func) };
     type->func = type::Type::FuncType();
-    type->func.value().returnType = std::make_shared<type::Type>(type::BuiltinType::Int);
+    type->func.value().returnTypes.push_back(std::make_shared<type::Type>(type::BuiltinType::Int));
     auto& params { type->func.value().params };
     for(int i=0; i<6; i++) {
         auto param {type::Type::FuncType::ParamType{UnicodeString::fromUTF8("p"+std::to_string(i))}};

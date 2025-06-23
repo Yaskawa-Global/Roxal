@@ -55,7 +55,7 @@ struct Type {
 
         bool isProc; // proc or func?
         std::vector<std::optional<ParamType>> params;
-        std::optional<ptr<Type>> returnType; // if specified and not a proc
+        std::vector<ptr<Type>> returnTypes; // if specified and not a proc
 
         std::string toString() const;
     };

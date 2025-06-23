@@ -110,9 +110,18 @@ std::string Type::toString() const
                     tspec += ", ";
             }
             tspec += ")";
-            if (funcType.returnType.has_value()) {
-                auto returnType { funcType.returnType.value() };
-                tspec += "→"+returnType->toString();
+            if (!funcType.returnTypes.empty()) {
+                tspec += "→";
+                if (funcType.returnTypes.size() == 1) {
+                    tspec += funcType.returnTypes[0]->toString();
+                } else {
+                    tspec += "[";
+                    for (size_t i = 0; i < funcType.returnTypes.size(); i++) {
+                        if (i > 0) tspec += ", ";
+                        tspec += funcType.returnTypes[i]->toString();
+                    }
+                    tspec += "]";
+                }
             }
         }
         else

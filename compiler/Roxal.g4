@@ -290,8 +290,13 @@ primary
 
 
 return_type
- : (builtin_type | IDENTIFIER)                                          // single type
- | '[' (builtin_type | IDENTIFIER) (',' (builtin_type | IDENTIFIER))* ']'  // multiple types
+ : type_spec                                                            // single type
+ | '[' type_spec (',' type_spec)* ']'                                   // multiple types
+ ;
+
+type_spec
+ : builtin_type
+ | IDENTIFIER
  ;
 
 

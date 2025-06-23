@@ -357,12 +357,30 @@ std::any ASTGraphviz::visit(ptr<ast::Function> ast)
 
     auto nameReturn = ast->name.has_value() ? toUTF8StdString(ast->name.value()) : "";
 
-    if (ast->returnType.has_value()) {
-        if (std::holds_alternative<BuiltinType>(ast->returnType.value())) {
-            nameReturn += " → "+to_string(std::get<BuiltinType>(ast->returnType.value()));
-        }
-        else if (std::holds_alternative<icu::UnicodeString>(ast->returnType.value())){
-            nameReturn += " → "+toUTF8StdString(std::get<icu::UnicodeString>(ast->returnType.value()));
+    if (ast->returnTypes.has_value()) {
+        nameReturn += " → ";
+        auto& returnTypes = ast->returnTypes.value();
+        if (returnTypes.size() == 1) {
+            // Single return type
+            if (std::holds_alternative<BuiltinType>(returnTypes[0])) {
+                nameReturn += to_string(std::get<BuiltinType>(returnTypes[0]));
+            }
+            else if (std::holds_alternative<icu::UnicodeString>(returnTypes[0])){
+                nameReturn += toUTF8StdString(std::get<icu::UnicodeString>(returnTypes[0]));
+            }
+        } else {
+            // Multiple return types
+            nameReturn += "[";
+            for (size_t i = 0; i < returnTypes.size(); i++) {
+                if (i > 0) nameReturn += ", ";
+                if (std::holds_alternative<BuiltinType>(returnTypes[i])) {
+                    nameReturn += to_string(std::get<BuiltinType>(returnTypes[i]));
+                }
+                else if (std::holds_alternative<icu::UnicodeString>(returnTypes[i])){
+                    nameReturn += toUTF8StdString(std::get<icu::UnicodeString>(returnTypes[i]));
+                }
+            }
+            nameReturn += "]";
         }
      }
 

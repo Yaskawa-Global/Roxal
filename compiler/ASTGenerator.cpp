@@ -758,14 +758,14 @@ std::any ASTGenerator::visitFunc_sig(RoxalParser::Func_sigContext *context)
         func->params = *anyas<ptr<std::vector<ptr<Parameter>>>>(params);
     }
 
-    // return type (optional)
+    // return types (optional)
     if (context->return_type()) {
-        auto returnTypeVariant = anyas<std::variant<BuiltinType,icu::UnicodeString>>(visitReturn_type(context->return_type()));
-        func->returnType = returnTypeVariant;
+        auto returnTypeVector = anyas<std::vector<std::variant<BuiltinType,icu::UnicodeString>>>(visitReturn_type(context->return_type()));
+        func->returnTypes = returnTypeVector;
     }
 
-    if (func->returnType.has_value() && func->isProc)
-        throw std::runtime_error("Proc "+toUTF8StdString(ident)+" cannot specify a return type.");
+    if (func->returnTypes.has_value() && func->isProc)
+        throw std::runtime_error("Proc "+toUTF8StdString(ident)+" cannot specify return types.");
 
     return typeValue(func);
     visitEnd();
@@ -1095,10 +1095,10 @@ std::any ASTGenerator::visitLambda_func(RoxalParser::Lambda_funcContext *context
         func->params = *anyas<ptr<std::vector<ptr<Parameter>>>>(params);
     }
 
-    // return type (optional)
+    // return types (optional)
     if (context->return_type()) {
-        auto returnTypeVariant = anyas<std::variant<BuiltinType,icu::UnicodeString>>(visitReturn_type(context->return_type()));
-        func->returnType = returnTypeVariant;
+        auto returnTypeVector = anyas<std::vector<std::variant<BuiltinType,icu::UnicodeString>>>(visitReturn_type(context->return_type()));
+        func->returnTypes = returnTypeVector;
     }
 
     if (context->suite()) {
@@ -1748,26 +1748,37 @@ std::any ASTGenerator::visitReturn_type(RoxalParser::Return_typeContext *context
 {
     visitStart();
 
-    // For now, only support single return types to maintain compatibility
-    // Multi-return type support will be added later when AST structure is updated
+    std::vector<std::variant<BuiltinType,icu::UnicodeString>> returnTypes;
+
+    // Process all type_spec nodes in order
+    for (auto* typeSpecCtx : context->type_spec()) {
+        auto typeSpec = anyas<std::variant<BuiltinType,icu::UnicodeString>>(visitType_spec(typeSpecCtx));
+        returnTypes.push_back(typeSpec);
+    }
+
+    if (returnTypes.empty()) {
+        throw std::runtime_error("Invalid return type specification - no types found.");
+    }
+
+    return returnTypes;
     
-    if (context->builtin_type().size() == 1 && context->IDENTIFIER().size() == 0) {
-        // Single builtin type: builtin_type
-        auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type(0)));
+    visitEnd();
+}
+
+std::any ASTGenerator::visitType_spec(RoxalParser::Type_specContext *context)
+{
+    visitStart();
+
+    if (context->builtin_type()) {
+        auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
         return std::variant<BuiltinType,icu::UnicodeString>(builtinType);
     }
-    else if (context->builtin_type().size() == 0 && context->IDENTIFIER().size() == 1) {
-        // Single identifier type: IDENTIFIER
-        auto typeIdent = UnicodeString::fromUTF8(context->IDENTIFIER(0)->getText());
+    else if (context->IDENTIFIER()) {
+        auto typeIdent = UnicodeString::fromUTF8(context->IDENTIFIER()->getText());
         return std::variant<BuiltinType,icu::UnicodeString>(typeIdent);
     }
-    else if (context->builtin_type().size() > 1 || context->IDENTIFIER().size() > 1 ||
-             (context->builtin_type().size() + context->IDENTIFIER().size()) > 1) {
-        // Multiple types - not yet supported
-        throw std::runtime_error("Multiple return types are not yet implemented. Use single return type for now.");
-    }
     else {
-        throw std::runtime_error("Invalid return type specification.");
+        throw std::runtime_error("Invalid type specification.");
     }
     
     visitEnd();

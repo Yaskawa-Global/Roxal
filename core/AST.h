@@ -377,7 +377,7 @@ struct Function : public AST {
     bool isProc;
     std::optional<icu::UnicodeString> name; // none if lambda func
     std::vector<ptr<Parameter>> params;
-    std::optional<std::variant<BuiltinType,icu::UnicodeString>> returnType;
+    std::optional<std::vector<std::variant<BuiltinType,icu::UnicodeString>>> returnTypes;
     std::variant<ptr<Suite>, ptr<Expression>, std::monostate> body; // no body if abstract
     Access access { Access::Public };
 
