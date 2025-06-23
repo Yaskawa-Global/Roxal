@@ -19,7 +19,7 @@ void AST::outputType(std::ostream& os, int indent) const
         if (indent > 0)
             os << spaces(indent+1) << "type: " << type.value()->toString() << std::endl;
         else
-            os << " →" << type.value()->toString();
+            os << " → " << type.value()->toString();
     }
 }
 

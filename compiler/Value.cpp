@@ -349,11 +349,16 @@ ValueType Value::asType(bool strict) const
 
 
 ValueType Value::type() const {
+    // FIXME: For efficiency, the enum values between ValueType and ObjType should be synchronized 
+    // and the Value::type() made efficient by returning a cast from ObjType -> ValueType for all 
+    // object cases to avoid a cascade of is*() checks for every single type.
     return isNil() ? ValueType::Nil
                     : (isBool() ? ValueType::Bool
-                                : (isReal() ? ValueType::Real
-                                            : (isObj() ? asObj()->valueType()
-                                                        : ValueType((val & TypeTag) >> TypeTagOffset) ) ) );
+                                : (isByte() ? ValueType::Byte
+                                            : (isInt() ? ValueType::Int
+                                                       : (isReal() ? ValueType::Real
+                                                                   : (isObj() ? asObj()->valueType()
+                                                                              : ValueType((val & TypeTag) >> TypeTagOffset) ) ) ) ) );
 }
 
 

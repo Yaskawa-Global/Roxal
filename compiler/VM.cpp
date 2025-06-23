@@ -93,6 +93,7 @@ VM::VM()
 
     defineBuiltinFunctions();
     defineBuiltinMethods();
+    defineBuiltinProperties();
     defineNativeFunctions();
 
     //CallSpec::testParamPositions();
@@ -1754,8 +1755,30 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::GetProp): {
                 Value& inst { peek(0) };
-                inst.resolve();
                 ObjString* name = readString();
+
+                // Check for signal properties BEFORE resolving
+                if (isSignal(inst)) {
+                    std::cout << "DEBUG: GetProp handling signal property access for: " << toUTF8StdString(name->s) << std::endl;
+                    // Handle signal builtin properties
+                    auto vt = inst.type();
+                    auto pit = builtinProperties.find(vt);
+                    if (pit != builtinProperties.end()) {
+                        auto propIt = pit->second.find(name->hash);
+                        if (propIt != pit->second.end()) {
+                            const BuiltinPropertyInfo& propInfo = propIt->second;
+                            Value result = (this->*(propInfo.getter))(inst);
+                            pop();
+                            push(result);
+                            break;
+                        }
+                    }
+
+                    runtimeError("Undefined property '"+toUTF8StdString(name->s)+"' for signal.");
+                    return errorReturn;
+                }
+
+                inst.resolve();
                 if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     // is it an instance property?
@@ -1841,6 +1864,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
                 if (inst.isObj()) {
                     auto vt = inst.type();
+                    // Check builtin methods
                     auto mit = builtinMethods.find(vt);
                     if (mit != builtinMethods.end()) {
                         auto it2 = mit->second.find(name->hash);
@@ -1860,8 +1884,29 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::GetPropCheck): {
                 Value& inst { peek(0) };
-                inst.resolve();
                 ObjString* name = readString();
+
+                // Check for signal properties BEFORE resolving
+                if (isSignal(inst)) {
+                    // Handle signal builtin properties
+                    auto vt = inst.type();
+                    auto pit = builtinProperties.find(vt);
+                    if (pit != builtinProperties.end()) {
+                        auto propIt = pit->second.find(name->hash);
+                        if (propIt != pit->second.end()) {
+                            const BuiltinPropertyInfo& propInfo = propIt->second;
+                            Value result = (this->*(propInfo.getter))(inst);
+                            pop();
+                            push(result);
+                            break;
+                        }
+                    }
+
+                    runtimeError("Undefined property '"+toUTF8StdString(name->s)+"' for signal.");
+                    return errorReturn;
+                }
+
+                inst.resolve();
                 if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     auto it = objInst->properties.find(name->hash);
@@ -1962,6 +2007,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
                 if (inst.isObj()) {
                     auto vt = inst.type();
+                    // Check builtin methods
                     auto mit = builtinMethods.find(vt);
                     if (mit != builtinMethods.end()) {
                         auto it2 = mit->second.find(name->hash);
@@ -2472,17 +2518,17 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                         Value returnVal = pop();
 
                         freeObjects(); // Always cleanup objects on scope exit for deterministic destruction
-                        
+
                         if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,returnVal);
                     }
-                    
+
                     // For top-level execute(), use original termination logic
                     if (thread->execute_depth == 1 && thread->frames.empty()) {
                         Value returnVal = pop();
 
                         freeObjects();
-                        
+
                         if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,returnVal);
                     }
@@ -2506,15 +2552,15 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     // For nested execute() calls, only terminate when we return to entry depth
                     if (thread->execute_depth > 1 && thread->frames.size() <= frame_depth_on_entry) {
                         freeObjects(); // Always cleanup objects on scope exit for deterministic destruction
-                        
+
                         if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,result);
                     }
-                    
+
                     // For top-level execute(), use original termination logic
                     if (thread->execute_depth == 1 && thread->frames.empty()) {
                         freeObjects();
-                        
+
                         if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,result);
                     }
@@ -3135,7 +3181,7 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::List, "append", &VM::list_append_builtin);
 
     defineBuiltinMethod(ValueType::Actor, "tick", &VM::dataflow_tick_native, true);  // proc
-    defineBuiltinMethod(ValueType::Actor, "run", &VM::dataflow_run_native, true);   // proc  
+    defineBuiltinMethod(ValueType::Actor, "run", &VM::dataflow_run_native, true);   // proc
     defineBuiltinMethod(ValueType::Actor, "runFor", &VM::dataflow_run_for_native, true);  // proc
 }
 
@@ -3143,6 +3189,32 @@ void VM::defineBuiltinMethod(ValueType type, const std::string& name, NativeFn f
 {
     auto us = toUnicodeString(name);
     builtinMethods[type][us.hashCode()] = BuiltinMethodInfo(fn, isProc);
+}
+
+void VM::defineBuiltinProperties()
+{
+    if (!builtinProperties.empty())
+        return;
+
+    // Signal properties
+    defineBuiltinProperty(ValueType::Signal, "value", &VM::signal_value_getter);
+}
+
+void VM::defineBuiltinProperty(ValueType type, const std::string& name, NativePropertyGetter getter, NativePropertySetter setter)
+{
+    auto us = toUnicodeString(name);
+    builtinProperties[type][us.hashCode()] = BuiltinPropertyInfo(getter, setter);
+}
+
+Value VM::signal_value_getter(Value& receiver)
+{
+    #ifdef DEBUG_BUILD
+    if (!isSignal(receiver))
+        throw std::invalid_argument("signal.value property called on non-signal value");
+    #endif
+
+    ObjSignal* objSignal = asSignal(receiver);
+    return objSignal->signal->lastValue();
 }
 
 

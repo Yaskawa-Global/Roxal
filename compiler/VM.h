@@ -274,6 +274,26 @@ protected:
     void defineBuiltinMethods();
     void defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn, bool isProc = false);
 
+    // Native property support
+    typedef Value (VM::*NativePropertyGetter)(Value&);
+    typedef void (VM::*NativePropertySetter)(Value&, Value);
+    
+    struct BuiltinPropertyInfo {
+        NativePropertyGetter getter;
+        NativePropertySetter setter;  // nullptr for read-only properties
+        bool readOnly;
+        
+        BuiltinPropertyInfo() : getter(nullptr), setter(nullptr), readOnly(true) {}
+        BuiltinPropertyInfo(NativePropertyGetter get, NativePropertySetter set = nullptr) 
+            : getter(get), setter(set), readOnly(set == nullptr) {}
+    };
+    
+    // Builtin properties: builtin value type -> property name hash -> BuiltinPropertyInfo
+    std::unordered_map<ValueType, std::unordered_map<int32_t, BuiltinPropertyInfo>> builtinProperties;
+
+    void defineBuiltinProperties();
+    void defineBuiltinProperty(ValueType type, const std::string& name, NativePropertyGetter getter, NativePropertySetter setter = nullptr);
+
     Value vector_norm_builtin(int argCount, Value* args);
     Value vector_sum_builtin(int argCount, Value* args);
     Value vector_normalized_builtin(int argCount, Value* args);
@@ -322,6 +342,9 @@ protected:
     Value dataflow_tick_native(int argCount, Value* args);
     Value dataflow_run_native(int argCount, Value* args);
     Value dataflow_run_for_native(int argCount, Value* args);
+    
+    // Builtin property getters
+    Value signal_value_getter(Value& receiver);
 public:
 protected:
     Value loadlib_native(int argCount, Value* args);

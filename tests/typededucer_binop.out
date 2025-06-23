@@ -1,6 +1,6 @@
 File
  VarDecl x
-  BinaryOp +  →int
+  BinaryOp +  → int
    Num 1:int
    Num 2:int
 

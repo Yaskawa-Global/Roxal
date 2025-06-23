@@ -26,6 +26,9 @@ atomic_vector<ObjModuleType*> ObjModuleType::allModules {};
 
 ValueType Obj::valueType() const
 {
+    // FIXME: For efficiency, the enum values between ValueType and ObjType should be synchronized 
+    // and the Value::type() made efficient by returning a cast from ObjType -> ValueType for all 
+    // object cases to avoid a cascade of is*() checks for every single type.
     switch (type) {
         case ObjType::Bool: return ValueType::Bool;
         // TODO: Byte, Decimal
@@ -38,6 +41,7 @@ ValueType Obj::valueType() const
         case ObjType::Dict: return ValueType::Dict;
         case ObjType::Vector: return ValueType::Vector;
         case ObjType::Matrix: return ValueType::Matrix;
+        case ObjType::Signal: return ValueType::Signal;
         case ObjType::Instance: return static_cast<const ObjObjectType*>(this)->isActor ? ValueType::Actor : ValueType::Object;
         case ObjType::Actor: return ValueType::Actor;
         default: return ValueType::Nil;
