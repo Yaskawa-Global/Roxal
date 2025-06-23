@@ -2207,7 +2207,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 Value a = pop();
                 a.resolve();
                 b.resolve();
-                push(boolVal(valuesEqual(a,b)));
+                push(boolVal(a.equals(b, frame->strict)));
                 break;
             }
             case asByte(OpCode::Greater): {

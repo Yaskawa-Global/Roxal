@@ -50,5 +50,34 @@ print("[7.0] matrix == [5.0] list: " + (singleMat == singleList))  // Should be 
 var singleList3 = [7.0]
 print("[7.0] matrix == [7.0] list: " + (singleMat == singleList3))  // Should be true
 
-// Matrix vs multi-element list (should not auto-convert)
-print("matrix == multi-element list: " + (m1 == multiList))  // Should be false
+// Matrix vs multi-element list - test with compatible values
+var matrixRowList = [1.0 2.0 3.0]  // Single row matrix  
+print("matrix == multi-element list: " + (matrixRowList == multiList))  // Should be true in non-strict
+
+print("=== Strict Context Tests (Inside Functions) ===")
+
+// Test the same comparisons in strict context (inside functions)
+func testStrictVectorEquality():
+    var v1_strict = [1.0 2.0 3.0]  // vector
+    var multiList_strict = [1.0, 2.0, 3.0]  // list
+    var singleList_strict = [5.0]  // list
+    var emptyList_strict = []  // list
+    
+    print("STRICT: vector == vector: " + (v1_strict == v1_strict))  // Should be true
+    print("STRICT: empty vector == []: " + (vector(0) == emptyList_strict))  // Should be true
+    print("STRICT: single vector == [5.0] list: " + (vector([5.0]) == singleList_strict))  // Should be true
+    print("STRICT: vector == multi-element list: " + (v1_strict == multiList_strict))  // Should be false in strict context
+
+func testStrictMatrixEquality():
+    var matrixRowList_strict = [1.0 2.0 3.0]  // Single row matrix
+    var multiList_strict = [1.0, 2.0, 3.0]  // list  
+    var singleList_strict = [7.0]  // list
+    var emptyList_strict = []  // list
+    
+    print("STRICT: matrix == matrix: " + (matrixRowList_strict == matrixRowList_strict))  // Should be true
+    print("STRICT: empty matrix == []: " + (matrix([]) == emptyList_strict))  // Should be true
+    print("STRICT: single matrix == [7.0] list: " + (matrix([7.0]) == singleList_strict))  // Should be true
+    print("STRICT: matrix == multi-element list: " + (matrixRowList_strict == multiList_strict))  // Should be false in strict context
+
+testStrictVectorEquality()
+testStrictMatrixEquality()

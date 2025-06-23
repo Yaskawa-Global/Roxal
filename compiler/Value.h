@@ -261,6 +261,7 @@ public:
     /// @brief Equality operator.
     /// @param rhs The right-hand side value to compare.
     /// @return True if the values are equal, false otherwise.
+    bool equals(const Value& rhs, bool strict = false) const;
     bool operator==(const Value& rhs) const;
 
     static_assert(sizeof(size_t) >= sizeof(uint64_t), "size_t is not big enough for uint64_t val as hash");
@@ -334,7 +335,6 @@ std::vector<std::tuple<std::string,bool,std::string>> testConversions();
 bool isFalsey(const Value& v);
 bool isTruthy(const Value& v);
 
-bool valuesEqual(Value a, Value b);
 
 Value negate(Value v);
 Value add(Value l, Value r);

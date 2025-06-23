@@ -618,42 +618,73 @@ std::string roxal::Value::typeName() const
 
 
 
-bool Value::operator==(const Value& rhs) const
+bool Value::equals(const Value& rhs, bool strict) const
 {
     // TODO: handle unboxing
 
+    // Handle nil cases
     if (isNil())
         return rhs.isNil();
     if (rhs.isNil())
         return isNil();
 
+    // Fast path for same primitive types
     if (isBool())
-        return asBool() == rhs.asBool();
+        return rhs.isBool() && asBool() == rhs.asBool();
     else if (isInt())
-        return asInt() == rhs.asInt();
+        return rhs.isInt() && asInt() == rhs.asInt();
     else if (isReal())
-        return asReal() == rhs.asReal();
+        return rhs.isReal() && asReal() == rhs.asReal();
     else if (isType())
-        return asType() == rhs.asType();
+        return rhs.isType() && asType() == rhs.asType();
+    else if (isEnum())
+        return rhs.isEnum() && (enumTypeId() == rhs.enumTypeId()) && (asEnum() == rhs.asEnum());
     else if (isString(*this))
-        return objsEqual(*this,rhs); // compares strings intelligently (e.g. using immutability & hash)
+        return objsEqual(*this, rhs); // compares strings intelligently (e.g. using immutability & hash)
+
+    // Handle mixed numeric type comparisons
+    else if (isNumber() && rhs.isNumber()) {
+        ValueType compType(binaryOpType(*this, rhs));
+        switch(compType) {
+            case ValueType::Int:  return asInt() == rhs.asInt();
+            case ValueType::Real: return asReal() == rhs.asReal();
+            default: throw std::runtime_error("unimplemented mixed numeric equality for types " + typeName() + " and " + rhs.typeName());
+        }
+    }
+    // Vector comparisons
     else if (isVector(*this) && isVector(rhs)) {
         // Deep equality for vectors - compare elements
         return asVector(*this)->equals(asVector(rhs));
     }
     else if (isVector(*this) && isList(rhs)) {
-        // Vector compared to list - auto-convert list if it has 0 or 1 numeric elements
+        // Vector compared to list - auto-conversion based on strict mode
         ObjList* rhsList = asList(rhs);
-        if (rhsList->length() <= 1) {
-            bool allNumeric = true;
-            for (int i = 0; i < rhsList->length(); i++) {
-                if (!rhsList->elts.at(i).isNumber()) {
-                    allNumeric = false;
-                    break;
-                }
+        if (strict && rhsList->length() > 1) {
+            // In strict mode, only allow 0 or 1 element lists (due to [] and [1] ambiguity)
+            return false;
+        }
+        
+        // Check if all elements are numeric
+        bool allNumeric = true;
+        for (int i = 0; i < rhsList->length(); i++) {
+            if (!rhsList->elts.at(i).isNumber()) {
+                allNumeric = false;
+                break;
             }
-            if (allNumeric) {
-                // Convert list to vector and compare
+        }
+        
+        if (allNumeric) {
+            // In non-strict mode, try to convert list to vector using construct()
+            if (!strict && rhsList->length() > 1) {
+                try {
+                    std::vector<Value> args{rhs};
+                    Value convertedVector = construct(ValueType::Vector, args.begin(), args.end());
+                    return asVector(*this)->equals(asVector(convertedVector));
+                } catch (...) {
+                    return false;
+                }
+            } else {
+                // For 0-1 element lists, do manual comparison (both strict and non-strict)
                 ObjVector* lhsVec = asVector(*this);
                 if (lhsVec->length() != rhsList->length())
                     return false;
@@ -664,30 +695,46 @@ bool Value::operator==(const Value& rhs) const
                 return true;
             }
         }
-        // Multi-element lists or non-numeric lists should not auto-convert
         return false;
     }
     else if (isList(*this) && isVector(rhs)) {
         // List compared to vector - symmetric case
-        return rhs == *this;  // Use the vector-list comparison above
+        return rhs.equals(*this, strict);
     }
+    // Matrix comparisons
     else if (isMatrix(*this) && isMatrix(rhs)) {
         // Deep equality for matrices - compare elements  
         return asMatrix(*this)->equals(asMatrix(rhs));
     }
     else if (isMatrix(*this) && isList(rhs)) {
-        // Matrix compared to list - auto-convert list if it has 0 or 1 numeric elements
+        // Matrix compared to list - auto-conversion based on strict mode
         ObjList* rhsList = asList(rhs);
-        if (rhsList->length() <= 1) {
-            bool allNumeric = true;
-            for (int i = 0; i < rhsList->length(); i++) {
-                if (!rhsList->elts.at(i).isNumber()) {
-                    allNumeric = false;
-                    break;
-                }
+        if (strict && rhsList->length() > 1) {
+            // In strict mode, only allow 0 or 1 element lists (due to [] and [1] ambiguity)
+            return false;
+        }
+        
+        // Check if all elements are numeric
+        bool allNumeric = true;
+        for (int i = 0; i < rhsList->length(); i++) {
+            if (!rhsList->elts.at(i).isNumber()) {
+                allNumeric = false;
+                break;
             }
-            if (allNumeric) {
-                // Convert list to matrix and compare
+        }
+        
+        if (allNumeric) {
+            // In non-strict mode, try to convert list to matrix using construct()
+            if (!strict && rhsList->length() > 1) {
+                try {
+                    std::vector<Value> args{rhs};
+                    Value convertedMatrix = construct(ValueType::Matrix, args.begin(), args.end());
+                    return asMatrix(*this)->equals(asMatrix(convertedMatrix));
+                } catch (...) {
+                    return false;
+                }
+            } else {
+                // For 0-1 element lists, do manual comparison (both strict and non-strict)
                 ObjMatrix* lhsMat = asMatrix(*this);
                 int expectedSize = rhsList->length();
                 if (expectedSize == 0) {
@@ -702,11 +749,16 @@ bool Value::operator==(const Value& rhs) const
     }
     else if (isList(*this) && isMatrix(rhs)) {
         // List compared to matrix - symmetric case
-        return rhs == *this;  // Use the matrix-list comparison above
+        return rhs.equals(*this, strict);
     }
     else if (isObj())
         return rhs.isObj() && (asObj() == rhs.asObj()); // identity (by ptr/address)
     return false;
+}
+
+bool Value::operator==(const Value& rhs) const
+{
+    return equals(rhs, false); // Default to non-strict mode
 }
 
 
@@ -1034,106 +1086,6 @@ bool roxal::isTruthy(const Value& v)
 }
 
 
-bool roxal::valuesEqual(Value a, Value b)
-{
-    // First handle cases where both values are the same builtin type and
-    // that type is expected to be common.
-    if (a.type() == b.type()) {
-        switch (a.type()) {
-            case ValueType::Bool:   return a.asBool() == b.asBool();
-            case ValueType::Nil:    return true; // only single Nil value
-            case ValueType::Int:    return a.asInt() == b.asInt();
-            case ValueType::Real:   return a.asReal() == b.asReal();
-            case ValueType::Enum:   return (a.enumTypeId() == b.enumTypeId()) && (a.asEnum() == b.asEnum());
-            case ValueType::Object: return objsEqual(a,b);
-            case ValueType::Matrix: {
-                ObjMatrix* am = asMatrix(a);
-                ObjMatrix* bm = asMatrix(b);
-                if (am->rows() != bm->rows() || am->cols() != bm->cols())
-                    return false;
-                for(int r=0;r<am->rows();++r)
-                    for(int c=0;c<am->cols();++c)
-                        if (am->mat(r,c) != bm->mat(r,c))
-                            return false;
-                return true;
-            }
-            case ValueType::Vector: {
-                ObjVector* av = asVector(a);
-                ObjVector* bv = asVector(b);
-                if (av->length() != bv->length())
-                    return false;
-                for(int i=0;i<av->length();++i)
-                    if (av->vec[i] != bv->vec[i])
-                        return false;
-                return true;
-            }
-            default:
-                throw std::runtime_error("unimplemented equality test for types " + a.typeName() + " and " + b.typeName());
-        }
-    }
-
-    // If both are numbers but of different type, compare as common numeric type.
-    if (a.isNumber() && b.isNumber()) {
-        ValueType compType(binaryOpType(a,b));
-        switch(compType) {
-            case ValueType::Int:  return a.asInt() == b.asInt();
-            case ValueType::Real: return a.asReal() == b.asReal();
-            default: throw std::runtime_error("unimplemented equality test for types " + a.typeName() + " and " + b.typeName());
-        }
-    }
-
-    // Handle matrix and vector comparisons after common types.
-    if (isMatrix(a) || isMatrix(b)) {
-        try {
-            if (!isMatrix(a)) {
-                std::vector<Value> args{a};
-                a = construct(ValueType::Matrix, args.begin(), args.end());
-            }
-            if (!isMatrix(b)) {
-                std::vector<Value> args{b};
-                b = construct(ValueType::Matrix, args.begin(), args.end());
-            }
-        } catch (...) {
-            return false;
-        }
-
-        ObjMatrix* am = asMatrix(a);
-        ObjMatrix* bm = asMatrix(b);
-        if (am->rows() != bm->rows() || am->cols() != bm->cols())
-            return false;
-        for(int r=0;r<am->rows();++r)
-            for(int c=0;c<am->cols();++c)
-                if (am->mat(r,c) != bm->mat(r,c))
-                    return false;
-        return true;
-    }
-
-    if (isVector(a) || isVector(b)) {
-        try {
-            if (!isVector(a)) {
-                std::vector<Value> args{a};
-                a = construct(ValueType::Vector, args.begin(), args.end());
-            }
-            if (!isVector(b)) {
-                std::vector<Value> args{b};
-                b = construct(ValueType::Vector, args.begin(), args.end());
-            }
-        } catch (...) {
-            return false;
-        }
-
-        ObjVector* av = asVector(a);
-        ObjVector* bv = asVector(b);
-        if (av->length() != bv->length())
-            return false;
-        for(int i=0;i<av->length();++i)
-            if (av->vec[i] != bv->vec[i])
-                return false;
-        return true;
-    }
-
-    return false;
-}
 
 
 Value roxal::negate(Value v)
