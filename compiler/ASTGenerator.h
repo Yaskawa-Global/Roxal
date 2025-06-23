@@ -114,6 +114,7 @@ public:
 
     virtual std::any visitPrimary(RoxalParser::PrimaryContext *context);
 
+    virtual std::any visitReturn_type(RoxalParser::Return_typeContext *context);
     virtual std::any visitBuiltin_type(RoxalParser::Builtin_typeContext *context);
 
     virtual std::any visitList(RoxalParser::ListContext *context);

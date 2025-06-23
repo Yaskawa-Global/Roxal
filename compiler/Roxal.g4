@@ -112,7 +112,7 @@ function
  ;
 
 func_sig
- : (FUNC | PROC) IDENTIFIER '(' parameters? ')' (YIELDS (builtin_type | IDENTIFIER))?
+ : (FUNC | PROC) IDENTIFIER '(' parameters? ')' (YIELDS return_type)?
  ;
 
 parameters
@@ -169,7 +169,7 @@ annot_argument
 
 
 lambda_func
- : FUNC '(' parameters? ')' (YIELDS (builtin_type | IDENTIFIER))? ':' (expression | suite)
+ : FUNC '(' parameters? ')' (YIELDS return_type)? ':' (expression | suite)
  ;
 
 
@@ -286,6 +286,12 @@ primary
  | lambda_func
  | SUPER '.' IDENTIFIER
  | builtin_type
+ ;
+
+
+return_type
+ : (builtin_type | IDENTIFIER)                                          // single type
+ | '[' (builtin_type | IDENTIFIER) (',' (builtin_type | IDENTIFIER))* ']'  // multiple types
  ;
 
 

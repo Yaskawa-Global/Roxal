@@ -746,7 +746,7 @@ std::any ASTGenerator::visitFunc_sig(RoxalParser::Func_sigContext *context)
 {
     visitStart();
 
-    auto ident { UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText()) };
+    auto ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
 
     auto func = std::make_shared<Function>();
     setSourceInfo(func,context);
@@ -759,13 +759,9 @@ std::any ASTGenerator::visitFunc_sig(RoxalParser::Func_sigContext *context)
     }
 
     // return type (optional)
-    if (context->builtin_type()) {
-        auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
-        func->returnType = builtinType;
-    }
-    else if (context->IDENTIFIER().size()>1) {
-        auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
-        func->returnType = typeIdent;
+    if (context->return_type()) {
+        auto returnTypeVariant = anyas<std::variant<BuiltinType,icu::UnicodeString>>(visitReturn_type(context->return_type()));
+        func->returnType = returnTypeVariant;
     }
 
     if (func->returnType.has_value() && func->isProc)
@@ -1100,13 +1096,9 @@ std::any ASTGenerator::visitLambda_func(RoxalParser::Lambda_funcContext *context
     }
 
     // return type (optional)
-    if (context->builtin_type()) {
-        auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
-        func->returnType = builtinType;
-    }
-    else if (context->IDENTIFIER()) {
-        auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
-        func->returnType = typeIdent;
+    if (context->return_type()) {
+        auto returnTypeVariant = anyas<std::variant<BuiltinType,icu::UnicodeString>>(visitReturn_type(context->return_type()));
+        func->returnType = returnTypeVariant;
     }
 
     if (context->suite()) {
@@ -1752,6 +1744,35 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
 
 
 // returns BuiltinType enum value
+std::any ASTGenerator::visitReturn_type(RoxalParser::Return_typeContext *context)
+{
+    visitStart();
+
+    // For now, only support single return types to maintain compatibility
+    // Multi-return type support will be added later when AST structure is updated
+    
+    if (context->builtin_type().size() == 1 && context->IDENTIFIER().size() == 0) {
+        // Single builtin type: builtin_type
+        auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type(0)));
+        return std::variant<BuiltinType,icu::UnicodeString>(builtinType);
+    }
+    else if (context->builtin_type().size() == 0 && context->IDENTIFIER().size() == 1) {
+        // Single identifier type: IDENTIFIER
+        auto typeIdent = UnicodeString::fromUTF8(context->IDENTIFIER(0)->getText());
+        return std::variant<BuiltinType,icu::UnicodeString>(typeIdent);
+    }
+    else if (context->builtin_type().size() > 1 || context->IDENTIFIER().size() > 1 ||
+             (context->builtin_type().size() + context->IDENTIFIER().size()) > 1) {
+        // Multiple types - not yet supported
+        throw std::runtime_error("Multiple return types are not yet implemented. Use single return type for now.");
+    }
+    else {
+        throw std::runtime_error("Invalid return type specification.");
+    }
+    
+    visitEnd();
+}
+
 std::any ASTGenerator::visitBuiltin_type(RoxalParser::Builtin_typeContext *context)
 {
     visitStart();
