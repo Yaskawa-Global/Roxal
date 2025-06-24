@@ -3,6 +3,7 @@ func add(x:int, y:int) -> int:
   return x + y
 
 c = clock(10)
+c.run()
 inc = add(c, 1)
 _dataflow.tick()
 _ussleep(10000)

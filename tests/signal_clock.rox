@@ -1,4 +1,5 @@
 c = clock(10)
+c.run()
 _dataflow.tick()
 sleep(5000)
 _dataflow.tick()

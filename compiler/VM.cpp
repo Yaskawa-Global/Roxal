@@ -3591,7 +3591,12 @@ Value VM::signal_run_builtin(int argCount, Value* args)
     if (argCount != 1 || !isSignal(args[0]))
         throw std::invalid_argument("signal.run expects no arguments");
 
-    // TODO: implement signal run behavior
+    ObjSignal* objSignal = asSignal(args[0]);
+    auto sig = objSignal->signal;
+    if (!sig->isSourceSignal())
+        throw std::runtime_error("signal.run not supported for non-source signal");
+
+    sig->run();
     return nilVal();
 }
 
@@ -3600,7 +3605,12 @@ Value VM::signal_stop_builtin(int argCount, Value* args)
     if (argCount != 1 || !isSignal(args[0]))
         throw std::invalid_argument("signal.stop expects no arguments");
 
-    // TODO: implement signal stop behavior
+    ObjSignal* objSignal = asSignal(args[0]);
+    auto sig = objSignal->signal;
+    if (!sig->isSourceSignal())
+        throw std::runtime_error("signal.stop not supported for non-source signal");
+
+    sig->stop();
     return nilVal();
 }
 

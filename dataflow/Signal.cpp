@@ -139,9 +139,15 @@ void Signal::setValueAt(TimePoint t, const Value& v)
 void Signal::tick(TimePoint t)
 {
     if (isClock) {
-        // For clock signals, generate a new incrementing value
-        ++clockCount;
-        Value val {int32_t(clockCount)};// FIXME: !!! 64->31 bits
+        Value val;
+        if (running) {
+            // For clock signals, generate a new incrementing value
+            ++clockCount;
+            val = Value{int32_t(clockCount)}; // FIXME: !!! 64->31 bits
+        } else {
+            // Not running - repeat last value
+            val = lastValue();
+        }
         setValueAt(t, val);
     }
 }
