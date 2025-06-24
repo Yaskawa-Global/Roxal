@@ -197,6 +197,10 @@ ptr<Signal> Signal::indexedSignal(int index)
         initial = Value();
     }
 
+    // Create a new signal that mirrors this one but with a time delay.
+    // The old standalone DataflowEngine supported latency by storing the
+    // desired index on FuncInputInfo.  Here we emulate that behaviour by
+    // generating a separate Signal updated whenever the source updates.
     auto newSig = std::shared_ptr<Signal>(new Signal(m_frequency, initial, m_name + "[" + std::to_string(index) + "]"));
     newSig->setMaxHistoryPeriods(std::max(m_maxHistoryPeriods, -index + 1));
 
