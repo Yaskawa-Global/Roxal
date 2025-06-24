@@ -2825,11 +2825,55 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 int eltCount = readByte();
                 std::vector<Value> elts {};
                 elts.reserve(eltCount);
+                bool signalElt = false;
                 // top of stack is last list elt by index
-                for(int i=0; i<eltCount;i++)
-                    elts.push_back(peek(eltCount-i-1));
+                for(int i=0; i<eltCount;i++) {
+                    auto v = peek(eltCount-i-1);
+                    if (isSignal(v)) signalElt = true;
+                    elts.push_back(v);
+                }
                 for(int i=0; i<eltCount;i++) pop();
-                push(objVal(listVal(elts)));
+                if (signalElt) {
+                    std::vector<int> signalIndex;
+                    std::vector<Value> constValues;
+                    std::vector<ptr<df::Signal>> signals;
+                    df::Names paramNames;
+                    signalIndex.resize(elts.size());
+                    constValues.resize(elts.size());
+                    for(size_t i=0;i<elts.size();++i) {
+                        const auto& v = elts[i];
+                        if (isSignal(v)) {
+                            signals.push_back(asSignal(v)->signal);
+                            paramNames.push_back("elt" + std::to_string(i));
+                            signalIndex[i] = int(signals.size()) - 1;
+                        } else {
+                            signalIndex[i] = -1;
+                            constValues[i] = v;
+                        }
+                    }
+
+                    auto func = [signalIndex, constValues](const df::Values& inVals) -> df::Values {
+                        std::vector<Value> outElts;
+                        outElts.reserve(signalIndex.size());
+                        size_t sigPos = 0;
+                        for(size_t i=0;i<signalIndex.size();++i) {
+                            if (signalIndex[i] >= 0) {
+                                outElts.push_back(inVals[sigPos++]);
+                            } else {
+                                outElts.push_back(constValues[i]);
+                            }
+                        }
+                        return { objVal(listVal(outElts)) };
+                    };
+
+                    auto node = roxal::make_ptr<df::FuncNode>("list", paramNames, signals, func);
+                    node->addToEngine();
+                    auto outputs = node->outputs();
+                    df::DataflowEngine::instance()->evaluate();
+                    push(objVal(signalVal(outputs[0])));
+                } else {
+                    push(objVal(listVal(elts)));
+                }
                 break;
             }
             case asByte(OpCode::NewDict): {

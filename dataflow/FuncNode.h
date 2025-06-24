@@ -20,10 +20,19 @@ public:
     using ConstArgMap = std::map<std::string, roxal::Value>;
     typedef std::map<std::string, std::string> ParamMap;
 
+    using NativeFunc = std::function<Values(const Values&)>;
+
     FuncNode(const std::string& name,
              const roxal::Value& closure,
              const ConstArgMap& constArgs,
              const std::vector<ptr<Signal>>& signalArgs);
+
+    FuncNode(const std::string& name,
+             const Names& paramNames,
+             const std::vector<ptr<Signal>>& signalArgs,
+             NativeFunc nativeFunc,
+             const Names& outputNames = {"result"},
+             bool pure = true);
 
     virtual ~FuncNode() {}
 
@@ -31,7 +40,7 @@ public:
     
     Names inputNames() const { return m_inputNames; }
     Names outputNames() const { return m_outputNames.empty() ? Names{"result"} : m_outputNames; }
-    bool isPure() const { return true; }
+    bool isPure() const { return m_isPure; }
     
     // Core execution method
     virtual Values operator()(const Values& inputValues);
@@ -89,6 +98,9 @@ protected:
     TimeDuration m_period;
 
     std::vector<std::function<void(TimePoint, ptr<FuncNode>, const Values&, const Values&)>> executionCallbacks;
+
+    std::optional<NativeFunc> m_nativeFunc;
+    bool m_isPure{true};
 
     // Add input and output ports
     // index=-1 -> previous period's value

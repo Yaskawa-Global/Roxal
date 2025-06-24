@@ -14,7 +14,7 @@ FuncNode::FuncNode(const std::string& name,
                    const roxal::Value& closure_,
                    const ConstArgMap& constArgs_,
                    const std::vector<ptr<Signal>>& signalArgs_)
-  : m_name(name), m_operatorSignalsCalled(false), closure(closure_), constArgs(constArgs_), signalArgs(signalArgs_)
+  : m_name(name), m_operatorSignalsCalled(false), closure(closure_), constArgs(constArgs_), signalArgs(signalArgs_), m_isPure(true)
 {
     m_outputNames = {"result"};
     if (roxal::isClosure(closure) && roxal::asClosure(closure)->function->funcType.has_value()) {
@@ -66,6 +66,37 @@ FuncNode::FuncNode(const std::string& name,
             m_operatorSignalsCalled = true;
         }
     }
+}
+
+FuncNode::FuncNode(const std::string& name,
+                   const Names& paramNames_,
+                   const std::vector<ptr<Signal>>& signalArgs_,
+                   NativeFunc nativeFunc,
+                   const Names& outputNames,
+                   bool pure)
+  : m_name(name), m_operatorSignalsCalled(false), closure(roxal::Value()), constArgs(), signalArgs(signalArgs_),
+    m_nativeFunc(nativeFunc), m_isPure(pure)
+{
+    m_outputNames = outputNames.empty() ? Names{"result"} : outputNames;
+    paramNames = paramNames_;
+    size_t sigIndex = 0;
+    for (const auto& pname : paramNames) {
+        m_inputNames.push_back(pname);
+        if (sigIndex < signalArgs.size()) {
+            addInput(pname, signalArgs[sigIndex]);
+            paramSignalIndex.push_back(int(sigIndex));
+            sigIndex++;
+        } else {
+            paramSignalIndex.push_back(-1);
+        }
+    }
+    double maxFreq = 0.0;
+    for (auto& sig : signalArgs)
+        maxFreq = std::max(maxFreq, sig->frequency());
+    if (maxFreq <= 0.0)
+        maxFreq = 1.0;
+    createOutputSignals(maxFreq);
+    m_operatorSignalsCalled = true;
 }
 
 const std::string& FuncNode::name() const
@@ -309,6 +340,10 @@ void FuncNode::invokeExecutionCallbacks(TimePoint time, const Values& inputValue
 Values FuncNode::operator()(const Values& inputValues)
 {
     using namespace roxal;
+
+    if (m_nativeFunc.has_value()) {
+        return m_nativeFunc.value()(inputValues);
+    }
 
     auto& vm = VM::instance();
 
