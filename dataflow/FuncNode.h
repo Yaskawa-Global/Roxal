@@ -30,7 +30,7 @@ public:
     const std::string& name() const;
     
     Names inputNames() const { return m_inputNames; }
-    Names outputNames() const { return {"result"}; }
+    Names outputNames() const { return m_outputNames.empty() ? Names{"result"} : m_outputNames; }
     bool isPure() const { return true; }
     
     // Core execution method
@@ -79,6 +79,7 @@ protected:
     // Input and output ports
     std::vector<InputPort> m_inputs;
     std::vector<OutputPort> m_outputs;
+    Names m_outputNames;
 
     // For pure functions, store previous inputs and outputs
     Values previousInputValues;
