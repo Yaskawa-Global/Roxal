@@ -1117,15 +1117,16 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
 
 bool VM::indexValue(const Value& indexable, int subscriptCount)
 {
-    if (indexable.isObj()) {
+    Value base = indexable; // copy since stack value may be popped
+    if (base.isObj()) {
         // TODO: move some per-type indexing code into Object or Value
-        switch (objType(indexable)) {
+        switch (objType(base)) {
             case ObjType::Range: {
                 if (subscriptCount != 1) {
                     runtimeError("Range indexing requires a single index.");
                     return false;
                 }
-                ObjRange* range = asRange(indexable);
+                ObjRange* range = asRange(base);
                 Value index = pop();
                 if (!index.isInt()) { // TODO number?
                     runtimeError("Range indexing requires int index.");
@@ -1153,7 +1154,7 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                     runtimeError("String indexing requires a single index.");
                     return false;
                 }
-                ObjString* str = asString(indexable);
+                ObjString* str = asString(base);
                 Value index = pop();
                 //std::cout << "VM::indexValue indexable="+toString(indexable)+" index="+toString(index) << std::endl << std::flush;
                 try {
@@ -1173,7 +1174,7 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                     runtimeError("List indexing requires a single index.");
                     return false;
                 }
-                ObjList* list = asList(indexable);
+                ObjList* list = asList(base);
                 Value index = pop();
                 try {
                     Value sublist { list->index(index) };
@@ -1191,7 +1192,7 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                     runtimeError("Vector indexing requires a single index.");
                     return false;
                 }
-                ObjVector* vec = asVector(indexable);
+                ObjVector* vec = asVector(base);
                 Value index = pop();
                 try {
                     Value subvec { vec->index(index) };
@@ -1206,7 +1207,7 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
             }
             case ObjType::Matrix: {
                 if (subscriptCount == 1) {
-                    ObjMatrix* mat = asMatrix(indexable);
+                    ObjMatrix* mat = asMatrix(base);
                     Value r = pop();
                     try {
                         Value row { mat->index(r) };
@@ -1218,7 +1219,7 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                     }
                     return true;
                 } else if (subscriptCount == 2) {
-                    ObjMatrix* mat = asMatrix(indexable);
+                    ObjMatrix* mat = asMatrix(base);
                     Value col = pop();
                     Value row = pop();
                     try {
@@ -1240,7 +1241,7 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                     runtimeError("Dict lookup requires a single key index.");
                     return false;
                 }
-                ObjDict* dict = asDict(indexable);
+                ObjDict* dict = asDict(base);
                 Value index = pop();
                 if (!dict->contains(index)) {
                     runtimeError("KeyError: key '" + toString(index) + "' not found in dict.");
@@ -1256,16 +1257,25 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                     runtimeError("Signal indexing requires a single index.");
                     return false;
                 }
-                ObjSignal* sig = asSignal(indexable);
+                ObjSignal* sig = asSignal(base);
                 Value indexVal = pop();
                 if (!indexVal.isInt()) {
                     runtimeError("Signal index must be an int.");
                     return false;
                 }
+                int idx = indexVal.asInt();
                 try {
-                    Value result { sig->signal->valueAtIndex(indexVal.asInt()) };
-                    pop();
-                    push(result);
+                    if (idx == 0) {
+                        pop();
+                        push(base);
+                    } else if (idx < 0) {
+                        auto newSig = sig->signal->indexedSignal(idx);
+                        pop();
+                        push(objVal(signalVal(newSig)));
+                    } else {
+                        runtimeError("Signal index must be 0 or negative.");
+                        return false;
+                    }
                 } catch (std::exception& e) {
                     runtimeError(e.what());
                     return false;
@@ -1280,10 +1290,10 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
             default:
                 break;
         }
-        runtimeError("Only strings, lists, ranges, [vectors, dicts, matrices, tensors - unimplemented], signals and streams can be indexed, not type "+objTypeName(indexable.asObj())+".");
+        runtimeError("Only strings, lists, ranges, [vectors, dicts, matrices, tensors - unimplemented], signals and streams can be indexed, not type "+objTypeName(base.asObj())+".");
         return false;
     }
-    runtimeError("Only strings, lists, ranges,[vectors, dicts, matrices, tensors - unimplemented], signals and streams can be indexed, not type "+indexable.typeName()+".");
+    runtimeError("Only strings, lists, ranges,[vectors, dicts, matrices, tensors - unimplemented], signals and streams can be indexed, not type "+base.typeName()+".");
     return false;
 }
 

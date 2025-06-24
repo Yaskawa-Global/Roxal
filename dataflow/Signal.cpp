@@ -182,6 +182,39 @@ Value Signal::valueAtIndex(int index) const
     return valueAt(t);
 }
 
+ptr<Signal> Signal::indexedSignal(int index)
+{
+    if (index > 0)
+        throw std::invalid_argument("Signal index must be 0 or negative");
+
+    if (index == 0)
+        return shared_from_this();
+
+    Value initial;
+    try {
+        initial = valueAtIndex(index);
+    } catch(...) {
+        initial = Value();
+    }
+
+    auto newSig = std::shared_ptr<Signal>(new Signal(m_frequency, initial, m_name + "[" + std::to_string(index) + "]"));
+    newSig->setMaxHistoryPeriods(std::max(m_maxHistoryPeriods, -index + 1));
+
+    std::weak_ptr<Signal> weakNew = newSig;
+    addValueChangedCallback([weakNew, index](TimePoint t, ptr<Signal> src, const Value& v){
+        if (auto s = weakNew.lock()) {
+            try {
+                Value val = src->valueAtIndex(index);
+                s->setValueAt(t, val);
+            } catch(...) {
+                s->setValueAt(t, Value());
+            }
+        }
+    });
+
+    return newSig;
+}
+
 
 
 Value Signal::lastValueBefore(TimePoint t) const

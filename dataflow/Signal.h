@@ -60,6 +60,12 @@ public:
     // Throws if index > 0 or history is insufficient
     Value valueAtIndex(int index) const;
 
+    // Return a new signal that is this signal delayed by -index periods
+    //   index 0 -> this signal
+    //   index -1 -> signal one period ago
+    // Throws if index > 0
+    ptr<Signal> indexedSignal(int index);
+
     // The last value before a specific time
     Value lastValueBefore(TimePoint t) const;
 
