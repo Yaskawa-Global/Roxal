@@ -140,12 +140,11 @@ void Signal::tick(TimePoint t)
 {
     if (isClock) {
         Value val;
-        if (running) {
-            // For clock signals, generate a new incrementing value
+        if (running || tickPending) {
             ++clockCount;
             val = Value{int32_t(clockCount)}; // FIXME: !!! 64->31 bits
+            tickPending = false;
         } else {
-            // Not running - repeat last value
             val = lastValue();
         }
         setValueAt(t, val);

@@ -112,8 +112,41 @@ TimeDuration DataflowEngine::tickPeriod() const
 
 
 void DataflowEngine::run() {
-    m_shouldStop = false;  // Reset the stop flag
-    runFor(TimeDuration::max());
+    m_shouldStop = false;
+
+    if (m_networkModified)
+        buildNetworkCacheData();
+
+    if (m_tickPeriod == TimeDuration::zero())
+        m_runStart = currentTime();
+    else
+        m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
+
+    while (!m_shouldStop) {
+        if (m_networkModified) {
+            buildNetworkCacheData();
+            if (m_tickPeriod > TimeDuration::zero()) {
+                m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
+                m_tickNumber = 0;
+            }
+            continue;
+        }
+
+        if (m_tickPeriod == TimeDuration::zero()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+
+        m_tickStart = m_runStart + m_tickPeriod*m_tickNumber;
+        if (m_tickStart < currentTime()) {
+            m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
+            m_tickNumber = 0;
+            continue;
+        }
+
+        sleepUntil(m_tickStart);
+        tick(false);
+    }
 }
 
 void DataflowEngine::runFor(TimeDuration duration)
@@ -124,7 +157,10 @@ void DataflowEngine::runFor(TimeDuration duration)
 
     auto runUntil = currentTime() + duration;
 
-    m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
+    if (m_tickPeriod == TimeDuration::zero())
+        m_runStart = currentTime();
+    else
+        m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
     //std::cout << "currentTime=" << currentTime().humanString() << " start=" << start.humanString() << std::endl;//!!!
     #if TRACE_EXECUTION
     trace(TraceEntry{currentTime(), "runFor() schedule initial signal ticks", signalsStart, std::nullopt, std::nullopt});
@@ -134,16 +170,26 @@ void DataflowEngine::runFor(TimeDuration duration)
     // keep running until we are out of time or stop is requested
     while (currentTime() < runUntil && !m_shouldStop) {
 
-        m_tickStart = m_runStart + m_tickPeriod*m_tickNumber;
-        //auto nextTickStart = m_tickStart + m_tickPeriod;
+        if (m_networkModified) {
+            buildNetworkCacheData();
+            if (m_tickPeriod > TimeDuration::zero()) {
+                m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
+                m_tickNumber = 0;
+            }
+            continue; // start loop again with updated timing
+        }
 
-        if (m_tickStart < currentTime()) { // can't start in the past - means we've run behind because the calculations took longer than the clock period
-            std::string message = "DataflowEngine::runFor(): tick start " + m_tickStart.humanString() + " < current time " + currentTime().humanString();
-            if (m_executionScheme == ExecutionScheme::Strict)
-                throw std::runtime_error(message);
-            else
-                std::cerr << message << std::endl;
-            break;
+        if (m_tickPeriod == TimeDuration::zero()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+
+        m_tickStart = m_runStart + m_tickPeriod*m_tickNumber;
+
+        if (m_tickStart < currentTime()) {
+            m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
+            m_tickNumber = 0;
+            continue;
         }
 
         // wait until the next tick should start
@@ -164,6 +210,9 @@ void DataflowEngine::tick(bool waitForTickStart)
 {
     if (m_networkModified)
         buildNetworkCacheData();
+
+    if (m_tickPeriod == TimeDuration::zero())
+        return;
 
     if (m_runStart == TimePoint::zero()) // not set
         m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);

@@ -43,6 +43,9 @@ public:
     // For source signals: generate next value
     void tick(TimePoint t);
 
+    // Advance the clock by one tick on the next period boundary
+    void tickOnce() { tickPending = true; }
+
     // Start/stop running of source signals
     void run() { running = true; }
     void stop() { running = false; }
@@ -97,6 +100,9 @@ protected:
     bool isClock;  // True if this signal counts up at freq
 
     bool running = false; // True if source signal should advance each tick
+
+    // if true, advance once on next engine tick then clear
+    bool tickPending = false;
 
     uint64_t clockCount = 0;
 

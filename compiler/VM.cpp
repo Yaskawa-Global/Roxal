@@ -88,6 +88,14 @@ VM::VM()
     dataflowEngineThread = std::make_shared<VM::Thread>();
     dataflowEngineThread->act(dataflowEngineActor);
 
+    // Start the dataflow engine run loop on its actor thread
+    {
+        ActorInstance* inst = asActorInstance(dataflowEngineActor);
+        CallSpec cs{}; cs.argCount = 0; cs.allPositional = true;
+        Value callee = objVal(boundNativeVal(dataflowEngineActor, &VM::dataflow_run_native, true));
+        inst->queueCall(callee, cs, nullptr);
+    }
+
     // Make dataflow engine available as global variable
     globals.storeGlobal(toUnicodeString("_dataflow"), dataflowEngineActor);
 
@@ -3249,6 +3257,7 @@ void VM::defineBuiltinMethods()
 
     defineBuiltinMethod(ValueType::Signal, "run", &VM::signal_run_builtin);
     defineBuiltinMethod(ValueType::Signal, "stop", &VM::signal_stop_builtin);
+    defineBuiltinMethod(ValueType::Signal, "tick", &VM::signal_tick_builtin);
 
     defineBuiltinMethod(ValueType::Actor, "tick", &VM::dataflow_tick_native, true);  // proc
     defineBuiltinMethod(ValueType::Actor, "run", &VM::dataflow_run_native, true);   // proc
@@ -3642,6 +3651,20 @@ Value VM::signal_stop_builtin(int argCount, Value* args)
         throw std::runtime_error("signal.stop not supported for non-source signal");
 
     sig->stop();
+    return nilVal();
+}
+
+Value VM::signal_tick_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isSignal(args[0]))
+        throw std::invalid_argument("signal.tick expects no arguments");
+
+    ObjSignal* objSignal = asSignal(args[0]);
+    auto sig = objSignal->signal;
+    if (!sig->isSourceSignal())
+        throw std::runtime_error("signal.tick only supported for source signals");
+
+    sig->tickOnce();
     return nilVal();
 }
 
