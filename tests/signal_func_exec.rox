@@ -3,11 +3,10 @@ func add(x:int, y:int) -> int:
   return x + y
 
 c = clock(10)
-c.run()
 inc = add(c, 1)
-_dataflow.tick()
-_ussleep(10000)
-_dataflow.tick()
-_ussleep(10000)
+c.tick()
+_ussleep(110000)
+c.tick()
+_ussleep(110000)
 print("inc="+inc)
 
