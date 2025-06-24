@@ -144,7 +144,7 @@ try:
             with open(testerr, 'r') as file:
                 err_re = file.read().strip()
             stderr_str = compProc.stderr.decode()
-            if re.search(err_re, stderr_str) is None:
+            if re.search(err_re, stderr_str, re.MULTILINE | re.DOTALL) is None:
                 print(f"Test {test} FAIL:")
                 print("-- stderr --")
                 print(stderr_str)
