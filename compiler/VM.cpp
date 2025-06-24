@@ -1251,6 +1251,27 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                 push(result);
                 return true;
             }
+            case ObjType::Signal: {
+                if (subscriptCount != 1) {
+                    runtimeError("Signal indexing requires a single index.");
+                    return false;
+                }
+                ObjSignal* sig = asSignal(indexable);
+                Value indexVal = pop();
+                if (!indexVal.isInt()) {
+                    runtimeError("Signal index must be an int.");
+                    return false;
+                }
+                try {
+                    Value result { sig->signal->valueAtIndex(indexVal.asInt()) };
+                    pop();
+                    push(result);
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return false;
+                }
+                return true;
+            }
             case ObjType::Closure: {
                 // indexing a closure occurs in special case of a function that returns a list or dict etc.
                 // currently unsupported
@@ -1259,10 +1280,10 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
             default:
                 break;
         }
-        runtimeError("Only strings, lists, ranges, [vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed, not type "+objTypeName(indexable.asObj())+".");
+        runtimeError("Only strings, lists, ranges, [vectors, dicts, matrices, tensors - unimplemented], signals and streams can be indexed, not type "+objTypeName(indexable.asObj())+".");
         return false;
     }
-    runtimeError("Only strings, lists, ranges,[vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed, not type "+indexable.typeName()+".");
+    runtimeError("Only strings, lists, ranges,[vectors, dicts, matrices, tensors - unimplemented], signals and streams can be indexed, not type "+indexable.typeName()+".");
     return false;
 }
 
@@ -1364,11 +1385,11 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
             default:
                 break;
         }
-        runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed for assignment, not type "+objTypeName(indexable.asObj())+".");
+        runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented], signals and streams can be indexed for assignment, not type "+objTypeName(indexable.asObj())+".");
         return false;
     }
 
-    runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented] and streams can be indexed for assignment, not type "+indexable.typeName()+".");
+    runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented], signals and streams can be indexed for assignment, not type "+indexable.typeName()+".");
     return false;
 }
 
@@ -2478,7 +2499,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::Index): {
                 uint8_t argCount = readByte();
-                peek(argCount).resolve(); // indexable
+                peek(argCount).resolveFuture(); // don't resolve signals here
                 if (!indexValue(peek(argCount), argCount))
                     return errorReturn;
                 break;
@@ -2619,7 +2640,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::SetIndex): {
                 uint8_t argCount = readByte();
-                peek(argCount).resolve(); // indexable
+                peek(argCount).resolveFuture(); // don't resolve signals here
                 try {
                     Value& indexable { peek(argCount) };
                     Value& value { peek(argCount+1) };

@@ -33,7 +33,7 @@ ptr<Signal> Signal::newSignal(double freq, Value initial, std::optional<std::str
 
 
 Signal::Signal(double freq, Value initial, std::optional<std::string> name)
-    : m_frequency(freq), m_maxHistoryPeriods(1)
+    : m_frequency(freq), m_maxHistoryPeriods(2)
 {
     m_name = name.value_or("source_signal");
     assert(freq > 0.0);
@@ -164,6 +164,22 @@ Value Signal::lastValue() const
     if (values.empty())
         throw std::runtime_error("Signal has no values.");
     return values.rbegin()->second;
+}
+
+Value Signal::valueAtIndex(int index) const
+{
+    if (index > 0)
+        throw std::invalid_argument("Signal index must be 0 or negative");
+
+    if (values.empty())
+        throw std::runtime_error("Signal has no values.");
+
+    int stepsBack = -index;
+
+    TimePoint lastTime = values.rbegin()->first;
+    TimePoint t = lastTime - m_period * stepsBack;
+
+    return valueAt(t);
 }
 
 
