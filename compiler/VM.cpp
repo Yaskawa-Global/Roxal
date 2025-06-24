@@ -864,32 +864,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     return true;
                 }
                 else if (ts->typeValue == ValueType::Vector) {
-                    ObjVector* vec = nullptr;
-                    if (callSpec.argCount == 0) {
-                        vec = vectorVal();
-                    }
-                    else if (callSpec.argCount == 1) {
-                        Value arg { peek(0) };
-                        if (arg.isInt()) {
-                            vec = vectorVal(arg.asInt());
-                        }
-                        else if (isList(arg)) {
-                            auto listVals = asList(arg)->elts.get();
-                            Eigen::VectorXd vals(listVals.size());
-                            for(size_t i=0;i<listVals.size();++i)
-                                vals[i] = toType(ValueType::Real, listVals[i], false).asReal();
-                            vec = vectorVal(vals);
-                        } else {
-                            runtimeError("Vector constructor expects int length or list of reals.");
-                            return false;
-                        }
-                    } else {
-                        runtimeError("Expected 0 or 1 argument for vector type instantiation, provided "+std::to_string(callSpec.argCount));
-                        return false;
-                    }
-                    *(thread->stackTop - callSpec.argCount - 1) = objVal(vec);
-                    popN(callSpec.argCount);
-                    return true;
+                    return call(ValueType::Vector, callSpec);
                 }
                 else {
                     throw std::runtime_error("unimplemented construction for type '"+to_string(ts->typeValue)+"'");
