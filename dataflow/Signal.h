@@ -42,6 +42,10 @@ public:
 
     // For source signals: generate next value
     void tick(TimePoint t);
+
+    // Start/stop running of source signals
+    void run() { running = true; }
+    void stop() { running = false; }
     
     // set initial value without advancing clock state (for evaluation)
     void evaluate(TimePoint t);
@@ -81,6 +85,8 @@ protected:
 
     bool isSource; // True if this is a source signal (e.g. constant at freq)
     bool isClock;  // True if this signal counts up at freq
+
+    bool running = false; // True if source signal should advance each tick
 
     uint64_t clockCount = 0;
 
