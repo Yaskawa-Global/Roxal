@@ -16,10 +16,21 @@ FuncNode::FuncNode(const std::string& name,
                    const std::vector<ptr<Signal>>& signalArgs_)
   : m_name(name), m_operatorSignalsCalled(false), closure(closure_), constArgs(constArgs_), signalArgs(signalArgs_)
 {
+    m_outputNames = {"result"};
     if (roxal::isClosure(closure) && roxal::asClosure(closure)->function->funcType.has_value()) {
         auto funcTypePtr = roxal::asClosure(closure)->function->funcType.value();
         if (funcTypePtr->func.has_value()) {
             const auto& funcType = funcTypePtr->func.value();
+
+            if (!funcType.returnTypes.empty()) {
+                if (funcType.returnTypes.size() == 1)
+                    m_outputNames = {"result"};
+                else {
+                    for (size_t i = 0; i < funcType.returnTypes.size(); ++i)
+                        m_outputNames.push_back("result" + std::to_string(i));
+                }
+            }
+
             size_t sigIndex = 0;
             for (const auto& param : funcType.params) {
                 std::string pname;
@@ -316,6 +327,21 @@ Values FuncNode::operator()(const Values& inputValues)
     }
 
     auto result = vm.callAndExec(roxal::asClosure(closure), args);
+
+    if (!m_outputNames.empty() && m_outputNames.size() > 1) {
+        if (roxal::isList(result.second)) {
+            auto list = roxal::asList(result.second);
+            Values outs;
+            outs.reserve(m_outputNames.size());
+            for (size_t i = 0; i < m_outputNames.size(); ++i) {
+                if (i < list->elts.size())
+                    outs.push_back(list->elts.at(i));
+                else
+                    outs.push_back(roxal::nilVal());
+            }
+            return outs;
+        }
+    }
 
     return { result.second };
 }
