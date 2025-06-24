@@ -1,0 +1,4 @@
+var s = clock(10)
+s.run()
+s.stop()
+print("done")

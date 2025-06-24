@@ -309,6 +309,9 @@ protected:
 
     Value list_append_builtin(int argCount, Value* args);
 
+    Value signal_run_builtin(int argCount, Value* args);
+    Value signal_stop_builtin(int argCount, Value* args);
+
     Value math_identity_builtin(int argCount, Value* args);
     Value math_zeros_builtin(int argCount, Value* args);
     Value math_ones_builtin(int argCount, Value* args);
