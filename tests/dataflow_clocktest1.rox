@@ -2,6 +2,7 @@
 // Creates a 20Hz clock signal and verifies it produces values [1, 2, 3] 
 
 c = clock(20.0)  // 20Hz clock signal
+c.run()
 
 values = []
 

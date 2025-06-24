@@ -1801,7 +1801,6 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
                 // Check for signal properties BEFORE resolving
                 if (isSignal(inst)) {
-                    std::cout << "DEBUG: GetProp handling signal property access for: " << toUTF8StdString(name->s) << std::endl;
                     // Handle signal builtin properties
                     auto vt = inst.type();
                     auto pit = builtinProperties.find(vt);
@@ -1812,6 +1811,19 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                             Value result = (this->*(propInfo.getter))(inst);
                             pop();
                             push(result);
+                            break;
+                        }
+                    }
+
+                    // Handle signal builtin methods
+                    auto mit = builtinMethods.find(vt);
+                    if (mit != builtinMethods.end()) {
+                        auto methodIt = mit->second.find(name->hash);
+                        if (methodIt != mit->second.end()) {
+                            const BuiltinMethodInfo& methodInfo = methodIt->second;
+                            ObjBoundNative* bm = boundNativeVal(inst, methodInfo.function, methodInfo.isProc);
+                            pop();
+                            push(objVal(bm));
                             break;
                         }
                     }
@@ -1940,6 +1952,19 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                             Value result = (this->*(propInfo.getter))(inst);
                             pop();
                             push(result);
+                            break;
+                        }
+                    }
+
+                    // Handle signal builtin methods
+                    auto mit = builtinMethods.find(vt);
+                    if (mit != builtinMethods.end()) {
+                        auto methodIt = mit->second.find(name->hash);
+                        if (methodIt != mit->second.end()) {
+                            const BuiltinMethodInfo& methodInfo = methodIt->second;
+                            ObjBoundNative* bm = boundNativeVal(inst, methodInfo.function, methodInfo.isProc);
+                            pop();
+                            push(objVal(bm));
                             break;
                         }
                     }
@@ -3222,6 +3247,9 @@ void VM::defineBuiltinMethods()
 
     defineBuiltinMethod(ValueType::List, "append", &VM::list_append_builtin);
 
+    defineBuiltinMethod(ValueType::Signal, "run", &VM::signal_run_builtin);
+    defineBuiltinMethod(ValueType::Signal, "stop", &VM::signal_stop_builtin);
+
     defineBuiltinMethod(ValueType::Actor, "tick", &VM::dataflow_tick_native, true);  // proc
     defineBuiltinMethod(ValueType::Actor, "run", &VM::dataflow_run_native, true);   // proc
     defineBuiltinMethod(ValueType::Actor, "runFor", &VM::dataflow_run_for_native, true);  // proc
@@ -3586,6 +3614,34 @@ Value VM::list_append_builtin(int argCount, Value* args)
     // Currently signals may not be resolved immediately, requiring workarounds like arithmetic (0 + signal)
     ObjList* list = asList(args[0]);
     list->elts.push_back(args[1]);
+    return nilVal();
+}
+
+Value VM::signal_run_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isSignal(args[0]))
+        throw std::invalid_argument("signal.run expects no arguments");
+
+    ObjSignal* objSignal = asSignal(args[0]);
+    auto sig = objSignal->signal;
+    if (!sig->isSourceSignal())
+        throw std::runtime_error("signal.run not supported for non-source signal");
+
+    sig->run();
+    return nilVal();
+}
+
+Value VM::signal_stop_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isSignal(args[0]))
+        throw std::invalid_argument("signal.stop expects no arguments");
+
+    ObjSignal* objSignal = asSignal(args[0]);
+    auto sig = objSignal->signal;
+    if (!sig->isSourceSignal())
+        throw std::runtime_error("signal.stop not supported for non-source signal");
+
+    sig->stop();
     return nilVal();
 }
 
