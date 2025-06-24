@@ -678,27 +678,16 @@ bool Value::equals(const Value& rhs, bool strict) const
             }
         }
 
-        if (allNumeric) {
-            // In non-strict mode, try to convert list to vector using construct()
-            if (!strict && rhsList->length() > 1) {
-                try {
-                    std::vector<Value> args{rhs};
-                    Value convertedVector = construct(ValueType::Vector, args.begin(), args.end());
-                    return asVector(*this)->equals(asVector(convertedVector));
-                } catch (...) {
+        if (allNumeric && rhsList->length() <= 1) {
+            // For 0-1 element lists, do manual comparison (both strict and non-strict)
+            ObjVector* lhsVec = asVector(*this);
+            if (lhsVec->length() != rhsList->length())
+                return false;
+            for (int i = 0; i < rhsList->length(); i++) {
+                if (std::abs(lhsVec->vec[i] - rhsList->elts.at(i).asReal()) > 1e-15)
                     return false;
-                }
-            } else {
-                // For 0-1 element lists, do manual comparison (both strict and non-strict)
-                ObjVector* lhsVec = asVector(*this);
-                if (lhsVec->length() != rhsList->length())
-                    return false;
-                for (int i = 0; i < rhsList->length(); i++) {
-                    if (std::abs(lhsVec->vec[i] - rhsList->elts.at(i).asReal()) > 1e-15)
-                        return false;
-                }
-                return true;
             }
+            return true;
         }
         return false;
     }
@@ -988,8 +977,11 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
             if (isList(arg)) {
                 auto listVals = asList(arg)->elts.get();
                 Eigen::VectorXd vals(listVals.size());
-                for(size_t i=0; i<listVals.size(); ++i)
+                for(size_t i=0; i<listVals.size(); ++i) {
+                    if (!listVals[i].isNumber() && !isSignal(listVals[i]))
+                        throw std::runtime_error("vector constructor expects list of numeric elements");
                     vals[i] = toType(ValueType::Real, listVals[i], false).asReal();
+                }
                 return objVal(vectorVal(vals));
             }
             if (isVector(arg)) {
