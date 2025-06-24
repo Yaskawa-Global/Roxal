@@ -993,6 +993,21 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
         }
     }
 
+    if (type == ValueType::List) {
+        size_t count = end - begin;
+        if (count == 1) {
+            Value arg = *begin;
+            if (isVector(arg)) {
+                const ObjVector* vec = asVector(arg);
+                std::vector<Value> elts;
+                elts.reserve(vec->length());
+                for (int i = 0; i < vec->length(); ++i)
+                    elts.push_back(realVal(vec->vec[i]));
+                return objVal(listVal(elts));
+            }
+        }
+    }
+
     if (type == ValueType::Matrix) {
         size_t count = end - begin;
         if (count == 1) {
