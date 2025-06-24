@@ -1,0 +1,5 @@
+// non-strict
+var l: list  // explicit type
+l = [1,2,3]
+print(typeof(l)) // list
+l = "hello" // error, assigning string to a list var

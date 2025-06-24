@@ -1,0 +1,12 @@
+
+func f():
+  // strict
+  var l
+  l = [1,2,3]
+  print(typeof(l)) // list
+  l = "hello" // ok because l isn't explicitly typed
+  print(l)
+  print(typeof(l)) // string
+
+f()
+
