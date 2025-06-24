@@ -3,8 +3,8 @@ var c :signal = clock(10)
 
 var v :vector = [1 2 3 4 5 6]
 
-// split vector into list of its elements
-func split(v :vector) -> list:
+// split vector into its elements
+func split(v :vector) -> [real,real,real,real,real,real]:
   var l :list
   for e in v:
     l.append(e)
@@ -21,18 +21,21 @@ func addToElt0(v :vector, i: int) -> vector:
 
 [out0, out1, out2, out3, out4, out5] = split(addToElt0(v,c))
 
-//out = join([out0, out1, out2, out3, out4, out5])
+// FIXME: either [sig,sig] should create a signal of vector type, or passing a list to a func should check if any list elts are signals
+out = join([out0, out1, out2, out3, out4, out5]) 
+
+print(typeof(out0)) // signal
+print(typeof(out))  // signal
 
 c.tick()
-_ussleep(110000)
+sleep(110000)
+print(real(out0))
+print(vector(out))
 
-print(out0)
+c.tick()
+sleep(110000)
+print(vector(out))
 
-
-//print(out)
-//_dataflow.tick()
-//sleep(100000)
-//print(out)
-
-
-
+c.tick()
+sleep(110000)
+print(vector(out))
