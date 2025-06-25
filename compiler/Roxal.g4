@@ -306,7 +306,7 @@ builtin_type
  | STRING | RANGE
 | LIST | DICT
 | VECTOR | MATRIX | TENSOR
-| ORIENT
+| ORIENT | EVENT
 ;
 
 
@@ -373,6 +373,7 @@ VECTOR: 'vector';
 MATRIX: 'matrix';
 TENSOR: 'tensor';
 ORIENT: 'orient';
+EVENT: 'event';
 OBJECT: 'object';
 ACTOR : 'actor';
 INTERFACE : 'interface' ;

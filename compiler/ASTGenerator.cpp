@@ -1819,6 +1819,8 @@ std::any ASTGenerator::visitBuiltin_type(RoxalParser::Builtin_typeContext *conte
         type = BuiltinType::Tensor;
     else if (context->ORIENT())
         type = BuiltinType::Orient;
+    else if (context->EVENT())
+        type = BuiltinType::Event;
     else
         throw std::runtime_error("unhandled BuiltinType alternative");
 

@@ -1931,6 +1931,7 @@ ValueType RoxalCompiler::builtinToValueType(ast::BuiltinType bt)
         case ast::BuiltinType::Matrix: type = ValueType::Matrix; break;
         case ast::BuiltinType::Tensor: type = ValueType::Tensor; break;
         case ast::BuiltinType::Orient: type = ValueType::Orient; break;
+        case ast::BuiltinType::Event: type = ValueType::Event; break;
         default:
             throw std::runtime_error("unhandled builtin type "+ast::to_string(bt));
     }

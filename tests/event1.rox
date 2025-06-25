@@ -1,0 +1,4 @@
+var e :event
+print(e)
+print(typeof(e))
+
