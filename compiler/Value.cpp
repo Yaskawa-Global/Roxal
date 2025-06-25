@@ -43,6 +43,7 @@ std::string roxal::to_string(ValueType t)
     case ValueType::Object: return "object"; break;
     case ValueType::Actor: return "actor"; break;
     case ValueType::Module: return "module"; break;
+    case ValueType::Event: return "event"; break;
     default:
         throw std::runtime_error("Unhandled type for to_string "+std::to_string(int(t)));
     }
@@ -785,6 +786,7 @@ static type::BuiltinType valueTypeToBuiltin(ValueType t)
         case ValueType::Vector:  return BuiltinType::Vector;
         case ValueType::Matrix:  return BuiltinType::Matrix;
         case ValueType::Signal:  return BuiltinType::Signal;
+        case ValueType::Event:   return BuiltinType::Event;
         case ValueType::Tensor:  return BuiltinType::Tensor;
         case ValueType::Orient:  return BuiltinType::Orient;
         case ValueType::Object:  return BuiltinType::Object;
@@ -869,6 +871,7 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::Vector: return Value(vectorVal());
         case ValueType::Matrix: return Value(matrixVal());
         case ValueType::Signal: throw std::runtime_error("Can't default-construct signal");
+        case ValueType::Event: throw std::runtime_error("Can't default-construct event");
         case ValueType::Tensor:
         case ValueType::Orient:
         case ValueType::Object:

@@ -39,6 +39,7 @@ enum class ValueType {
     Object,
     Actor,
     Module,
+    Event,
     Boxed = 0xff // not used with NAN tagging
 };
 
