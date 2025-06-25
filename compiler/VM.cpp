@@ -3871,6 +3871,8 @@ Value VM::typeof_native(int argCount, Value* args)
         valueType = ValueType::Type;
     } else if (isSignal(val)) {
         valueType = ValueType::Signal;
+    } else if (isEvent(val)) {
+        valueType = ValueType::Event;
     } else if (val.isObj()) {
         // For object types, get the type from the object
         valueType = val.asObj()->valueType();

@@ -60,7 +60,8 @@ enum class ObjType {
     Vector,
     Matrix,
     Signal,
-    Library
+    Library,
+    Event
 };
 
 
@@ -482,6 +483,20 @@ inline ObjSignal* asSignal(const Value& v) { return static_cast<ObjSignal*>(v.as
 
 ObjSignal* signalVal(ptr<df::Signal> s);
 std::string objSignalToString(const ObjSignal* os);
+
+//
+// event (simple event placeholder)
+
+struct ObjEvent : public Obj {
+    ObjEvent() { type = ObjType::Event; }
+    virtual ~ObjEvent() {}
+};
+
+inline bool isEvent(const Value& v) { return isObjType(v, ObjType::Event); }
+inline ObjEvent* asEvent(const Value& v) { return static_cast<ObjEvent*>(v.asObj()); }
+
+ObjEvent* eventVal();
+std::string objEventToString(const ObjEvent* ev);
 
 //
 // dynamic library handle

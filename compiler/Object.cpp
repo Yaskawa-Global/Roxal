@@ -42,6 +42,7 @@ ValueType Obj::valueType() const
         case ObjType::Vector: return ValueType::Vector;
         case ObjType::Matrix: return ValueType::Matrix;
         case ObjType::Signal: return ValueType::Signal;
+        case ObjType::Event: return ValueType::Event;
         case ObjType::Instance: return static_cast<const ObjObjectType*>(this)->isActor ? ValueType::Actor : ValueType::Object;
         case ObjType::Actor: return ValueType::Actor;
         default: return ValueType::Nil;
@@ -811,6 +812,17 @@ std::string roxal::objSignalToString(const ObjSignal* os)
     }
 }
 
+ObjEvent* roxal::eventVal()
+{
+    return newObj<ObjEvent>(__func__);
+}
+
+std::string roxal::objEventToString(const ObjEvent* ev)
+{
+    (void)ev;
+    return std::string("<event>");
+}
+
 ObjLibrary::~ObjLibrary()
 {
     if (handle)
@@ -1154,6 +1166,9 @@ std::string roxal::objToString(const Value& v)
         }
         case ObjType::Signal: {
             return objSignalToString(asSignal(v));
+        }
+        case ObjType::Event: {
+            return objEventToString(asEvent(v));
         }
         case ObjType::Library: {
             return objLibraryToString(asLibrary(v));
@@ -1518,6 +1533,7 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::Vector: return "vector";
     case ObjType::Matrix: return "matrix";
     case ObjType::Signal: return "signal";
+    case ObjType::Event: return "event";
     case ObjType::Library: return "library";
     }
     return "unknown";

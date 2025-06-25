@@ -23,7 +23,8 @@ enum class BuiltinType {
     Orient,
     Func,
     Object, Actor,
-    Type
+    Type,
+    Event
 };
 
 std::string to_string(BuiltinType t);
