@@ -7,6 +7,7 @@
 #include <unordered_map>
 
 #include "core/atomic.h"
+#include "core/TimePoint.h"
 #include "Chunk.h"
 #include "Value.h"
 #include <ffi.h>
@@ -242,6 +243,19 @@ protected:
     Value dataflowEngineActor;
     std::shared_ptr<VM::Thread> dataflowEngineThread;
 
+    struct PendingEvent {
+        TimePoint when;
+        Value event;
+    };
+
+    struct PendingEventCompare {
+        bool operator()(const PendingEvent& a, const PendingEvent& b) const {
+            return a.when > b.when;
+        }
+    };
+
+    atomic_priority_queue<PendingEvent, PendingEventCompare> eventQueue;
+
     ObjString* initString;
 
     // TODO: perhaps implement inheritance first, then pre-define
@@ -328,6 +342,7 @@ protected:
     Value threadid_builtin(int argCount, Value* args);
     Value wait_builtin(int argCount, Value* args);
     Value runtests_builtin(int argCount, Value* args);
+    Value event_emit_builtin(int argCount, Value* args);
 
 
 

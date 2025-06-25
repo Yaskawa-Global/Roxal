@@ -16,6 +16,7 @@
 #include "dataflow/DataflowEngine.h"
 #include "dataflow/FuncNode.h"
 
+#include <core/TimePoint.h>
 #include "VM.h"
 #include "Object.h"
 #include <Eigen/Dense>
@@ -3237,6 +3238,8 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Signal, "stop", &VM::signal_stop_builtin);
     defineBuiltinMethod(ValueType::Signal, "tick", &VM::signal_tick_builtin);
 
+    defineBuiltinMethod(ValueType::Event, "emit", &VM::event_emit_builtin, true);
+
     defineBuiltinMethod(ValueType::Actor, "tick", &VM::dataflow_tick_native, true);  // proc
     defineBuiltinMethod(ValueType::Actor, "run", &VM::dataflow_run_native, true);   // proc
     defineBuiltinMethod(ValueType::Actor, "runFor", &VM::dataflow_run_for_native, true);  // proc
@@ -3460,6 +3463,26 @@ Value VM::runtests_builtin(int argCount, Value* args)
 
         std::cout << "Passed " << passes << " failed " << fails << std::endl;
     }
+
+    return nilVal();
+}
+
+Value VM::event_emit_builtin(int argCount, Value* args)
+{
+    if (argCount > 2 || !isEvent(args[0]))
+        throw std::invalid_argument("event.emit expects optional time argument in microseconds");
+
+    TimePoint when = TimePoint::currentTime();
+    if (argCount == 2) {
+        if (!args[1].isNumber())
+            throw std::invalid_argument("event.emit time argument must be numeric microseconds");
+        when = TimePoint::microSecs(args[1].asInt());
+    }
+
+    PendingEvent pe;
+    pe.when = when;
+    pe.event = args[0];
+    eventQueue.push(pe);
 
     return nilVal();
 }
