@@ -166,6 +166,11 @@ void RoxalCompiler::setModulePaths(const std::vector<std::string>& modulePaths)
     this->modulePaths = modulePaths;
 }
 
+void RoxalCompiler::setReplMode(bool replMode)
+{
+    this->replModeFlag = replMode;
+}
+
 
 ASTVisitor::TraversalOrder RoxalCompiler::traversalOrder() const
 {
@@ -634,9 +639,27 @@ std::any RoxalCompiler::visit(ptr<ast::ExpressionStatement> ast)
     ast::Anys results {};
     ast->acceptChildren(*this, results);
 
-    // expressions leave their value on the stack, but statements don't
-    //  have a value, so discard it
-    emitByte(OpCode::Pop, "expr_stmt value");
+    // In REPL mode at module scope with no nested local scope, automatically
+    // print the value of expression statements
+    if (replModeFlag && inModuleScope() && asFuncScope(funcScope())->scopeDepth == 0) {
+        // stack currently: <expr_value>
+        namedModuleVariable(toUnicodeString("print")); // push print function
+        emitByte(OpCode::Swap);                       // [print_fn, value]
+        CallSpec cs{1};
+        cs.allPositional = true;
+        auto bytes = cs.toBytes();
+        if (bytes.size()==1)
+            emitBytes(OpCode::Call, bytes[0]);
+        else {
+            emitByte(OpCode::Call);
+            for(auto b : bytes) emitByte(b);
+        }
+        emitByte(OpCode::Pop); // discard print return
+    } else {
+        // expressions leave their value on the stack, but statements don't
+        // have a value, so discard it
+        emitByte(OpCode::Pop, "expr_stmt value");
+    }
     return results;
 }
 

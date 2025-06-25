@@ -228,6 +228,7 @@ VM::InterpretResult VM::interpretLine(std::istream& linestream)
     static RoxalCompiler compiler {};
     static ObjModuleType* replModule { nullptr };
     compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
+    compiler.setReplMode(true);
 
     try {
         function = compiler.compile(linestream, "cli", replModule);
@@ -244,6 +245,7 @@ VM::InterpretResult VM::interpretLine(std::istream& linestream)
 
     lineMode = true;
     lineStream = &linestream;
+    compiler.setReplMode(false);
 
     ObjClosure* closure = closureVal(function);
     Value closureValue { objVal(closure) };
