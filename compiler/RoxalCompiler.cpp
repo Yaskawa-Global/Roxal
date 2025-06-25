@@ -900,6 +900,54 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     return {};
 }
 
+std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
+{
+    currentNode = ast;
+
+    // push event variable
+    namedVariable(ast->event);
+
+    // access builtin method 'on'
+    int16_t methodName = identifierConstant("on");
+    emitBytes(OpCode::GetPropCheck, uint8_t(methodName));
+
+    // compile handler body as closure proc
+    auto funcType = std::make_shared<type::Type>(BuiltinType::Func);
+    funcType->func = type::Type::FuncType();
+    funcType->func->isProc = true;
+
+    auto enclosingModuleScope { asModuleScope(moduleScope()) };
+    icu::UnicodeString funcName = icu::UnicodeString::fromUTF8("__on_" + std::to_string(ast->interval.first.line) + "_" + std::to_string(ast->interval.first.pos));
+
+    enterFuncScope(enclosingModuleScope->moduleType, funcName, FunctionType::Function, funcType);
+    enterLocalScope();
+    asFuncScope(funcScope())->function->arity = 0;
+    ast->body->accept(*this);
+    emitReturn();
+
+    ObjFunction* function = asFuncScope(funcScope())->function;
+    auto fs = *asFuncScope(funcScope());
+    exitFuncScope();
+
+    emitBytes(OpCode::Closure, makeConstant(objVal(function)));
+    for (int i = 0; i < function->upvalueCount; i++) {
+        emitByte(fs.upvalues[i].isLocal ? 1 : 0);
+        emitByte(fs.upvalues[i].index);
+    }
+
+    CallSpec cs{1};
+    auto bytes = cs.toBytes();
+    if (bytes.size() == 1)
+        emitBytes(OpCode::Call, bytes[0]);
+    else {
+        emitByte(OpCode::Call);
+        for (auto b : bytes) emitByte(b);
+    }
+    emitByte(OpCode::Pop);
+
+    return {};
+}
+
 
 std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 {

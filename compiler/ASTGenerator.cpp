@@ -515,6 +515,8 @@ std::any ASTGenerator::visitCompound_stmt(RoxalParser::Compound_stmtContext *con
         return visitWhile_stmt(context->while_stmt());
     else if (context->for_stmt())
         return visitFor_stmt(context->for_stmt());
+    else if (context->on_stmt())
+        return visitOn_stmt(context->on_stmt());
     else
         throw std::runtime_error("unimplemented compound statement alternative");
 
@@ -625,6 +627,21 @@ std::any ASTGenerator::visitFor_stmt(RoxalParser::For_stmtContext *context)
     forStmt->body = as<Suite>(body);
 
     return typeValue(forStmt);
+    visitEnd();
+}
+
+
+std::any ASTGenerator::visitOn_stmt(RoxalParser::On_stmtContext *context)
+{
+    visitStart();
+
+    auto onStmt = std::make_shared<OnStatement>();
+    setSourceInfo(onStmt, context);
+
+    onStmt->event = UnicodeString::fromUTF8(context->IDENTIFIER()->getText());
+    onStmt->body = as<Suite>(visitSuite(context->suite()));
+
+    return typeValue(onStmt);
     visitEnd();
 }
 

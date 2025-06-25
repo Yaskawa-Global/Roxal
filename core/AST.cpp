@@ -491,6 +491,35 @@ void ForStatement::acceptChildren(ASTVisitor& v, Anys& results)
 
 }
 
+std::any OnStatement::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(std::dynamic_pointer_cast<OnStatement>(shared_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(std::dynamic_pointer_cast<OnStatement>(shared_from_this())) );
+
+    return results;
+}
+
+void OnStatement::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"On" << std::endl;
+    os << spaces(indent+1) << "event:" << toUTF8StdString(event) << std::endl;
+    os << spaces(indent+1) << "body:" << std::endl;
+    body->output(os,indent+2);
+}
+
+void OnStatement::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    results.push_back( body->accept(v) );
+}
+
 
 
 

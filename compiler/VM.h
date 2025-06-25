@@ -184,6 +184,7 @@ public:
         InterpretResult result;
 
         std::list<ObjUpvalue*> openUpvalues;
+        std::unordered_map<ObjEvent*, std::vector<Value>> eventHandlers;
         
         // execution depth tracking for nested execute() calls
         int execute_depth;
@@ -343,6 +344,7 @@ protected:
     Value wait_builtin(int argCount, Value* args);
     Value runtests_builtin(int argCount, Value* args);
     Value event_emit_builtin(int argCount, Value* args);
+    Value event_on_builtin(int argCount, Value* args);
 
 
 

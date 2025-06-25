@@ -104,6 +104,7 @@ public:
     std::any visit(ptr<roxal::ast::IfStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::WhileStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::ForStatement> ast) override { throw std::runtime_error("Not implemented"); }
+    std::any visit(ptr<roxal::ast::OnStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Function> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Parameter> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Assignment> ast) override { if(m_f) m_f(ast); return{}; }

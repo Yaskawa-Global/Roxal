@@ -61,8 +61,9 @@ compound_stmt
  | if_stmt
  | while_stmt
  | for_stmt
+ | on_stmt
 //  | with_stmt
- ;
+;
 
 block_stmt
  : SCOPE ':' suite
@@ -91,6 +92,10 @@ for_stmt
         |     ident_opt_type (COMMA ident_opt_type)*       // can omit the []s for convenience
        )
    IN expression ':' suite
+ ;
+
+on_stmt
+ : ON IDENTIFIER ':' suite
  ;
 
 
@@ -347,6 +352,7 @@ PRIVATE: 'private';
 LET : 'let';
 FUNC: 'func';
 PROC: 'proc';
+ON: 'on';
 RETURN: 'return';
 SCOPE: 'scope' ;
 WITH: 'with'; // TODO
@@ -430,7 +436,7 @@ CLOSE_BRACE : '}';
  * Literals
  */
 
-LTRUE : 'True'|'true'|'ON'|'On'|'on';
+LTRUE : 'True'|'true'|'ON'|'On';
 LFALSE : 'False'|'false'|'OFF'|'Off'|'off';
 LNIL: 'nil';
 

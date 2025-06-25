@@ -3239,6 +3239,7 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Signal, "tick", &VM::signal_tick_builtin);
 
     defineBuiltinMethod(ValueType::Event, "emit", &VM::event_emit_builtin, true);
+    defineBuiltinMethod(ValueType::Event, "on", &VM::event_on_builtin, true);
 
     defineBuiltinMethod(ValueType::Actor, "tick", &VM::dataflow_tick_native, true);  // proc
     defineBuiltinMethod(ValueType::Actor, "run", &VM::dataflow_run_native, true);   // proc
@@ -3483,6 +3484,17 @@ Value VM::event_emit_builtin(int argCount, Value* args)
     pe.when = when;
     pe.event = args[0];
     eventQueue.push(pe);
+
+    return nilVal();
+}
+
+Value VM::event_on_builtin(int argCount, Value* args)
+{
+    if (argCount != 2 || !isEvent(args[0]) || !isClosure(args[1]))
+        throw std::invalid_argument("event.on expects closure argument");
+
+    auto ev = asEvent(args[0]);
+    thread->eventHandlers[ev].push_back(args[1]);
 
     return nilVal();
 }
