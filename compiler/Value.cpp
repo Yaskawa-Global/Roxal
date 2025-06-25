@@ -871,7 +871,7 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::Vector: return Value(vectorVal());
         case ValueType::Matrix: return Value(matrixVal());
         case ValueType::Signal: throw std::runtime_error("Can't default-construct signal");
-        case ValueType::Event: throw std::runtime_error("Can't default-construct event");
+        case ValueType::Event: return Value(eventVal());
         case ValueType::Tensor:
         case ValueType::Orient:
         case ValueType::Object:

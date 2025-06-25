@@ -21,6 +21,7 @@ tests = [
     'unicode', 'signal_clock', 'signal_func_nocall', 'signal_func_exec', 'signal_index',
     'test_signal_value_property', 'construct_by_signal', 'signal_run_stop', 'signal_network1',
     'dataflow_clocktest1',
+    'event1',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err', 'conversions1',
     'byteops',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'lambda1',

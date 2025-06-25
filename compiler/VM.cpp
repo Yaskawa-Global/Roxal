@@ -43,6 +43,7 @@ static ValueType builtinToValueType(type::BuiltinType bt)
         case type::BuiltinType::Matrix:  return ValueType::Matrix;
         case type::BuiltinType::Tensor:  return ValueType::Tensor;
         case type::BuiltinType::Orient:  return ValueType::Orient;
+        case type::BuiltinType::Event:   return ValueType::Event;
         default:
             throw std::runtime_error("unhandled builtin type");
     }
