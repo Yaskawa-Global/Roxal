@@ -1,6 +1,7 @@
 
 #include <filesystem>
 #include <boost/program_options.hpp>
+#include <stdexcept>
 
 #include <core/AST.h>
 #include "RoxalIndentationLexer.h"
@@ -109,6 +110,8 @@ static void runFile(const std::string& path, const std::vector<std::string>& mod
 {
 
     std::ifstream sourcestream(path); // assumed UTF-8
+    if (!sourcestream.is_open())
+        throw std::runtime_error("file not found: " + path);
 
     std::filesystem::path fileAndPath(path);
     std::string name { fileAndPath.stem().filename().string() };
