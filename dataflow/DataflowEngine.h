@@ -5,6 +5,7 @@
 
 #include <set>
 #include <memory>
+#include <mutex>
 
 namespace df {
 
@@ -41,7 +42,7 @@ public:
     // Run the engine
     void run(); // call tick() forever
     void runFor(TimeDuration duration); // call tick() for the duration
-    
+
     // Stop the engine (causes run() to exit)
     void stop();
 
@@ -82,15 +83,17 @@ private:
 
     ExecutionScheme m_executionScheme;
 
+    mutable std::recursive_mutex m_mutex; // guard network structures
+
     // engine ticks occur at GCD of all clock signals
-    TimeDuration m_tickPeriod;
+    std::atomic<TimeDuration> m_tickPeriod;
 
-    TimePoint m_runStart;
+    std::atomic<TimePoint> m_runStart;
 
-    uint64_t m_tickNumber;
+    std::atomic<uint64_t> m_tickNumber;
 
     // of start of current tick (ticks occur at GCD of all clock signals)
-    TimePoint m_tickStart;
+    std::atomic<TimePoint> m_tickStart;
     std::vector<std::function<void(ptr<DataflowEngine>, TimePoint)>> m_tickCallbacks;
 
     // rebuild pre-computed network information (call after network changes - Func/Signal addition/removal/modification)
@@ -98,7 +101,7 @@ private:
 
     void invokeTickCallbacks();
 
-    bool m_networkModified;
+    std::atomic<bool> m_networkModified;
     std::atomic<bool> m_shouldStop{false};
 
     void addSignal(ptr<Signal> signal);

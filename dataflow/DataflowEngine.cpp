@@ -68,12 +68,14 @@ DataflowEngine::~DataflowEngine()
 
 void DataflowEngine::addSignal(ptr<Signal> signal)
 {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
     signals.push_back(signal);
     m_networkModified = true;
 }
 
 void DataflowEngine::addFunc(ptr<FuncNode> func)
 {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
     funcs[func->name()] = func;
     m_networkModified = true;
 }
@@ -81,6 +83,7 @@ void DataflowEngine::addFunc(ptr<FuncNode> func)
 
 void DataflowEngine::clear()
 {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
     signalConsumers.clear();
     precomputedExecutionOrders.clear();
     signals.clear();
@@ -112,17 +115,22 @@ TimeDuration DataflowEngine::tickPeriod() const
 void DataflowEngine::run() {
     m_shouldStop = false;
 
-    if (m_networkModified)
-        buildNetworkCacheData();
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
-    if (m_tickPeriod == TimeDuration::zero())
-        m_runStart = TimePoint::currentTime();
-    else
-        m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
+        if (m_networkModified)
+            buildNetworkCacheData();
+
+        if (m_tickPeriod == TimeDuration::zero())
+            m_runStart = TimePoint::currentTime();
+        else
+            m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
+    }
 
     while (!m_shouldStop) {
         if (m_networkModified) {
             buildNetworkCacheData();
+
             if (m_tickPeriod > TimeDuration::zero()) {
                 m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
                 m_tickNumber = 0;
@@ -216,6 +224,7 @@ void DataflowEngine::tick(bool waitForTickStart)
         m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
 
 
+
     m_tickStart = m_runStart + m_tickPeriod*m_tickNumber;
     auto nextTickStart = m_tickStart + m_tickPeriod;
 
@@ -228,6 +237,13 @@ void DataflowEngine::tick(bool waitForTickStart)
 
 
     // tick all the source signals that need it on this loop tick
+    std::vector<ptr<Signal>> signalsToCheck {};
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        signalsToCheck = signals; // copy to avoid holding the lock while ticking signals
+    }
+
+
     for(const auto& signal : signals) {
         if (signal->isSourceSignal()) {
             // should this source tick now?
@@ -264,7 +280,7 @@ void DataflowEngine::tick(bool waitForTickStart)
 
     invokeTickCallbacks();
     if (TimePoint::currentTime() > nextTickStart) {
-        std::string message = "Engine tick period "+m_tickPeriod.humanString()+" exceeded after tick callbacks invoked";
+        std::string message = "Engine tick period "+m_tickPeriod.load().humanString()+" exceeded after tick callbacks invoked";
 
         if (m_executionScheme == ExecutionScheme::Strict)
             throw std::runtime_error(message);
@@ -282,6 +298,12 @@ void DataflowEngine::evaluateNetwork(TimePoint evaluationTime)
     //  there are no more functions that can be executed
     uint64_t functionsExecuted;
     int32_t iterations = 0;
+    bool funcsEmpty = true;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        funcsEmpty = funcs.empty();
+    }
+
     if (!funcs.empty())
         do {
             functionsExecuted = 0;
@@ -304,8 +326,13 @@ void DataflowEngine::evaluateNetwork(TimePoint evaluationTime)
                 }
             };
 
-
-            for(const auto& periodFuncs : precomputedExecutionOrders) {
+            // take a copy to avoid holding the lock while executing functions (expensive!)
+            std::map<TimeDuration, std::vector<ptr<FuncNode>>> precomputedExecutionOrdersCopy;
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_mutex);
+                precomputedExecutionOrdersCopy = precomputedExecutionOrders;
+            }
+            for(const auto& periodFuncs : precomputedExecutionOrdersCopy) {
                 auto& funcs { periodFuncs.second };
                 for(auto func : funcs) {
                     executeFuncIfinputsAvailable(func);
@@ -327,7 +354,7 @@ void DataflowEngine::evaluate()
 
     // For evaluation, use time zero and ensure all source signals have initial values
     TimePoint evalTime = TimePoint::zero();
-    
+
     // Ensure all source signals have values at evaluation time
     for(const auto& signal : signals) {
         if (signal->isSourceSignal()) {
@@ -511,6 +538,7 @@ bool DataflowEngine::topologicalSort(const DependencyGraph& depGraph,
 
 void DataflowEngine::updateSignalConsumerInputAvailability(ptr<Signal> signal, TimePoint signalTickedTime)
 {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
     // For each function that consumes this signal
     auto consumers = signalConsumers[signal];
@@ -637,6 +665,8 @@ void DataflowEngine::addTickCallback(std::function<void(ptr<DataflowEngine>, Tim
 
 void DataflowEngine::buildNetworkCacheData()
 {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
     #if 0
     std::cout << "Rebuilding network cached data" << std::endl;
     #endif
@@ -687,6 +717,7 @@ void DataflowEngine::invokeTickCallbacks()
 
 std::string DataflowEngine::graph() const
 {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
     std::stringstream ss;
     ss << "Funcs:\n";
 
@@ -715,6 +746,7 @@ std::string DataflowEngine::graph() const
 
 std::string DataflowEngine::graphDot(const std::string& title, std::map<std::string,Value> signalValues) const
 {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
     std::stringstream dot;
     dot << "digraph Dataflow {\n";
     if (!title.empty())
