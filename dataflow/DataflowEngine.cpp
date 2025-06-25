@@ -8,7 +8,6 @@
 #include <numeric>
 #include <thread>
 #include <iostream>
-#include <iomanip> // for std::setw
 #include <string.h>
 
 using namespace df;
@@ -54,7 +53,6 @@ void printTrace() {
 DataflowEngine::DataflowEngine()
 {
     m_executionScheme = ExecutionScheme::Strict;
-    usOffset = microSecsSinceBoot();
     m_networkModified = false;
     assert(TimeDuration::secs(1).frequency() == 1.0);
     m_runStart = TimePoint::zero();
@@ -118,7 +116,7 @@ void DataflowEngine::run() {
         buildNetworkCacheData();
 
     if (m_tickPeriod == TimeDuration::zero())
-        m_runStart = currentTime();
+        m_runStart = TimePoint::currentTime();
     else
         m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
 
@@ -138,7 +136,7 @@ void DataflowEngine::run() {
         }
 
         m_tickStart = m_runStart + m_tickPeriod*m_tickNumber;
-        if (m_tickStart < currentTime()) {
+        if (m_tickStart < TimePoint::currentTime()) {
             m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
             m_tickNumber = 0;
             continue;
@@ -155,20 +153,20 @@ void DataflowEngine::runFor(TimeDuration duration)
         buildNetworkCacheData();
 
 
-    auto runUntil = currentTime() + duration;
+    auto runUntil = TimePoint::currentTime() + duration;
 
     if (m_tickPeriod == TimeDuration::zero())
-        m_runStart = currentTime();
+        m_runStart = TimePoint::currentTime();
     else
         m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
-    //std::cout << "currentTime=" << currentTime().humanString() << " start=" << start.humanString() << std::endl;//!!!
+    //std::cout << "currentTime=" << TimePoint::currentTime().humanString() << " start=" << start.humanString() << std::endl;//!!!
     #if TRACE_EXECUTION
-    trace(TraceEntry{currentTime(), "runFor() schedule initial signal ticks", signalsStart, std::nullopt, std::nullopt});
+    trace(TraceEntry{TimePoint::currentTime(), "runFor() schedule initial signal ticks", signalsStart, std::nullopt, std::nullopt});
     #endif
 
 
     // keep running until we are out of time or stop is requested
-    while (currentTime() < runUntil && !m_shouldStop) {
+    while (TimePoint::currentTime() < runUntil && !m_shouldStop) {
 
         if (m_networkModified) {
             buildNetworkCacheData();
@@ -186,7 +184,7 @@ void DataflowEngine::runFor(TimeDuration duration)
 
         m_tickStart = m_runStart + m_tickPeriod*m_tickNumber;
 
-        if (m_tickStart < currentTime()) {
+        if (m_tickStart < TimePoint::currentTime()) {
             m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
             m_tickNumber = 0;
             continue;
@@ -265,7 +263,7 @@ void DataflowEngine::tick(bool waitForTickStart)
     #endif
 
     invokeTickCallbacks();
-    if (currentTime() > nextTickStart) {
+    if (TimePoint::currentTime() > nextTickStart) {
         std::string message = "Engine tick period "+m_tickPeriod.humanString()+" exceeded after tick callbacks invoked";
 
         if (m_executionScheme == ExecutionScheme::Strict)
@@ -589,51 +587,6 @@ TimeDuration DataflowEngine::computeExecutionInterval(ptr<FuncNode> func) {
 
 
 
-TimePoint DataflowEngine::currentTime() const
-{
-    return TimePoint::microSecs(uint64_t(microSecsSinceBoot() - usOffset));
-}
-
-
-uint64_t DataflowEngine::microSecsSinceBoot() const
-{
-    struct timespec tp;
-    if (clock_gettime(CLOCK_MONOTONIC,&tp) != 0)
-        throw std::runtime_error("Error querying system monotonic clock:"+std::string(strerror(errno)));
-    return (uint64_t(tp.tv_sec)*1000000ull)+uint64_t(tp.tv_nsec/1000);
-}
-
-
-std::string toHumanReadableTime(const std::chrono::steady_clock::time_point& tp) {
-    // Convert steady clock time point to system clock time point
-    auto system_now = std::chrono::system_clock::now();
-    auto steady_now = std::chrono::steady_clock::now();
-    auto duration_since_steady_epoch = tp - steady_now;
-    auto system_time = system_now + duration_since_steady_epoch;
-
-    // Convert to time_t for formatting the date and time
-    std::time_t time = std::chrono::system_clock::to_time_t(system_time);
-
-    // Get the milliseconds part
-    auto milliseconds_part = std::chrono::duration_cast<std::chrono::milliseconds>(system_time.time_since_epoch()) % 1000;
-
-    // Format the time to a human-readable string
-    std::tm tm = *std::localtime(&time);
-    std::stringstream ss;
-    ss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
-    ss << '.' << std::setfill('0') << std::setw(3) << milliseconds_part.count(); // Add milliseconds
-
-    return ss.str();
-}
-
-void DataflowEngine::sleepUntil(TimePoint futureTime)
-{
-    auto microSecsFromNow = futureTime.microSecs() - currentTime().microSecs();
-    std::chrono::microseconds microSecsFromNowDuration(microSecsFromNow);
-    auto current_time = std::chrono::steady_clock::now();
-    auto future_time = current_time + microSecsFromNowDuration;
-    std::this_thread::sleep_until(future_time);
-}
 
 
 TimePoint DataflowEngine::nextPeriodOnPeriodBoundary(TimeDuration period) const
@@ -647,7 +600,7 @@ TimePoint DataflowEngine::nextPeriodOnPeriodBoundary(double freq) const
     assert(freq>0.0);
     #endif
     TimeDuration period = TimeDuration::microSecs(int64_t(1000000ULL/freq));
-    TimePoint nextPlusHalf = currentTime()+TimeDuration::microSecs(1.5*period.microSecs());
+    TimePoint nextPlusHalf = TimePoint::currentTime()+TimeDuration::microSecs(1.5*period.microSecs());
     TimePoint nextOnBoundary = nextPlusHalf - TimeDuration::microSecs(int64_t(nextPlusHalf.microSecs() % period.microSecs()));
     return nextOnBoundary;
 }

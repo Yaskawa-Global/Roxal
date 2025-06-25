@@ -36,8 +36,6 @@ public:
 
     void setExecutionScheme(ExecutionScheme scheme) { m_executionScheme = scheme; }
 
-    TimePoint currentTime() const;     // since DataflowEngine construction
-
     TimeDuration tickPeriod() const;
 
     // Run the engine
@@ -48,7 +46,7 @@ public:
     void stop();
 
     // run for single engine tick (GCD of all clock signals)
-    //  (if waitForTickStart==true and currentTime() is not yet tick-number*tick-period, wait until then)
+    //  (if waitForTickStart==true and TimePoint::currentTime() is not yet tick-number*tick-period, wait until then)
     //  will rebuild network and restart tick count if network modified
     void tick(bool waitForTickStart = true);
 
@@ -63,7 +61,6 @@ public:
     std::map<std::string, Value> signalValues() const;
 
 
-    void sleepUntil(TimePoint futureTime);
 
 
     // callback for each engine tick (who's period is the GCD of all clock signals). Called after all signal value for this tick have been computed.
@@ -151,8 +148,6 @@ private:
     TimeDuration computeExecutionInterval(ptr<FuncNode> func);
 
 
-    uint64_t microSecsSinceBoot() const; // microsecs since boot
-    uint64_t usOffset; // microsecs since boot when engine instantiated
 
 
     TimePoint nextPeriodOnPeriodBoundary(TimeDuration periodMicrosecs) const;
