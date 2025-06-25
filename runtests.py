@@ -54,7 +54,7 @@ if args.convs:
     tests += conv_tests
 
 # implementation doesn't yet allow these tests to pass
-failing_tests = []
+failing_tests = ['signal_network1']
 
 project_root = os.path.dirname(os.path.abspath(__file__))
 test_dir = os.path.join(project_root, 'tests')
@@ -103,9 +103,11 @@ try:
             cmd = [roxal, '--ast', testrox]
         compProc = subprocess.run(cmd, capture_output=True, shell=False)
 
+        opt_expected = (" [expected]" if test in failing_tests else '')
+
         passed = True
         if compProc.returncode != 0:
-            print(f"Test {test} FAIL:")
+            print(f"Test {test} FAIL: {opt_expected}")
             print(f"-- return code {compProc.returncode} --")
             if compProc.returncode < 0:
                 import signal
@@ -123,7 +125,7 @@ try:
                         b'abort' in compProc.stdout.lower() or
                         b'abort' in compProc.stderr.lower())
         if crash_output and passed:
-            print(f"Test {test} FAIL:")
+            print(f"Test {test} FAIL: {opt_expected}")
             print("-- abnormal termination message detected --")
             print(compProc.stdout)
             print(compProc.stderr)
@@ -133,7 +135,7 @@ try:
             with open(testout, mode='rb') as file:
                 expected = file.read()
             if expected != compProc.stdout:
-                print(f"Test {test} FAIL:")
+                print(f"Test {test} FAIL: {opt_expected}")
                 print("-- stdout --")
                 print(compProc.stdout)
                 print("-- expected stdout --")
@@ -146,7 +148,7 @@ try:
                 err_re = file.read().strip()
             stderr_str = compProc.stderr.decode()
             if re.search(err_re, stderr_str, re.MULTILINE | re.DOTALL) is None:
-                print(f"Test {test} FAIL:")
+                print(f"Test {test} FAIL: {opt_expected}")
                 print("-- stderr --")
                 print(stderr_str)
                 print("-- expected regex --")
@@ -164,5 +166,7 @@ except Exception as e:
     print('Exception: ' + str(e))
 
 print(f"{passed_count} tests passed, {failed_count} failed")
+if failed_count > 0:
+  print(f"Tests expecied to fail currently: {' ,'.join(failing_tests)}")
 
 os.chdir(cwd)
