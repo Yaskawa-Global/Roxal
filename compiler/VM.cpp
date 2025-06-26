@@ -137,6 +137,9 @@ VM::~VM()
 
     df::DataflowEngine::instance()->clear();
 
+    // Remove any pending events so their references can be released
+    eventQueue.clear();
+
     freeObjects();
 
     // Final cleanup pass for any objects that became unreferenced during destructor
