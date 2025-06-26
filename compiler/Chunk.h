@@ -86,7 +86,8 @@ enum class OpCode {
     IfDictToKeys,
     IfDictToItems,
     ToType,
-    ToTypeStrict
+    ToTypeStrict,
+    EventOn
 };
 
 inline constexpr uint8_t asByte(OpCode op) { return uint8_t(op); }

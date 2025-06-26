@@ -344,7 +344,6 @@ protected:
     Value wait_builtin(int argCount, Value* args);
     Value runtests_builtin(int argCount, Value* args);
     Value event_emit_builtin(int argCount, Value* args);
-    Value event_on_builtin(int argCount, Value* args);
 
 
 

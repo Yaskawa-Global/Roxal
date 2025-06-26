@@ -459,6 +459,9 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
         else if (is<Suite>(compound)) {
             stmt = as<Suite>(compound);
         }
+        else if (is<OnStatement>(compound)) {
+            stmt = as<OnStatement>(compound);
+        }
         else if (is<ExpressionStatement>(compound))
             stmt = as<ExpressionStatement>(compound);
         else

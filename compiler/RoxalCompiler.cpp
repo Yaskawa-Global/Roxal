@@ -907,10 +907,6 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
     // push event variable
     namedVariable(ast->event);
 
-    // access builtin method 'on'
-    int16_t methodName = identifierConstant("on");
-    emitBytes(OpCode::GetPropCheck, uint8_t(methodName));
-
     // compile handler body as closure proc
     auto funcType = std::make_shared<type::Type>(BuiltinType::Func);
     funcType->func = type::Type::FuncType();
@@ -935,15 +931,7 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
         emitByte(fs.upvalues[i].index);
     }
 
-    CallSpec cs{1};
-    auto bytes = cs.toBytes();
-    if (bytes.size() == 1)
-        emitBytes(OpCode::Call, bytes[0]);
-    else {
-        emitByte(OpCode::Call);
-        for (auto b : bytes) emitByte(b);
-    }
-    emitByte(OpCode::Pop);
+    emitByte(OpCode::EventOn);
 
     return {};
 }
