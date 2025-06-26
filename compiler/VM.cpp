@@ -252,15 +252,16 @@ VM::InterpretResult VM::interpretLine(std::istream& linestream)
     compiler.setReplMode(false);
 
     ObjClosure* closure = closureVal(function);
-    Value closureValue { objVal(closure) };
 
-    auto newThread = std::make_shared<Thread>();
-    threads.store(newThread->id(), newThread);
-    newThread->spawn(closureValue);
+    if (!replThread) {
+        replThread = std::make_shared<Thread>();
+    }
 
-    newThread->join();
+    thread = replThread;
+    resetStack();
 
-    InterpretResult result = newThread->result;
+    auto resultPair = callAndExec(closure, {});
+    InterpretResult result = resultPair.first;
 
     #if defined(DEBUG_TRACE_EXECUTION)
     if (globals.size() > 0) {
