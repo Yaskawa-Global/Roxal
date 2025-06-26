@@ -1,0 +1,4 @@
+var e:event
+on e:
+  print('hello')
+print('done')

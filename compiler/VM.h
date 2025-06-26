@@ -7,6 +7,7 @@
 #include <unordered_map>
 
 #include "core/atomic.h"
+#include "core/TimePoint.h"
 #include "Chunk.h"
 #include "Value.h"
 #include <ffi.h>
@@ -183,6 +184,13 @@ public:
         InterpretResult result;
 
         std::list<ObjUpvalue*> openUpvalues;
+        struct ValueHasher {
+            size_t operator()(const Value& v) const noexcept { return v.hash(); }
+        };
+        struct ValueEqual {
+            bool operator()(const Value& a, const Value& b) const noexcept { return a == b; }
+        };
+        std::unordered_map<Value, std::vector<Value>, ValueHasher, ValueEqual> eventHandlers;
         
         // execution depth tracking for nested execute() calls
         int execute_depth;
@@ -241,6 +249,19 @@ protected:
     std::shared_ptr<df::DataflowEngine> dataflowEngine;
     Value dataflowEngineActor;
     std::shared_ptr<VM::Thread> dataflowEngineThread;
+
+    struct PendingEvent {
+        TimePoint when;
+        Value event;
+    };
+
+    struct PendingEventCompare {
+        bool operator()(const PendingEvent& a, const PendingEvent& b) const {
+            return a.when > b.when;
+        }
+    };
+
+    atomic_priority_queue<PendingEvent, PendingEventCompare> eventQueue;
 
     ObjString* initString;
 
@@ -328,6 +349,7 @@ protected:
     Value threadid_builtin(int argCount, Value* args);
     Value wait_builtin(int argCount, Value* args);
     Value runtests_builtin(int argCount, Value* args);
+    Value event_emit_builtin(int argCount, Value* args);
 
 
 

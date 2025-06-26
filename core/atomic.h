@@ -720,4 +720,74 @@ private:
 };
 
 
+template<typename T, typename Compare>
+class atomic_priority_queue
+{
+public:
+
+    typedef T value_type;
+
+    atomic_priority_queue() {}
+    ~atomic_priority_queue()
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+    }
+
+    void push(const T& value)
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        q.push(value);
+    }
+
+    T pop()
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        T v { q.top() };
+        q.pop();
+        return v;
+    }
+
+    template<typename Pred>
+    bool pop_if(Pred pred, T& value)
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        if (!q.empty() && pred(q.top())) {
+            value = q.top();
+            q.pop();
+            return true;
+        }
+        return false;
+    }
+
+    T top() const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return q.top();
+    }
+
+    bool empty() const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return q.empty();
+    }
+
+    size_t size() const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return q.size();
+    }
+
+    void clear()
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        while(!q.empty()) q.pop();
+    }
+
+private:
+    mutable std::mutex m_lock;
+
+    std::priority_queue<T,std::vector<T>,Compare> q;
+};
+
+
 } // ns

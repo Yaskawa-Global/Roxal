@@ -900,6 +900,42 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     return {};
 }
 
+std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
+{
+    currentNode = ast;
+
+    // push event variable
+    namedVariable(ast->event);
+
+    // compile handler body as closure proc
+    auto funcType = std::make_shared<type::Type>(BuiltinType::Func);
+    funcType->func = type::Type::FuncType();
+    funcType->func->isProc = true;
+
+    auto enclosingModuleScope { asModuleScope(moduleScope()) };
+    icu::UnicodeString funcName = icu::UnicodeString::fromUTF8("__on_" + std::to_string(ast->interval.first.line) + "_" + std::to_string(ast->interval.first.pos));
+
+    enterFuncScope(enclosingModuleScope->moduleType, funcName, FunctionType::Function, funcType);
+    enterLocalScope();
+    asFuncScope(funcScope())->function->arity = 0;
+    ast->body->accept(*this);
+    emitReturn();
+
+    ObjFunction* function = asFuncScope(funcScope())->function;
+    auto fs = *asFuncScope(funcScope());
+    exitFuncScope();
+
+    emitBytes(OpCode::Closure, makeConstant(objVal(function)));
+    for (int i = 0; i < function->upvalueCount; i++) {
+        emitByte(fs.upvalues[i].isLocal ? 1 : 0);
+        emitByte(fs.upvalues[i].index);
+    }
+
+    emitByte(OpCode::EventOn);
+
+    return {};
+}
+
 
 std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 {

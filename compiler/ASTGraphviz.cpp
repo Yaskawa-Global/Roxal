@@ -347,6 +347,19 @@ std::any ASTGraphviz::visit(ptr<ast::ForStatement> ast)
     return {};
 }
 
+std::any ASTGraphviz::visit(ptr<ast::OnStatement> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+
+    addLink(name, stackPop(), "body");
+    nodes[name] = node(name, "on " + toUTF8StdString(ast->event));
+    stackPush(name);
+
+    endVisit();
+    return {};
+}
+
 
 std::any ASTGraphviz::visit(ptr<ast::Function> ast)
 {

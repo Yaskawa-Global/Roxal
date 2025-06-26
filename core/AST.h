@@ -34,6 +34,7 @@ class ReturnStatement;
 class IfStatement;
 class WhileStatement;
 class ForStatement;
+class OnStatement;
 class Function;
 class Parameter;
 class Assignment;
@@ -83,6 +84,7 @@ public:
     virtual std::any visit(ptr<IfStatement> ast) = 0;
     virtual std::any visit(ptr<WhileStatement> ast) = 0;
     virtual std::any visit(ptr<ForStatement> ast) = 0;
+    virtual std::any visit(ptr<OnStatement> ast) = 0;
     virtual std::any visit(ptr<Function> ast) = 0;
     virtual std::any visit(ptr<Parameter> ast) = 0;
     virtual std::any visit(ptr<Assignment> ast) = 0;
@@ -258,7 +260,8 @@ struct Statement : public AST {
         Return,
         If,
         While,
-        For
+        For,
+        On
     };
 
     Statement(StmtType st) : stmtType(st) {}
@@ -337,6 +340,19 @@ struct ForStatement : public Statement {
 
     std::vector<ptr<VarDecl>> targetList; // like var decl with name & optional type, but no initializer
     ptr<ast::Expression> iterable;
+    ptr<ast::Suite> body;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
+struct OnStatement : public Statement {
+    OnStatement() : Statement(StmtType::On) {}
+
+    icu::UnicodeString event;
     ptr<ast::Suite> body;
 
     virtual std::any accept(ASTVisitor& v);

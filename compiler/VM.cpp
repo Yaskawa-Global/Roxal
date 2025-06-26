@@ -16,6 +16,7 @@
 #include "dataflow/DataflowEngine.h"
 #include "dataflow/FuncNode.h"
 
+#include <core/TimePoint.h>
 #include "VM.h"
 #include "Object.h"
 #include <Eigen/Dense>
@@ -135,6 +136,9 @@ VM::~VM()
     mathModule->decRef();
 
     df::DataflowEngine::instance()->clear();
+
+    // Remove any pending events so their references can be released
+    eventQueue.clear();
 
     freeObjects();
 
@@ -1662,6 +1666,26 @@ std::pair<VM::InterpretResult,Value> VM::execute()
         push( op(a,b) );
     };
 
+    auto processEvents = [&]() -> bool {
+        if (thread->eventHandlers.empty()) return true;
+        PendingEvent ev;
+        auto now = TimePoint::currentTime();
+        if (eventQueue.pop_if([&](const PendingEvent& e){
+                return e.when <= now && thread->eventHandlers.count(e.event) > 0;
+            }, ev)) {
+            auto handlersIt = thread->eventHandlers.find(ev.event);
+            if (handlersIt != thread->eventHandlers.end()) {
+                for(const auto& handler : handlersIt->second) {
+                    auto closure = asClosure(handler);
+                    auto result = callAndExec(closure, {});
+                    if (result.first != InterpretResult::OK)
+                        return false;
+                }
+            }
+        }
+        return true;
+    };
+
     #if defined(DEBUG_TRACE_EXECUTION)
     std::cout << std::endl << "== executing ==" << std::endl;
     #endif
@@ -2913,6 +2937,16 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 }
                 break;
             }
+            case asByte(OpCode::EventOn): {
+                Value closureVal = pop();
+                Value eventVal = pop();
+                if (!isEvent(eventVal) || !isClosure(closureVal)) {
+                    runtimeError("EVENT_ON expects event and closure");
+                    return errorReturn;
+                }
+                thread->eventHandlers[eventVal].push_back(closureVal);
+                break;
+            }
             case asByte(OpCode::ObjectType): {
                 ObjString* name = readString();
                 ObjObjectType* t = objectTypeVal(name->s, false);
@@ -3086,6 +3120,9 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
         postInstructionDispatch:
 
+        if (!processEvents())
+            return errorReturn;
+
         freeObjects();
 
     } // for
@@ -3236,6 +3273,8 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Signal, "run", &VM::signal_run_builtin);
     defineBuiltinMethod(ValueType::Signal, "stop", &VM::signal_stop_builtin);
     defineBuiltinMethod(ValueType::Signal, "tick", &VM::signal_tick_builtin);
+
+    defineBuiltinMethod(ValueType::Event, "emit", &VM::event_emit_builtin, true);
 
     defineBuiltinMethod(ValueType::Actor, "tick", &VM::dataflow_tick_native, true);  // proc
     defineBuiltinMethod(ValueType::Actor, "run", &VM::dataflow_run_native, true);   // proc
@@ -3460,6 +3499,26 @@ Value VM::runtests_builtin(int argCount, Value* args)
 
         std::cout << "Passed " << passes << " failed " << fails << std::endl;
     }
+
+    return nilVal();
+}
+
+Value VM::event_emit_builtin(int argCount, Value* args)
+{
+    if (argCount > 2 || !isEvent(args[0]))
+        throw std::invalid_argument("event.emit expects optional time argument in microseconds");
+
+    TimePoint when = TimePoint::currentTime();
+    if (argCount == 2) {
+        if (!args[1].isNumber())
+            throw std::invalid_argument("event.emit time argument must be numeric microseconds");
+        when = TimePoint::microSecs(args[1].asInt());
+    }
+
+    PendingEvent pe;
+    pe.when = when;
+    pe.event = args[0];
+    eventQueue.push(pe);
 
     return nilVal();
 }
