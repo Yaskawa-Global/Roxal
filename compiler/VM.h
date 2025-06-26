@@ -184,7 +184,13 @@ public:
         InterpretResult result;
 
         std::list<ObjUpvalue*> openUpvalues;
-        std::unordered_map<ObjEvent*, std::vector<Value>> eventHandlers;
+        struct ValueHasher {
+            size_t operator()(const Value& v) const noexcept { return v.hash(); }
+        };
+        struct ValueEqual {
+            bool operator()(const Value& a, const Value& b) const noexcept { return a == b; }
+        };
+        std::unordered_map<Value, std::vector<Value>, ValueHasher, ValueEqual> eventHandlers;
         
         // execution depth tracking for nested execute() calls
         int execute_depth;

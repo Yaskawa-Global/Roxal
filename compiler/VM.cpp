@@ -1663,6 +1663,26 @@ std::pair<VM::InterpretResult,Value> VM::execute()
         push( op(a,b) );
     };
 
+    auto processEvents = [&]() -> bool {
+        if (thread->eventHandlers.empty()) return true;
+        PendingEvent ev;
+        auto now = TimePoint::currentTime();
+        if (eventQueue.pop_if([&](const PendingEvent& e){
+                return e.when <= now && thread->eventHandlers.count(e.event) > 0;
+            }, ev)) {
+            auto handlersIt = thread->eventHandlers.find(ev.event);
+            if (handlersIt != thread->eventHandlers.end()) {
+                for(const auto& handler : handlersIt->second) {
+                    auto closure = asClosure(handler);
+                    auto result = callAndExec(closure, {});
+                    if (result.first != InterpretResult::OK)
+                        return false;
+                }
+            }
+        }
+        return true;
+    };
+
     #if defined(DEBUG_TRACE_EXECUTION)
     std::cout << std::endl << "== executing ==" << std::endl;
     #endif
@@ -2921,7 +2941,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     runtimeError("EVENT_ON expects event and closure");
                     return errorReturn;
                 }
-                thread->eventHandlers[asEvent(eventVal)].push_back(closureVal);
+                thread->eventHandlers[eventVal].push_back(closureVal);
                 break;
             }
             case asByte(OpCode::ObjectType): {
@@ -3096,6 +3116,9 @@ std::pair<VM::InterpretResult,Value> VM::execute()
         }
 
         postInstructionDispatch:
+
+        if (!processEvents())
+            return errorReturn;
 
         freeObjects();
 
