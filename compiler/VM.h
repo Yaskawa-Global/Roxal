@@ -223,6 +223,10 @@ protected:
 
     atomic_unordered_map<uint64_t, ptr<Thread>> threads;
 
+    // Persistent thread used for REPL execution so that state such as event
+    // handlers persists across entered lines.
+    ptr<Thread> replThread;
+
     ObjModuleType* moduleType()
     {
         #ifdef DEBUG_BUILD
