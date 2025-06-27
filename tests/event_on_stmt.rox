@@ -1,4 +1,7 @@
 var e:event
 on e:
   print('hello')
+
+e.emit()
+
 print('done')
