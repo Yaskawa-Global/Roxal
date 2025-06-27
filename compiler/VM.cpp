@@ -140,6 +140,9 @@ VM::~VM()
     // Remove any pending events so their references can be released
     eventQueue.clear();
 
+    // Release REPL thread resources before reporting potential leaks
+    replThread.reset();
+
     freeObjects();
 
     // Final cleanup pass for any objects that became unreferenced during destructor
