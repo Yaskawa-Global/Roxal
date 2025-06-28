@@ -790,8 +790,13 @@ bool Value::equals(const Value& rhs, bool strict) const
         // List compared to matrix - symmetric case
         return rhs.equals(*this, strict);
     }
-    else if (isObj())
-        return rhs.isObj() && (asObj() == rhs.asObj()); // identity (by ptr/address)
+    else if (isObj()) {
+        if (!rhs.isObj())
+            return false;
+        if (!isAlive() || !rhs.isAlive())
+            return false;
+        return asObj() == rhs.asObj(); // identity (by ptr/address)
+    }
     return false;
 }
 
