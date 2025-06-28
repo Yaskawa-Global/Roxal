@@ -1,5 +1,5 @@
 var l = [1,2]
-var w = weakref(l)
-print(weak_alive(w))
+var w = _weakref(l)
+print(_weak_alive(w))
 l = nil
-print(weak_alive(w))
+print(_weak_alive(w))

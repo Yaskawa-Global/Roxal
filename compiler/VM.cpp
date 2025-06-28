@@ -3251,8 +3251,8 @@ void VM::defineBuiltinFunctions()
     addSys("_threadid", &VM::threadid_builtin);
     addSys("_wait", &VM::wait_builtin);
     addSys("_runtests", &VM::runtests_builtin);
-    addSys("weakref", &VM::weakref_builtin);
-    addSys("weak_alive", &VM::weak_alive_builtin);
+    addSys("_weakref", &VM::weakref_builtin);
+    addSys("_weak_alive", &VM::weak_alive_builtin);
 }
 
 void VM::defineBuiltinMethods()
