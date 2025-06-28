@@ -1,0 +1,25 @@
+
+type MyActor actor:
+
+  private var e :event
+
+  proc setup():
+    on e:
+      print('e handled in MyActor')
+
+  proc trigger():
+    e.emit()
+
+
+a = MyActor()
+
+a.trigger()
+
+a.setup()
+
+a.trigger()
+
+sleep(1000)
+
+a = nil
+
