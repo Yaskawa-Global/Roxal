@@ -68,12 +68,15 @@ enum class ObjType {
 
 
 
+
+#include "ObjControl.h"
+
 struct Obj {
-    Obj() : type(ObjType::None), refCount(0) {}
+    Obj() : type(ObjType::None), control(nullptr) {}
     virtual ~Obj() {}
 
     ObjType type;
-    std::atomic_int32_t refCount;
+    ObjControl* control;
 
 
     ValueType valueType() const;
@@ -82,14 +85,27 @@ struct Obj {
 
     inline void incRef()
     {
-        refCount.fetch_add(1,std::memory_order_relaxed);
+        control->strong.fetch_add(1,std::memory_order_relaxed);
     }
 
     inline void decRef()
     {
-        auto prevCount = refCount.fetch_sub(1,std::memory_order_relaxed);
-        if (prevCount <= 1)
+        auto prevCount = control->strong.fetch_sub(1,std::memory_order_relaxed);
+        if (prevCount <= 1) {
+            control->obj = nullptr;
             unrefedObjs.push_back(this);
+        }
+    }
+
+    inline void incWeak()
+    {
+        control->weak.fetch_add(1,std::memory_order_relaxed);
+    }
+
+    inline void decWeak()
+    {
+        if (control->weak.fetch_sub(1,std::memory_order_relaxed) == 1)
+            delete[] reinterpret_cast<char*>(control);
     }
 
 
@@ -103,15 +119,23 @@ struct Obj {
 
 template<typename T, typename... Args>
 inline T* newObj(const char* comment, Args&&... args) {
+    // allocate one contiguous block for control and object
+    char* mem = new char[sizeof(ObjControl) + sizeof(T)];
+    ObjControl* ctrl = new (mem) ObjControl();
+    T* o = new (mem + sizeof(ObjControl)) T(std::forward<Args>(args)...);
+
+    ctrl->strong = 0;
+    ctrl->weak   = 1;   // implicit weak ref representing strong refs
+    ctrl->obj    = o;
+    o->control   = ctrl;
+
     #ifdef DEBUG_TRACE_MEMORY
-    T* o = new T(std::forward<Args>(args)...);
     if (Obj::allocatedObjs.containsKey(o))
-        throw std::runtime_error("new Obj* yielded address already allocated: "+toString(o));
+        throw std::runtime_error("new Obj* yielded address already allocated: " + toString(o));
     Obj::allocatedObjs.store(o, comment);
-    return o;
-    #else
-    return new T(std::forward<Args>(args)...);
     #endif
+
+    return o;
 }
 
 template<typename T>
@@ -121,7 +145,10 @@ inline void delObj(T* o) {
         throw std::runtime_error("delete for unallocated Obj* "+toString(o)+" :"+objTypeName(o));
     Obj::allocatedObjs.erase(o);
     #endif
-    delete o;
+    ObjControl* ctrl = o->control;
+    o->~T();
+    if (ctrl->weak.fetch_sub(1, std::memory_order_relaxed) == 1)
+        delete[] reinterpret_cast<char*>(ctrl);
 }
 
 inline std::ostream& operator<<(std::ostream& out, const Obj* obj)
@@ -138,13 +165,17 @@ inline std::string toString(Obj* obj)
 }
 
 
-// starts refCount at 1
+// create Value from Obj (increments strong ref)
 inline Value objVal(Obj* o) { return Value(o); }
 
 
-inline ObjType objType(const Value& v) { return v.asObj()->type; }
+inline ObjType objType(const Value& v) { return v.asObj() ? v.asObj()->type : ObjType::None; }
 inline bool isObjType(const Value& v, ObjType type)
-    { return v.isObj() && v.asObj()->type == type; }
+{
+    if (!v.isObj()) return false;
+    Obj* o = v.asObj();
+    return o != nullptr && o->type == type;
+}
 
 
 std::string objToString(const Value& v);
@@ -717,7 +748,6 @@ struct ObjTypeSpec : public Obj
 {
     ObjTypeSpec() {
         type = ObjType::Type;
-        refCount = 0;
         typeValue = ValueType::Nil;
     }
     virtual ~ObjTypeSpec() {}

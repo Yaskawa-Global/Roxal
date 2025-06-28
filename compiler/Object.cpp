@@ -115,7 +115,6 @@ ObjString::ObjString(const UnicodeString& us)
     :  s(us)
 {
     type = ObjType::String;
-    refCount = 0;
     hash = s.hashCode();
 
     // add ourself to the string intern table

@@ -3251,6 +3251,8 @@ void VM::defineBuiltinFunctions()
     addSys("_threadid", &VM::threadid_builtin);
     addSys("_wait", &VM::wait_builtin);
     addSys("_runtests", &VM::runtests_builtin);
+    addSys("weakref", &VM::weakref_builtin);
+    addSys("weak_alive", &VM::weak_alive_builtin);
 }
 
 void VM::defineBuiltinMethods()
@@ -3525,6 +3527,22 @@ Value VM::event_emit_builtin(int argCount, Value* args)
     eventQueue.push(pe);
 
     return nilVal();
+}
+
+Value VM::weakref_builtin(int argCount, Value* args)
+{
+    if (argCount != 1)
+        throw std::invalid_argument("weakref expects single argument");
+
+    return args[0].weakRef();
+}
+
+Value VM::weak_alive_builtin(int argCount, Value* args)
+{
+    if (argCount != 1)
+        throw std::invalid_argument("weak_alive expects single argument");
+
+    return args[0].isAlive() ? trueVal() : falseVal();
 }
 
 Value VM::vector_norm_builtin(int argCount, Value* args)
