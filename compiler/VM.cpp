@@ -1671,11 +1671,22 @@ std::pair<VM::InterpretResult,Value> VM::execute()
     };
 
     auto processEvents = [&]() -> bool {
-        if (thread->eventHandlers.empty()) return true;
         PendingEvent ev;
+
+        // Drop any events that are no longer alive or have no handlers
+        while(eventQueue.pop_if([&](const PendingEvent& e){
+                    return !e.event.isAlive() ||
+                           thread->eventHandlers.count(e.event) == 0;
+                }, ev)) {
+            thread->eventHandlers.erase(ev.event);
+        }
+
+        if (thread->eventHandlers.empty()) return true;
+
         auto now = TimePoint::currentTime();
         if (eventQueue.pop_if([&](const PendingEvent& e){
-                return e.when <= now && thread->eventHandlers.count(e.event) > 0;
+                return e.when <= now && e.event.isAlive() &&
+                       thread->eventHandlers.count(e.event) > 0;
             }, ev)) {
             auto handlersIt = thread->eventHandlers.find(ev.event);
             if (handlersIt != thread->eventHandlers.end()) {
@@ -2948,7 +2959,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     runtimeError("EVENT_ON expects event and closure");
                     return errorReturn;
                 }
-                thread->eventHandlers[eventVal].push_back(closureVal);
+                Value key = eventVal.weakRef();
+                thread->eventHandlers[key].push_back(closureVal);
                 break;
             }
             case asByte(OpCode::ObjectType): {
@@ -3156,13 +3168,23 @@ void VM::resetStack()
 
 void VM::freeObjects()
 {
-    if (Obj::unrefedObjs.empty()) return;
+    if (!Obj::unrefedObjs.empty()) {
+        // free objects who's reference count dropped to 0
+        while(!Obj::unrefedObjs.empty()) {
+            Obj::unrefedObjs.pop_back_and_apply([](Obj* obj) {
+                delObj(obj);
+            });
+        }
+    }
 
-    // free objcts who's reference count dropped to 0
-    while(!Obj::unrefedObjs.empty()) {
-        Obj::unrefedObjs.pop_back_and_apply([](Obj* obj) {
-            delObj(obj);
-        });
+    if (thread) {
+        // remove event handlers referencing destroyed events
+        for(auto it = thread->eventHandlers.begin(); it != thread->eventHandlers.end(); ) {
+            if (!it->first.isAlive())
+                it = thread->eventHandlers.erase(it);
+            else
+                ++it;
+        }
     }
 }
 
@@ -3523,7 +3545,7 @@ Value VM::event_emit_builtin(int argCount, Value* args)
 
     PendingEvent pe;
     pe.when = when;
-    pe.event = args[0];
+    pe.event = args[0].weakRef();
     eventQueue.push(pe);
 
     return nilVal();
