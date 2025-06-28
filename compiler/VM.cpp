@@ -151,6 +151,7 @@ VM::~VM()
     #ifdef DEBUG_TRACE_MEMORY
     // Try one more cleanup pass right before reporting
     freeObjects();
+    std::cout << "== active threads == " << threads.size() << std::endl;
     outputAllocatedObjs();
     #endif
 }
