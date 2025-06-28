@@ -183,6 +183,8 @@ public:
 
         InterpretResult result;
 
+        // eventHandlers map <event weakref> -> <vector of closures>
+        // (closures must run on this thread)
         std::list<ObjUpvalue*> openUpvalues;
         struct ValueHasher {
             size_t operator()(const Value& v) const noexcept { return v.hash(); }
@@ -191,7 +193,7 @@ public:
             bool operator()(const Value& a, const Value& b) const noexcept { return a == b; }
         };
         std::unordered_map<Value, std::vector<Value>, ValueHasher, ValueEqual> eventHandlers;
-        
+
         // execution depth tracking for nested execute() calls
         int execute_depth;
 
@@ -276,11 +278,11 @@ protected:
     struct BuiltinMethodInfo {
         NativeFn function;
         bool isProc;  // true for proc methods, false for func methods
-        
+
         BuiltinMethodInfo() : function(nullptr), isProc(false) {}
         BuiltinMethodInfo(NativeFn fn, bool proc = false) : function(fn), isProc(proc) {}
     };
-    
+
     // Builtin methods: builtin value type -> method name hash -> BuiltinMethodInfo
     std::unordered_map<ValueType, std::unordered_map<int32_t, BuiltinMethodInfo>> builtinMethods;
 
@@ -302,17 +304,17 @@ protected:
     // Native property support
     typedef Value (VM::*NativePropertyGetter)(Value&);
     typedef void (VM::*NativePropertySetter)(Value&, Value);
-    
+
     struct BuiltinPropertyInfo {
         NativePropertyGetter getter;
         NativePropertySetter setter;  // nullptr for read-only properties
         bool readOnly;
-        
+
         BuiltinPropertyInfo() : getter(nullptr), setter(nullptr), readOnly(true) {}
-        BuiltinPropertyInfo(NativePropertyGetter get, NativePropertySetter set = nullptr) 
+        BuiltinPropertyInfo(NativePropertyGetter get, NativePropertySetter set = nullptr)
             : getter(get), setter(set), readOnly(set == nullptr) {}
     };
-    
+
     // Builtin properties: builtin value type -> property name hash -> BuiltinPropertyInfo
     std::unordered_map<ValueType, std::unordered_map<int32_t, BuiltinPropertyInfo>> builtinProperties;
 
@@ -369,16 +371,15 @@ protected:
     Value clock_signal_native(int argCount, Value* args);
     Value engine_stop_native(int argCount, Value* args);
     Value typeof_native(int argCount, Value* args);
-    
+
     // DataflowEngine actor native methods
     Value dataflow_tick_native(int argCount, Value* args);
     Value dataflow_run_native(int argCount, Value* args);
     Value dataflow_run_for_native(int argCount, Value* args);
-    
+
     // Builtin property getters
     Value signal_value_getter(Value& receiver);
-public:
-protected:
+
     Value loadlib_native(int argCount, Value* args);
     Value ffi_native(int argCount, Value* args);
 
