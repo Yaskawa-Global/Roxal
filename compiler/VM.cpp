@@ -323,6 +323,8 @@ void VM::Thread::join()
         inst->queueConditionVar.notify_one();
     }
 
+    wake();
+
     osthread->join();
     osthread = nullptr;
     actorInstance = nilVal();
@@ -356,17 +358,15 @@ void VM::Thread::act(Value actorInstance)
             ActorInstance::MethodCallInfo callInfo {};
             {
                 std::unique_lock<std::mutex> lock { actorInst->queueMutex };
-                actorInst->queueConditionVar.wait(lock,[&]()
-                {
-                    // Acquire the lock only if we should quit or the queue has pending calls
-                    return quit || !actorInst->callQueue.empty();
-                });
+                actorInst->queueConditionVar.wait(lock);
+                if (quit)
+                    break;
                 if (!actorInst->callQueue.empty()) {
                     callInfo = actorInst->callQueue.pop();
                 }
-                if (quit)
-                    break;
             }
+
+            vm.processPendingEvents();
 
             if (callInfo.valid()) {
 
@@ -1673,36 +1673,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
         push( op(a,b) );
     };
 
-    auto processEvents = [&]() -> bool {
-        PendingEvent ev;
-
-        // Drop any events that are no longer alive or have no handlers
-        while(eventQueue.pop_if([&](const PendingEvent& e){
-                    return !e.event.isAlive() ||
-                           thread->eventHandlers.count(e.event) == 0;
-                }, ev)) {
-            thread->eventHandlers.erase(ev.event);
-        }
-
-        if (thread->eventHandlers.empty()) return true;
-
-        auto now = TimePoint::currentTime();
-        if (eventQueue.pop_if([&](const PendingEvent& e){
-                return e.when <= now && e.event.isAlive() &&
-                       thread->eventHandlers.count(e.event) > 0;
-            }, ev)) {
-            auto handlersIt = thread->eventHandlers.find(ev.event);
-            if (handlersIt != thread->eventHandlers.end()) {
-                for(const auto& handler : handlersIt->second) {
-                    auto closure = asClosure(handler);
-                    auto result = callAndExec(closure, {});
-                    if (result.first != InterpretResult::OK)
-                        return false;
-                }
-            }
-        }
-        return true;
-    };
+    auto processEvents = [&]() -> bool { return processPendingEvents(); };
 
     #if defined(DEBUG_TRACE_EXECUTION)
     std::cout << std::endl << "== executing ==" << std::endl;
@@ -1733,9 +1704,26 @@ std::pair<VM::InterpretResult,Value> VM::execute()
         if (thread->threadSleep) {
             if (currentTimeNs() >= thread->threadSleepUntil) {
                 thread->threadSleep = false;
-            }
-            else
+            } else {
+                uint64_t waitUntil = thread->threadSleepUntil;
+                if (!eventQueue.empty()) {
+                    auto nextEv = eventQueue.top();
+                    uint64_t evNs = nextEv.when.microSecs() * 1000ull;
+                    if (evNs < waitUntil)
+                        waitUntil = evNs;
+                }
+
+                std::unique_lock<std::mutex> lock(thread->sleepMutex);
+                uint64_t now = currentTimeNs();
+                if (waitUntil > now) {
+                    thread->sleepCondVar.wait_for(lock,
+                        std::chrono::nanoseconds(waitUntil - now));
+                } else {
+                    thread->sleepCondVar.wait_for(lock,
+                        std::chrono::nanoseconds(0));
+                }
                 goto postInstructionDispatch;
+            }
         }
 
 
@@ -3191,6 +3179,38 @@ void VM::freeObjects()
     }
 }
 
+bool VM::processPendingEvents()
+{
+    PendingEvent ev;
+
+    // Drop any events that are no longer alive or have no handlers
+    while(eventQueue.pop_if([&](const PendingEvent& e){
+                return !e.event.isAlive() ||
+                       thread->eventHandlers.count(e.event) == 0;
+            }, ev)) {
+        thread->eventHandlers.erase(ev.event);
+    }
+
+    if (thread->eventHandlers.empty()) return true;
+
+    auto now = TimePoint::currentTime();
+    if (eventQueue.pop_if([&](const PendingEvent& e){
+            return e.when <= now && e.event.isAlive() &&
+                   thread->eventHandlers.count(e.event) > 0;
+        }, ev)) {
+        auto handlersIt = thread->eventHandlers.find(ev.event);
+        if (handlersIt != thread->eventHandlers.end()) {
+            for(const auto& handler : handlersIt->second) {
+                auto closure = asClosure(handler);
+                auto result = callAndExec(closure, {});
+                if (result.first != InterpretResult::OK)
+                    return false;
+            }
+        }
+    }
+    return true;
+}
+
 
 void VM::outputAllocatedObjs()
 {
@@ -3550,6 +3570,10 @@ Value VM::event_emit_builtin(int argCount, Value* args)
     pe.when = when;
     pe.event = args[0].weakRef();
     eventQueue.push(pe);
+
+    threads.apply([&](const auto& entry){
+        entry.second->wake();
+    });
 
     return nilVal();
 }

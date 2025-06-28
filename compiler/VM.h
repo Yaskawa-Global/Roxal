@@ -158,6 +158,16 @@ public:
         void act(Value actorInstance);
         void detach();
 
+        void wake()
+        {
+            sleepCondVar.notify_one();
+            if (actor) {
+                auto inst = asActorInstance(actorInstance);
+                std::lock_guard<std::mutex> lock { inst->queueMutex };
+                inst->queueConditionVar.notify_one();
+            }
+        }
+
         void push(const Value& value);
         Value pop();
         void popN(size_t n); // call pop() n times
@@ -180,6 +190,8 @@ public:
 
         bool threadSleep;
         uint64_t threadSleepUntil;
+        std::mutex sleepMutex;
+        std::condition_variable sleepCondVar;
 
         InterpretResult result;
 
@@ -288,6 +300,7 @@ protected:
 
     void resetStack();
     void freeObjects();
+    bool processPendingEvents();
     void outputAllocatedObjs();
 
     void concatenate();
