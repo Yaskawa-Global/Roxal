@@ -153,7 +153,7 @@ VM::~VM()
     freeObjects();
     size_t activeThreads = threads.size();
     if (activeThreads > 0)
-        std::cout << "== active threads == " << activeThreads << std::endl;
+        std::cout << "== active threads: " << activeThreads << std::endl;
     outputAllocatedObjs();
     #endif
 }
