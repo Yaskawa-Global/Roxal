@@ -8,6 +8,7 @@
 #include <cassert>
 
 #include <core/common.h>
+#include "ObjControl.h"
 
 namespace roxal {
 
@@ -88,28 +89,28 @@ bool isObjPrimitive(const Value& v); // forward from Object.h
 class Value {
 public:
     /// @brief Default constructor. Initializes the value to Nil.
-    Value() : val(QNAN | TagNil) {}
+    Value() : val(QNAN | TagNil), weak(false) {}
 
     /// @brief Constructs a boolean value.
     /// @param b The boolean value.
-    explicit Value(bool b) { val = b ? (QNAN | TagTrue) : (QNAN | TagFalse); }
+    explicit Value(bool b) : weak(false) { val = b ? (QNAN | TagTrue) : (QNAN | TagFalse); }
 
 
     /// @brief Constructs a byte value.
     /// @param b The byte value.
-    explicit Value(uint8_t b) { val = QNAN | TagByte | (0xff & *reinterpret_cast<uint8_t*>(&b)); }
+    explicit Value(uint8_t b) : weak(false) { val = QNAN | TagByte | (0xff & *reinterpret_cast<uint8_t*>(&b)); }
 
     /// @brief Constructs a real value.
     /// @param r The real value.
-    explicit Value(double r) { val = (*reinterpret_cast<uint64_t*>(&r)); }
+    explicit Value(double r) : weak(false) { val = (*reinterpret_cast<uint64_t*>(&r)); }
 
     /// @brief Constructs an integer value.
     /// @param i The integer value.
-    explicit Value(int32_t i) { val = QNAN | TagInt | (0xffffffff & *reinterpret_cast<uint64_t*>(&i)); }
+    explicit Value(int32_t i) : weak(false) { val = QNAN | TagInt | (0xffffffff & *reinterpret_cast<uint64_t*>(&i)); }
 
     /// @brief Constructs a value of the specified builtin type.
     /// @param bt The builtin type.
-    explicit Value(ValueType bt) { val = QNAN | TagType | uint64_t(bt); }
+    explicit Value(ValueType bt) : weak(false) { val = QNAN | TagType | uint64_t(bt); }
 
     /// @brief Constructs a value from an object pointer.
     /// @param o The object pointer.
@@ -123,8 +124,11 @@ public:
     Value(const Value& v)
     {
         val.store(v.val.load());
-        if (isObj() || isBoxed())
-            incRefObj();
+        weak = v.weak;
+        if (isObj() || isBoxed()) {
+            if (weak) incWeakObj();
+            else incRefObj();
+        }
     }
 
     /// @brief Assignment operator.
@@ -132,12 +136,17 @@ public:
     /// @return The assigned value.
     Value& operator=(const Value& v)
     {
-        if (isObj() || isBoxed())
-            decRefObj();
+        if (isObj() || isBoxed()) {
+            if (weak) decWeakObj();
+            else decRefObj();
+        }
 
         val.store(v.val.load());
-        if (isObj() || isBoxed())
-            incRefObj();
+        weak = v.weak;
+        if (isObj() || isBoxed()) {
+            if (weak) incWeakObj();
+            else incRefObj();
+        }
 
         return *this;
     }
@@ -145,8 +154,10 @@ public:
 
     /// @brief Destructor. Will decrement the reference count of objects.
     ~Value() {
-        if (isObj() || isBoxed())
-            decRefObj();
+        if (isObj() || isBoxed()) {
+            if (weak) decWeakObj();
+            else decRefObj();
+        }
     }
 
 
@@ -156,6 +167,9 @@ public:
     /// @brief Unboxes the value from an object if it is boxed.
     void unbox();
 
+    bool isWeak() const { return weak; }
+    Value weakRef() const;
+
     /// @brief Checks if the value is boxed.
     /// @return True if the value is boxed, false otherwise.
     bool isBoxed() const { return isObj() && isObjPrimitive(*this); }
@@ -163,6 +177,12 @@ public:
     /// @brief Checks if the value is boxable (primitive type that can be boxed).
     /// @return True if the value is boxable, false otherwise.
     bool isBoxable() const { return !isBoxed() && (isBool() || isInt() || isReal()); }
+
+    bool isAlive() const {
+        if (!weak) return true;
+        ObjControl* c = asControl();
+        return c->obj != nullptr && c->strong.load(std::memory_order_relaxed) > 0;
+    }
 
     /// @brief Retrieves the value type.
     /// @return The value type.
@@ -250,7 +270,18 @@ public:
         #ifdef DEBUG_BUILD
         assert(isObj());
         #endif
+        if (weak) {
+            ObjControl* c = (ObjControl*)(uintptr_t)(val & ~(SignBit | QNAN));
+            return c->obj;
+        }
         return (Obj*)(uintptr_t)(val & ~(SignBit | QNAN));
+    }
+
+    inline ObjControl* asControl() const {
+        #ifdef DEBUG_BUILD
+        assert(isObj());
+        #endif
+        return (ObjControl*)(uintptr_t)(val & ~(SignBit | QNAN));
     }
 
 
@@ -287,9 +318,12 @@ public:
 
 protected:
     std::atomic_uint64_t val;
+    bool weak;
 
     void incRefObj();
     void decRefObj();
+    void incWeakObj();
+    void decWeakObj();
 };
 
 
