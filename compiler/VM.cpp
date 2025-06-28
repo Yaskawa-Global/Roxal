@@ -5,6 +5,7 @@
 #include <thread>
 #include <utility>
 #include <memory>
+#include <optional>
 #include <ffi.h>
 #include <dlfcn.h>
 
@@ -151,6 +152,9 @@ VM::~VM()
     #ifdef DEBUG_TRACE_MEMORY
     // Try one more cleanup pass right before reporting
     freeObjects();
+    size_t activeThreads = threads.size();
+    if (activeThreads > 0)
+        std::cout << "== active threads: " << activeThreads << std::endl;
     outputAllocatedObjs();
     #endif
 }
@@ -350,20 +354,48 @@ void VM::Thread::act(Value actorInstance)
 
         do {
 
+            if (!vm.processPendingEvents()) {
+                quit = true;
+                break;
+            }
+
             ActorInstance::MethodCallInfo callInfo {};
             {
                 std::unique_lock<std::mutex> lock { actorInst->queueMutex };
-                actorInst->queueConditionVar.wait(lock,[&]()
-                {
-                    // Acquire the lock only if we should quit or the queue has pending calls
-                    return quit || !actorInst->callQueue.empty();
-                });
+
+                if (actorInst->callQueue.empty() && !quit) {
+                    auto nextEv = vm.nextEventTime();
+                    if (nextEv.has_value()) {
+                        auto now = TimePoint::currentTime();
+                        auto wait_us = nextEv.value() > now ? (nextEv.value() - now).microSecs() : 0;
+                        actorInst->queueConditionVar.wait_for(lock,
+                                std::chrono::microseconds(wait_us),
+                                [&]() { return quit || !actorInst->callQueue.empty(); });
+                    } else {
+                        actorInst->queueConditionVar.wait(lock,[&]() {
+                            return quit || !actorInst->callQueue.empty();
+                        });
+                    }
+                } else {
+                    actorInst->queueConditionVar.wait(lock,[&]() {
+                        return quit || !actorInst->callQueue.empty();
+                    });
+                }
+
                 if (!actorInst->callQueue.empty()) {
                     callInfo = actorInst->callQueue.pop();
                 }
                 if (quit)
                     break;
             }
+
+            if (!vm.processPendingEvents()) {
+                quit = true;
+                break;
+            }
+
+            if (quit)
+                break;
 
             if (callInfo.valid()) {
 
@@ -993,6 +1025,45 @@ std::pair<VM::InterpretResult,Value> VM::callAndExec(ObjClosure* closure, const 
     // since the call() and execute() sequence manages the stack properly
 
     return result;
+}
+
+bool VM::processPendingEvents()
+{
+    PendingEvent ev;
+
+    // Drop events that are no longer alive or have no handlers
+    while(eventQueue.pop_if([&](const PendingEvent& e){
+                return !e.event.isAlive() ||
+                       thread->eventHandlers.count(e.event) == 0;
+            }, ev)) {
+        thread->eventHandlers.erase(ev.event);
+    }
+
+    if (thread->eventHandlers.empty()) return true;
+
+    auto now = TimePoint::currentTime();
+    if (eventQueue.pop_if([&](const PendingEvent& e){
+                return e.when <= now && e.event.isAlive() &&
+                       thread->eventHandlers.count(e.event) > 0;
+            }, ev)) {
+        auto handlersIt = thread->eventHandlers.find(ev.event);
+        if (handlersIt != thread->eventHandlers.end()) {
+            for(const auto& handler : handlersIt->second) {
+                auto closure = asClosure(handler);
+                auto result = callAndExec(closure, {});
+                if (result.first != InterpretResult::OK)
+                    return false;
+            }
+        }
+    }
+    return true;
+}
+
+std::optional<TimePoint> VM::nextEventTime() const
+{
+    if (eventQueue.empty())
+        return std::optional<TimePoint>();
+    return eventQueue.top().when;
 }
 
 
@@ -1670,25 +1741,6 @@ std::pair<VM::InterpretResult,Value> VM::execute()
         push( op(a,b) );
     };
 
-    auto processEvents = [&]() -> bool {
-        if (thread->eventHandlers.empty()) return true;
-        PendingEvent ev;
-        auto now = TimePoint::currentTime();
-        if (eventQueue.pop_if([&](const PendingEvent& e){
-                return e.when <= now && thread->eventHandlers.count(e.event) > 0;
-            }, ev)) {
-            auto handlersIt = thread->eventHandlers.find(ev.event);
-            if (handlersIt != thread->eventHandlers.end()) {
-                for(const auto& handler : handlersIt->second) {
-                    auto closure = asClosure(handler);
-                    auto result = callAndExec(closure, {});
-                    if (result.first != InterpretResult::OK)
-                        return false;
-                }
-            }
-        }
-        return true;
-    };
 
     #if defined(DEBUG_TRACE_EXECUTION)
     std::cout << std::endl << "== executing ==" << std::endl;
@@ -2948,7 +3000,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                     runtimeError("EVENT_ON expects event and closure");
                     return errorReturn;
                 }
-                thread->eventHandlers[eventVal].push_back(closureVal);
+                Value key = eventVal.weakRef();
+                thread->eventHandlers[key].push_back(closureVal);
                 break;
             }
             case asByte(OpCode::ObjectType): {
@@ -3124,7 +3177,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
         postInstructionDispatch:
 
-        if (!processEvents())
+        if (!processPendingEvents())
             return errorReturn;
 
         freeObjects();
@@ -3156,13 +3209,23 @@ void VM::resetStack()
 
 void VM::freeObjects()
 {
-    if (Obj::unrefedObjs.empty()) return;
+    if (!Obj::unrefedObjs.empty()) {
+        // free objects who's reference count dropped to 0
+        while(!Obj::unrefedObjs.empty()) {
+            Obj::unrefedObjs.pop_back_and_apply([](Obj* obj) {
+                delObj(obj);
+            });
+        }
+    }
 
-    // free objcts who's reference count dropped to 0
-    while(!Obj::unrefedObjs.empty()) {
-        Obj::unrefedObjs.pop_back_and_apply([](Obj* obj) {
-            delObj(obj);
-        });
+    if (thread) {
+        // remove event handlers referencing destroyed events
+        for(auto it = thread->eventHandlers.begin(); it != thread->eventHandlers.end(); ) {
+            if (!it->first.isAlive())
+                it = thread->eventHandlers.erase(it);
+            else
+                ++it;
+        }
     }
 }
 
@@ -3251,6 +3314,8 @@ void VM::defineBuiltinFunctions()
     addSys("_threadid", &VM::threadid_builtin);
     addSys("_wait", &VM::wait_builtin);
     addSys("_runtests", &VM::runtests_builtin);
+    addSys("_weakref", &VM::weakref_builtin);
+    addSys("_weak_alive", &VM::weak_alive_builtin);
 }
 
 void VM::defineBuiltinMethods()
@@ -3521,10 +3586,35 @@ Value VM::event_emit_builtin(int argCount, Value* args)
 
     PendingEvent pe;
     pe.when = when;
-    pe.event = args[0];
+    pe.event = args[0].weakRef();
     eventQueue.push(pe);
 
+    // Wake actor threads so they can process the event
+    threads.apply([&](const auto& entry){
+        auto t = entry.second;
+        if (t->isActor()) {
+            ActorInstance* inst = asActorInstance(t->actorValue());
+            inst->queueConditionVar.notify_one();
+        }
+    });
+
     return nilVal();
+}
+
+Value VM::weakref_builtin(int argCount, Value* args)
+{
+    if (argCount != 1)
+        throw std::invalid_argument("weakref expects single argument");
+
+    return args[0].weakRef();
+}
+
+Value VM::weak_alive_builtin(int argCount, Value* args)
+{
+    if (argCount != 1)
+        throw std::invalid_argument("weak_alive expects single argument");
+
+    return args[0].isAlive() ? trueVal() : falseVal();
 }
 
 Value VM::vector_norm_builtin(int argCount, Value* args)

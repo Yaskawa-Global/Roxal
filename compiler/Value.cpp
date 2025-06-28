@@ -55,6 +55,7 @@ std::string roxal::to_string(ValueType t)
 
 Value::Value(Obj* o)
 {
+    weak = false;
     o->incRef();
     val = SignBit | QNAN | uint64_t(uintptr_t(o));
 }
@@ -76,6 +77,7 @@ void Value::box() {
         throw std::runtime_error("Unsupported type for auto-boxing "+typeName());
 
     obj->incRef();
+    weak = false;
     val = SignBit | QNAN | uint64_t(uintptr_t(obj));
 }
 
@@ -97,6 +99,7 @@ void Value::unbox() {
         throw std::runtime_error("Unsupported type for auto-unboxing "+typeName());
 
     obj->decRef();
+    weak = false;
 }
 
 
@@ -116,6 +119,25 @@ void roxal::Value::decRefObj()
         throw std::runtime_error("Can't decRef non-object type "+typeName());
     #endif
     asObj()->decRef();
+}
+
+void roxal::Value::incWeakObj()
+{
+    #ifdef DEBUG_BUILD
+    if (!isObj() && !isBoxable())
+        throw std::runtime_error("Can't incWeak non-object type "+typeName());
+    #endif
+    asControl()->weak.fetch_add(1,std::memory_order_relaxed);
+}
+
+void roxal::Value::decWeakObj()
+{
+    #ifdef DEBUG_BUILD
+    if (!isObj() && !isBoxable())
+        throw std::runtime_error("Can't decWeak non-object type "+typeName());
+    #endif
+    if (asControl()->weak.fetch_sub(1,std::memory_order_relaxed) == 1)
+        delete[] reinterpret_cast<char*>(asControl());
 }
 
 
@@ -402,6 +424,7 @@ std::string Value::typeName() const
 roxal::Value::Value(Obj* o)
     : _type(ValueType::Object)
 {
+    weak = false;
     as.obj=o; o->incRef();
 }
 
@@ -422,6 +445,7 @@ void Value::box() {
         throw std::runtime_error("Unsupported type for auto-boxing "+typeName());
 
     as.obj->incRef();
+    weak = false;
 }
 
 
@@ -439,6 +463,26 @@ void Value::unbox() {
     else
         throw std::runtime_error("Unsupported type for auto-unboxing "+typeName());
     as.obj->decRef();
+    weak = false;
+}
+
+void roxal::Value::incWeakObj()
+{
+    #ifdef DEBUG_BUILD
+    if (!isObj() && !isBoxable())
+        throw std::runtime_error("Can't incWeak non-object type "+typeName());
+    #endif
+    asControl()->weak.fetch_add(1,std::memory_order_relaxed);
+}
+
+void roxal::Value::decWeakObj()
+{
+    #ifdef DEBUG_BUILD
+    if (!isObj() && !isBoxable())
+        throw std::runtime_error("Can't decWeak non-object type "+typeName());
+    #endif
+    if (asControl()->weak.fetch_sub(1,std::memory_order_relaxed) == 1)
+        delete[] reinterpret_cast<char*>(asControl());
 }
 
 
@@ -746,8 +790,13 @@ bool Value::equals(const Value& rhs, bool strict) const
         // List compared to matrix - symmetric case
         return rhs.equals(*this, strict);
     }
-    else if (isObj())
-        return rhs.isObj() && (asObj() == rhs.asObj()); // identity (by ptr/address)
+    else if (isObj()) {
+        if (!rhs.isObj())
+            return false;
+        if (!isAlive() || !rhs.isAlive())
+            return false;
+        return asObj() == rhs.asObj(); // identity (by ptr/address)
+    }
     return false;
 }
 
@@ -766,6 +815,18 @@ Value Value::clone() const
         return Value(asObj()->clone());
 
     throw std::runtime_error("unhandled clone()");
+}
+
+Value Value::weakRef() const
+{
+    if (!isObj())
+        return *this; // primitives just copy
+    Value v;
+    ObjControl* c = asObj()->control;
+    v.val = SignBit | QNAN | uint64_t(uintptr_t(c));
+    v.weak = true;
+    v.incWeakObj();
+    return v;
 }
 
 static type::BuiltinType valueTypeToBuiltin(ValueType t)
