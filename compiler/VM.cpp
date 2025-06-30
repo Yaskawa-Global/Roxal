@@ -3173,6 +3173,7 @@ bool VM::processPendingEvents()
                 auto prevThreadSleep = thread->threadSleep.load();
                 auto prevThreadSleepUntil = thread->threadSleepUntil.load();
 
+                thread->threadSleep = false;
                 auto result = callAndExec(closure, {});
                 assert(!thread->threadSleep); // should not be sleeping after event handler execution
 
