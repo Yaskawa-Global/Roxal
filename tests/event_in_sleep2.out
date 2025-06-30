@@ -1,0 +1,7 @@
+handleEvents sleeping for .5s
+emit 1
+event e occured
+emit 2
+event e occured
+done
+handleEvents exiting

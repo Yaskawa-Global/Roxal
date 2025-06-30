@@ -3131,9 +3131,7 @@ std::pair<VM::InterpretResult,Value> VM::execute()
             else {
                 auto remainingSleepTime = thread->threadSleepUntil - TimePoint::currentTime();
                 std::unique_lock<std::mutex> lk(thread->sleepMutex);
-                //std::cout << "**** Thread " << thread->id() << " sleeping for " << remainingSleepTime.microSecs() << " microseconds" << std::endl;//!!!
                 bool timedout = (thread->sleepCondVar.wait_for(lk, std::chrono::microseconds(remainingSleepTime.microSecs())) == std::cv_status::timeout);
-                //std::cout << "**** Thread " << thread->id() << " woke up, timeout=" << timedout << std::endl;//!!!
             }
         }
 
@@ -3152,7 +3150,6 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
 bool VM::processPendingEvents()
 {
-    //std::cout << "*** in processPendingEvents() ***" << std::endl;//!!!
     if (thread->eventHandlers.empty()) return true;
 
     PendingEvent ev;
