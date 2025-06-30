@@ -157,6 +157,7 @@ public:
         void join();
         void act(Value actorInstance);
         void detach();
+        void wake();
 
         void push(const Value& value);
         Value pop();
@@ -178,8 +179,12 @@ public:
         void outputStack();
 
 
-        bool threadSleep;
-        uint64_t threadSleepUntil;
+        // when builtin sleep() is called, we block with timeout on this condition variable
+        std::mutex sleepMutex;
+        std::condition_variable sleepCondVar;
+        std::atomic_bool threadSleep;
+        std::atomic<TimePoint> threadSleepUntil;
+
 
         InterpretResult result;
 
@@ -285,6 +290,8 @@ protected:
 
     // Builtin methods: builtin value type -> method name hash -> BuiltinMethodInfo
     std::unordered_map<ValueType, std::unordered_map<int32_t, BuiltinMethodInfo>> builtinMethods;
+
+    bool processPendingEvents();
 
     void resetStack();
     void freeObjects();
