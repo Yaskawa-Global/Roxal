@@ -1,0 +1,11 @@
+type A actor:
+  proc init(x):
+    print('init:'+x)
+  proc f(y):
+    print('f:'+y)
+
+var a = A('a')
+a.f('b')
+
+sleep(50000)
+

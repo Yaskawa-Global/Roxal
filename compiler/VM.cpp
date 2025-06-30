@@ -770,12 +770,13 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 ObjTypeSpec* ts = asTypeSpec(callee);
                 if ((ts->typeValue == ValueType::Object) || (ts->typeValue == ValueType::Actor)) {
                     ObjObjectType* type = asObjectType(callee);
+                    Value inst {};
                     if (!type->isActor) {
-                        Value inst { objectInstanceVal(type) };
+                        inst = Value(objectInstanceVal(type));
                         *(thread->stackTop - callSpec.argCount - 1) = inst;
                     }
                     else {
-                        Value inst { actorInstanceVal(type) };
+                        inst = Value(actorInstanceVal(type));
 
                         // spawn Thread to handle actor method calls
                         auto newThread = std::make_shared<Thread>();
@@ -789,10 +790,18 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         Value initializer { it->second.closure };
                         if (!type->isActor)
                             return call(asClosure(initializer), callSpec);
-                        else
-                            throw std::runtime_error("queueing actor init params unimplemented");//!!!
-                    }
-                    else {
+                        else {
+                            ObjBoundMethod* boundInit = boundMethodVal(inst, asClosure(initializer));
+                            Value calleeVal = objVal(boundInit);
+                            ActorInstance* actorInst = asActorInstance(inst);
+                            actorInst->queueCall(calleeVal, callSpec, &(*thread->stackTop));
+                            // leave the new actor instance on the stack as the
+                            // constructor return value (queueCall returns nil
+                            // for proc init). Only the init arguments are
+                            // popped here.
+                            popN(callSpec.argCount); // remove init args
+                        }
+                    } else {
                         if (callSpec.argCount != 0) {
                             runtimeError("Expected 0 arguments for type instantiation, provided "+std::to_string(callSpec.argCount));
                             return false;
