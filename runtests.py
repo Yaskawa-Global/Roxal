@@ -46,6 +46,10 @@ tests = [
     , 'weakref'
 ]
 
+# implementation doesn't yet allow these tests to pass
+failing_tests = ['signal_network1', 'event_actor_ref2']
+
+
 if args.convs:
     conv_test_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tests/conversions')
     conv_tests = sorted([
@@ -54,9 +58,6 @@ if args.convs:
         if f.endswith('.rox') and ('decimal' not in f) and os.path.exists(os.path.join(conv_test_dir, os.path.splitext(f)[0] + '.out'))
     ])
     tests += conv_tests
-
-# implementation doesn't yet allow these tests to pass
-failing_tests = ['signal_network1', 'event_actor_ref2']
 
 project_root = os.path.dirname(os.path.abspath(__file__))
 test_dir = os.path.join(project_root, 'tests')
@@ -169,6 +170,6 @@ except Exception as e:
 
 print(f"{passed_count} tests passed, {failed_count} failed")
 if failed_count > 0:
-  print(f"Tests expecied to fail currently: {' ,'.join(failing_tests)}")
+  print(f"Tests expecied to fail currently: {', '.join(failing_tests)}")
 
 os.chdir(cwd)

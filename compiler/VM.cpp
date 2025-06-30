@@ -429,7 +429,11 @@ void VM::Thread::detach()
         osthread->detach();
 }
 
-
+void VM::Thread::wake()
+{
+    std::unique_lock<std::mutex> lk(sleepMutex);
+    sleepCondVar.notify_one();
+}
 
 
 void VM::Thread::push(const Value& value)
@@ -1682,36 +1686,6 @@ std::pair<VM::InterpretResult,Value> VM::execute()
         push( op(a,b) );
     };
 
-    auto processEvents = [&]() -> bool {
-        PendingEvent ev;
-
-        // Drop any events that are no longer alive or have no handlers
-        while(eventQueue.pop_if([&](const PendingEvent& e){
-                    return !e.event.isAlive() ||
-                           thread->eventHandlers.count(e.event) == 0;
-                }, ev)) {
-            thread->eventHandlers.erase(ev.event);
-        }
-
-        if (thread->eventHandlers.empty()) return true;
-
-        auto now = TimePoint::currentTime();
-        if (eventQueue.pop_if([&](const PendingEvent& e){
-                return e.when <= now && e.event.isAlive() &&
-                       thread->eventHandlers.count(e.event) > 0;
-            }, ev)) {
-            auto handlersIt = thread->eventHandlers.find(ev.event);
-            if (handlersIt != thread->eventHandlers.end()) {
-                for(const auto& handler : handlersIt->second) {
-                    auto closure = asClosure(handler);
-                    auto result = callAndExec(closure, {});
-                    if (result.first != InterpretResult::OK)
-                        return false;
-                }
-            }
-        }
-        return true;
-    };
 
     #if defined(DEBUG_TRACE_EXECUTION)
     std::cout << std::endl << "== executing ==" << std::endl;
@@ -1726,6 +1700,13 @@ std::pair<VM::InterpretResult,Value> VM::execute()
     uint8_t instruction {};
 
     for(;;) {
+
+        // if we're 'sleeping' don't execute any instructions
+        //  (we may have been woken up by an event or a spurious wakeup, in which case we'll re-block below)
+        if (thread->threadSleep)
+           goto postInstructionDispatch;
+
+
         #if defined(DEBUG_TRACE_EXECUTION)
             // output stack
             thread->outputStack();
@@ -1738,14 +1719,6 @@ std::pair<VM::InterpretResult,Value> VM::execute()
                 return std::make_pair(InterpretResult::RuntimeError,nilVal());
             }
         #endif
-
-        if (thread->threadSleep) {
-            if (currentTimeNs() >= thread->threadSleepUntil) {
-                thread->threadSleep = false;
-            }
-            else
-                goto postInstructionDispatch;
-        }
 
 
         if (thread->frameStart) {
@@ -3148,7 +3121,23 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
         postInstructionDispatch:
 
-        if (!processEvents())
+        // are we supposed to be sleeping?  If so, block until the sleep time is over
+        //  or until we get a wakeup signal (for a possible event)
+        // if we've slept for long enough, reset the flag and continue execution
+        if (thread->threadSleep) {
+            if (TimePoint::currentTime() >= thread->threadSleepUntil) {
+                thread->threadSleep = false;
+            }
+            else {
+                auto remainingSleepTime = thread->threadSleepUntil - TimePoint::currentTime();
+                std::unique_lock<std::mutex> lk(thread->sleepMutex);
+                //std::cout << "**** Thread " << thread->id() << " sleeping for " << remainingSleepTime.microSecs() << " microseconds" << std::endl;//!!!
+                bool timedout = (thread->sleepCondVar.wait_for(lk, std::chrono::microseconds(remainingSleepTime.microSecs())) == std::cv_status::timeout);
+                //std::cout << "**** Thread " << thread->id() << " woke up, timeout=" << timedout << std::endl;//!!!
+            }
+        }
+
+        if (!processPendingEvents())
             return errorReturn;
 
         freeObjects();
@@ -3159,6 +3148,55 @@ std::pair<VM::InterpretResult,Value> VM::execute()
     return std::make_pair(InterpretResult::OK,nilVal());
 
 }
+
+
+bool VM::processPendingEvents()
+{
+    //std::cout << "*** in processPendingEvents() ***" << std::endl;//!!!
+    if (thread->eventHandlers.empty()) return true;
+
+    PendingEvent ev;
+
+    // Drop any events that are no longer alive or have no handlers
+    while(eventQueue.pop_if([&](const PendingEvent& e){
+                return !e.event.isAlive() ||
+                        thread->eventHandlers.count(e.event) == 0;
+            }, ev)) {
+        thread->eventHandlers.erase(ev.event);
+    }
+
+    if (thread->eventHandlers.empty()) return true; // maybe empty after dropping events
+
+    auto now = TimePoint::currentTime();
+    if (eventQueue.pop_if([&](const PendingEvent& e){
+            return e.when <= now && e.event.isAlive() &&
+                    thread->eventHandlers.count(e.event) > 0;
+        }, ev)) {
+        auto handlersIt = thread->eventHandlers.find(ev.event);
+        if (handlersIt != thread->eventHandlers.end()) {
+            for(const auto& handler : handlersIt->second) {
+                auto closure = asClosure(handler);
+
+                // if the this thread is sleeping, stash the sleeping state and
+                //  restore it afterwards
+                auto prevThreadSleep = thread->threadSleep.load();
+                auto prevThreadSleepUntil = thread->threadSleepUntil.load();
+
+                thread->threadSleep = false;
+                auto result = callAndExec(closure, {});
+                assert(!thread->threadSleep); // should not be sleeping after event handler execution
+
+                thread->threadSleep = prevThreadSleep;
+                thread->threadSleepUntil = prevThreadSleepUntil;
+
+                if (result.first != InterpretResult::OK)
+                    return false;
+            }
+        }
+    }
+    return true;
+}
+
 
 
 void VM::resetStack()
@@ -3412,10 +3450,10 @@ Value VM::sleep_builtin(int argCount, Value* args)
     if ((argCount != 1) || !args[0].isNumber())
         throw std::invalid_argument("sleep expects single numeric argument (microsecs)");
 
-    uint64_t nanosecs = uint64_t(args[0].asInt()) * 1000;
+    auto microSecs { TimeDuration::microSecs(args[0].asInt()) };
 
     thread->threadSleep = true;
-    thread->threadSleepUntil = currentTimeNs() + nanosecs;
+    thread->threadSleepUntil = TimePoint::currentTime() + microSecs;
 
     return nilVal();
 }
@@ -3559,6 +3597,11 @@ Value VM::event_emit_builtin(int argCount, Value* args)
     pe.when = when;
     pe.event = args[0].weakRef();
     eventQueue.push(pe);
+
+    // wake up all threads in case they're sleeping
+    threads.apply([&](const auto& entry){
+        entry.second->wake();
+    });
 
     return nilVal();
 }

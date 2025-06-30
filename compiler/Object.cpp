@@ -26,8 +26,8 @@ atomic_vector<ObjModuleType*> ObjModuleType::allModules {};
 
 ValueType Obj::valueType() const
 {
-    // FIXME: For efficiency, the enum values between ValueType and ObjType should be synchronized 
-    // and the Value::type() made efficient by returning a cast from ObjType -> ValueType for all 
+    // FIXME: For efficiency, the enum values between ValueType and ObjType should be synchronized
+    // and the Value::type() made efficient by returning a cast from ObjType -> ValueType for all
     // object cases to avoid a cascade of is*() checks for every single type.
     switch (type) {
         case ObjType::Bool: return ValueType::Bool;
@@ -90,13 +90,16 @@ Obj* Obj::clone() const
     else if (type == ObjType::Instance)
         return cloneObjectInstance(static_cast<const ObjectInstance*>(this));
     else if (type == ObjType::Actor)
-        throw std::runtime_error("cannot be clone() type actor instances");
+        throw std::runtime_error("cannot clone() type actor instances");
     else if (type == ObjType::BoundMethod)
-        // NB: this clones the reciever object
+        // NB: this clones the receiver object
         return cloneBoundMethod(static_cast<const ObjBoundMethod*>(this));
     else if (type == ObjType::BoundNative)
         return cloneBoundNative(static_cast<const ObjBoundNative*>(this));
     else if (type == ObjType::Library)
+        return mutableThis;
+    else if (type == ObjType::Event)
+        // Note: currently ObjEvents have no user-mutable state, so we can just share the reference
         return mutableThis;
 
     throw std::runtime_error("clone() unimplemented for type "+std::to_string(int(this->type)));
@@ -730,11 +733,11 @@ bool ObjVector::equals(const ObjVector* other, double eps) const
 {
     if (other == nullptr)
         return false;
-    
+
     // Check if dimensions match
     if (vec.size() != other->vec.size())
         return false;
-    
+
     // Use Eigen's isApprox for element-wise comparison with tolerance
     return vec.isApprox(other->vec, eps);
 }
@@ -821,6 +824,8 @@ std::string roxal::objEventToString(const ObjEvent* ev)
     (void)ev;
     return std::string("<event>");
 }
+
+
 
 ObjLibrary::~ObjLibrary()
 {
@@ -1051,11 +1056,11 @@ bool ObjMatrix::equals(const ObjMatrix* other, double eps) const
 {
     if (other == nullptr)
         return false;
-    
+
     // Check if dimensions match
     if (mat.rows() != other->mat.rows() || mat.cols() != other->mat.cols())
         return false;
-    
+
     // Use Eigen's isApprox for element-wise comparison with tolerance
     return mat.isApprox(other->mat, eps);
 }
@@ -1433,7 +1438,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
     else if (isBoundNative(callee)) {
         // For builtin methods, check if it's a proc or func
         auto bound = asBoundNative(callee);
-        
+
         // Only create a return promise if it's NOT a proc (i.e., it's a func)
         if (!bound->isProc) {
             callInfo.returnPromise = std::make_shared<std::promise<Value>>();

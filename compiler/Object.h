@@ -335,7 +335,7 @@ struct ObjList : public Obj
 
     Value index(const Value& i) const;
     void setIndex(const Value& i, const Value& v);
-    
+
     // List operations (in-place)
     void concatenate(const ObjList* other);  // Concatenate other list to this list
     void append(const Value& value);         // Append value to this list
@@ -444,7 +444,7 @@ struct ObjVector : public Obj
 
     Value index(const Value& i) const;
     void setIndex(const Value& i, const Value& v);
-    
+
     bool equals(const ObjVector* other, double eps = 1e-15) const;
 
     Eigen::VectorXd vec;
@@ -484,7 +484,7 @@ struct ObjMatrix : public Obj
     void setIndex(const Value& row, const Value& value);
     // assign to element, row/column vector or submatrix
     void setIndex(const Value& row, const Value& col, const Value& value);
-    
+
     bool equals(const ObjMatrix* other, double eps = 1e-15) const;
 
     Eigen::MatrixXd mat;
@@ -515,8 +515,9 @@ inline ObjSignal* asSignal(const Value& v) { return static_cast<ObjSignal*>(v.as
 ObjSignal* signalVal(ptr<df::Signal> s);
 std::string objSignalToString(const ObjSignal* os);
 
+
 //
-// event (simple event placeholder)
+// event
 
 struct ObjEvent : public Obj {
     ObjEvent() { type = ObjType::Event; }
@@ -528,6 +529,7 @@ inline ObjEvent* asEvent(const Value& v) { return static_cast<ObjEvent*>(v.asObj
 
 ObjEvent* eventVal();
 std::string objEventToString(const ObjEvent* ev);
+
 
 //
 // dynamic library handle
