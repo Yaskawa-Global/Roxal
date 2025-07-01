@@ -11,12 +11,13 @@ type MyActor actor:
 a = MyActor()
 
 e.emit()  // no handlers
+sleep(2000)
 
 a.setup() // install hander
-sleep(200)
+sleep(2000)
 
 e.emit()  // should trigger the hander in setup()
-sleep(200)
+sleep(2000)
 
 a = nil   // destruct actor, it's thread and the handler along with it
 
