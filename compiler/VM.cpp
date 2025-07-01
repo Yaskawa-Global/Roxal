@@ -3151,7 +3151,6 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 bool VM::processPendingEvents()
 {
     if (thread->eventHandlers.empty()) return true;
-
     PendingEvent ev;
 
     // Drop any events that are no longer alive or have no handlers
@@ -3593,6 +3592,15 @@ Value VM::event_emit_builtin(int argCount, Value* args)
     PendingEvent pe;
     pe.when = when;
     pe.event = args[0].weakRef();
+
+    bool hasHandlers = false;
+    threads.apply([&](const auto& entry){
+        if (entry.second->eventHandlers.count(pe.event) > 0)
+            hasHandlers = true;
+    });
+    if (!hasHandlers)
+        return nilVal();
+
     eventQueue.push(pe);
 
     // wake up all threads in case they're sleeping
