@@ -3150,12 +3150,8 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
 bool VM::processPendingEvents()
 {
-<<<<<<< Updated upstream
     if (thread->eventHandlers.empty()) return true;
-=======
-    //if (thread->eventHandlers.empty()) return true;
 
->>>>>>> Stashed changes
     PendingEvent ev;
 
     // Drop any events that are no longer alive or have no handlers
