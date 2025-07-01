@@ -88,6 +88,7 @@ set(SOURCES
     compiler/RoxalIndentationLexer.cpp
     compiler/TypeDeducer.cpp
     compiler/Value.cpp
+    compiler/Thread.cpp
     compiler/VM.cpp
     compiler/linenoise.c
     compiler/roxal.cpp
