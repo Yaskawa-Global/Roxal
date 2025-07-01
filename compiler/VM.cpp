@@ -3150,10 +3150,16 @@ std::pair<VM::InterpretResult,Value> VM::execute()
 
 bool VM::processPendingEvents()
 {
+<<<<<<< Updated upstream
     if (thread->eventHandlers.empty()) return true;
+=======
+    //if (thread->eventHandlers.empty()) return true;
+
+>>>>>>> Stashed changes
     PendingEvent ev;
 
     // Drop any events that are no longer alive or have no handlers
+    // TODO: should we be dropping events just because they have no handers? (currently)
     while(eventQueue.pop_if([&](const PendingEvent& e){
                 return !e.event.isAlive() ||
                         thread->eventHandlers.count(e.event) == 0;
@@ -3161,6 +3167,7 @@ bool VM::processPendingEvents()
         thread->eventHandlers.erase(ev.event);
     }
 
+    // TODO: shouldn't we still dequeue due events that have no handers?
     if (thread->eventHandlers.empty()) return true; // maybe empty after dropping events
 
     auto now = TimePoint::currentTime();
