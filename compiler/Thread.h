@@ -10,6 +10,7 @@
 #include "core/atomic.h"
 #include "core/TimePoint.h"
 #include "Value.h"
+#include "Object.h"
 #include "InterpretResult.h"
 
 namespace roxal {

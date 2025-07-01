@@ -1,0 +1,241 @@
+#include "Thread.h"
+#include "VM.h"
+#include "Object.h"
+
+using namespace roxal;
+
+void Thread::spawn(Value closure)
+{
+    assert(isClosure(closure));
+
+    state = State::Spawned;
+    osthread = std::make_shared<std::thread>([this,closure]() {
+        auto& vm { VM::instance() };
+
+        vm.thread = shared_from_this(); // set thread local storage member
+
+        vm.resetStack();
+        push(closure);
+        vm.call(asClosure(closure),CallSpec(0));
+
+        vm.execute();
+        // (ignoring result, as thread is terminating anyway)
+
+        stack.clear();
+
+        state = State::Completed;
+    });
+}
+
+void Thread::join()
+{
+    if (state == State::Constructed)
+        throw std::runtime_error("Can't join Thread that hasn't completed spawning yet. id:"+std::to_string(thisid));
+
+    if ((osthread == nullptr) || !osthread->joinable())
+        throw std::runtime_error("Can't join Thread that isn't joinable. id:"+std::to_string(thisid));
+
+    if (actor) {
+        auto inst { asActorInstance(actorInstance) };
+        std::lock_guard<std::mutex> lock { inst->queueMutex };
+        quit = true;
+        inst->queueConditionVar.notify_one();
+    }
+
+    osthread->join();
+    osthread = nullptr;
+    actorInstance = nilVal();
+
+    state = State::Completed;
+}
+
+
+void Thread::act(Value actorInstance)
+{
+    assert(isActorInstance(actorInstance));
+    this->actorInstance = actorInstance;
+
+    actor = true;
+    state = State::Spawned;
+
+    osthread = std::make_shared<std::thread>([this,actorInstance]() {
+        auto& vm { VM::instance() };
+
+        vm.thread = shared_from_this(); // set thread local storage member
+
+        ActorInstance* actorInst = asActorInstance(actorInstance);
+        actorInst->thread_id = std::this_thread::get_id(); // store actor's thread in instance
+
+        vm.resetStack();
+        // frame local 0 is actor 'this' instance for actor method (as for object methods)
+        push(actorInstance);
+
+        do {
+
+            ActorInstance::MethodCallInfo callInfo {};
+            {
+                std::unique_lock<std::mutex> lock { actorInst->queueMutex };
+                actorInst->queueConditionVar.wait(lock,[&]()
+                {
+                    // Acquire the lock only if we should quit or the queue has pending calls
+                    return quit || !actorInst->callQueue.empty();
+                });
+                if (!actorInst->callQueue.empty()) {
+                    callInfo = actorInst->callQueue.pop();
+                }
+                if (quit)
+                    break;
+            }
+
+            if (callInfo.valid()) {
+
+                if (isBoundMethod(callInfo.callee)) {
+                    auto closure = asBoundMethod(callInfo.callee)->method;
+
+                    for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
+                        push(*it);
+
+                    vm.call(closure, callInfo.callSpec);
+
+                    auto result = vm.execute();
+
+                    if (result.first == InterpretResult::OK) {
+                        if (callInfo.returnPromise != nullptr) {
+                            Value ret = result.second;
+                            if (!ret.isPrimitive())
+                                ret = ret.clone();
+                            callInfo.returnPromise->set_value(ret);
+                        }
+                    } else {
+                        if (callInfo.returnPromise != nullptr)
+                            callInfo.returnPromise->set_value(nilVal());
+                        quit = true;
+                        break;
+                    }
+
+                    popN(callInfo.callSpec.argCount);
+
+                } else if (isBoundNative(callInfo.callee)) {
+                    ObjBoundNative* bn = asBoundNative(callInfo.callee);
+
+                    for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
+                        push(*it);
+
+                    NativeFn native = bn->function;
+                    (vm.*native)(callInfo.callSpec.argCount + 1,
+                                &(*vm.thread->stackTop) - callInfo.callSpec.argCount - 1);
+
+                    popN(callInfo.callSpec.argCount);
+                }
+
+            }
+
+        } while (true);
+
+        stack.clear();
+
+        state = State::Completed;
+    });
+
+}
+
+
+void Thread::detach()
+{
+    assert(state != State::Constructed);
+
+    if (osthread != nullptr)
+        osthread->detach();
+}
+
+void Thread::wake()
+{
+    std::unique_lock<std::mutex> lk(sleepMutex);
+    sleepCondVar.notify_one();
+}
+
+
+void Thread::push(const Value& value)
+{
+    *stackTop = value;
+    stackTop++;
+
+    #ifdef DEBUG_BUILD
+    if (stackTop == stack.end())
+        throw std::runtime_error("Stack overflow");
+    #endif
+}
+
+
+Value Thread::pop()
+{
+    #ifdef DEBUG_BUILD
+    if (stackTop == stack.begin())
+        throw std::runtime_error("Stack underflow");
+    #endif
+
+    stackTop--;
+    auto retValue = *stackTop; // copy (hold ref)
+
+    if (stackTop->isObj())
+        *stackTop = Value(); // ensure to call decRef on objects
+
+    return retValue;
+}
+
+void Thread::popN(size_t n)
+{
+    for(auto i=0; i<n; i++) pop();
+}
+
+
+
+Value& Thread::peek(int distance)
+{
+    #ifdef DEBUG_BUILD
+    if (stackTop - stack.begin() <= distance)
+        throw std::runtime_error("Stack underflow access ("+std::to_string(distance)+" stacksize:"+std::to_string(stackTop - stack.begin())+")");
+    #endif
+    return *(stackTop - 1 - distance);
+}
+
+void Thread::pushFrame(CallFrame& frame)
+{
+    frame.parent = frames.end() - 1;
+    frames.push_back(frame);
+}
+
+void Thread::popFrame()
+{
+    frames.pop_back();
+}
+
+
+std::atomic<uint64_t> Thread::nextId = 1;
+
+
+void Thread::outputStack()
+{
+    // output stack
+    if (stack.size() > 0) {
+
+        std::cout << "          ";
+        for(auto vi = stack.begin(); vi < stackTop; vi++) {
+            bool aString = vi->isObj() && isString(*vi);
+            std::cout << "[";
+            if (!frames.empty() && (frames.end()-1)->slots == &(*vi) )
+                std::cout << "F^"; // show frame pointer
+            std::cout << " ";
+            if (aString)
+                std::cout << "'"; // quote strings
+            std::cout << toString(*vi);
+            if (aString)
+                std::cout << "'";
+            if (vi->isNumber()) // show numeric type
+                std::cout << ":" << vi->typeName().at(0);
+
+            std::cout << " ]";
+        }
+        std::cout << std::endl;
+    }
+}
