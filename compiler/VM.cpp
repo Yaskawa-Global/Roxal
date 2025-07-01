@@ -87,7 +87,7 @@ VM::VM()
     dataflowEngine = df::DataflowEngine::instance();
     ObjObjectType* dataflowType = objectTypeVal(toUnicodeString("_DataflowEngine"), true);
     dataflowEngineActor = objVal(actorInstanceVal(dataflowType));
-    dataflowEngineThread = std::make_shared<VM::Thread>();
+    dataflowEngineThread = std::make_shared<Thread>();
     dataflowEngineThread->act(dataflowEngineActor);
 
     // Start the dataflow engine run loop on its actor thread
@@ -177,7 +177,7 @@ void VM::appendModulePaths(const std::vector<std::string>& modulePaths)
 
 
 
-VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
+InterpretResult VM::interpret(std::istream& source, const std::string& name)
 {
     ObjFunction* function { nullptr };
 
@@ -231,7 +231,7 @@ VM::InterpretResult VM::interpret(std::istream& source, const std::string& name)
 }
 
 
-VM::InterpretResult VM::interpretLine(std::istream& linestream)
+InterpretResult VM::interpretLine(std::istream& linestream)
 {
     ObjFunction* function { nullptr };
 
@@ -282,10 +282,10 @@ VM::InterpretResult VM::interpretLine(std::istream& linestream)
 
 
 
-thread_local ptr<VM::Thread> VM::thread;
+thread_local ptr<Thread> VM::thread;
 
 
-void VM::Thread::spawn(Value closure)
+void Thread::spawn(Value closure)
 {
     assert(isClosure(closure));
 
@@ -308,7 +308,7 @@ void VM::Thread::spawn(Value closure)
     });
 }
 
-void VM::Thread::join()
+void Thread::join()
 {
     if (state == State::Constructed)
         throw std::runtime_error("Can't join Thread that hasn't completed spawning yet. id:"+std::to_string(thisid));
@@ -331,7 +331,7 @@ void VM::Thread::join()
 }
 
 
-void VM::Thread::act(Value actorInstance)
+void Thread::act(Value actorInstance)
 {
     assert(isActorInstance(actorInstance));
     this->actorInstance = actorInstance;
@@ -404,7 +404,7 @@ void VM::Thread::act(Value actorInstance)
 
                     NativeFn native = bn->function;
                     (vm.*native)(callInfo.callSpec.argCount + 1,
-                                &(*thread->stackTop) - callInfo.callSpec.argCount - 1);
+                                &(*vm.thread->stackTop) - callInfo.callSpec.argCount - 1);
 
                     popN(callInfo.callSpec.argCount);
                 }
@@ -421,7 +421,7 @@ void VM::Thread::act(Value actorInstance)
 }
 
 
-void VM::Thread::detach()
+void Thread::detach()
 {
     assert(state != State::Constructed);
 
@@ -429,14 +429,14 @@ void VM::Thread::detach()
         osthread->detach();
 }
 
-void VM::Thread::wake()
+void Thread::wake()
 {
     std::unique_lock<std::mutex> lk(sleepMutex);
     sleepCondVar.notify_one();
 }
 
 
-void VM::Thread::push(const Value& value)
+void Thread::push(const Value& value)
 {
     *stackTop = value;
     stackTop++;
@@ -448,7 +448,7 @@ void VM::Thread::push(const Value& value)
 }
 
 
-Value VM::Thread::pop()
+Value Thread::pop()
 {
     #ifdef DEBUG_BUILD
     if (stackTop == stack.begin())
@@ -464,14 +464,14 @@ Value VM::Thread::pop()
     return retValue;
 }
 
-void VM::Thread::popN(size_t n)
+void Thread::popN(size_t n)
 {
     for(auto i=0; i<n; i++) pop();
 }
 
 
 
-Value& VM::Thread::peek(int distance)
+Value& Thread::peek(int distance)
 {
     #ifdef DEBUG_BUILD
     if (stackTop - stack.begin() <= distance)
@@ -480,11 +480,22 @@ Value& VM::Thread::peek(int distance)
     return *(stackTop - 1 - distance);
 }
 
+void Thread::pushFrame(CallFrame& frame)
+{
+    frame.parent = frames.end() - 1;
+    frames.push_back(frame);
+}
 
-std::atomic<uint64_t> VM::Thread::nextId = 1;
+void Thread::popFrame()
+{
+    frames.pop_back();
+}
 
 
-void VM::Thread::outputStack()
+std::atomic<uint64_t> Thread::nextId = 1;
+
+
+void Thread::outputStack()
 {
     // output stack
     if (stack.size() > 0) {
@@ -991,7 +1002,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
     return false;
 }
 
-std::pair<VM::InterpretResult,Value> VM::callAndExec(ObjClosure* closure, const std::vector<Value>& args)
+std::pair<InterpretResult,Value> VM::callAndExec(ObjClosure* closure, const std::vector<Value>& args)
 {
 
     // Push closure first, then arguments (to match OpCode::Call stack layout)
@@ -1622,7 +1633,7 @@ void VM::defineNative(const std::string& name, NativeFn function)
 }
 
 
-std::pair<VM::InterpretResult,Value> VM::execute()
+std::pair<InterpretResult,Value> VM::execute()
 {
     if (thread->frames.empty() || thread->frames.back().closure->function->chunk->code.size()==0)
         return std::make_pair(InterpretResult::OK,nilVal()); // nothing to execute
