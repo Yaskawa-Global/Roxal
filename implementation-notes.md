@@ -27,7 +27,7 @@ The `RoxalCompiler` visits the AST and generates custom VM (Virtual Machine) byt
 
 ### Virtual Machine (VM)
 
-The `VM` class executes the Chunk OpCodes.  It supports multiple threads via `VM::Thread` and each `VM::Thread` maintains its own stack.
+The `VM` class executes the Chunk OpCodes.  It supports multiple threads via the `Thread` class and each `Thread` maintains its own stack.
 
 
 ## Types & Values
