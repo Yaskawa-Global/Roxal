@@ -137,8 +137,6 @@ VM::~VM()
 
     df::DataflowEngine::instance()->clear();
 
-    // Remove any pending events so their references can be released
-    eventQueue.clear();
 
     // Release REPL thread resources before reporting potential leaks
     replThread.reset();
@@ -2712,8 +2710,16 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError("EVENT_ON expects event and closure");
                     return errorReturn;
                 }
+
+                // record this handler on the current thread
                 Value key = eventVal.weakRef();
                 thread->eventHandlers[key].push_back(closureVal);
+
+                // track the handler thread and subscribe the closure to the event
+                auto* ev = asEvent(eventVal);
+                auto* closure = asClosure(closureVal);
+                closure->handlerThread = thread;
+                ev->subscribers.push_back(closureVal.weakRef());
                 break;
             }
             case asByte(OpCode::ObjectType): {
@@ -2920,38 +2926,34 @@ bool VM::processPendingEvents()
 {
     if (thread->eventHandlers.empty()) return true;
 
-    PendingEvent ev;
+    Thread::PendingEvent tev;
 
-    // Drop any events that are no longer alive or have no handlers
-    // TODO: should we be dropping events just because they have no handers? (currently)
-    while(eventQueue.pop_if([&](const PendingEvent& e){
+    // Drop events that are no longer alive or have no handlers
+    while(thread->pendingEvents.pop_if([&](const Thread::PendingEvent& e){
                 return !e.event.isAlive() ||
                         thread->eventHandlers.count(e.event) == 0;
-            }, ev)) {
-        thread->eventHandlers.erase(ev.event);
+            }, tev)) {
+        thread->eventHandlers.erase(tev.event);
     }
 
-    // TODO: shouldn't we still dequeue due events that have no handers?
-    if (thread->eventHandlers.empty()) return true; // maybe empty after dropping events
+    if (thread->eventHandlers.empty()) return true;
 
     auto now = TimePoint::currentTime();
-    if (eventQueue.pop_if([&](const PendingEvent& e){
+    if (thread->pendingEvents.pop_if([&](const Thread::PendingEvent& e){
             return e.when <= now && e.event.isAlive() &&
                     thread->eventHandlers.count(e.event) > 0;
-        }, ev)) {
-        auto handlersIt = thread->eventHandlers.find(ev.event);
+        }, tev)) {
+        auto handlersIt = thread->eventHandlers.find(tev.event);
         if (handlersIt != thread->eventHandlers.end()) {
             for(const auto& handler : handlersIt->second) {
                 auto closure = asClosure(handler);
 
-                // if the this thread is sleeping, stash the sleeping state and
-                //  restore it afterwards
                 auto prevThreadSleep = thread->threadSleep.load();
                 auto prevThreadSleepUntil = thread->threadSleepUntil.load();
 
                 thread->threadSleep = false;
                 auto result = callAndExec(closure, {});
-                assert(!thread->threadSleep); // should not be sleeping after event handler execution
+                assert(!thread->threadSleep);
 
                 thread->threadSleep = prevThreadSleep;
                 thread->threadSleepUntil = prevThreadSleepUntil;
@@ -2995,9 +2997,30 @@ void VM::freeObjects()
     }
 
     if (thread) {
-        // remove event handlers referencing destroyed events
+        // remove event handlers referencing destroyed events or closures
         for(auto it = thread->eventHandlers.begin(); it != thread->eventHandlers.end(); ) {
-            if (!it->first.isAlive())
+            if (!it->first.isAlive()) {
+                it = thread->eventHandlers.erase(it);
+                continue;
+            }
+
+            ObjEvent* ev = asEvent(it->first);
+            auto& handlers = it->second;
+            for(auto hit = handlers.begin(); hit != handlers.end(); ) {
+                if (!hit->isAlive()) {
+                    for(auto es = ev->subscribers.begin(); es != ev->subscribers.end(); ) {
+                        if (!es->isAlive() || asClosure(*es) == asClosure(*hit))
+                            es = ev->subscribers.erase(es);
+                        else
+                            ++es;
+                    }
+                    hit = handlers.erase(hit);
+                } else {
+                    ++hit;
+                }
+            }
+
+            if (handlers.empty())
                 it = thread->eventHandlers.erase(it);
             else
                 ++it;
@@ -3360,24 +3383,34 @@ Value VM::event_emit_builtin(int argCount, Value* args)
         when = TimePoint::microSecs(args[1].asInt());
     }
 
-    PendingEvent pe;
+    Thread::PendingEvent pe;
     pe.when = when;
     pe.event = args[0].weakRef();
 
-    bool hasHandlers = false;
-    threads.apply([&](const auto& entry){
-        if (entry.second->eventHandlers.count(pe.event) > 0)
-            hasHandlers = true;
-    });
-    if (!hasHandlers)
+    ObjEvent* ev = asEvent(args[0]);
+    if (ev->subscribers.empty())
         return nilVal();
 
-    eventQueue.push(pe);
-
-    // wake up all threads in case they're sleeping
-    threads.apply([&](const auto& entry){
-        entry.second->wake();
-    });
+    // schedule on subscribed handler threads
+    for (auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
+        Value handlerVal = *it;
+        if (!handlerVal.isAlive()) {
+            it = ev->subscribers.erase(it);
+            continue;
+        }
+        auto closure = asClosure(handlerVal);
+        auto handlerThread = closure->handlerThread.lock();
+        if (!handlerThread) {
+            it = ev->subscribers.erase(it);
+            continue;
+        }
+        Thread::PendingEvent tpe;
+        tpe.when = pe.when;
+        tpe.event = pe.event;
+        handlerThread->pendingEvents.push(tpe);
+        handlerThread->wake();
+        ++it;
+    }
 
     return nilVal();
 }

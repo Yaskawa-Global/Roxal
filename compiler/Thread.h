@@ -32,6 +32,20 @@ public:
         for (auto* upvalue : openUpvalues) {
             upvalue->decRef();
         }
+        // remove any event subscriptions for this thread
+        for (auto& entry : eventHandlers) {
+            if (!entry.first.isAlive()) continue;
+            ObjEvent* ev = asEvent(entry.first);
+            for (const auto& handler : entry.second) {
+                for (auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
+                    if (!it->isAlive() || asClosure(*it) != asClosure(handler)) {
+                        ++it;
+                        continue;
+                    }
+                    it = ev->subscribers.erase(it);
+                }
+            }
+        }
     }
 
     uint64_t id() { return thisid; }
@@ -81,6 +95,19 @@ public:
         bool operator()(const Value& a, const Value& b) const noexcept { return a == b; }
     };
     std::unordered_map<Value, std::vector<Value>, ValueHasher, ValueEqual> eventHandlers;
+
+    struct PendingEvent {
+        TimePoint when;
+        Value event;
+    };
+
+    struct PendingEventCompare {
+        bool operator()(const PendingEvent& a, const PendingEvent& b) const {
+            return a.when > b.when;
+        }
+    };
+
+    atomic_priority_queue<PendingEvent, PendingEventCompare> pendingEvents;
 
     int execute_depth;
 

@@ -5,7 +5,6 @@
 #include <unordered_map>
 
 #include "core/atomic.h"
-#include "core/TimePoint.h"
 #include "Chunk.h"
 #include "Value.h"
 #include "InterpretResult.h"
@@ -170,18 +169,6 @@ protected:
     Value dataflowEngineActor;
     std::shared_ptr<Thread> dataflowEngineThread;
 
-    struct PendingEvent {
-        TimePoint when;
-        Value event;
-    };
-
-    struct PendingEventCompare {
-        bool operator()(const PendingEvent& a, const PendingEvent& b) const {
-            return a.when > b.when;
-        }
-    };
-
-    atomic_priority_queue<PendingEvent, PendingEventCompare> eventQueue;
 
     ObjString* initString;
 
