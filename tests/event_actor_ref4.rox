@@ -1,0 +1,39 @@
+
+var e :event
+
+type MyActor actor:
+
+  proc setup():
+    on e:
+      print('e handled in MyActor')
+
+
+type MyOtherActor actor:
+
+  proc setup():
+    on e:
+      print('e handled in MyOtherActor')
+
+
+  
+
+
+a = MyActor()
+oa = MyOtherActor()
+
+a.setup()
+oa.setup()
+
+sleep(10000)
+
+e.emit() // should trigger both handlers
+
+sleep(1000)
+
+a = nil
+oa = nil
+
+sleep(10000)
+
+e.emit() // should trigger none
+
