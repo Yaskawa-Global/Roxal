@@ -137,8 +137,6 @@ VM::~VM()
 
     df::DataflowEngine::instance()->clear();
 
-    // Remove any pending events so their references can be released
-    eventQueue.clear();
 
     // Release REPL thread resources before reporting potential leaks
     replThread.reset();
@@ -3385,7 +3383,7 @@ Value VM::event_emit_builtin(int argCount, Value* args)
         when = TimePoint::microSecs(args[1].asInt());
     }
 
-    PendingEvent pe;
+    Thread::PendingEvent pe;
     pe.when = when;
     pe.event = args[0].weakRef();
 

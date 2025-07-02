@@ -77,14 +77,20 @@ void Thread::act(Value actorInstance)
                 std::unique_lock<std::mutex> lock { actorInst->queueMutex };
                 actorInst->queueConditionVar.wait(lock,[&]()
                 {
-                    // Acquire the lock only if we should quit or the queue has pending calls
-                    return quit || !actorInst->callQueue.empty();
+                    // wake when quitting, when a method is queued, or when events are pending
+                    return quit || !actorInst->callQueue.empty() || !pendingEvents.empty();
                 });
                 if (!actorInst->callQueue.empty()) {
                     callInfo = actorInst->callQueue.pop();
                 }
                 if (quit)
                     break;
+            }
+
+            // handle events even when no method was queued
+            if (!vm.processPendingEvents()) {
+                quit = true;
+                break;
             }
 
             if (callInfo.valid()) {
@@ -150,8 +156,14 @@ void Thread::detach()
 
 void Thread::wake()
 {
-    std::unique_lock<std::mutex> lk(sleepMutex);
-    sleepCondVar.notify_one();
+    {
+        std::unique_lock<std::mutex> lk(sleepMutex);
+        sleepCondVar.notify_one();
+    }
+    if (actor) {
+        ActorInstance* inst = asActorInstance(actorInstance);
+        inst->queueConditionVar.notify_one();
+    }
 }
 
 
