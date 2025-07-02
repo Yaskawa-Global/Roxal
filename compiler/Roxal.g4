@@ -206,6 +206,7 @@ equality
 equalnotequal
  : ISEQUAL comparison
  | ISNOTEQUALS comparison
+ | IS comparison
  ;
 
 comparison
@@ -413,6 +414,7 @@ AT: '@';
 OR: 'or';
 AND: 'and';
 NOT: 'not';
+IS: 'is';
 LESS_THAN : '<';
 GREATER_THAN : '>';
 LT_EQ : '<=' | '\u2264' | '\u2A7D'; // ≤ ⩽

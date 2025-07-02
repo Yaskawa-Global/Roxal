@@ -1245,6 +1245,7 @@ std::any RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
             case BinaryOp::Divide: emitByte(OpCode::Divide); break;
             case BinaryOp::Equal: emitByte(OpCode::Equal); break;
             case BinaryOp::NotEqual: emitByte(OpCode::Equal); emitByte(OpCode::Negate); break;
+            case BinaryOp::Is: emitByte(OpCode::Is); break;
             case BinaryOp::Modulo: emitByte(OpCode::Modulo); break;
             case BinaryOp::LessThan: emitByte(OpCode::Less); break;
             case BinaryOp::GreaterThan: emitByte(OpCode::Greater); break;
