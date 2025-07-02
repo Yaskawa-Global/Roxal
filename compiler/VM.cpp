@@ -2712,8 +2712,16 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError("EVENT_ON expects event and closure");
                     return errorReturn;
                 }
+
+                // record this handler on the current thread
                 Value key = eventVal.weakRef();
                 thread->eventHandlers[key].push_back(closureVal);
+
+                // track the handler thread and subscribe the closure to the event
+                auto* ev = asEvent(eventVal);
+                auto* closure = asClosure(closureVal);
+                closure->handlerThread = thread;
+                ev->subscribers.push_back(closureVal.weakRef());
                 break;
             }
             case asByte(OpCode::ObjectType): {
@@ -3378,6 +3386,28 @@ Value VM::event_emit_builtin(int argCount, Value* args)
     threads.apply([&](const auto& entry){
         entry.second->wake();
     });
+
+    // also schedule on any subscribed handler threads (new mechanism)
+    ObjEvent* ev = asEvent(args[0]);
+    for (auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
+        Value handlerVal = *it;
+        if (!handlerVal.isAlive()) {
+            it = ev->subscribers.erase(it);
+            continue;
+        }
+        auto closure = asClosure(handlerVal);
+        auto handlerThread = closure->handlerThread.lock();
+        if (!handlerThread) {
+            it = ev->subscribers.erase(it);
+            continue;
+        }
+        Thread::PendingEvent tpe;
+        tpe.when = pe.when;
+        tpe.event = pe.event;
+        handlerThread->pendingEvents.push(tpe);
+        handlerThread->wake();
+        ++it;
+    }
 
     return nilVal();
 }
