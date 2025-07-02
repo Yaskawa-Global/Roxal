@@ -8,6 +8,16 @@
 namespace roxal {
 
 
+struct VarInfo {
+    ptr<type::Type> type;
+    bool explicitType { false };
+};
+
+struct ScopeInfo {
+    bool strict { false };
+    std::map<icu::UnicodeString, VarInfo> symbols;
+};
+
 class TypeDeducer : public ast::ASTVisitor
 {
 public:
@@ -57,6 +67,14 @@ public:
         #endif
         return std::any_cast<ptr<type::Type>>(ast->attrs["type"]);
     }
+
+private:
+    std::vector<ScopeInfo> scopes;
+    void pushScope(bool strict);
+    void popScope();
+    bool currentStrict() const;
+    void declareVar(const icu::UnicodeString& name, ptr<type::Type> type, bool explicitType);
+    std::optional<VarInfo> lookupVar(const icu::UnicodeString& name) const;
 };
 
 

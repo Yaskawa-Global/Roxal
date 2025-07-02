@@ -9,6 +9,7 @@
 #include <core/common.h>
 #include <core/AST.h>
 #include "RoxalIndentationLexer.h"
+#include "Error.h"
 
 
 using namespace roxal;
@@ -237,10 +238,10 @@ ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
             ast = as<File>(file);
 
         } catch (std::logic_error& e) {
-            std::cout << std::string("Compile error: ") << e.what() << std::endl;
+            compileError(e.what());
             return nullptr;
         } catch (std::exception& e) {
-            std::cout << std::string("Exception: ") << e.what() << std::endl;
+            compileError(e.what());
             throw e;
         }
     }
