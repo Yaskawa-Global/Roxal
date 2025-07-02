@@ -82,6 +82,19 @@ public:
     };
     std::unordered_map<Value, std::vector<Value>, ValueHasher, ValueEqual> eventHandlers;
 
+    struct PendingEvent {
+        TimePoint when;
+        Value event;
+    };
+
+    struct PendingEventCompare {
+        bool operator()(const PendingEvent& a, const PendingEvent& b) const {
+            return a.when > b.when;
+        }
+    };
+
+    atomic_priority_queue<PendingEvent, PendingEventCompare> pendingEvents;
+
     int execute_depth;
 
 private:

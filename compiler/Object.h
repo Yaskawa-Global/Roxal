@@ -7,6 +7,7 @@
 #include <atomic>
 #include <future>
 #include <condition_variable>
+#include <memory>
 #include <unicode/ustring.h>
 
 #include <core/common.h>
@@ -30,6 +31,7 @@ namespace df { class Signal; }
 
 namespace roxal {
 struct ObjObjectType; // forward
+class Thread; // forward declaration for handler threads
 }
 
 
@@ -522,6 +524,9 @@ std::string objSignalToString(const ObjSignal* os);
 struct ObjEvent : public Obj {
     ObjEvent() { type = ObjType::Event; }
     virtual ~ObjEvent() {}
+
+    // list of subscribed handler closures (weak references)
+    std::vector<Value> subscribers;
 };
 
 inline bool isEvent(const Value& v) { return isObjType(v, ObjType::Event); }
@@ -657,6 +662,9 @@ struct ObjClosure : public Obj
 
     ObjFunction* function;
     std::vector<ObjUpvalue*> upvalues;
+
+    // thread expected to execute this closure when used as an event handler
+    std::weak_ptr<Thread> handlerThread;
 };
 
 inline bool isClosure(const Value& v) { return isObjType(v, ObjType::Closure); }
