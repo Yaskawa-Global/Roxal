@@ -821,7 +821,10 @@ bool Value::is(const Value& rhs, bool strict) const
     else if (rhs.isType()) {
         return type() == rhs.asType();
     }
+    else if (isObj()) // reference value identity
+        return rhs.isObj() && (asObj() == rhs.asObj()); // same ptr/address
 
+    // assume builtin value types, use equality
     return equals(rhs, strict);
 }
 

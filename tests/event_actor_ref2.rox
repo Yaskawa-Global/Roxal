@@ -20,6 +20,7 @@ e.emit()  // should trigger the hander in setup()
 sleep(2000)
 
 a = nil   // destruct actor, it's thread and the handler along with it
+sleep(20000)
 
 e.emit()  // nothing
 sleep(200)

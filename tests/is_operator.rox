@@ -11,9 +11,14 @@ print("s is string? " + (s is string))
 
 var v1 = [1 2 3]
 var v2 = [1 2 3]
+var v3 = v1
 print("v1 is v2? " + (v1 is v2))
+print("v1 is v3? " + (v1 is v3))
 
 var m1 = [1 2;3 4]
 var m2 = [1 2;3 4]
+var m3 = m1
 print("m1 is m2? " + (m1 is m2))
+print("m1 is m3? " + (m1 is m3))
+print("m3 is matrix? " + (m3 is matrix))
 

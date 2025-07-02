@@ -1,7 +1,7 @@
 var c = clock(10) // int signal
 
-var is :signal = c // int signal
-var i = int(is)
+var ints :signal = c // int signal
+var i = int(ints)
 print(typeof(i)) // int
 
 func retBool(c) -> bool:
