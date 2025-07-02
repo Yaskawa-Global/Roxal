@@ -7,6 +7,49 @@ using namespace roxal;
 
 using roxal::type::BuiltinType;
 using roxal::type::Type;
+using roxal::type::to_string;
+
+static std::string linePos(ptr<ast::AST> node)
+{
+    return std::to_string(node->interval.first.line) + ":" +
+           std::to_string(node->interval.first.pos);
+}
+
+void TypeDeducer::pushScope(bool strict)
+{
+    scopes.push_back(ScopeInfo{});
+    scopes.back().strict = strict;
+}
+
+void TypeDeducer::popScope()
+{
+    if (!scopes.empty())
+        scopes.pop_back();
+}
+
+bool TypeDeducer::currentStrict() const
+{
+    if (scopes.empty())
+        return false;
+    return scopes.back().strict;
+}
+
+void TypeDeducer::declareVar(const icu::UnicodeString& name, ptr<Type> type, bool explicitType)
+{
+    if (scopes.empty())
+        return;
+    scopes.back().symbols[name] = VarInfo{type, explicitType};
+}
+
+std::optional<VarInfo> TypeDeducer::lookupVar(const icu::UnicodeString& name) const
+{
+    for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+        auto vit = it->symbols.find(name);
+        if (vit != it->symbols.end())
+            return vit->second;
+    }
+    return std::nullopt;
+}
 
 
 ast::ASTVisitor::TraversalOrder TypeDeducer::traversalOrder() const
@@ -18,7 +61,9 @@ ast::ASTVisitor::TraversalOrder TypeDeducer::traversalOrder() const
 std::any TypeDeducer::visit(ptr<ast::File> ast)
 {
     ast::Anys results {};
+    pushScope(/*strict=*/false); // module scope is non-strict
     ast->acceptChildren(*this, results);
+    popScope();
     return results;
 }
 
@@ -143,20 +188,24 @@ std::any TypeDeducer::visit(ptr<ast::VarDecl> ast)
     ast->acceptChildren(*this, results);
     if (ast->varType.has_value()) {
         if (std::holds_alternative<BuiltinType>(ast->varType.value())) {
-            ast->type = std::make_shared<type::Type>(std::get<BuiltinType>(ast->varType.value()));
+            ast->type = std::make_shared<Type>(std::get<BuiltinType>(ast->varType.value()));
         }
-        else {
-            // lookup name..
-        }
+    } else if (ast->initializer.has_value() && ast->initializer.value()->type.has_value()) {
+        ast->type = ast->initializer.value()->type.value();
     }
-    else { // type wasn't explicitly specified, so type will be that of initializer
-        if (ast->initializer.has_value()) { // if given
-            if (ast->initializer.value()->type.has_value()) { // and type known
-                ast->type = ast->initializer.value()->type.value();
-            }
-        }
 
+    // if variable has explicit type and initializer type known, check
+    if (ast->varType.has_value() && ast->initializer.has_value() && ast->initializer.value()->type.has_value()) {
+        auto lhsType = std::get<BuiltinType>(ast->varType.value());
+        auto rhsType = ast->initializer.value()->type.value()->builtin;
+        if (!type::convertibleTo(rhsType, lhsType, currentStrict())) {
+            throw std::logic_error(linePos(ast) + " - unable to convert " + to_string(rhsType) + " to " + to_string(lhsType) + (currentStrict()?" in strict mode":""));
+        }
     }
+
+    if (ast->type.has_value())
+        declareVar(ast->name, ast->type.value(), ast->varType.has_value());
+
     return results;
 }
 
@@ -219,6 +268,16 @@ std::any TypeDeducer::visit(ptr<ast::OnStatement> ast)
 std::any TypeDeducer::visit(ptr<ast::Function> ast)
 {
     ast::Anys results {};
+
+    pushScope(/*strict=*/true);
+    // pre-register parameter types so body and defaults can reference them
+    for (auto& param : ast->params) {
+        if (param->type.has_value() && std::holds_alternative<BuiltinType>(param->type.value())) {
+            auto ptype = std::make_shared<Type>(std::get<BuiltinType>(param->type.value()));
+            declareVar(param->name, ptype, /*explicit*/true);
+        }
+    }
+
     ast->acceptChildren(*this, results);
 
     auto type = std::make_shared<Type>();
@@ -273,6 +332,7 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
     }
 
     ast->type = type;
+    popScope();
     return results;
 }
 
@@ -281,6 +341,9 @@ std::any TypeDeducer::visit(ptr<ast::Parameter> ast)
 {
     ast::Anys results {};
     ast->acceptChildren(*this, results);
+    if (ast->type.has_value() && std::holds_alternative<BuiltinType>(ast->type.value())) {
+        static_cast<ast::AST*>(ast.get())->type = std::make_shared<Type>(std::get<BuiltinType>(ast->type.value()));
+    }
     return results;
 }
 
@@ -291,11 +354,21 @@ std::any TypeDeducer::visit(ptr<ast::Assignment> ast)
     ast->acceptChildren(*this, results);
 
     // assignment has type of rhs
-
-    //  TODO: when assigning to lhs vars of explicitly declared type,
-    //  rhs will be converted to lhs type
     if (ast->rhs->type.has_value())
         ast->type = ast->rhs->type.value();
+
+    // static type check when lhs is a variable with known explicit type
+    if (std::dynamic_pointer_cast<ast::Variable>(ast->lhs) != nullptr) {
+        auto vname = std::dynamic_pointer_cast<ast::Variable>(ast->lhs)->name;
+        auto info = lookupVar(vname);
+        if (info.has_value() && info->explicitType && info->type != nullptr && ast->rhs->type.has_value()) {
+            auto lhsType = info->type->builtin;
+            auto rhsType = ast->rhs->type.value()->builtin;
+            if (!type::convertibleTo(rhsType, lhsType, currentStrict())) {
+                throw std::logic_error(linePos(ast) + " - unable to convert " + to_string(rhsType) + " to " + to_string(lhsType) + (currentStrict()?" in strict mode":""));
+            }
+        }
+    }
 
     return results;
 }
@@ -395,7 +468,9 @@ std::any TypeDeducer::visit(ptr<ast::UnaryOp> ast)
 
 std::any TypeDeducer::visit(ptr<ast::Variable> ast)
 {
-    // TODO: lookup name
+    auto info = lookupVar(ast->name);
+    if (info.has_value() && info->type != nullptr)
+        ast->type = info->type;
     return {};
 }
 

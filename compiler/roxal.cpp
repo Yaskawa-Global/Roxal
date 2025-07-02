@@ -11,6 +11,7 @@
 #include "RoxalCompiler.h"
 
 #include "VM.h"
+#include "Error.h"
 
 
 extern "C" {
@@ -97,7 +98,7 @@ static void repl()
                 stream << buffer << std::flush;
                 vm.interpretLine(stream);
             } catch (std::exception& e) {
-                std::cout << std::string("error: ") << e.what() << std::endl;
+                std::cerr << "Error: " << e.what() << std::endl;
             }
             buffer.clear();
             indents.assign(1,0);
@@ -142,17 +143,17 @@ static void generateAST(const std::string& inputPath, bool graph, const std::str
         ASTGenerator astGenerator {};
         ast = astGenerator.ast(sourcestream, name);
     } catch (std::exception& e) {
-        std::cout << "Exception in parsing - " << std::string(e.what()) << std::endl;
+        compileError(e.what());
         return;
     }
     if (ast == nullptr) // must have been a parse or AST gen error (already reported?)
         return;
 
-     try {
+    try {
         TypeDeducer typeDeducer {};
         typeDeducer.visit(std::dynamic_pointer_cast<ast::File>(ast));
     } catch (std::exception& e) {
-        std::cout << "Exception during type inference - " << std::string(e.what()) << std::endl;
+        compileError(e.what());
         return;
     }
 

@@ -8,6 +8,7 @@
 #include "ASTGenerator.h"
 #include "TypeDeducer.h"
 #include "VM.h"
+#include "Error.h"
 
 #include "RoxalCompiler.h"
 
@@ -64,7 +65,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
         ASTGenerator astGenerator {};
         ast = astGenerator.ast(source, name);
     } catch (std::exception& e) {
-        std::cout << "Exception in parsing - " << std::string(e.what()) << std::endl;
+        compileError(e.what());
         return function;
     }
 
@@ -75,7 +76,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
         TypeDeducer typeDeducer {};
         typeDeducer.visit(as<File>(ast));
     } catch (std::exception& e) {
-        std::cout << "Exception during type inference - " << std::string(e.what()) << std::endl;
+        compileError(e.what());
         return function;
     }
 
@@ -108,7 +109,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 
             //std::cout << "value:" << value->repr() << std::endl;
         } catch (std::logic_error& e) {
-            std::cerr << std::string("Compile error: ") << e.what() << std::endl;
+            compileError(e.what());
 
             while (!lexicalScopes.empty() && (*scope())->isFunc() && !(*scope())->isModule()) {
                 auto fs = asFuncScope(funcScope());
@@ -127,7 +128,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 
             return nullptr;
         } catch (std::exception& e) {
-            std::cerr << std::string("Exception: ") << e.what() << std::endl;
+            compileError(e.what());
 
             while (!lexicalScopes.empty() && (*scope())->isFunc() && !(*scope())->isModule()) {
                 auto fs = asFuncScope(funcScope());

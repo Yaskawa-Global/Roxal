@@ -1,2 +1,1 @@
-unable to convert value of type string to list
-\[line 7\] in script
+Compile error: .*unable to convert string to list in strict mode

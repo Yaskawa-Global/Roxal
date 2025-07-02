@@ -1,0 +1,2 @@
+func f(i:int):
+  var b:bool = i
