@@ -1399,6 +1399,9 @@ ActorInstance::ActorInstance(ObjObjectType* objectType)
 ActorInstance::~ActorInstance()
 {
     instanceType->decRef();
+    if (auto t = thread.lock()) {
+        t->join(this);
+    }
 }
 
 

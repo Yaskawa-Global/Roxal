@@ -919,6 +919,7 @@ struct ActorInstance : public Obj
     std::condition_variable queueConditionVar;
 
     std::thread::id thread_id;
+    std::weak_ptr<Thread> thread;
 };
 
 inline bool isActorInstance(const Value& v) { return isObjType(v, ObjType::Actor); }
