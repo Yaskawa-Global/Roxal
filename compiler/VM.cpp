@@ -2099,6 +2099,14 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(boolVal(a.equals(b, frame->strict)));
                 break;
             }
+            case asByte(OpCode::Is): {
+                Value b = pop();
+                Value a = pop();
+                a.resolve();
+                b.resolve();
+                push(boolVal(a.is(b, frame->strict)));
+                break;
+            }
             case asByte(OpCode::Greater): {
                 peek(0).resolve();
                 peek(1).resolve();

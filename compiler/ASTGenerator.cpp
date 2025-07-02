@@ -1282,7 +1282,11 @@ std::any ASTGenerator::visitEquality(RoxalParser::EqualityContext *context)
 std::any ASTGenerator::visitEqualnotequal(RoxalParser::EqualnotequalContext *context)
 {
     visitStart();
-    auto compOp = std::make_shared<BinaryOp>( context->ISEQUAL() ? BinaryOp::Equal : BinaryOp::NotEqual);
+    BinaryOp::Op op;
+    if (context->ISEQUAL()) op = BinaryOp::Equal;
+    else if (context->ISNOTEQUALS()) op = BinaryOp::NotEqual;
+    else op = BinaryOp::Is;
+    auto compOp = std::make_shared<BinaryOp>(op);
     setSourceInfo(compOp,context);
 
     auto comparison = visitComparison(context->comparison());

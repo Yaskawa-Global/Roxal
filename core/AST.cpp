@@ -829,6 +829,7 @@ std::string BinaryOp::opString() const
         case Or: return "or";
         case Equal: return "\u225F";
         case NotEqual: return "\u2260";
+        case Is: return "is";
         case LessThan: return "<";
         case GreaterThan: return ">";
         case LessOrEqual: return "\u2A7D";

@@ -800,6 +800,31 @@ bool Value::equals(const Value& rhs, bool strict) const
     return false;
 }
 
+bool Value::is(const Value& rhs, bool strict) const
+{
+    if (isTypeSpec(rhs)) {
+        ObjTypeSpec* ts = asTypeSpec(rhs);
+        switch (ts->typeValue) {
+            case ValueType::Object:
+                if (isObjectInstance(*this))
+                    return asObjectInstance(*this)->instanceType == ts; // TODO: handle inheritance/interfaces
+                break;
+            case ValueType::Actor:
+                if (isActorInstance(*this))
+                    return asActorInstance(*this)->instanceType == ts; // TODO: handle inheritance/interfaces
+                break;
+            default:
+                return type() == ts->typeValue;
+        }
+        return false;
+    }
+    else if (rhs.isType()) {
+        return type() == rhs.asType();
+    }
+
+    return equals(rhs, strict);
+}
+
 bool Value::operator==(const Value& rhs) const
 {
     return equals(rhs, false); // Default to non-strict mode

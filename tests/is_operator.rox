@@ -1,0 +1,19 @@
+var l1 = [1,2,3]
+var l2 = [1,2,3]
+print("l1 is l2? " + (l1 is l2))
+
+var i1 = 1
+var i2 = 1
+print("i1 is i2? " + (i1 is i2))
+
+var s = "hello"
+print("s is string? " + (s is string))
+
+var v1 = [1 2 3]
+var v2 = [1 2 3]
+print("v1 is v2? " + (v1 is v2))
+
+var m1 = [1 2;3 4]
+var m2 = [1 2;3 4]
+print("m1 is m2? " + (m1 is m2))
+

@@ -1,0 +1,5 @@
+l1 is l2? false
+i1 is i2? true
+s is string? true
+v1 is v2? true
+m1 is m2? true

@@ -295,6 +295,7 @@ public:
     /// @return True if the values are equal, false otherwise.
     bool equals(const Value& rhs, bool strict = false) const;
     bool operator==(const Value& rhs) const;
+    bool is(const Value& rhs, bool strict = false) const;
 
     static_assert(sizeof(size_t) >= sizeof(uint64_t), "size_t is not big enough for uint64_t val as hash");
 

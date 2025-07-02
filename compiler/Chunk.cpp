@@ -204,6 +204,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("CONST_INT1", offset);
         case asByte(OpCode::Equal):
             return simpleInstruction("EQUAL", offset);
+        case asByte(OpCode::Is):
+            return simpleInstruction("IS", offset);
         case asByte(OpCode::Greater):
             return simpleInstruction("GREATER", offset);
         case asByte(OpCode::Less):
