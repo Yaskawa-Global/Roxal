@@ -10,15 +10,15 @@ values = []
 // Since tick() is now async, we need to wait for each tick to complete
 
 c.tick()
-_ussleep(us=110000)  // Wait for tick to complete
+sleep(us=150000)  // Wait for tick to complete
 values.append(0 + c)  // Should be 1
 
 c.tick()
-_ussleep(us=110000)
+sleep(us=150000)
 values.append(0 + c)  // Should be 2
 
 c.tick()
-_ussleep(us=110000)
+sleep(us=150000)
 values.append(0 + c)  // Should be 3
 
 // Verify we got [1, 2, 3]

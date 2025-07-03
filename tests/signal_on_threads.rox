@@ -15,5 +15,5 @@ on s:
 
 s.run()
 
-sleep(us=210000)
+sleep(us=250000)
 
