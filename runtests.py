@@ -48,7 +48,7 @@ tests = [
 ]
 
 # implementation doesn't yet allow these tests to pass
-failing_tests = ['signal_network1', 'event_actor_ref4']
+failing_tests = ['signal_network1']
 
 
 if args.convs:

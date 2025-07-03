@@ -12,6 +12,7 @@ type MyOtherActor actor:
 
   proc setup():
     on e:
+      sleep(20000) // avoid colliding prints
       print('e handled in MyOtherActor')
 
 
