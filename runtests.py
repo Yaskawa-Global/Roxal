@@ -93,6 +93,8 @@ failed_count = 0
 cwd = os.getcwd()
 os.chdir(os.path.join(project_root, roxalpath))
 
+total_start_time = time.perf_counter()
+
 try:
     for test in tests:
         print(f"Test {test} ", end='', flush=True)
@@ -175,7 +177,8 @@ try:
 except Exception as e:
     print('Exception: ' + str(e))
 
-print(f"{passed_count} tests passed, {failed_count} failed")
+total_duration = time.perf_counter() - total_start_time
+print(f"{passed_count} tests passed, {failed_count} failed in {total_duration:.2f} s")
 if failed_count > 0:
   print(f"Tests expecied to fail currently: {', '.join(failing_tests)}")
 
