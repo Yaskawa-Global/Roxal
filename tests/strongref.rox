@@ -1,0 +1,8 @@
+var l = [1,2]
+var w = _weakref(l)
+var s = _strongref(w)
+print(_weak_alive(w))
+l = nil
+print(_weak_alive(w))
+s = nil
+print(_weak_alive(w))

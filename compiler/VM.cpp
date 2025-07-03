@@ -3183,6 +3183,7 @@ void VM::defineBuiltinFunctions()
     addSys("_runtests", &VM::runtests_builtin);
     addSys("_weakref", &VM::weakref_builtin);
     addSys("_weak_alive", &VM::weak_alive_builtin);
+    addSys("_strongref", &VM::strongref_builtin);
 }
 
 void VM::defineBuiltinMethods()
@@ -3497,6 +3498,14 @@ Value VM::weak_alive_builtin(int argCount, Value* args)
         throw std::invalid_argument("weak_alive expects single argument");
 
     return args[0].isAlive() ? trueVal() : falseVal();
+}
+
+Value VM::strongref_builtin(int argCount, Value* args)
+{
+    if (argCount != 1)
+        throw std::invalid_argument("strongref expects single argument");
+
+    return args[0].strongRef();
 }
 
 Value VM::vector_norm_builtin(int argCount, Value* args)
