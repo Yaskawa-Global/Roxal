@@ -644,7 +644,7 @@ std::any ASTGenerator::visitOn_stmt(RoxalParser::On_stmtContext *context)
     auto onStmt = std::make_shared<OnStatement>();
     setSourceInfo(onStmt, context);
 
-    onStmt->event = UnicodeString::fromUTF8(context->IDENTIFIER()->getText());
+    onStmt->event = as<Expression>(visitExpression(context->expression()));
     onStmt->body = as<Suite>(visitSuite(context->suite()));
 
     return typeValue(onStmt);

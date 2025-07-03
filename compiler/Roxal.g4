@@ -96,7 +96,7 @@ for_stmt
  ;
 
 on_stmt
- : ON IDENTIFIER ':' suite
+ : ON expression ':' suite
  ;
 
 emit_stmt
