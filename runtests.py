@@ -31,7 +31,7 @@ tests = [
     'linkedlist', 'structbindassign',
     'if', 'for1',
     'func_param_default', 'func_param_default2', 'func_param_default3','func_param_default4',
-    'typeobj1', 'typeobj2', 'typeobj3', 'typeobj4', 'typeobj5', 'typeobj6', 'typeobj7',
+    'typeobj1', 'typeobj2', 'typeobj3', 'typeobj4', 'typeobj5', 'typeobj6', 'typeobj7', 'virtual_method',
     'implements1',
     'importmodule1', 'importstar', 'importsyms', 'importdiamond',
     'method_named_param',
@@ -48,7 +48,7 @@ tests = [
 ]
 
 # implementation doesn't yet allow these tests to pass
-failing_tests = ['signal_network1']
+failing_tests = ['signal_network1', 'virtual_method']
 
 
 if args.convs:

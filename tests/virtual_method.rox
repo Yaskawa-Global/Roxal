@@ -1,0 +1,16 @@
+type P object:
+
+  func greet():
+    print('Hello from P')
+
+
+type C object extends P:
+  
+  func greet():
+    print('Hello from C')
+
+
+var o :P = C()
+
+o.greet()
+
