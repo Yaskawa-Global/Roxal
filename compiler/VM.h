@@ -112,6 +112,19 @@ public:
                       ptr<type::Type> funcType = nullptr,
                       std::vector<Value> defaults = {});
 
+    // Helper used by builtin call marshalling
+    std::vector<Value> marshalArgs(ptr<type::Type> funcType,
+                                   const std::vector<Value>& defaults,
+                                   const CallSpec& callSpec,
+                                   bool includeReceiver = false,
+                                   const Value& receiver = nilVal());
+
+    bool callNativeFn(NativeFn fn, ptr<type::Type> funcType,
+                      const std::vector<Value>& defaults,
+                      const CallSpec& callSpec,
+                      bool includeReceiver = false,
+                      const Value& receiver = nilVal());
+
 
     const int MaxStack = 1024;
     typedef std::vector<Value> ValueStack;

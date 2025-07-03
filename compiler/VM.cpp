@@ -50,6 +50,88 @@ static ValueType builtinToValueType(type::BuiltinType bt)
     }
 }
 
+static std::vector<type::Type::FuncType::ParamType>
+constructParams(const std::vector<std::pair<std::string, type::BuiltinType>>& infos,
+                const std::vector<Value>& defaults)
+{
+    using PT = type::Type::FuncType::ParamType;
+    std::vector<PT> params;
+    params.reserve(infos.size());
+    for(size_t i=0; i<infos.size(); ++i) {
+        PT p(toUnicodeString(infos[i].first));
+        p.type = make_ptr<type::Type>(infos[i].second);
+        if (i < defaults.size() && !defaults[i].isNil())
+            p.hasDefault = true;
+        else
+            p.hasDefault = false;
+        params.push_back(p);
+    }
+    return params;
+}
+
+std::vector<Value> VM::marshalArgs(ptr<type::Type> funcType,
+                                   const std::vector<Value>& defaults,
+                                   const CallSpec& callSpec,
+                                   bool includeReceiver,
+                                   const Value& receiver)
+{
+    const auto& params = funcType->func.value().params;
+    auto paramPositions = callSpec.paramPositions(funcType, true);
+
+    std::vector<Value> argsVec(params.size() + (includeReceiver ? 1 : 0));
+    size_t idx = 0;
+    if (includeReceiver)
+        argsVec[idx++] = receiver;
+
+    for(size_t pi = 0; pi < params.size(); ++pi) {
+        Value arg;
+        int pos = paramPositions[pi];
+        if (pos >= 0)
+            arg = *(&(*thread->stackTop) - callSpec.argCount + pos);
+        else if (pi < defaults.size())
+            arg = defaults[pi];
+        else
+            arg = nilVal();
+
+        if (params[pi].has_value() && params[pi]->type.has_value()) {
+            ValueType vt = builtinToValueType(params[pi]->type.value()->builtin);
+            bool strictConv = false;
+            if (thread->frames.size() >= 1)
+                strictConv = (thread->frames.end()-1)->strict;
+            arg = toType(vt, arg, strictConv);
+        }
+        argsVec[idx++] = arg;
+    }
+    return argsVec;
+}
+
+bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
+                      const std::vector<Value>& defaults,
+                      const CallSpec& callSpec,
+                      bool includeReceiver,
+                      const Value& receiver)
+{
+    try {
+        if (funcType) {
+            auto argsVec = marshalArgs(funcType, defaults, callSpec,
+                                       includeReceiver, receiver);
+            Value result { (this->*fn)(argsVec.size(), argsVec.data()) };
+            *(thread->stackTop - callSpec.argCount - 1) = result;
+            popN(callSpec.argCount);
+            return true;
+        } else {
+            Value* base = &(*thread->stackTop) - callSpec.argCount - (includeReceiver ? 1 : 0);
+            Value result { (this->*fn)(callSpec.argCount + (includeReceiver ? 1 : 0), base) };
+            *(thread->stackTop - callSpec.argCount - 1) = result;
+            popN(callSpec.argCount);
+            return true;
+        }
+    } catch (std::exception& e) {
+        runtimeError(e.what());
+        return false;
+    }
+}
+
 void roxal::scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when)
 {
     Thread::PendingEvent pe; pe.when = when; pe.event = eventWeak;
@@ -709,43 +791,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             case ObjType::Native: {
                 ObjNative* nativeObj = asNative(callee);
                 NativeFn native = nativeObj->function;
-                try {
-                    if (nativeObj->funcType) {
-                        auto paramPositions = callSpec.paramPositions(nativeObj->funcType, true);
-                        const auto& params = nativeObj->funcType->func.value().params;
-                        std::vector<Value> argsVec(params.size());
-                        for(size_t pi=0; pi<params.size(); ++pi) {
-                            Value arg;
-                            int pos = paramPositions[pi];
-                            if (pos >= 0)
-                                arg = *(&(*thread->stackTop) - callSpec.argCount + pos);
-                            else if (pi < nativeObj->defaultValues.size())
-                                arg = nativeObj->defaultValues[pi];
-                            else
-                                arg = nilVal();
-                            if (params[pi].has_value() && params[pi]->type.has_value()) {
-                                ValueType vt = builtinToValueType(params[pi]->type.value()->builtin);
-                                bool strictConv = false;
-                                if (thread->frames.size() >= 1)
-                                    strictConv = (thread->frames.end()-1)->strict;
-                                arg = toType(vt, arg, strictConv);
-                            }
-                            argsVec[pi] = arg;
-                        }
-                        Value result { (this->*native)(argsVec.size(), argsVec.data()) };
-                        *(thread->stackTop - callSpec.argCount - 1) = result;
-                        popN(callSpec.argCount);
-                        return true;
-                    } else {
-                        Value result { (this->*native)(callSpec.argCount, &(*thread->stackTop) - callSpec.argCount) };
-                        *(thread->stackTop - callSpec.argCount - 1) = result;
-                        popN(callSpec.argCount);
-                        return true;
-                    }
-                } catch (std::exception& e) {
-                    runtimeError(e.what());
-                    return false;
-                }
+                return callNativeFn(native, nativeObj->funcType,
+                                    nativeObj->defaultValues, callSpec);
             }
             case ObjType::BoundNative: {
                 ObjBoundNative* bound { asBoundNative(callee) };
@@ -753,44 +800,9 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 if (!isActorInstance(bound->receiver)) {
                     *(thread->stackTop - callSpec.argCount - 1) = bound->receiver;
                     NativeFn native = bound->function;
-                    try {
-                        if (bound->funcType) {
-                            auto paramPositions = callSpec.paramPositions(bound->funcType, true);
-                            const auto& params = bound->funcType->func.value().params;
-                            std::vector<Value> argsVec(params.size() + 1);
-                            argsVec[0] = bound->receiver;
-                            for(size_t pi=0; pi<params.size(); ++pi) {
-                                Value arg;
-                                int pos = paramPositions[pi];
-                                if (pos >= 0)
-                                    arg = *(&(*thread->stackTop) - callSpec.argCount + pos);
-                                else if (pi < bound->defaultValues.size())
-                                    arg = bound->defaultValues[pi];
-                                else
-                                    arg = nilVal();
-                                if (params[pi].has_value() && params[pi]->type.has_value()) {
-                                    ValueType vt = builtinToValueType(params[pi]->type.value()->builtin);
-                                    bool strictConv = false;
-                                    if (thread->frames.size() >= 1)
-                                        strictConv = (thread->frames.end()-1)->strict;
-                                    arg = toType(vt, arg, strictConv);
-                                }
-                                argsVec[pi+1] = arg;
-                            }
-                            Value result { (this->*native)(argsVec.size(), argsVec.data()) };
-                            *(thread->stackTop - callSpec.argCount - 1) = result;
-                            popN(callSpec.argCount);
-                            return true;
-                        } else {
-                            Value result { (this->*native)(callSpec.argCount+1, &(*thread->stackTop) - callSpec.argCount - 1) };
-                            *(thread->stackTop - callSpec.argCount - 1) = result;
-                            popN(callSpec.argCount);
-                            return true;
-                        }
-                    } catch (std::exception& e) {
-                        runtimeError(e.what());
-                        return false;
-                    }
+                    return callNativeFn(native, bound->funcType,
+                                        bound->defaultValues, callSpec,
+                                        true, bound->receiver);
                 }
                 else {
                     // call to actor native method.
@@ -804,44 +816,9 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         // actor to this/self native method call
                         *(thread->stackTop - callSpec.argCount - 1) = bound->receiver;
                         NativeFn native = bound->function;
-                        try {
-                            if (bound->funcType) {
-                                auto paramPositions = callSpec.paramPositions(bound->funcType, true);
-                                const auto& params = bound->funcType->func.value().params;
-                                std::vector<Value> argsVec(params.size() + 1);
-                                argsVec[0] = bound->receiver;
-                                for(size_t pi=0; pi<params.size(); ++pi) {
-                                    Value arg;
-                                    int pos = paramPositions[pi];
-                                    if (pos >= 0)
-                                        arg = *(&(*thread->stackTop) - callSpec.argCount + pos);
-                                    else if (pi < bound->defaultValues.size())
-                                        arg = bound->defaultValues[pi];
-                                    else
-                                        arg = nilVal();
-                                    if (params[pi].has_value() && params[pi]->type.has_value()) {
-                                        ValueType vt = builtinToValueType(params[pi]->type.value()->builtin);
-                                        bool strictConv = false;
-                                        if (thread->frames.size() >= 1)
-                                            strictConv = (thread->frames.end()-1)->strict;
-                                        arg = toType(vt, arg, strictConv);
-                                    }
-                                    argsVec[pi+1] = arg;
-                                }
-                                Value result { (this->*native)(argsVec.size(), argsVec.data()) };
-                                *(thread->stackTop - callSpec.argCount - 1) = result;
-                                popN(callSpec.argCount);
-                                return true;
-                            } else {
-                                Value result { (this->*native)(callSpec.argCount+1, &(*thread->stackTop) - callSpec.argCount - 1) };
-                                *(thread->stackTop - callSpec.argCount - 1) = result;
-                                popN(callSpec.argCount);
-                                return true;
-                            }
-                        } catch (std::exception& e) {
-                            runtimeError(e.what());
-                            return false;
-                        }
+                        return callNativeFn(native, bound->funcType,
+                                            bound->defaultValues, callSpec,
+                                            true, bound->receiver);
                     } else {
                         // call to other actor
                         Value future = inst->queueCall(callee, callSpec, &(*thread->stackTop) );
@@ -975,37 +952,12 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                 if (std::this_thread::get_id() == instance->thread_id) {
                     // Same thread - call directly
                     if (methodInfo.funcType) {
-                        auto paramPositions = callSpec.paramPositions(methodInfo.funcType, true);
-                        const auto& params = methodInfo.funcType->func.value().params;
-                        std::vector<Value> argsVec(params.size() + 1);
-                        argsVec[0] = receiver;
-                        for(size_t pi=0; pi<params.size(); ++pi) {
-                            Value arg;
-                            int pos = paramPositions[pi];
-                            if (pos >= 0)
-                                arg = *(&(*thread->stackTop) - callSpec.argCount + pos);
-                            else if (pi < methodInfo.defaultValues.size())
-                                arg = methodInfo.defaultValues[pi];
-                            else
-                                arg = nilVal();
-                            if (params[pi].has_value() && params[pi]->type.has_value()) {
-                                ValueType vt = builtinToValueType(params[pi]->type.value()->builtin);
-                                bool strictConv = false;
-                                if (thread->frames.size() >= 1)
-                                    strictConv = (thread->frames.end()-1)->strict;
-                                arg = toType(vt, arg, strictConv);
-                            }
-                            argsVec[pi+1] = arg;
-                        }
-                        Value result { (this->*fn)(argsVec.size(), argsVec.data()) };
-                        *(thread->stackTop - callSpec.argCount - 1) = result;
-                        popN(callSpec.argCount);
-                        return true;
+                        return callNativeFn(fn, methodInfo.funcType,
+                                            methodInfo.defaultValues, callSpec,
+                                            true, receiver);
                     } else {
-                        Value result { (this->*fn)(callSpec.argCount+1, &(*thread->stackTop) - callSpec.argCount - 1) };
-                        *(thread->stackTop - callSpec.argCount - 1) = result;
-                        popN(callSpec.argCount);
-                        return true;
+                        return callNativeFn(fn, nullptr, {}, callSpec,
+                                            true, receiver);
                     }
                 } else {
                     // Different thread - queue the call
@@ -1034,37 +986,12 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                     const BuiltinMethodInfo& methodInfo = it->second;
                     NativeFn fn = methodInfo.function;
                     if (methodInfo.funcType) {
-                        auto paramPositions = callSpec.paramPositions(methodInfo.funcType, true);
-                        const auto& params = methodInfo.funcType->func.value().params;
-                        std::vector<Value> argsVec(params.size() + 1);
-                        argsVec[0] = receiver;
-                        for(size_t pi=0; pi<params.size(); ++pi) {
-                            Value arg;
-                            int pos = paramPositions[pi];
-                            if (pos >= 0)
-                                arg = *(&(*thread->stackTop) - callSpec.argCount + pos);
-                            else if (pi < methodInfo.defaultValues.size())
-                                arg = methodInfo.defaultValues[pi];
-                            else
-                                arg = nilVal();
-                            if (params[pi].has_value() && params[pi]->type.has_value()) {
-                                ValueType vt = builtinToValueType(params[pi]->type.value()->builtin);
-                                bool strictConv = false;
-                                if (thread->frames.size() >= 1)
-                                    strictConv = (thread->frames.end()-1)->strict;
-                                arg = toType(vt, arg, strictConv);
-                            }
-                            argsVec[pi+1] = arg;
-                        }
-                        Value result { (this->*fn)(argsVec.size(), argsVec.data()) };
-                        *(thread->stackTop - callSpec.argCount - 1) = result;
-                        popN(callSpec.argCount);
-                        return true;
+                        return callNativeFn(fn, methodInfo.funcType,
+                                            methodInfo.defaultValues, callSpec,
+                                            true, receiver);
                     } else {
-                        Value result { (this->*fn)(callSpec.argCount+1, &(*thread->stackTop) - callSpec.argCount - 1) };
-                        *(thread->stackTop - callSpec.argCount - 1) = result;
-                        popN(callSpec.argCount);
-                        return true;
+                        return callNativeFn(fn, nullptr, {}, callSpec,
+                                            true, receiver);
                     }
                 }
             }
@@ -3335,23 +3262,14 @@ void VM::defineBuiltinFunctions()
         auto t = make_ptr<type::Type>(type::BuiltinType::Func);
         t->func = type::Type::FuncType();
         t->func->isProc = true;
-        using PT = type::Type::FuncType::ParamType;
-        std::vector<PT> params;
-        params.emplace_back(toUnicodeString("s"));
-        params.back().type = make_ptr<type::Type>(type::BuiltinType::Int);
-        params.back().hasDefault = true;
-        params.emplace_back(toUnicodeString("ms"));
-        params.back().type = make_ptr<type::Type>(type::BuiltinType::Int);
-        params.back().hasDefault = true;
-        params.emplace_back(toUnicodeString("us"));
-        params.back().type = make_ptr<type::Type>(type::BuiltinType::Int);
-        params.back().hasDefault = true;
-        params.emplace_back(toUnicodeString("ns"));
-        params.back().type = make_ptr<type::Type>(type::BuiltinType::Int);
-        params.back().hasDefault = true;
+        std::vector<Value> defaults { intVal(0), intVal(0), intVal(0), intVal(0) };
+        auto params = constructParams({ {"s", type::BuiltinType::Int},
+                                       {"ms", type::BuiltinType::Int},
+                                       {"us", type::BuiltinType::Int},
+                                       {"ns", type::BuiltinType::Int} },
+                                     defaults);
         t->func->params.resize(params.size());
         for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
-        std::vector<Value> defaults { intVal(0), intVal(0), intVal(0), intVal(0) };
         addSys("sleep", &VM::sleep_builtin, t, defaults);
     }
     addSys("fork", &VM::fork_builtin);
