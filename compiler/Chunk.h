@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <string>
 
 #include <core/common.h>
 #include "Value.h"
@@ -98,7 +99,8 @@ inline constexpr uint8_t asByte(OpCode op) { return uint8_t(op); }
 class Chunk
 {
 public:
-    Chunk(const icu::UnicodeString& packageName_, const icu::UnicodeString& moduleName_);
+    Chunk(const icu::UnicodeString& packageName_, const icu::UnicodeString& moduleName_,
+          const icu::UnicodeString& sourceName_ = icu::UnicodeString());
     virtual ~Chunk() {}
 
     // fully-qualified package & module name (e.g. p.q.mod)
@@ -118,20 +120,29 @@ public:
     using size_type = CodeType::size_type;
     using iterator = CodeType::iterator;
 
-    void write(uint8_t byte, int line, const std::string& comment = "");
-    void write(OpCode byte, int line, const std::string& comment = "") { write(uint8_t(byte), line, comment); }
-    void writeConsant(const Value& value, int line, const std::string& comment = "");
+    struct LineEntry {
+        size_type offset;
+        int line;
+        int column;
+    };
+
+    icu::UnicodeString sourceName; // name of source file
+
+    void write(uint8_t byte, int line, int column, const std::string& comment = "");
+    void write(OpCode byte, int line, int column, const std::string& comment = "") { write(uint8_t(byte), line, column, comment); }
+    void writeConsant(const Value& value, int line, int column, const std::string& comment = "");
     uint8_t lastByte() const; // last byte written
 
     size_type addConstant(const Value& value);
 
     int getLine(size_type offset) const;
+    int getColumn(size_type offset) const;
 
     void disassemble(const icu::UnicodeString& name);
     size_type disassembleInstruction(size_type offset);
 
 protected:
-    std::vector<int> lines; // TODO: implement more efficient method
+    std::vector<LineEntry> lineTable; // sparse line/column table
 
     size_type constantInstruction(const std::string& name, size_type offset) const;
     size_type constantInstruction2(const std::string& name, size_type offset) const;

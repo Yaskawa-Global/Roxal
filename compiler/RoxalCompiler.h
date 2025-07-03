@@ -195,11 +195,12 @@ protected:
     struct FunctionScope : public LexicalScope
     {
         FunctionScope(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName,
+                      const icu::UnicodeString& sourceName,
                       const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> t)
             : LexicalScope(ScopeType::Func, funcName), scopeDepth(0), functionType(funcType), type(t)
         {
             strict = true;
-            function = functionVal(packageName, moduleName);
+            function = functionVal(packageName, moduleName, sourceName);
             function->name = funcName;
             function->funcType = type; // store type for runtime
             function->strict = strict;
@@ -250,7 +251,7 @@ protected:
         ModuleScope(const icu::UnicodeString& packageName_,
                     const icu::UnicodeString& moduleName_,
                     ObjModuleType* existing = nullptr)
-            : FunctionScope(packageName_, moduleName_, moduleName_,
+            : FunctionScope(packageName_, moduleName_, moduleName_, moduleName_,
                             FunctionType::Module,
                             std::make_shared<type::Type>(type::BuiltinType::Func)),
               packageName(packageName_), moduleName(moduleName_)

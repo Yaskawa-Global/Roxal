@@ -572,7 +572,8 @@ struct ObjModuleType; // forward
 
 struct ObjFunction : public Obj
 {
-    ObjFunction(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName);
+    ObjFunction(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName,
+                const icu::UnicodeString& sourceName);
     virtual ~ObjFunction();
 
     UnicodeString name;
@@ -607,8 +608,10 @@ inline ObjFunction* asFunction(const Value& v) {
 }
 
 
-inline ObjFunction* functionVal(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName) {
-    return newObj<ObjFunction>(__func__, packageName, moduleName);
+inline ObjFunction* functionVal(const icu::UnicodeString& packageName,
+                                const icu::UnicodeString& moduleName,
+                                const icu::UnicodeString& sourceName) {
+    return newObj<ObjFunction>(__func__, packageName, moduleName, sourceName);
 }
 
 std::string objFunctionToString(const ObjFunction* of);

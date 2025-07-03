@@ -1779,7 +1779,9 @@ void RoxalCompiler::enterFuncScope(Value moduleType, const icu::UnicodeString& f
     // function scopes only valid in a module
     auto modScope { asModuleScope(moduleScope()) };
 
-    auto funcScope {std::make_shared<FunctionScope>(modScope->packageName, modScope->moduleName,
+    auto funcScope {std::make_shared<FunctionScope>(modScope->packageName,
+                                                    modScope->moduleName,
+                                                    modScope->moduleName,
                                                     funcName,funcType,type)};
 
     funcScope->function->moduleType = moduleType;
@@ -2022,33 +2024,42 @@ ValueType RoxalCompiler::builtinToValueType(ast::BuiltinType bt)
 
 void RoxalCompiler::emitByte(uint8_t byte, const std::string& comment)
 {
-    currentChunk()->write(byte, currentNode->interval.first.line, comment);
+    currentChunk()->write(byte, currentNode->interval.first.line,
+                          currentNode->interval.first.pos, comment);
 }
 
 
 void RoxalCompiler::emitByte(OpCode op, const std::string& comment)
 {
-    currentChunk()->write(asByte(op), currentNode->interval.first.line, comment);
+    currentChunk()->write(asByte(op), currentNode->interval.first.line,
+                          currentNode->interval.first.pos, comment);
 }
 
 
 void RoxalCompiler::emitBytes(uint8_t byte1, uint8_t byte2, const std::string& comment)
 {
-    currentChunk()->write(byte1, currentNode->interval.first.line, comment);
-    currentChunk()->write(byte2, currentNode->interval.first.line);
+    currentChunk()->write(byte1, currentNode->interval.first.line,
+                          currentNode->interval.first.pos, comment);
+    currentChunk()->write(byte2, currentNode->interval.first.line,
+                          currentNode->interval.first.pos);
 }
 
 void RoxalCompiler::emitBytes(OpCode op, uint8_t byte2, const std::string& comment)
 {
-    currentChunk()->write(op, currentNode->interval.first.line, comment);
-    currentChunk()->write(byte2, currentNode->interval.first.line);
+    currentChunk()->write(op, currentNode->interval.first.line,
+                          currentNode->interval.first.pos, comment);
+    currentChunk()->write(byte2, currentNode->interval.first.line,
+                          currentNode->interval.first.pos);
 }
 
 void RoxalCompiler::emitBytes(OpCode op, uint8_t byte2, uint8_t byte3, const std::string& comment)
 {
-    currentChunk()->write(op, currentNode->interval.first.line, comment);
-    currentChunk()->write(byte2, currentNode->interval.first.line);
-    currentChunk()->write(byte3, currentNode->interval.first.line);
+    currentChunk()->write(op, currentNode->interval.first.line,
+                          currentNode->interval.first.pos, comment);
+    currentChunk()->write(byte2, currentNode->interval.first.line,
+                          currentNode->interval.first.pos);
+    currentChunk()->write(byte3, currentNode->interval.first.line,
+                          currentNode->interval.first.pos);
 }
 
 uint8_t RoxalCompiler::lastByte()

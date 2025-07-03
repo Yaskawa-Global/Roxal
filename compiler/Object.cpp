@@ -1249,11 +1249,12 @@ std::string roxal::toString(FunctionType ft)
 
 
 
-ObjFunction::ObjFunction(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName)
+ObjFunction::ObjFunction(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName,
+                         const icu::UnicodeString& sourceName)
     : arity(0), upvalueCount(0), name(), strict(false), ownerType(nilVal())
 {
     type = ObjType::Function;
-    chunk = std::make_shared<Chunk>(packageName, moduleName);
+    chunk = std::make_shared<Chunk>(packageName, moduleName, sourceName);
 }
 
 
