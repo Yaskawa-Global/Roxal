@@ -1239,6 +1239,14 @@ Value roxal::add(Value l, Value r)
         Eigen::VectorXd result = lv->vec + rv->vec;
         return objVal(vectorVal(result));
     }
+    else if (isMatrix(l) && isMatrix(r)) {
+        const ObjMatrix* lm = asMatrix(l);
+        const ObjMatrix* rm = asMatrix(r);
+        if (lm->rows() != rm->rows() || lm->cols() != rm->cols())
+            throw std::invalid_argument("Matrix addition requires matrices of same size");
+        Eigen::MatrixXd result = lm->mat + rm->mat;
+        return objVal(matrixVal(result));
+    }
     else if (isList(l) && isList(r)) {
         // List + List → concatenation (clone LHS, then concatenate RHS)
         ObjList* lv = asList(l);
@@ -1271,6 +1279,14 @@ Value roxal::subtract(Value l, Value r)
             throw std::invalid_argument("Vector subtraction requires vectors of same length");
         Eigen::VectorXd result = lv->vec - rv->vec;
         return objVal(vectorVal(result));
+    }
+    else if (isMatrix(l) && isMatrix(r)) {
+        const ObjMatrix* lm = asMatrix(l);
+        const ObjMatrix* rm = asMatrix(r);
+        if (lm->rows() != rm->rows() || lm->cols() != rm->cols())
+            throw std::invalid_argument("Matrix subtraction requires matrices of same size");
+        Eigen::MatrixXd result = lm->mat - rm->mat;
+        return objVal(matrixVal(result));
     }
 
     if (!l.isNumber())
@@ -1311,6 +1327,42 @@ Value roxal::multiply(Value l, Value r)
         double scalar = toType(ValueType::Real, l, false).asReal();
         Eigen::VectorXd result = rv->vec * scalar;
         return objVal(vectorVal(result));
+    }
+    if (isMatrix(l) && isMatrix(r)) {
+        const ObjMatrix* lm = asMatrix(l);
+        const ObjMatrix* rm = asMatrix(r);
+        if (lm->cols() != rm->rows())
+            throw std::invalid_argument("Matrix multiplication dimension mismatch");
+        Eigen::MatrixXd result = lm->mat * rm->mat;
+        return objVal(matrixVal(result));
+    }
+    if (isMatrix(l) && isVector(r)) {
+        const ObjMatrix* lm = asMatrix(l);
+        const ObjVector* rv = asVector(r);
+        if (lm->cols() != rv->length())
+            throw std::invalid_argument("Matrix and vector dimension mismatch");
+        Eigen::VectorXd result = lm->mat * rv->vec;
+        return objVal(vectorVal(result));
+    }
+    if (isVector(l) && isMatrix(r)) {
+        const ObjVector* lv = asVector(l);
+        const ObjMatrix* rm = asMatrix(r);
+        if (lv->length() != rm->rows())
+            throw std::invalid_argument("Vector and matrix dimension mismatch");
+        Eigen::VectorXd result = lv->vec.transpose() * rm->mat;
+        return objVal(vectorVal(result));
+    }
+    if (isMatrix(l) && r.isNumber()) {
+        const ObjMatrix* lm = asMatrix(l);
+        double scalar = toType(ValueType::Real, r, false).asReal();
+        Eigen::MatrixXd result = lm->mat * scalar;
+        return objVal(matrixVal(result));
+    }
+    if (l.isNumber() && isMatrix(r)) {
+        const ObjMatrix* rm = asMatrix(r);
+        double scalar = toType(ValueType::Real, l, false).asReal();
+        Eigen::MatrixXd result = scalar * rm->mat;
+        return objVal(matrixVal(result));
     }
 
     if (!l.isNumber())

@@ -2189,6 +2189,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 peek(1).resolve();
                 if ((peek(0).isNumber() && peek(1).isNumber()) ||
                     (isVector(peek(0)) && isVector(peek(1))) ||
+                    (isMatrix(peek(0)) && isMatrix(peek(1))) ||
                     (isList(peek(1)) && isList(peek(0))) ||
                     isList(peek(1))) {
                     binaryOp([](Value a, Value b) -> Value { return add(a,b); });
@@ -2197,7 +2198,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     concatenate();
                 }
                 else {
-                    runtimeError("Operands of + must be two numbers, two vectors, two lists, list + value, or strings LHS");
+                    runtimeError("Operands of + must be two numbers, two vectors, two matrices, two lists, list + value, or strings LHS");
                     return errorReturn;
                 }
                 break;
@@ -2207,10 +2208,12 @@ std::pair<InterpretResult,Value> VM::execute()
                 peek(1).resolve();
                 if (isVector(peek(0)) && isVector(peek(1))) {
                     binaryOp([](Value a, Value b) -> Value { return subtract(a,b); });
+                } else if (isMatrix(peek(0)) && isMatrix(peek(1))) {
+                    binaryOp([](Value a, Value b) -> Value { return subtract(a,b); });
                 } else if (peek(0).isNumber() && peek(1).isNumber()) {
                     binaryOp([](Value a, Value b) -> Value { return subtract(a,b); });
                 } else {
-                    runtimeError("Operands of - must be two numbers or two vectors");
+                    runtimeError("Operands of - must be two numbers, two vectors, or two matrices");
                     return errorReturn;
                 }
                 break;
@@ -2220,12 +2223,17 @@ std::pair<InterpretResult,Value> VM::execute()
                 peek(1).resolve();
                 if ( (isVector(peek(0)) && isVector(peek(1))) ||
                      (isVector(peek(0)) && peek(1).isNumber()) ||
-                     (peek(0).isNumber() && isVector(peek(1))) ) {
+                     (peek(0).isNumber() && isVector(peek(1))) ||
+                     (isMatrix(peek(0)) && isMatrix(peek(1))) ||
+                     (isMatrix(peek(0)) && isVector(peek(1))) ||
+                     (isVector(peek(0)) && isMatrix(peek(1))) ||
+                     (isMatrix(peek(0)) && peek(1).isNumber()) ||
+                     (peek(0).isNumber() && isMatrix(peek(1))) ) {
                     binaryOp([](Value a, Value b) -> Value { return multiply(a,b); });
                 } else if (peek(0).isNumber() && peek(1).isNumber()) {
                     binaryOp([](Value a, Value b) -> Value { return multiply(a,b); });
                 } else {
-                    runtimeError("Operands of * must be numbers or vectors with scalar");
+                    runtimeError("Operands of * must be numbers, vectors or matrices with compatible dimensions");
                     return errorReturn;
                 }
                 break;
