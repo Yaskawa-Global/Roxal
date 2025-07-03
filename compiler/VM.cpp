@@ -176,6 +176,8 @@ void* VM::createFFIWrapper(void* fn, ffi_type* retType,
 VM::VM()
     : lineMode(false)
 {
+    assert(sizeof(Value) == sizeof(uint64_t)); // ensure Value is 64bit
+
     thread = nullptr;
     initString = stringVal(UnicodeString("init"));
     initString->incRef();
