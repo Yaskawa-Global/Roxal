@@ -55,7 +55,6 @@ std::string roxal::to_string(ValueType t)
 
 Value::Value(Obj* o)
 {
-    weak = false;
     o->incRef();
     val = SignBit | QNAN | uint64_t(uintptr_t(o));
 }
@@ -77,7 +76,6 @@ void Value::box() {
         throw std::runtime_error("Unsupported type for auto-boxing "+typeName());
 
     obj->incRef();
-    weak = false;
     val = SignBit | QNAN | uint64_t(uintptr_t(obj));
 }
 
@@ -99,7 +97,6 @@ void Value::unbox() {
         throw std::runtime_error("Unsupported type for auto-unboxing "+typeName());
 
     obj->decRef();
-    weak = false;
 }
 
 
@@ -424,7 +421,6 @@ std::string Value::typeName() const
 roxal::Value::Value(Obj* o)
     : _type(ValueType::Object)
 {
-    weak = false;
     as.obj=o; o->incRef();
 }
 
@@ -445,7 +441,6 @@ void Value::box() {
         throw std::runtime_error("Unsupported type for auto-boxing "+typeName());
 
     as.obj->incRef();
-    weak = false;
 }
 
 
@@ -463,7 +458,6 @@ void Value::unbox() {
     else
         throw std::runtime_error("Unsupported type for auto-unboxing "+typeName());
     as.obj->decRef();
-    weak = false;
 }
 
 void roxal::Value::incWeakObj()
@@ -851,15 +845,14 @@ Value Value::weakRef() const
         return *this; // primitives just copy
     Value v;
     ObjControl* c = asObj()->control;
-    v.val = SignBit | QNAN | uint64_t(uintptr_t(c));
-    v.weak = true;
+    v.val = SignBit | QNAN | WeakMask | uint64_t(uintptr_t(c));
     v.incWeakObj();
     return v;
 }
 
 Value Value::strongRef() const
 {
-    if (!weak)
+    if (!isWeak())
         return *this;
 
     if (!isAlive())
@@ -870,7 +863,6 @@ Value Value::strongRef() const
     obj->incRef();
     Value v;
     v.val = SignBit | QNAN | uint64_t(uintptr_t(obj));
-    v.weak = false;
     return v;
 }
 
