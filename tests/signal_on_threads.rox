@@ -3,6 +3,7 @@ var s = clock(10)
 type A actor:
   proc setup():
     on s:
+      sleep(10000)
       print("actor:"+int(s))
 
 a = A()
@@ -12,8 +13,7 @@ sleep(2000)
 on s:
   print("main:"+int(s))
 
-s.tick()
-_ussleep(120000)
-s.tick()
-_ussleep(120000)
+s.run()
+
+sleep(210000)
 
