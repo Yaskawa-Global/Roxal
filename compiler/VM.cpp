@@ -50,6 +50,27 @@ static ValueType builtinToValueType(type::BuiltinType bt)
     }
 }
 
+void roxal::scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when)
+{
+    Thread::PendingEvent pe; pe.when = when; pe.event = eventWeak;
+    for (auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
+        Value handlerVal = *it;
+        if (!handlerVal.isAlive()) {
+            it = ev->subscribers.erase(it);
+            continue;
+        }
+        auto closure = asClosure(handlerVal);
+        auto handlerThread = closure->handlerThread.lock();
+        if (!handlerThread) {
+            it = ev->subscribers.erase(it);
+            continue;
+        }
+        handlerThread->pendingEvents.push(pe);
+        handlerThread->wake();
+        ++it;
+    }
+}
+
 static uint64_t currentTimeNs() {
     struct timespec tp;
     clock_gettime(CLOCK_MONOTONIC,&tp);
@@ -2714,9 +2735,18 @@ std::pair<InterpretResult,Value> VM::execute()
             case asByte(OpCode::EventOn): {
                 Value closureVal = pop();
                 Value eventVal = pop();
-                if (!isEvent(eventVal) || !isClosure(closureVal)) {
-                    runtimeError("EVENT_ON expects event and closure");
+                if (!isClosure(closureVal) || !(isEvent(eventVal) || isSignal(eventVal))) {
+                    runtimeError("EVENT_ON expects event/signal and closure");
                     return errorReturn;
+                }
+
+                ObjEvent* ev = nullptr;
+                if (isEvent(eventVal)) {
+                    ev = asEvent(eventVal);
+                } else {
+                    ObjSignal* sigObj = asSignal(eventVal);
+                    ev = sigObj->ensureChangeEvent();
+                    eventVal = sigObj->changeEvent;
                 }
 
                 // record this handler on the current thread
@@ -2724,7 +2754,6 @@ std::pair<InterpretResult,Value> VM::execute()
                 thread->eventHandlers[key].push_back(closureVal);
 
                 // track the handler thread and subscribe the closure to the event
-                auto* ev = asEvent(eventVal);
                 auto* closure = asClosure(closureVal);
                 closure->handlerThread = thread;
                 ev->subscribers.push_back(closureVal.weakRef());
@@ -3392,34 +3421,12 @@ Value VM::event_emit_builtin(int argCount, Value* args)
         when = TimePoint::microSecs(args[1].asInt());
     }
 
-    Thread::PendingEvent pe;
-    pe.when = when;
-    pe.event = args[0].weakRef();
-
+    Value eventWeak = args[0].weakRef();
     ObjEvent* ev = asEvent(args[0]);
     if (ev->subscribers.empty())
         return nilVal();
 
-    // schedule on subscribed handler threads
-    for (auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
-        Value handlerVal = *it;
-        if (!handlerVal.isAlive()) {
-            it = ev->subscribers.erase(it);
-            continue;
-        }
-        auto closure = asClosure(handlerVal);
-        auto handlerThread = closure->handlerThread.lock();
-        if (!handlerThread) {
-            it = ev->subscribers.erase(it);
-            continue;
-        }
-        Thread::PendingEvent tpe;
-        tpe.when = pe.when;
-        tpe.event = pe.event;
-        handlerThread->pendingEvents.push(tpe);
-        handlerThread->wake();
-        ++it;
-    }
+    scheduleEventHandlers(eventWeak, ev, when);
 
     return nilVal();
 }

@@ -10,6 +10,7 @@
 #include "Object.h"
 #include "VM.h"
 #include "Value.h"
+#include "Thread.h"
 #include "dataflow/Signal.h"
 
 using namespace roxal;
@@ -796,6 +797,28 @@ ObjMatrix* roxal::cloneMatrix(const ObjMatrix* m)
     auto newm = newObj<ObjMatrix>(__func__, m->mat.rows(), m->mat.cols());
     newm->mat = m->mat;
     return newm;
+}
+
+ObjSignal::ObjSignal(ptr<df::Signal> s)
+    : signal(s), changeEvent(nilVal())
+{
+    type = ObjType::Signal;
+}
+
+ObjEvent* ObjSignal::ensureChangeEvent()
+{
+    if (!changeEvent.isNil())
+        return asEvent(changeEvent);
+
+    changeEvent = objVal(eventVal());
+    Value eventWeak = changeEvent.weakRef();
+    signal->addValueChangedCallback([eventWeak](TimePoint t, ptr<df::Signal>, const Value&){
+        if (!eventWeak.isAlive())
+            return;
+        ObjEvent* ev = asEvent(eventWeak);
+        scheduleEventHandlers(eventWeak, ev, t);
+    });
+    return asEvent(changeEvent);
 }
 
 ObjSignal* roxal::signalVal(ptr<df::Signal> s)
