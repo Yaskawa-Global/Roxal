@@ -49,7 +49,7 @@ tests = [
 ]
 
 # implementation doesn't yet allow these tests to pass
-failing_tests = ['signal_network1', 'virtual_method']
+failing_tests = ['signal_network1']
 
 
 if args.convs:

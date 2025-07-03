@@ -576,9 +576,17 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
                         *(thread->stackTop - callSpec.argCount - 1) = inst;
                     }
-                    auto it = type->methods.find(initString->hash);
-                    if (it != type->methods.end()) {
-                        Value initializer { it->second.closure };
+                    ObjObjectType* tInit = type;
+                    const ObjObjectType::Method* initMethod = nullptr;
+                    while (tInit != nullptr && initMethod == nullptr) {
+                        auto it = tInit->methods.find(initString->hash);
+                        if (it != tInit->methods.end())
+                            initMethod = &it->second;
+                        else
+                            tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
+                    }
+                    if (initMethod != nullptr) {
+                        Value initializer { initMethod->closure };
                         if (!type->isActor)
                             return call(asClosure(initializer), callSpec);
                         else {
@@ -802,12 +810,21 @@ std::pair<InterpretResult,Value> VM::callAndExec(ObjClosure* closure, const std:
 
 bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec)
 {
-    auto it = type->methods.find(name->hash);
-    if (it == type->methods.end()) {
-        runtimeError("Undefined property '%s'",toUTF8StdString(name->s).c_str());
+    ObjObjectType* t = type;
+    const ObjObjectType::Method* methodPtr = nullptr;
+    while (t != nullptr && methodPtr == nullptr) {
+        auto it = t->methods.find(name->hash);
+        if (it != t->methods.end())
+            methodPtr = &it->second;
+        else
+            t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+    }
+
+    if (methodPtr == nullptr) {
+        runtimeError("Undefined property '%s'", toUTF8StdString(name->s).c_str());
         return false;
     }
-    const auto& methodInfo = it->second;
+    const auto& methodInfo = *methodPtr;
     if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
         runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
         return false;
@@ -1203,11 +1220,20 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
 
 VM::BindResult VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
 {
-    auto it = instanceType->methods.find(name->hash);
-    if (it == instanceType->methods.end())
+    ObjObjectType* t = instanceType;
+    const ObjObjectType::Method* methodPtr = nullptr;
+    while (t != nullptr && methodPtr == nullptr) {
+        auto it = t->methods.find(name->hash);
+        if (it != t->methods.end())
+            methodPtr = &it->second;
+        else
+            t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+    }
+
+    if (methodPtr == nullptr)
         return BindResult::NotFound;
 
-    const auto& methodInfo = it->second;
+    const auto& methodInfo = *methodPtr;
     if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
         runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
         return BindResult::Private;
@@ -1287,14 +1313,14 @@ Value VM::opReturn()
 }
 
 
-bool VM::isAccessAllowed(ObjObjectType* ownerType, ast::Access access)
+bool VM::isAccessAllowed(const Value& ownerType, ast::Access access)
 {
     if (access == ast::Access::Public)
         return true;
 
     for(auto it = thread->frames.rbegin(); it != thread->frames.rend(); ++it) {
         ObjFunction* fn = it->closure->function;
-        if (fn->ownerType != nullptr) {
+        if (!fn->ownerType.isNil() && fn->ownerType.isAlive()) {
             if (fn->ownerType == ownerType)
                 return true;
         }
@@ -1334,7 +1360,8 @@ void VM::defineProperty(ObjString* name)
     }
 
     ast::Access access = (!accessVal.isNil() && accessVal.isBool() && accessVal.asBool()) ? ast::Access::Private : ast::Access::Public;
-    objType->properties[name->hash] = {name->s,propertyType,propertyInitial,access,objType};
+    objType->properties[name->hash] = {name->s, propertyType, propertyInitial,
+                                      access, objVal(objType).weakRef()};
     objType->propertyOrder.push_back(name->hash);
 
     // check module annotations for ctype
@@ -1367,9 +1394,10 @@ void VM::defineMethod(ObjString* name)
         throw std::runtime_error("Duplicate method '"+name->toStdString()+"' declared in type "+(type->isActor?"actor":"object")+" '"+toUTF8StdString(type->name)+"'");
 
     ObjClosure* closure = asClosure(method);
-    closure->function->ownerType = asObjectType(peek(1));
+    closure->function->ownerType = objVal(type).weakRef();
 
-    type->methods[name->hash] = {name->s, method, closure->function->access, asObjectType(peek(1))};
+    type->methods[name->hash] = {name->s, method, closure->function->access,
+                                 objVal(type).weakRef()};
     pop();
 }
 
@@ -1777,7 +1805,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     if (it != objInst->properties.end()) {
                         auto pit = objInst->instanceType->properties.find(name->hash);
                         ast::Access propAccess = ast::Access::Public;
-                        ObjObjectType* ownerT = objInst->instanceType;
+                        Value ownerT = objVal(objInst->instanceType).weakRef();
                         if (pit != objInst->instanceType->properties.end()) {
                             propAccess = pit->second.access;
                             ownerT = pit->second.ownerType;
@@ -1805,7 +1833,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     auto it = actorInst->properties.find(name->hash);
                     if (it != actorInst->properties.end()) {
                         ast::Access propAccess = ast::Access::Public;
-                        ObjObjectType* ownerT = actorInst->instanceType;
+                        Value ownerT = objVal(actorInst->instanceType).weakRef();
                         if (pit != actorInst->instanceType->properties.end()) {
                             propAccess = pit->second.access;
                             ownerT = pit->second.ownerType;
@@ -2012,7 +2040,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     auto pit = objInst->instanceType->properties.find(name->hash);
                     ast::Access propAccess = ast::Access::Public;
-                    ObjObjectType* ownerT = objInst->instanceType;
+                    Value ownerT = objVal(objInst->instanceType).weakRef();
                     if (pit != objInst->instanceType->properties.end()) {
                         propAccess = pit->second.access;
                         ownerT = pit->second.ownerType;
@@ -2053,7 +2081,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     auto pit = actorInst->instanceType->properties.find(name->hash);
                     ast::Access propAccess = ast::Access::Public;
-                    ObjObjectType* ownerT = actorInst->instanceType;
+                    Value ownerT = objVal(actorInst->instanceType).weakRef();
                     if (pit != actorInst->instanceType->properties.end()) {
                         propAccess = pit->second.access;
                         ownerT = pit->second.ownerType;
@@ -2357,7 +2385,7 @@ std::pair<InterpretResult,Value> VM::execute()
             case asByte(OpCode::Closure): {
                 ObjFunction* function = asFunction(readConstant());
                 ObjClosure* closure = closureVal(function);
-                if (function->ownerType == nullptr && frame->closure->function->ownerType != nullptr)
+                if (function->ownerType.isNil() && !frame->closure->function->ownerType.isNil())
                     function->ownerType = frame->closure->function->ownerType;
                 push(objVal(closure));
                 for (int i = 0; i < closure->upvalues.size(); i++) {
@@ -2861,9 +2889,12 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                // add all of super's methods to sub type
-                subType->methods.insert(superType->methods.cbegin(),superType->methods.cend());
-                subType->properties.insert(superType->properties.cbegin(),superType->properties.cend());
+                // record inheritance relationship and copy properties
+                subType->superType = objVal(superType);
+                subType->properties.insert(superType->properties.cbegin(), superType->properties.cend());
+                subType->propertyOrder.insert(subType->propertyOrder.end(),
+                                             superType->propertyOrder.begin(),
+                                             superType->propertyOrder.end());
                 pop();
                 break;
             }

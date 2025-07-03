@@ -1250,7 +1250,7 @@ std::string roxal::toString(FunctionType ft)
 
 
 ObjFunction::ObjFunction(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName)
-    : arity(0), upvalueCount(0), name(), strict(false), ownerType(nullptr)
+    : arity(0), upvalueCount(0), name(), strict(false), ownerType(nilVal())
 {
     type = ObjType::Function;
     chunk = std::make_shared<Chunk>(packageName, moduleName);
@@ -1293,7 +1293,7 @@ ObjNative* roxal::nativeVal(NativeFn function, void* data)
 std::unordered_map<uint16_t, roxal::ObjObjectType*> ObjObjectType::enumTypes {};
 
 ObjObjectType::ObjObjectType(const icu::UnicodeString& typeName, bool isactor, bool isinterface, bool isenumeration)
-    : name(typeName), isActor(isactor), isInterface(isinterface), isEnumeration(isenumeration)
+    : name(typeName), isActor(isactor), isInterface(isinterface), isEnumeration(isenumeration), superType(nilVal())
 {
     typeValue = ValueType::Object;
     if (isActor)
