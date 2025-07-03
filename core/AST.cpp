@@ -510,15 +510,15 @@ std::any OnStatement::accept(ASTVisitor& v)
 void OnStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"On" << std::endl;
-    os << spaces(indent+1) << "event:" << std::endl;
-    event->output(os, indent+2);
+    os << spaces(indent+1) << "trigger:" << std::endl;
+    trigger->output(os, indent+2);
     os << spaces(indent+1) << "body:" << std::endl;
     body->output(os,indent+2);
 }
 
 void OnStatement::acceptChildren(ASTVisitor& v, Anys& results)
 {
-    results.push_back( event->accept(v) );
+    results.push_back( trigger->accept(v) );
     results.push_back( body->accept(v) );
 }
 

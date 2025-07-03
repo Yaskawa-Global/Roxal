@@ -352,7 +352,7 @@ struct ForStatement : public Statement {
 struct OnStatement : public Statement {
     OnStatement() : Statement(StmtType::On) {}
 
-    ptr<ast::Expression> event;
+    ptr<ast::Expression> trigger;
     ptr<ast::Suite> body;
 
     virtual std::any accept(ASTVisitor& v);

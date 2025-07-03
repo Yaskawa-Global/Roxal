@@ -353,7 +353,7 @@ std::any ASTGraphviz::visit(ptr<ast::OnStatement> ast)
     auto name { uname(ast) };
 
     addLink(name, stackPop(), "body");
-    addLink(name, stackPop(), "event");
+    addLink(name, stackPop(), "trigger");
     nodes[name] = node(name, "on");
     stackPush(name);
 
