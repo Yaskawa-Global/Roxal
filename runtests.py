@@ -166,7 +166,7 @@ try:
                 print()
                 passed = False
         if passed:
-            print(f"pass ({duration_ms:.1f} ms)", flush=True)
+            print(f"pass ({duration_ms:.0f} ms)", flush=True)
             passed_count += 1
         else:
             print(f"({duration_ms:.1f} ms)", flush=True)
