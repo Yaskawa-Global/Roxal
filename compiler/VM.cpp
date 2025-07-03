@@ -1104,10 +1104,10 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
             default:
                 break;
         }
-        runtimeError("Only strings, lists, ranges, [vectors, dicts, matrices, tensors - unimplemented], signals and streams can be indexed, not type "+objTypeName(indexable.asObj())+".");
+        runtimeError("Only strings, lists, ranges, [vectors, dicts, matrices, tensors - unimplemented], and signals can be indexed, not type "+objTypeName(indexable.asObj())+".");
         return false;
     }
-    runtimeError("Only strings, lists, ranges,[vectors, dicts, matrices, tensors - unimplemented], signals and streams can be indexed, not type "+indexable.typeName()+".");
+    runtimeError("Only strings, lists, ranges,[vectors, dicts, matrices, tensors - unimplemented], and signals can be indexed, not type "+indexable.typeName()+".");
     return false;
 }
 
@@ -1209,11 +1209,11 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
             default:
                 break;
         }
-        runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented], signals and streams can be indexed for assignment, not type "+objTypeName(indexable.asObj())+".");
+        runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented], and signals can be indexed for assignment, not type "+objTypeName(indexable.asObj())+".");
         return false;
     }
 
-    runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented], signals and streams can be indexed for assignment, not type "+indexable.typeName()+".");
+    runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented], and signals can be indexed for assignment, not type "+indexable.typeName()+".");
     return false;
 }
 
