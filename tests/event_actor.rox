@@ -21,7 +21,7 @@ print('calling act')
 a.act()
 
 print('emitting e')
-e.emit()
+emit e
 
 sleep(1000)
 
@@ -31,7 +31,7 @@ a = nil
 sleep(1000)
 
 print('emitting e')
-e.emit()
+emit e
 
 sleep(1000)
 

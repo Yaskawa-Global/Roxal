@@ -1,7 +1,10 @@
 var e:event
-on e:
+func handler():
   print('hello')
+
+e.on(handler)
 
 emit e
 
 print('done')
+

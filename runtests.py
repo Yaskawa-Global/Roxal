@@ -21,7 +21,7 @@ tests = [
     'unicode', 'signal_clock', 'signal_func_nocall', 'signal_func_exec', 'signal_index',
     'test_signal_value_property', 'construct_by_signal', 'signal_run_stop', 'signal_network1',
     'dataflow_clocktest1',
-    'event1', 'event_on_stmt', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4',
+    'event1', 'event_on_stmt', 'event_emit_keyword', 'event_on_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4',
     'event_in_sleep', 'event_in_sleep2',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err', 'conversions1',
     'byteops',
@@ -48,7 +48,7 @@ tests = [
 ]
 
 # implementation doesn't yet allow these tests to pass
-failing_tests = ['signal_network1', 'event_actor_ref2', 'event_actor_ref4']
+failing_tests = ['signal_network1', 'event_actor_ref2', 'event_actor_ref4', 'signal_func_exec']
 
 
 if args.convs:

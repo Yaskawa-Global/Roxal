@@ -26,7 +26,7 @@ oa.setup()
 
 sleep(10000)
 
-e.emit() // should trigger both handlers
+emit e // should trigger both handlers
 
 sleep(1000)
 
@@ -35,5 +35,5 @@ oa = nil
 
 sleep(10000)
 
-e.emit() // should trigger none
+emit e // should trigger none
 
