@@ -915,8 +915,8 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
 {
     currentNode = ast;
 
-    // push event expression
-    ast->event->accept(*this);
+    // push trigger expression
+    ast->trigger->accept(*this);
 
     // compile handler body as closure proc
     auto funcType = std::make_shared<type::Type>(BuiltinType::Func);
