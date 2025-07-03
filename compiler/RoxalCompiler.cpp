@@ -92,8 +92,18 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 
         auto module { asModuleScope(moduleScope()) };
 
-        module->strict = false;
-        module->function->strict = false;
+        bool strictContext = false;
+        if (auto file = std::dynamic_pointer_cast<ast::File>(ast)) {
+            for (const auto& annot : file->annotations) {
+                if (annot->name == "strict")
+                    strictContext = true;
+                else if (annot->name == "nonstrict")
+                    strictContext = false;
+            }
+        }
+
+        module->strict = strictContext;
+        module->function->strict = strictContext;
 
         try {
             auto file = as<File>(ast);
@@ -974,6 +984,16 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 
     enterFuncScope(enclosingModuleScope->moduleType, funcName, ftype, ast->type.value());
 
+    bool strictContext = true;
+    for (const auto& annot : ast->annotations) {
+        if (annot->name == "strict")
+            strictContext = true;
+        else if (annot->name == "nonstrict")
+            strictContext = false;
+    }
+
+    asFuncScope(funcScope())->strict = strictContext;
+    asFuncScope(funcScope())->function->strict = strictContext;
     asFuncScope(funcScope())->function->access = ast->access;
 
     #ifdef DEBUG_BUILD

@@ -1,0 +1,9 @@
+var dummy = 0
+
+@nonstrict
+func f(x:int) -> int:
+  var y:int
+  y = "2"
+  return x+y
+
+print(f(1))
