@@ -3243,8 +3243,14 @@ void VM::runtimeError(const std::string& format, ...)
     auto frame { thread->frames.end()-1 };
 
     size_t instruction = frame->ip - frame->closure->function->chunk->code.begin() - 1;
-    int line = frame->closure->function->chunk->getLine(instruction);
-    fprintf(stderr, "[line %d] in script\n", line);
+    auto chunk = frame->closure->function->chunk;
+    int line = chunk->getLine(instruction);
+    int col  = chunk->getColumn(instruction);
+    std::string fname = toUTF8StdString(chunk->sourceName);
+    if (!fname.empty())
+        fprintf(stderr, "[%s:%d:%d] in script\n", fname.c_str(), line, col);
+    else
+        fprintf(stderr, "[line %d:%d] in script\n", line, col);
     resetStack();
 }
 

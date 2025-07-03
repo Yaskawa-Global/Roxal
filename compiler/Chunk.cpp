@@ -8,30 +8,32 @@
 using namespace roxal;
 
 
-Chunk::Chunk(const icu::UnicodeString& packageName_, const icu::UnicodeString& moduleName_)
-    : packageName(packageName_), moduleName(moduleName_)
+Chunk::Chunk(const icu::UnicodeString& packageName_, const icu::UnicodeString& moduleName_,
+             const icu::UnicodeString& sourceName_)
+    : packageName(packageName_), moduleName(moduleName_), sourceName(sourceName_)
 {
     code.reserve(8);
 }
 
 
-void Chunk::write(uint8_t byte, int line, const std::string& comment)
+void Chunk::write(uint8_t byte, int line, int column, const std::string& comment)
 {
     code.push_back(byte);
     #ifdef DEBUG_BUILD
     codeComments.push_back(comment);
     #endif
-    lines.push_back(line);
+    if (lineTable.empty() || lineTable.back().line != line || lineTable.back().column != column)
+        lineTable.push_back(LineEntry{code.size()-1, line, column});
 }
 
 
-void Chunk::writeConsant(const Value& value, int line, const std::string& comment)
+void Chunk::writeConsant(const Value& value, int line, int column, const std::string& comment)
 {
     auto constant = addConstant(value);
     if (constant > 255)
         throw std::runtime_error("maximum of 256 constants exceeded");
-    write(OpCode::Constant, line, comment);
-    write(constant, line);
+    write(OpCode::Constant, line, column, comment);
+    write(constant, line, column);
 }
 
 
@@ -54,9 +56,28 @@ Chunk::size_type Chunk::addConstant(const Value& value)
 
 int Chunk::getLine(size_type offset) const
 {
-    if (offset < lines.size())
-        return lines.at(offset);
-    return -1;
+    if (lineTable.empty())
+        return -1;
+    LineEntry entry{0, lineTable.front().line, lineTable.front().column};
+    for(const auto& e : lineTable) {
+        if (e.offset > offset)
+            break;
+        entry = e;
+    }
+    return entry.line;
+}
+
+int Chunk::getColumn(size_type offset) const
+{
+    if (lineTable.empty())
+        return -1;
+    LineEntry entry{0, lineTable.front().line, lineTable.front().column};
+    for(const auto& e : lineTable) {
+        if (e.offset > offset)
+            break;
+        entry = e;
+    }
+    return entry.column;
 }
 
 
@@ -180,10 +201,10 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
         return offset;
         //throw std::runtime_error("No instruction to dissasemble a offset "+std::to_string(offset));
 
-    if (offset > 0 && lines.at(offset) == lines.at(offset-1))
+    if (offset > 0 && getLine(offset) == getLine(offset-1))
         std::cout << "   | ";
     else
-        std::cout << format("%4d ", lines.at(offset));
+        std::cout << format("%4d ", getLine(offset));
 
     uint8_t instruction = code.at(offset);
 
