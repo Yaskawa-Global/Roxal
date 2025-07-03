@@ -3,9 +3,8 @@ var s = clock(10)
 on s:
   print("s changed to:"+int(s))
 
-s.tick()
-_ussleep(120000)
-s.tick()
-_ussleep(120000)
-s.tick()
-_ussleep(120000)
+s.run()
+sleep(310000)
+
+print('done')
+
