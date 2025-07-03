@@ -203,7 +203,10 @@ public:
 
     /// @brief Checks if the value is a boolean.
     /// @return True if the value is a boolean, false otherwise.
-    inline bool isBool() const { return (val|uint64_t(1)<<TypeTagOffset) == (QNAN | TagTrue); }
+    inline bool isBool() const {
+        return (val & SignBit) == 0 &&
+               ((val | uint64_t(1) << TypeTagOffset) == (QNAN | TagTrue));
+    }
 
     /// @brief Retrieves the value as a boolean.
     /// @param strict If true, performs strict type checking. If false, allows type coercion.
@@ -212,7 +215,9 @@ public:
 
     /// @brief Checks if the value is a byte.
     /// @return True if the value is a byte, false otherwise.
-    inline bool isByte() const { return (val & (QNAN | TypeTag)) == (QNAN | TagByte); }
+    inline bool isByte() const {
+        return (val & (SignBit | QNAN | TypeTag)) == (QNAN | TagByte);
+    }
 
     /// @brief Retrieves the value as a byte.
     /// @param strict If true, performs strict type checking. If false, allows type coercion.
@@ -221,7 +226,9 @@ public:
 
     /// @brief Checks if the value is an integer.
     /// @return True if the value is an integer, false otherwise.
-    inline bool isInt() const { return (val & (QNAN | TypeTag)) == (QNAN | TagInt); }
+    inline bool isInt() const {
+        return (val & (SignBit | QNAN | TypeTag)) == (QNAN | TagInt);
+    }
 
     /// @brief Retrieves the value as an integer.
     /// @param strict If true, performs strict type checking. If false, allows type coercion.
@@ -241,7 +248,9 @@ public:
     /// @return True if the value is a number, false otherwise.
     inline bool isNumber() const { return isInt() || isReal() || isByte(); } // TODO: || isDecimal(v)
 
-    inline bool isEnum() const { return (val & (QNAN | TypeTag)) == (QNAN | TagEnum); }
+    inline bool isEnum() const {
+        return (val & (SignBit | QNAN | TypeTag)) == (QNAN | TagEnum);
+    }
     int16_t asEnum() const;
     uint16_t enumTypeId() const {
         #ifdef DEBUG_BUILD
@@ -252,7 +261,9 @@ public:
 
     /// @brief Checks if the value is a type.
     /// @return True if the value is a type, false otherwise.
-    inline bool isType() const { return (val & (QNAN | TypeTag)) == (QNAN | TagType); }
+    inline bool isType() const {
+        return (val & (SignBit | QNAN | TypeTag)) == (QNAN | TagType);
+    }
 
     /// @brief Retrieves the value as a type.
     /// @param strict If true, performs strict type checking. If false, allows type coercion.
