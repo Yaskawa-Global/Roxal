@@ -259,6 +259,7 @@ protected:
     Value wait_builtin(int argCount, Value* args);
     Value runtests_builtin(int argCount, Value* args);
     Value event_emit_builtin(int argCount, Value* args);
+    Value event_on_builtin(int argCount, Value* args);
     Value weakref_builtin(int argCount, Value* args);
     Value weak_alive_builtin(int argCount, Value* args);
 

@@ -62,6 +62,7 @@ compound_stmt
  | while_stmt
  | for_stmt
  | on_stmt
+ | emit_stmt
 //  | with_stmt
 ;
 
@@ -96,6 +97,10 @@ for_stmt
 
 on_stmt
  : ON IDENTIFIER ':' suite
+ ;
+
+emit_stmt
+ : EMIT expression
  ;
 
 
@@ -246,7 +251,7 @@ call
 args_or_index_or_accessor
   : '(' arguments? ')'
   | '[' ranges ']'
-  | DOT IDENTIFIER ('(' arguments? ')')?
+  | DOT (IDENTIFIER | ON | EMIT) ('(' arguments? ')')?
   ;
 
 ranges
@@ -354,6 +359,7 @@ LET : 'let';
 FUNC: 'func';
 PROC: 'proc';
 ON: 'on';
+EMIT: 'emit';
 RETURN: 'return';
 SCOPE: 'scope' ;
 WITH: 'with'; // TODO

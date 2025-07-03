@@ -9,7 +9,7 @@ func f():
 
 e = f()
 
-e.emit()
+emit e
 
 // release e
 e = nil

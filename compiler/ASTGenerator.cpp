@@ -521,6 +521,8 @@ std::any ASTGenerator::visitCompound_stmt(RoxalParser::Compound_stmtContext *con
         return visitFor_stmt(context->for_stmt());
     else if (context->on_stmt())
         return visitOn_stmt(context->on_stmt());
+    else if (context->emit_stmt())
+        return visitEmit_stmt(context->emit_stmt());
     else
         throw std::runtime_error("unimplemented compound statement alternative");
 
@@ -646,6 +648,31 @@ std::any ASTGenerator::visitOn_stmt(RoxalParser::On_stmtContext *context)
     onStmt->body = as<Suite>(visitSuite(context->suite()));
 
     return typeValue(onStmt);
+    visitEnd();
+}
+
+
+std::any ASTGenerator::visitEmit_stmt(RoxalParser::Emit_stmtContext *context)
+{
+    visitStart();
+
+    auto expr = as<Expression>(visitExpression(context->expression()));
+
+    auto access = std::make_shared<UnaryOp>(UnaryOp::Accessor);
+    setSourceInfo(access, context->EMIT());
+    access->arg = expr;
+    access->member = toUnicodeString("emit");
+
+    auto call = std::make_shared<Call>();
+    setSourceInfo(call, context);
+    call->callable = access;
+    call->args = {};
+
+    auto exprStmt = std::make_shared<ExpressionStatement>();
+    setSourceInfo(exprStmt, context);
+    exprStmt->expr = call;
+
+    return typeValue(exprStmt);
     visitEnd();
 }
 
@@ -1531,7 +1558,13 @@ std::any ASTGenerator::visitArgs_or_index_or_accessor(RoxalParser::Args_or_index
     if (context->DOT()) { // accessor, possibly call
         info->accessor = true;
         info->arguments = false;
-        UnicodeString ident = context->IDENTIFIER() ? UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) : "";
+        UnicodeString ident;
+        if (context->IDENTIFIER())
+            ident = UnicodeString::fromUTF8(context->IDENTIFIER()->getText());
+        else if (context->ON())
+            ident = UnicodeString("on");
+        else if (context->EMIT())
+            ident = UnicodeString("emit");
         info->accessed = ident;
 
         if (context->OPEN_PAREN()) {
