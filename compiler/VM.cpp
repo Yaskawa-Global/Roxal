@@ -3884,13 +3884,10 @@ void VM::defineNativeFunctions()
     };
 
     addSys("_clock", &VM::clock_native);
-    addSys("_ussleep", &VM::usSleep_native);
-    addSys("_mssleep", &VM::msSleep_native);
     addSys("clock", &VM::clock_signal_native);
     addSys("_engine_stop", &VM::engine_stop_native);
     addSys("typeof", &VM::typeof_native);
     addSys("loadlib", &VM::loadlib_native);
-    //addSys("_sleep", &VM::sleep_native);
 
     auto addMath = [&](const std::string& name, void* fnPtr,
                        std::vector<ffi_type*> args){
@@ -3974,25 +3971,6 @@ Value VM::clock_native(int argCount, Value* args)
     return realVal(double(clock())/CLOCKS_PER_SEC);
 }
 
-Value VM::usSleep_native(int argCount, Value* args)
-{
-    if ((argCount != 1) || !args[0].isNumber())
-        throw std::invalid_argument("ussleep expects single numeric argument");
-
-    std::this_thread::sleep_for(std::chrono::microseconds(args[0].asInt()));
-
-    return nilVal();
-}
-
-Value VM::msSleep_native(int argCount, Value* args)
-{
-    if ((argCount != 1) || !args[0].isNumber())
-        throw std::invalid_argument("mssleep expects single numeric argument");
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(args[0].asInt()));
-
-    return nilVal();
-}
 
 Value VM::clock_signal_native(int argCount, Value* args)
 {
@@ -4087,15 +4065,6 @@ Value VM::loadlib_native(int argCount, Value* args)
     return objVal(libraryVal(h));
 }
 
-Value VM::sleep_native(int argCount, Value* args)
-{
-    if ((argCount != 1) || !args[0].isNumber())
-        throw std::invalid_argument("sleep expects single numeric argument");
-
-    std::this_thread::sleep_for(std::chrono::seconds(args[0].asInt()));
-
-    return nilVal();
-}
 
 Value VM::ffi_native(int argCount, Value* args)
 {
