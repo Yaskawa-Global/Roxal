@@ -7,5 +7,5 @@ type A actor:
 var a = A('a')
 a.f('b')
 
-sleep(50000)
+sleep(us=50000)
 

@@ -5,6 +5,6 @@ on signals[0]:
   print("tick")
 
 s.run()
-sleep(350000)
+sleep(us=350000)
 
 print('done')

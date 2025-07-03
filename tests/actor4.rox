@@ -5,7 +5,7 @@ type A actor:
     print('from actor A.f()')
 
   func g():
-    sleep(100000)
+    sleep(us=100000)
     gl = true
     return 2
 

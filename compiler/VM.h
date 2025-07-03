@@ -108,7 +108,9 @@ public:
     void defineProperty(ObjString* name);
     void defineMethod(ObjString* name);
     void defineEnumLabel(ObjString* name);
-    void defineNative(const std::string& name, NativeFn function);
+    void defineNative(const std::string& name, NativeFn function,
+                      ptr<type::Type> funcType = nullptr,
+                      std::vector<Value> defaults = {});
 
 
     const int MaxStack = 1024;
@@ -179,9 +181,14 @@ protected:
     struct BuiltinMethodInfo {
         NativeFn function;
         bool isProc;  // true for proc methods, false for func methods
+        ptr<type::Type> funcType;
+        std::vector<Value> defaultValues;
 
         BuiltinMethodInfo() : function(nullptr), isProc(false) {}
-        BuiltinMethodInfo(NativeFn fn, bool proc = false) : function(fn), isProc(proc) {}
+        BuiltinMethodInfo(NativeFn fn, bool proc = false,
+                          ptr<type::Type> type=nullptr,
+                          std::vector<Value> defaults = {})
+            : function(fn), isProc(proc), funcType(type), defaultValues(std::move(defaults)) {}
     };
 
     // Builtin methods: builtin value type -> method name hash -> BuiltinMethodInfo
@@ -202,7 +209,10 @@ protected:
     void defineBuiltinFunctions();
 
     void defineBuiltinMethods();
-    void defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn, bool isProc = false);
+    void defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn,
+                             bool isProc = false,
+                             ptr<type::Type> funcType = nullptr,
+                             std::vector<Value> defaults = {});
 
     // Native property support
     typedef Value (VM::*NativePropertyGetter)(Value&);

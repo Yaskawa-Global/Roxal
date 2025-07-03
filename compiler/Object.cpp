@@ -1275,16 +1275,20 @@ ObjFunction::~ObjFunction()
 
 
 
-ObjNative::ObjNative(NativeFn _function, void* _data)
-    : function(_function), data(_data)
+ObjNative::ObjNative(NativeFn _function, void* _data,
+                     ptr<roxal::type::Type> _funcType,
+                     std::vector<Value> defaults)
+    : function(_function), data(_data), funcType(_funcType), defaultValues(std::move(defaults))
 {
     type = ObjType::Native;
 }
 
 
-ObjNative* roxal::nativeVal(NativeFn function, void* data)
+ObjNative* roxal::nativeVal(NativeFn function, void* data,
+                           ptr<roxal::type::Type> funcType,
+                           std::vector<Value> defaults)
 {
-    return newObj<ObjNative>(__func__,function,data);
+    return newObj<ObjNative>(__func__,function,data,funcType,std::move(defaults));
 }
 
 

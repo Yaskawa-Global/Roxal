@@ -4,7 +4,7 @@ on s:
   print("s changed to:"+int(s))
 
 s.run()
-sleep(350000)
+sleep(us=350000)
 
 print('done')
 

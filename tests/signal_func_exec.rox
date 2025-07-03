@@ -5,8 +5,8 @@ func add(x:int, y:int) -> int:
 c = clock(10)
 inc = add(c, 1)
 c.tick()
-_ussleep(110000)
+_ussleep(us=110000)
 c.tick()
-_ussleep(110000)
+_ussleep(us=110000)
 print("inc="+inc)
 
