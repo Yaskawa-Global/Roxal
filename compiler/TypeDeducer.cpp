@@ -61,7 +61,16 @@ ast::ASTVisitor::TraversalOrder TypeDeducer::traversalOrder() const
 std::any TypeDeducer::visit(ptr<ast::File> ast)
 {
     ast::Anys results {};
-    pushScope(/*strict=*/false); // module scope is non-strict
+
+    bool strictContext = false;
+    for (const auto& annot : ast->annotations) {
+        if (annot->name == "strict")
+            strictContext = true;
+        else if (annot->name == "nonstrict")
+            strictContext = false;
+    }
+
+    pushScope(strictContext); // module scope strictness can be overridden
     ast->acceptChildren(*this, results);
     popScope();
     return results;
@@ -174,6 +183,9 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
 std::any TypeDeducer::visit(ptr<ast::FuncDecl> ast)
 {
     ast::Anys results {};
+    // propagate annotations to the underlying Function node so visitors
+    // like visit(Function) can inspect them
+    ast->func->annotations = ast->annotations;
     ast->acceptChildren(*this, results);
 
     // for completeness/convenience, set function type here too
@@ -269,7 +281,15 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
 {
     ast::Anys results {};
 
-    pushScope(/*strict=*/true);
+    bool strictContext = true;
+    for (const auto& annot : ast->annotations) {
+        if (annot->name == "strict")
+            strictContext = true;
+        else if (annot->name == "nonstrict")
+            strictContext = false;
+    }
+
+    pushScope(strictContext);
     // pre-register parameter types so body and defaults can reference them
     for (auto& param : ast->params) {
         if (param->type.has_value() && std::holds_alternative<BuiltinType>(param->type.value())) {
