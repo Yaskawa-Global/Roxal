@@ -94,6 +94,7 @@ os.chdir(os.path.join(project_root, roxalpath))
 
 try:
     for test in tests:
+        print(f"Test {test} ", end='', flush=True)
         testrox = os.path.join(test_dir, test + '.rox')
         testout = os.path.join(test_dir, test + '.out')
         testerr = os.path.join(test_dir, test + '.err')
@@ -112,7 +113,7 @@ try:
 
         passed = True
         if compProc.returncode != 0:
-            print(f"Test {test} FAIL: {opt_expected}")
+            print(f"FAIL: {opt_expected}", flush=True)
             print(f"-- return code {compProc.returncode} --")
             if compProc.returncode < 0:
                 import signal
@@ -130,7 +131,7 @@ try:
                         b'abort' in compProc.stdout.lower() or
                         b'abort' in compProc.stderr.lower())
         if crash_output and passed:
-            print(f"Test {test} FAIL: {opt_expected}")
+            print(f"FAIL: {opt_expected}", flush=True)
             print("-- abnormal termination message detected --")
             print(compProc.stdout)
             print(compProc.stderr)
@@ -140,7 +141,7 @@ try:
             with open(testout, mode='rb') as file:
                 expected = file.read()
             if expected != compProc.stdout:
-                print(f"Test {test} FAIL: {opt_expected}")
+                print(f"FAIL: {opt_expected}", flush=True)
                 print("-- stdout --")
                 print(compProc.stdout)
                 print("-- expected stdout --")
@@ -153,7 +154,7 @@ try:
                 err_re = file.read().strip()
             stderr_str = compProc.stderr.decode()
             if re.search(err_re, stderr_str, re.MULTILINE | re.DOTALL) is None:
-                print(f"Test {test} FAIL: {opt_expected}")
+                print(f"FAIL: {opt_expected}", flush=True)
                 print("-- stderr --")
                 print(stderr_str)
                 print("-- expected regex --")
@@ -162,7 +163,7 @@ try:
                 print()
                 passed = False
         if passed:
-            print(f"Test {test} pass")
+            print("pass", flush=True)
             passed_count += 1
         else:
             failed_count += 1
