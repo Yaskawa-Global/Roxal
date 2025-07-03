@@ -32,6 +32,7 @@ namespace df { class Signal; }
 namespace roxal {
 struct ObjObjectType; // forward
 class Thread; // forward declaration for handler threads
+struct ObjEvent; // forward
 }
 
 
@@ -506,9 +507,11 @@ std::string objMatrixToString(const ObjMatrix* om);
 // signal (dataflow signal wrapper)
 
 struct ObjSignal : public Obj {
-    ObjSignal(ptr<df::Signal> s) : signal(s) { type = ObjType::Signal; }
+    ObjSignal(ptr<df::Signal> s);
     virtual ~ObjSignal() {}
+    ObjEvent* ensureChangeEvent();
     ptr<df::Signal> signal;
+    Value changeEvent;
 };
 
 inline bool isSignal(const Value& v) { return isObjType(v, ObjType::Signal); }

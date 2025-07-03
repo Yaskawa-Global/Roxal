@@ -299,3 +299,7 @@ protected:
 
 
 }
+
+namespace roxal {
+void scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when);
+}

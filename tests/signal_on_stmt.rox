@@ -1,0 +1,10 @@
+var s = clock(10)
+
+on s:
+  print("s changed to:"+int(s))
+
+s.run()
+sleep(310000)
+
+print('done')
+
