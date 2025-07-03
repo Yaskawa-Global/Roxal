@@ -585,7 +585,7 @@ struct ObjFunction : public Obj
     bool strict;        // true if function was compiled in strict mode
 
     FunctionType fnType { FunctionType::Function };
-    ObjObjectType* ownerType { nullptr }; // owning type for methods
+    Value ownerType { nilVal() }; // weak ref owning type
     ast::Access access { ast::Access::Public };
 
     // for parameters with default values that must be re-evaluated on each call
@@ -796,6 +796,7 @@ struct ObjObjectType : public ObjTypeSpec
     bool isActor;
     bool isInterface;
     bool isEnumeration;
+    Value superType { nilVal() }; // parent type
     bool isCStruct { false };
     int cstructArch { hostArch };
     uint16_t enumTypeId;
@@ -806,7 +807,7 @@ struct ObjObjectType : public ObjTypeSpec
         Value type;
         Value initialValue;
         ast::Access access { ast::Access::Public };
-        ObjObjectType* ownerType { nullptr };
+        Value ownerType { nilVal() }; // weak ref to owning type
         std::optional<icu::UnicodeString> ctype;
     };
     std::unordered_map<int32_t, Property> properties;
@@ -816,7 +817,7 @@ struct ObjObjectType : public ObjTypeSpec
         icu::UnicodeString name;
         Value closure;
         ast::Access access { ast::Access::Public };
-        ObjObjectType* ownerType { nullptr };
+        Value ownerType { nilVal() }; // weak ref to owning type
     };
     std::unordered_map<int32_t, Method> methods;
 
