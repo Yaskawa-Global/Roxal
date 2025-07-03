@@ -33,7 +33,7 @@ tests = [
     'if', 'for1',
     'func_param_default', 'func_param_default2', 'func_param_default3','func_param_default4',
     'typeobj1', 'typeobj2', 'typeobj3', 'typeobj4', 'typeobj5', 'typeobj6', 'typeobj7', 'virtual_method',
-    'implements1',
+    'implements1', 'object_inherit_bank',
     'importmodule1', 'importstar', 'importsyms', 'importdiamond',
     'method_named_param',
     'annot1', 'generic', 'objscopes',
