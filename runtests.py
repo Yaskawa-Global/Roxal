@@ -4,6 +4,7 @@ import os
 import subprocess
 import argparse
 import re
+import time
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Run Roxal tests.")
@@ -95,6 +96,7 @@ os.chdir(os.path.join(project_root, roxalpath))
 try:
     for test in tests:
         print(f"Test {test} ", end='', flush=True)
+        start_time = time.perf_counter()
         testrox = os.path.join(test_dir, test + '.rox')
         testout = os.path.join(test_dir, test + '.out')
         testerr = os.path.join(test_dir, test + '.err')
@@ -108,6 +110,7 @@ try:
         if test.startswith('typededucer_'):
             cmd = [roxal, '--ast', testrox]
         compProc = subprocess.run(cmd, capture_output=True, shell=False)
+        duration_ms = (time.perf_counter() - start_time) * 1000
 
         opt_expected = (" [expected]" if test in failing_tests else '')
 
@@ -163,9 +166,10 @@ try:
                 print()
                 passed = False
         if passed:
-            print("pass", flush=True)
+            print(f"pass ({duration_ms:.1f} ms)", flush=True)
             passed_count += 1
         else:
+            print(f"({duration_ms:.1f} ms)", flush=True)
             failed_count += 1
 
 except Exception as e:
