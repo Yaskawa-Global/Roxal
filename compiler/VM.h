@@ -293,9 +293,6 @@ protected:
     void defineNativeFunctions();
 
     Value clock_native(int argCount, Value* args);
-    Value usSleep_native(int argCount, Value* args);
-    Value msSleep_native(int argCount, Value* args);
-    Value sleep_native(int argCount, Value* args);
     Value clock_signal_native(int argCount, Value* args);
     Value engine_stop_native(int argCount, Value* args);
     Value typeof_native(int argCount, Value* args);
