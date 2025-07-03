@@ -29,16 +29,16 @@ print(typeof(out))  // signal
 
 c.tick()
 print("c="+int(c))
-sleep(110000)
+sleep(us=110000)
 print(real(out0))
 print(vector(out))
 
 c.tick()
 print("c="+int(c))
-sleep(110000)
+sleep(us=110000)
 print(vector(out))
 
 c.tick()
 print("c="+int(c))
-sleep(110000)
+sleep(us=110000)
 print(vector(out))

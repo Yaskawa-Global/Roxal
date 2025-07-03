@@ -13,6 +13,7 @@
 #include <core/common.h>
 #include <core/AST.h>
 #include <core/atomic.h>
+#include <core/types.h>
 #include "Chunk.h"
 #include "Value.h"
 #include <Eigen/Dense>
@@ -737,17 +738,23 @@ typedef Value (VM::*NativeFn)(int,Value*);
 
 struct ObjNative : public Obj
 {
-    ObjNative(NativeFn function, void* data=nullptr);
+    ObjNative(NativeFn function, void* data=nullptr,
+              ptr<roxal::type::Type> funcType=nullptr,
+              std::vector<Value> defaults = {});
     virtual ~ObjNative() {}
 
     NativeFn function;
     void* data;
+    ptr<roxal::type::Type> funcType;
+    std::vector<Value> defaultValues;
 };
 
 inline bool isNative(const Value& v) { return isObjType(v, ObjType::Native); }
 inline ObjNative* asNative(const Value& v) { return static_cast<ObjNative*>(v.asObj()); }
 
-ObjNative* nativeVal(NativeFn function, void* data=nullptr);
+ObjNative* nativeVal(NativeFn function, void* data=nullptr,
+                     ptr<roxal::type::Type> funcType=nullptr,
+                     std::vector<Value> defaults = {});
 
 
 
@@ -963,20 +970,27 @@ inline ObjBoundMethod* cloneBoundMethod(const ObjBoundMethod* bm) {
 
 struct ObjBoundNative : public Obj
 {
-    ObjBoundNative(const Value& instance, NativeFn fn, bool proc = false)
-      : receiver(instance), function(fn), isProc(proc) { type = ObjType::BoundNative; }
+    ObjBoundNative(const Value& instance, NativeFn fn, bool proc = false,
+                   ptr<roxal::type::Type> funcType=nullptr,
+                   std::vector<Value> defaults = {})
+      : receiver(instance), function(fn), isProc(proc),
+        funcType(funcType), defaultValues(std::move(defaults)) { type = ObjType::BoundNative; }
     virtual ~ObjBoundNative() {}
 
     Value receiver;
     NativeFn function;
     bool isProc;  // true for proc methods, false for func methods
+    ptr<roxal::type::Type> funcType;
+    std::vector<Value> defaultValues;
 };
 
 inline bool isBoundNative(const Value& v) { return isObjType(v, ObjType::BoundNative); }
 inline ObjBoundNative* asBoundNative(const Value& v) { return static_cast<ObjBoundNative*>(v.asObj()); }
-inline ObjBoundNative* boundNativeVal(const Value& instance, NativeFn fn, bool isProc = false) { return newObj<ObjBoundNative>(__func__, instance, fn, isProc); }
+inline ObjBoundNative* boundNativeVal(const Value& instance, NativeFn fn, bool isProc = false,
+                                      ptr<roxal::type::Type> funcType=nullptr,
+                                      std::vector<Value> defaults = {}) { return newObj<ObjBoundNative>(__func__, instance, fn, isProc, funcType, std::move(defaults)); }
 inline ObjBoundNative* cloneBoundNative(const ObjBoundNative* bm) {
-    auto newbm = newObj<ObjBoundNative>(__func__, bm->receiver, bm->function, bm->isProc);
+    auto newbm = newObj<ObjBoundNative>(__func__, bm->receiver, bm->function, bm->isProc, bm->funcType, bm->defaultValues);
     newbm->receiver = newbm->receiver.clone();
     return newbm;
 }

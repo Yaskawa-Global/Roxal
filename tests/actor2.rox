@@ -2,7 +2,7 @@ var g = false
 
 type A actor:
   func addone(n):
-    sleep(100000)
+    sleep(us=100000)
     g = true
     return n+1
 

@@ -12,7 +12,7 @@ type EventConsumer actor:
       print('event e occured')
 
     print('handleEvents sleeping for .5s')
-    sleep(500000)
+    sleep(us=500000)
     print('handleEvents exiting')    
 
 
@@ -21,11 +21,11 @@ p = EventConsumer()
 //p.printid()
 p.handleEvents(e)
 
-sleep(100000)
+sleep(us=100000)
 
 for i in range(1..2):
   print('emit '+i)
   emit e
-  sleep(100000)
+  sleep(us=100000)
 
 print('done')

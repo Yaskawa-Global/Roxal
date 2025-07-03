@@ -108,7 +108,22 @@ public:
     void defineProperty(ObjString* name);
     void defineMethod(ObjString* name);
     void defineEnumLabel(ObjString* name);
-    void defineNative(const std::string& name, NativeFn function);
+    void defineNative(const std::string& name, NativeFn function,
+                      ptr<type::Type> funcType = nullptr,
+                      std::vector<Value> defaults = {});
+
+    // Helper used by builtin call marshalling
+    std::vector<Value> marshalArgs(ptr<type::Type> funcType,
+                                   const std::vector<Value>& defaults,
+                                   const CallSpec& callSpec,
+                                   bool includeReceiver = false,
+                                   const Value& receiver = nilVal());
+
+    bool callNativeFn(NativeFn fn, ptr<type::Type> funcType,
+                      const std::vector<Value>& defaults,
+                      const CallSpec& callSpec,
+                      bool includeReceiver = false,
+                      const Value& receiver = nilVal());
 
 
     const int MaxStack = 1024;
@@ -179,9 +194,14 @@ protected:
     struct BuiltinMethodInfo {
         NativeFn function;
         bool isProc;  // true for proc methods, false for func methods
+        ptr<type::Type> funcType;
+        std::vector<Value> defaultValues;
 
         BuiltinMethodInfo() : function(nullptr), isProc(false) {}
-        BuiltinMethodInfo(NativeFn fn, bool proc = false) : function(fn), isProc(proc) {}
+        BuiltinMethodInfo(NativeFn fn, bool proc = false,
+                          ptr<type::Type> type=nullptr,
+                          std::vector<Value> defaults = {})
+            : function(fn), isProc(proc), funcType(type), defaultValues(std::move(defaults)) {}
     };
 
     // Builtin methods: builtin value type -> method name hash -> BuiltinMethodInfo
@@ -202,7 +222,10 @@ protected:
     void defineBuiltinFunctions();
 
     void defineBuiltinMethods();
-    void defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn, bool isProc = false);
+    void defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn,
+                             bool isProc = false,
+                             ptr<type::Type> funcType = nullptr,
+                             std::vector<Value> defaults = {});
 
     // Native property support
     typedef Value (VM::*NativePropertyGetter)(Value&);

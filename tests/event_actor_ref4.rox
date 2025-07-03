@@ -12,7 +12,7 @@ type MyOtherActor actor:
 
   proc setup():
     on e:
-      sleep(20000) // avoid colliding prints
+      sleep(us=20000) // avoid colliding prints
       print('e handled in MyOtherActor')
 
 
@@ -25,16 +25,16 @@ oa = MyOtherActor()
 a.setup()
 oa.setup()
 
-sleep(10000)
+sleep(us=10000)
 
 emit e // should trigger both handlers
 
-sleep(1000)
+sleep(us=1000)
 
 a = nil
 oa = nil
 
-sleep(10000)
+sleep(us=10000)
 
 emit e // should trigger none
 

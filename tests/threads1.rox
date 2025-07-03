@@ -2,7 +2,7 @@ func f1():
   print("hello from f1() thread id:"+_threadid())
 
 func f2():
-  sleep(700)
+  sleep(us=700)
   print("hello from f2() thread id:"+_threadid())
 
 
