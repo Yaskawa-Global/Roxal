@@ -1,0 +1,11 @@
+var m1 = [1 2;3 4]
+var m2 = [5 6;7 8]
+print(m1 + m2)
+print(m2 - m1)
+print(m1 * m2)
+var v = [1 2]
+print(m1 * v)
+print(v * m1)
+print(2 * m1)
+print(m1 * 2)
+
