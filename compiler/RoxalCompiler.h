@@ -91,6 +91,8 @@ protected:
     bool replModeFlag{false};
     std::vector<std::string> modulePaths;
 
+    std::shared_ptr<std::vector<std::string>> sourceLines;
+
     std::map<ModuleInfo,Value> importedModules;
 
     // given the components of an import, such as "package.subpackage.module", return

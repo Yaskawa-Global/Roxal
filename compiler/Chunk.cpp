@@ -12,16 +12,19 @@ Chunk::Chunk(const icu::UnicodeString& packageName_, const icu::UnicodeString& m
     : packageName(packageName_), moduleName(moduleName_)
 {
     code.reserve(8);
+    sourceLines = nullptr;
 }
 
 
-void Chunk::write(uint8_t byte, int line, const std::string& comment)
+void Chunk::write(uint8_t byte, int line, const std::string& comment, int column, int span)
 {
     code.push_back(byte);
     #ifdef DEBUG_BUILD
     codeComments.push_back(comment);
     #endif
     lines.push_back(line);
+    columns.push_back(column);
+    spans.push_back(span);
 }
 
 
@@ -57,6 +60,20 @@ int Chunk::getLine(size_type offset) const
     if (offset < lines.size())
         return lines.at(offset);
     return -1;
+}
+
+int Chunk::getColumn(size_type offset) const
+{
+    if (offset < columns.size())
+        return columns.at(offset);
+    return -1;
+}
+
+int Chunk::getSpan(size_type offset) const
+{
+    if (offset < spans.size())
+        return spans.at(offset);
+    return 1;
 }
 
 

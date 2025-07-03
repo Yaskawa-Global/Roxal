@@ -115,23 +115,30 @@ public:
 
     std::vector<Value> constants;
 
+    // Source lines for runtime error messages
+    std::shared_ptr<std::vector<std::string>> sourceLines;
+
     using size_type = CodeType::size_type;
     using iterator = CodeType::iterator;
 
-    void write(uint8_t byte, int line, const std::string& comment = "");
-    void write(OpCode byte, int line, const std::string& comment = "") { write(uint8_t(byte), line, comment); }
+    void write(uint8_t byte, int line, const std::string& comment = "", int column=-1, int span=1);
+    void write(OpCode byte, int line, const std::string& comment = "", int column=-1, int span=1) { write(uint8_t(byte), line, comment, column, span); }
     void writeConsant(const Value& value, int line, const std::string& comment = "");
     uint8_t lastByte() const; // last byte written
 
     size_type addConstant(const Value& value);
 
     int getLine(size_type offset) const;
+    int getColumn(size_type offset) const;
+    int getSpan(size_type offset) const;
 
     void disassemble(const icu::UnicodeString& name);
     size_type disassembleInstruction(size_type offset);
 
 protected:
     std::vector<int> lines; // TODO: implement more efficient method
+    std::vector<int> columns;
+    std::vector<int> spans;
 
     size_type constantInstruction(const std::string& name, size_type offset) const;
     size_type constantInstruction2(const std::string& name, size_type offset) const;

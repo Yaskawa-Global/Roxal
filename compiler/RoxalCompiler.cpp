@@ -61,11 +61,30 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
     ObjFunction* function { nullptr };
 
     ptr<ast::AST> ast {};
+    // read entire source so we can store lines for runtime error output
+    std::string src((std::istreambuf_iterator<char>(source)), {});
+    std::istringstream srcStream(src);
+
+    std::shared_ptr<std::vector<std::string>> linesPtr =
+        std::make_shared<std::vector<std::string>>();
+    {
+        std::string line;
+        std::istringstream lsrc(src);
+        while(std::getline(lsrc, line)) {
+            if(!line.empty() && line.back()=='\r') line.pop_back();
+            linesPtr->push_back(line);
+        }
+    }
+
+    auto prevLines = sourceLines;
+    sourceLines = linesPtr;
+
     try {
         ASTGenerator astGenerator {};
-        ast = astGenerator.ast(source, name);
+        ast = astGenerator.ast(srcStream, name);
     } catch (std::exception& e) {
         compileError(e.what());
+        sourceLines = prevLines;
         return function;
     }
 
@@ -77,6 +96,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
         typeDeducer.visit(as<File>(ast));
     } catch (std::exception& e) {
         compileError(e.what());
+        sourceLines = prevLines;
         return function;
     }
 
@@ -163,6 +183,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
         //std::cout << "\n" << interpreter.stackAsString(false) << std::endl;
     }
 
+    sourceLines = prevLines;
     return function;
 }
 
@@ -1704,6 +1725,8 @@ void RoxalCompiler::enterModuleScope(const icu::UnicodeString& packageName,
 {
     auto moduleScope { std::make_shared<ModuleScope>(packageName, moduleName,
                                                      existingModule) };
+    if (sourceLines)
+        moduleScope->function->chunk->sourceLines = sourceLines;
 
     lexicalScopes.push_back(moduleScope);
     #ifdef DEBUG_TRACE_SCOPES
@@ -1781,6 +1804,8 @@ void RoxalCompiler::enterFuncScope(Value moduleType, const icu::UnicodeString& f
 
     auto funcScope {std::make_shared<FunctionScope>(modScope->packageName, modScope->moduleName,
                                                     funcName,funcType,type)};
+    if (sourceLines)
+        funcScope->function->chunk->sourceLines = sourceLines;
 
     funcScope->function->moduleType = moduleType;
 
@@ -2022,33 +2047,53 @@ ValueType RoxalCompiler::builtinToValueType(ast::BuiltinType bt)
 
 void RoxalCompiler::emitByte(uint8_t byte, const std::string& comment)
 {
-    currentChunk()->write(byte, currentNode->interval.first.line, comment);
+    int col = int(currentNode->interval.first.pos);
+    int span = (currentNode->interval.first.line == currentNode->interval.second.line)
+                   ? std::max(1, int(currentNode->interval.second.pos - currentNode->interval.first.pos))
+                   : 1;
+    currentChunk()->write(byte, currentNode->interval.first.line, comment, col, span);
 }
 
 
 void RoxalCompiler::emitByte(OpCode op, const std::string& comment)
 {
-    currentChunk()->write(asByte(op), currentNode->interval.first.line, comment);
+    int col = int(currentNode->interval.first.pos);
+    int span = (currentNode->interval.first.line == currentNode->interval.second.line)
+                   ? std::max(1, int(currentNode->interval.second.pos - currentNode->interval.first.pos))
+                   : 1;
+    currentChunk()->write(asByte(op), currentNode->interval.first.line, comment, col, span);
 }
 
 
 void RoxalCompiler::emitBytes(uint8_t byte1, uint8_t byte2, const std::string& comment)
 {
-    currentChunk()->write(byte1, currentNode->interval.first.line, comment);
-    currentChunk()->write(byte2, currentNode->interval.first.line);
+    int col = int(currentNode->interval.first.pos);
+    int span = (currentNode->interval.first.line == currentNode->interval.second.line)
+                   ? std::max(1, int(currentNode->interval.second.pos - currentNode->interval.first.pos))
+                   : 1;
+    currentChunk()->write(byte1, currentNode->interval.first.line, comment, col, span);
+    currentChunk()->write(byte2, currentNode->interval.first.line, "", col, span);
 }
 
 void RoxalCompiler::emitBytes(OpCode op, uint8_t byte2, const std::string& comment)
 {
-    currentChunk()->write(op, currentNode->interval.first.line, comment);
-    currentChunk()->write(byte2, currentNode->interval.first.line);
+    int col = int(currentNode->interval.first.pos);
+    int span = (currentNode->interval.first.line == currentNode->interval.second.line)
+                   ? std::max(1, int(currentNode->interval.second.pos - currentNode->interval.first.pos))
+                   : 1;
+    currentChunk()->write(op, currentNode->interval.first.line, comment, col, span);
+    currentChunk()->write(byte2, currentNode->interval.first.line, "", col, span);
 }
 
 void RoxalCompiler::emitBytes(OpCode op, uint8_t byte2, uint8_t byte3, const std::string& comment)
 {
-    currentChunk()->write(op, currentNode->interval.first.line, comment);
-    currentChunk()->write(byte2, currentNode->interval.first.line);
-    currentChunk()->write(byte3, currentNode->interval.first.line);
+    int col = int(currentNode->interval.first.pos);
+    int span = (currentNode->interval.first.line == currentNode->interval.second.line)
+                   ? std::max(1, int(currentNode->interval.second.pos - currentNode->interval.first.pos))
+                   : 1;
+    currentChunk()->write(op, currentNode->interval.first.line, comment, col, span);
+    currentChunk()->write(byte2, currentNode->interval.first.line, "", col, span);
+    currentChunk()->write(byte3, currentNode->interval.first.line, "", col, span);
 }
 
 uint8_t RoxalCompiler::lastByte()

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <thread>
 #include <utility>
+#include <algorithm>
 #include <memory>
 #include <ffi.h>
 #include <dlfcn.h>
@@ -3153,7 +3154,23 @@ void VM::runtimeError(const std::string& format, ...)
 
     size_t instruction = frame->ip - frame->closure->function->chunk->code.begin() - 1;
     int line = frame->closure->function->chunk->getLine(instruction);
+    int column = frame->closure->function->chunk->getColumn(instruction);
+    int span = frame->closure->function->chunk->getSpan(instruction);
     fprintf(stderr, "[line %d] in script\n", line);
+
+    auto linesPtr = frame->closure->function->chunk->sourceLines;
+    if (linesPtr && line > 0 && line <= linesPtr->size()) {
+        const std::string& srcLine = linesPtr->at(line-1);
+        fprintf(stderr, "%s\n", srcLine.c_str());
+        if (column >= 0) {
+            int len = span > 0 ? span : 1;
+            if (column + len > (int)srcLine.size())
+                len = std::max(1, (int)srcLine.size() - column);
+            std::string caret(column, ' ');
+            caret += std::string(len, '^');
+            fprintf(stderr, "%s\n", caret.c_str());
+        }
+    }
     resetStack();
 }
 
