@@ -857,6 +857,23 @@ Value Value::weakRef() const
     return v;
 }
 
+Value Value::strongRef() const
+{
+    if (!weak)
+        return *this;
+
+    if (!isAlive())
+        return nilVal();
+
+    Obj* obj = asControl()->obj;
+    // Increment strong count before constructing Value to ensure object stays alive
+    obj->incRef();
+    Value v;
+    v.val = SignBit | QNAN | uint64_t(uintptr_t(obj));
+    v.weak = false;
+    return v;
+}
+
 static type::BuiltinType valueTypeToBuiltin(ValueType t)
 {
     using namespace type;

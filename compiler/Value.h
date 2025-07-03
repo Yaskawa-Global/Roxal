@@ -169,6 +169,7 @@ public:
 
     bool isWeak() const { return weak; }
     Value weakRef() const;
+    Value strongRef() const;
 
     /// @brief Checks if the value is boxed.
     /// @return True if the value is boxed, false otherwise.
