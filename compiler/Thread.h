@@ -59,7 +59,7 @@ public:
     std::atomic<State> state;
 
     void spawn(Value closure);
-    void join();
+    void join(ActorInstance* actorInstOverride = nullptr);
     void act(Value actorInstance);
     void detach();
     void wake();
@@ -114,6 +114,7 @@ public:
 private:
     ptr<std::thread> osthread;
 
+    // weak reference to associated actor instance
     Value actorInstance;
     std::atomic<bool> actor;
     std::atomic<bool> quit;

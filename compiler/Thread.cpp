@@ -24,27 +24,32 @@ void Thread::spawn(Value closure)
         stack.clear();
 
         state = State::Completed;
+        actor = false;
     });
 }
 
-void Thread::join()
+void Thread::join(ActorInstance* actorInstOverride)
 {
-    if (state == State::Constructed)
-        throw std::runtime_error("Can't join Thread that hasn't completed spawning yet. id:"+std::to_string(thisid));
+    if (state == State::Constructed || osthread == nullptr || !osthread->joinable())
+        return;
 
-    if ((osthread == nullptr) || !osthread->joinable())
-        throw std::runtime_error("Can't join Thread that isn't joinable. id:"+std::to_string(thisid));
-
+    ActorInstance* inst = actorInstOverride;
     if (actor) {
-        auto inst { asActorInstance(actorInstance) };
-        std::lock_guard<std::mutex> lock { inst->queueMutex };
-        quit = true;
-        inst->queueConditionVar.notify_one();
+        if (inst == nullptr && actorInstance.isAlive())
+            inst = asActorInstance(actorInstance);
+        if (inst != nullptr) {
+            std::lock_guard<std::mutex> lock { inst->queueMutex };
+            quit = true;
+            inst->queueConditionVar.notify_one();
+        } else {
+            quit = true;
+        }
     }
 
     osthread->join();
     osthread = nullptr;
     actorInstance = nilVal();
+    actor = false;
 
     state = State::Completed;
 }
@@ -53,22 +58,28 @@ void Thread::join()
 void Thread::act(Value actorInstance)
 {
     assert(isActorInstance(actorInstance));
-    this->actorInstance = actorInstance;
+    this->actorInstance = actorInstance.weakRef();
 
     actor = true;
     state = State::Spawned;
 
-    osthread = std::make_shared<std::thread>([this,actorInstance]() {
+    osthread = std::make_shared<std::thread>([this]() {
         auto& vm { VM::instance() };
 
         vm.thread = shared_from_this(); // set thread local storage member
 
-        ActorInstance* actorInst = asActorInstance(actorInstance);
+        Value actorVal = this->actorInstance;
+        if (!actorVal.isAlive()) {
+            state = State::Completed;
+            return;
+        }
+        ActorInstance* actorInst = asActorInstance(actorVal);
         actorInst->thread_id = std::this_thread::get_id(); // store actor's thread in instance
+        actorInst->thread = shared_from_this();
 
         vm.resetStack();
         // frame local 0 is actor 'this' instance for actor method (as for object methods)
-        push(actorInstance);
+        push(actorVal);
 
         do {
 
@@ -85,6 +96,11 @@ void Thread::act(Value actorInstance)
                 }
                 if (quit)
                     break;
+            }
+
+            if (!this->actorInstance.isAlive()) {
+                quit = true;
+                break;
             }
 
             // handle events even when no method was queued
@@ -160,7 +176,7 @@ void Thread::wake()
         std::unique_lock<std::mutex> lk(sleepMutex);
         sleepCondVar.notify_one();
     }
-    if (actor) {
+    if (actor && actorInstance.isAlive()) {
         ActorInstance* inst = asActorInstance(actorInstance);
         inst->queueConditionVar.notify_one();
     }
