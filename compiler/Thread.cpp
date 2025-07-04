@@ -131,12 +131,13 @@ void Thread::act(Value actorInstance)
                     result = resultPair.first;
 
                     if (resultPair.first == InterpretResult::OK) {
-                        if (callInfo.returnPromise != nullptr) {
-                            Value ret = resultPair.second;
-                            if (!ret.isPrimitive())
-                                ret = ret.clone();
+                        Value ret = resultPair.second;
+                        if (!ret.isPrimitive())
+                            ret = ret.clone();
+                        if (callInfo.returnPromise != nullptr)
                             callInfo.returnPromise->set_value(ret);
-                        }
+                        // remove return value from stack
+                        vm.thread->pop();
                     } else {
                         if (callInfo.returnPromise != nullptr)
                             callInfo.returnPromise->set_value(nilVal());
@@ -162,7 +163,8 @@ void Thread::act(Value actorInstance)
                 }
 
                 // restore weak actor reference for next iteration
-                this->stack[0] = this->actorInstance;
+                stackTop = stack.begin();
+                push(this->actorInstance);
 
             }
 
