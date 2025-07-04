@@ -401,8 +401,6 @@ thread_local ptr<Thread> VM::thread;
 
 bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
 {
-    if (runtimeErrorFlag.load())
-        return false;
 
     // closure,frame pair for any param default value 'func' calls
     std::vector<std::pair<Value,CallFrame>> defValFrames {};
@@ -559,8 +557,6 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
 
 bool VM::call(ValueType builtinType, const CallSpec& callSpec)
 {
-    if (runtimeErrorFlag.load())
-        return false;
 
     if (!callSpec.allPositional)
         throw std::runtime_error("Named parameters unsupported in constructor for "+to_string(builtinType));
@@ -579,8 +575,6 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
 
 bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 {
-    if (runtimeErrorFlag.load())
-        return false;
 
     bool signalArg = false;
     for(int i=0;i<callSpec.argCount;i++)
@@ -3109,8 +3103,6 @@ std::pair<InterpretResult,Value> VM::execute()
 
 bool VM::processPendingEvents()
 {
-    if (runtimeErrorFlag.load())
-        return false;
 
     if (thread->eventHandlers.empty()) return true;
 
