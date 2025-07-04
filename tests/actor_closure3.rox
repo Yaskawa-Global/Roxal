@@ -1,0 +1,17 @@
+type A actor:
+  private var secret = [1, 2]
+  func causeerror():
+    doesnotexist()
+    
+  func makeGetter():
+    var local = secret
+    func getter():
+      return local
+    return getter
+
+print('creating actor instance')
+var a = A()
+a.causeerror()
+
+var getter = a.makeGetter()
+//var lst = getter()
