@@ -141,12 +141,20 @@ void Thread::act(Value actorInstance)
                         if (callInfo.returnPromise != nullptr)
                             callInfo.returnPromise->set_value(nilVal());
                         quit = true;
-                        // restore weak reference before breaking
-                        this->stack[0] = this->actorInstance;
+                        // reset stack before breaking
+                        {
+                            auto diff = this->stackTop - (this->stack.begin()+1);
+                            if (diff > 0) popN(size_t(diff));
+                            this->stack[0] = this->actorInstance;
+                        }
                         break;
                     }
 
-                    popN(callInfo.callSpec.argCount);
+                    {
+                        auto diff = this->stackTop - (this->stack.begin()+1);
+                        if (diff > 0) popN(size_t(diff));
+                        this->stack[0] = this->actorInstance;
+                    }
 
                 } else if (isBoundNative(callInfo.callee)) {
                     ObjBoundNative* bn = asBoundNative(callInfo.callee);
@@ -167,6 +175,13 @@ void Thread::act(Value actorInstance)
             }
 
         } while (true);
+
+        // resolve any queued calls with nil so waiting futures complete
+        while(!actorInst->callQueue.empty()) {
+            auto pending = actorInst->callQueue.pop();
+            if (pending.returnPromise)
+                pending.returnPromise->set_value(nilVal());
+        }
 
         stack.clear();
 
