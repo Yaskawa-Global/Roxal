@@ -4,4 +4,5 @@ exfiltrating secret
 mutating secret
 [55, 2]
 asking actor to print secret
+[1, 2]
 done

@@ -1,3 +1,7 @@
+// This currently passes, but should fail in future becase we wish to disallow the exfiltration of
+//  reference types from actor theads without logcially copying them (either actual deep copy or a CoW implementation)
+//  so that there can be no shared state between actors
+
 type A actor:
   private var secret = [1, 2]
   func printSecret():
@@ -22,6 +26,8 @@ print(lst)
 
 print('asking actor to print secret')
 a.printSecret()
+
+sleep(ms=100)
 
 print('done')
 
