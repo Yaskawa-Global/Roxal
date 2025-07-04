@@ -25,6 +25,7 @@ public:
         thisid = nextId.fetch_add(1);
         actor = false;
         quit = false;
+        result = InterpretResult::OK;
         frames.reserve(256);
     }
     Thread(Thread&) = delete;

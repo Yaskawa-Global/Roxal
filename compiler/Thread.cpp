@@ -18,8 +18,8 @@ void Thread::spawn(Value closure)
         push(closure);
         vm.call(asClosure(closure),CallSpec(0));
 
-        vm.execute();
-        // (ignoring result, as thread is terminating anyway)
+        auto execResult = vm.execute();
+        result = execResult.first;
 
         stack.clear();
 
@@ -119,11 +119,12 @@ void Thread::act(Value actorInstance)
 
                     vm.call(closure, callInfo.callSpec);
 
-                    auto result = vm.execute();
+                    auto resultPair = vm.execute();
+                    result = resultPair.first;
 
-                    if (result.first == InterpretResult::OK) {
+                    if (resultPair.first == InterpretResult::OK) {
                         if (callInfo.returnPromise != nullptr) {
-                            Value ret = result.second;
+                            Value ret = resultPair.second;
                             if (!ret.isPrimitive())
                                 ret = ret.clone();
                             callInfo.returnPromise->set_value(ret);
