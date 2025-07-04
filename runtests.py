@@ -39,6 +39,7 @@ tests = [
     'method_named_param',
     'annot1', 'generic', 'objscopes',
     'threads1', 'fork_upvalue_error', 'fork_no_upvalues', 'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8', 'actor9', 'actor_init',
+    #'actor_closure1',
     'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4',
     'private_prop', 'private_method', 'private_inherit',
     'typededucer_binop', 'typededucer_ops',

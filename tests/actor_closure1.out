@@ -1,0 +1,7 @@
+creating actor instance
+exfiltrating secret
+[1, 2]
+mutating secret
+[55, 2]
+asking actor to print secret
+done

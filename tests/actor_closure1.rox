@@ -1,0 +1,27 @@
+type A actor:
+  private var secret = [1, 2]
+  func printSecret():
+    print(secret)
+  func makeGetter():
+    var local = secret
+    func getter():
+      return local
+    return getter
+
+print('creating actor instance')
+var a = A()
+a.printSecret()
+
+print('exfiltrating secret')
+var getter = a.makeGetter()
+var lst = getter()
+
+print('mutating secret')
+lst[0] = 55
+print(lst)
+
+print('asking actor to print secret')
+a.printSecret()
+
+print('done')
+
