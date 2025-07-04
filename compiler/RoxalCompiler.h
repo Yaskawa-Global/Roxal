@@ -158,6 +158,7 @@ protected:
 
     void enterModuleScope(const icu::UnicodeString& packageName,
                           const icu::UnicodeString& moduleName,
+                          const icu::UnicodeString& sourceName,
                           ObjModuleType* existingModule = nullptr);
     void exitModuleScope();
 
@@ -250,11 +251,12 @@ protected:
     {
         ModuleScope(const icu::UnicodeString& packageName_,
                     const icu::UnicodeString& moduleName_,
+                    const icu::UnicodeString& sourceName_,
                     ObjModuleType* existing = nullptr)
-            : FunctionScope(packageName_, moduleName_, moduleName_, moduleName_,
+            : FunctionScope(packageName_, moduleName_, sourceName_, moduleName_,
                             FunctionType::Module,
                             std::make_shared<type::Type>(type::BuiltinType::Func)),
-              packageName(packageName_), moduleName(moduleName_)
+              packageName(packageName_), moduleName(moduleName_), sourceName(sourceName_)
         {
             //this->functionType = FunctionType::Module;
             scopeType = ScopeType::Module;
@@ -275,6 +277,7 @@ protected:
 
         icu::UnicodeString packageName;
         icu::UnicodeString moduleName;
+        icu::UnicodeString sourceName;
         Value moduleType;  // ObjModuleType
         std::unordered_map<icu::UnicodeString, ValueType> moduleVarTypes;
     };

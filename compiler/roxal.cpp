@@ -127,7 +127,7 @@ static void runFile(const std::string& path, const std::vector<std::string>& mod
     vm.setDisassemblyOutput(outputBytecodeDisassembly);
     vm.appendModulePaths({relativePath.string()}); // folder containing the script is first in the search path
     vm.appendModulePaths(modulePaths);
-    vm.interpret(sourcestream, name);
+    vm.interpret(sourcestream, path);
 }
 
 

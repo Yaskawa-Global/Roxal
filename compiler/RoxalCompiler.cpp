@@ -88,7 +88,9 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 
     if (ast != nullptr) {
 
-        enterModuleScope("",toUnicodeString(name), existingModule);
+        std::filesystem::path p{name};
+        std::string moduleName = p.stem().filename().string();
+        enterModuleScope("", toUnicodeString(moduleName), toUnicodeString(name), existingModule);
 
         auto module { asModuleScope(moduleScope()) };
 
@@ -1700,9 +1702,11 @@ void RoxalCompiler::outputScopes()
 
 void RoxalCompiler::enterModuleScope(const icu::UnicodeString& packageName,
                                     const icu::UnicodeString& moduleName,
+                                    const icu::UnicodeString& sourceName,
                                     ObjModuleType* existingModule)
 {
     auto moduleScope { std::make_shared<ModuleScope>(packageName, moduleName,
+                                                     sourceName,
                                                      existingModule) };
 
     lexicalScopes.push_back(moduleScope);
@@ -1781,7 +1785,7 @@ void RoxalCompiler::enterFuncScope(Value moduleType, const icu::UnicodeString& f
 
     auto funcScope {std::make_shared<FunctionScope>(modScope->packageName,
                                                     modScope->moduleName,
-                                                    modScope->moduleName,
+                                                    modScope->sourceName,
                                                     funcName,funcType,type)};
 
     funcScope->function->moduleType = moduleType;

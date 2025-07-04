@@ -23,6 +23,7 @@
 #include <core/types.h>
 #include <core/common.h>
 #include <core/AST.h>
+#include <fstream>
 
 
 using namespace roxal;
@@ -3234,12 +3235,6 @@ void VM::concatenate()
 
 void VM::runtimeError(const std::string& format, ...)
 {
-    va_list args;
-    va_start(args, format);
-    vfprintf(stderr, format.c_str(), args);
-    va_end(args);
-    fputs("\n", stderr);
-
     auto frame { thread->frames.end()-1 };
 
     size_t instruction = frame->ip - frame->closure->function->chunk->code.begin() - 1;
@@ -3247,10 +3242,31 @@ void VM::runtimeError(const std::string& format, ...)
     int line = chunk->getLine(instruction);
     int col  = chunk->getColumn(instruction);
     std::string fname = toUTF8StdString(chunk->sourceName);
+
     if (!fname.empty())
-        fprintf(stderr, "[%s:%d:%d] in script\n", fname.c_str(), line, col);
+        fprintf(stderr, "%s:%d:%d: error: ", fname.c_str(), line, col);
     else
-        fprintf(stderr, "[line %d:%d] in script\n", line, col);
+        fprintf(stderr, "[line %d:%d]: error: ", line, col);
+
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format.c_str(), args);
+    va_end(args);
+    fputs("\n", stderr);
+
+    if (!fname.empty()) {
+        std::ifstream src(fname);
+        if (src.good()) {
+            std::string srcLine;
+            for (int i = 1; i <= line && std::getline(src, srcLine); ++i) {
+                if (i == line) {
+                    fprintf(stderr, "    %d | %s\n", line, srcLine.c_str());
+                    fprintf(stderr, "      | %s^\n", spaces(col).c_str());
+                }
+            }
+        }
+    }
+
     resetStack();
 }
 
