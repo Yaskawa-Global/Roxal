@@ -1,0 +1,17 @@
+
+c = clock(10)
+
+func f(c):
+  while true:
+    _
+
+out = f(c)
+
+c.run()
+
+print(int(out))
+
+print('done')
+
+
+
