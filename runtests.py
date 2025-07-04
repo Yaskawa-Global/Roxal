@@ -6,6 +6,9 @@ import argparse
 import re
 import time
 
+# Maximum time in seconds to allow each test to run
+TEST_TIMEOUT_SECS = 5
+
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Run Roxal tests.")
 parser.add_argument('--convs', action='store_true', help='Include tests/conversions/* tests')
@@ -115,10 +118,22 @@ try:
         cmd = [roxal, testrox]
         if test.startswith('typededucer_'):
             cmd = [roxal, '--ast', testrox]
-        compProc = subprocess.run(cmd, capture_output=True, shell=False)
-        duration_ms = (time.perf_counter() - start_time) * 1000
 
         opt_expected = (" [expected]" if test in failing_tests else '')
+
+        try:
+            compProc = subprocess.run(
+                cmd, capture_output=True, shell=False,
+                timeout=TEST_TIMEOUT_SECS)
+        except subprocess.TimeoutExpired:
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            print(f"FAIL: {opt_expected}", flush=True)
+            print(f"-- timeout after {TEST_TIMEOUT_SECS} s --")
+            print()
+            failed_count += 1
+            continue
+        duration_ms = (time.perf_counter() - start_time) * 1000
+
 
         passed = True
         expect_err = os.path.exists(testerr)
