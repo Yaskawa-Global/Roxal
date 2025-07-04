@@ -1,0 +1,11 @@
+
+type A actor:
+
+  func depth():
+    return _stackdepth()
+    
+a = A()
+print(a.depth()) // print resolves futures, hence blocks
+print(a.depth())
+print(a.depth())
+
