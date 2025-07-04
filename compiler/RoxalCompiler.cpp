@@ -66,6 +66,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
         ast = astGenerator.ast(source, name);
     } catch (std::exception& e) {
         compileError(e.what());
+        clearCompileContext();
         return function;
     }
 
@@ -77,6 +78,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
         typeDeducer.visit(as<File>(ast));
     } catch (std::exception& e) {
         compileError(e.what());
+        clearCompileContext();
         return function;
     }
 
@@ -138,6 +140,8 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
             exitModuleScope();
             delObj(modFunc);
 
+            clearCompileContext();
+
             return nullptr;
         } catch (std::exception& e) {
             compileError(e.what());
@@ -157,10 +161,14 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
             exitModuleScope();
             delObj(modFunc);
 
+            clearCompileContext();
+
             throw e;
         }
 
         exitModuleScope();
+
+        clearCompileContext();
 
         //std::cout << "\n" << interpreter.stackAsString(false) << std::endl;
     }

@@ -1,1 +1,1 @@
-Compile error: .*unable to convert string to int in strict mode
+.*module_strict_assign_err\.rox:3:0: error: unable to convert string to int in strict mode\n\s*3 \| x = "5"\n\s*\|\s*\^\n?

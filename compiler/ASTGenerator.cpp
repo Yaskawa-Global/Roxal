@@ -201,6 +201,7 @@ ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
     this->source = std::make_shared<std::string>(std::string(std::istreambuf_iterator<char>(source), {}));
     source.seekg(0);
     this->sourceName = name;
+    setCompileContext(this->source, this->sourceName);
 
     using namespace antlr4;
 

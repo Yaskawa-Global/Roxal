@@ -144,6 +144,7 @@ static void generateAST(const std::string& inputPath, bool graph, const std::str
         ast = astGenerator.ast(sourcestream, name);
     } catch (std::exception& e) {
         compileError(e.what());
+        clearCompileContext();
         return;
     }
     if (ast == nullptr) // must have been a parse or AST gen error (already reported?)
@@ -154,6 +155,7 @@ static void generateAST(const std::string& inputPath, bool graph, const std::str
         typeDeducer.visit(std::dynamic_pointer_cast<ast::File>(ast));
     } catch (std::exception& e) {
         compileError(e.what());
+        clearCompileContext();
         return;
     }
 
@@ -168,6 +170,8 @@ static void generateAST(const std::string& inputPath, bool graph, const std::str
         out << graph;
         out.close();
     }
+
+    clearCompileContext();
 }
 
 
