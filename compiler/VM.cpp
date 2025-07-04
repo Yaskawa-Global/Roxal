@@ -179,6 +179,8 @@ VM::VM()
 {
     assert(sizeof(Value) == sizeof(uint64_t)); // ensure Value is 64bit
 
+    runtimeErrorFlag = false;
+
     thread = nullptr;
     initString = stringVal(UnicodeString("init"));
     initString->incRef();
@@ -285,6 +287,8 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
 {
     ObjFunction* function { nullptr };
 
+    runtimeErrorFlag = false;
+
     try {
         RoxalCompiler compiler {};
         compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
@@ -310,16 +314,21 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
 
     // join all threads
     //  (note: threads being waited on may create additional threads)
+    InterpretResult result = firstThread->result;
+
     while (threads.size() > 0) {
         for(auto thread : threads.get()) {
             thread.second->join();
+            if (thread.second->result != InterpretResult::OK)
+                result = InterpretResult::RuntimeError;
             threads.erase(thread.first);
         }
     }
 
     threads.clear();
 
-    InterpretResult result = firstThread->result;
+    if (runtimeErrorFlag.load())
+        result = InterpretResult::RuntimeError;
 
     #if defined(DEBUG_TRACE_EXECUTION)
     if (globals.size() > 0) {
@@ -338,6 +347,8 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
 InterpretResult VM::interpretLine(std::istream& linestream)
 {
     ObjFunction* function { nullptr };
+
+    runtimeErrorFlag = false;
 
     static RoxalCompiler compiler {};
     static ObjModuleType* replModule { nullptr };
@@ -372,6 +383,8 @@ InterpretResult VM::interpretLine(std::istream& linestream)
 
     auto resultPair = callAndExec(closure, {});
     InterpretResult result = resultPair.first;
+    if (runtimeErrorFlag.load())
+        result = InterpretResult::RuntimeError;
 
     #if defined(DEBUG_TRACE_EXECUTION)
     if (globals.size() > 0) {
@@ -388,6 +401,9 @@ thread_local ptr<Thread> VM::thread;
 
 bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
 {
+    if (runtimeErrorFlag.load())
+        return false;
+
     // closure,frame pair for any param default value 'func' calls
     std::vector<std::pair<Value,CallFrame>> defValFrames {};
 
@@ -543,6 +559,9 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
 
 bool VM::call(ValueType builtinType, const CallSpec& callSpec)
 {
+    if (runtimeErrorFlag.load())
+        return false;
+
     if (!callSpec.allPositional)
         throw std::runtime_error("Named parameters unsupported in constructor for "+to_string(builtinType));
     auto argBegin = thread->stackTop - callSpec.argCount;
@@ -560,6 +579,9 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
 
 bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 {
+    if (runtimeErrorFlag.load())
+        return false;
+
     bool signalArg = false;
     for(int i=0;i<callSpec.argCount;i++)
         if (isSignal(peek(i))) { signalArg = true; break; }
@@ -1593,6 +1615,9 @@ std::pair<InterpretResult,Value> VM::execute()
     uint8_t instruction {};
 
     for(;;) {
+
+        if (runtimeErrorFlag.load())
+            return errorReturn;
 
         // if we're 'sleeping' don't execute any instructions
         //  (we may have been woken up by an event or a spurious wakeup, in which case we'll re-block below)
@@ -3084,6 +3109,9 @@ std::pair<InterpretResult,Value> VM::execute()
 
 bool VM::processPendingEvents()
 {
+    if (runtimeErrorFlag.load())
+        return false;
+
     if (thread->eventHandlers.empty()) return true;
 
     Thread::PendingEvent tev;
@@ -3235,6 +3263,14 @@ void VM::concatenate()
 
 void VM::runtimeError(const std::string& format, ...)
 {
+    runtimeErrorFlag = true;
+
+    // Wake all threads so they can notice the error flag and terminate
+    threads.apply([](const std::pair<const uint64_t, ptr<Thread>>& entry){
+        if (entry.second)
+            entry.second->wake();
+    });
+
     auto frame { thread->frames.end()-1 };
 
     size_t instruction = frame->ip - frame->closure->function->chunk->code.begin() - 1;
