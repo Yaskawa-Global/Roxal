@@ -118,7 +118,8 @@ try:
         opt_expected = (" [expected]" if test in failing_tests else '')
 
         passed = True
-        if compProc.returncode != 0:
+        expect_err = os.path.exists(testerr)
+        if compProc.returncode != 0 and not expect_err:
             print(f"FAIL: {opt_expected}", flush=True)
             print(f"-- return code {compProc.returncode} --")
             if compProc.returncode < 0:

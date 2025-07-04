@@ -107,7 +107,9 @@ static void repl()
 }
 
 
-static void runFile(const std::string& path, const std::vector<std::string>& modulePaths, bool outputBytecodeDisassembly=false)
+static InterpretResult runFile(const std::string& path,
+                               const std::vector<std::string>& modulePaths,
+                               bool outputBytecodeDisassembly=false)
 {
 
     std::ifstream sourcestream(path); // assumed UTF-8
@@ -127,7 +129,7 @@ static void runFile(const std::string& path, const std::vector<std::string>& mod
     vm.setDisassemblyOutput(outputBytecodeDisassembly);
     vm.appendModulePaths({relativePath.string()}); // folder containing the script is first in the search path
     vm.appendModulePaths(modulePaths);
-    vm.interpret(sourcestream, path);
+    return vm.interpret(sourcestream, path);
 }
 
 
@@ -218,7 +220,10 @@ int main(int argc, const char* argv[])
                 generateAST(filename, true, vmap["astgraph"].as<std::vector<std::string>>().at(0));
             else {
                 bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
-                runFile(filename, modulePaths, outputBytecodeDisassembly);
+                InterpretResult res =
+                    runFile(filename, modulePaths, outputBytecodeDisassembly);
+                if (res != InterpretResult::OK)
+                    return 1;
             }
         } catch (std::exception& e) {
             std::cerr << "Runtime error: " << e.what() << std::endl;
