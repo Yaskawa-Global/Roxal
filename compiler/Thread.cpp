@@ -141,12 +141,14 @@ void Thread::act(Value actorInstance)
                         if (callInfo.returnPromise != nullptr)
                             callInfo.returnPromise->set_value(nilVal());
                         quit = true;
-                        // restore weak reference before breaking
-                        this->stack[0] = this->actorInstance;
+                        // reset stack before breaking
+                        this->stackTop = this->stack.begin();
+                        push(this->actorInstance);
                         break;
                     }
 
-                    popN(callInfo.callSpec.argCount);
+                    this->stackTop = this->stack.begin();
+                    push(this->actorInstance);
 
                 } else if (isBoundNative(callInfo.callee)) {
                     ObjBoundNative* bn = asBoundNative(callInfo.callee);
@@ -162,7 +164,6 @@ void Thread::act(Value actorInstance)
                 }
 
                 // restore weak actor reference for next iteration
-                this->stack[0] = this->actorInstance;
 
             }
 
