@@ -153,6 +153,10 @@ protected:
 
     atomic_unordered_map<uint64_t, ptr<Thread>> threads;
 
+    // Set when any thread encounters a runtime error so that
+    // all threads can terminate early.
+    std::atomic_bool runtimeErrorFlag {false};
+
     // Persistent thread used for REPL execution so that state such as event
     // handlers persists across entered lines.
     ptr<Thread> replThread;
