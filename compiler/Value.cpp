@@ -855,12 +855,24 @@ Value Value::strongRef() const
     if (!isWeak())
         return *this;
 
-    if (!isAlive())
-        return nilVal();
+    ObjControl* ctrl = asControl();
+    int32_t expected = ctrl->strong.load(std::memory_order_acquire);
+    while (true) {
+        if (expected == 0 || ctrl->obj == nullptr)
+            return nilVal();
 
-    Obj* obj = asControl()->obj;
-    // Increment strong count before constructing Value to ensure object stays alive
-    obj->incRef();
+        if (ctrl->strong.compare_exchange_weak(expected, expected + 1,
+                                               std::memory_order_acquire,
+                                               std::memory_order_relaxed))
+            break;
+    }
+
+    Obj* obj = ctrl->obj;
+    if (obj == nullptr) {
+        ctrl->strong.fetch_sub(1, std::memory_order_relaxed);
+        return nilVal();
+    }
+
     Value v;
     v.val = SignBit | QNAN | uint64_t(uintptr_t(obj));
     return v;
