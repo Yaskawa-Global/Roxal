@@ -1835,7 +1835,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         break;
                     }
                     else {
-                        runtimeError("Undefined variable '"+name->toStdString()+"' in module "+toUTF8StdString(moduleType->name)+".");
+                        runtimeError("Undefined variable '"+name->toStdString()+"'");
                         return errorReturn;
                     }
                 }
@@ -1994,7 +1994,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         push(value);
                         break;
                     } else {
-                        runtimeError("Undefined variable '"+name->toStdString()+"' in module "+toUTF8StdString(moduleType->name)+".");
+                        runtimeError("Undefined variable '"+name->toStdString()+"'");
                         return errorReturn;
                     }
                 }
@@ -2649,11 +2649,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     push(value);
                 }
                 else {
-                    #ifdef DEBUG_BUILD
-                    runtimeError("Undefined variable '"+name->toStdString()+"' in module "+toUTF8StdString(moduleType()->name));
-                    #else
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
-                    #endif
                     return errorReturn;
                 }
                 break;
