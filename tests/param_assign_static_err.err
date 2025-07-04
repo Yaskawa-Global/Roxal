@@ -1,1 +1,1 @@
-Compile error: .*unable to convert int to bool in strict mode
+.*param_assign_static_err\.rox:2:2: error: unable to convert int to bool in strict mode\n\s*2 \|   var b:bool = i\n\s*\|\s*\^\n?

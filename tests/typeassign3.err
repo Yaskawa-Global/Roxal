@@ -1,1 +1,1 @@
-Compile error: .*unable to convert int to bool in strict mode
+.*typeassign3\.rox:9:4: error: unable to convert int to bool in strict mode\n\s*9 \|     b = 1.*\n\s*\|\s*\^\n?
