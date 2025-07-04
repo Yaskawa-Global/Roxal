@@ -3307,6 +3307,7 @@ void VM::defineBuiltinFunctions()
     addSys("fork", &VM::fork_builtin);
     addSys("join", &VM::join_builtin);
     addSys("_threadid", &VM::threadid_builtin);
+    addSys("_stackdepth", &VM::stackdepth_builtin);
     addSys("_wait", &VM::wait_builtin);
     addSys("_runtests", &VM::runtests_builtin);
     addSys("_weakref", &VM::weakref_builtin);
@@ -3501,6 +3502,16 @@ Value VM::threadid_builtin(int argCount, Value* args)
 
     int32_t id = int32_t(thread->id()); // FIXME: id is uint64
     return intVal(id);
+}
+
+
+Value VM::stackdepth_builtin(int argCount, Value* args)
+{
+    if (argCount != 0)
+        throw std::invalid_argument("_stackdepth takes no arguments");
+
+    int32_t depth = int32_t(thread->stackTop - thread->stack.begin());
+    return intVal(depth);
 }
 
 

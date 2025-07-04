@@ -1,0 +1,7 @@
+print(_stackdepth())
+func test(x):
+  print(_stackdepth())
+  return x
+var y = test(1)
+print(_stackdepth())
+
