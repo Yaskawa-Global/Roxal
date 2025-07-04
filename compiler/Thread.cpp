@@ -142,13 +142,19 @@ void Thread::act(Value actorInstance)
                             callInfo.returnPromise->set_value(nilVal());
                         quit = true;
                         // reset stack before breaking
-                        this->stackTop = this->stack.begin();
-                        push(this->actorInstance);
+                        {
+                            auto diff = this->stackTop - (this->stack.begin()+1);
+                            if (diff > 0) popN(size_t(diff));
+                            this->stack[0] = this->actorInstance;
+                        }
                         break;
                     }
 
-                    this->stackTop = this->stack.begin();
-                    push(this->actorInstance);
+                    {
+                        auto diff = this->stackTop - (this->stack.begin()+1);
+                        if (diff > 0) popN(size_t(diff));
+                        this->stack[0] = this->actorInstance;
+                    }
 
                 } else if (isBoundNative(callInfo.callee)) {
                     ObjBoundNative* bn = asBoundNative(callInfo.callee);
@@ -164,6 +170,7 @@ void Thread::act(Value actorInstance)
                 }
 
                 // restore weak actor reference for next iteration
+                this->stack[0] = this->actorInstance;
 
             }
 
