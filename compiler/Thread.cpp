@@ -111,6 +111,14 @@ void Thread::act(Value actorInstance)
 
             if (callInfo.valid()) {
 
+                Value strongActor = this->actorInstance.strongRef();
+                if (strongActor.isNil()) {
+                    quit = true;
+                    break;
+                }
+                // Ensure actor instance stays alive during call
+                this->stack[0] = strongActor;
+
                 if (isBoundMethod(callInfo.callee)) {
                     auto closure = asBoundMethod(callInfo.callee)->method;
 
@@ -133,6 +141,8 @@ void Thread::act(Value actorInstance)
                         if (callInfo.returnPromise != nullptr)
                             callInfo.returnPromise->set_value(nilVal());
                         quit = true;
+                        // restore weak reference before breaking
+                        this->stack[0] = this->actorInstance;
                         break;
                     }
 
@@ -150,6 +160,9 @@ void Thread::act(Value actorInstance)
 
                     popN(callInfo.callSpec.argCount);
                 }
+
+                // restore weak actor reference for next iteration
+                this->stack[0] = this->actorInstance;
 
             }
 
