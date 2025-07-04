@@ -1,0 +1,1 @@
+.*runtime_error_snippet\.rox:4:8: error: Undefined variable 't'\n\s*4 \|   print\(t\)\n\s*\|\s*\^\n?

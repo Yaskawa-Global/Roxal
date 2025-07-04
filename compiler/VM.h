@@ -80,7 +80,7 @@ public:
 
     ObjModuleType* getBuiltinModule(const icu::UnicodeString& name);
 
-    InterpretResult interpret(std::istream& source, const std::string& name);
+    InterpretResult interpret(std::istream& source, const std::string& sourceName);
     InterpretResult interpretLine(std::istream& linestream);
 
 
