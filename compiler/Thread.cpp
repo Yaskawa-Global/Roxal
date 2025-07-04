@@ -131,11 +131,12 @@ void Thread::act(Value actorInstance)
                     result = resultPair.first;
 
                     if (resultPair.first == InterpretResult::OK) {
-                        Value ret = resultPair.second;
-                        if (!ret.isPrimitive())
-                            ret = ret.clone();
-                        if (callInfo.returnPromise != nullptr)
+                        if (callInfo.returnPromise != nullptr) {
+                            Value ret = resultPair.second;
+                            if (!ret.isPrimitive())
+                                ret = ret.clone();
                             callInfo.returnPromise->set_value(ret);
+                        }
                         // remove return value from stack
                         vm.thread->pop();
                     } else {
