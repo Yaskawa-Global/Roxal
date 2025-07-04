@@ -45,7 +45,7 @@ tests = [
     'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8', 'actor9', 
     'actor_init', 'actor_stack',
     #'actor_closure1',
-    #'actor_closure2', # hangs
+    'actor_closure2', # hangs
     'actor_closure3', # currently leaks
     'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4',
     'private_prop', 'private_method', 'private_inherit',
