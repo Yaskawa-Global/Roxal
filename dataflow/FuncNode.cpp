@@ -68,6 +68,42 @@ FuncNode::FuncNode(const std::string& name,
     }
 }
 
+FuncNode::FuncNode(const std::string& name,
+                   NativeFunc nativeFunc_,
+                   const std::vector<std::string>& paramNames_,
+                   const ConstArgMap& constArgs_,
+                   const std::vector<ptr<Signal>>& signalArgs_,
+                   const Names& outputNames_)
+  : m_name(name), m_operatorSignalsCalled(false), closure(roxal::nilVal()),
+    nativeFunc(nativeFunc_), constArgs(constArgs_), signalArgs(signalArgs_)
+{
+    m_outputNames = outputNames_;
+    paramNames = paramNames_;
+    size_t sigIndex = 0;
+    for(const auto& pname : paramNames) {
+        m_inputNames.push_back(pname);
+        auto it = constArgs.find(pname);
+        if (it == constArgs.end()) {
+            if (sigIndex < signalArgs.size()) {
+                addInput(pname, signalArgs[sigIndex]);
+                paramSignalIndex.push_back(int(sigIndex));
+                sigIndex++;
+            } else {
+                paramSignalIndex.push_back(-1);
+            }
+        } else {
+            paramSignalIndex.push_back(-1);
+        }
+    }
+    double maxFreq = 0.0;
+    for (auto& sig : signalArgs)
+        maxFreq = std::max(maxFreq, sig->frequency());
+    if (maxFreq <= 0.0)
+        maxFreq = 1.0;
+    createOutputSignals(maxFreq);
+    m_operatorSignalsCalled = true;
+}
+
 const std::string& FuncNode::name() const
 {
     return m_name;
@@ -326,6 +362,9 @@ Values FuncNode::operator()(const Values& inputValues)
         }
     }
 
+    if (nativeFunc) {
+        return nativeFunc(args);
+    }
     auto result = vm.callAndExec(roxal::asClosure(closure), args);
 
     if (!m_outputNames.empty() && m_outputNames.size() > 1) {
