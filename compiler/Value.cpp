@@ -6,6 +6,8 @@
 
 #include "Object.h"
 #include "dataflow/Signal.h"
+#include "dataflow/FuncNode.h"
+#include "dataflow/DataflowEngine.h"
 #include <core/types.h>
 #include <Eigen/Dense>
 
@@ -1246,6 +1248,35 @@ Value roxal::add(Value l, Value r)
             throw std::invalid_argument("Matrix addition requires matrices of same size");
         Eigen::MatrixXd result = lm->mat + rm->mat;
         return objVal(matrixVal(result));
+    }
+    else if (isSignal(l) || isSignal(r)) {
+        df::FuncNode::ConstArgMap constArgs;
+        std::vector<ptr<df::Signal>> sigArgs;
+        std::vector<std::string> paramNames{"lhs", "rhs"};
+
+        if (isSignal(l))
+            sigArgs.push_back(asSignal(l)->signal);
+        else
+            constArgs["lhs"] = l;
+
+        if (isSignal(r))
+            sigArgs.push_back(asSignal(r)->signal);
+        else
+            constArgs["rhs"] = r;
+
+        auto node = roxal::make_ptr<df::FuncNode>(
+            "add",
+            [](const df::Values& vals) -> df::Values {
+                return df::Values{ add(vals[0], vals[1]) };
+            },
+            paramNames,
+            constArgs,
+            sigArgs);
+
+        node->addToEngine();
+        auto outputs = node->outputs();
+        df::DataflowEngine::instance()->evaluate();
+        return objVal(signalVal(outputs[0]));
     }
     else if (isList(l) && isList(r)) {
         // List + List → concatenation (clone LHS, then concatenate RHS)

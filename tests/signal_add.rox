@@ -1,0 +1,10 @@
+c = clock(10)
+sum = c + c
+c.tick()
+_dataflow.tick()
+sleep(us=150000)
+print(int(sum))
+c.tick()
+_dataflow.tick()
+sleep(us=150000)
+print(int(sum))
