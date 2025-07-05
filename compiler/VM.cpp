@@ -2288,42 +2288,29 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Add): {
-                Value& lhs { peek(1) };
-                Value& rhs { peek(0) };
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
-                if ((lhs.isNumber() && lhs.isNumber()) ||
-                    (isVector(lhs) && isVector(rhs)) ||
-                    (isMatrix(lhs) && isMatrix(rhs)) ||
-                    isList(lhs) ) {
-                    binaryOp([](Value l, Value r) -> Value { return add(l,r); });
-                }
-                else if (isString(peek(1))) {
+
+                if (isString(peek(1))) {
                     concatenate();
-                }
-                else if ((isSignal(peek(0)) || isSignal(peek(1))) &&
-                         !isString(peek(0)) && !isString(peek(1))) {
-                    binaryOp([](Value l, Value r) -> Value { return add(l,r); });
-                }
-                else {
-                    runtimeError("Operands of + must be two numbers, two vectors, two matrices, two lists, list + value, or strings LHS");
-                    return errorReturn;
+                } else {
+                    try {
+                        binaryOp([](Value l, Value r) -> Value { return add(l, r); });
+                    } catch (std::exception& e) {
+                        runtimeError(e.what());
+                        return errorReturn;
+                    }
                 }
                 break;
             }
             case asByte(OpCode::Subtract): {
-                Value& lhs { peek(1) };
-                Value& rhs { peek(0) };
-                lhs.resolveFuture();
-                rhs.resolveFuture();
-                if (isVector(lhs) && isVector(rhs)) {
-                    binaryOp([](Value l, Value r) -> Value { return subtract(l,r); });
-                } else if (isMatrix(lhs) && isMatrix(rhs)) {
-                    binaryOp([](Value l, Value r) -> Value { return subtract(l,r); });
-                } else if (lhs.isNumber() && rhs.isNumber()) {
-                    binaryOp([](Value l, Value r) -> Value { return subtract(l,r); });
-                } else {
-                    runtimeError("Operands of - must be two numbers, two vectors, or two matrices");
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
+
+                try {
+                    binaryOp([](Value l, Value r) -> Value { return subtract(l, r); });
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
                     return errorReturn;
                 }
                 break;
