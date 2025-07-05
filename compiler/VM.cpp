@@ -1590,9 +1590,9 @@ std::pair<InterpretResult,Value> VM::execute()
     };
 
     auto binaryOp = [&](std::function<Value(Value, Value)> op) {
-        Value b = pop();
-        Value a = pop();
-        push( op(a,b) );
+        Value rhs = pop();
+        Value lhs = pop();
+        push( op(lhs,rhs) );
     };
 
 
@@ -2288,23 +2288,22 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Add): {
-                if ((peek(0).isNumber() && peek(1).isNumber()) ||
-                    (isVector(peek(0)) && isVector(peek(1))) ||
-                    (isMatrix(peek(0)) && isMatrix(peek(1))) ||
-                    (isList(peek(1)) && isList(peek(0))) ||
-                    isList(peek(1))) {
-                    peek(0).resolve();
-                    peek(1).resolve();
-                    binaryOp([](Value a, Value b) -> Value { return add(a,b); });
+                Value& lhs { peek(1) };
+                Value& rhs { peek(0) };
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
+                if ((lhs.isNumber() && lhs.isNumber()) ||
+                    (isVector(lhs) && isVector(rhs)) ||
+                    (isMatrix(lhs) && isMatrix(rhs)) ||
+                    isList(lhs) ) {
+                    binaryOp([](Value l, Value r) -> Value { return add(l,r); });
                 }
                 else if (isString(peek(1))) {
-                    peek(0).resolve();
-                    peek(1).resolve();
                     concatenate();
                 }
                 else if ((isSignal(peek(0)) || isSignal(peek(1))) &&
                          !isString(peek(0)) && !isString(peek(1))) {
-                    binaryOp([](Value a, Value b) -> Value { return add(a,b); });
+                    binaryOp([](Value l, Value r) -> Value { return add(l,r); });
                 }
                 else {
                     runtimeError("Operands of + must be two numbers, two vectors, two matrices, two lists, list + value, or strings LHS");
@@ -2313,14 +2312,16 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Subtract): {
-                peek(0).resolve();
-                peek(1).resolve();
-                if (isVector(peek(0)) && isVector(peek(1))) {
-                    binaryOp([](Value a, Value b) -> Value { return subtract(a,b); });
-                } else if (isMatrix(peek(0)) && isMatrix(peek(1))) {
-                    binaryOp([](Value a, Value b) -> Value { return subtract(a,b); });
-                } else if (peek(0).isNumber() && peek(1).isNumber()) {
-                    binaryOp([](Value a, Value b) -> Value { return subtract(a,b); });
+                Value& lhs { peek(1) };
+                Value& rhs { peek(0) };
+                lhs.resolveFuture();
+                rhs.resolveFuture();
+                if (isVector(lhs) && isVector(rhs)) {
+                    binaryOp([](Value l, Value r) -> Value { return subtract(l,r); });
+                } else if (isMatrix(lhs) && isMatrix(rhs)) {
+                    binaryOp([](Value l, Value r) -> Value { return subtract(l,r); });
+                } else if (lhs.isNumber() && rhs.isNumber()) {
+                    binaryOp([](Value l, Value r) -> Value { return subtract(l,r); });
                 } else {
                     runtimeError("Operands of - must be two numbers, two vectors, or two matrices");
                     return errorReturn;
