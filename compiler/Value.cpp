@@ -10,6 +10,7 @@
 #include "dataflow/DataflowEngine.h"
 #include <core/types.h>
 #include <Eigen/Dense>
+#include <functional>
 
 
 namespace roxal {
@@ -1220,6 +1221,38 @@ Value roxal::negate(Value v)
     throw std::runtime_error("unimplemented negation for type:"+v.typeName());
 }
 
+static Value signalBinaryOp(const std::string& name,
+                            const std::function<Value(Value, Value)>& op,
+                            Value l, Value r)
+{
+    df::FuncNode::ConstArgMap constArgs;
+    std::vector<ptr<df::Signal>> sigArgs;
+    std::vector<std::string> paramNames{"lhs", "rhs"};
+
+    if (isSignal(l))
+        sigArgs.push_back(asSignal(l)->signal);
+    else
+        constArgs["lhs"] = l;
+
+    if (isSignal(r))
+        sigArgs.push_back(asSignal(r)->signal);
+    else
+        constArgs["rhs"] = r;
+
+    auto node = roxal::make_ptr<df::FuncNode>(
+        name,
+        [op](const df::Values& vals) -> df::Values {
+            return df::Values{ op(vals[0], vals[1]) };
+        },
+        paramNames,
+        constArgs,
+        sigArgs);
+
+    node->addToEngine();
+    auto outputs = node->outputs();
+    df::DataflowEngine::instance()->evaluate();
+    return objVal(signalVal(outputs[0]));
+}
 
 Value roxal::add(Value l, Value r)
 {
@@ -1250,33 +1283,9 @@ Value roxal::add(Value l, Value r)
         return objVal(matrixVal(result));
     }
     else if (isSignal(l) || isSignal(r)) {
-        df::FuncNode::ConstArgMap constArgs;
-        std::vector<ptr<df::Signal>> sigArgs;
-        std::vector<std::string> paramNames{"lhs", "rhs"};
-
-        if (isSignal(l))
-            sigArgs.push_back(asSignal(l)->signal);
-        else
-            constArgs["lhs"] = l;
-
-        if (isSignal(r))
-            sigArgs.push_back(asSignal(r)->signal);
-        else
-            constArgs["rhs"] = r;
-
-        auto node = roxal::make_ptr<df::FuncNode>(
-            "add",
-            [](const df::Values& vals) -> df::Values {
-                return df::Values{ add(vals[0], vals[1]) };
-            },
-            paramNames,
-            constArgs,
-            sigArgs);
-
-        node->addToEngine();
-        auto outputs = node->outputs();
-        df::DataflowEngine::instance()->evaluate();
-        return objVal(signalVal(outputs[0]));
+        return signalBinaryOp("add",
+                              [](Value a, Value b) { return add(a, b); },
+                              l, r);
     }
     else if (isList(l) && isList(r)) {
         // List + List → concatenation (clone LHS, then concatenate RHS)
@@ -1320,33 +1329,9 @@ Value roxal::subtract(Value l, Value r)
         return objVal(matrixVal(result));
     }
     else if (isSignal(l) || isSignal(r)) {
-        df::FuncNode::ConstArgMap constArgs;
-        std::vector<ptr<df::Signal>> sigArgs;
-        std::vector<std::string> paramNames{"lhs", "rhs"};
-
-        if (isSignal(l))
-            sigArgs.push_back(asSignal(l)->signal);
-        else
-            constArgs["lhs"] = l;
-
-        if (isSignal(r))
-            sigArgs.push_back(asSignal(r)->signal);
-        else
-            constArgs["rhs"] = r;
-
-        auto node = roxal::make_ptr<df::FuncNode>(
-            "subtract",
-            [](const df::Values& vals) -> df::Values {
-                return df::Values{ subtract(vals[0], vals[1]) };
-            },
-            paramNames,
-            constArgs,
-            sigArgs);
-
-        node->addToEngine();
-        auto outputs = node->outputs();
-        df::DataflowEngine::instance()->evaluate();
-        return objVal(signalVal(outputs[0]));
+        return signalBinaryOp("subtract",
+                              [](Value a, Value b) { return subtract(a, b); },
+                              l, r);
     }
 
     if (!l.isNumber())
@@ -1423,6 +1408,11 @@ Value roxal::multiply(Value l, Value r)
         double scalar = toType(ValueType::Real, l, false).asReal();
         Eigen::MatrixXd result = scalar * rm->mat;
         return objVal(matrixVal(result));
+    }
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("multiply",
+                              [](Value a, Value b) { return multiply(a, b); },
+                              l, r);
     }
 
     if (!l.isNumber())
