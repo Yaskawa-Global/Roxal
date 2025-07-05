@@ -12,6 +12,7 @@ type A actor:
 print('creating actor instance')
 var a = A()
 a.causeerror()
+sleep(ms=100)
 
 var getter = a.makeGetter()
 //var lst = getter()
