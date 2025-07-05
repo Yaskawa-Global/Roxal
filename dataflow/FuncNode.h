@@ -25,6 +25,15 @@ public:
              const ConstArgMap& constArgs,
              const std::vector<ptr<Signal>>& signalArgs);
 
+    using NativeFunc = std::function<Values(const Values&)>;
+
+    FuncNode(const std::string& name,
+             NativeFunc nativeFunc,
+             const std::vector<std::string>& paramNames,
+             const ConstArgMap& constArgs,
+             const std::vector<ptr<Signal>>& signalArgs,
+             const Names& outputNames = {"result"});
+
     virtual ~FuncNode() {}
 
     const std::string& name() const;
@@ -49,6 +58,7 @@ public:
     void addToEngine();
 
     roxal::Value closure;
+    NativeFunc nativeFunc;
     ConstArgMap constArgs;
     std::vector<ptr<Signal>> signalArgs;
 
