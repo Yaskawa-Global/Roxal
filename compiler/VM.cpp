@@ -2316,21 +2316,13 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Multiply): {
-                peek(0).resolve();
-                peek(1).resolve();
-                if ( (isVector(peek(0)) && isVector(peek(1))) ||
-                     (isVector(peek(0)) && peek(1).isNumber()) ||
-                     (peek(0).isNumber() && isVector(peek(1))) ||
-                     (isMatrix(peek(0)) && isMatrix(peek(1))) ||
-                     (isMatrix(peek(0)) && isVector(peek(1))) ||
-                     (isVector(peek(0)) && isMatrix(peek(1))) ||
-                     (isMatrix(peek(0)) && peek(1).isNumber()) ||
-                     (peek(0).isNumber() && isMatrix(peek(1))) ) {
-                    binaryOp([](Value a, Value b) -> Value { return multiply(a,b); });
-                } else if (peek(0).isNumber() && peek(1).isNumber()) {
-                    binaryOp([](Value a, Value b) -> Value { return multiply(a,b); });
-                } else {
-                    runtimeError("Operands of * must be numbers, vectors or matrices with compatible dimensions");
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
+
+                try {
+                    binaryOp([](Value l, Value r) -> Value { return multiply(l, r); });
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
                     return errorReturn;
                 }
                 break;
