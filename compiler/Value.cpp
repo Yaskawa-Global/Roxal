@@ -1319,6 +1319,35 @@ Value roxal::subtract(Value l, Value r)
         Eigen::MatrixXd result = lm->mat - rm->mat;
         return objVal(matrixVal(result));
     }
+    else if (isSignal(l) || isSignal(r)) {
+        df::FuncNode::ConstArgMap constArgs;
+        std::vector<ptr<df::Signal>> sigArgs;
+        std::vector<std::string> paramNames{"lhs", "rhs"};
+
+        if (isSignal(l))
+            sigArgs.push_back(asSignal(l)->signal);
+        else
+            constArgs["lhs"] = l;
+
+        if (isSignal(r))
+            sigArgs.push_back(asSignal(r)->signal);
+        else
+            constArgs["rhs"] = r;
+
+        auto node = roxal::make_ptr<df::FuncNode>(
+            "subtract",
+            [](const df::Values& vals) -> df::Values {
+                return df::Values{ subtract(vals[0], vals[1]) };
+            },
+            paramNames,
+            constArgs,
+            sigArgs);
+
+        node->addToEngine();
+        auto outputs = node->outputs();
+        df::DataflowEngine::instance()->evaluate();
+        return objVal(signalVal(outputs[0]));
+    }
 
     if (!l.isNumber())
         throw std::invalid_argument("LHS must be a number");
