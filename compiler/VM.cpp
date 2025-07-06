@@ -3388,6 +3388,7 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Signal, "run", &VM::signal_run_builtin);
     defineBuiltinMethod(ValueType::Signal, "stop", &VM::signal_stop_builtin);
     defineBuiltinMethod(ValueType::Signal, "tick", &VM::signal_tick_builtin);
+    defineBuiltinMethod(ValueType::Signal, "freq", &VM::signal_freq_builtin);
 
     defineBuiltinMethod(ValueType::Event, "emit", &VM::event_emit_builtin, true);
     defineBuiltinMethod(ValueType::Event, "on", &VM::event_on_builtin, true);
@@ -3885,6 +3886,16 @@ Value VM::signal_tick_builtin(int argCount, Value* args)
 
     sig->tickOnce();
     return nilVal();
+}
+
+Value VM::signal_freq_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isSignal(args[0]))
+        throw std::invalid_argument("signal.freq expects no arguments");
+
+    ObjSignal* objSignal = asSignal(args[0]);
+    auto sig = objSignal->signal;
+    return intVal(sig->frequency());
 }
 
 Value VM::math_identity_builtin(int argCount, Value* args)
