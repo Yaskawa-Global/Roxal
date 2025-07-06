@@ -61,7 +61,7 @@ tests = [
 ]
 
 # implementation doesn't yet allow these tests to pass
-failing_tests = ['signal_network1', 'multi_clock']
+failing_tests = ['signal_network1']
 
 
 if args.convs:
