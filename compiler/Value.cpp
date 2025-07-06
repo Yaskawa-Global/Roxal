@@ -17,6 +17,9 @@ namespace roxal {
     // forward from Object.h
     std::string objToString(const Value& v);
     bool objsEqual(const Value& l, const Value& r);
+    static Value signalUnaryOp(const std::string& name,
+                               const std::function<Value(Value)>& op,
+                               Value v);
 }
 
 
@@ -1207,9 +1210,6 @@ bool roxal::isTruthy(const Value& v)
 
 Value roxal::negate(Value v)
 {
-    if (!v.isNumber() && !v.isBool())
-        throw std::invalid_argument("Operand must be a number or bool");
-
     if (v.isInt() || v.isByte())
         return intVal(-v.asInt());
     else if (v.isReal())
@@ -1218,7 +1218,44 @@ Value roxal::negate(Value v)
         return boolVal(!v.asBool());
     // TODO: decimal
 
+    if (isSignal(v)) {
+        return signalUnaryOp("negate",
+                             [](Value a) { return negate(a); },
+                             v);
+    }
+
+    if (!v.isNumber() && !v.isBool())
+        throw std::invalid_argument("Operand must be a number or bool");
+
     throw std::runtime_error("unimplemented negation for type:"+v.typeName());
+}
+
+static Value roxal::signalUnaryOp(const std::string& name,
+                                  const std::function<Value(Value)>& op,
+                                  Value v)
+{
+    df::FuncNode::ConstArgMap constArgs;
+    std::vector<ptr<df::Signal>> sigArgs;
+    std::vector<std::string> paramNames{"val"};
+
+    if (isSignal(v))
+        sigArgs.push_back(asSignal(v)->signal);
+    else
+        constArgs["val"] = v;
+
+    auto node = roxal::make_ptr<df::FuncNode>(
+        name,
+        [op](const df::Values& vals) -> df::Values {
+            return df::Values{ op(vals[0]) };
+        },
+        paramNames,
+        constArgs,
+        sigArgs);
+
+    node->addToEngine();
+    auto outputs = node->outputs();
+    df::DataflowEngine::instance()->evaluate();
+    return objVal(signalVal(outputs[0]));
 }
 
 static Value signalBinaryOp(const std::string& name,
@@ -1481,10 +1518,19 @@ Value roxal::mod(Value l, Value r)
 
 Value roxal::land(Value l, Value r)
 {
-    if (!l.isBool())
+    if (l.isBool() && r.isBool())
+        return boolVal(l.asBool() && r.asBool());
+
+    if (!l.isBool() && !isSignal(l))
         throw std::invalid_argument("LHS must be a bool");
-    if (!r.isBool())
+    if (!r.isBool() && !isSignal(r))
         throw std::invalid_argument("RHS must be a bool");
+
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("and",
+                              [](Value a, Value b) { return land(a, b); },
+                              l, r);
+    }
 
     return boolVal(l.asBool() && r.asBool());
 }
@@ -1492,10 +1538,19 @@ Value roxal::land(Value l, Value r)
 
 Value roxal::lor(Value l, Value r)
 {
-    if (!l.isBool())
+    if (l.isBool() && r.isBool())
+        return boolVal(l.asBool() || r.asBool());
+
+    if (!l.isBool() && !isSignal(l))
         throw std::invalid_argument("LHS must be a bool");
-    if (!r.isBool())
+    if (!r.isBool() && !isSignal(r))
         throw std::invalid_argument("RHS must be a bool");
+
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("or",
+                              [](Value a, Value b) { return lor(a, b); },
+                              l, r);
+    }
 
     return boolVal(l.asBool() || r.asBool());
 }
