@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <numeric>
 #include <iterator>
+#include <cmath>
 
 #include "Signal.h"
 #include "DataflowEngine.h"
@@ -37,7 +38,14 @@ Signal::Signal(double freq, Value initial, std::optional<std::string> name)
 {
     m_name = name.value_or("source_signal");
     assert(freq > 0.0);
-    m_period = TimeDuration::microSecs(int64_t(1000000ULL / m_frequency));
+    double period_us = 1000000.0 / m_frequency;
+    double period_round = std::round(period_us);
+    if (period_us < 1.0 || std::fabs(period_us - period_round) > 1e-9) {
+        throw std::invalid_argument(
+            "clock frequency " + std::to_string(freq) +
+            " not representable as whole microseconds");
+    }
+    m_period = TimeDuration::microSecs(static_cast<int64_t>(period_round));
     values[TimePoint::zero()] = initial;
 }
 
@@ -75,7 +83,14 @@ Signal::~Signal()
 void Signal::setFrequency(double freq)
 {
     m_frequency = freq;
-    m_period = TimeDuration::microSecs(int64_t(1000000ULL / m_frequency));
+    double period_us = 1000000.0 / m_frequency;
+    double period_round = std::round(period_us);
+    if (period_us < 1.0 || std::fabs(period_us - period_round) > 1e-9) {
+        throw std::invalid_argument(
+            "clock frequency " + std::to_string(freq) +
+            " not representable as whole microseconds");
+    }
+    m_period = TimeDuration::microSecs(static_cast<int64_t>(period_round));
 }
 
 
