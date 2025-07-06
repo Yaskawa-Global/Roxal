@@ -1,0 +1,8 @@
+c = clock(10)
+l = c < 2
+c.tick()
+sleep(ms=200)
+print(bool(l))
+c.tick()
+sleep(ms=200)
+print(bool(l))
