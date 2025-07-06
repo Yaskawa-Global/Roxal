@@ -1571,6 +1571,12 @@ Value roxal::lor(Value l, Value r)
 
 Value roxal::greater(Value l, Value r)
 {
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("greater",
+                              [](Value a, Value b) { return greater(a, b); },
+                              l, r);
+    }
+
     if (l.isNumber() && r.isNumber()) {
         ValueType resultType(binaryOpType(l,r));
         switch (resultType) {
@@ -1599,6 +1605,12 @@ Value roxal::greater(Value l, Value r)
 
 Value roxal::less(Value l, Value r)
 {
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("less",
+                              [](Value a, Value b) { return less(a, b); },
+                              l, r);
+    }
+
     if (l.isNumber() && r.isNumber()) {
         ValueType resultType(binaryOpType(l,r));
         switch (resultType) {
