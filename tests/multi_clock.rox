@@ -1,0 +1,11 @@
+
+c20 = clock(20) // 20hz
+
+c30 = clock(30) // 30Hz
+
+sum = c20 + c20 // need to run at 60Hz so that each tick coincides with a tick of c20 & c30
+
+sleep(ms=100)
+
+print(sum.freq()) // 60
+
