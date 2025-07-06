@@ -3895,7 +3895,7 @@ Value VM::signal_freq_builtin(int argCount, Value* args)
 
     ObjSignal* objSignal = asSignal(args[0]);
     auto sig = objSignal->signal;
-    return numberVal(sig->frequency());
+    return intVal(sig->frequency());
 }
 
 Value VM::math_identity_builtin(int argCount, Value* args)
