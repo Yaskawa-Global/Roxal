@@ -1,0 +1,7 @@
+type Point object:
+  var x:int = 0
+  var y:int = 0
+
+var p = Point({"x":3, "y":4})
+print(p.x)
+print(p.y)
