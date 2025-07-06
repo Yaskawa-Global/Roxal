@@ -31,7 +31,7 @@ tests = [
     'event_in_sleep', 'event_in_sleep2',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
     'module_strict_assign_err', 'func_nonstrict', 'conversions1',
-    'byteops',
+    'byteops', 'object_init',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'lambda1',
     'conversion1',
     'call_param_type_nonstrict', 'call_param_type_strict', 'param_assign_static_err',

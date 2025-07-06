@@ -1,0 +1,33 @@
+type InitOneParam object:
+   var a
+   var b
+   proc init(p :int):
+     a = p
+     b = p
+
+// normal usage
+var o = InitOneParam(1)
+print(o.a)
+print(o.b)
+
+// since it doesn't have an init with a dict or unspecified type single param,
+//  passing a dict can be use to initialize the public member variables
+var o2 = InitOneParam({'a':1, 'b':2})
+print(o2.a)
+print(o2.b)
+
+print(dict(o2))
+
+// this object explicitly has an init with a dict param
+type InitDictParam object:
+  var a
+  var b
+  proc init(d :dict):
+    a = d['first']
+    b = d['second']
+
+// so constructing with a dict should use init, not try to match the dict with public variable members
+o3 = InitDictParam({'first':1,'second':2})
+print(o3.a)
+print(o3.b)
+print(dict(o3))
