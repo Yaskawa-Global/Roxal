@@ -2343,21 +2343,10 @@ std::pair<InterpretResult,Value> VM::execute()
                 Value& operand { peek(0) };
                 operand.resolveFuture();
 
-                if (isSignal(operand) || operand.isNumber() || operand.isBool()) {
-                    try {
-                        push(negate(pop()));
-                    } catch (std::exception& e) {
-                        runtimeError(e.what());
-                        return errorReturn;
-                    }
-                }
-                else if (isFalsey(operand)) {
-                    // if it looks like false, isFalsey() -> true, so we push
-                    //   true, which is negative of false
-                    push(boolVal(isFalsey(operand)));
-                }
-                else {
-                    runtimeError("Operand of 'not' or negation must be a number, bool or nil");
+                try {
+                    push(negate(pop()));
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
                     return errorReturn;
                 }
                 break;
