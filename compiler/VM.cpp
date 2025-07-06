@@ -3966,7 +3966,14 @@ void VM::defineNativeFunctions()
     };
 
     addSys("_clock", &VM::clock_native);
-    addSys("clock", &VM::clock_signal_native);
+    {
+        auto t = make_ptr<type::Type>(type::BuiltinType::Func);
+        t->func = type::Type::FuncType();
+        auto params = constructParams({{"freq", type::BuiltinType::Int}}, {});
+        t->func->params.resize(params.size());
+        for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
+        addSys("clock", &VM::clock_signal_native, t, {});
+    }
     addSys("_engine_stop", &VM::engine_stop_native);
     addSys("typeof", &VM::typeof_native);
     addSys("loadlib", &VM::loadlib_native);
