@@ -1037,8 +1037,8 @@ Value roxal::toType(ValueType t, Value v, bool strict)
 
                 ObjectInstance* vObj = asObjectInstance(v);
                 ObjObjectType* vObjType = vObj->instanceType;
-                for(const auto& property : vObjType->properties) {
-                    const auto& prop { property.second };
+                for(int32_t hash : vObjType->propertyOrder) {
+                    const auto& prop { vObjType->properties.at(hash) };
                     if (prop.access != ast::Access::Public)
                         continue;
                     auto propName { stringVal(prop.name) };
