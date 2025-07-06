@@ -1434,10 +1434,19 @@ Value roxal::multiply(Value l, Value r)
 
 Value roxal::divide(Value l, Value r)
 {
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("divide",
+                              [](Value a, Value b) { return divide(a, b); },
+                              l, r);
+    }
+
     if (!l.isNumber())
         throw std::invalid_argument("LHS must be a number");
     if (!r.isNumber())
         throw std::invalid_argument("RHS must be a number");
+
+    if (toType(ValueType::Real, r, false).asReal() == 0.0)
+        throw std::invalid_argument("Divide by 0");
 
     ValueType resultType(binaryOpType(l,r));
     switch (resultType) {

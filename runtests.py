@@ -22,7 +22,7 @@ tests = [
     'andtest', 'ortest', 'not',
     'arith', 'factorial', 'defaultvalues', 'typeof_test',
     'dict', 'dict2', 'dict_keyerror', 'list', 'list2', 'list_add_test', 'range', 'range2', 'enum1', 'enum2', 'enum3', 'upvalue_leak',
-    'unicode', 'signal_clock', 'signal_add', 'signal_subtract', 'signal_multiply',
+    'unicode', 'signal_clock', 'signal_add', 'signal_subtract', 'signal_multiply', 'signal_divide',
     'signal_func_nocall', 'signal_func_exec', 'signal_index', 'signal_on_stmt', 'signal_on_threads', 'on_expression',
     'test_signal_value_property', 'construct_by_signal', 'signal_run_stop', 'signal_network1',
     'dataflow_clocktest1',
