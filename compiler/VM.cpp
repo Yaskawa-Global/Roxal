@@ -686,7 +686,22 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         else
                             tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
                     }
-                    if (initMethod != nullptr) {
+                    bool dictArg = (!type->isActor && callSpec.argCount == 1 && isDict(peek(0)));
+                    bool initAcceptsDict = false;
+                    if (initMethod != nullptr && asClosure(initMethod->closure)->function->funcType.has_value()) {
+                        auto ftype = asClosure(initMethod->closure)->function->funcType.value();
+                        if (ftype->builtin == type::BuiltinType::Func) {
+                            const auto& params = ftype->func.value().params;
+                            if (params.size() == 1) {
+                                if (!params[0].has_value() || !params[0]->type.has_value())
+                                    initAcceptsDict = true;
+                                else if (builtinToValueType(params[0]->type.value()->builtin) == ValueType::Dict)
+                                    initAcceptsDict = true;
+                            }
+                        }
+                    }
+
+                    if (initMethod != nullptr && !(dictArg && !initAcceptsDict)) {
                         Value initializer { initMethod->closure };
                         if (!type->isActor)
                             return call(asClosure(initializer), callSpec);
@@ -695,14 +710,41 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             Value calleeVal = objVal(boundInit);
                             ActorInstance* actorInst = asActorInstance(inst);
                             actorInst->queueCall(calleeVal, callSpec, &(*thread->stackTop));
-                            // leave the new actor instance on the stack as the
-                            // constructor return value (queueCall returns nil
-                            // for proc init). Only the init arguments are
-                            // popped here.
                             popN(callSpec.argCount); // remove init args
                         }
                     } else {
-                        if (callSpec.argCount != 0) {
+                        if (dictArg) {
+                            ObjDict* argDict = asDict(peek(0));
+                            ObjectInstance* objInst = asObjectInstance(inst);
+                            bool strictConv = false;
+                            if (thread->frames.size() >= 1)
+                                strictConv = (thread->frames.end()-1)->strict;
+                            for(const auto& kv : argDict->items()) {
+                                if (!isString(kv.first))
+                                    continue;
+                                int32_t hash = asString(kv.first)->hash;
+                                auto pit = type->properties.find(hash);
+                                if (pit == type->properties.end())
+                                    continue;
+                                const auto& prop { pit->second };
+                                if (prop.access != ast::Access::Public)
+                                    continue;
+                                Value val { kv.second };
+                                if (!prop.type.isNil() && isTypeSpec(prop.type)) {
+                                    ObjTypeSpec* ts = asTypeSpec(prop.type);
+                                    if (ts->typeValue != ValueType::Nil) {
+                                        try {
+                                            val = toType(ts->typeValue, val, strictConv);
+                                        } catch (std::exception& e) {
+                                            runtimeError(e.what());
+                                            return false;
+                                        }
+                                    }
+                                }
+                                objInst->properties[hash] = val;
+                            }
+                            pop();
+                        } else if (callSpec.argCount != 0) {
                             runtimeError("Expected 0 arguments for type instantiation, provided "+std::to_string(callSpec.argCount));
                             return false;
                         }

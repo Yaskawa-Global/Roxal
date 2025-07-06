@@ -1,0 +1,6 @@
+type Obj object:
+  var pub = 1
+  private var secret = 2
+
+var o = Obj()
+print(dict(o))
