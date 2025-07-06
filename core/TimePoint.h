@@ -33,9 +33,7 @@ public:
     constexpr double seconds() const { return static_cast<double>(m_microSecs)/1000000.0; }
 
     inline std::string humanString() const {
-        std::ostringstream oss;
-        oss << seconds() << "s";
-        return oss.str();
+        return humanDurationString(m_microSecs);
     }
 };
 

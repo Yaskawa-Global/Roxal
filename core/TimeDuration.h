@@ -5,8 +5,82 @@
 #include <string>
 #include <sstream>
 #include <ostream>
+#include <algorithm>
 
 namespace roxal {
+
+inline std::string humanDurationString(int64_t microSecs)
+{
+    constexpr int64_t kMicroSecond = 1;
+    constexpr int64_t kMilliSecond = 1000 * kMicroSecond;
+    constexpr int64_t kSecond = 1000 * kMilliSecond;
+
+    if (microSecs == 0)
+        return "0s";
+
+    bool negative = microSecs < 0;
+    uint64_t u = negative ? static_cast<uint64_t>(-microSecs) : static_cast<uint64_t>(microSecs);
+
+    auto fmtInt = [](uint64_t v) -> std::string {
+        if (v == 0)
+            return "0";
+        std::string s;
+        while (v > 0) {
+            s.push_back('0' + (v % 10));
+            v /= 10;
+        }
+        std::reverse(s.begin(), s.end());
+        return s;
+    };
+
+    auto fmtFrac = [](uint64_t &v, int prec) -> std::string {
+        std::string digits;
+        bool print = false;
+        for (int i = 0; i < prec; ++i) {
+            int digit = v % 10;
+            print = print || digit != 0;
+            if (print)
+                digits.push_back('0' + digit);
+            v /= 10;
+        }
+        if (!print)
+            return "";
+        std::reverse(digits.begin(), digits.end());
+        return std::string(".") + digits;
+    };
+
+    std::string out;
+    if (negative)
+        out.push_back('-');
+
+    if (u < static_cast<uint64_t>(kSecond)) {
+        if (u < static_cast<uint64_t>(kMilliSecond)) {
+            uint64_t val = u;
+            std::string frac = fmtFrac(val, 0);
+            out += fmtInt(val) + frac + "us";
+        } else {
+            uint64_t val = u;
+            std::string frac = fmtFrac(val, 3);
+            out += fmtInt(val) + frac + "ms";
+        }
+    } else {
+        uint64_t val = u;
+        std::string frac = fmtFrac(val, 6);
+        uint64_t sec = val % 60;
+        std::string result = fmtInt(sec) + frac + "s";
+        val /= 60;
+        if (val > 0) {
+            uint64_t min = val % 60;
+            result = fmtInt(min) + "m" + result;
+            val /= 60;
+            if (val > 0)
+                result = fmtInt(val) + "h" + result;
+        }
+        out += result;
+    }
+
+    return out;
+}
 
 class TimeDuration {
     int64_t m_microSecs;
@@ -26,9 +100,7 @@ public:
     inline double frequency() const { return m_microSecs ? 1000000.0/static_cast<double>(m_microSecs) : 0.0; }
 
     inline std::string humanString() const {
-        std::ostringstream oss;
-        oss << seconds() << "s";
-        return oss.str();
+        return humanDurationString(m_microSecs);
     }
 };
 
