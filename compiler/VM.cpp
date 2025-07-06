@@ -2358,17 +2358,15 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::Modulo): {
                 // TODO: support decimal
-                peek(0).resolve();
-                peek(1).resolve();
-                if (!peek(0).isNumber() && !peek(0).isBool()) {
-                    runtimeError("Operand of '%' must be an integer");
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
+
+                try {
+                    binaryOp([](Value a, Value b) -> Value { return mod(a,b); });
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
                     return errorReturn;
                 }
-                if (!peek(1).isNumber() && !peek(1).isBool()) {
-                    runtimeError("Operand of '%' must be an integer");
-                    return errorReturn;
-                }
-                binaryOp([](Value a, Value b) -> Value { return mod(a,b); });
                 break;
             }
             case asByte(OpCode::And): {
