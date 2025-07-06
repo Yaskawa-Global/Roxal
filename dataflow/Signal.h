@@ -23,6 +23,8 @@ class Signal
 public:
     static ptr<Signal> newClockSignal(double freq, std::optional<std::string> name = {});
     static ptr<Signal> newSignal(double freq, Value initial, std::optional<std::string> name = {});
+    static ptr<Signal> newSourceSignal(double freq, Value initial = Value(),
+                                      std::optional<std::string> name = {});
 
     const std::string& name() const { return m_name; }
 
@@ -39,6 +41,7 @@ public:
     std::optional<Value> valueIfAvailableAt(TimePoint t) const;
     Value valueAt(TimePoint t) const;
     void setValueAt(TimePoint t, const Value& v);
+    void set(const Value& v);
 
     // For source signals: generate next value
     void tick(TimePoint t);
