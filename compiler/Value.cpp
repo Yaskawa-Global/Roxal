@@ -1501,6 +1501,10 @@ Value roxal::mod(Value l, Value r)
 {
     // TODO: support Decimal
 
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("mod", [](Value a, Value b) { return mod(a, b); }, l, r);
+    }
+
     if (!l.isNumber() && !l.isBool())
         throw std::invalid_argument("LHS must be an integer");
     if (!r.isNumber() && !r.isBool())
