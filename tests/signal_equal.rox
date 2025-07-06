@@ -1,0 +1,8 @@
+c = clock(10)
+eq = (c + 1) == 2
+c.tick()
+sleep(ms=200)
+print(bool(eq))
+c.tick()
+sleep(ms=200)
+print(bool(eq))

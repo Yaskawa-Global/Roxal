@@ -2286,11 +2286,15 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Equal): {
-                Value b = pop();
-                Value a = pop();
-                a.resolve();
-                b.resolve();
-                push(boolVal(a.equals(b, frame->strict)));
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
+
+                try {
+                    binaryOp([&](Value a, Value b) -> Value { return equal(a, b, frame->strict); });
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
                 break;
             }
             case asByte(OpCode::Is): {

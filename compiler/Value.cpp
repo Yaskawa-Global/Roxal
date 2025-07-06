@@ -1637,6 +1637,18 @@ Value roxal::less(Value l, Value r)
 }
 
 
+Value roxal::equal(Value l, Value r, bool strict)
+{
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("equal",
+                              [strict](Value a, Value b) { return equal(a, b, strict); },
+                              l, r);
+    }
+
+    return boolVal(l.equals(r, strict));
+}
+
+
 std::string roxal::toString(const Value& v)
 {
     if (v.isInt())
