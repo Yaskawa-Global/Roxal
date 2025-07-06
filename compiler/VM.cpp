@@ -154,11 +154,6 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when)
     }
 }
 
-static uint64_t currentTimeNs() {
-    struct timespec tp;
-    clock_gettime(CLOCK_MONOTONIC,&tp);
-    return uint64_t(tp.tv_sec)*1000000000ull + uint64_t(tp.tv_nsec);
-}
 
 void* VM::createFFIWrapper(void* fn, ffi_type* retType,
                            const std::vector<ffi_type*>& argTypes)

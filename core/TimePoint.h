@@ -82,6 +82,14 @@ inline void TimePoint::sleepUntil() const
     std::this_thread::sleep_until(future_time);
 }
 
+inline uint64_t currentTimeNs()
+{
+    struct timespec tp;
+    clock_gettime(CLOCK_MONOTONIC,&tp);
+    return uint64_t(tp.tv_sec)*1000000000ull + uint64_t(tp.tv_nsec);
+}
+
+
 inline std::string toHumanReadableTime(const std::chrono::steady_clock::time_point& tp)
 {
     auto system_now = std::chrono::system_clock::now();
