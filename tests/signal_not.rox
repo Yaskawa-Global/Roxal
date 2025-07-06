@@ -1,0 +1,12 @@
+func t_sig(x) -> bool:
+  return true
+
+c = clock(10)
+t = t_sig(c)
+n = not t
+c.tick()
+sleep(ms=120)
+print(bool(n))
+c.tick()
+sleep(ms=120)
+print(bool(n))

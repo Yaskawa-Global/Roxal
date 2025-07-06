@@ -2341,10 +2341,16 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::Negate): {
                 Value& operand { peek(0) };
-                operand.resolve();
+                operand.resolveFuture();
 
-                if (operand.isNumber() || operand.isBool())
-                    push(negate(pop()));
+                if (isSignal(operand) || operand.isNumber() || operand.isBool()) {
+                    try {
+                        push(negate(pop()));
+                    } catch (std::exception& e) {
+                        runtimeError(e.what());
+                        return errorReturn;
+                    }
+                }
                 else if (isFalsey(operand)) {
                     // if it looks like false, isFalsey() -> true, so we push
                     //   true, which is negative of false
@@ -2372,31 +2378,41 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::And): {
-                peek(0).resolve();
-                peek(1).resolve();
-                if (!peek(0).isBool()) {
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
+                if (!peek(0).isBool() && !isSignal(peek(0))) {
                     runtimeError("Operand of 'and' must be a bool");
                     return errorReturn;
                 }
-                if (!peek(1).isBool()) {
+                if (!peek(1).isBool() && !isSignal(peek(1))) {
                     runtimeError("Operand of 'and' must be a bool");
                     return errorReturn;
                 }
-                binaryOp([](Value a, Value b) -> Value { return land(a,b); });
+                try {
+                    binaryOp([](Value a, Value b) -> Value { return land(a,b); });
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
                 break;
             }
             case asByte(OpCode::Or): {
-                peek(0).resolve();
-                peek(1).resolve();
-                if (!peek(0).isBool()) {
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
+                if (!peek(0).isBool() && !isSignal(peek(0))) {
                     runtimeError("Operand of 'or' must be a bool");
                     return errorReturn;
                 }
-                if (!peek(1).isBool()) {
+                if (!peek(1).isBool() && !isSignal(peek(1))) {
                     runtimeError("Operand of 'or' must be a bool");
                     return errorReturn;
                 }
-                binaryOp([](Value a, Value b) -> Value { return lor(a,b); });
+                try {
+                    binaryOp([](Value a, Value b) -> Value { return lor(a,b); });
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
                 break;
             }
             case asByte(OpCode::Pop): {
