@@ -1214,8 +1214,21 @@ Value roxal::negate(Value v)
         return intVal(-v.asInt());
     else if (v.isReal())
         return realVal(-v.asReal());
+    else if (isVector(v)) {
+        const ObjVector* vec = asVector(v);
+        Eigen::VectorXd result = -vec->vec;
+        return objVal(vectorVal(result));
+    }
+    else if (isMatrix(v)) {
+        const ObjMatrix* mat = asMatrix(v);
+        Eigen::MatrixXd result = -mat->mat;
+        return objVal(matrixVal(result));
+    }
     else if (v.isBool())
         return boolVal(!v.asBool());
+    else if (v.isNil())
+        return boolVal(true);
+
     // TODO: decimal
 
     if (isSignal(v)) {
@@ -1224,10 +1237,7 @@ Value roxal::negate(Value v)
                              v);
     }
 
-    if (!v.isNumber() && !v.isBool())
-        throw std::invalid_argument("Operand must be a number or bool");
-
-    throw std::runtime_error("unimplemented negation for type:"+v.typeName());
+    throw std::invalid_argument("Operand must be a number, bool or nil");
 }
 
 static Value roxal::signalUnaryOp(const std::string& name,
