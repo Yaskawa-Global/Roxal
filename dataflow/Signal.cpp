@@ -32,6 +32,15 @@ ptr<Signal> Signal::newSignal(double freq, Value initial, std::optional<std::str
     return s;
 }
 
+ptr<Signal> Signal::newSourceSignal(double freq, Value initial, std::optional<std::string> name)
+{
+    auto s = std::shared_ptr<Signal>(new Signal(freq, initial, name));
+    s->isClock = false;
+    s->isSource = true;
+    DataflowEngine::instance()->addSignal(s);
+    return s;
+}
+
 
 Signal::Signal(double freq, Value initial, std::optional<std::string> name)
     : m_frequency(freq), m_maxHistoryPeriods(2)
@@ -148,6 +157,13 @@ void Signal::setValueAt(TimePoint t, const Value& v)
 
     if (valueChanged)
         invokeValueChangedCallbacks(t, v);
+}
+
+void Signal::set(const Value& v)
+{
+    TimePoint t = DataflowEngine::instance()->tickStart();
+    setValueAt(t, v);
+    DataflowEngine::instance()->updateSignalConsumerInputAvailability(shared_from_this(), t);
 }
 
 

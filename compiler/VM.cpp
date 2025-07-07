@@ -3368,6 +3368,27 @@ void VM::runtimeError(const std::string& format, ...)
     int col  = chunk->getColumn(instruction);
     std::string fname = toUTF8StdString(chunk->sourceName);
 
+    // output stacktrace
+    for(auto it = thread->frames.begin(); it != thread->frames.end(); ++it) {
+        const CallFrame& f { *it };
+        auto c = f.closure->function->chunk;
+        size_t instr = 0;
+        if (f.ip > c->code.begin())
+            instr = f.ip - c->code.begin() - 1;
+        int ln = c->getLine(instr);
+        int cl = c->getColumn(instr);
+        std::string fn = toUTF8StdString(c->sourceName);
+        UnicodeString funcName = f.closure->function->name;
+        if (funcName.isEmpty())
+            funcName = UnicodeString("<script>");
+        if (!fn.empty())
+            fprintf(stderr, "%s:%d:%d: in %s\n", fn.c_str(), ln, cl,
+                    toUTF8StdString(funcName).c_str());
+        else
+            fprintf(stderr, "[line %d:%d]: in %s\n", ln, cl,
+                    toUTF8StdString(funcName).c_str());
+    }
+
     if (!fname.empty())
         fprintf(stderr, "%s:%d:%d: error: ", fname.c_str(), line, col);
     else
@@ -3431,6 +3452,7 @@ void VM::defineBuiltinFunctions()
     }
     addSys("fork", &VM::fork_builtin);
     addSys("join", &VM::join_builtin);
+    addSys("stacktrace", &VM::stacktrace_builtin);
     addSys("_threadid", &VM::threadid_builtin);
     addSys("_stackdepth", &VM::stackdepth_builtin);
     addSys("_wait", &VM::wait_builtin);
@@ -3465,6 +3487,7 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Signal, "stop", &VM::signal_stop_builtin);
     defineBuiltinMethod(ValueType::Signal, "tick", &VM::signal_tick_builtin);
     defineBuiltinMethod(ValueType::Signal, "freq", &VM::signal_freq_builtin);
+    defineBuiltinMethod(ValueType::Signal, "set", &VM::signal_set_builtin);
 
     defineBuiltinMethod(ValueType::Event, "emit", &VM::event_emit_builtin, true);
     defineBuiltinMethod(ValueType::Event, "on", &VM::event_on_builtin, true);
@@ -3628,6 +3651,44 @@ Value VM::threadid_builtin(int argCount, Value* args)
 
     int32_t id = int32_t(thread->id()); // FIXME: id is uint64
     return intVal(id);
+}
+
+
+Value VM::stacktrace_builtin(int argCount, Value* args)
+{
+    if (argCount != 0)
+        throw std::invalid_argument("stacktrace takes no arguments");
+
+    ObjList* framesList = listVal();
+
+    for(auto it = thread->frames.begin(); it != thread->frames.end(); ++it) {
+        const CallFrame& frame { *it };
+        ObjDict* frameDict = dictVal();
+
+        UnicodeString funcName = frame.closure->function->name;
+        if (funcName.isEmpty())
+            funcName = UnicodeString("<script>");
+
+        frameDict->store(objVal(stringVal(UnicodeString("function"))),
+                         objVal(stringVal(funcName)));
+
+        auto chunk = frame.closure->function->chunk;
+        size_t instruction = 0;
+        if (frame.ip > chunk->code.begin())
+            instruction = frame.ip - chunk->code.begin() - 1;
+        int line = chunk->getLine(instruction);
+        int col  = chunk->getColumn(instruction);
+
+        frameDict->store(objVal(stringVal(UnicodeString("line"))), intVal(line));
+        frameDict->store(objVal(stringVal(UnicodeString("col"))), intVal(col));
+
+        frameDict->store(objVal(stringVal(UnicodeString("filename"))),
+                         objVal(stringVal(chunk->sourceName)));
+
+        framesList->append(objVal(frameDict));
+    }
+
+    return objVal(framesList);
 }
 
 
@@ -3974,6 +4035,20 @@ Value VM::signal_freq_builtin(int argCount, Value* args)
     return intVal(sig->frequency());
 }
 
+Value VM::signal_set_builtin(int argCount, Value* args)
+{
+    if (argCount != 2 || !isSignal(args[0]))
+        throw std::invalid_argument("signal.set expects single value argument");
+
+    ObjSignal* objSignal = asSignal(args[0]);
+    auto sig = objSignal->signal;
+    if (!sig->isSourceSignal())
+        throw std::runtime_error("signal.set not supported for non-source signal");
+
+    sig->set(args[1]);
+    return nilVal();
+}
+
 Value VM::math_identity_builtin(int argCount, Value* args)
 {
     if (argCount != 1 || !args[0].isNumber())
@@ -4060,6 +4135,17 @@ void VM::defineNativeFunctions()
         t->func->params.resize(params.size());
         for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
         addSys("clock", &VM::clock_signal_native, t, {});
+    }
+    {
+        auto t = make_ptr<type::Type>(type::BuiltinType::Func);
+        t->func = type::Type::FuncType();
+        type::Type::FuncType::ParamType p1(toUnicodeString("freq"));
+        p1.type = make_ptr<type::Type>(type::BuiltinType::Int);
+        type::Type::FuncType::ParamType p2(toUnicodeString("initial"));
+        t->func->params.resize(2);
+        t->func->params[0] = p1;
+        t->func->params[1] = p2;
+        addSys("signal", &VM::signal_source_native, t, {});
     }
     addSys("_engine_stop", &VM::engine_stop_native);
     addSys("typeof", &VM::typeof_native);
@@ -4155,6 +4241,19 @@ Value VM::clock_signal_native(int argCount, Value* args)
 
     double freq = args[0].asReal();
     auto sig = df::Signal::newClockSignal(freq);
+    return objVal(signalVal(sig));
+}
+
+Value VM::signal_source_native(int argCount, Value* args)
+{
+    if (argCount < 1 || argCount > 2 || !args[0].isNumber())
+        throw std::invalid_argument("signal expects frequency and optional initial value");
+
+    double freq = args[0].asReal();
+    Value initial;
+    if (argCount >= 2)
+        initial = args[1];
+    auto sig = df::Signal::newSourceSignal(freq, initial);
     return objVal(signalVal(sig));
 }
 

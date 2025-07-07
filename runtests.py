@@ -26,13 +26,13 @@ tests = [
     'signal_greater', 'signal_less', 'signal_equal',
     'signal_and', 'signal_or', 'signal_not',
     'signal_func_nocall', 'signal_func_exec', 'signal_index', 'signal_on_stmt', 'signal_on_threads', 'on_expression',
-    'test_signal_value_property', 'construct_by_signal', 'signal_run_stop', 'signal_network1',
+    'test_signal_value_property', 'construct_by_signal', 'signal_run_stop', 'signal_source', 'signal_network1',
     'dataflow_clocktest1', 'multi_clock',
     'event1', 'event_on_stmt', 'event_emit_keyword', 'event_on_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4',
     'event_in_sleep', 'event_in_sleep2',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
     'module_strict_assign_err', 'func_nonstrict', 'conversions1',
-    'byteops', 'object_init',
+    'byteops', 'byte_int_bits', 'object_init',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'lambda1',
     'conversion1',
     'call_param_type_nonstrict', 'call_param_type_strict', 'param_assign_static_err',
@@ -55,9 +55,13 @@ tests = [
     'mathfuncs',
     'typeassign1', 'typeassign2', 'typeassign3',
     'vector1', 'vector2', 'vector3', 'vector4', 'vector5','vector_methods', 'vector_equal', 'vector_matrix_equal',
-    'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'unary_vector_matrix', 'matrix_index', 'matrix_methods', 'matrix_assign', 'matrix_equal', 'matrix_math', 'ffi1', 'cstruct1', 'cstruct2', 'cstruct3'
-    , 'weakref', 'strongref', 'is_operator', 'stackdepth'
-    , 'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string'
+    'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'unary_vector_matrix', 
+    'matrix_index', 'matrix_methods', 'matrix_assign', 'matrix_equal', 'matrix_math', 
+    'ffi1', 'cstruct1', 'cstruct2', 'cstruct3',
+    'weakref', 'strongref', 'is_operator', 'stackdepth',
+    'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
+    'stacktrace',
+    'runtime_error_snippet'
 ]
 
 # implementation doesn't yet allow these tests to pass
@@ -119,9 +123,10 @@ try:
         if not (os.path.exists(testout) or os.path.exists(testerr)):
             raise RuntimeError(f"Test expected output {testout} or {testerr} not found.")
 
-        cmd = [roxal, testrox]
+        rel_testrox = os.path.relpath(testrox, os.getcwd())
+        cmd = [roxal, rel_testrox]
         if test.startswith('typededucer_'):
-            cmd = [roxal, '--ast', testrox]
+            cmd = [roxal, '--ast', rel_testrox]
 
         opt_expected = (" [expected]" if test in failing_tests else '')
 

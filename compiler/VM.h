@@ -277,6 +277,7 @@ protected:
     Value signal_stop_builtin(int argCount, Value* args);
     Value signal_tick_builtin(int argCount, Value* args);
     Value signal_freq_builtin(int argCount, Value* args);
+    Value signal_set_builtin(int argCount, Value* args);
 
     Value math_identity_builtin(int argCount, Value* args);
     Value math_zeros_builtin(int argCount, Value* args);
@@ -291,6 +292,7 @@ protected:
     Value fork_builtin(int argCount, Value* args);
     Value join_builtin(int argCount, Value* args);
     Value threadid_builtin(int argCount, Value* args);
+    Value stacktrace_builtin(int argCount, Value* args);
     Value stackdepth_builtin(int argCount, Value* args);
     Value wait_builtin(int argCount, Value* args);
     Value runtests_builtin(int argCount, Value* args);
@@ -307,6 +309,7 @@ protected:
 
     Value clock_native(int argCount, Value* args);
     Value clock_signal_native(int argCount, Value* args);
+    Value signal_source_native(int argCount, Value* args);
     Value engine_stop_native(int argCount, Value* args);
     Value typeof_native(int argCount, Value* args);
 
