@@ -1,0 +1,5 @@
+try:
+  raise 'bad'
+except:
+  print('caught')
+print('done')
