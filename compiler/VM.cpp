@@ -3287,6 +3287,27 @@ void VM::runtimeError(const std::string& format, ...)
     int col  = chunk->getColumn(instruction);
     std::string fname = toUTF8StdString(chunk->sourceName);
 
+    // output stacktrace
+    for(auto it = thread->frames.begin(); it != thread->frames.end(); ++it) {
+        const CallFrame& f { *it };
+        auto c = f.closure->function->chunk;
+        size_t instr = 0;
+        if (f.ip > c->code.begin())
+            instr = f.ip - c->code.begin() - 1;
+        int ln = c->getLine(instr);
+        int cl = c->getColumn(instr);
+        std::string fn = toUTF8StdString(c->sourceName);
+        UnicodeString funcName = f.closure->function->name;
+        if (funcName.isEmpty())
+            funcName = UnicodeString("<script>");
+        if (!fn.empty())
+            fprintf(stderr, "%s:%d:%d: in %s\n", fn.c_str(), ln, cl,
+                    toUTF8StdString(funcName).c_str());
+        else
+            fprintf(stderr, "[line %d:%d]: in %s\n", ln, cl,
+                    toUTF8StdString(funcName).c_str());
+    }
+
     if (!fname.empty())
         fprintf(stderr, "%s:%d:%d: error: ", fname.c_str(), line, col);
     else
