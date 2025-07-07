@@ -55,6 +55,13 @@ struct CallFrame {
 
     // if not empty, used to reorder call arguments on the stack
     std::vector<int8_t> reorderArgs; // reordering
+
+    struct ExceptionHandler {
+        Chunk::iterator handlerIp;
+        size_t stackDepth;
+        size_t frameDepth;
+    };
+    std::vector<ExceptionHandler> exceptionHandlers;
 };
 
 

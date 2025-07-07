@@ -34,6 +34,7 @@ namespace roxal {
 struct ObjObjectType; // forward
 class Thread; // forward declaration for handler threads
 struct ObjEvent; // forward
+struct ObjException; // forward
 }
 
 
@@ -65,7 +66,8 @@ enum class ObjType {
     Matrix,
     Signal,
     Library,
-    Event
+    Event,
+    Exception
 };
 
 
@@ -554,6 +556,24 @@ inline ObjLibrary* asLibrary(const Value& v) { return static_cast<ObjLibrary*>(v
 
 ObjLibrary* libraryVal(void* handle);
 std::string objLibraryToString(const ObjLibrary* lib);
+
+
+//
+// exception object
+
+struct ObjException : public Obj {
+    ObjException() { type = ObjType::Exception; }
+    explicit ObjException(Value msg) : message(msg) { type = ObjType::Exception; }
+    virtual ~ObjException() {}
+
+    Value message;
+};
+
+inline bool isException(const Value& v) { return isObjType(v, ObjType::Exception); }
+inline ObjException* asException(const Value& v) { return static_cast<ObjException*>(v.asObj()); }
+
+ObjException* exceptionVal(Value message = nilVal());
+std::string objExceptionToString(const ObjException* ex);
 
 
 //

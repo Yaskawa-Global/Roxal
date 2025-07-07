@@ -1632,6 +1632,14 @@ std::pair<InterpretResult,Value> VM::execute()
         push( op(lhs,rhs) );
     };
 
+    auto unwindFrame = [&]() {
+        auto f = thread->frames.back();
+        closeUpvalues(f.slots);
+        size_t popCount = &(*thread->stackTop) - f.slots;
+        for(size_t i=0;i<popCount;i++) pop();
+        thread->popFrame();
+    };
+
 
     #if defined(DEBUG_TRACE_EXECUTION)
     std::cout << std::endl << "== executing ==" << std::endl;
@@ -2912,6 +2920,48 @@ std::pair<InterpretResult,Value> VM::execute()
                 auto* closure = asClosure(closureVal);
                 closure->handlerThread = thread;
                 ev->subscribers.push_back(closureVal.weakRef());
+                break;
+            }
+            case asByte(OpCode::SetupExcept): {
+                uint16_t off = readShort();
+                CallFrame::ExceptionHandler h;
+                h.handlerIp = frame->ip + off;
+                h.stackDepth = thread->stackTop - thread->stack.begin();
+                h.frameDepth = thread->frames.size();
+                frame->exceptionHandlers.push_back(h);
+                break;
+            }
+            case asByte(OpCode::EndExcept): {
+                if (!frame->exceptionHandlers.empty())
+                    frame->exceptionHandlers.pop_back();
+                break;
+            }
+            case asByte(OpCode::Throw): {
+                Value exc = pop();
+                if (!isException(exc))
+                    exc = objVal(exceptionVal(exc));
+                while (true) {
+                    if (thread->frames.empty()) {
+                        runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
+                        return errorReturn;
+                    }
+                    auto &cf = thread->frames.back();
+                    if (!cf.exceptionHandlers.empty()) {
+                        auto h = cf.exceptionHandlers.back();
+                        cf.exceptionHandlers.pop_back();
+                        while (thread->frames.size() > h.frameDepth)
+                            unwindFrame();
+                        frame = thread->frames.end()-1;
+                        frame->ip = h.handlerIp;
+                        while (thread->stackTop - thread->stack.begin() > h.stackDepth)
+                            pop();
+                        push(exc);
+                        break;
+                    } else {
+                        unwindFrame();
+                    }
+                }
+                frame = thread->frames.end()-1;
                 break;
             }
             case asByte(OpCode::ObjectType): {
