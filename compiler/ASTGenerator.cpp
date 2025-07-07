@@ -701,6 +701,8 @@ std::any ASTGenerator::visitTry_stmt(RoxalParser::Try_stmtContext *context)
         TryStatement::ExceptClause ec;
         if (excCtx->expression())
             ec.type = as<Expression>(visitExpression(excCtx->expression()));
+        if (excCtx->IDENTIFIER())
+            ec.name = UnicodeString::fromUTF8(excCtx->IDENTIFIER()->getText());
         ec.body = as<Suite>(visitSuite(excCtx->suite()));
         tryStmt->exceptClauses.push_back(ec);
     }
@@ -717,7 +719,8 @@ std::any ASTGenerator::visitRaise_stmt(RoxalParser::Raise_stmtContext *context)
     visitStart();
     auto rs = std::make_shared<RaiseStatement>();
     setSourceInfo(rs, context);
-    rs->exception = as<Expression>(visitExpression(context->expression()));
+    if (context->expression())
+        rs->exception = as<Expression>(visitExpression(context->expression()));
     return typeValue(rs);
     visitEnd();
 }

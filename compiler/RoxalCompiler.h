@@ -292,6 +292,9 @@ protected:
 
     std::vector<std::string> moduleRootPaths {};  // filesystem paths of top-level for package directories & module files
 
+    // stack of current exception variable names for nested try/except blocks
+    std::vector<icu::UnicodeString> exceptionVarStack {};
+
 
 
 

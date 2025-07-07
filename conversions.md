@@ -34,6 +34,7 @@
 ^5^ "true" or "false"
 ^6^ The enum label
 ^7^ Strings converting to numeric types parse the same formats as numeric literals (prefixes like 0x for hex). In non-strict mode invalid strings yield zero; strict mode disallows such conversions.
+^8^ Converting an exception value to `string` returns only the exception's message text.
 
 
 ## Explicit (explicit cast/constructor used)

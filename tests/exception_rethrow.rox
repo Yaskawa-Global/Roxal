@@ -1,0 +1,9 @@
+try:
+  try:
+    raise ProgramException('bad')
+  except ProgramException as e:
+    print('inner')
+    raise
+except exception as e:
+  print('outer')
+print('done')

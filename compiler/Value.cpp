@@ -808,6 +808,19 @@ bool Value::is(const Value& rhs, bool strict) const
             case ValueType::Object:
                 if (isObjectInstance(*this))
                     return asObjectInstance(*this)->instanceType == ts; // TODO: handle inheritance/interfaces
+                if (isException(*this) && isObjectType(rhs)) {
+                    ObjException* ex = asException(*this);
+                    if (isTypeSpec(ex->exType)) {
+                        ObjObjectType* et = asObjectType(ex->exType);
+                        ObjObjectType* target = asObjectType(rhs);
+                        while (et) {
+                            if (et == target)
+                                return true;
+                            if (et->superType.isNil()) break;
+                            et = asObjectType(et->superType);
+                        }
+                    }
+                }
                 break;
             case ValueType::Actor:
                 if (isActorInstance(*this))
@@ -1011,6 +1024,17 @@ Value roxal::toType(ValueType t, Value v, bool strict)
         case ValueType::Real: return realVal(v.asReal(strict));
         case ValueType::Int: return intVal(v.asInt(strict));
         case ValueType::String: {
+            // allow conversion of typed exceptions to just the message text
+            if (isException(v)) {
+                ObjException* ex = asException(v);
+                Value msg = ex->message;
+                if (isString(msg))
+                    return msg;
+                if (!msg.isNil())
+                    return Value(stringVal(toUnicodeString(toString(msg))));
+                return Value(stringVal(UnicodeString()));
+            }
+
             // TODO: use alternate 'non-debug' string conversion only utilizing UnicodeString
             return Value(stringVal(toUnicodeString(toString(v))));
         } break;

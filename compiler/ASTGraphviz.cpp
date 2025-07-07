@@ -383,7 +383,8 @@ std::any ASTGraphviz::visit(ptr<ast::RaiseStatement> ast)
 {
     startVisit();
     auto name { uname(ast) };
-    addLink(name, stackPop());
+    if (ast->exception.has_value())
+        addLink(name, stackPop());
     nodes[name] = node(name, "raise");
     stackPush(name);
     endVisit();

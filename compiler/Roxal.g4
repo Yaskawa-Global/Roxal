@@ -106,7 +106,7 @@ emit_stmt
  ;
 
 raise_stmt
- : RAISE expression
+ : RAISE expression?
  ;
 
 try_stmt
@@ -114,7 +114,7 @@ try_stmt
  ;
 
 except_clause
- : EXCEPT expression? ':' suite
+ : EXCEPT expression? (AS IDENTIFIER)? ':' suite
  ;
 
 finally_clause
