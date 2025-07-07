@@ -1075,6 +1075,77 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
             }
         }
     }
+
+    if (type == ValueType::Byte) {
+        size_t count = end - begin;
+        if (count == 1) {
+            Value arg = *begin;
+            if (isList(arg)) {
+                auto bits = asList(arg)->elts.get();
+                if (bits.size() != 8)
+                    throw std::runtime_error("byte constructor expects list of 8 bools or 0/1 ints");
+                uint8_t value = 0;
+                for (size_t i = 0; i < bits.size(); ++i) {
+                    Value b = bits[i];
+                    bool bit;
+                    if (b.isBool())
+                        bit = b.asBool();
+                    else if (b.isInt() || b.isByte()) {
+                        int iv = b.asInt(false);
+                        if (iv != 0 && iv != 1)
+                            throw std::runtime_error("byte bit list elements must be 0 or 1");
+                        bit = iv != 0;
+                    } else {
+                        throw std::runtime_error("byte constructor expects list of bools or ints");
+                    }
+                    if (bit)
+                        value |= uint8_t(1u << (7 - i));
+                }
+                return byteVal(value);
+            }
+        }
+    }
+
+    if (type == ValueType::Int) {
+        size_t count = end - begin;
+        if (count == 1) {
+            Value arg = *begin;
+            if (isList(arg)) {
+                auto parts = asList(arg)->elts.get();
+                if (parts.size() == 32) {
+                    uint32_t value = 0;
+                    for (size_t i = 0; i < parts.size(); ++i) {
+                        Value p = parts[i];
+                        bool bit;
+                        if (p.isBool())
+                            bit = p.asBool();
+                        else if (p.isInt() || p.isByte()) {
+                            int iv = p.asInt(false);
+                            if (iv != 0 && iv != 1)
+                                throw std::runtime_error("int bit list elements must be 0 or 1");
+                            bit = iv != 0;
+                        } else {
+                            throw std::runtime_error("int constructor expects list of bools or ints");
+                        }
+                        if (bit)
+                            value |= (1u << (31 - i));
+                    }
+                    int32_t result = *reinterpret_cast<int32_t*>(&value);
+                    return intVal(result);
+                } else if (parts.size() == 4) {
+                    uint32_t value = 0;
+                    for (size_t i = 0; i < 4; ++i) {
+                        uint8_t b = toType(ValueType::Byte, parts[i], false).asByte(false);
+                        value |= uint32_t(b) << (8 * (3 - i));
+                    }
+                    int32_t result = *reinterpret_cast<int32_t*>(&value);
+                    return intVal(result);
+                } else {
+                    throw std::runtime_error("int constructor expects list of 32 bits or 4 bytes");
+                }
+            }
+        }
+    }
     if (type == ValueType::Vector) {
         size_t count = end - begin;
         if (count == 0) {
