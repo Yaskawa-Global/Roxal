@@ -35,6 +35,8 @@ class IfStatement;
 class WhileStatement;
 class ForStatement;
 class OnStatement;
+class TryStatement;
+class RaiseStatement;
 class Function;
 class Parameter;
 class Assignment;
@@ -85,6 +87,8 @@ public:
     virtual std::any visit(ptr<WhileStatement> ast) = 0;
     virtual std::any visit(ptr<ForStatement> ast) = 0;
     virtual std::any visit(ptr<OnStatement> ast) = 0;
+    virtual std::any visit(ptr<TryStatement> ast) = 0;
+    virtual std::any visit(ptr<RaiseStatement> ast) = 0;
     virtual std::any visit(ptr<Function> ast) = 0;
     virtual std::any visit(ptr<Parameter> ast) = 0;
     virtual std::any visit(ptr<Assignment> ast) = 0;
@@ -261,7 +265,9 @@ struct Statement : public AST {
         If,
         While,
         For,
-        On
+        On,
+        Try,
+        Raise
     };
 
     Statement(StmtType st) : stmtType(st) {}
@@ -354,6 +360,37 @@ struct OnStatement : public Statement {
 
     ptr<ast::Expression> trigger;
     ptr<ast::Suite> body;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
+struct RaiseStatement : public Statement {
+    RaiseStatement() : Statement(StmtType::Raise) {}
+
+    std::optional<ptr<ast::Expression>> exception;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
+struct TryStatement : public Statement {
+    TryStatement() : Statement(StmtType::Try) {}
+
+    ptr<ast::Suite> body;
+    struct ExceptClause {
+        std::optional<ptr<ast::Expression>> type;
+        std::optional<icu::UnicodeString> name;
+        ptr<ast::Suite> body;
+    };
+    std::vector<ExceptClause> exceptClauses;
+    std::optional<ptr<ast::Suite>> finallySuite;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

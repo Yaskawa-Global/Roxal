@@ -44,6 +44,8 @@ public:
     virtual std::any visit(ptr<ast::WhileStatement> ast);
     virtual std::any visit(ptr<ast::ForStatement> ast);
     virtual std::any visit(ptr<ast::OnStatement> ast);
+    virtual std::any visit(ptr<ast::TryStatement> ast);
+    virtual std::any visit(ptr<ast::RaiseStatement> ast);
     virtual std::any visit(ptr<ast::Function> ast);
     virtual std::any visit(ptr<ast::Parameter> ast);
     virtual std::any visit(ptr<ast::Assignment> ast);
@@ -289,6 +291,9 @@ protected:
     // Global modules
 
     std::vector<std::string> moduleRootPaths {};  // filesystem paths of top-level for package directories & module files
+
+    // stack of current exception variable names for nested try/except blocks
+    std::vector<icu::UnicodeString> exceptionVarStack {};
 
 
 

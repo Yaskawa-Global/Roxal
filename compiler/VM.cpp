@@ -70,6 +70,18 @@ constructParams(const std::vector<std::pair<std::string, type::BuiltinType>>& in
     return params;
 }
 
+static bool isExceptionType(ObjObjectType* type)
+{
+    while (type) {
+        if (toUTF8StdString(type->name) == "exception")
+            return true;
+        if (type->superType.isNil())
+            break;
+        type = asObjectType(type->superType);
+    }
+    return false;
+}
+
 std::vector<Value> VM::marshalArgs(ptr<type::Type> funcType,
                                    const std::vector<Value>& defaults,
                                    const CallSpec& callSpec,
@@ -203,6 +215,17 @@ VM::VM()
 
     // Make dataflow engine available as global variable
     globals.storeGlobal(toUnicodeString("_dataflow"), dataflowEngineActor);
+
+    // built-in exception hierarchy
+    Value exType = objVal(objectTypeVal(toUnicodeString("exception"), false));
+    Value runtimeExType = objVal(objectTypeVal(toUnicodeString("RuntimeException"), false));
+    asObjectType(runtimeExType)->superType = exType;
+    Value programExType = objVal(objectTypeVal(toUnicodeString("ProgramException"), false));
+    asObjectType(programExType)->superType = exType;
+
+    globals.storeGlobal(toUnicodeString("exception"), exType);
+    globals.storeGlobal(toUnicodeString("RuntimeException"), runtimeExType);
+    globals.storeGlobal(toUnicodeString("ProgramException"), programExType);
 
     defineBuiltinFunctions();
     defineBuiltinMethods();
@@ -657,6 +680,23 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 ObjTypeSpec* ts = asTypeSpec(callee);
                 if ((ts->typeValue == ValueType::Object) || (ts->typeValue == ValueType::Actor)) {
                     ObjObjectType* type = asObjectType(callee);
+                    ObjObjectType* tInit = type;
+                    const ObjObjectType::Method* initMethod = nullptr;
+                    while (tInit != nullptr && initMethod == nullptr) {
+                        auto it = tInit->methods.find(initString->hash);
+                        if (it != tInit->methods.end())
+                            initMethod = &it->second;
+                        else
+                            tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
+                    }
+
+                    if (initMethod == nullptr && isExceptionType(type) && callSpec.argCount == 1) {
+                        Value msg = peek(0);
+                        *(thread->stackTop - callSpec.argCount - 1) = objVal(exceptionVal(msg, objVal(type)));
+                        pop();
+                        return true;
+                    }
+
                     Value inst {};
                     if (!type->isActor) {
                         inst = Value(objectInstanceVal(type));
@@ -671,15 +711,6 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         newThread->act(inst);
 
                         *(thread->stackTop - callSpec.argCount - 1) = inst;
-                    }
-                    ObjObjectType* tInit = type;
-                    const ObjObjectType::Method* initMethod = nullptr;
-                    while (tInit != nullptr && initMethod == nullptr) {
-                        auto it = tInit->methods.find(initString->hash);
-                        if (it != tInit->methods.end())
-                            initMethod = &it->second;
-                        else
-                            tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
                     }
                     bool dictArg = (!type->isActor && callSpec.argCount == 1 && isDict(peek(0)));
                     bool initAcceptsDict = false;
@@ -1630,6 +1661,14 @@ std::pair<InterpretResult,Value> VM::execute()
         Value rhs = pop();
         Value lhs = pop();
         push( op(lhs,rhs) );
+    };
+
+    auto unwindFrame = [&]() {
+        auto f = thread->frames.back();
+        closeUpvalues(f.slots);
+        size_t popCount = &(*thread->stackTop) - f.slots;
+        for(size_t i=0;i<popCount;i++) pop();
+        thread->popFrame();
     };
 
 
@@ -2912,6 +2951,48 @@ std::pair<InterpretResult,Value> VM::execute()
                 auto* closure = asClosure(closureVal);
                 closure->handlerThread = thread;
                 ev->subscribers.push_back(closureVal.weakRef());
+                break;
+            }
+            case asByte(OpCode::SetupExcept): {
+                uint16_t off = readShort();
+                CallFrame::ExceptionHandler h;
+                h.handlerIp = frame->ip + off;
+                h.stackDepth = thread->stackTop - thread->stack.begin();
+                h.frameDepth = thread->frames.size();
+                frame->exceptionHandlers.push_back(h);
+                break;
+            }
+            case asByte(OpCode::EndExcept): {
+                if (!frame->exceptionHandlers.empty())
+                    frame->exceptionHandlers.pop_back();
+                break;
+            }
+            case asByte(OpCode::Throw): {
+                Value exc = pop();
+                if (!isException(exc))
+                    exc = objVal(exceptionVal(exc));
+                while (true) {
+                    if (thread->frames.empty()) {
+                        runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
+                        return errorReturn;
+                    }
+                    auto &cf = thread->frames.back();
+                    if (!cf.exceptionHandlers.empty()) {
+                        auto h = cf.exceptionHandlers.back();
+                        cf.exceptionHandlers.pop_back();
+                        while (thread->frames.size() > h.frameDepth)
+                            unwindFrame();
+                        frame = thread->frames.end()-1;
+                        frame->ip = h.handlerIp;
+                        while (thread->stackTop - thread->stack.begin() > h.stackDepth)
+                            pop();
+                        push(exc);
+                        break;
+                    } else {
+                        unwindFrame();
+                    }
+                }
+                frame = thread->frames.end()-1;
                 break;
             }
             case asByte(OpCode::ObjectType): {
@@ -4210,14 +4291,31 @@ Value VM::typeof_native(int argCount, Value* args)
     } else if (isEvent(val)) {
         valueType = ValueType::Event;
     } else if (val.isObj()) {
-        // For object types, get the type from the object
-        valueType = val.asObj()->valueType();
+        Obj* obj = val.asObj();
+        if (obj->type == ObjType::Instance)
+            return objVal(asObjectInstance(val)->instanceType);
+        if (obj->type == ObjType::Actor)
+            return objVal(asActorInstance(val)->instanceType);
+        if (obj->type == ObjType::Exception) {
+            ObjException* ex = asException(val);
+            if (!ex->exType.isNil())
+                return ex->exType;
+            // fall back to builtin 'exception' type if somehow missing
+            auto maybe = globals.load(toUnicodeString("exception"));
+            if (maybe.has_value())
+                return maybe.value();
+            return objVal(typeSpecVal(ValueType::Object));
+        }
+
+        // For primitive object wrappers like strings
+        valueType = obj->valueType();
+        ObjTypeSpec* typeObj = typeSpecVal(valueType);
+        return objVal(typeObj);
     } else {
         // Fallback
         valueType = ValueType::Nil;
     }
 
-    // Create and return a type object
     ObjTypeSpec* typeObj = typeSpecVal(valueType);
     return objVal(typeObj);
 }

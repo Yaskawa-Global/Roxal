@@ -464,6 +464,12 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
         else if (is<OnStatement>(compound)) {
             stmt = as<OnStatement>(compound);
         }
+        else if (is<TryStatement>(compound)) {
+            stmt = as<TryStatement>(compound);
+        }
+        else if (is<RaiseStatement>(compound)) {
+            stmt = as<RaiseStatement>(compound);
+        }
         else if (is<ExpressionStatement>(compound))
             stmt = as<ExpressionStatement>(compound);
         else
@@ -524,6 +530,10 @@ std::any ASTGenerator::visitCompound_stmt(RoxalParser::Compound_stmtContext *con
         return visitOn_stmt(context->on_stmt());
     else if (context->emit_stmt())
         return visitEmit_stmt(context->emit_stmt());
+    else if (context->try_stmt())
+        return visitTry_stmt(context->try_stmt());
+    else if (context->raise_stmt())
+        return visitRaise_stmt(context->raise_stmt());
     else
         throw std::runtime_error("unimplemented compound statement alternative");
 
@@ -675,6 +685,58 @@ std::any ASTGenerator::visitEmit_stmt(RoxalParser::Emit_stmtContext *context)
 
     return typeValue(exprStmt);
     visitEnd();
+}
+
+std::any ASTGenerator::visitTry_stmt(RoxalParser::Try_stmtContext *context)
+{
+    visitStart();
+
+    auto tryStmt = std::make_shared<TryStatement>();
+    setSourceInfo(tryStmt, context);
+
+    tryStmt->body = as<Suite>(visitSuite(context->suite()));
+
+    for (size_t i = 0; i < context->except_clause().size(); ++i) {
+        auto excCtx = context->except_clause(i);
+        TryStatement::ExceptClause ec;
+        if (excCtx->expression())
+            ec.type = as<Expression>(visitExpression(excCtx->expression()));
+        if (excCtx->IDENTIFIER())
+            ec.name = UnicodeString::fromUTF8(excCtx->IDENTIFIER()->getText());
+        ec.body = as<Suite>(visitSuite(excCtx->suite()));
+        tryStmt->exceptClauses.push_back(ec);
+    }
+
+    if (context->finally_clause())
+        tryStmt->finallySuite = as<Suite>(visitSuite(context->finally_clause()->suite()));
+
+    return typeValue(tryStmt);
+    visitEnd();
+}
+
+std::any ASTGenerator::visitRaise_stmt(RoxalParser::Raise_stmtContext *context)
+{
+    visitStart();
+    auto rs = std::make_shared<RaiseStatement>();
+    setSourceInfo(rs, context);
+    if (context->expression())
+        rs->exception = as<Expression>(visitExpression(context->expression()));
+    return typeValue(rs);
+    visitEnd();
+}
+
+std::any ASTGenerator::visitExcept_clause(RoxalParser::Except_clauseContext *context)
+{
+    visitStart();
+    visitEnd();
+    return {};
+}
+
+std::any ASTGenerator::visitFinally_clause(RoxalParser::Finally_clauseContext *context)
+{
+    visitStart();
+    visitEnd();
+    return {};
 }
 
 

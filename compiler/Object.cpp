@@ -44,6 +44,7 @@ ValueType Obj::valueType() const
         case ObjType::Matrix: return ValueType::Matrix;
         case ObjType::Signal: return ValueType::Signal;
         case ObjType::Event: return ValueType::Event;
+        case ObjType::Exception: return ValueType::Object;
         case ObjType::Instance: return static_cast<const ObjObjectType*>(this)->isActor ? ValueType::Actor : ValueType::Object;
         case ObjType::Actor: return ValueType::Actor;
         default: return ValueType::Nil;
@@ -868,6 +869,19 @@ std::string roxal::objLibraryToString(const ObjLibrary* lib)
     return oss.str();
 }
 
+ObjException* roxal::exceptionVal(Value message, Value exType)
+{
+    return newObj<ObjException>(__func__, message, exType);
+}
+
+std::string roxal::objExceptionToString(const ObjException* ex)
+{
+    if (!ex) return "<exception>";
+    if (!ex->message.isNil())
+        return std::string("<exception ") + toString(ex->message) + ">";
+    return std::string("<exception>");
+}
+
 Value ObjMatrix::index(const Value& row) const
 {
     if (row.isNumber()) {
@@ -1199,6 +1213,9 @@ std::string roxal::objToString(const Value& v)
         }
         case ObjType::Library: {
             return objLibraryToString(asLibrary(v));
+        }
+        case ObjType::Exception: {
+            return objExceptionToString(asException(v));
         }
         case ObjType::Type: {
             ObjTypeSpec* ts = asTypeSpec(v);
@@ -1570,6 +1587,7 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::Signal: return "signal";
     case ObjType::Event: return "event";
     case ObjType::Library: return "library";
+    case ObjType::Exception: return "exception";
     }
     return "unknown";
 }

@@ -957,6 +957,89 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
     return {};
 }
 
+std::any RoxalCompiler::visit(ptr<ast::TryStatement> ast)
+{
+    currentNode = ast;
+    // emit handler setup and compile body
+    auto handlerJump = emitJump(OpCode::SetupExcept);
+
+    enterLocalScope();
+    ast->body->accept(*this);
+    exitLocalScope();
+
+    emitByte(OpCode::EndExcept);
+
+    if (ast->finallySuite.has_value())
+        ast->finallySuite.value()->accept(*this);
+
+    auto jumpOverHandlers = emitJump(OpCode::Jump);
+
+    // patch handler start
+    patchJump(handlerJump);
+
+    std::vector<Chunk::size_type> jumpsToEnd;
+
+    for (size_t i = 0; i < ast->exceptClauses.size(); ++i) {
+        const auto& ec = ast->exceptClauses[i];
+
+        Chunk::size_type jumpNext = 0;
+        if (ec.type.has_value()) {
+            emitByte(OpCode::Dup); // exception
+            ec.type.value()->accept(*this);
+            emitByte(OpCode::Is);
+            jumpNext = emitJump(OpCode::JumpIfFalse);
+            emitByte(OpCode::Pop, "is result");
+        }
+
+        enterLocalScope();
+        icu::UnicodeString excVar = ec.name.value_or(toUnicodeString("$exception"));
+        declareVariable(excVar);
+        defineVariable(0);
+        exceptionVarStack.push_back(excVar);
+        ec.body->accept(*this);
+        exceptionVarStack.pop_back();
+        exitLocalScope();
+
+        if (!ec.name.has_value())
+            emitByte(OpCode::Pop, "exception");
+
+        if (ast->finallySuite.has_value())
+            ast->finallySuite.value()->accept(*this);
+
+        jumpsToEnd.push_back(emitJump(OpCode::Jump));
+
+        if (ec.type.has_value())
+            patchJump(jumpNext);
+    }
+
+    if (ast->finallySuite.has_value())
+        ast->finallySuite.value()->accept(*this);
+
+    emitByte(OpCode::Throw); // rethrow if not handled
+
+    for (auto j : jumpsToEnd)
+        patchJump(j);
+
+    patchJump(jumpOverHandlers);
+
+    return {};
+}
+
+std::any RoxalCompiler::visit(ptr<ast::RaiseStatement> ast)
+{
+    currentNode = ast;
+    if (ast->exception.has_value()) {
+        ast->exception.value()->accept(*this);
+    } else {
+        if (exceptionVarStack.empty())
+            error("Bare raise outside of except clause");
+        else
+            namedVariable(exceptionVarStack.back(), false);
+    }
+    emitByte(OpCode::Throw);
+    return {};
+}
+
 
 std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 {
