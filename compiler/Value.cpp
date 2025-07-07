@@ -808,6 +808,19 @@ bool Value::is(const Value& rhs, bool strict) const
             case ValueType::Object:
                 if (isObjectInstance(*this))
                     return asObjectInstance(*this)->instanceType == ts; // TODO: handle inheritance/interfaces
+                if (isException(*this) && isObjectType(rhs)) {
+                    ObjException* ex = asException(*this);
+                    if (isTypeSpec(ex->exType)) {
+                        ObjObjectType* et = asObjectType(ex->exType);
+                        ObjObjectType* target = asObjectType(rhs);
+                        while (et) {
+                            if (et == target)
+                                return true;
+                            if (et->superType.isNil()) break;
+                            et = asObjectType(et->superType);
+                        }
+                    }
+                }
                 break;
             case ValueType::Actor:
                 if (isActorInstance(*this))

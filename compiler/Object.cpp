@@ -869,9 +869,9 @@ std::string roxal::objLibraryToString(const ObjLibrary* lib)
     return oss.str();
 }
 
-ObjException* roxal::exceptionVal(Value message)
+ObjException* roxal::exceptionVal(Value message, Value exType)
 {
-    return newObj<ObjException>(__func__, message);
+    return newObj<ObjException>(__func__, message, exType);
 }
 
 std::string roxal::objExceptionToString(const ObjException* ex)

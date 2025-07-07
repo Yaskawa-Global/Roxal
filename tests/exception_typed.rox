@@ -1,0 +1,5 @@
+try:
+  raise RuntimeException('fail')
+except RuntimeException as e:
+  print(e)
+print('done')

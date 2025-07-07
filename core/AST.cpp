@@ -542,12 +542,14 @@ std::any RaiseStatement::accept(ASTVisitor& v)
 void RaiseStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Raise" << std::endl;
-    exception->output(os, indent+2);
+    if (exception.has_value())
+        exception.value()->output(os, indent+2);
 }
 
 void RaiseStatement::acceptChildren(ASTVisitor& v, Anys& results)
 {
-    results.push_back( exception->accept(v) );
+    if (exception.has_value())
+        results.push_back( exception.value()->accept(v) );
 }
 
 

@@ -563,16 +563,18 @@ std::string objLibraryToString(const ObjLibrary* lib);
 
 struct ObjException : public Obj {
     ObjException() { type = ObjType::Exception; }
-    explicit ObjException(Value msg) : message(msg) { type = ObjType::Exception; }
+    ObjException(Value msg, Value exType = nilVal())
+        : message(msg), exType(exType) { type = ObjType::Exception; }
     virtual ~ObjException() {}
 
     Value message;
+    Value exType; // object type of the exception
 };
 
 inline bool isException(const Value& v) { return isObjType(v, ObjType::Exception); }
 inline ObjException* asException(const Value& v) { return static_cast<ObjException*>(v.asObj()); }
 
-ObjException* exceptionVal(Value message = nilVal());
+ObjException* exceptionVal(Value message = nilVal(), Value exType = nilVal());
 std::string objExceptionToString(const ObjException* ex);
 
 

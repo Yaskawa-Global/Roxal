@@ -371,7 +371,7 @@ struct OnStatement : public Statement {
 struct RaiseStatement : public Statement {
     RaiseStatement() : Statement(StmtType::Raise) {}
 
-    ptr<ast::Expression> exception;
+    std::optional<ptr<ast::Expression>> exception;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

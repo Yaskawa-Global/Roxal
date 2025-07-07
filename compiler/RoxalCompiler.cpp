@@ -992,10 +992,16 @@ std::any RoxalCompiler::visit(ptr<ast::TryStatement> ast)
         }
 
         enterLocalScope();
+        icu::UnicodeString excVar = ec.name.value_or(toUnicodeString("$exception"));
+        declareVariable(excVar);
+        defineVariable(0);
+        exceptionVarStack.push_back(excVar);
         ec.body->accept(*this);
+        exceptionVarStack.pop_back();
         exitLocalScope();
 
-        emitByte(OpCode::Pop, "exception");
+        if (!ec.name.has_value())
+            emitByte(OpCode::Pop, "exception");
 
         if (ast->finallySuite.has_value())
             ast->finallySuite.value()->accept(*this);
@@ -1022,7 +1028,14 @@ std::any RoxalCompiler::visit(ptr<ast::TryStatement> ast)
 std::any RoxalCompiler::visit(ptr<ast::RaiseStatement> ast)
 {
     currentNode = ast;
-    ast->exception->accept(*this);
+    if (ast->exception.has_value()) {
+        ast->exception.value()->accept(*this);
+    } else {
+        if (exceptionVarStack.empty())
+            error("Bare raise outside of except clause");
+        else
+            namedVariable(exceptionVarStack.back(), false);
+    }
     emitByte(OpCode::Throw);
     return {};
 }
