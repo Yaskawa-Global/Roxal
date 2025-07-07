@@ -120,9 +120,10 @@ try:
         if not (os.path.exists(testout) or os.path.exists(testerr)):
             raise RuntimeError(f"Test expected output {testout} or {testerr} not found.")
 
-        cmd = [roxal, testrox]
+        rel_testrox = os.path.relpath(testrox, os.getcwd())
+        cmd = [roxal, rel_testrox]
         if test.startswith('typededucer_'):
-            cmd = [roxal, '--ast', testrox]
+            cmd = [roxal, '--ast', rel_testrox]
 
         opt_expected = (" [expected]" if test in failing_tests else '')
 
