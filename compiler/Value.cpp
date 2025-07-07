@@ -1024,6 +1024,17 @@ Value roxal::toType(ValueType t, Value v, bool strict)
         case ValueType::Real: return realVal(v.asReal(strict));
         case ValueType::Int: return intVal(v.asInt(strict));
         case ValueType::String: {
+            // allow conversion of typed exceptions to just the message text
+            if (isException(v)) {
+                ObjException* ex = asException(v);
+                Value msg = ex->message;
+                if (isString(msg))
+                    return msg;
+                if (!msg.isNil())
+                    return Value(stringVal(toUnicodeString(toString(msg))));
+                return Value(stringVal(UnicodeString()));
+            }
+
             // TODO: use alternate 'non-debug' string conversion only utilizing UnicodeString
             return Value(stringVal(toUnicodeString(toString(v))));
         } break;

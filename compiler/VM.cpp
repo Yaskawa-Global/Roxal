@@ -4192,14 +4192,31 @@ Value VM::typeof_native(int argCount, Value* args)
     } else if (isEvent(val)) {
         valueType = ValueType::Event;
     } else if (val.isObj()) {
-        // For object types, get the type from the object
-        valueType = val.asObj()->valueType();
+        Obj* obj = val.asObj();
+        if (obj->type == ObjType::Instance)
+            return objVal(asObjectInstance(val)->instanceType);
+        if (obj->type == ObjType::Actor)
+            return objVal(asActorInstance(val)->instanceType);
+        if (obj->type == ObjType::Exception) {
+            ObjException* ex = asException(val);
+            if (!ex->exType.isNil())
+                return ex->exType;
+            // fall back to builtin 'exception' type if somehow missing
+            auto maybe = globals.load(toUnicodeString("exception"));
+            if (maybe.has_value())
+                return maybe.value();
+            return objVal(typeSpecVal(ValueType::Object));
+        }
+
+        // For primitive object wrappers like strings
+        valueType = obj->valueType();
+        ObjTypeSpec* typeObj = typeSpecVal(valueType);
+        return objVal(typeObj);
     } else {
         // Fallback
         valueType = ValueType::Nil;
     }
 
-    // Create and return a type object
     ObjTypeSpec* typeObj = typeSpecVal(valueType);
     return objVal(typeObj);
 }
