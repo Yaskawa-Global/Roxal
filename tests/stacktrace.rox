@@ -1,0 +1,9 @@
+func foo():
+  return stacktrace()
+
+func bar():
+  return foo()
+
+print(stacktrace())
+print(foo())
+print(bar())

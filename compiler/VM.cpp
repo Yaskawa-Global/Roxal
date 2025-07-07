@@ -3350,6 +3350,7 @@ void VM::defineBuiltinFunctions()
     }
     addSys("fork", &VM::fork_builtin);
     addSys("join", &VM::join_builtin);
+    addSys("stacktrace", &VM::stacktrace_builtin);
     addSys("_threadid", &VM::threadid_builtin);
     addSys("_stackdepth", &VM::stackdepth_builtin);
     addSys("_wait", &VM::wait_builtin);
@@ -3548,6 +3549,44 @@ Value VM::threadid_builtin(int argCount, Value* args)
 
     int32_t id = int32_t(thread->id()); // FIXME: id is uint64
     return intVal(id);
+}
+
+
+Value VM::stacktrace_builtin(int argCount, Value* args)
+{
+    if (argCount != 0)
+        throw std::invalid_argument("stacktrace takes no arguments");
+
+    ObjList* framesList = listVal();
+
+    for(auto it = thread->frames.begin(); it != thread->frames.end(); ++it) {
+        const CallFrame& frame { *it };
+        ObjDict* frameDict = dictVal();
+
+        UnicodeString funcName = frame.closure->function->name;
+        if (funcName.isEmpty())
+            funcName = UnicodeString("<script>");
+
+        frameDict->store(objVal(stringVal(UnicodeString("function"))),
+                         objVal(stringVal(funcName)));
+
+        auto chunk = frame.closure->function->chunk;
+        size_t instruction = 0;
+        if (frame.ip > chunk->code.begin())
+            instruction = frame.ip - chunk->code.begin() - 1;
+        int line = chunk->getLine(instruction);
+        int col  = chunk->getColumn(instruction);
+
+        frameDict->store(objVal(stringVal(UnicodeString("line"))), intVal(line));
+        frameDict->store(objVal(stringVal(UnicodeString("col"))), intVal(col));
+
+        frameDict->store(objVal(stringVal(UnicodeString("filename"))),
+                         objVal(stringVal(chunk->sourceName)));
+
+        framesList->append(objVal(frameDict));
+    }
+
+    return objVal(framesList);
 }
 
 
