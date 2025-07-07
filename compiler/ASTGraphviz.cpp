@@ -361,6 +361,35 @@ std::any ASTGraphviz::visit(ptr<ast::OnStatement> ast)
     return {};
 }
 
+std::any ASTGraphviz::visit(ptr<ast::TryStatement> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+    if (ast->finallySuite.has_value())
+        addLink(name, stackPop(), "finally");
+    for(auto it = ast->exceptClauses.rbegin(); it != ast->exceptClauses.rend(); ++it) {
+        addLink(name, stackPop(), "except");
+        if (it->type.has_value())
+            addLink(name, stackPop(), "type");
+    }
+    addLink(name, stackPop(), "body");
+    nodes[name] = node(name, "try");
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
+std::any ASTGraphviz::visit(ptr<ast::RaiseStatement> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+    addLink(name, stackPop());
+    nodes[name] = node(name, "raise");
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
 
 std::any ASTGraphviz::visit(ptr<ast::Function> ast)
 {

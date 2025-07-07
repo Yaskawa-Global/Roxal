@@ -523,6 +523,84 @@ void OnStatement::acceptChildren(ASTVisitor& v, Anys& results)
 }
 
 
+std::any RaiseStatement::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(std::dynamic_pointer_cast<RaiseStatement>(shared_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(std::dynamic_pointer_cast<RaiseStatement>(shared_from_this())) );
+
+    return results;
+}
+
+void RaiseStatement::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"Raise" << std::endl;
+    exception->output(os, indent+2);
+}
+
+void RaiseStatement::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    results.push_back( exception->accept(v) );
+}
+
+
+std::any TryStatement::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(std::dynamic_pointer_cast<TryStatement>(shared_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(std::dynamic_pointer_cast<TryStatement>(shared_from_this())) );
+
+    return results;
+}
+
+void TryStatement::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"Try" << std::endl;
+    os << spaces(indent+1) << "body:" << std::endl;
+    body->output(os, indent+2);
+    for(const auto& ec : exceptClauses) {
+        os << spaces(indent+1) << "except:" << std::endl;
+        if (ec.type.has_value()) {
+            ec.type.value()->output(os, indent+2);
+        }
+        if (ec.name.has_value()) {
+            os << spaces(indent+2) << "as " << toUTF8StdString(ec.name.value()) << std::endl;
+        }
+        ec.body->output(os, indent+2);
+    }
+    if (finallySuite.has_value()) {
+        os << spaces(indent+1) << "finally:" << std::endl;
+        finallySuite.value()->output(os, indent+2);
+    }
+}
+
+void TryStatement::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    results.push_back( body->accept(v) );
+    for(auto& ec : exceptClauses) {
+        if (ec.type.has_value())
+            results.push_back( ec.type.value()->accept(v) );
+        results.push_back( ec.body->accept(v) );
+    }
+    if (finallySuite.has_value())
+        results.push_back( finallySuite.value()->accept(v) );
+}
+
+
 
 
 

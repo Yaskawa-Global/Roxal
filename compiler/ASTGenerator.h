@@ -44,6 +44,10 @@ public:
     virtual std::any visitFor_stmt(RoxalParser::For_stmtContext *context);
     virtual std::any visitOn_stmt(RoxalParser::On_stmtContext *context);
     virtual std::any visitEmit_stmt(RoxalParser::Emit_stmtContext *context);
+    virtual std::any visitTry_stmt(RoxalParser::Try_stmtContext *context);
+    virtual std::any visitRaise_stmt(RoxalParser::Raise_stmtContext *context);
+    virtual std::any visitExcept_clause(RoxalParser::Except_clauseContext *context);
+    virtual std::any visitFinally_clause(RoxalParser::Finally_clauseContext *context);
 
     virtual std::any visitVar_decl(RoxalParser::Var_declContext *context);
 

@@ -276,6 +276,20 @@ std::any TypeDeducer::visit(ptr<ast::OnStatement> ast)
     return results;
 }
 
+std::any TypeDeducer::visit(ptr<ast::TryStatement> ast)
+{
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
+}
+
+std::any TypeDeducer::visit(ptr<ast::RaiseStatement> ast)
+{
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
+}
+
 
 std::any TypeDeducer::visit(ptr<ast::Function> ast)
 {

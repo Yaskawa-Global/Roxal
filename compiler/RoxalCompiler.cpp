@@ -957,6 +957,20 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
     return {};
 }
 
+std::any RoxalCompiler::visit(ptr<ast::TryStatement> ast)
+{
+    currentNode = ast;
+    // not yet implemented
+    return {};
+}
+
+std::any RoxalCompiler::visit(ptr<ast::RaiseStatement> ast)
+{
+    currentNode = ast;
+    // not yet implemented
+    return {};
+}
+
 
 std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 {

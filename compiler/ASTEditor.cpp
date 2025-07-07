@@ -370,6 +370,16 @@ std::any ASTEditor::visit(ptr<ast::WhileStatement> ast)
     return {};
 }
 
+std::any ASTEditor::visit(ptr<ast::TryStatement> ast)
+{
+    return {};
+}
+
+std::any ASTEditor::visit(ptr<ast::RaiseStatement> ast)
+{
+    return {};
+}
+
 std::any ASTEditor::visit(ptr<ast::Function> ast)
 {
     //icu::UnicodeString name;

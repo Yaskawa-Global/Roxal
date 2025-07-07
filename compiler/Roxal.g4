@@ -63,6 +63,8 @@ compound_stmt
  | for_stmt
  | on_stmt
  | emit_stmt
+ | raise_stmt
+ | try_stmt
 //  | with_stmt
 ;
 
@@ -101,6 +103,22 @@ on_stmt
 
 emit_stmt
  : EMIT expression
+ ;
+
+raise_stmt
+ : RAISE expression
+ ;
+
+try_stmt
+ : TRY ':' suite except_clause+ finally_clause?
+ ;
+
+except_clause
+ : EXCEPT expression? ':' suite
+ ;
+
+finally_clause
+ : FINALLY ':' suite
  ;
 
 
@@ -400,6 +418,11 @@ WHILE: 'while';
 FOR : 'for';
 IN : 'in';
 BY : 'by';
+TRY: 'try';
+EXCEPT: 'except';
+FINALLY: 'finally';
+RAISE: 'raise';
+AS: 'as';
 
 
 NEWLINE : ( '\r'? '\n' | '\r' | '\f' ) SPACES?;
