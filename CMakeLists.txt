@@ -80,9 +80,27 @@ endif()
 find_package(Eigen3 REQUIRED)
 include_directories(${EIGEN3_INCLUDE_DIR})
 
-# Detect libffi via pkg-config so that include and library paths
-# are recorded explicitly and the build fails clearly if libffi is
-# missing.
+# Detect libffi via pkg-config. When libffi is installed via Homebrew on
+# macOS the pkg-config file lives outside the default search path so add
+# it explicitly.
+set(LIBFFI_ROOT "")
+if(APPLE)
+    if(EXISTS "/opt/homebrew/opt/libffi")
+        set(LIBFFI_ROOT "/opt/homebrew/opt/libffi")
+    elseif(EXISTS "/usr/local/opt/libffi")
+        set(LIBFFI_ROOT "/usr/local/opt/libffi")
+    endif()
+endif()
+
+if(LIBFFI_ROOT)
+    list(APPEND CMAKE_PREFIX_PATH "${LIBFFI_ROOT}")
+    if(DEFINED ENV{PKG_CONFIG_PATH})
+        set(ENV{PKG_CONFIG_PATH} "${LIBFFI_ROOT}/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+    else()
+        set(ENV{PKG_CONFIG_PATH} "${LIBFFI_ROOT}/lib/pkgconfig")
+    endif()
+endif()
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBFFI REQUIRED libffi)
 
