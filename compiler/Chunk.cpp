@@ -394,6 +394,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return byteInstruction("TO_TYPE_STRICT", offset);
         case asByte(OpCode::EventOn):
             return simpleInstruction("EVENT_ON", offset);
+        case asByte(OpCode::EventOff):
+            return simpleInstruction("EVENT_OFF", offset);
         case asByte(OpCode::SetupExcept):
             return jumpInstruction("SETUP_EXCEPT", 1, offset);
         case asByte(OpCode::EndExcept):
