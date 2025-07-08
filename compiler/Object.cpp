@@ -211,6 +211,15 @@ ObjString* roxal::stringVal(const UnicodeString& s)
     }
 }
 
+void roxal::updateInternedString(ObjString* obj, const UnicodeString& newVal)
+{
+    if (!obj) return;
+    strings.erase(obj->hash);
+    obj->s = newVal;
+    obj->hash = obj->s.hashCode();
+    strings.store(obj->hash, obj);
+}
+
 
 
 // range

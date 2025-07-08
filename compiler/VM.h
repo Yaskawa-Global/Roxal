@@ -22,6 +22,7 @@ struct FFIWrapper {
     void* fn;
     std::vector<ffi_type*> argTypes;
     std::vector<bool> argIsCharPtr;
+    std::vector<bool> argIsConstCharPtr;
     std::vector<bool> argIsBool;
     ffi_type* retType;
     bool retIsCharPtr{false};

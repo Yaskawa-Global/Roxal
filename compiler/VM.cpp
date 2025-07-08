@@ -175,6 +175,7 @@ void* VM::createFFIWrapper(void* fn, ffi_type* retType,
     spec->retType = retType;
     spec->argTypes = argTypes;
     spec->argIsCharPtr.assign(argTypes.size(), false);
+    spec->argIsConstCharPtr.assign(argTypes.size(), false);
     spec->argIsBool.assign(argTypes.size(), false);
     spec->retIsCharPtr = false;
     spec->retIsBool = false;
@@ -4528,6 +4529,7 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
 
         std::vector<ffi_type*> argTypes;
         std::vector<bool> argIsCharPtr;
+        std::vector<bool> argIsConstCharPtr;
         std::vector<bool> argIsBool;
         if (argsExpr) {
             std::string argsStr = toUTF8StdString(asUString(evalExpr(argsExpr)));
@@ -4535,8 +4537,11 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
             std::string token;
             while(std::getline(ss, token, ',')) {
                 token.erase(0, token.find_first_not_of(" \t"));
-                size_t space = token.find(' ');
-                std::string type = (space==std::string::npos)?token:token.substr(0,space);
+                size_t space = token.rfind(' ');
+                std::string type = token;
+                if (space != std::string::npos)
+                    type = token.substr(0, space);
+                type.erase(type.find_last_not_of(" \t") + 1);
                 if (type=="float")
                     argTypes.push_back(&ffi_type_float);
                 else if (type=="double" || type=="real")
@@ -4560,6 +4565,12 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                 else if (type=="char*") {
                     argTypes.push_back(&ffi_type_pointer);
                     argIsCharPtr.push_back(true);
+                    argIsConstCharPtr.push_back(false);
+                }
+                else if (type=="const char*") {
+                    argTypes.push_back(&ffi_type_pointer);
+                    argIsCharPtr.push_back(true);
+                    argIsConstCharPtr.push_back(true);
                 }
                 else if (!type.empty() && (type.back()=='*' || type.back()=='&'))
                     argTypes.push_back(&ffi_type_pointer);
@@ -4567,6 +4578,8 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                     throw std::runtime_error("unsupported arg type: "+type);
                 if (argIsCharPtr.size() < argTypes.size())
                     argIsCharPtr.push_back(false);
+                if (argIsConstCharPtr.size() < argTypes.size())
+                    argIsConstCharPtr.push_back(false);
                 if (argIsBool.size() < argTypes.size())
                     argIsBool.push_back(false);
             }
@@ -4666,6 +4679,7 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
         spec->fn = fnPtr;
         spec->argTypes = argTypes;
         spec->argIsCharPtr = argIsCharPtr;
+        spec->argIsConstCharPtr = argIsConstCharPtr;
         spec->argIsBool = argIsBool;
         spec->retType = retType;
         spec->retIsCharPtr = retIsCharPtr;
@@ -4705,6 +4719,9 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
     std::vector<ObjectInstance*> structArgInstances(callSpec.argCount, nullptr);
     std::vector<std::string> stringArgs(callSpec.argCount);
     std::vector<const char*> cstrPtrs(callSpec.argCount);
+    std::vector<std::vector<char>> mutableBuffers(callSpec.argCount);
+    std::vector<char*> mutablePtrs(callSpec.argCount);
+    std::vector<ObjString*> mutableStringObjs(callSpec.argCount, nullptr);
 
     for(int i=0;i<callSpec.argCount;i++) {
         if (spec->argTypes[i] == &ffi_type_double || spec->argTypes[i] == &ffi_type_float) {
@@ -4758,9 +4775,18 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
             if (spec->argIsCharPtr[i]) {
                 if (!isString(argVector[i]))
                     throw std::invalid_argument("ffi arg not string for char*");
-                stringArgs[i] = toUTF8StdString(asUString(argVector[i]));
-                cstrPtrs[i] = stringArgs[i].c_str();
-                argValues[i] = &cstrPtrs[i];
+                if (spec->argIsConstCharPtr[i]) {
+                    stringArgs[i] = toUTF8StdString(asUString(argVector[i]));
+                    cstrPtrs[i] = stringArgs[i].c_str();
+                    argValues[i] = &cstrPtrs[i];
+                } else {
+                    std::string s = toUTF8StdString(asUString(argVector[i]));
+                    mutableBuffers[i].assign(s.begin(), s.end());
+                    mutableBuffers[i].push_back('\0');
+                    mutablePtrs[i] = mutableBuffers[i].data();
+                    argValues[i] = &mutablePtrs[i];
+                    mutableStringObjs[i] = asString(argVector[i]);
+                }
             } else {
                 if (!isObjectInstance(argVector[i]))
                     throw std::invalid_argument("ffi arg not object instance for pointer");
@@ -4787,6 +4813,14 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
     for (int i=0;i<callSpec.argCount;i++)
         if (structArgInstances[i])
             updateObjectFromCStruct(structArgInstances[i], structBuffers[i].data(), structBuffers[i].size());
+
+    for (int i=0;i<callSpec.argCount;i++) {
+        if (mutableStringObjs[i]) {
+            std::string newStr(mutableBuffers[i].data());
+            if (newStr != toUTF8StdString(mutableStringObjs[i]->s))
+                updateInternedString(mutableStringObjs[i], toUnicodeString(newStr));
+        }
+    }
 
     if (spec->retObjType) {
         ObjectInstance* inst = objectFromCStruct(spec->retObjType, retBuf.data(), retBuf.size());
