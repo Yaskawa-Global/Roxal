@@ -1350,8 +1350,9 @@ static Value roxal::signalUnaryOp(const std::string& name,
     else
         constArgs["val"] = v;
 
+    auto uniqueName = df::DataflowEngine::uniqueFuncName(name);
     auto node = roxal::make_ptr<df::FuncNode>(
-        name,
+        uniqueName,
         [op](const df::Values& vals) -> df::Values {
             return df::Values{ op(vals[0]) };
         },
@@ -1383,8 +1384,9 @@ static Value signalBinaryOp(const std::string& name,
     else
         constArgs["rhs"] = r;
 
+    auto uniqueName = df::DataflowEngine::uniqueFuncName(name);
     auto node = roxal::make_ptr<df::FuncNode>(
-        name,
+        uniqueName,
         [op](const df::Values& vals) -> df::Values {
             return df::Values{ op(vals[0], vals[1]) };
         },

@@ -12,6 +12,15 @@
 
 using namespace df;
 
+#include <atomic>
+
+static std::atomic<uint64_t> gFuncCounter{0};
+
+std::string DataflowEngine::uniqueFuncName(const std::string& base)
+{
+    return base + "#" + std::to_string(gFuncCounter++);
+}
+
 
 #define TRACE_EXECUTION 0
 
