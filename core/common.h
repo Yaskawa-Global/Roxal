@@ -53,17 +53,17 @@ inline auto mapValues(const Map& m) {
 #define _CRT_NO_VA_START_VALIDATION
 
 // inline to avoid linker error (?)
-inline std::string format(const std::string& fmt...)
+inline std::string format(const char* fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
-    size_t len = std::vsnprintf(NULL, 0, fmt.c_str(), args);
+    size_t len = std::vsnprintf(nullptr, 0, fmt, args);
     va_end(args);
     std::vector<char> vec(len + 1);
     va_start(args, fmt);
-    std::vsnprintf(&vec[0], len + 1, fmt.c_str(), args);
+    std::vsnprintf(vec.data(), len + 1, fmt, args);
     va_end(args);
-    return &vec[0];
+    return vec.data();
 }
 
 #undef _CRT_NO_VA_START_VALIDATION
