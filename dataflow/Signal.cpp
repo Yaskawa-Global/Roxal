@@ -140,9 +140,12 @@ Value Signal::valueAt(TimePoint t) const
 void Signal::setValueAt(TimePoint t, const Value& v)
 {
     auto age = t - DataflowEngine::instance()->tickStart();
+#ifdef DEBUG_BUILD
     if (age % m_period != TimeDuration::zero()) {
-        std::cout << "setValueAt Signal " + name() + " for time " + t.humanString() + " not a multiple of period " + m_period.humanString() << std::endl;
+        std::cout << "setValueAt Signal " + name() + " for time " + t.humanString() +
+            " not a multiple of period " + m_period.humanString() << std::endl;
     }
+#endif
 
     assert(!values.empty());
     bool valueChanged = (lastValueBefore(t) != v);

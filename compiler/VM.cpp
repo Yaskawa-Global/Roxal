@@ -625,7 +625,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             }
         }
 
-        auto name = toUTF8StdString(roxal::asClosure(closureVal)->function->name);
+        auto baseName = toUTF8StdString(roxal::asClosure(closureVal)->function->name);
+        auto name = df::DataflowEngine::uniqueFuncName(baseName);
         auto node = roxal::make_ptr<df::FuncNode>(name, closureVal, constArgs, sigArgs);
         node->addToEngine();
         auto outputs = node->outputs(); // creates output signals if they don't exist
