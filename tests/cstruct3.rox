@@ -7,7 +7,7 @@ type MyStruct object:
   @ctype(ctype='float')
   var f:real
 
-@cfunc(lib=mylib, cname='make_struct', args='int i,float f', ret='MyStruct')
+@cfunc(lib=mylib, args='int i,float f', ret='MyStruct')
 func make_struct(i: int, f: real) -> MyStruct:
   _
 

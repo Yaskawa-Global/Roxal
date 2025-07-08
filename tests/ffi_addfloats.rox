@@ -1,0 +1,8 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cfunc(lib=mylib, args='float x,float y', ret='float')
+func addfloats(x: real, y: real) -> real:
+  _
+
+print(addfloats(2.0, 3.5))

@@ -4489,8 +4489,8 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
         auto cnameExpr = getArg("cname");
         auto argsExpr = getArg("args");
         auto retExpr = getArg("ret");
-        if (!libExpr || !cnameExpr)
-            throw std::runtime_error("cfunc annotation requires lib and cname");
+        if (!libExpr)
+            throw std::runtime_error("cfunc annotation requires lib");
 
         auto evalExpr = [&](ptr<ast::Expression> expr) -> Value {
             if (auto s = std::dynamic_pointer_cast<ast::Str>(expr)) {
@@ -4518,8 +4518,13 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
             throw std::runtime_error("lib argument not library handle");
         void* handle = asLibrary(libVal)->handle;
 
-        Value cnameVal = evalExpr(cnameExpr);
-        std::string cname = toUTF8StdString(asUString(cnameVal));
+        std::string cname;
+        if (cnameExpr) {
+            Value cnameVal = evalExpr(cnameExpr);
+            cname = toUTF8StdString(asUString(cnameVal));
+        } else {
+            cname = toUTF8StdString(function->name);
+        }
 
         std::vector<ffi_type*> argTypes;
         std::vector<bool> argIsCharPtr;
