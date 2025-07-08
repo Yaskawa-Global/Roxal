@@ -479,6 +479,15 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
     else
         throw std::runtime_error("unhandled statement parse alternative");
 
+    if (context->until_clause()) {
+        auto ucExpr = as<Expression>(visitExpression(context->until_clause()->expression()));
+        auto untilStmt = std::make_shared<UntilStatement>();
+        setSourceInfo(untilStmt, context->until_clause());
+        untilStmt->stmt = stmt;
+        untilStmt->condition = ucExpr;
+        stmt = untilStmt;
+    }
+
     setSourceInfo(stmt, context);
     return typeValue(stmt);
 
@@ -737,6 +746,16 @@ std::any ASTGenerator::visitFinally_clause(RoxalParser::Finally_clauseContext *c
     visitStart();
     visitEnd();
     return {};
+}
+
+std::any ASTGenerator::visitUntil_clause(RoxalParser::Until_clauseContext *context)
+{
+    visitStart();
+
+    auto expr = visitExpression(context->expression());
+    return expr;
+
+    visitEnd();
 }
 
 

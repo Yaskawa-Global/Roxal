@@ -957,6 +957,14 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
     return {};
 }
 
+std::any RoxalCompiler::visit(ptr<ast::UntilStatement> ast)
+{
+    currentNode = ast;
+    // TODO: implement conditional interruption
+    ast->stmt->accept(*this);
+    return {};
+}
+
 std::any RoxalCompiler::visit(ptr<ast::TryStatement> ast)
 {
     currentNode = ast;

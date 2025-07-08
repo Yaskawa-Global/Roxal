@@ -222,10 +222,13 @@ VM::VM()
     asObjectType(runtimeExType)->superType = exType;
     Value programExType = objVal(objectTypeVal(toUnicodeString("ProgramException"), false));
     asObjectType(programExType)->superType = exType;
+    Value condIntType = objVal(objectTypeVal(toUnicodeString("ConditionalInterrupt"), false));
+    asObjectType(condIntType)->superType = exType;
 
     globals.storeGlobal(toUnicodeString("exception"), exType);
     globals.storeGlobal(toUnicodeString("RuntimeException"), runtimeExType);
     globals.storeGlobal(toUnicodeString("ProgramException"), programExType);
+    globals.storeGlobal(toUnicodeString("ConditionalInterrupt"), condIntType);
 
     defineBuiltinFunctions();
     defineBuiltinMethods();
