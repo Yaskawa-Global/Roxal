@@ -175,7 +175,9 @@ void* VM::createFFIWrapper(void* fn, ffi_type* retType,
     spec->retType = retType;
     spec->argTypes = argTypes;
     spec->argIsCharPtr.assign(argTypes.size(), false);
+    spec->argIsBool.assign(argTypes.size(), false);
     spec->retIsCharPtr = false;
+    spec->retIsBool = false;
     if (ffi_prep_cif(&spec->cif, FFI_DEFAULT_ABI, argTypes.size(), retType,
                      spec->argTypes.data()) != FFI_OK)
         throw std::runtime_error("ffi_prep_cif failed");
@@ -4373,7 +4375,11 @@ Value VM::ffi_native(int argCount, Value* args)
     std::vector<void*> argValues(argCount);
     std::vector<double> realVals(argCount);
     std::vector<float> floatVals(argCount);
-    std::vector<int> intVals(argCount);
+    std::vector<int32_t> intVals(argCount);
+    std::vector<uint32_t> uint32Vals(argCount);
+    std::vector<int16_t> sint16Vals(argCount);
+    std::vector<uint16_t> uint16Vals(argCount);
+    std::vector<uint8_t> byteVals(argCount);
     std::vector<uint8_t> boolVals(argCount);
 
     for(int i=0;i<argCount;i++) {
@@ -4392,31 +4398,68 @@ Value VM::ffi_native(int argCount, Value* args)
                 throw std::invalid_argument("ffi argument not int");
             intVals[i] = args[i].asInt();
             argValues[i] = &intVals[i];
+        } else if (spec->argTypes[i] == &ffi_type_uint32) {
+            if (!args[i].isNumber())
+                throw std::invalid_argument("ffi argument not uint32_t");
+            uint32Vals[i] = uint32_t(args[i].asInt());
+            argValues[i] = &uint32Vals[i];
+        } else if (spec->argTypes[i] == &ffi_type_sint16) {
+            if (!args[i].isNumber())
+                throw std::invalid_argument("ffi argument not int16_t");
+            sint16Vals[i] = int16_t(args[i].asInt());
+            argValues[i] = &sint16Vals[i];
+        } else if (spec->argTypes[i] == &ffi_type_uint16) {
+            if (!args[i].isNumber())
+                throw std::invalid_argument("ffi argument not uint16_t");
+            uint16Vals[i] = uint16_t(args[i].asInt());
+            argValues[i] = &uint16Vals[i];
+        } else if (spec->argTypes[i] == &ffi_type_sint8) {
+            if (!args[i].isNumber())
+                throw std::invalid_argument("ffi argument not int8_t");
+            byteVals[i] = uint8_t(int8_t(args[i].asInt()));
+            argValues[i] = &byteVals[i];
         } else if (spec->argTypes[i] == &ffi_type_uint8) {
-            if (!args[i].isBool())
-                throw std::invalid_argument("ffi argument not bool");
-            boolVals[i] = args[i].asBool() ? 1 : 0;
-            argValues[i] = &boolVals[i];
+            if (spec->argIsBool[i]) {
+                if (!args[i].isBool())
+                    throw std::invalid_argument("ffi argument not bool");
+                boolVals[i] = args[i].asBool() ? 1 : 0;
+                argValues[i] = &boolVals[i];
+            } else {
+                if (!args[i].isNumber())
+                    throw std::invalid_argument("ffi argument not uint8_t");
+                byteVals[i] = uint8_t(args[i].asInt());
+                argValues[i] = &byteVals[i];
+            }
         } else {
             throw std::runtime_error("unsupported ffi arg type");
         }
     }
 
     union {
-        double d;
-        float f;
-        int i;
-        uint8_t b;
+        double d; float f;
+        int32_t i; uint32_t ui32;
+        int16_t s16; uint16_t u16;
+        int8_t s8; uint8_t u8;
     } ret;
 
     ffi_call(&spec->cif, FFI_FN(spec->fn), &ret, argValues.data());
 
     if (spec->retType == &ffi_type_double)
         return Value(ret.d);
+    else if (spec->retType == &ffi_type_float)
+        return Value(double(ret.f));
     else if (spec->retType == &ffi_type_sint32)
         return Value(intVal(ret.i));
+    else if (spec->retType == &ffi_type_uint32)
+        return Value(intVal(int32_t(ret.ui32)));
+    else if (spec->retType == &ffi_type_sint16)
+        return Value(intVal(int32_t(ret.s16)));
+    else if (spec->retType == &ffi_type_uint16)
+        return Value(intVal(int32_t(ret.u16)));
+    else if (spec->retType == &ffi_type_sint8)
+        return Value(byteVal(uint8_t(ret.s8)));
     else if (spec->retType == &ffi_type_uint8)
-        return Value(boolVal(ret.b != 0));
+        return spec->retIsBool ? Value(boolVal(ret.u8 != 0)) : Value(byteVal(ret.u8));
     else
         throw std::runtime_error("unsupported ffi return type");
 }
@@ -4485,6 +4528,7 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
 
         std::vector<ffi_type*> argTypes;
         std::vector<bool> argIsCharPtr;
+        std::vector<bool> argIsBool;
         if (argsExpr) {
             std::string argsStr = toUTF8StdString(asUString(evalExpr(argsExpr)));
             std::stringstream ss(argsStr);
@@ -4497,10 +4541,22 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                     argTypes.push_back(&ffi_type_float);
                 else if (type=="double" || type=="real")
                     argTypes.push_back(&ffi_type_double);
-                else if (type=="int")
+                else if (type=="int" || type=="int32_t")
                     argTypes.push_back(&ffi_type_sint32);
-                else if (type=="bool")
+                else if (type=="uint32_t")
+                    argTypes.push_back(&ffi_type_uint32);
+                else if (type=="int16_t")
+                    argTypes.push_back(&ffi_type_sint16);
+                else if (type=="uint16_t")
+                    argTypes.push_back(&ffi_type_uint16);
+                else if (type=="int8_t")
+                    argTypes.push_back(&ffi_type_sint8);
+                else if (type=="uint8_t")
                     argTypes.push_back(&ffi_type_uint8);
+                else if (type=="bool") {
+                    argTypes.push_back(&ffi_type_uint8);
+                    argIsBool.push_back(true);
+                }
                 else if (type=="char*") {
                     argTypes.push_back(&ffi_type_pointer);
                     argIsCharPtr.push_back(true);
@@ -4511,11 +4567,14 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                     throw std::runtime_error("unsupported arg type: "+type);
                 if (argIsCharPtr.size() < argTypes.size())
                     argIsCharPtr.push_back(false);
+                if (argIsBool.size() < argTypes.size())
+                    argIsBool.push_back(false);
             }
         }
 
         ffi_type* retType = &ffi_type_void;
         bool retIsCharPtr = false;
+        bool retIsBool = false;
         ObjObjectType* retObjType = nullptr;
         std::vector<ffi_type*> retElems;
         ffi_type retStruct;
@@ -4525,10 +4584,22 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                 retType = &ffi_type_float;
             else if (r=="double" || r=="real")
                 retType = &ffi_type_double;
-            else if (r=="int")
+            else if (r=="int" || r=="int32_t")
                 retType = &ffi_type_sint32;
-            else if (r=="bool")
+            else if (r=="uint32_t")
+                retType = &ffi_type_uint32;
+            else if (r=="int16_t")
+                retType = &ffi_type_sint16;
+            else if (r=="uint16_t")
+                retType = &ffi_type_uint16;
+            else if (r=="int8_t")
+                retType = &ffi_type_sint8;
+            else if (r=="uint8_t")
                 retType = &ffi_type_uint8;
+            else if (r=="bool") {
+                retType = &ffi_type_uint8;
+                retIsBool = true;
+            }
             else if (r=="void")
                 retType = &ffi_type_void;
             else if (r=="char*") {
@@ -4550,7 +4621,12 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                         auto byName = [&](const std::string& n) -> ffi_type* {
                             if (n=="float") return &ffi_type_float;
                             if (n=="double" || n=="real") return &ffi_type_double;
-                            if (n=="int") return &ffi_type_sint32;
+                            if (n=="int" || n=="int32_t") return &ffi_type_sint32;
+                            if (n=="uint32_t") return &ffi_type_uint32;
+                            if (n=="int16_t") return &ffi_type_sint16;
+                            if (n=="uint16_t") return &ffi_type_uint16;
+                            if (n=="int8_t") return &ffi_type_sint8;
+                            if (n=="uint8_t") return &ffi_type_uint8;
                             if (n=="bool") return &ffi_type_uint8;
                             return nullptr;
                         };
@@ -4590,8 +4666,10 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
         spec->fn = fnPtr;
         spec->argTypes = argTypes;
         spec->argIsCharPtr = argIsCharPtr;
+        spec->argIsBool = argIsBool;
         spec->retType = retType;
         spec->retIsCharPtr = retIsCharPtr;
+        spec->retIsBool = retIsBool;
         spec->retObjType = retObjType;
         if (retObjType) {
             spec->retStructElems = retElems;
@@ -4615,7 +4693,11 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
     std::vector<void*> argValues(callSpec.argCount);
     std::vector<double> realVals(callSpec.argCount);
     std::vector<float> floatVals(callSpec.argCount);
-    std::vector<int> intVals(callSpec.argCount);
+    std::vector<int32_t> intVals(callSpec.argCount);
+    std::vector<uint32_t> uint32Vals(callSpec.argCount);
+    std::vector<int16_t> sint16Vals(callSpec.argCount);
+    std::vector<uint16_t> uint16Vals(callSpec.argCount);
+    std::vector<uint8_t> byteVals(callSpec.argCount);
     std::vector<uint8_t> boolVals(callSpec.argCount);
     std::vector<std::vector<uint8_t>> structBuffers(callSpec.argCount);
     std::vector<std::vector<std::string>> structStrings(callSpec.argCount);
@@ -4640,11 +4722,38 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                 throw std::invalid_argument("ffi arg not int");
             intVals[i] = argVector[i].asInt();
             argValues[i] = &intVals[i];
+        } else if (spec->argTypes[i] == &ffi_type_uint32) {
+            if (!argVector[i].isNumber())
+                throw std::invalid_argument("ffi arg not uint32_t");
+            uint32Vals[i] = uint32_t(argVector[i].asInt());
+            argValues[i] = &uint32Vals[i];
+        } else if (spec->argTypes[i] == &ffi_type_sint16) {
+            if (!argVector[i].isNumber())
+                throw std::invalid_argument("ffi arg not int16_t");
+            sint16Vals[i] = int16_t(argVector[i].asInt());
+            argValues[i] = &sint16Vals[i];
+        } else if (spec->argTypes[i] == &ffi_type_uint16) {
+            if (!argVector[i].isNumber())
+                throw std::invalid_argument("ffi arg not uint16_t");
+            uint16Vals[i] = uint16_t(argVector[i].asInt());
+            argValues[i] = &uint16Vals[i];
+        } else if (spec->argTypes[i] == &ffi_type_sint8) {
+            if (!argVector[i].isNumber())
+                throw std::invalid_argument("ffi arg not int8_t");
+            byteVals[i] = uint8_t(int8_t(argVector[i].asInt()));
+            argValues[i] = &byteVals[i];
         } else if (spec->argTypes[i] == &ffi_type_uint8) {
-            if (!argVector[i].isBool())
-                throw std::invalid_argument("ffi arg not bool");
-            boolVals[i] = argVector[i].asBool() ? 1 : 0;
-            argValues[i] = &boolVals[i];
+            if (spec->argIsBool[i]) {
+                if (!argVector[i].isBool())
+                    throw std::invalid_argument("ffi arg not bool");
+                boolVals[i] = argVector[i].asBool() ? 1 : 0;
+                argValues[i] = &boolVals[i];
+            } else {
+                if (!argVector[i].isNumber())
+                    throw std::invalid_argument("ffi arg not uint8_t");
+                byteVals[i] = uint8_t(argVector[i].asInt());
+                argValues[i] = &byteVals[i];
+            }
         } else if (spec->argTypes[i] == &ffi_type_pointer) {
             if (spec->argIsCharPtr[i]) {
                 if (!isString(argVector[i]))
@@ -4666,7 +4775,7 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
         }
     }
 
-    union { double d; float f; int i; uint8_t b; void* p; } ret;
+    union { double d; float f; int32_t i; uint32_t ui32; int16_t s16; uint16_t u16; int8_t s8; uint8_t u8; void* p; } ret;
     void* retPtr = &ret;
     std::vector<uint8_t> retBuf;
     if (spec->retObjType) {
@@ -4688,8 +4797,16 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
         return Value(double(ret.f));
     else if (spec->retType == &ffi_type_sint32)
         return Value(intVal(ret.i));
+    else if (spec->retType == &ffi_type_uint32)
+        return Value(intVal(int32_t(ret.ui32)));
+    else if (spec->retType == &ffi_type_sint16)
+        return Value(intVal(int32_t(ret.s16)));
+    else if (spec->retType == &ffi_type_uint16)
+        return Value(intVal(int32_t(ret.u16)));
+    else if (spec->retType == &ffi_type_sint8)
+        return Value(byteVal(uint8_t(ret.s8)));
     else if (spec->retType == &ffi_type_uint8)
-        return Value(boolVal(ret.b != 0));
+        return spec->retIsBool ? Value(boolVal(ret.u8 != 0)) : Value(byteVal(ret.u8));
     else
         return nilVal();
 }
@@ -4743,7 +4860,12 @@ std::vector<uint8_t> VM::objectToCStruct(ObjectInstance* instance, std::vector<s
         auto writeByName = [&](const std::string& ctype) -> bool {
             if (ctype == "float") { float f = float(val.asReal()); appendPadded(&f, sizeof(f), 4); return true; }
             if (ctype == "double" || ctype == "real") { double d = val.asReal(); appendPadded(&d, sizeof(d), 8); return true; }
-            if (ctype == "int") { int32_t i = val.asInt(); appendPadded(&i, sizeof(i), 4); return true; }
+            if (ctype == "int" || ctype=="int32_t") { int32_t i = val.asInt(); appendPadded(&i, sizeof(i), 4); return true; }
+            if (ctype == "uint32_t") { uint32_t u = uint32_t(val.asInt()); appendPadded(&u, sizeof(u), 4); return true; }
+            if (ctype == "int16_t") { int16_t s = int16_t(val.asInt()); appendPadded(&s, sizeof(s), 2); return true; }
+            if (ctype == "uint16_t") { uint16_t u = uint16_t(val.asInt()); appendPadded(&u, sizeof(u), 2); return true; }
+            if (ctype == "int8_t") { int8_t s = int8_t(val.asByte()); appendPadded(&s, sizeof(s),1); return true; }
+            if (ctype == "uint8_t") { uint8_t u = val.asByte(); appendPadded(&u, sizeof(u),1); return true; }
             if (ctype == "bool") { uint8_t b = val.asBool()?1:0; appendPadded(&b, sizeof(b),1); return true; }
             if (ctype == "char*") {
                 if (!isString(val))
@@ -4837,7 +4959,12 @@ ObjectInstance* VM::objectFromCStruct(ObjObjectType* type, const void* data, siz
         auto readByName = [&](const std::string& ctype) -> bool {
             if (ctype == "float") { float f; readPadded(&f, sizeof(f), 4); val = Value(double(f)); return true; }
             if (ctype == "double" || ctype == "real") { double d; readPadded(&d, sizeof(d), 8); val = Value(d); return true; }
-            if (ctype == "int") { int32_t i; readPadded(&i, sizeof(i), 4); val = intVal(i); return true; }
+            if (ctype == "int" || ctype=="int32_t") { int32_t i; readPadded(&i, sizeof(i), 4); val = intVal(i); return true; }
+            if (ctype == "uint32_t") { uint32_t u; readPadded(&u, sizeof(u), 4); val = intVal(int32_t(u)); return true; }
+            if (ctype == "int16_t") { int16_t s; readPadded(&s, sizeof(s), 2); val = intVal(int32_t(s)); return true; }
+            if (ctype == "uint16_t") { uint16_t u; readPadded(&u, sizeof(u), 2); val = intVal(int32_t(u)); return true; }
+            if (ctype == "int8_t") { int8_t s; readPadded(&s, sizeof(s), 1); val = byteVal(uint8_t(s)); return true; }
+            if (ctype == "uint8_t") { uint8_t u; readPadded(&u, sizeof(u), 1); val = byteVal(u); return true; }
             if (ctype == "bool") { uint8_t b; readPadded(&b, sizeof(b), 1); val = boolVal(b != 0); return true; }
             if (ctype == "char*") { const char* p; readPadded(&p, ptrSize, ptrSize); val = objVal(stringVal(toUnicodeString(std::string(p?p:"")))); return true; }
             return false;
@@ -4907,7 +5034,12 @@ void VM::updateObjectFromCStruct(ObjectInstance* instance, const void* data, siz
         auto readByName = [&](const std::string& ctype) -> bool {
             if (ctype == "float") { float f; readPadded(&f, sizeof(f), 4); val = Value(double(f)); return true; }
             if (ctype == "double" || ctype == "real") { double d; readPadded(&d, sizeof(d), 8); val = Value(d); return true; }
-            if (ctype == "int") { int32_t i; readPadded(&i, sizeof(i), 4); val = intVal(i); return true; }
+            if (ctype == "int" || ctype=="int32_t") { int32_t i; readPadded(&i, sizeof(i), 4); val = intVal(i); return true; }
+            if (ctype == "uint32_t") { uint32_t u; readPadded(&u, sizeof(u), 4); val = intVal(int32_t(u)); return true; }
+            if (ctype == "int16_t") { int16_t s; readPadded(&s, sizeof(s), 2); val = intVal(int32_t(s)); return true; }
+            if (ctype == "uint16_t") { uint16_t u; readPadded(&u, sizeof(u), 2); val = intVal(int32_t(u)); return true; }
+            if (ctype == "int8_t") { int8_t s; readPadded(&s, sizeof(s), 1); val = byteVal(uint8_t(s)); return true; }
+            if (ctype == "uint8_t") { uint8_t u; readPadded(&u, sizeof(u), 1); val = byteVal(u); return true; }
             if (ctype == "bool") { uint8_t b; readPadded(&b, sizeof(b), 1); val = boolVal(b != 0); return true; }
             if (ctype == "char*") { const char* p; readPadded(&p, ptrSize, ptrSize); val = objVal(stringVal(toUnicodeString(std::string(p?p:"")))); return true; }
             return false;
