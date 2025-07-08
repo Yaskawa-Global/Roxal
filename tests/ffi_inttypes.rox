@@ -1,0 +1,33 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cfunc(lib=mylib, cname='add_int32', args='int32_t a,int32_t b', ret='int32_t')
+func add_i32(a: int, b: int) -> int:
+  _
+
+@cfunc(lib=mylib, cname='add_uint32', args='uint32_t a,uint32_t b', ret='int32_t')
+func add_u32(a: int, b: int) -> int:
+  _
+
+@cfunc(lib=mylib, cname='add_int16', args='int16_t a,int16_t b', ret='int32_t')
+func add_i16(a: int, b: int) -> int:
+  _
+
+@cfunc(lib=mylib, cname='add_uint16', args='uint16_t a,uint16_t b', ret='int32_t')
+func add_u16(a: int, b: int) -> int:
+  _
+
+@cfunc(lib=mylib, cname='add_uint8', args='uint8_t a,uint8_t b', ret='uint8_t')
+func add_u8(a: byte, b: byte) -> byte:
+  _
+
+@cfunc(lib=mylib, cname='add_int8', args='int8_t a,int8_t b', ret='uint8_t')
+func add_i8(a: byte, b: byte) -> byte:
+  _
+
+print(add_i32(1,2))
+print(add_u32(1,2))
+print(add_i16(10,20))
+print(add_u16(10,20))
+print(add_u8(byte(1), byte(2)))
+print(add_i8(byte(2), byte(3)))
