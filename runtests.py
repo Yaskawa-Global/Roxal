@@ -30,6 +30,7 @@ tests = [
     'dataflow_clocktest1', 'multi_clock', 'clock_error',
     'event1', 'event_on_stmt', 'event_emit_keyword', 'event_on_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4',
     'event_in_sleep', 'event_in_sleep2',
+    'until_event',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
     'module_strict_assign_err', 'func_nonstrict', 'conversions1',
     'byteops', 'byte_int_bits', 'object_init',
