@@ -66,6 +66,7 @@ enum class ObjType {
     Matrix,
     Signal,
     Library,
+    ForeignPtr,
     Event,
     Exception
 };
@@ -556,6 +557,21 @@ inline ObjLibrary* asLibrary(const Value& v) { return static_cast<ObjLibrary*>(v
 
 ObjLibrary* libraryVal(void* handle);
 std::string objLibraryToString(const ObjLibrary* lib);
+
+//
+// opaque foreign pointer
+
+struct ObjForeignPtr : public Obj {
+    ObjForeignPtr(void* p) : ptr(p) { type = ObjType::ForeignPtr; }
+    virtual ~ObjForeignPtr() {}
+    void* ptr;
+};
+
+inline bool isForeignPtr(const Value& v) { return isObjType(v, ObjType::ForeignPtr); }
+inline ObjForeignPtr* asForeignPtr(const Value& v) { return static_cast<ObjForeignPtr*>(v.asObj()); }
+
+ObjForeignPtr* foreignPtrVal(void* ptr);
+std::string objForeignPtrToString(const ObjForeignPtr* fp);
 
 
 //
