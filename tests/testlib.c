@@ -15,3 +15,7 @@ int32_t add_int16(int16_t a, int16_t b) { return (int32_t)(a + b); }
 int32_t add_uint16(uint16_t a, uint16_t b) { return (int32_t)(a + b); }
 uint8_t add_uint8(uint8_t a, uint8_t b) { return (uint8_t)(a + b); }
 uint8_t add_int8(int8_t a, int8_t b) { return (uint8_t)(a + b); }
+
+#include <string.h>
+int cstrlen(const char* s) { return (int)strlen(s); }
+void to_upper(char* s) { for (; *s; ++s) if (*s >= 'a' && *s <= 'z') *s = *s - ('a'-'A'); }

@@ -278,6 +278,7 @@ inline UnicodeString asUString(const Value& v) { return asString(v)->s; }
 
 // allocate new ObjString on heap and copy s (or return existing interned string)
 ObjString* stringVal(const UnicodeString& s);
+void updateInternedString(ObjString* obj, const UnicodeString& newVal);
 
 std::string objStringToString(const ObjString* os);
 
