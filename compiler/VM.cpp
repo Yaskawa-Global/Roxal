@@ -174,6 +174,8 @@ void* VM::createFFIWrapper(void* fn, ffi_type* retType,
     spec->fn = fn;
     spec->retType = retType;
     spec->argTypes = argTypes;
+    spec->argIsCharPtr.assign(argTypes.size(), false);
+    spec->retIsCharPtr = false;
     if (ffi_prep_cif(&spec->cif, FFI_DEFAULT_ABI, argTypes.size(), retType,
                      spec->argTypes.data()) != FFI_OK)
         throw std::runtime_error("ffi_prep_cif failed");
@@ -4479,6 +4481,7 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
         std::string cname = toUTF8StdString(asUString(cnameVal));
 
         std::vector<ffi_type*> argTypes;
+        std::vector<bool> argIsCharPtr;
         if (argsExpr) {
             std::string argsStr = toUTF8StdString(asUString(evalExpr(argsExpr)));
             std::stringstream ss(argsStr);
@@ -4495,14 +4498,21 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                     argTypes.push_back(&ffi_type_sint32);
                 else if (type=="bool")
                     argTypes.push_back(&ffi_type_uint8);
-                else if (!type.empty() && type.back()=='*')
+                else if (type=="char*") {
+                    argTypes.push_back(&ffi_type_pointer);
+                    argIsCharPtr.push_back(true);
+                }
+                else if (!type.empty() && (type.back()=='*' || type.back()=='&'))
                     argTypes.push_back(&ffi_type_pointer);
                 else
                     throw std::runtime_error("unsupported arg type: "+type);
+                if (argIsCharPtr.size() < argTypes.size())
+                    argIsCharPtr.push_back(false);
             }
         }
 
         ffi_type* retType = &ffi_type_void;
+        bool retIsCharPtr = false;
         ObjObjectType* retObjType = nullptr;
         std::vector<ffi_type*> retElems;
         ffi_type retStruct;
@@ -4518,6 +4528,10 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                 retType = &ffi_type_uint8;
             else if (r=="void")
                 retType = &ffi_type_void;
+            else if (r=="char*") {
+                retType = &ffi_type_pointer;
+                retIsCharPtr = true;
+            }
             else {
                 auto opt = mod->vars.load(toUnicodeString(r));
                 if (opt.has_value() && isObjectType(opt.value())) {
@@ -4572,7 +4586,9 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
         spec = new FFIWrapper;
         spec->fn = fnPtr;
         spec->argTypes = argTypes;
+        spec->argIsCharPtr = argIsCharPtr;
         spec->retType = retType;
+        spec->retIsCharPtr = retIsCharPtr;
         spec->retObjType = retObjType;
         if (retObjType) {
             spec->retStructElems = retElems;
@@ -4599,7 +4615,10 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
     std::vector<int> intVals(callSpec.argCount);
     std::vector<uint8_t> boolVals(callSpec.argCount);
     std::vector<std::vector<uint8_t>> structBuffers(callSpec.argCount);
+    std::vector<std::vector<std::string>> structStrings(callSpec.argCount);
     std::vector<void*> structPtrs(callSpec.argCount);
+    std::vector<std::string> stringArgs(callSpec.argCount);
+    std::vector<const char*> cstrPtrs(callSpec.argCount);
 
     for(int i=0;i<callSpec.argCount;i++) {
         if (spec->argTypes[i] == &ffi_type_double || spec->argTypes[i] == &ffi_type_float) {
@@ -4623,12 +4642,20 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
             boolVals[i] = argVector[i].asBool() ? 1 : 0;
             argValues[i] = &boolVals[i];
         } else if (spec->argTypes[i] == &ffi_type_pointer) {
-            if (!isObjectInstance(argVector[i]))
-                throw std::invalid_argument("ffi arg not object instance for pointer");
-            ObjectInstance* inst = asObjectInstance(argVector[i]);
-            structBuffers[i] = objectToCStruct(inst);
-            structPtrs[i] = structBuffers[i].data();
-            argValues[i] = &structPtrs[i];
+            if (spec->argIsCharPtr[i]) {
+                if (!isString(argVector[i]))
+                    throw std::invalid_argument("ffi arg not string for char*");
+                stringArgs[i] = toUTF8StdString(asUString(argVector[i]));
+                cstrPtrs[i] = stringArgs[i].c_str();
+                argValues[i] = &cstrPtrs[i];
+            } else {
+                if (!isObjectInstance(argVector[i]))
+                    throw std::invalid_argument("ffi arg not object instance for pointer");
+                ObjectInstance* inst = asObjectInstance(argVector[i]);
+                structBuffers[i] = objectToCStruct(inst, &structStrings[i]);
+                structPtrs[i] = structBuffers[i].data();
+                argValues[i] = &structPtrs[i];
+            }
         } else {
             throw std::runtime_error("unsupported ffi arg type");
         }
@@ -4667,7 +4694,7 @@ ObjModuleType* VM::getBuiltinModule(const icu::UnicodeString& name)
     return nullptr;
 }
 
-std::vector<uint8_t> VM::objectToCStruct(ObjectInstance* instance)
+std::vector<uint8_t> VM::objectToCStruct(ObjectInstance* instance, std::vector<std::string>* stringStore)
 {
     if (!instance)
         throw std::invalid_argument("objectToCStruct null instance");
@@ -4677,6 +4704,9 @@ std::vector<uint8_t> VM::objectToCStruct(ObjectInstance* instance)
         throw std::runtime_error("objectToCStruct called on non-cstruct type");
 
     std::vector<uint8_t> buffer;
+    size_t ptrSize = (type->cstructArch==64)?8:4;
+    std::vector<std::string> localStrings;
+    if (!stringStore) stringStore = &localStrings;
     size_t offset = 0;
     size_t structAlign = 1;
 
@@ -4706,6 +4736,15 @@ std::vector<uint8_t> VM::objectToCStruct(ObjectInstance* instance)
             if (ctype == "double" || ctype == "real") { double d = val.asReal(); appendPadded(&d, sizeof(d), 8); return true; }
             if (ctype == "int") { int32_t i = val.asInt(); appendPadded(&i, sizeof(i), 4); return true; }
             if (ctype == "bool") { uint8_t b = val.asBool()?1:0; appendPadded(&b, sizeof(b),1); return true; }
+            if (ctype == "char*") {
+                if (!isString(val))
+                    throw std::runtime_error("char* field expects string value");
+                std::string s = toUTF8StdString(asUString(val));
+                stringStore->push_back(std::move(s));
+                const char* p = stringStore->back().c_str();
+                appendPadded(&p, ptrSize, ptrSize);
+                return true;
+            }
             return false;
         };
 
@@ -4763,6 +4802,7 @@ ObjectInstance* VM::objectFromCStruct(ObjObjectType* type, const void* data, siz
     const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
     size_t offset = 0;
     size_t structAlign = 1;
+    size_t ptrSize = (type->cstructArch==64)?8:4;
 
     auto readPadded = [&](void* out, size_t size, size_t align) {
         size_t padding = (align - (offset % align)) % align;
@@ -4790,6 +4830,7 @@ ObjectInstance* VM::objectFromCStruct(ObjObjectType* type, const void* data, siz
             if (ctype == "double" || ctype == "real") { double d; readPadded(&d, sizeof(d), 8); val = Value(d); return true; }
             if (ctype == "int") { int32_t i; readPadded(&i, sizeof(i), 4); val = intVal(i); return true; }
             if (ctype == "bool") { uint8_t b; readPadded(&b, sizeof(b), 1); val = boolVal(b != 0); return true; }
+            if (ctype == "char*") { const char* p; readPadded(&p, ptrSize, ptrSize); val = objVal(stringVal(toUnicodeString(std::string(p?p:"")))); return true; }
             return false;
         };
 

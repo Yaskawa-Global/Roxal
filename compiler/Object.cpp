@@ -100,6 +100,8 @@ Obj* Obj::clone() const
         return cloneBoundNative(static_cast<const ObjBoundNative*>(this));
     else if (type == ObjType::Library)
         return mutableThis;
+    else if (type == ObjType::ForeignPtr)
+        return mutableThis;
     else if (type == ObjType::Event)
         // Note: currently ObjEvents have no user-mutable state, so we can just share the reference
         return mutableThis;
@@ -869,6 +871,18 @@ std::string roxal::objLibraryToString(const ObjLibrary* lib)
     return oss.str();
 }
 
+ObjForeignPtr* roxal::foreignPtrVal(void* ptr)
+{
+    return newObj<ObjForeignPtr>(__func__, ptr);
+}
+
+std::string roxal::objForeignPtrToString(const ObjForeignPtr* fp)
+{
+    std::ostringstream oss;
+    oss << "<ptr " << fp->ptr << ">";
+    return oss.str();
+}
+
 ObjException* roxal::exceptionVal(Value message, Value exType)
 {
     return newObj<ObjException>(__func__, message, exType);
@@ -1213,6 +1227,9 @@ std::string roxal::objToString(const Value& v)
         }
         case ObjType::Library: {
             return objLibraryToString(asLibrary(v));
+        }
+        case ObjType::ForeignPtr: {
+            return objForeignPtrToString(asForeignPtr(v));
         }
         case ObjType::Exception: {
             return objExceptionToString(asException(v));
@@ -1587,6 +1604,7 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::Signal: return "signal";
     case ObjType::Event: return "event";
     case ObjType::Library: return "library";
+    case ObjType::ForeignPtr: return "foreignptr";
     case ObjType::Exception: return "exception";
     }
     return "unknown";

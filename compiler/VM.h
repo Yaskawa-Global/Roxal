@@ -21,7 +21,9 @@ struct FFIWrapper {
     ffi_cif cif;
     void* fn;
     std::vector<ffi_type*> argTypes;
+    std::vector<bool> argIsCharPtr;
     ffi_type* retType;
+    bool retIsCharPtr{false};
     ObjObjectType* retObjType { nullptr };
     std::vector<ffi_type*> retStructElems;
     ffi_type retStructType;
@@ -329,7 +331,7 @@ protected:
 
     Value callCFunc(ObjClosure* closure, const CallSpec& callSpec);
 
-    std::vector<uint8_t> objectToCStruct(ObjectInstance* instance);
+    std::vector<uint8_t> objectToCStruct(ObjectInstance* instance, std::vector<std::string>* stringStore=nullptr);
     ObjectInstance* objectFromCStruct(ObjObjectType* type, const void* data, size_t len);
 
 };
