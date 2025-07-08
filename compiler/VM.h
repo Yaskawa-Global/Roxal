@@ -333,6 +333,7 @@ protected:
 
     std::vector<uint8_t> objectToCStruct(ObjectInstance* instance, std::vector<std::string>* stringStore=nullptr);
     ObjectInstance* objectFromCStruct(ObjObjectType* type, const void* data, size_t len);
+    void updateObjectFromCStruct(ObjectInstance* instance, const void* data, size_t len);
 
 };
 

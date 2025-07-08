@@ -1,0 +1,19 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cstruct()
+type MyStruct object:
+  var i:int
+  @ctype(ctype='float')
+  var f:real
+
+@cfunc(lib=mylib, cname='struct_inc', args='MyStruct* s')
+proc inc(s: MyStruct):
+  _
+
+var s = MyStruct()
+s.i = 10
+s.f = 5.5
+inc(s)
+print(s.i)
+print(s.f)
