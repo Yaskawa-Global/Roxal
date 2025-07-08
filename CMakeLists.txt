@@ -203,6 +203,9 @@ include_directories(${LIBFFI_INCLUDE_DIRS})
 # Add the executable target
 add_executable(roxal ${CORE_SOURCES} ${SOURCES} ${GENERATED_SOURCES})
 
+# Ensure libffi headers are available when compiling the executable
+target_include_directories(roxal PRIVATE ${LIBFFI_INCLUDE_DIRS})
+
 add_dependencies(roxal generate_parser)
 
 
