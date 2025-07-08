@@ -65,13 +65,19 @@ find_package(antlr4-runtime 4.13.1 CONFIG REQUIRED)
 
 #
 # Eigen
+# Use an existing installation if available. Otherwise look for a
+# local checkout next to this repository so Eigen does not need to be
+# globally installed. Clone it with:
+#   git clone https://gitlab.com/libeigen/eigen.git ../eigen
+#   cd ../eigen && git checkout 3.4.0
 
-# Install via:
-# git clone https://gitlab.com/libeigen/eigen.git
-# git checkout 3.4.0
-# mkdir build && cd build && make && sudo make install
-find_package( Eigen3 REQUIRED )
-set(EIGEN3_INCLUDE_DIR "/usr/local/include/eigen3/")
+set(EIGEN_ROOT "${CMAKE_SOURCE_DIR}/../eigen")
+if(EXISTS "${EIGEN_ROOT}")
+    list(APPEND CMAKE_MODULE_PATH "${EIGEN_ROOT}/cmake")
+    set(EIGEN3_INCLUDE_DIR "${EIGEN_ROOT}")
+endif()
+
+find_package(Eigen3 REQUIRED)
 include_directories(${EIGEN3_INCLUDE_DIR})
 
 # Detect libffi via pkg-config so that include and library paths
