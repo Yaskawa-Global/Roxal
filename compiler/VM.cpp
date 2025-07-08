@@ -3298,20 +3298,64 @@ bool VM::processPendingEvents()
                 auto prevThreadSleepUntil = thread->threadSleepUntil.load();
 
                 thread->threadSleep = false;
-                auto result = callAndExec(closure, {});
-                assert(!thread->threadSleep);
+
+                if (closure == conditionalInterruptClosure) {
+                    Value excType = globals.load(toUnicodeString("ConditionalInterrupt")).value();
+                    Value exc = objVal(exceptionVal(nilVal(), excType));
+                    raiseException(exc);
+                } else {
+                    auto result = callAndExec(closure, {});
+                    assert(!thread->threadSleep);
+
+                    if (result.first != InterpretResult::OK)
+                        return false;
+                }
 
                 thread->threadSleep = prevThreadSleep;
                 thread->threadSleepUntil = prevThreadSleepUntil;
-
-                if (result.first != InterpretResult::OK)
-                    return false;
             }
         }
     }
     return true;
 }
 
+void VM::unwindFrame()
+{
+    auto f = thread->frames.back();
+    closeUpvalues(f.slots);
+    size_t popCount = &(*thread->stackTop) - f.slots;
+    for(size_t i = 0; i < popCount; i++) pop();
+    thread->popFrame();
+}
+
+void VM::raiseException(Value exc)
+{
+    if (!isException(exc))
+        exc = objVal(exceptionVal(exc));
+
+    while (true) {
+        if (thread->frames.empty()) {
+            runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
+            return;
+        }
+
+        auto& cf = thread->frames.back();
+        if (!cf.exceptionHandlers.empty()) {
+            auto h = cf.exceptionHandlers.back();
+            cf.exceptionHandlers.pop_back();
+            while (thread->frames.size() > h.frameDepth)
+                unwindFrame();
+            auto frame = thread->frames.end()-1;
+            frame->ip = h.handlerIp;
+            while (thread->stackTop - thread->stack.begin() > h.stackDepth)
+                pop();
+            push(exc);
+            break;
+        } else {
+            unwindFrame();
+        }
+    }
+}
 
 
 void VM::resetStack()

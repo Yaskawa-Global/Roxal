@@ -227,6 +227,8 @@ public:
 
     void resetStack();
     void freeObjects();
+    void unwindFrame();
+    void raiseException(Value exc);
     void outputAllocatedObjs();
 
     void concatenate();
