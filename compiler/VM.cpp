@@ -235,6 +235,29 @@ VM::VM()
     defineBuiltinProperties();
     defineNativeFunctions();
 
+    // Create builtin __conditional_interrupt closure
+    {
+        ObjFunction* fn = functionVal(toUnicodeString("sys"), toUnicodeString("__internal"), toUnicodeString("internal"));
+        fn->name = toUnicodeString("__conditional_interrupt");
+        fn->arity = 0;
+        fn->upvalueCount = 0;
+
+        Value condIntType = globals.load(toUnicodeString("ConditionalInterrupt")).value();
+        fn->chunk->writeConsant(condIntType, 0, 0);
+        fn->chunk->write(OpCode::ConstNil, 0, 0);
+        CallSpec cs{1};
+        auto bytes = cs.toBytes();
+        fn->chunk->write(OpCode::Call, 0, 0);
+        fn->chunk->write(bytes[0], 0, 0);
+        fn->chunk->write(OpCode::Throw, 0, 0);
+        fn->chunk->write(OpCode::ConstNil, 0, 0);
+        fn->chunk->write(OpCode::Return, 0, 0);
+
+        conditionalInterruptClosure = closureVal(fn);
+        conditionalInterruptClosure->incRef();
+        globals.storeGlobal(toUnicodeString("__conditional_interrupt"), objVal(conditionalInterruptClosure));
+    }
+
     //CallSpec::testParamPositions();
     //Value::testPrimitiveValues();
     //testObjectValues();
@@ -263,6 +286,9 @@ VM::~VM()
     initString->decRef();
     sysModule->decRef();
     mathModule->decRef();
+
+    if (conditionalInterruptClosure)
+        conditionalInterruptClosure->decRef();
 
     df::DataflowEngine::instance()->clear();
 
@@ -2956,6 +2982,46 @@ std::pair<InterpretResult,Value> VM::execute()
                 ev->subscribers.push_back(closureVal.weakRef());
                 break;
             }
+            case asByte(OpCode::EventOff): {
+                Value closureVal = pop();
+                Value eventVal = pop();
+                if (!isClosure(closureVal) || !(isEvent(eventVal) || isSignal(eventVal))) {
+                    runtimeError("EVENT_OFF expects event/signal and closure");
+                    return errorReturn;
+                }
+
+                ObjEvent* ev = nullptr;
+                if (isEvent(eventVal)) {
+                    ev = asEvent(eventVal);
+                } else {
+                    ObjSignal* sigObj = asSignal(eventVal);
+                    ev = sigObj->ensureChangeEvent();
+                    eventVal = sigObj->changeEvent;
+                }
+
+                Value key = eventVal.weakRef();
+                auto it = thread->eventHandlers.find(key);
+                if (it != thread->eventHandlers.end()) {
+                    auto& handlers = it->second;
+                    for(auto hit = handlers.begin(); hit != handlers.end(); ) {
+                        if (hit->isAlive() && asClosure(*hit) == asClosure(closureVal))
+                            hit = handlers.erase(hit);
+                        else
+                            ++hit;
+                    }
+                    if (handlers.empty())
+                        thread->eventHandlers.erase(it);
+                }
+
+                for(auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
+                    if (it->isAlive() && asClosure(*it) == asClosure(closureVal))
+                        it = ev->subscribers.erase(it);
+                    else
+                        ++it;
+                }
+
+                break;
+            }
             case asByte(OpCode::SetupExcept): {
                 uint16_t off = readShort();
                 CallFrame::ExceptionHandler h;
@@ -3232,20 +3298,64 @@ bool VM::processPendingEvents()
                 auto prevThreadSleepUntil = thread->threadSleepUntil.load();
 
                 thread->threadSleep = false;
-                auto result = callAndExec(closure, {});
-                assert(!thread->threadSleep);
+
+                if (closure == conditionalInterruptClosure) {
+                    Value excType = globals.load(toUnicodeString("ConditionalInterrupt")).value();
+                    Value exc = objVal(exceptionVal(nilVal(), excType));
+                    raiseException(exc);
+                } else {
+                    auto result = callAndExec(closure, {});
+                    assert(!thread->threadSleep);
+
+                    if (result.first != InterpretResult::OK)
+                        return false;
+                }
 
                 thread->threadSleep = prevThreadSleep;
                 thread->threadSleepUntil = prevThreadSleepUntil;
-
-                if (result.first != InterpretResult::OK)
-                    return false;
             }
         }
     }
     return true;
 }
 
+void VM::unwindFrame()
+{
+    auto f = thread->frames.back();
+    closeUpvalues(f.slots);
+    size_t popCount = &(*thread->stackTop) - f.slots;
+    for(size_t i = 0; i < popCount; i++) pop();
+    thread->popFrame();
+}
+
+void VM::raiseException(Value exc)
+{
+    if (!isException(exc))
+        exc = objVal(exceptionVal(exc));
+
+    while (true) {
+        if (thread->frames.empty()) {
+            runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
+            return;
+        }
+
+        auto& cf = thread->frames.back();
+        if (!cf.exceptionHandlers.empty()) {
+            auto h = cf.exceptionHandlers.back();
+            cf.exceptionHandlers.pop_back();
+            while (thread->frames.size() > h.frameDepth)
+                unwindFrame();
+            auto frame = thread->frames.end()-1;
+            frame->ip = h.handlerIp;
+            while (thread->stackTop - thread->stack.begin() > h.stackDepth)
+                pop();
+            push(exc);
+            break;
+        } else {
+            unwindFrame();
+        }
+    }
+}
 
 
 void VM::resetStack()
@@ -3494,6 +3604,7 @@ void VM::defineBuiltinMethods()
 
     defineBuiltinMethod(ValueType::Event, "emit", &VM::event_emit_builtin, true);
     defineBuiltinMethod(ValueType::Event, "on", &VM::event_on_builtin, true);
+    defineBuiltinMethod(ValueType::Event, "off", &VM::event_off_builtin, true);
 
     defineBuiltinMethod(ValueType::Actor, "tick", &VM::dataflow_tick_native, true);  // proc
     defineBuiltinMethod(ValueType::Actor, "run", &VM::dataflow_run_native, true);   // proc
@@ -3818,6 +3929,47 @@ Value VM::event_on_builtin(int argCount, Value* args)
     ObjClosure* closure = asClosure(closureVal);
     closure->handlerThread = thread;
     ev->subscribers.push_back(closureVal.weakRef());
+
+    return nilVal();
+}
+
+Value VM::event_off_builtin(int argCount, Value* args)
+{
+    if (argCount != 2 || !(isEvent(args[0]) || isSignal(args[0])) || !isClosure(args[1]))
+        throw std::invalid_argument("event.off expects event/signal and closure argument");
+
+    Value eventVal = args[0];
+    Value closureVal = args[1];
+
+    ObjEvent* ev = nullptr;
+    if (isEvent(eventVal)) {
+        ev = asEvent(eventVal);
+    } else {
+        ObjSignal* sigObj = asSignal(eventVal);
+        ev = sigObj->ensureChangeEvent();
+        eventVal = sigObj->changeEvent;
+    }
+
+    Value key = eventVal.weakRef();
+    auto it = thread->eventHandlers.find(key);
+    if (it != thread->eventHandlers.end()) {
+        auto& handlers = it->second;
+        for(auto hit = handlers.begin(); hit != handlers.end(); ) {
+            if (hit->isAlive() && asClosure(*hit) == asClosure(closureVal))
+                hit = handlers.erase(hit);
+            else
+                ++hit;
+        }
+        if (handlers.empty())
+            thread->eventHandlers.erase(it);
+    }
+
+    for(auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
+        if (it->isAlive() && asClosure(*it) == asClosure(closureVal))
+            it = ev->subscribers.erase(it);
+        else
+            ++it;
+    }
 
     return nilVal();
 }

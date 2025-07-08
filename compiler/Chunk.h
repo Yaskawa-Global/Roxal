@@ -90,6 +90,7 @@ enum class OpCode {
     ToType,
     ToTypeStrict,
     EventOn,
+    EventOff,
     SetupExcept,
     EndExcept,
     Throw
