@@ -19,11 +19,12 @@ list(APPEND CMAKE_PREFIX_PATH "/usr/local")
 # Set the relative path to vcpkg (assumed to be at same level as project folder)
 set(VCPKG_ROOT "${CMAKE_SOURCE_DIR}/../../../../vcpkg")
 
-# Point CMake to the vcpkg toolchain file
-set(CMAKE_TOOLCHAIN_FILE "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
-
-# Add the vcpkg installation prefix to CMAKE_PREFIX_PATH
-list(APPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-linux")
+if(EXISTS "${VCPKG_ROOT}")
+    # Point CMake to the vcpkg toolchain file
+    set(CMAKE_TOOLCHAIN_FILE "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
+    # Add the vcpkg installation prefix to CMAKE_PREFIX_PATH
+    list(APPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-linux")
+endif()
 
 
 #find_package( Protobuf REQUIRED CONFIG )

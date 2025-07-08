@@ -26,11 +26,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 # Set the relative path to vcpkg (assumed to be at same level as project folder)
 set(VCPKG_ROOT "${CMAKE_SOURCE_DIR}/../vcpkg")
 
-# Point CMake to the vcpkg toolchain file
-set(CMAKE_TOOLCHAIN_FILE "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
-
-# Add the vcpkg installation prefix to CMAKE_PREFIX_PATH
-list(APPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-linux")
+if(EXISTS "${VCPKG_ROOT}")
+    # Point CMake to the vcpkg toolchain file
+    set(CMAKE_TOOLCHAIN_FILE "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
+    # Add the vcpkg installation prefix to CMAKE_PREFIX_PATH
+    list(APPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-linux")
+endif()
 
 
 #
@@ -42,8 +43,22 @@ list(APPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-linux")
 # $ pip install antlr4-tools
 # (check they are compatible)
 
-# Set ANTLR4_ROOT to the location where ANTLR4 is installed by vcpkg
-set(ANTLR4_ROOT "${VCPKG_ROOT}/installed/x64-linux")
+# Attempt to locate the ANTLR4 runtime
+# Prefer vcpkg if present, otherwise fall back to common Homebrew locations
+set(ANTLR4_ROOT "")
+if(EXISTS "${VCPKG_ROOT}/installed/x64-linux")
+    set(ANTLR4_ROOT "${VCPKG_ROOT}/installed/x64-linux")
+elseif(APPLE)
+    if(EXISTS "/opt/homebrew/opt/antlr4-cpp-runtime")
+        set(ANTLR4_ROOT "/opt/homebrew/opt/antlr4-cpp-runtime")
+    elseif(EXISTS "/usr/local/opt/antlr4-cpp-runtime")
+        set(ANTLR4_ROOT "/usr/local/opt/antlr4-cpp-runtime")
+    endif()
+endif()
+
+if(ANTLR4_ROOT)
+    list(APPEND CMAKE_PREFIX_PATH "${ANTLR4_ROOT}")
+endif()
 
 # Find ANTLR4 package
 find_package(antlr4-runtime 4.13.1 CONFIG REQUIRED)
