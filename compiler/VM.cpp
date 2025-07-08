@@ -4614,6 +4614,7 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
     std::vector<std::vector<uint8_t>> structBuffers(callSpec.argCount);
     std::vector<std::vector<std::string>> structStrings(callSpec.argCount);
     std::vector<void*> structPtrs(callSpec.argCount);
+    std::vector<ObjectInstance*> structArgInstances(callSpec.argCount, nullptr);
     std::vector<std::string> stringArgs(callSpec.argCount);
     std::vector<const char*> cstrPtrs(callSpec.argCount);
 
@@ -4649,6 +4650,7 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                 if (!isObjectInstance(argVector[i]))
                     throw std::invalid_argument("ffi arg not object instance for pointer");
                 ObjectInstance* inst = asObjectInstance(argVector[i]);
+                structArgInstances[i] = inst;
                 structBuffers[i] = objectToCStruct(inst, &structStrings[i]);
                 structPtrs[i] = structBuffers[i].data();
                 argValues[i] = &structPtrs[i];
@@ -4666,6 +4668,10 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
         retPtr = retBuf.data();
     }
     ffi_call(&spec->cif, FFI_FN(spec->fn), retPtr, argValues.data());
+
+    for (int i=0;i<callSpec.argCount;i++)
+        if (structArgInstances[i])
+            updateObjectFromCStruct(structArgInstances[i], structBuffers[i].data(), structBuffers[i].size());
 
     if (spec->retObjType) {
         ObjectInstance* inst = objectFromCStruct(spec->retObjType, retBuf.data(), retBuf.size());
@@ -4857,4 +4863,72 @@ ObjectInstance* VM::objectFromCStruct(ObjObjectType* type, const void* data, siz
         throw std::runtime_error("buffer too small for objectFromCStruct");
 
     return inst;
+}
+
+void VM::updateObjectFromCStruct(ObjectInstance* instance, const void* data, size_t len)
+{
+    if (!instance || !data)
+        throw std::invalid_argument("updateObjectFromCStruct null instance or data");
+
+    ObjObjectType* type = instance->instanceType;
+    if (!type->isCStruct)
+        throw std::runtime_error("updateObjectFromCStruct called on non-cstruct type");
+
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
+    size_t offset = 0;
+    size_t structAlign = 1;
+    size_t ptrSize = (type->cstructArch==64)?8:4;
+
+    auto readPadded = [&](void* out, size_t size, size_t align) {
+        size_t padding = (align - (offset % align)) % align;
+        if (offset + padding + size > len)
+            throw std::runtime_error("buffer too small for updateObjectFromCStruct");
+        offset += padding;
+        memcpy(out, bytes + offset, size);
+        offset += size;
+        structAlign = std::max(structAlign, align);
+    };
+
+    for (int32_t hash : type->propertyOrder) {
+        const auto& prop = type->properties.at(hash);
+
+        Value val;
+
+        std::string ctypeStr;
+        if (prop.ctype.has_value())
+            ctypeStr = toUTF8StdString(prop.ctype.value());
+
+        auto readByName = [&](const std::string& ctype) -> bool {
+            if (ctype == "float") { float f; readPadded(&f, sizeof(f), 4); val = Value(double(f)); return true; }
+            if (ctype == "double" || ctype == "real") { double d; readPadded(&d, sizeof(d), 8); val = Value(d); return true; }
+            if (ctype == "int") { int32_t i; readPadded(&i, sizeof(i), 4); val = intVal(i); return true; }
+            if (ctype == "bool") { uint8_t b; readPadded(&b, sizeof(b), 1); val = boolVal(b != 0); return true; }
+            if (ctype == "char*") { const char* p; readPadded(&p, ptrSize, ptrSize); val = objVal(stringVal(toUnicodeString(std::string(p?p:"")))); return true; }
+            return false;
+        };
+
+        if (!ctypeStr.empty()) {
+            if (!readByName(ctypeStr))
+                throw std::runtime_error("unsupported ctype annotation: " + ctypeStr);
+        } else if (isTypeSpec(prop.type)) {
+            ObjTypeSpec* ts = asTypeSpec(prop.type);
+            switch (ts->typeValue) {
+                case ValueType::Bool: { uint8_t b; readPadded(&b, sizeof(b), 1); val = boolVal(b != 0); break; }
+                case ValueType::Byte: { uint8_t v; readPadded(&v, sizeof(v), 1); val = byteVal(v); break; }
+                case ValueType::Int: { int32_t i; readPadded(&i, sizeof(i), 4); val = intVal(i); break; }
+                case ValueType::Real: { double d; readPadded(&d, sizeof(d), 8); val = Value(d); break; }
+                case ValueType::Enum: { int32_t e; readPadded(&e, sizeof(e), 4); val = intVal(e); break; }
+                default:
+                    throw std::runtime_error("unsupported struct property type");
+            }
+        } else {
+            throw std::runtime_error("struct property has no builtin type");
+        }
+
+        instance->properties[prop.name.hashCode()] = val;
+    }
+
+    size_t finalPad = (structAlign - (offset % structAlign)) % structAlign;
+    if (offset + finalPad > len)
+        throw std::runtime_error("buffer too small for updateObjectFromCStruct");
 }
