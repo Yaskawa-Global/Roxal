@@ -95,7 +95,9 @@ inline std::string toHumanReadableTime(const std::chrono::steady_clock::time_poi
     auto system_now = std::chrono::system_clock::now();
     auto steady_now = std::chrono::steady_clock::now();
     auto duration_since_steady_epoch = tp - steady_now;
-    auto system_time = system_now + duration_since_steady_epoch;
+    auto system_time = system_now +
+        std::chrono::duration_cast<std::chrono::system_clock::duration>(
+            duration_since_steady_epoch);
 
     std::time_t time = std::chrono::system_clock::to_time_t(system_time);
     auto milliseconds_part = std::chrono::duration_cast<std::chrono::milliseconds>(system_time.time_since_epoch()) % 1000;

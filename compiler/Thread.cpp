@@ -4,6 +4,27 @@
 
 using namespace roxal;
 
+Thread::~Thread()
+{
+    for (auto* upvalue : openUpvalues) {
+        upvalue->decRef();
+    }
+    // remove any event subscriptions for this thread
+    for (auto& entry : eventHandlers) {
+        if (!entry.first.isAlive()) continue;
+        ObjEvent* ev = asEvent(entry.first);
+        for (const auto& handler : entry.second) {
+            for (auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
+                if (!it->isAlive() || asClosure(*it) != asClosure(handler)) {
+                    ++it;
+                    continue;
+                }
+                it = ev->subscribers.erase(it);
+            }
+        }
+    }
+}
+
 void Thread::spawn(Value closure)
 {
     assert(isClosure(closure));
