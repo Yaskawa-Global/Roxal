@@ -86,6 +86,23 @@ include_directories(${EIGEN3_INCLUDE_DIR})
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBFFI REQUIRED libffi)
 
+# ICU Unicode library
+set(ICU_ROOT "")
+if(APPLE)
+    if(EXISTS "/opt/homebrew/opt/icu4c")
+        set(ICU_ROOT "/opt/homebrew/opt/icu4c")
+    elseif(EXISTS "/usr/local/opt/icu4c")
+        set(ICU_ROOT "/usr/local/opt/icu4c")
+    endif()
+endif()
+
+if(ICU_ROOT)
+    list(APPEND CMAKE_PREFIX_PATH "${ICU_ROOT}")
+endif()
+
+find_package(ICU REQUIRED COMPONENTS i18n io uc data)
+include_directories(${ICU_INCLUDE_DIRS})
+
 # Build the dataflow engine library
 add_subdirectory(dataflow)
 
@@ -173,10 +190,7 @@ add_dependencies(roxal generate_parser)
 
 target_link_libraries(roxal
     antlr4-runtime
-    icuio
-    icui18n
-    icuuc
-    icudata
+    ${ICU_LIBRARIES}
     pthread
     boost_program_options
     dataflow
