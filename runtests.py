@@ -51,7 +51,7 @@ tests = [
     'actor_closure1', 'actor_closure2', 'actor_closure3',
     'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4',
     'private_prop', 'private_method', 'private_inherit',
-    'typededucer_binop', 'typededucer_ops',
+    'typededucer_binop', 'typededucer_ops', 'typededucer_until',
     'mathfuncs',
     'typeassign1', 'typeassign2', 'typeassign3',
     'vector1', 'vector2', 'vector3', 'vector4', 'vector5','vector_methods', 'vector_equal', 'vector_matrix_equal',

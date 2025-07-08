@@ -960,8 +960,38 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
 std::any RoxalCompiler::visit(ptr<ast::UntilStatement> ast)
 {
     currentNode = ast;
-    // TODO: implement conditional interruption
+
+    // syntactic sugar for: try: <stmt> except ConditionalInterrupt: pass
+
+    auto handlerJump = emitJump(OpCode::SetupExcept);
+
+    enterLocalScope();
     ast->stmt->accept(*this);
+    exitLocalScope();
+
+    emitByte(OpCode::EndExcept);
+
+    auto jumpOverHandlers = emitJump(OpCode::Jump);
+
+    patchJump(handlerJump);
+
+    // except ConditionalInterrupt
+    emitByte(OpCode::Dup); // exception
+    namedVariable(toUnicodeString("ConditionalInterrupt"), false);
+    emitByte(OpCode::Is);
+    auto jumpNext = emitJump(OpCode::JumpIfFalse);
+    emitByte(OpCode::Pop, "is result");
+
+    emitByte(OpCode::Pop, "exception"); // ignore exception
+
+    auto jumpEnd = emitJump(OpCode::Jump);
+
+    patchJump(jumpNext);
+    emitByte(OpCode::Throw); // rethrow if not ConditionalInterrupt
+
+    patchJump(jumpEnd);
+    patchJump(jumpOverHandlers);
+
     return {};
 }
 
