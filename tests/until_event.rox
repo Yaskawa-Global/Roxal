@@ -8,6 +8,9 @@ type A actor:
 a = A()
 a.emitIt(e)
 
+c = clock(1)
 print('start')
-sleep(ms=1000) until e
-print('done')
+c.run()
+sleep(s=10) until e
+c.stop()
+print('done c='+int(c)) // should still be 0 after ~100ms, not 9 or more
