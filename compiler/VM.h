@@ -342,6 +342,14 @@ public:
 
     Value callCFunc(ObjClosure* closure, const CallSpec& callSpec);
 
+    void marshalProperty(const Value& val, const ObjObjectType::Property& prop,
+                         size_t ptrSize, std::vector<uint8_t>& buffer,
+                         size_t& offset, size_t& structAlign,
+                         std::vector<std::string>* stringStore);
+    Value unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSize,
+                            const uint8_t* bytes, size_t len,
+                            size_t& offset, size_t& structAlign);
+
     std::vector<uint8_t> objectToCStruct(ObjectInstance* instance, std::vector<std::string>* stringStore=nullptr);
     ObjectInstance* objectFromCStruct(ObjObjectType* type, const void* data, size_t len);
     void updateObjectFromCStruct(ObjectInstance* instance, const void* data, size_t len);

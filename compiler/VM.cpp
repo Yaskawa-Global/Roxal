@@ -5009,6 +5009,130 @@ ObjModuleType* VM::getBuiltinModule(const icu::UnicodeString& name)
     return nullptr;
 }
 
+void VM::marshalProperty(const Value& val, const ObjObjectType::Property& prop,
+                         size_t ptrSize, std::vector<uint8_t>& buffer,
+                         size_t& offset, size_t& structAlign,
+                         std::vector<std::string>* stringStore)
+{
+
+
+    std::string ctypeStr;
+    if (prop.ctype.has_value())
+        ctypeStr = toUTF8StdString(prop.ctype.value());
+
+    auto writeByName = [&](const std::string& ctype) -> bool {
+        if (ctype == "float") { float f = float(val.asReal()); appendPadded(&f, sizeof(f), 4); return true; }
+        if (ctype == "double" || ctype == "real") { double d = val.asReal(); appendPadded(&d, sizeof(d), 8); return true; }
+        if (ctype == "int" || ctype=="int32_t") { int32_t i = val.asInt(); appendPadded(&i, sizeof(i), 4); return true; }
+        if (ctype == "uint32_t") { uint32_t u = uint32_t(val.asInt()); appendPadded(&u, sizeof(u), 4); return true; }
+        if (ctype == "int16_t") { int16_t s = int16_t(val.asInt()); appendPadded(&s, sizeof(s), 2); return true; }
+        if (ctype == "uint16_t") { uint16_t u = uint16_t(val.asInt()); appendPadded(&u, sizeof(u), 2); return true; }
+        if (ctype == "int8_t") { int8_t s = int8_t(val.asByte()); appendPadded(&s, sizeof(s),1); return true; }
+        if (ctype == "uint8_t") { uint8_t u = val.asByte(); appendPadded(&u, sizeof(u),1); return true; }
+        if (ctype == "bool") { uint8_t b = val.asBool()?1:0; appendPadded(&b, sizeof(b),1); return true; }
+        if (ctype == "char*") {
+            if (!isString(val))
+                throw std::runtime_error("char* field expects string value");
+            std::string s = toUTF8StdString(asUString(val));
+            stringStore->push_back(std::move(s));
+            const char* p = stringStore->back().c_str();
+            appendPadded(&p, ptrSize, ptrSize);
+            return true;
+        }
+        return false;
+    };
+
+    if (!ctypeStr.empty()) {
+        if (!writeByName(ctypeStr))
+            throw std::runtime_error("unsupported ctype annotation: " + ctypeStr);
+        return;
+    }
+
+    if (isTypeSpec(prop.type)) {
+        ObjTypeSpec* ts = asTypeSpec(prop.type);
+        switch (ts->typeValue) {
+            case ValueType::Bool: {
+                uint8_t b = val.asBool();
+                appendPadded(&b, sizeof(b), 1);
+                break; }
+            case ValueType::Byte: {
+                uint8_t v = val.asByte();
+                appendPadded(&v, sizeof(v), 1);
+                break; }
+            case ValueType::Int: {
+                int32_t i = val.asInt();
+                appendPadded(&i, sizeof(i), 4);
+                break; }
+            case ValueType::Real: {
+                double d = val.asReal();
+                appendPadded(&d, sizeof(d), 8);
+                break; }
+            case ValueType::Enum: {
+                int32_t e = val.asEnum();
+                appendPadded(&e, sizeof(e), 4);
+                break; }
+            default:
+                throw std::runtime_error("unsupported struct property type");
+        }
+    } else {
+        throw std::runtime_error("struct property has no builtin type");
+    }
+}
+
+Value VM::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSize,
+                            const uint8_t* bytes, size_t len,
+                            size_t& offset, size_t& structAlign)
+{
+    auto readPadded = [&](void* out, size_t size, size_t align) {
+        size_t padding = (align - (offset % align)) % align;
+        if (offset + padding + size > len)
+            throw std::runtime_error("buffer too small for cstruct unmarshalling");
+        offset += padding;
+        memcpy(out, bytes + offset, size);
+        offset += size;
+        structAlign = std::max(structAlign, align);
+    };
+
+    Value val;
+    std::string ctypeStr;
+    if (prop.ctype.has_value())
+        ctypeStr = toUTF8StdString(prop.ctype.value());
+
+    auto readByName = [&](const std::string& ctype) -> bool {
+        if (ctype == "float") { float f; readPadded(&f, sizeof(f), 4); val = Value(double(f)); return true; }
+        if (ctype == "double" || ctype == "real") { double d; readPadded(&d, sizeof(d), 8); val = Value(d); return true; }
+        if (ctype == "int" || ctype=="int32_t") { int32_t i; readPadded(&i, sizeof(i), 4); val = intVal(i); return true; }
+        if (ctype == "uint32_t") { uint32_t u; readPadded(&u, sizeof(u), 4); val = intVal(int32_t(u)); return true; }
+        if (ctype == "int16_t") { int16_t s; readPadded(&s, sizeof(s), 2); val = intVal(int32_t(s)); return true; }
+        if (ctype == "uint16_t") { uint16_t u; readPadded(&u, sizeof(u), 2); val = intVal(int32_t(u)); return true; }
+        if (ctype == "int8_t") { int8_t s; readPadded(&s, sizeof(s), 1); val = byteVal(uint8_t(s)); return true; }
+        if (ctype == "uint8_t") { uint8_t u; readPadded(&u, sizeof(u), 1); val = byteVal(u); return true; }
+        if (ctype == "bool") { uint8_t b; readPadded(&b, sizeof(b), 1); val = boolVal(b != 0); return true; }
+        if (ctype == "char*") { const char* p; readPadded(&p, ptrSize, ptrSize); val = objVal(stringVal(toUnicodeString(std::string(p?p:"")))); return true; }
+        return false;
+    };
+
+    if (!ctypeStr.empty()) {
+        if (!readByName(ctypeStr))
+            throw std::runtime_error("unsupported ctype annotation: " + ctypeStr);
+    } else if (isTypeSpec(prop.type)) {
+        ObjTypeSpec* ts = asTypeSpec(prop.type);
+        switch (ts->typeValue) {
+            case ValueType::Bool: { uint8_t b; readPadded(&b, sizeof(b), 1); val = boolVal(b != 0); break; }
+            case ValueType::Byte: { uint8_t v; readPadded(&v, sizeof(v), 1); val = byteVal(v); break; }
+            case ValueType::Int: { int32_t i; readPadded(&i, sizeof(i), 4); val = intVal(i); break; }
+            case ValueType::Real: { double d; readPadded(&d, sizeof(d), 8); val = Value(d); break; }
+            case ValueType::Enum: { int32_t e; readPadded(&e, sizeof(e), 4); val = intVal(e); break; }
+            default:
+                throw std::runtime_error("unsupported struct property type");
+        }
+    } else {
+        throw std::runtime_error("struct property has no builtin type");
+    }
+
+    return val;
+}
+
 std::vector<uint8_t> VM::objectToCStruct(ObjectInstance* instance, std::vector<std::string>* stringStore)
 {
     if (!instance)
@@ -5025,84 +5149,12 @@ std::vector<uint8_t> VM::objectToCStruct(ObjectInstance* instance, std::vector<s
     size_t offset = 0;
     size_t structAlign = 1;
 
-    auto appendPadded = [&](const void* data, size_t size, size_t align) {
-        size_t padding = (align - (offset % align)) % align;
-        buffer.insert(buffer.end(), padding, 0);
-        const uint8_t* p = reinterpret_cast<const uint8_t*>(data);
-        buffer.insert(buffer.end(), p, p + size);
-        offset += padding + size;
-        structAlign = std::max(structAlign, align);
-    };
-
     for (int32_t hash : type->propertyOrder) {
         const auto& prop = type->properties.at(hash);
         auto it = instance->properties.find(prop.name.hashCode());
         if (it == instance->properties.end())
             throw std::runtime_error("instance missing property in objectToCStruct");
-
-        Value val = it->second;
-
-        std::string ctypeStr;
-        if (prop.ctype.has_value())
-            ctypeStr = toUTF8StdString(prop.ctype.value());
-
-        auto writeByName = [&](const std::string& ctype) -> bool {
-            if (ctype == "float") { float f = float(val.asReal()); appendPadded(&f, sizeof(f), 4); return true; }
-            if (ctype == "double" || ctype == "real") { double d = val.asReal(); appendPadded(&d, sizeof(d), 8); return true; }
-            if (ctype == "int" || ctype=="int32_t") { int32_t i = val.asInt(); appendPadded(&i, sizeof(i), 4); return true; }
-            if (ctype == "uint32_t") { uint32_t u = uint32_t(val.asInt()); appendPadded(&u, sizeof(u), 4); return true; }
-            if (ctype == "int16_t") { int16_t s = int16_t(val.asInt()); appendPadded(&s, sizeof(s), 2); return true; }
-            if (ctype == "uint16_t") { uint16_t u = uint16_t(val.asInt()); appendPadded(&u, sizeof(u), 2); return true; }
-            if (ctype == "int8_t") { int8_t s = int8_t(val.asByte()); appendPadded(&s, sizeof(s),1); return true; }
-            if (ctype == "uint8_t") { uint8_t u = val.asByte(); appendPadded(&u, sizeof(u),1); return true; }
-            if (ctype == "bool") { uint8_t b = val.asBool()?1:0; appendPadded(&b, sizeof(b),1); return true; }
-            if (ctype == "char*") {
-                if (!isString(val))
-                    throw std::runtime_error("char* field expects string value");
-                std::string s = toUTF8StdString(asUString(val));
-                stringStore->push_back(std::move(s));
-                const char* p = stringStore->back().c_str();
-                appendPadded(&p, ptrSize, ptrSize);
-                return true;
-            }
-            return false;
-        };
-
-        if (!ctypeStr.empty()) {
-            if (writeByName(ctypeStr))
-                continue;
-            throw std::runtime_error("unsupported ctype annotation: " + ctypeStr);
-        }
-
-        if (isTypeSpec(prop.type)) {
-            ObjTypeSpec* ts = asTypeSpec(prop.type);
-            switch (ts->typeValue) {
-                case ValueType::Bool: {
-                    uint8_t b = val.asBool();
-                    appendPadded(&b, sizeof(b), 1);
-                    break; }
-                case ValueType::Byte: {
-                    uint8_t v = val.asByte();
-                    appendPadded(&v, sizeof(v), 1);
-                    break; }
-                case ValueType::Int: {
-                    int32_t i = val.asInt();
-                    appendPadded(&i, sizeof(i), 4);
-                    break; }
-                case ValueType::Real: {
-                    double d = val.asReal();
-                    appendPadded(&d, sizeof(d), 8);
-                    break; }
-                case ValueType::Enum: {
-                    int32_t e = val.asEnum();
-                    appendPadded(&e, sizeof(e), 4);
-                    break; }
-                default:
-                    throw std::runtime_error("unsupported struct property type");
-            }
-        } else {
-            throw std::runtime_error("struct property has no builtin type");
-        }
+        marshalProperty(it->second, prop, ptrSize, buffer, offset, structAlign, stringStore);
     }
 
     size_t finalPad = (structAlign - (buffer.size() % structAlign)) % structAlign;
@@ -5124,59 +5176,13 @@ ObjectInstance* VM::objectFromCStruct(ObjObjectType* type, const void* data, siz
     size_t structAlign = 1;
     size_t ptrSize = (type->cstructArch==64)?8:4;
 
-    auto readPadded = [&](void* out, size_t size, size_t align) {
-        size_t padding = (align - (offset % align)) % align;
-        if (offset + padding + size > len)
-            throw std::runtime_error("buffer too small for objectFromCStruct");
-        offset += padding;
-        memcpy(out, bytes + offset, size);
-        offset += size;
-        structAlign = std::max(structAlign, align);
-    };
+    // helper handled by unmarshalProperty
 
     ObjectInstance* inst = objectInstanceVal(type);
 
     for (int32_t hash : type->propertyOrder) {
         const auto& prop = type->properties.at(hash);
-
-        Value val;
-
-        std::string ctypeStr;
-        if (prop.ctype.has_value())
-            ctypeStr = toUTF8StdString(prop.ctype.value());
-
-        auto readByName = [&](const std::string& ctype) -> bool {
-            if (ctype == "float") { float f; readPadded(&f, sizeof(f), 4); val = Value(double(f)); return true; }
-            if (ctype == "double" || ctype == "real") { double d; readPadded(&d, sizeof(d), 8); val = Value(d); return true; }
-            if (ctype == "int" || ctype=="int32_t") { int32_t i; readPadded(&i, sizeof(i), 4); val = intVal(i); return true; }
-            if (ctype == "uint32_t") { uint32_t u; readPadded(&u, sizeof(u), 4); val = intVal(int32_t(u)); return true; }
-            if (ctype == "int16_t") { int16_t s; readPadded(&s, sizeof(s), 2); val = intVal(int32_t(s)); return true; }
-            if (ctype == "uint16_t") { uint16_t u; readPadded(&u, sizeof(u), 2); val = intVal(int32_t(u)); return true; }
-            if (ctype == "int8_t") { int8_t s; readPadded(&s, sizeof(s), 1); val = byteVal(uint8_t(s)); return true; }
-            if (ctype == "uint8_t") { uint8_t u; readPadded(&u, sizeof(u), 1); val = byteVal(u); return true; }
-            if (ctype == "bool") { uint8_t b; readPadded(&b, sizeof(b), 1); val = boolVal(b != 0); return true; }
-            if (ctype == "char*") { const char* p; readPadded(&p, ptrSize, ptrSize); val = objVal(stringVal(toUnicodeString(std::string(p?p:"")))); return true; }
-            return false;
-        };
-
-        if (!ctypeStr.empty()) {
-            if (!readByName(ctypeStr))
-                throw std::runtime_error("unsupported ctype annotation: " + ctypeStr);
-        } else if (isTypeSpec(prop.type)) {
-            ObjTypeSpec* ts = asTypeSpec(prop.type);
-            switch (ts->typeValue) {
-                case ValueType::Bool: { uint8_t b; readPadded(&b, sizeof(b), 1); val = boolVal(b != 0); break; }
-                case ValueType::Byte: { uint8_t v; readPadded(&v, sizeof(v), 1); val = byteVal(v); break; }
-                case ValueType::Int: { int32_t i; readPadded(&i, sizeof(i), 4); val = intVal(i); break; }
-                case ValueType::Real: { double d; readPadded(&d, sizeof(d), 8); val = Value(d); break; }
-                case ValueType::Enum: { int32_t e; readPadded(&e, sizeof(e), 4); val = intVal(e); break; }
-                default:
-                    throw std::runtime_error("unsupported struct property type");
-            }
-        } else {
-            throw std::runtime_error("struct property has no builtin type");
-        }
-
+        Value val = unmarshalProperty(prop, ptrSize, bytes, len, offset, structAlign);
         inst->properties[prop.name.hashCode()] = val;
     }
 
@@ -5201,57 +5207,11 @@ void VM::updateObjectFromCStruct(ObjectInstance* instance, const void* data, siz
     size_t structAlign = 1;
     size_t ptrSize = (type->cstructArch==64)?8:4;
 
-    auto readPadded = [&](void* out, size_t size, size_t align) {
-        size_t padding = (align - (offset % align)) % align;
-        if (offset + padding + size > len)
-            throw std::runtime_error("buffer too small for updateObjectFromCStruct");
-        offset += padding;
-        memcpy(out, bytes + offset, size);
-        offset += size;
-        structAlign = std::max(structAlign, align);
-    };
+    // helper handled by unmarshalProperty
 
     for (int32_t hash : type->propertyOrder) {
         const auto& prop = type->properties.at(hash);
-
-        Value val;
-
-        std::string ctypeStr;
-        if (prop.ctype.has_value())
-            ctypeStr = toUTF8StdString(prop.ctype.value());
-
-        auto readByName = [&](const std::string& ctype) -> bool {
-            if (ctype == "float") { float f; readPadded(&f, sizeof(f), 4); val = Value(double(f)); return true; }
-            if (ctype == "double" || ctype == "real") { double d; readPadded(&d, sizeof(d), 8); val = Value(d); return true; }
-            if (ctype == "int" || ctype=="int32_t") { int32_t i; readPadded(&i, sizeof(i), 4); val = intVal(i); return true; }
-            if (ctype == "uint32_t") { uint32_t u; readPadded(&u, sizeof(u), 4); val = intVal(int32_t(u)); return true; }
-            if (ctype == "int16_t") { int16_t s; readPadded(&s, sizeof(s), 2); val = intVal(int32_t(s)); return true; }
-            if (ctype == "uint16_t") { uint16_t u; readPadded(&u, sizeof(u), 2); val = intVal(int32_t(u)); return true; }
-            if (ctype == "int8_t") { int8_t s; readPadded(&s, sizeof(s), 1); val = byteVal(uint8_t(s)); return true; }
-            if (ctype == "uint8_t") { uint8_t u; readPadded(&u, sizeof(u), 1); val = byteVal(u); return true; }
-            if (ctype == "bool") { uint8_t b; readPadded(&b, sizeof(b), 1); val = boolVal(b != 0); return true; }
-            if (ctype == "char*") { const char* p; readPadded(&p, ptrSize, ptrSize); val = objVal(stringVal(toUnicodeString(std::string(p?p:"")))); return true; }
-            return false;
-        };
-
-        if (!ctypeStr.empty()) {
-            if (!readByName(ctypeStr))
-                throw std::runtime_error("unsupported ctype annotation: " + ctypeStr);
-        } else if (isTypeSpec(prop.type)) {
-            ObjTypeSpec* ts = asTypeSpec(prop.type);
-            switch (ts->typeValue) {
-                case ValueType::Bool: { uint8_t b; readPadded(&b, sizeof(b), 1); val = boolVal(b != 0); break; }
-                case ValueType::Byte: { uint8_t v; readPadded(&v, sizeof(v), 1); val = byteVal(v); break; }
-                case ValueType::Int: { int32_t i; readPadded(&i, sizeof(i), 4); val = intVal(i); break; }
-                case ValueType::Real: { double d; readPadded(&d, sizeof(d), 8); val = Value(d); break; }
-                case ValueType::Enum: { int32_t e; readPadded(&e, sizeof(e), 4); val = intVal(e); break; }
-                default:
-                    throw std::runtime_error("unsupported struct property type");
-            }
-        } else {
-            throw std::runtime_error("struct property has no builtin type");
-        }
-
+        Value val = unmarshalProperty(prop, ptrSize, bytes, len, offset, structAlign);
         instance->properties[prop.name.hashCode()] = val;
     }
 
