@@ -19,3 +19,8 @@ uint8_t add_int8(int8_t a, int8_t b) { return (uint8_t)(a + b); }
 #include <string.h>
 int cstrlen(const char* s) { return (int)strlen(s); }
 void to_upper(char* s) { for (; *s; ++s) if (*s >= 'a' && *s <= 'z') *s = *s - ('a'-'A'); }
+
+typedef struct { int i; } IntHolder;
+typedef struct { double r; IntHolder h; } MyStruct2;
+bool mod_nested(MyStruct2* ms2) { ms2->r = 2.22; ms2->h.i = 33; return true; }
+

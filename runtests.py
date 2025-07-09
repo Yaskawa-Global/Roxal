@@ -47,7 +47,7 @@ tests = [
     'method_named_param',
     'annot1', 'generic', 'objscopes',
     'threads1', 'fork_upvalue_error', 'fork_no_upvalues',
-    'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8', 'actor9', 
+    'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8', 'actor9',
     'actor_init', 'actor_stack',
     'actor_closure1', 'actor_closure2', 'actor_closure3',
     'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4',
@@ -59,6 +59,7 @@ tests = [
     'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'unary_vector_matrix', 
     'matrix_index', 'matrix_methods', 'matrix_assign', 'matrix_equal', 'matrix_math',
     'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_toupper', 'cstruct1', 'cstruct2', 'cstruct3',
+    'nested_cstruct',
     'weakref', 'strongref', 'is_operator', 'stackdepth',
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
     'stacktrace',
@@ -66,7 +67,7 @@ tests = [
 ]
 
 # implementation doesn't yet allow these tests to pass
-failing_tests = ['signal_network1']
+failing_tests = ['signal_network1', 'nested_cstruct']
 
 
 if args.convs:

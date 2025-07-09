@@ -6,3 +6,5 @@ print(int(sum)) // 2
 c.tick()
 sleep(ms=120)
 print(int(sum)) // 4
+sleep(ms=50)
+
