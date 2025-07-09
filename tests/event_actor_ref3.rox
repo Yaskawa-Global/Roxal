@@ -13,11 +13,11 @@ type MyActor actor:
 
 a = MyActor()
 
-sleep(us=1000)
+wait(us=1000)
 
 a.trigger() // setup not called, so should be no hander
 
-sleep(us=1000)
+wait(us=1000)
 
 a = nil
 

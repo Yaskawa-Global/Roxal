@@ -27,7 +27,7 @@ print(lst)
 print('asking actor to print secret')
 a.printSecret()
 
-sleep(ms=100)
+wait(ms=100)
 
 print('done')
 

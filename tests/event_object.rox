@@ -25,16 +25,16 @@ o2.amethod(2)
 print('emitting e')
 emit e
 
-sleep(us=1000)
+wait(us=1000)
 
 print('destroying o')
 o = nil
 
-sleep(us=1000)
+wait(us=1000)
 
 print('emitting e')
 emit e
 
-sleep(us=1000)
+wait(us=1000)
 
 print('done')

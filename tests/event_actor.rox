@@ -23,17 +23,17 @@ a.act()
 print('emitting e')
 emit e
 
-sleep(us=1000)
+wait(us=1000)
 
 print('destroying a')
 a = nil
 
-sleep(us=1000)
+wait(us=1000)
 
 print('emitting e')
 emit e
 
-sleep(us=1000)
+wait(us=1000)
 
 print('done')
 

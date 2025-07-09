@@ -1,6 +1,6 @@
 c = clock(10)
 print('start')
 c.run()
-sleep(s=5) until c > 10
+wait(s=5) until c > 10
 c.stop()
 print('done c='+int(c))

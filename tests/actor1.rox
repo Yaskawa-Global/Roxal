@@ -5,6 +5,6 @@ type A actor:
 var a = A()
 a.f(p1=3,p0=2)
 
-sleep(us=50000) // allow time for f() to run before existing and terminating it
+wait(us=50000) // allow time for f() to run before existing and terminating it
 
 

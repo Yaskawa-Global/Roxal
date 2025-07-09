@@ -14,13 +14,13 @@ type MyActor actor:
 a = MyActor()
 
 a.trigger()
-sleep(us=10000)
+wait(us=10000)
 
 a.setup()
-sleep(us=10000)
+wait(us=10000)
 
 a.trigger()
-sleep(us=10000)
+wait(us=10000)
 
 a = nil
 

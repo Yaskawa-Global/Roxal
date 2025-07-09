@@ -5,7 +5,7 @@ c50 = clock(50) // 50Hz
 
 sum = c20 + c50 // 50Hz (faster of the two)
 
-sleep(ms=100)
+wait(ms=100)
 
 print(sum.freq()) // 50
 

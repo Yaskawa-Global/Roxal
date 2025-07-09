@@ -1,8 +1,8 @@
 c = clock(10)
 mod = (c + 1) % 2
 c.tick()
-sleep(ms=150)
+wait(ms=150)
 print(int(mod)) // 0
 c.tick()
-sleep(ms=150)
+wait(ms=150)
 print(int(mod)) // 1
