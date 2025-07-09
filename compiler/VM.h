@@ -200,6 +200,11 @@ protected:
     Value dataflowEngineActor;
     std::shared_ptr<Thread> dataflowEngineThread;
 
+    ObjClosure* conditionalInterruptClosure { nullptr };
+
+public:
+    ObjClosure* getConditionalInterruptClosure() const { return conditionalInterruptClosure; }
+
 
     ObjString* initString;
 
@@ -227,6 +232,8 @@ protected:
 
     void resetStack();
     void freeObjects();
+    void unwindFrame();
+    void raiseException(Value exc);
     void outputAllocatedObjs();
 
     void concatenate();
@@ -303,6 +310,7 @@ protected:
     Value runtests_builtin(int argCount, Value* args);
     Value event_emit_builtin(int argCount, Value* args);
     Value event_on_builtin(int argCount, Value* args);
+    Value event_off_builtin(int argCount, Value* args);
     Value weakref_builtin(int argCount, Value* args);
     Value weak_alive_builtin(int argCount, Value* args);
     Value strongref_builtin(int argCount, Value* args);

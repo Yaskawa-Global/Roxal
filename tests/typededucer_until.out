@@ -1,0 +1,14 @@
+File
+ VarDecl x
+  Num 0:int
+ Until
+  stmt:
+   ExprStmt
+    Assignment
+     Variable x
+     BinaryOp +  → int
+      Variable x
+      Num 1:int
+  condition:
+   Bool false
+

@@ -957,6 +957,80 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
     return {};
 }
 
+std::any RoxalCompiler::visit(ptr<ast::UntilStatement> ast)
+{
+    currentNode = ast;
+
+    // until <eventExpr>: <stmt>
+    //   is compiled as:
+    //   declare temp local for event expression
+    //   eventExpr -> local
+    //   event.on(local, __conditional_interrupt)
+    //   try:
+    //       <stmt>
+    //   except e:
+    //       event.off(local, __conditional_interrupt)
+    //       if not isinstance(e, ConditionalInterrupt):
+    //           raise
+    //   event.off(local, __conditional_interrupt)
+
+    enterLocalScope();
+
+    // store condition expression (event) in temporary local
+    icu::UnicodeString tmpName = "__until_event";
+    declareVariable(tmpName);
+    ast->condition->accept(*this);          // [event]
+    defineVariable();                       // local = event
+
+    // subscribe conditional interrupt handler
+    namedVariable(tmpName, false);          // [event]
+    namedVariable(toUnicodeString("__conditional_interrupt"), false); // [event, closure]
+    emitByte(OpCode::EventOn);
+
+    // setup try/except
+    auto handlerJump = emitJump(OpCode::SetupExcept);
+
+    // body
+    enterLocalScope();
+    ast->stmt->accept(*this);
+    exitLocalScope();
+
+    emitByte(OpCode::EndExcept);
+
+    // remove handler on normal path
+    namedVariable(tmpName, false);
+    namedVariable(toUnicodeString("__conditional_interrupt"), false);
+    emitByte(OpCode::EventOff);
+
+    auto jumpOverHandlers = emitJump(OpCode::Jump);
+
+    // exception handler
+    patchJump(handlerJump);
+
+    // remove handler on exceptional path
+    namedVariable(tmpName, false);
+    namedVariable(toUnicodeString("__conditional_interrupt"), false);
+    emitByte(OpCode::EventOff);
+
+    emitByte(OpCode::Dup); // exception
+    namedVariable(toUnicodeString("ConditionalInterrupt"), false);
+    emitByte(OpCode::Is);
+    auto jumpNext = emitJump(OpCode::JumpIfFalse);
+    emitByte(OpCode::Pop, "is result");
+    emitByte(OpCode::Pop, "exception"); // ignore exception
+    auto jumpEnd = emitJump(OpCode::Jump);
+
+    patchJump(jumpNext);
+    emitByte(OpCode::Throw); // rethrow if not ConditionalInterrupt
+
+    patchJump(jumpEnd);
+    patchJump(jumpOverHandlers);
+
+    exitLocalScope();
+
+    return {};
+}
+
 std::any RoxalCompiler::visit(ptr<ast::TryStatement> ast)
 {
     currentNode = ast;

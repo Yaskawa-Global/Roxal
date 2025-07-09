@@ -45,8 +45,12 @@ declaration
  ;
 
 statement
- : expr_stmt NEWLINE
+ : expr_stmt until_clause? NEWLINE
  | compound_stmt
+ ;
+
+until_clause
+ : UNTIL expression
  ;
 
 
@@ -423,6 +427,7 @@ EXCEPT: 'except';
 FINALLY: 'finally';
 RAISE: 'raise';
 AS: 'as';
+UNTIL: 'until';
 
 
 NEWLINE : ( '\r'? '\n' | '\r' | '\f' ) SPACES?;

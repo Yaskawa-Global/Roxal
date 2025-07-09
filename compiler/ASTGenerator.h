@@ -49,6 +49,8 @@ public:
     virtual std::any visitExcept_clause(RoxalParser::Except_clauseContext *context);
     virtual std::any visitFinally_clause(RoxalParser::Finally_clauseContext *context);
 
+    virtual std::any visitUntil_clause(RoxalParser::Until_clauseContext *context);
+
     virtual std::any visitVar_decl(RoxalParser::Var_declContext *context);
 
     virtual std::any visitIdent_opt_type(RoxalParser::Ident_opt_typeContext *context);

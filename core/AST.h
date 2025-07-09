@@ -35,6 +35,7 @@ class IfStatement;
 class WhileStatement;
 class ForStatement;
 class OnStatement;
+class UntilStatement;
 class TryStatement;
 class RaiseStatement;
 class Function;
@@ -87,6 +88,7 @@ public:
     virtual std::any visit(ptr<WhileStatement> ast) = 0;
     virtual std::any visit(ptr<ForStatement> ast) = 0;
     virtual std::any visit(ptr<OnStatement> ast) = 0;
+    virtual std::any visit(ptr<UntilStatement> ast) = 0;
     virtual std::any visit(ptr<TryStatement> ast) = 0;
     virtual std::any visit(ptr<RaiseStatement> ast) = 0;
     virtual std::any visit(ptr<Function> ast) = 0;
@@ -266,6 +268,7 @@ struct Statement : public AST {
         While,
         For,
         On,
+        Until,
         Try,
         Raise
     };
@@ -360,6 +363,19 @@ struct OnStatement : public Statement {
 
     ptr<ast::Expression> trigger;
     ptr<ast::Suite> body;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
+struct UntilStatement : public Statement {
+    UntilStatement() : Statement(StmtType::Until) {}
+
+    ptr<ast::Statement> stmt;
+    ptr<ast::Expression> condition;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
