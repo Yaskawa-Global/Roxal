@@ -5020,6 +5020,15 @@ void VM::marshalProperty(const Value& val, const ObjObjectType::Property& prop,
     if (prop.ctype.has_value())
         ctypeStr = toUTF8StdString(prop.ctype.value());
 
+    auto appendPadded = [&](const void* data, size_t size, size_t align) {
+        size_t padding = (align - (offset % align)) % align;
+        buffer.insert(buffer.end(), padding, 0);
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(data);
+        buffer.insert(buffer.end(), p, p + size);
+        offset += padding + size;
+        structAlign = std::max(structAlign, align);
+    };
+
     auto writeByName = [&](const std::string& ctype) -> bool {
         if (ctype == "float") { float f = float(val.asReal()); appendPadded(&f, sizeof(f), 4); return true; }
         if (ctype == "double" || ctype == "real") { double d = val.asReal(); appendPadded(&d, sizeof(d), 8); return true; }
