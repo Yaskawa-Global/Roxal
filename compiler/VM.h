@@ -342,17 +342,27 @@ public:
 
     Value callCFunc(ObjClosure* closure, const CallSpec& callSpec);
 
+    struct CStructContext {
+        std::vector<std::vector<uint8_t>> buffers;
+        std::vector<ObjectInstance*> instances;
+    };
+
     void marshalProperty(const Value& val, const ObjObjectType::Property& prop,
                          size_t ptrSize, std::vector<uint8_t>& buffer,
                          size_t& offset, size_t& structAlign,
-                         std::vector<std::string>* stringStore);
+                         std::vector<std::string>* stringStore,
+                         CStructContext* ctx = nullptr);
     Value unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSize,
                             const uint8_t* bytes, size_t len,
-                            size_t& offset, size_t& structAlign);
+                            size_t& offset, size_t& structAlign,
+                            CStructContext* ctx = nullptr);
 
-    std::vector<uint8_t> objectToCStruct(ObjectInstance* instance, std::vector<std::string>* stringStore=nullptr);
+    std::vector<uint8_t> objectToCStruct(ObjectInstance* instance,
+                                         std::vector<std::string>* stringStore=nullptr,
+                                         CStructContext* ctx = nullptr);
     ObjectInstance* objectFromCStruct(ObjObjectType* type, const void* data, size_t len);
-    void updateObjectFromCStruct(ObjectInstance* instance, const void* data, size_t len);
+    void updateObjectFromCStruct(ObjectInstance* instance, const void* data, size_t len,
+                                 CStructContext* ctx = nullptr);
 
 };
 

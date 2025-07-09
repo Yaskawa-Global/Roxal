@@ -24,3 +24,6 @@ typedef struct { int i; } IntHolder;
 typedef struct { double r; IntHolder h; } MyStruct2;
 bool mod_nested(MyStruct2* ms2) { ms2->r = 2.22; ms2->h.i = 33; return true; }
 
+typedef struct { IntHolder* hp; } MyStruct3;
+bool mod_nested_ptr(MyStruct3* ms3) { if (ms3->hp) { ms3->hp->i += 5; return true; } return false; }
+

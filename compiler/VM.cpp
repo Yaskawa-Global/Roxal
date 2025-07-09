@@ -4869,6 +4869,7 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
     std::vector<uint8_t> byteVals(callSpec.argCount);
     std::vector<uint8_t> boolVals(callSpec.argCount);
     std::vector<std::vector<uint8_t>> structBuffers(callSpec.argCount);
+    std::vector<CStructContext> structContexts(callSpec.argCount);
     std::vector<std::vector<std::string>> structStrings(callSpec.argCount);
     std::vector<void*> structPtrs(callSpec.argCount);
     std::vector<ObjectInstance*> structArgInstances(callSpec.argCount, nullptr);
@@ -4947,7 +4948,7 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                     throw std::invalid_argument("ffi arg not object instance for pointer");
                 ObjectInstance* inst = asObjectInstance(argVector[i]);
                 structArgInstances[i] = inst;
-                structBuffers[i] = objectToCStruct(inst, &structStrings[i]);
+                structBuffers[i] = objectToCStruct(inst, &structStrings[i], &structContexts[i]);
                 structPtrs[i] = structBuffers[i].data();
                 argValues[i] = &structPtrs[i];
             }
@@ -4967,7 +4968,7 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
 
     for (int i=0;i<callSpec.argCount;i++)
         if (structArgInstances[i])
-            updateObjectFromCStruct(structArgInstances[i], structBuffers[i].data(), structBuffers[i].size());
+            updateObjectFromCStruct(structArgInstances[i], structBuffers[i].data(), structBuffers[i].size(), &structContexts[i]);
 
     for (int i=0;i<callSpec.argCount;i++) {
         if (mutableStringObjs[i]) {
@@ -5012,7 +5013,8 @@ ObjModuleType* VM::getBuiltinModule(const icu::UnicodeString& name)
 void VM::marshalProperty(const Value& val, const ObjObjectType::Property& prop,
                          size_t ptrSize, std::vector<uint8_t>& buffer,
                          size_t& offset, size_t& structAlign,
-                         std::vector<std::string>* stringStore)
+                         std::vector<std::string>* stringStore,
+                         CStructContext* ctx)
 {
 
 
@@ -5028,6 +5030,22 @@ void VM::marshalProperty(const Value& val, const ObjObjectType::Property& prop,
         offset += padding + size;
         structAlign = std::max(structAlign, align);
     };
+
+    if (isObjectType(prop.type) && !ctypeStr.empty() && ctypeStr.back()=='*') {
+        void* p = nullptr;
+        if (!val.isNil()) {
+            if (!isObjectInstance(val))
+                throw std::runtime_error("struct pointer field expects object instance");
+            if (!ctx)
+                throw std::runtime_error("marshalProperty missing context for nested struct pointer");
+            ObjectInstance* inst = asObjectInstance(val);
+            ctx->buffers.push_back(objectToCStruct(inst, stringStore, ctx));
+            ctx->instances.push_back(inst);
+            p = ctx->buffers.back().data();
+        }
+        appendPadded(&p, ptrSize, ptrSize);
+        return;
+    }
 
     auto writeByName = [&](const std::string& ctype) -> bool {
         if (ctype == "float") { float f = float(val.asReal()); appendPadded(&f, sizeof(f), 4); return true; }
@@ -5090,7 +5108,8 @@ void VM::marshalProperty(const Value& val, const ObjObjectType::Property& prop,
 
 Value VM::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSize,
                             const uint8_t* bytes, size_t len,
-                            size_t& offset, size_t& structAlign)
+                            size_t& offset, size_t& structAlign,
+                            CStructContext* ctx)
 {
     auto readPadded = [&](void* out, size_t size, size_t align) {
         size_t padding = (align - (offset % align)) % align;
@@ -5106,6 +5125,23 @@ Value VM::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSize,
     std::string ctypeStr;
     if (prop.ctype.has_value())
         ctypeStr = toUTF8StdString(prop.ctype.value());
+
+    if (isObjectType(prop.type) && !ctypeStr.empty() && ctypeStr.back()=='*') {
+        void* p = nullptr;
+        readPadded(&p, ptrSize, ptrSize);
+        if (!p) {
+            return nilVal();
+        }
+        if (ctx) {
+            for (size_t i=0;i<ctx->buffers.size();i++) {
+                if (ctx->buffers[i].data() == p) {
+                    updateObjectFromCStruct(ctx->instances[i], ctx->buffers[i].data(), ctx->buffers[i].size(), ctx);
+                    return Value(ctx->instances[i]);
+                }
+            }
+        }
+        return nilVal();
+    }
 
     auto readByName = [&](const std::string& ctype) -> bool {
         if (ctype == "float") { float f; readPadded(&f, sizeof(f), 4); val = Value(double(f)); return true; }
@@ -5142,7 +5178,8 @@ Value VM::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSize,
     return val;
 }
 
-std::vector<uint8_t> VM::objectToCStruct(ObjectInstance* instance, std::vector<std::string>* stringStore)
+std::vector<uint8_t> VM::objectToCStruct(ObjectInstance* instance, std::vector<std::string>* stringStore,
+                                         CStructContext* ctx)
 {
     if (!instance)
         throw std::invalid_argument("objectToCStruct null instance");
@@ -5163,7 +5200,7 @@ std::vector<uint8_t> VM::objectToCStruct(ObjectInstance* instance, std::vector<s
         auto it = instance->properties.find(prop.name.hashCode());
         if (it == instance->properties.end())
             throw std::runtime_error("instance missing property in objectToCStruct");
-        marshalProperty(it->second, prop, ptrSize, buffer, offset, structAlign, stringStore);
+        marshalProperty(it->second, prop, ptrSize, buffer, offset, structAlign, stringStore, ctx);
     }
 
     size_t finalPad = (structAlign - (buffer.size() % structAlign)) % structAlign;
@@ -5191,7 +5228,7 @@ ObjectInstance* VM::objectFromCStruct(ObjObjectType* type, const void* data, siz
 
     for (int32_t hash : type->propertyOrder) {
         const auto& prop = type->properties.at(hash);
-        Value val = unmarshalProperty(prop, ptrSize, bytes, len, offset, structAlign);
+        Value val = unmarshalProperty(prop, ptrSize, bytes, len, offset, structAlign, nullptr);
         inst->properties[prop.name.hashCode()] = val;
     }
 
@@ -5202,7 +5239,8 @@ ObjectInstance* VM::objectFromCStruct(ObjObjectType* type, const void* data, siz
     return inst;
 }
 
-void VM::updateObjectFromCStruct(ObjectInstance* instance, const void* data, size_t len)
+void VM::updateObjectFromCStruct(ObjectInstance* instance, const void* data, size_t len,
+                                 CStructContext* ctx)
 {
     if (!instance || !data)
         throw std::invalid_argument("updateObjectFromCStruct null instance or data");
@@ -5220,7 +5258,7 @@ void VM::updateObjectFromCStruct(ObjectInstance* instance, const void* data, siz
 
     for (int32_t hash : type->propertyOrder) {
         const auto& prop = type->properties.at(hash);
-        Value val = unmarshalProperty(prop, ptrSize, bytes, len, offset, structAlign);
+        Value val = unmarshalProperty(prop, ptrSize, bytes, len, offset, structAlign, ctx);
         instance->properties[prop.name.hashCode()] = val;
     }
 
