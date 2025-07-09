@@ -2976,6 +2976,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     ObjSignal* sigObj = asSignal(eventVal);
                     ev = sigObj->ensureChangeEvent();
                     eventVal = sigObj->changeEvent;
+                    thread->eventToSignal[eventVal.weakRef()] = objVal(sigObj);
                 }
 
                 // record this handler on the current thread
@@ -3003,6 +3004,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     ObjSignal* sigObj = asSignal(eventVal);
                     ev = sigObj->ensureChangeEvent();
                     eventVal = sigObj->changeEvent;
+                    thread->eventToSignal.erase(eventVal.weakRef());
                 }
 
                 Value key = eventVal.weakRef();
@@ -3306,9 +3308,25 @@ bool VM::processPendingEvents()
                 thread->threadSleep = false;
 
                 if (closure == conditionalInterruptClosure) {
-                    Value excType = globals.load(toUnicodeString("ConditionalInterrupt")).value();
-                    Value exc = objVal(exceptionVal(nilVal(), excType));
-                    raiseException(exc);
+                    bool raise = true;
+                    auto sigIt = thread->eventToSignal.find(tev.event);
+                    if (sigIt != thread->eventToSignal.end()) {
+                        Value sigVal = sigIt->second;
+                        if (isSignal(sigVal)) {
+                            ObjSignal* sigObj = asSignal(sigVal);
+                            Value cur = sigObj->signal->lastValue();
+                            if (cur.isBool() && cur.asBool()) {
+                                raise = true;
+                            } else {
+                                raise = false;
+                            }
+                        }
+                    }
+                    if (raise) {
+                        Value excType = globals.load(toUnicodeString("ConditionalInterrupt")).value();
+                        Value exc = objVal(exceptionVal(nilVal(), excType));
+                        raiseException(exc);
+                    }
                 } else {
                     auto result = callAndExec(closure, {});
                     assert(!thread->threadSleep);
@@ -3954,6 +3972,7 @@ Value VM::event_off_builtin(int argCount, Value* args)
         ObjSignal* sigObj = asSignal(eventVal);
         ev = sigObj->ensureChangeEvent();
         eventVal = sigObj->changeEvent;
+        thread->eventToSignal.erase(eventVal.weakRef());
     }
 
     Value key = eventVal.weakRef();

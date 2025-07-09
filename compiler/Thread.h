@@ -78,6 +78,7 @@ public:
         bool operator()(const Value& a, const Value& b) const noexcept { return a == b; }
     };
     std::unordered_map<Value, std::vector<Value>, ValueHasher, ValueEqual> eventHandlers;
+    std::unordered_map<Value, Value, ValueHasher, ValueEqual> eventToSignal;
 
     struct PendingEvent {
         TimePoint when;
