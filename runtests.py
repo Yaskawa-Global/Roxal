@@ -33,7 +33,7 @@ tests = [
     'until_event', 'until_signal',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
     'module_strict_assign_err', 'func_nonstrict', 'conversions1',
-    'byteops', 'byte_int_bits', 'object_init',
+    'byteops', 'byte_int_bits', 'object_init', 'object_inherit_is',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'lambda1',
     'conversion1',
     'call_param_type_nonstrict', 'call_param_type_strict', 'param_assign_static_err',
@@ -67,7 +67,7 @@ tests = [
 ]
 
 # implementation doesn't yet allow these tests to pass
-failing_tests = ['signal_network1', 'nested_cstruct']
+failing_tests = ['signal_network1', 'nested_cstruct', 'object_inherit_is']
 
 
 if args.convs:
