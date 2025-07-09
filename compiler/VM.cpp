@@ -3309,10 +3309,10 @@ bool VM::processPendingEvents()
 
                     if (result.first != InterpretResult::OK)
                         return false;
-                }
 
-                thread->threadSleep = prevThreadSleep;
-                thread->threadSleepUntil = prevThreadSleepUntil;
+                    thread->threadSleep = prevThreadSleep;
+                    thread->threadSleepUntil = prevThreadSleepUntil;
+                }
             }
         }
     }
