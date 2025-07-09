@@ -2,8 +2,8 @@ c = clock(10)
 base = c + 1
 div = base / base
 c.tick()
-sleep(ms=120)
+wait(ms=120)
 print(int(div)) // 1
 c.tick()
-sleep(ms=120)
+wait(ms=120)
 print(int(div)) // 1

@@ -1,6 +1,6 @@
 type A actor:
   func f():
-    sleep(us=100000)
+    wait(us=100000)
     print('f id:'+_threadid())
     return true
 

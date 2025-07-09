@@ -28,9 +28,8 @@ print("Creating actor...")
 var a = A()
 a.work()
 
-sleep(us=50000) // let actor complete
+wait(us=50000) // let actor complete
 
 print("Calling closure after actor...")
 print("Closure result: " + closure())
-
 print("Done")

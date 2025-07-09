@@ -1,8 +1,8 @@
 c = clock(10)
 sum = c - c
 c.tick()
-sleep(ms=120)
+wait(ms=120)
 print(int(sum)) // 0
 c.tick()
-sleep(ms=120)
+wait(ms=120)
 print(int(sum)) // 0

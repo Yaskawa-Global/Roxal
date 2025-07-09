@@ -3585,7 +3585,7 @@ void VM::defineBuiltinFunctions()
                                      defaults);
         t->func->params.resize(params.size());
         for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
-        addSys("sleep", &VM::sleep_builtin, t, defaults);
+        addSys("wait", &VM::sleep_builtin, t, defaults);
     }
     addSys("fork", &VM::fork_builtin);
     addSys("join", &VM::join_builtin);
@@ -3727,7 +3727,7 @@ Value VM::clone_builtin(int argCount, Value* args)
 Value VM::sleep_builtin(int argCount, Value* args)
 {
     if (argCount != 4)
-        throw std::invalid_argument("sleep expects 4 arguments");
+        throw std::invalid_argument("wait expects 4 arguments");
 
     int64_t s = toType(ValueType::Int, args[0], false).asInt();
     int64_t ms = toType(ValueType::Int, args[1], false).asInt();

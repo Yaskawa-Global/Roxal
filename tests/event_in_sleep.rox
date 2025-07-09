@@ -8,12 +8,12 @@ type EventProducer actor:
 
   func emitEvents(e :event):
 
-    sleep(us=100000)
+    wait(us=100000)
 
     for i in range(1..2):
       print('emit '+i)
       emit e
-      sleep(us=100000)
+      wait(us=100000)
     
 
 
@@ -27,7 +27,7 @@ on e:
 p.emitEvents(e)
 
 print('sleeping for .5s')
-sleep(us=500000)
+wait(us=500000)
 print('awake')
 
 print('done')
