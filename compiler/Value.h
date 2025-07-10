@@ -369,6 +369,14 @@ Value defaultValue(ValueType t);
 
 Value toType(ValueType t, Value v, bool strict=true);
 
+// convert value `v` according to the given type specification. If the
+// specification is a builtin type this behaves the same as the above
+// `toType(ValueType, Value, bool)` overload. For object or actor type
+// specifications the value must be an instance of the specified type or
+// one of its subtypes. The value is returned unchanged if compatible,
+// otherwise an exception is thrown.
+Value toType(const Value& typeSpec, Value v, bool strict=true);
+
 // construct / convert from values (e.g. 'constructor' args) a value of the specified builtin type
 //  (for single arg, same as toType(*begin)) - TODO: use C++20 range?
 Value construct(ValueType type, std::vector<Value>::const_iterator begin, std::vector<Value>::const_iterator end);

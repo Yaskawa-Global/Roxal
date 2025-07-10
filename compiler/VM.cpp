@@ -1559,7 +1559,7 @@ void VM::defineProperty(ObjString* name)
             ObjTypeSpec* typeSpec = asTypeSpec(propertyType);
             if (typeSpec->typeValue != ValueType::Nil)
                 // TODO: implement & use a canConvertToType()
-                propertyInitial = toType(typeSpec->typeValue,propertyInitial,/*strict=*/false);
+                propertyInitial = toType(propertyType, propertyInitial, /*strict=*/false);
         }
     }
 
@@ -2163,7 +2163,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                 if (typeSpec->typeValue != ValueType::Nil)
                                     try {
                                         // TODO: implement & use a canConvertToType()
-                                        value = toType(typeSpec->typeValue,value, strictConv);
+                                        value = toType(prop.type, value, strictConv);
                                     } catch(std::exception& e) {
                                         runtimeError(e.what());
                                         return errorReturn;
@@ -2193,7 +2193,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
                                     try {
-                                        value = toType(typeSpec->typeValue,value, strictConv);
+                                        value = toType(prop.type, value, strictConv);
                                     } catch(std::exception& e) {
                                         runtimeError(e.what());
                                         return errorReturn;
@@ -2252,7 +2252,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
                                     try {
-                                        value = toType(typeSpec->typeValue,value, strictConv);
+                                        value = toType(prop.type, value, strictConv);
                                     } catch(std::exception& e) {
                                         runtimeError(e.what());
                                         return errorReturn;
@@ -2293,7 +2293,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
                                     try {
-                                        value = toType(typeSpec->typeValue,value, strictConv);
+                                        value = toType(prop.type, value, strictConv);
                                     } catch(std::exception& e) {
                                         runtimeError(e.what());
                                         return errorReturn;
