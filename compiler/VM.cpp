@@ -903,10 +903,15 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     if (annot->name == "cfunc") { cfunc = true; break; }
                 }
                 if (cfunc) {
-                    Value result { callCFunc(closure, callSpec) };
-                    *(thread->stackTop - callSpec.argCount - 1) = result;
-                    popN(callSpec.argCount);
-                    return true;
+                    try {
+                        Value result { callCFunc(closure, callSpec) };
+                        *(thread->stackTop - callSpec.argCount - 1) = result;
+                        popN(callSpec.argCount);
+                        return true;
+                    } catch (std::exception& e) {
+                        runtimeError(e.what());
+                        return false;
+                    }
                 }
                 return call(closure, callSpec);
             }
