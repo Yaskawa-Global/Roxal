@@ -4901,9 +4901,12 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
     std::vector<ObjString*> mutableStringObjs(callSpec.argCount, nullptr);
 
     for(int i=0;i<callSpec.argCount;i++) {
+
+        auto funcNameAndArg = [&]() -> std::string { return toUTF8StdString(function->name) + " arg " + std::to_string(i); };
+
         if (spec->argTypes[i] == &ffi_type_double || spec->argTypes[i] == &ffi_type_float) {
             if (!argVector[i].isNumber())
-                throw std::invalid_argument("ffi arg not number");
+                throw std::invalid_argument(funcNameAndArg()+" not a number for C double/float");
             if (spec->argTypes[i] == &ffi_type_double) {
                 realVals[i] = argVector[i].asReal();
                 argValues[i] = &realVals[i];
@@ -4913,45 +4916,45 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
             }
         } else if (spec->argTypes[i] == &ffi_type_sint32) {
             if (!argVector[i].isNumber())
-                throw std::invalid_argument("ffi arg not int");
+                throw std::invalid_argument(funcNameAndArg()+" not a number for int32_t");
             intVals[i] = argVector[i].asInt();
             argValues[i] = &intVals[i];
         } else if (spec->argTypes[i] == &ffi_type_uint32) {
             if (!argVector[i].isNumber())
-                throw std::invalid_argument("ffi arg not uint32_t");
+                throw std::invalid_argument(funcNameAndArg()+" not a number for uint32_t");
             uint32Vals[i] = uint32_t(argVector[i].asInt());
             argValues[i] = &uint32Vals[i];
         } else if (spec->argTypes[i] == &ffi_type_sint16) {
             if (!argVector[i].isNumber())
-                throw std::invalid_argument("ffi arg not int16_t");
+                throw std::invalid_argument(funcNameAndArg()+" not a number for int16_t");
             sint16Vals[i] = int16_t(argVector[i].asInt());
             argValues[i] = &sint16Vals[i];
         } else if (spec->argTypes[i] == &ffi_type_uint16) {
             if (!argVector[i].isNumber())
-                throw std::invalid_argument("ffi arg not uint16_t");
+                throw std::invalid_argument(funcNameAndArg()+" not a number for uint16_t");
             uint16Vals[i] = uint16_t(argVector[i].asInt());
             argValues[i] = &uint16Vals[i];
         } else if (spec->argTypes[i] == &ffi_type_sint8) {
             if (!argVector[i].isNumber())
-                throw std::invalid_argument("ffi arg not int8_t");
+                throw std::invalid_argument(funcNameAndArg()+" not a number for C int8_t");
             byteVals[i] = uint8_t(int8_t(argVector[i].asInt()));
             argValues[i] = &byteVals[i];
         } else if (spec->argTypes[i] == &ffi_type_uint8) {
             if (spec->argIsBool[i]) {
                 if (!argVector[i].isBool())
-                    throw std::invalid_argument("ffi arg not bool");
+                    throw std::invalid_argument(funcNameAndArg()+" not bool");
                 boolVals[i] = argVector[i].asBool() ? 1 : 0;
                 argValues[i] = &boolVals[i];
             } else {
                 if (!argVector[i].isNumber())
-                    throw std::invalid_argument("ffi arg not uint8_t");
+                    throw std::invalid_argument(funcNameAndArg()+" not a number for C uint8_t");
                 byteVals[i] = uint8_t(argVector[i].asInt());
                 argValues[i] = &byteVals[i];
             }
         } else if (spec->argTypes[i] == &ffi_type_pointer) {
             if (spec->argIsCharPtr[i]) {
                 if (!isString(argVector[i]))
-                    throw std::invalid_argument("ffi arg not string for char*");
+                    throw std::invalid_argument(funcNameAndArg()+" not string for C char*");
                 if (spec->argIsConstCharPtr[i]) {
                     stringArgs[i] = toUTF8StdString(asUString(argVector[i]));
                     cstrPtrs[i] = stringArgs[i].c_str();
@@ -4965,8 +4968,12 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                     mutableStringObjs[i] = asString(argVector[i]);
                 }
             } else {
-                if (!isObjectInstance(argVector[i]))
-                    throw std::invalid_argument("ffi arg not object instance for pointer");
+                if (!isObjectInstance(argVector[i])) {
+                    if (argVector[i].isNil())
+                        throw std::invalid_argument(funcNameAndArg()+" not object instance for C pointer (nil)");
+                    else
+                        throw std::invalid_argument(funcNameAndArg()+" not object instance for C pointer");
+                }
                 ObjectInstance* inst = asObjectInstance(argVector[i]);
                 structArgInstances[i] = inst;
                 structBuffers[i] = objectToCStruct(inst, &structStrings[i], &structContexts[i]);
