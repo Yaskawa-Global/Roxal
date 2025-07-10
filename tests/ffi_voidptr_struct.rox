@@ -1,0 +1,14 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cstruct
+type VoidPtrStruct object:
+  @ctype(ctype='void*')
+  var p
+
+@cfunc(lib=mylib, cname='make_voidptr_struct', ret='VoidPtrStruct')
+func make_voidptr_struct() -> VoidPtrStruct:
+  _
+
+s = make_voidptr_struct()
+print(typeof(s.p))

@@ -4815,6 +4815,8 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                             if (n=="int8_t") return &ffi_type_sint8;
                             if (n=="uint8_t") return &ffi_type_uint8;
                             if (n=="bool") return &ffi_type_uint8;
+                            if (n=="char*" || n=="const char*" || !n.empty() && n.back()=='*')
+                                return &ffi_type_pointer;
                             return nullptr;
                         };
                         ffi_type* et = nullptr;
@@ -5085,6 +5087,16 @@ void VM::marshalProperty(const Value& val, const ObjObjectType::Property& prop,
             appendPadded(&p, ptrSize, ptrSize);
             return true;
         }
+        if (ctype == "void*" || (!ctype.empty() && ctype.back()=='*')) {
+            void* p = nullptr;
+            if (!val.isNil()) {
+                if (!isForeignPtr(val))
+                    throw std::runtime_error("void* field expects foreignptr value");
+                p = asForeignPtr(val)->ptr;
+            }
+            appendPadded(&p, ptrSize, ptrSize);
+            return true;
+        }
         return false;
     };
 
@@ -5173,6 +5185,7 @@ Value VM::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSize,
         if (ctype == "uint8_t") { uint8_t u; readPadded(&u, sizeof(u), 1); val = byteVal(u); return true; }
         if (ctype == "bool") { uint8_t b; readPadded(&b, sizeof(b), 1); val = boolVal(b != 0); return true; }
         if (ctype == "char*") { const char* p; readPadded(&p, ptrSize, ptrSize); val = objVal(stringVal(toUnicodeString(std::string(p?p:"")))); return true; }
+        if (ctype == "void*" || (!ctype.empty() && ctype.back()=='*')) { void* p; readPadded(&p, ptrSize, ptrSize); val = p ? objVal(foreignPtrVal(p)) : nilVal(); return true; }
         return false;
     };
 
