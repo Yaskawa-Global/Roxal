@@ -31,21 +31,38 @@ void Thread::spawn(Value closure)
 
     state = State::Spawned;
     osthread = std::make_shared<std::thread>([this,closure]() {
-        auto& vm { VM::instance() };
+        try {
+            auto& vm { VM::instance() };
 
-        vm.thread = shared_from_this(); // set thread local storage member
+            vm.thread = shared_from_this(); // set thread local storage member
 
-        vm.resetStack();
-        push(closure);
-        vm.call(asClosure(closure),CallSpec(0));
+            vm.resetStack();
+            push(closure);
+            vm.call(asClosure(closure),CallSpec(0));
 
-        auto execResult = vm.execute();
-        result = execResult.first;
+            auto execResult = vm.execute();
+            result = execResult.first;
 
-        stack.clear();
+            stack.clear();
 
-        state = State::Completed;
-        actor = false;
+            state = State::Completed;
+            actor = false;
+        }
+        catch (std::exception& e) {
+            std::cerr << "VM Runtime error: " << e.what() << std::endl;
+
+            auto& vm { VM::instance() };
+            vm.runtimeErrorFlag = true;
+            vm.threads.apply([](const std::pair<const uint64_t, ptr<Thread>>& entry){
+                if (entry.second)
+                    entry.second->wake();
+            });
+
+            result = InterpretResult::RuntimeError;
+            stack.clear();
+            state = State::Completed;
+            actor = false;
+        }
     });
 }
 
@@ -85,9 +102,10 @@ void Thread::act(Value actorInstance)
     state = State::Spawned;
 
     osthread = std::make_shared<std::thread>([this]() {
-        auto& vm { VM::instance() };
+        try {
+            auto& vm { VM::instance() };
 
-        vm.thread = shared_from_this(); // set thread local storage member
+            vm.thread = shared_from_this(); // set thread local storage member
 
         Value actorVal = this->actorInstance;
         if (!actorVal.isAlive()) {
@@ -206,7 +224,22 @@ void Thread::act(Value actorInstance)
 
         stack.clear();
 
-        state = State::Completed;
+            state = State::Completed;
+        }
+        catch (std::exception& e) {
+            std::cerr << "VM Runtime error: " << e.what() << std::endl;
+
+            auto& vm { VM::instance() };
+            vm.runtimeErrorFlag = true;
+            vm.threads.apply([](const std::pair<const uint64_t, ptr<Thread>>& entry){
+                if (entry.second)
+                    entry.second->wake();
+            });
+
+            result = InterpretResult::RuntimeError;
+            stack.clear();
+            state = State::Completed;
+        }
     });
 
 }
