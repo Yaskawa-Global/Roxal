@@ -69,6 +69,7 @@ tests = [
 
 # implementation doesn't yet allow these tests to pass
 failing_tests = ['object_user_ref_cycle', 'signal_network1', 'nested_cstruct']
+assert(set(failing_tests).issubset(tests))
 
 
 if args.convs:
@@ -210,8 +211,11 @@ except Exception as e:
     print('Exception: ' + str(e))
 
 total_duration = time.perf_counter() - total_start_time
-print(f"{passed_count} tests passed, {failed_count} failed in {total_duration:.2f} s")
+failed_unexpected_count = failed_count - len(failing_tests)
+print()
+print(f"{passed_count} tests passed, {failed_unexpected_count} "+('FAILED' if failed_unexpected_count>0 else 'failed')+f" unexpectedly ({len(failing_tests)} were expected to fail)")
 if failed_count > 0:
   print(f"Tests expecied to fail currently: {', '.join(failing_tests)}")
+print(f"Total time {total_duration:.2f} s")
 
 os.chdir(cwd)
