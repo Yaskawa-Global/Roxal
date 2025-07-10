@@ -27,3 +27,7 @@ bool mod_nested(MyStruct2* ms2) { ms2->r = 2.22; ms2->h.i = 33; return true; }
 typedef struct { IntHolder* hp; } MyStruct3;
 bool mod_nested_ptr(MyStruct3* ms3) { if (ms3->hp) { ms3->hp->i += 5; return true; } return false; }
 
+typedef struct { void* p; } VoidPtrStruct;
+static int global_val = 123;
+VoidPtrStruct make_voidptr_struct() { VoidPtrStruct s; s.p = &global_val; return s; }
+

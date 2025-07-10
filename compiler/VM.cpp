@@ -4815,6 +4815,8 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                             if (n=="int8_t") return &ffi_type_sint8;
                             if (n=="uint8_t") return &ffi_type_uint8;
                             if (n=="bool") return &ffi_type_uint8;
+                            if (n=="char*" || n=="const char*" || !n.empty() && n.back()=='*')
+                                return &ffi_type_pointer;
                             return nullptr;
                         };
                         ffi_type* et = nullptr;
@@ -4899,9 +4901,12 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
     std::vector<ObjString*> mutableStringObjs(callSpec.argCount, nullptr);
 
     for(int i=0;i<callSpec.argCount;i++) {
+
+        auto funcNameAndArg = [&]() -> std::string { return toUTF8StdString(function->name) + " arg " + std::to_string(i); };
+
         if (spec->argTypes[i] == &ffi_type_double || spec->argTypes[i] == &ffi_type_float) {
             if (!argVector[i].isNumber())
-                throw std::invalid_argument("ffi arg not number");
+                throw std::invalid_argument(funcNameAndArg()+" not a number for C double/float");
             if (spec->argTypes[i] == &ffi_type_double) {
                 realVals[i] = argVector[i].asReal();
                 argValues[i] = &realVals[i];
@@ -4911,45 +4916,45 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
             }
         } else if (spec->argTypes[i] == &ffi_type_sint32) {
             if (!argVector[i].isNumber())
-                throw std::invalid_argument("ffi arg not int");
+                throw std::invalid_argument(funcNameAndArg()+" not a number for int32_t");
             intVals[i] = argVector[i].asInt();
             argValues[i] = &intVals[i];
         } else if (spec->argTypes[i] == &ffi_type_uint32) {
             if (!argVector[i].isNumber())
-                throw std::invalid_argument("ffi arg not uint32_t");
+                throw std::invalid_argument(funcNameAndArg()+" not a number for uint32_t");
             uint32Vals[i] = uint32_t(argVector[i].asInt());
             argValues[i] = &uint32Vals[i];
         } else if (spec->argTypes[i] == &ffi_type_sint16) {
             if (!argVector[i].isNumber())
-                throw std::invalid_argument("ffi arg not int16_t");
+                throw std::invalid_argument(funcNameAndArg()+" not a number for int16_t");
             sint16Vals[i] = int16_t(argVector[i].asInt());
             argValues[i] = &sint16Vals[i];
         } else if (spec->argTypes[i] == &ffi_type_uint16) {
             if (!argVector[i].isNumber())
-                throw std::invalid_argument("ffi arg not uint16_t");
+                throw std::invalid_argument(funcNameAndArg()+" not a number for uint16_t");
             uint16Vals[i] = uint16_t(argVector[i].asInt());
             argValues[i] = &uint16Vals[i];
         } else if (spec->argTypes[i] == &ffi_type_sint8) {
             if (!argVector[i].isNumber())
-                throw std::invalid_argument("ffi arg not int8_t");
+                throw std::invalid_argument(funcNameAndArg()+" not a number for C int8_t");
             byteVals[i] = uint8_t(int8_t(argVector[i].asInt()));
             argValues[i] = &byteVals[i];
         } else if (spec->argTypes[i] == &ffi_type_uint8) {
             if (spec->argIsBool[i]) {
                 if (!argVector[i].isBool())
-                    throw std::invalid_argument("ffi arg not bool");
+                    throw std::invalid_argument(funcNameAndArg()+" not bool");
                 boolVals[i] = argVector[i].asBool() ? 1 : 0;
                 argValues[i] = &boolVals[i];
             } else {
                 if (!argVector[i].isNumber())
-                    throw std::invalid_argument("ffi arg not uint8_t");
+                    throw std::invalid_argument(funcNameAndArg()+" not a number for C uint8_t");
                 byteVals[i] = uint8_t(argVector[i].asInt());
                 argValues[i] = &byteVals[i];
             }
         } else if (spec->argTypes[i] == &ffi_type_pointer) {
             if (spec->argIsCharPtr[i]) {
                 if (!isString(argVector[i]))
-                    throw std::invalid_argument("ffi arg not string for char*");
+                    throw std::invalid_argument(funcNameAndArg()+" not string for C char*");
                 if (spec->argIsConstCharPtr[i]) {
                     stringArgs[i] = toUTF8StdString(asUString(argVector[i]));
                     cstrPtrs[i] = stringArgs[i].c_str();
@@ -4963,8 +4968,12 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                     mutableStringObjs[i] = asString(argVector[i]);
                 }
             } else {
-                if (!isObjectInstance(argVector[i]))
-                    throw std::invalid_argument("ffi arg not object instance for pointer");
+                if (!isObjectInstance(argVector[i])) {
+                    if (argVector[i].isNil())
+                        throw std::invalid_argument(funcNameAndArg()+" not object instance for C pointer (nil)");
+                    else
+                        throw std::invalid_argument(funcNameAndArg()+" not object instance for C pointer");
+                }
                 ObjectInstance* inst = asObjectInstance(argVector[i]);
                 structArgInstances[i] = inst;
                 structBuffers[i] = objectToCStruct(inst, &structStrings[i], &structContexts[i]);
@@ -5085,6 +5094,16 @@ void VM::marshalProperty(const Value& val, const ObjObjectType::Property& prop,
             appendPadded(&p, ptrSize, ptrSize);
             return true;
         }
+        if (ctype == "void*" || (!ctype.empty() && ctype.back()=='*')) {
+            void* p = nullptr;
+            if (!val.isNil()) {
+                if (!isForeignPtr(val))
+                    throw std::runtime_error("void* field expects foreignptr value");
+                p = asForeignPtr(val)->ptr;
+            }
+            appendPadded(&p, ptrSize, ptrSize);
+            return true;
+        }
         return false;
     };
 
@@ -5173,6 +5192,7 @@ Value VM::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSize,
         if (ctype == "uint8_t") { uint8_t u; readPadded(&u, sizeof(u), 1); val = byteVal(u); return true; }
         if (ctype == "bool") { uint8_t b; readPadded(&b, sizeof(b), 1); val = boolVal(b != 0); return true; }
         if (ctype == "char*") { const char* p; readPadded(&p, ptrSize, ptrSize); val = objVal(stringVal(toUnicodeString(std::string(p?p:"")))); return true; }
+        if (ctype == "void*" || (!ctype.empty() && ctype.back()=='*')) { void* p; readPadded(&p, ptrSize, ptrSize); val = p ? objVal(foreignPtrVal(p)) : nilVal(); return true; }
         return false;
     };
 
