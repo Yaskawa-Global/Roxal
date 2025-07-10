@@ -3585,14 +3585,14 @@ void VM::defineBuiltinFunctions()
                                      defaults);
         t->func->params.resize(params.size());
         for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
-        addSys("wait", &VM::sleep_builtin, t, defaults);
+        addSys("wait", &VM::wait_builtin, t, defaults);
     }
     addSys("fork", &VM::fork_builtin);
     addSys("join", &VM::join_builtin);
     addSys("stacktrace", &VM::stacktrace_builtin);
     addSys("_threadid", &VM::threadid_builtin);
     addSys("_stackdepth", &VM::stackdepth_builtin);
-    addSys("_wait", &VM::wait_builtin);
+    addSys("_wait", &VM::await_builtin);
     addSys("_runtests", &VM::runtests_builtin);
     addSys("_weakref", &VM::weakref_builtin);
     addSys("_weak_alive", &VM::weak_alive_builtin);
@@ -3724,7 +3724,7 @@ Value VM::clone_builtin(int argCount, Value* args)
 }
 
 
-Value VM::sleep_builtin(int argCount, Value* args)
+Value VM::wait_builtin(int argCount, Value* args)
 {
     if (argCount != 4)
         throw std::invalid_argument("wait expects 4 arguments");
@@ -3842,7 +3842,7 @@ Value VM::stackdepth_builtin(int argCount, Value* args)
 
 
 
-Value VM::wait_builtin(int argCount, Value* args)
+Value VM::await_builtin(int argCount, Value* args)
 {
     // iterate over all the argumens, and for each if it is an ObjFuture,
     //  resolve it (which wil block until the promise is fulfilled unless it was already)

@@ -300,13 +300,13 @@ public:
     Value print_builtin(int argCount, Value* args);
     Value len_builtin(int argCount, Value* args);
     Value clone_builtin(int argCount, Value* args);
-    Value sleep_builtin(int argCount, Value* args);
+    Value wait_builtin(int argCount, Value* args);            // delay for a specified time
     Value fork_builtin(int argCount, Value* args);
     Value join_builtin(int argCount, Value* args);
     Value threadid_builtin(int argCount, Value* args);
     Value stacktrace_builtin(int argCount, Value* args);
     Value stackdepth_builtin(int argCount, Value* args);
-    Value wait_builtin(int argCount, Value* args);
+    Value await_builtin(int argCount, Value* args);            // wait on futures
     Value runtests_builtin(int argCount, Value* args);
     Value event_emit_builtin(int argCount, Value* args);
     Value event_on_builtin(int argCount, Value* args);
