@@ -4832,7 +4832,7 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                             }
                         }
                         if (!et)
-                            throw std::runtime_error("unsupported struct field type");
+                            throw std::runtime_error("unsupported struct field type "+ct+" in return type "+r);
                         retElems.push_back(et);
                     }
                     retElems.push_back(nullptr);
