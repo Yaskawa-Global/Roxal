@@ -63,12 +63,12 @@ tests = [
     'weakref', 'strongref', 'is_operator', 'stackdepth',
     'is_operator_type',
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
-    'stacktrace',
+    'stacktrace', 'object_user_ref_cycle',
     'runtime_error_snippet'
 ]
 
 # implementation doesn't yet allow these tests to pass
-failing_tests = ['signal_network1', 'nested_cstruct']
+failing_tests = ['object_user_ref_cycle', 'signal_network1', 'nested_cstruct']
 
 
 if args.convs:

@@ -1,0 +1,26 @@
+// deliberately create a cycle of object references that reference-counting can't clean up (only a GC can)
+
+// Note: this will only fail in runtests.py if DEBUG_TRACE_MEMORY is defined in CMakeLists.txt to output leaked objects
+//  (unless we introduce a way to query the number of heap allocated values)
+
+type A object:
+  var a :A
+
+a1 = A()
+a2 = A()
+
+a1.a = a2
+a2.a = a1
+
+
+// A more challenging one:
+
+a3 = A()
+a4 = A()
+a5 = A()
+
+a3.a = a4
+a4.a = a5
+a5.a = a3
+
+
