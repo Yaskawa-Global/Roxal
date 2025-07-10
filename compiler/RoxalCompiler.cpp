@@ -1534,6 +1534,11 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
 
     ast->acceptChildren(*this, results);
 
+    // Restore current node to the call expression so the CALL opcode
+    // emitted below uses the location of the call rather than that of
+    // the final argument.
+    currentNode = ast;
+
     auto argCount = ast->args.size();
     if (argCount > 127)
         error("Number of call parameters is limited to 127");
