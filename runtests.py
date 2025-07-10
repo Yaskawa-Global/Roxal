@@ -61,6 +61,7 @@ tests = [
     'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_toupper', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3',
     'nested_cstruct', 'nested_cstruct_ptr',
     'weakref', 'strongref', 'is_operator', 'stackdepth',
+    'is_operator_type',
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
     'stacktrace',
     'runtime_error_snippet'

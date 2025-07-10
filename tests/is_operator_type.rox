@@ -1,0 +1,4 @@
+type O object:
+  var io :int
+
+print(O is O)
