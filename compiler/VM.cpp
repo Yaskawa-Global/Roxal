@@ -3549,7 +3549,9 @@ void VM::runtimeError(const std::string& format, ...)
             for (int i = 1; i <= line && std::getline(src, srcLine); ++i) {
                 if (i == line) {
                     fprintf(stderr, "    %d | %s\n", line, srcLine.c_str());
-                    fprintf(stderr, "      | %s^\n", spaces(col).c_str());
+                    std::string lstr = std::to_string(line);
+                    size_t indent = 4 + lstr.length() + 1; // spaces before '|'
+                    fprintf(stderr, "%s| %s^\n", spaces(indent).c_str(), spaces(col).c_str());
                 }
             }
         }
