@@ -806,8 +806,16 @@ bool Value::is(const Value& rhs, bool strict) const
         ObjTypeSpec* ts = asTypeSpec(rhs);
         switch (ts->typeValue) {
             case ValueType::Object:
-                if (isObjectInstance(*this))
-                    return asObjectInstance(*this)->instanceType == ts; // TODO: handle inheritance/interfaces
+                if (isObjectInstance(*this)) {
+                    ObjObjectType* t = asObjectInstance(*this)->instanceType;
+                    while (t) {
+                        if (t == ts)
+                            return true;
+                        if (t->superType.isNil()) break;
+                        t = asObjectType(t->superType);
+                    }
+                    return false;
+                }
                 if (isException(*this) && isObjectType(rhs)) {
                     ObjException* ex = asException(*this);
                     if (isTypeSpec(ex->exType)) {
@@ -823,8 +831,16 @@ bool Value::is(const Value& rhs, bool strict) const
                 }
                 break;
             case ValueType::Actor:
-                if (isActorInstance(*this))
-                    return asActorInstance(*this)->instanceType == ts; // TODO: handle inheritance/interfaces
+                if (isActorInstance(*this)) {
+                    ObjObjectType* t = asActorInstance(*this)->instanceType;
+                    while (t) {
+                        if (t == ts)
+                            return true;
+                        if (t->superType.isNil()) break;
+                        t = asObjectType(t->superType);
+                    }
+                    return false;
+                }
                 break;
             default:
                 return type() == ts->typeValue;

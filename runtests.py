@@ -67,7 +67,7 @@ tests = [
 ]
 
 # implementation doesn't yet allow these tests to pass
-failing_tests = ['signal_network1', 'nested_cstruct', 'object_inherit_is']
+failing_tests = ['signal_network1', 'nested_cstruct']
 
 
 if args.convs:
