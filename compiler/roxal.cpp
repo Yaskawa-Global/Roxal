@@ -2,6 +2,8 @@
 #include <filesystem>
 #include <boost/program_options.hpp>
 #include <stdexcept>
+#include <sstream>
+#include <cstdlib>
 
 #include <core/AST.h>
 #include "RoxalIndentationLexer.h"
@@ -127,7 +129,9 @@ static InterpretResult runFile(const std::string& path,
 
     VM& vm { VM::instance() };
     vm.setDisassemblyOutput(outputBytecodeDisassembly);
-    vm.appendModulePaths({relativePath.string()}); // folder containing the script is first in the search path
+
+    // Add the folder containing the script to the search paths
+    vm.appendModulePaths({relativePath.string()});
     vm.appendModulePaths(modulePaths);
     return vm.interpret(sourcestream, path);
 }
@@ -202,8 +206,26 @@ int main(int argc, const char* argv[])
     }
 
     std::vector<std::string> modulePaths;
-    if (vmap.count("module-paths") > 0)
-        modulePaths = vmap["module-paths"].as<std::vector<std::string>>();
+
+    const char* envPath = std::getenv("ROXALPATH");
+    if (envPath) {
+        std::string paths(envPath);
+        char sep = ':';
+#ifdef _WIN32
+        sep = ';';
+#endif
+        std::stringstream ss(paths);
+        std::string item;
+        while (std::getline(ss, item, sep)) {
+            if (!item.empty())
+                modulePaths.push_back(item);
+        }
+    }
+
+    if (vmap.count("module-paths") > 0) {
+        auto cliPaths = vmap["module-paths"].as<std::vector<std::string>>();
+        modulePaths.insert(modulePaths.end(), cliPaths.begin(), cliPaths.end());
+    }
 
 
     if (vmap.count("input-file")==0) {

@@ -43,7 +43,7 @@ tests = [
     'typeobj1', 'typeobj2', 'typeobj3', 'typeobj4', 'typeobj5', 'typeobj6', 'typeobj7',
     'object_to_dict_private', 'object_from_dict', 'virtual_method',
     'implements1', 'object_inherit_bank',
-    'importmodule1', 'importstar', 'importsyms', 'importdiamond',
+    'importmodule1', 'importstar', 'importsyms', 'importdiamond', 'pkg1/main',
     'method_named_param',
     'annot1', 'generic', 'objscopes',
     'threads1', 'fork_upvalue_error', 'fork_no_upvalues',
@@ -111,6 +111,9 @@ failed_count = 0
 cwd = os.getcwd()
 os.chdir(os.path.join(project_root, roxalpath))
 
+env_base = os.environ.copy()
+env_base['ROXALPATH'] = test_dir
+
 total_start_time = time.perf_counter()
 
 try:
@@ -136,7 +139,7 @@ try:
         try:
             compProc = subprocess.run(
                 cmd, capture_output=True, shell=False,
-                timeout=TEST_TIMEOUT_SECS)
+                timeout=TEST_TIMEOUT_SECS, env=env_base)
         except subprocess.TimeoutExpired:
             duration_ms = (time.perf_counter() - start_time) * 1000
             print(f"FAIL: {opt_expected}", flush=True)
