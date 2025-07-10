@@ -4902,7 +4902,16 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
 
     for(int i=0;i<callSpec.argCount;i++) {
 
-        auto funcNameAndArg = [&]() -> std::string { return toUTF8StdString(function->name) + " arg " + std::to_string(i); };
+        auto funcNameAndArg = [&]() -> std::string {
+            if (function->funcType.has_value()) {
+                const auto& params = function->funcType.value()->func.value().params;
+                if (i < (int)params.size() && params[i].has_value()) {
+                    return toUTF8StdString(function->name) + " parameter '" +
+                           toUTF8StdString(params[i]->name) + "'";
+                }
+            }
+            return toUTF8StdString(function->name) + " arg " + std::to_string(i);
+        };
 
         if (spec->argTypes[i] == &ffi_type_double || spec->argTypes[i] == &ffi_type_float) {
             if (!argVector[i].isNumber())
