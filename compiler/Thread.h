@@ -77,7 +77,15 @@ public:
     struct ValueEqual {
         bool operator()(const Value& a, const Value& b) const noexcept { return a == b; }
     };
+    // Per-thread mapping of event to subscribed handler closures. The key is a
+    // weak reference to the event object and each value is the list of handler
+    // closures registered by this thread.
     std::unordered_map<Value, std::vector<Value>, ValueHasher, ValueEqual> eventHandlers;
+
+    // When a handler is registered on a signal's change event, the signal is
+    // recorded here so the handler can access the latest signal value.  Keys
+    // are weak references to the signal's change event and values are the
+    // corresponding signal objects.
     std::unordered_map<Value, Value, ValueHasher, ValueEqual> eventToSignal;
 
     struct PendingEvent {
