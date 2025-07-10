@@ -58,7 +58,7 @@ tests = [
     'vector1', 'vector2', 'vector3', 'vector4', 'vector5','vector_methods', 'vector_equal', 'vector_matrix_equal',
     'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'unary_vector_matrix', 
     'matrix_index', 'matrix_methods', 'matrix_assign', 'matrix_equal', 'matrix_math',
-    'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_toupper', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3',
+    'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_toupper', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3', 'cstruct_byval',
     'nested_cstruct', 'nested_cstruct_ptr',
     'weakref', 'strongref', 'is_operator', 'stackdepth',
     'is_operator_type',

@@ -177,6 +177,10 @@ void* VM::createFFIWrapper(void* fn, ffi_type* retType,
     spec->argIsCharPtr.assign(argTypes.size(), false);
     spec->argIsConstCharPtr.assign(argTypes.size(), false);
     spec->argIsBool.assign(argTypes.size(), false);
+    spec->argObjTypes.assign(argTypes.size(), nullptr);
+    spec->argStructElems.resize(argTypes.size());
+    spec->argStructTypes.resize(argTypes.size());
+    spec->argObjTypes.assign(argTypes.size(), nullptr);
     spec->retIsCharPtr = false;
     spec->retIsBool = false;
     if (ffi_prep_cif(&spec->cif, FFI_DEFAULT_ABI, argTypes.size(), retType,
@@ -4712,6 +4716,9 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
         std::vector<bool> argIsCharPtr;
         std::vector<bool> argIsConstCharPtr;
         std::vector<bool> argIsBool;
+        std::vector<ObjObjectType*> argObjTypes;
+        std::vector<std::vector<ffi_type*>> argStructElems;
+        std::vector<ffi_type> argStructTypes;
         if (argsExpr) {
             std::string argsStr = toUTF8StdString(asUString(evalExpr(argsExpr)));
             std::stringstream ss(argsStr);
@@ -4755,14 +4762,72 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                 }
                 else if (!type.empty() && (type.back()=='*' || type.back()=='&'))
                     argTypes.push_back(&ffi_type_pointer);
-                else
-                    throw std::runtime_error("unsupported arg type: "+type);
+                else {
+                    auto opt = mod->vars.load(toUnicodeString(type));
+                    if (opt.has_value() && isObjectType(opt.value())) {
+                        ObjObjectType* t = asObjectType(opt.value());
+                        if (!t->isCStruct)
+                            throw std::runtime_error("arg type not cstruct: "+type);
+                        std::vector<ffi_type*> elems;
+                        for (int32_t h : t->propertyOrder) {
+                            const auto& prop = t->properties.at(h);
+                            std::string ct;
+                            if (prop.ctype.has_value())
+                                ct = toUTF8StdString(prop.ctype.value());
+                            auto byName = [&](const std::string& n) -> ffi_type* {
+                                if (n=="float") return &ffi_type_float;
+                                if (n=="double" || n=="real") return &ffi_type_double;
+                                if (n=="int" || n=="int32_t") return &ffi_type_sint32;
+                                if (n=="uint32_t") return &ffi_type_uint32;
+                                if (n=="int16_t") return &ffi_type_sint16;
+                                if (n=="uint16_t") return &ffi_type_uint16;
+                                if (n=="int8_t") return &ffi_type_sint8;
+                                if (n=="uint8_t") return &ffi_type_uint8;
+                                if (n=="bool") return &ffi_type_uint8;
+                                if (n=="char*" || n=="const char*" || !n.empty() && n.back()=='*')
+                                    return &ffi_type_pointer;
+                                return nullptr;
+                            };
+                            ffi_type* et = nullptr;
+                            if (!ct.empty()) {
+                                et = byName(ct);
+                            } else if (isTypeSpec(prop.type)) {
+                                ObjTypeSpec* ts = asTypeSpec(prop.type);
+                                switch(ts->typeValue) {
+                                    case ValueType::Bool: et=&ffi_type_uint8; break;
+                                    case ValueType::Byte: et=&ffi_type_uint8; break;
+                                    case ValueType::Int: et=&ffi_type_sint32; break;
+                                    case ValueType::Real: et=&ffi_type_double; break;
+                                    case ValueType::Enum: et=&ffi_type_sint32; break;
+                                    default: break;
+                                }
+                            }
+                            if (!et)
+                                throw std::runtime_error("unsupported struct field type "+ct+" in arg type "+type);
+                            elems.push_back(et);
+                        }
+                        elems.push_back(nullptr);
+                        ffi_type st; st.size=0; st.alignment=0; st.type=FFI_TYPE_STRUCT; st.elements=elems.data();
+                        argStructElems.push_back(elems);
+                        argStructTypes.push_back(st);
+                        argTypes.push_back(&argStructTypes.back());
+                        argObjTypes.push_back(t);
+                    } else {
+                        throw std::runtime_error("unsupported arg type: "+type);
+                    }
+                }
                 if (argIsCharPtr.size() < argTypes.size())
                     argIsCharPtr.push_back(false);
                 if (argIsConstCharPtr.size() < argTypes.size())
                     argIsConstCharPtr.push_back(false);
                 if (argIsBool.size() < argTypes.size())
                     argIsBool.push_back(false);
+                if (argObjTypes.size() < argTypes.size())
+                    argObjTypes.push_back(nullptr);
+                if (argStructElems.size() < argTypes.size())
+                    argStructElems.emplace_back();
+                if (argStructTypes.size() < argTypes.size())
+                    argStructTypes.emplace_back();
             }
         }
 
@@ -4864,6 +4929,15 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
         spec->argIsCharPtr = argIsCharPtr;
         spec->argIsConstCharPtr = argIsConstCharPtr;
         spec->argIsBool = argIsBool;
+        spec->argObjTypes = argObjTypes;
+        spec->argStructElems = argStructElems;
+        spec->argStructTypes = argStructTypes;
+        for (size_t i=0;i<spec->argStructTypes.size();i++)
+            if (spec->argObjTypes[i])
+                spec->argStructTypes[i].elements = spec->argStructElems[i].data();
+        for (size_t i=0;i<spec->argTypes.size();i++)
+            if (spec->argObjTypes[i])
+                spec->argTypes[i] = &spec->argStructTypes[i];
         spec->retType = retType;
         spec->retIsCharPtr = retIsCharPtr;
         spec->retIsBool = retIsBool;
@@ -4967,6 +5041,12 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                 byteVals[i] = uint8_t(argVector[i].asInt());
                 argValues[i] = &byteVals[i];
             }
+        } else if (spec->argObjTypes[i]) {
+            if (!isObjectInstance(argVector[i]))
+                throw std::invalid_argument(funcNameAndArg()+" not object instance for C struct value");
+            ObjectInstance* inst = asObjectInstance(argVector[i]);
+            structBuffers[i] = objectToCStruct(inst, &structStrings[i], &structContexts[i]);
+            argValues[i] = structBuffers[i].data();
         } else if (spec->argTypes[i] == &ffi_type_pointer) {
             if (spec->argIsCharPtr[i]) {
                 if (!isString(argVector[i]))
