@@ -1,0 +1,17 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cstruct()
+type MyStruct object:
+  var i:int
+  @ctype(ctype='float')
+  var f:real
+
+@cfunc(lib=mylib, cname='struct_sum', args='MyStruct s', ret='float')
+func sum(s: MyStruct) -> real:
+  _
+
+var s = MyStruct()
+s.i = 5
+s.f = 6.5
+print(sum(s))
