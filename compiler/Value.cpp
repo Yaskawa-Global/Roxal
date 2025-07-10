@@ -802,6 +802,15 @@ bool Value::equals(const Value& rhs, bool strict) const
 
 bool Value::is(const Value& rhs, bool strict) const
 {
+    if (isTypeSpec(*this)) {
+        if (isTypeSpec(rhs))
+            return asTypeSpec(*this) == asTypeSpec(rhs);
+        if (rhs.isType())
+            return asTypeSpec(*this)->typeValue == rhs.asType();
+    }
+    else if (isType() && isTypeSpec(rhs)) {
+        return asType() == asTypeSpec(rhs)->typeValue;
+    }
     if (isTypeSpec(rhs)) {
         ObjTypeSpec* ts = asTypeSpec(rhs);
         switch (ts->typeValue) {
@@ -848,6 +857,10 @@ bool Value::is(const Value& rhs, bool strict) const
         return false;
     }
     else if (rhs.isType()) {
+        if (isType())
+            return asType() == rhs.asType();
+        if (isTypeSpec(*this))
+            return asTypeSpec(*this)->typeValue == rhs.asType();
         return type() == rhs.asType();
     }
     else if (isObj()) // reference value identity
