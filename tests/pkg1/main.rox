@@ -1,0 +1,5 @@
+import pkg1.pkg2.mod3
+import pkg1.pkg2
+import pkg1.pkg2.mod3
+pkg1.pkg2.mod3.foo()
+

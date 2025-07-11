@@ -315,13 +315,48 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         importedModuleType = importedEntry->second;
     }
 
-    // define a variable in the importing module with the name of the imported module
-    //  that has the value of the ObjModuleType
-    //  (we can directly insert the var in the importing module since it is already existing static type)
+    // create or retrieve package modules and build module hierarchy
     const auto& importingModuleType = asFuncScope(funcScope())->function->moduleType;
     auto& importingModuleVars = asModuleType(importingModuleType)->vars;
-    icu::UnicodeString moduleName { module.name };
-    importingModuleVars.store(moduleName, importedModuleType);
+
+    Value parentModuleVal { nilVal() };
+    icu::UnicodeString packagePath;
+    for(size_t i=0; i+1 < ast->packages.size(); ++i) {
+        icu::UnicodeString pkgName { ast->packages[i] };
+        ModuleInfo pkgInfo;
+        pkgInfo.modulePathRoot = module.modulePathRoot;
+        pkgInfo.packagePath = packagePath;
+        pkgInfo.name = pkgName;
+        pkgInfo.isPackage = true;
+
+        Value pkgModuleVal {};
+        auto pkgEntry = importedModules.find(pkgInfo);
+        if (pkgEntry == importedModules.end()) {
+            pkgModuleVal = objVal(moduleTypeVal(pkgName));
+            importedModules[pkgInfo] = pkgModuleVal;
+        } else {
+            pkgModuleVal = pkgEntry->second;
+        }
+
+        if (parentModuleVal.isObj())
+            asModuleType(parentModuleVal)->vars.store(pkgName, pkgModuleVal);
+        else
+            importingModuleVars.store(pkgName, pkgModuleVal);
+
+        parentModuleVal = pkgModuleVal;
+        if (!packagePath.isEmpty())
+            packagePath += "/";
+        packagePath += pkgName;
+    }
+
+    if (parentModuleVal.isObj())
+        asModuleType(parentModuleVal)->vars.store(module.name, importedModuleType);
+
+    // For non-nested imports expose the module directly in the importing module
+    if (ast->packages.size() == 1) {
+        icu::UnicodeString moduleName { module.name };
+        importingModuleVars.store(moduleName, importedModuleType);
+    }
 
 
     // if any (or all) symbols are explicitly imported into the importing module scope,
@@ -1790,8 +1825,13 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
     // search the module paths (as package component roots)
     //  for the specified module
     std::vector<std::filesystem::path> candidatePaths; // paths that match the prefix, thus far
-    for (const auto& modulePath : modulePaths)
-        candidatePaths.push_back(std::filesystem::canonical(std::filesystem::absolute(modulePath)));
+    for (const auto& modulePath : modulePaths) {
+        try {
+            candidatePaths.push_back(std::filesystem::canonical(std::filesystem::absolute(modulePath)));
+        } catch (...) {
+            // ignore invalid paths
+        }
+    }
 
     //std::cout << "initial candidates:";
     //for (const auto& path : candidatePaths)
@@ -1838,19 +1878,30 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
     auto path { candidatePaths.at(0) }; // take first (if multiple)
     ModuleInfo module {};
     module.filename = path.filename().string();
-    for (auto& modulePath : modulePaths) {
-        auto absModulePath = std::filesystem::canonical(std::filesystem::absolute(modulePath));
-        if (startsWith(path, absModulePath)) {
-            module.modulePathRoot = modulePath;
-            module.packagePath = toUnicodeString(std::filesystem::relative(path, absModulePath).parent_path().string());
-            module.isPackage = std::filesystem::is_directory(path); // FIXME: handle package module file above
-            module.filename = path.filename().string();
-            module.name = toUnicodeString(path.stem().string());
-            return module;
-        }
-    }
+    module.isPackage = std::filesystem::is_directory(path);
+    module.name = toUnicodeString(path.stem().string());
 
-    return {};
+    // join components except the last to build packagePath
+    icu::UnicodeString pkgPath;
+    for (size_t i=0; i+1 < components.size(); ++i) {
+        if (i>0) pkgPath += "/";
+        pkgPath += components[i];
+    }
+    module.packagePath = pkgPath;
+
+    // find the module path root that, combined with the package path and filename,
+    //  resolves to the located module file or directory
+    for (auto& modulePath : modulePaths) {
+        try {
+            auto absModulePath = std::filesystem::canonical(std::filesystem::absolute(modulePath));
+            auto composed = absModulePath / toUTF8StdString(module.packagePath) / module.filename;
+            if (std::filesystem::canonical(composed) == std::filesystem::canonical(path)) {
+                module.modulePathRoot = modulePath;
+                break;
+            }
+        } catch (...) { }
+    }
+    return module;
 }
 
 
