@@ -5146,6 +5146,23 @@ void VM::marshalProperty(const Value& val, const ObjObjectType::Property& prop,
     if (prop.ctype.has_value())
         ctypeStr = toUTF8StdString(prop.ctype.value());
 
+    // detect array syntax, eg. "double[4]"
+    bool isArray = false;
+    std::string arrayBase;
+    size_t arrayLen = 0;
+    auto lb = ctypeStr.find('[');
+    auto rb = ctypeStr.find(']', lb == std::string::npos ? 0 : lb);
+    if (lb != std::string::npos && rb == ctypeStr.size() - 1) {
+        arrayBase = ctypeStr.substr(0, lb);
+        // trim whitespace in base type
+        while(!arrayBase.empty() && isspace(arrayBase.back())) arrayBase.pop_back();
+        std::string lenStr = ctypeStr.substr(lb+1, rb-lb-1);
+        arrayLen = std::strtoul(lenStr.c_str(), nullptr, 10);
+        if (arrayLen > 0) {
+            isArray = true;
+        }
+    }
+
     auto appendPadded = [&](const void* data, size_t size, size_t align) {
         size_t padding = (align - (offset % align)) % align;
         buffer.insert(buffer.end(), padding, 0);
@@ -5154,6 +5171,19 @@ void VM::marshalProperty(const Value& val, const ObjObjectType::Property& prop,
         offset += padding + size;
         structAlign = std::max(structAlign, align);
     };
+
+    if (isArray) {
+        if (!isList(val))
+            throw std::runtime_error("ctype array field expects list value");
+        ObjList* list = asList(val);
+        size_t len = list->length();
+        for (size_t i = 0; i < arrayLen; ++i) {
+            Value elem = (i < len) ? list->elts.at(i) : Value(0);
+            if (!writeByNameVal(arrayBase, elem))
+                throw std::runtime_error("unsupported ctype annotation: " + ctypeStr);
+        }
+        return;
+    }
 
     if (isObjectType(prop.type) && !ctypeStr.empty() && ctypeStr.back()=='*') {
         void* p = nullptr;
@@ -5171,20 +5201,20 @@ void VM::marshalProperty(const Value& val, const ObjObjectType::Property& prop,
         return;
     }
 
-    auto writeByName = [&](const std::string& ctype) -> bool {
-        if (ctype == "float") { float f = float(val.asReal()); appendPadded(&f, sizeof(f), 4); return true; }
-        if (ctype == "double" || ctype == "real") { double d = val.asReal(); appendPadded(&d, sizeof(d), 8); return true; }
-        if (ctype == "int" || ctype=="int32_t") { int32_t i = val.asInt(); appendPadded(&i, sizeof(i), 4); return true; }
-        if (ctype == "uint32_t") { uint32_t u = uint32_t(val.asInt()); appendPadded(&u, sizeof(u), 4); return true; }
-        if (ctype == "int16_t") { int16_t s = int16_t(val.asInt()); appendPadded(&s, sizeof(s), 2); return true; }
-        if (ctype == "uint16_t") { uint16_t u = uint16_t(val.asInt()); appendPadded(&u, sizeof(u), 2); return true; }
-        if (ctype == "int8_t") { int8_t s = int8_t(val.asByte()); appendPadded(&s, sizeof(s),1); return true; }
-        if (ctype == "uint8_t") { uint8_t u = val.asByte(); appendPadded(&u, sizeof(u),1); return true; }
-        if (ctype == "bool") { uint8_t b = val.asBool()?1:0; appendPadded(&b, sizeof(b),1); return true; }
+    auto writeByNameVal = [&](const std::string& ctype, const Value& v) -> bool {
+        if (ctype == "float") { float f = float(toType(ValueType::Real, v, false).asReal()); appendPadded(&f, sizeof(f), 4); return true; }
+        if (ctype == "double" || ctype == "real") { double d = toType(ValueType::Real, v, false).asReal(); appendPadded(&d, sizeof(d), 8); return true; }
+        if (ctype == "int" || ctype=="int32_t") { int32_t i = toType(ValueType::Int, v, false).asInt(); appendPadded(&i, sizeof(i), 4); return true; }
+        if (ctype == "uint32_t") { uint32_t u = uint32_t(toType(ValueType::Int, v, false).asInt()); appendPadded(&u, sizeof(u), 4); return true; }
+        if (ctype == "int16_t") { int16_t s = int16_t(toType(ValueType::Int, v, false).asInt()); appendPadded(&s, sizeof(s), 2); return true; }
+        if (ctype == "uint16_t") { uint16_t u = uint16_t(toType(ValueType::Int, v, false).asInt()); appendPadded(&u, sizeof(u), 2); return true; }
+        if (ctype == "int8_t") { int8_t s = int8_t(toType(ValueType::Byte, v, false).asByte()); appendPadded(&s, sizeof(s),1); return true; }
+        if (ctype == "uint8_t") { uint8_t u = toType(ValueType::Byte, v, false).asByte(); appendPadded(&u, sizeof(u),1); return true; }
+        if (ctype == "bool") { uint8_t b = toType(ValueType::Bool, v, false).asBool()?1:0; appendPadded(&b, sizeof(b),1); return true; }
         if (ctype == "char*") {
-            if (!isString(val))
+            if (!isString(v))
                 throw std::runtime_error("char* field expects string value");
-            std::string s = toUTF8StdString(asUString(val));
+            std::string s = toUTF8StdString(asUString(v));
             stringStore->push_back(std::move(s));
             const char* p = stringStore->back().c_str();
             appendPadded(&p, ptrSize, ptrSize);
@@ -5192,16 +5222,18 @@ void VM::marshalProperty(const Value& val, const ObjObjectType::Property& prop,
         }
         if (ctype == "void*" || (!ctype.empty() && ctype.back()=='*')) {
             void* p = nullptr;
-            if (!val.isNil()) {
-                if (!isForeignPtr(val))
+            if (!v.isNil()) {
+                if (!isForeignPtr(v))
                     throw std::runtime_error("void* field expects foreignptr value");
-                p = asForeignPtr(val)->ptr;
+                p = asForeignPtr(v)->ptr;
             }
             appendPadded(&p, ptrSize, ptrSize);
             return true;
         }
         return false;
     };
+
+    auto writeByName = [&](const std::string& ctype) -> bool { return writeByNameVal(ctype, val); };
 
     if (!ctypeStr.empty()) {
         if (!writeByName(ctypeStr))

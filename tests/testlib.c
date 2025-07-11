@@ -31,3 +31,5 @@ typedef struct { void* p; } VoidPtrStruct;
 static int global_val = 123;
 VoidPtrStruct make_voidptr_struct() { VoidPtrStruct s; s.p = &global_val; return s; }
 
+typedef struct { double darr[4]; } ACStruct;
+double sum_acstruct(ACStruct* s) { double total = 0; for(int i=0;i<4;i++) total += s->darr[i]; return total; }

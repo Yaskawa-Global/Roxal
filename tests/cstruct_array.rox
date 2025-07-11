@@ -1,0 +1,15 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cstruct
+type ACStruct object:
+  @ctype(ctype='double[4]')
+  var darr :list
+
+@cfunc(lib=mylib, args='ACStruct* s', ret='double')
+func array_sum(s: ACStruct) -> real:
+  _
+
+ac = ACStruct()
+ac.darr = [1.0, 2.0, 3.0]
+print(array_sum(ac))
