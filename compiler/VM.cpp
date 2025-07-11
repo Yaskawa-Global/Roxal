@@ -2970,6 +2970,26 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
+            case asByte(OpCode::ToTypeSpec): {
+                Value typeSpec = pop();
+                try {
+                    peek(0) = toType(typeSpec, peek(0), /*strict=*/false);
+                } catch(std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case asByte(OpCode::ToTypeSpecStrict): {
+                Value typeSpec = pop();
+                try {
+                    peek(0) = toType(typeSpec, peek(0), /*strict=*/true);
+                } catch(std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
             case asByte(OpCode::EventOn): {
                 Value closureVal = pop();
                 Value eventVal = pop();
