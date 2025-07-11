@@ -33,3 +33,5 @@ VoidPtrStruct make_voidptr_struct() { VoidPtrStruct s; s.p = &global_val; return
 
 typedef struct { double darr[4]; } ACStruct;
 double sum_acstruct(ACStruct* s) { double total = 0; for(int i=0;i<4;i++) total += s->darr[i]; return total; }
+void fill_acstruct(ACStruct* s) { for(int i=0;i<4;i++) s->darr[i] = (double)(i+1); }
+ACStruct make_acstruct() { ACStruct s; for(int i=0;i<4;i++) s.darr[i] = (double)(i+1)*2; return s; }

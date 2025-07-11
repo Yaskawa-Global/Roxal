@@ -4788,8 +4788,19 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                                     return &ffi_type_pointer;
                                 return nullptr;
                             };
+                            auto parseArray = [&](const std::string& str, std::string& base, size_t& len) -> bool {
+                                auto lb=str.find('['); auto rb=str.find(']', lb==std::string::npos?0:lb);
+                                if(lb!=std::string::npos && rb==str.size()-1){
+                                    base=str.substr(0,lb); while(!base.empty() && isspace(base.back())) base.pop_back();
+                                    std::string ls=str.substr(lb+1, rb-lb-1); len=strtoul(ls.c_str(),nullptr,10); return len>0; }
+                                return false; };
+
                             ffi_type* et = nullptr;
-                            if (!ct.empty()) {
+                            size_t arrLen = 0; std::string arrBase;
+                            bool isArr = (!ct.empty() && parseArray(ct, arrBase, arrLen));
+                            if (isArr) {
+                                et = byName(arrBase);
+                            } else if (!ct.empty()) {
                                 et = byName(ct);
                             } else if (isTypeSpec(prop.type)) {
                                 ObjTypeSpec* ts = asTypeSpec(prop.type);
@@ -4804,7 +4815,11 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                             }
                             if (!et)
                                 throw std::runtime_error("unsupported struct field type "+ct+" in arg type "+type);
-                            elems.push_back(et);
+                            if (isArr) {
+                                for(size_t ai=0; ai<arrLen; ++ai) elems.push_back(et);
+                            } else {
+                                elems.push_back(et);
+                            }
                         }
                         elems.push_back(nullptr);
                         ffi_type st; st.size=0; st.alignment=0; st.type=FFI_TYPE_STRUCT; st.elements=elems.data();
@@ -4891,8 +4906,19 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                                 return &ffi_type_pointer;
                             return nullptr;
                         };
+                        auto parseArray = [&](const std::string& str, std::string& base, size_t& len) -> bool {
+                            auto lb=str.find('['); auto rb=str.find(']', lb==std::string::npos?0:lb);
+                            if(lb!=std::string::npos && rb==str.size()-1){
+                                base=str.substr(0,lb); while(!base.empty() && isspace(base.back())) base.pop_back();
+                                std::string ls=str.substr(lb+1, rb-lb-1); len=strtoul(ls.c_str(),nullptr,10); return len>0; }
+                            return false; };
+
                         ffi_type* et = nullptr;
-                        if (!ct.empty()) {
+                        size_t arrLen = 0; std::string arrBase;
+                        bool isArr = (!ct.empty() && parseArray(ct, arrBase, arrLen));
+                        if (isArr) {
+                            et = byName(arrBase);
+                        } else if (!ct.empty()) {
                             et = byName(ct);
                         } else if (isTypeSpec(prop.type)) {
                             ObjTypeSpec* ts = asTypeSpec(prop.type);
@@ -4907,7 +4933,11 @@ Value VM::callCFunc(ObjClosure* closure, const CallSpec& callSpec)
                         }
                         if (!et)
                             throw std::runtime_error("unsupported struct field type "+ct+" in return type "+r);
-                        retElems.push_back(et);
+                        if (isArr) {
+                            for(size_t ai=0; ai<arrLen; ++ai) retElems.push_back(et);
+                        } else {
+                            retElems.push_back(et);
+                        }
                     }
                     retElems.push_back(nullptr);
                     retStruct.size = 0; retStruct.alignment = 0; retStruct.type = FFI_TYPE_STRUCT;
@@ -5172,35 +5202,6 @@ void VM::marshalProperty(const Value& val, const ObjObjectType::Property& prop,
         structAlign = std::max(structAlign, align);
     };
 
-    if (isArray) {
-        if (!isList(val))
-            throw std::runtime_error("ctype array field expects list value");
-        ObjList* list = asList(val);
-        size_t len = list->length();
-        for (size_t i = 0; i < arrayLen; ++i) {
-            Value elem = (i < len) ? list->elts.at(i) : Value(0);
-            if (!writeByNameVal(arrayBase, elem))
-                throw std::runtime_error("unsupported ctype annotation: " + ctypeStr);
-        }
-        return;
-    }
-
-    if (isObjectType(prop.type) && !ctypeStr.empty() && ctypeStr.back()=='*') {
-        void* p = nullptr;
-        if (!val.isNil()) {
-            if (!isObjectInstance(val))
-                throw std::runtime_error("struct pointer field expects object instance");
-            if (!ctx)
-                throw std::runtime_error("marshalProperty missing context for nested struct pointer");
-            ObjectInstance* inst = asObjectInstance(val);
-            ctx->buffers.push_back(objectToCStruct(inst, stringStore, ctx));
-            ctx->instances.push_back(inst);
-            p = ctx->buffers.back().data();
-        }
-        appendPadded(&p, ptrSize, ptrSize);
-        return;
-    }
-
     auto writeByNameVal = [&](const std::string& ctype, const Value& v) -> bool {
         if (ctype == "float") { float f = float(toType(ValueType::Real, v, false).asReal()); appendPadded(&f, sizeof(f), 4); return true; }
         if (ctype == "double" || ctype == "real") { double d = toType(ValueType::Real, v, false).asReal(); appendPadded(&d, sizeof(d), 8); return true; }
@@ -5232,6 +5233,35 @@ void VM::marshalProperty(const Value& val, const ObjObjectType::Property& prop,
         }
         return false;
     };
+
+    if (isArray) {
+        if (!isList(val))
+            throw std::runtime_error("ctype array field expects list value");
+        ObjList* list = asList(val);
+        size_t len = list->length();
+        for (size_t i = 0; i < arrayLen; ++i) {
+            Value elem = (i < len) ? list->elts.at(i) : Value(0);
+            if (!writeByNameVal(arrayBase, elem))
+                throw std::runtime_error("unsupported ctype annotation: " + ctypeStr);
+        }
+        return;
+    }
+
+    if (isObjectType(prop.type) && !ctypeStr.empty() && ctypeStr.back()=='*') {
+        void* p = nullptr;
+        if (!val.isNil()) {
+            if (!isObjectInstance(val))
+                throw std::runtime_error("struct pointer field expects object instance");
+            if (!ctx)
+                throw std::runtime_error("marshalProperty missing context for nested struct pointer");
+            ObjectInstance* inst = asObjectInstance(val);
+            ctx->buffers.push_back(objectToCStruct(inst, stringStore, ctx));
+            ctx->instances.push_back(inst);
+            p = ctx->buffers.back().data();
+        }
+        appendPadded(&p, ptrSize, ptrSize);
+        return;
+    }
 
     auto writeByName = [&](const std::string& ctype) -> bool { return writeByNameVal(ctype, val); };
 
@@ -5292,6 +5322,21 @@ Value VM::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSize,
     if (prop.ctype.has_value())
         ctypeStr = toUTF8StdString(prop.ctype.value());
 
+    // detect array syntax, eg. "double[4]"
+    bool isArray = false;
+    std::string arrayBase;
+    size_t arrayLen = 0;
+    auto lb = ctypeStr.find('[');
+    auto rb = ctypeStr.find(']', lb == std::string::npos ? 0 : lb);
+    if (lb != std::string::npos && rb == ctypeStr.size() - 1) {
+        arrayBase = ctypeStr.substr(0, lb);
+        while(!arrayBase.empty() && isspace(arrayBase.back())) arrayBase.pop_back();
+        std::string lenStr = ctypeStr.substr(lb+1, rb-lb-1);
+        arrayLen = std::strtoul(lenStr.c_str(), nullptr, 10);
+        if (arrayLen > 0)
+            isArray = true;
+    }
+
     if (isObjectType(prop.type) && !ctypeStr.empty() && ctypeStr.back()=='*') {
         void* p = nullptr;
         readPadded(&p, ptrSize, ptrSize);
@@ -5309,20 +5354,35 @@ Value VM::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSize,
         return nilVal();
     }
 
-    auto readByName = [&](const std::string& ctype) -> bool {
-        if (ctype == "float") { float f; readPadded(&f, sizeof(f), 4); val = Value(double(f)); return true; }
-        if (ctype == "double" || ctype == "real") { double d; readPadded(&d, sizeof(d), 8); val = Value(d); return true; }
-        if (ctype == "int" || ctype=="int32_t") { int32_t i; readPadded(&i, sizeof(i), 4); val = intVal(i); return true; }
-        if (ctype == "uint32_t") { uint32_t u; readPadded(&u, sizeof(u), 4); val = intVal(int32_t(u)); return true; }
-        if (ctype == "int16_t") { int16_t s; readPadded(&s, sizeof(s), 2); val = intVal(int32_t(s)); return true; }
-        if (ctype == "uint16_t") { uint16_t u; readPadded(&u, sizeof(u), 2); val = intVal(int32_t(u)); return true; }
-        if (ctype == "int8_t") { int8_t s; readPadded(&s, sizeof(s), 1); val = byteVal(uint8_t(s)); return true; }
-        if (ctype == "uint8_t") { uint8_t u; readPadded(&u, sizeof(u), 1); val = byteVal(u); return true; }
-        if (ctype == "bool") { uint8_t b; readPadded(&b, sizeof(b), 1); val = boolVal(b != 0); return true; }
-        if (ctype == "char*") { const char* p; readPadded(&p, ptrSize, ptrSize); val = objVal(stringVal(toUnicodeString(std::string(p?p:"")))); return true; }
-        if (ctype == "void*" || (!ctype.empty() && ctype.back()=='*')) { void* p; readPadded(&p, ptrSize, ptrSize); val = p ? objVal(foreignPtrVal(p)) : nilVal(); return true; }
+    auto readByNameVal = [&](const std::string& ctype, Value& out) -> bool {
+        if (ctype == "float") { float f; readPadded(&f, sizeof(f), 4); out = Value(double(f)); return true; }
+        if (ctype == "double" || ctype == "real") { double d; readPadded(&d, sizeof(d), 8); out = Value(d); return true; }
+        if (ctype == "int" || ctype=="int32_t") { int32_t i; readPadded(&i, sizeof(i), 4); out = intVal(i); return true; }
+        if (ctype == "uint32_t") { uint32_t u; readPadded(&u, sizeof(u), 4); out = intVal(int32_t(u)); return true; }
+        if (ctype == "int16_t") { int16_t s; readPadded(&s, sizeof(s), 2); out = intVal(int32_t(s)); return true; }
+        if (ctype == "uint16_t") { uint16_t u; readPadded(&u, sizeof(u), 2); out = intVal(int32_t(u)); return true; }
+        if (ctype == "int8_t") { int8_t s; readPadded(&s, sizeof(s), 1); out = byteVal(uint8_t(s)); return true; }
+        if (ctype == "uint8_t") { uint8_t u; readPadded(&u, sizeof(u), 1); out = byteVal(u); return true; }
+        if (ctype == "bool") { uint8_t b; readPadded(&b, sizeof(b), 1); out = boolVal(b != 0); return true; }
+        if (ctype == "char*") { const char* p; readPadded(&p, ptrSize, ptrSize); out = objVal(stringVal(toUnicodeString(std::string(p?p:"")))); return true; }
+        if (ctype == "void*" || (!ctype.empty() && ctype.back()=='*')) { void* p; readPadded(&p, ptrSize, ptrSize); out = p ? objVal(foreignPtrVal(p)) : nilVal(); return true; }
         return false;
     };
+
+    auto readByName = [&](const std::string& ctype) -> bool { return readByNameVal(ctype, val); };
+
+    if (isArray) {
+        std::vector<Value> elements;
+        elements.reserve(arrayLen);
+        for (size_t i = 0; i < arrayLen; ++i) {
+            Value elem;
+            if (!readByNameVal(arrayBase, elem))
+                throw std::runtime_error("unsupported ctype annotation: " + ctypeStr);
+            elements.push_back(elem);
+        }
+        val = objVal(listVal(elements));
+        return val;
+    }
 
     if (!ctypeStr.empty()) {
         if (!readByName(ctypeStr))
