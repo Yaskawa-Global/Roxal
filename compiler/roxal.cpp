@@ -114,15 +114,27 @@ static InterpretResult runFile(const std::string& path,
                                bool outputBytecodeDisassembly=false)
 {
 
-    std::ifstream sourcestream(path); // assumed UTF-8
+    std::filesystem::path filePath(path);
+    std::ifstream sourcestream(filePath); // assumed UTF-8
+    if (!sourcestream.is_open()) {
+        for(const auto& modPath : modulePaths) {
+            std::filesystem::path candidate = std::filesystem::path(modPath) / filePath;
+            sourcestream.open(candidate);
+            if (sourcestream.is_open()) {
+                filePath = candidate;
+                break;
+            }
+        }
+    }
+
     if (!sourcestream.is_open())
         throw std::runtime_error("file not found: " + path);
 
-    std::filesystem::path fileAndPath(path);
+    std::filesystem::path fileAndPath(filePath);
     std::string name { fileAndPath.stem().filename().string() };
 
     // construct a relative directory path containing the file, from the current working directory
-    std::filesystem::path absolutePath = std::filesystem::absolute(path);
+    std::filesystem::path absolutePath = std::filesystem::absolute(filePath);
     std::filesystem::path currentPath = std::filesystem::current_path();
     std::filesystem::path parentPath = absolutePath.parent_path();
     std::filesystem::path relativePath = std::filesystem::relative(parentPath, currentPath);
@@ -133,7 +145,7 @@ static InterpretResult runFile(const std::string& path,
     // Add the folder containing the script to the search paths
     vm.appendModulePaths({relativePath.string()});
     vm.appendModulePaths(modulePaths);
-    return vm.interpret(sourcestream, path);
+    return vm.interpret(sourcestream, filePath.string());
 }
 
 
