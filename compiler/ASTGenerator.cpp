@@ -2063,17 +2063,65 @@ std::any ASTGenerator::visitDict(RoxalParser::DictContext *context)
 std::any ASTGenerator::visitStr(RoxalParser::StrContext *context)
 {
     visitStart();
-    auto text = context->STRING_LITERAL()->getText();
+    std::string text;
+    bool isDouble = false;
+    if (context->SINGLE_STRING()) {
+        text = context->SINGLE_STRING()->getText();
+    } else {
+        text = context->DOUBLE_STRING()->getText();
+        isDouble = true;
+    }
 
     // drop enclosing quotes
     text = text.substr(1,text.size()-2);
 
-    auto str = std::make_shared<Str>();
-    setSourceInfo(str,context);
-    // convert to UnicodeString assuming UTF-8 encoding and unescape escape sequences
-    //  (see ICU UnicodeString::unescape() docs for details)
-    str->str = toUnicodeString(text).unescape();
-    return typeValue(str);
+    if (isDouble && text.find('{') != std::string::npos) {
+        std::vector<ptr<Expression>> parts;
+        size_t pos = 0;
+        while (true) {
+            size_t open = text.find('{', pos);
+            if (open == std::string::npos) break;
+            size_t close = text.find('}', open + 1);
+            if (close == std::string::npos) break;
+            if (open > pos) {
+                auto s = std::make_shared<Str>();
+                setSourceInfo(s, context);
+                s->str = toUnicodeString(text.substr(pos, open - pos)).unescape();
+                parts.push_back(s);
+            }
+            auto ident = text.substr(open + 1, close - open - 1);
+            auto var = std::make_shared<Variable>(toUnicodeString(ident));
+            setSourceInfo(var, context);
+            parts.push_back(var);
+            pos = close + 1;
+        }
+        if (pos < text.size()) {
+            auto s = std::make_shared<Str>();
+            setSourceInfo(s, context);
+            s->str = toUnicodeString(text.substr(pos)).unescape();
+            parts.push_back(s);
+        }
+        if (parts.empty()) {
+            auto str = std::make_shared<Str>();
+            setSourceInfo(str, context);
+            str->str = toUnicodeString(text).unescape();
+            return typeValue(str);
+        }
+        ptr<Expression> expr = parts[0];
+        for (size_t i = 1; i < parts.size(); ++i) {
+            auto add = std::make_shared<BinaryOp>(BinaryOp::Add);
+            setSourceInfo(add, context);
+            add->lhs = expr;
+            add->rhs = parts[i];
+            expr = add;
+        }
+        return typeValue(expr);
+    } else {
+        auto str = std::make_shared<Str>();
+        setSourceInfo(str, context);
+        str->str = toUnicodeString(text).unescape();
+        return typeValue(str);
+    }
     visitEnd();
 }
 
