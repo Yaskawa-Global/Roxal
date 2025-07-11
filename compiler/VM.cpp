@@ -409,6 +409,7 @@ InterpretResult VM::interpretLine(std::istream& linestream)
     static RoxalCompiler compiler {};
     static ObjModuleType* replModule { nullptr };
     compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
+    compiler.setModulePaths(modulePaths);
     compiler.setReplMode(true);
 
     try {
