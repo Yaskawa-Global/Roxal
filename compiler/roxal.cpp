@@ -207,6 +207,7 @@ int main(int argc, const char* argv[])
 
     std::vector<std::string> modulePaths;
 
+    // Allow module search paths via the ROXALPATH environment variable
     const char* envPath = std::getenv("ROXALPATH");
     if (envPath) {
         std::string paths(envPath);
