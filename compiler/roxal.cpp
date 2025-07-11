@@ -230,6 +230,7 @@ int main(int argc, const char* argv[])
 
 
     if (vmap.count("input-file")==0) {
+        VM::instance().appendModulePaths(modulePaths);
         repl();
     }
     else if (vmap.count("input-file")) {
