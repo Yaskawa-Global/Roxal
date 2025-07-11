@@ -207,7 +207,8 @@ std::any TypeDeducer::visit(ptr<ast::VarDecl> ast)
     }
 
     // if variable has explicit type and initializer type known, check
-    if (ast->varType.has_value() && ast->initializer.has_value() && ast->initializer.value()->type.has_value()) {
+    if (ast->varType.has_value() && std::holds_alternative<BuiltinType>(ast->varType.value()) &&
+        ast->initializer.has_value() && ast->initializer.value()->type.has_value()) {
         auto lhsType = std::get<BuiltinType>(ast->varType.value());
         auto rhsType = ast->initializer.value()->type.value()->builtin;
         if (!type::convertibleTo(rhsType, lhsType, currentStrict())) {

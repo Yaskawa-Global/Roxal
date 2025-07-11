@@ -1112,21 +1112,25 @@ Value roxal::toType(ValueType t, Value v, bool strict)
 
 Value roxal::toType(const Value& typeSpec, Value v, bool strict)
 {
-    if (!isTypeSpec(typeSpec))
-        throw std::invalid_argument("toType: typeSpec argument is not a type specification");
+    if (isTypeSpec(typeSpec)) {
+        ObjTypeSpec* ts = asTypeSpec(typeSpec);
 
-    ObjTypeSpec* ts = asTypeSpec(typeSpec);
-
-    if (ts->typeValue == ValueType::Nil)
-        return v;
-
-    if (ts->typeValue == ValueType::Object || ts->typeValue == ValueType::Actor) {
-        if (v.is(typeSpec))
+        if (ts->typeValue == ValueType::Nil)
             return v;
-        throw std::invalid_argument("unable to convert value of type "+to_string(v.type())+" to "+to_string(ts->typeValue));
+
+        if (ts->typeValue == ValueType::Object || ts->typeValue == ValueType::Actor) {
+            if (v.is(typeSpec))
+                return v;
+            throw std::invalid_argument("unable to convert value of type "+to_string(v.type())+" to "+to_string(ts->typeValue));
+        }
+
+        return toType(ts->typeValue, v, strict);
     }
 
-    return toType(ts->typeValue, v, strict);
+    if (typeSpec.isType())
+        return toType(typeSpec.asType(), v, strict);
+
+    throw std::invalid_argument("toType: typeSpec argument is not a type specification");
 }
 
 

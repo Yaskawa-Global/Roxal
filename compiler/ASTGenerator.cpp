@@ -786,15 +786,17 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
     }
 
     if (context->COLON()) { // type specified
-        if (context->builtin_type())
-            if (context->builtin_type()) {
-                auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
-                vardecl->varType = builtinType;
-            }
-            else if (context->IDENTIFIER().size()>1) {
-                auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
+        if (context->builtin_type()) {
+            auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
+            vardecl->varType = builtinType;
+        }
+        else if (context->IDENTIFIER().size()>1) {
+            auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
+            if (toUTF8StdString(typeIdent) == "signal")
+                vardecl->varType = BuiltinType::Signal;
+            else
                 vardecl->varType = typeIdent;
-            }
+        }
     }
 
     if (context->EQUALS())

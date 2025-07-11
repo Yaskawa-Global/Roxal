@@ -2230,6 +2230,7 @@ ValueType RoxalCompiler::builtinToValueType(ast::BuiltinType bt)
         case ast::BuiltinType::Vector: type = ValueType::Vector; break;
         case ast::BuiltinType::Matrix: type = ValueType::Matrix; break;
         case ast::BuiltinType::Tensor: type = ValueType::Tensor; break;
+        case ast::BuiltinType::Signal: type = ValueType::Signal; break;
         case ast::BuiltinType::Orient: type = ValueType::Orient; break;
         case ast::BuiltinType::Event: type = ValueType::Event; break;
         default:
