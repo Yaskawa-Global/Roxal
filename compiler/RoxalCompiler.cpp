@@ -315,11 +315,45 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         importedModuleType = importedEntry->second;
     }
 
-    // define a variable in the importing module with the name of the imported module
-    //  that has the value of the ObjModuleType
-    //  (we can directly insert the var in the importing module since it is already existing static type)
+    // create or retrieve package modules and build module hierarchy
     const auto& importingModuleType = asFuncScope(funcScope())->function->moduleType;
     auto& importingModuleVars = asModuleType(importingModuleType)->vars;
+
+    Value parentModuleVal { nilVal() };
+    icu::UnicodeString packagePath;
+    for(size_t i=0; i+1 < ast->packages.size(); ++i) {
+        icu::UnicodeString pkgName { ast->packages[i] };
+        ModuleInfo pkgInfo;
+        pkgInfo.modulePathRoot = module.modulePathRoot;
+        pkgInfo.packagePath = packagePath;
+        pkgInfo.name = pkgName;
+        pkgInfo.isPackage = true;
+
+        Value pkgModuleVal {};
+        auto pkgEntry = importedModules.find(pkgInfo);
+        if (pkgEntry == importedModules.end()) {
+            pkgModuleVal = objVal(moduleTypeVal(pkgName));
+            importedModules[pkgInfo] = pkgModuleVal;
+        } else {
+            pkgModuleVal = pkgEntry->second;
+        }
+
+        if (parentModuleVal.isObj())
+            asModuleType(parentModuleVal)->vars.store(pkgName, pkgModuleVal);
+        else
+            importingModuleVars.store(pkgName, pkgModuleVal);
+
+        parentModuleVal = pkgModuleVal;
+        if (!packagePath.isEmpty())
+            packagePath += "/";
+        packagePath += pkgName;
+    }
+
+    if (parentModuleVal.isObj())
+        asModuleType(parentModuleVal)->vars.store(module.name, importedModuleType);
+
+    // define a variable in the importing module with the name of the imported module
+    //  that has the value of the ObjModuleType
     icu::UnicodeString moduleName { module.name };
     importingModuleVars.store(moduleName, importedModuleType);
 
