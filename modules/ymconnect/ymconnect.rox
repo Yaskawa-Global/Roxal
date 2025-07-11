@@ -1,0 +1,62 @@
+import sys
+ymlib = sys.loadlib('./libYMConnect.so')
+
+@cstruct
+type status_info_t object:
+
+  var StatusCode :int
+  @ctype(ctype='char*')
+  var Message :string
+
+
+@cstruct
+type motoman_controller_t object:
+
+  @ctype(ctype='void*')
+  var _motomanController
+
+
+@cstruct
+type string_variable_data_t object:
+
+  @ctype(ctype='char*')
+  var stringVariableData :string
+
+  @ctype(ctype='uint16_t')
+  var variableIndex :int
+
+
+
+@cfunc(lib=ymlib, args='const char* ip_address, status_info_t* status, int32_t receivePacketTimeout_ms, int32_t sendPacketRetries, bool loggingEnabled, const char* version', ret='motoman_controller_t')
+func open_connection(ip_address :string, status :status_info_t, receivePacketTimeout_ms :int, sendPacketRetries :int, loggingEnabled :bool, version :string) -> motoman_controller_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller')
+proc close_connection(controller :motoman_controller_t):
+  _
+
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint16_t variableIndex,string_variable_data_t* stringVariableData',ret='status_info_t')
+func string_variable_interface_read(controller :motoman_controller_t, variableIndex :int,
+		                                stringVariableData :string_variable_data_t) -> status_info_t:
+  _
+
+
+
+// test it
+var status = status_info_t()
+var ver :string = '1.1.5'
+controller = open_connection('10.7.3.41',status,200,5,true,ver)
+
+
+print("open_connection returned "+status.StatusCode+" - "+status.Message)
+//print(dict(controller))
+//print(typeof(controller))
+
+print('Reading S14')
+var svar_info  = string_variable_data_t()
+status = string_variable_interface_read(controller,14,svar_info)
+print("status:"+status.StatusCode+" - "+status.Message)
+print("S14="+svar_info.stringVariableData)
+
+close_connection(controller)
