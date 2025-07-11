@@ -1,3 +1,5 @@
+print('mod3 init')
+
 func foo():
   print('from mod3')
 
