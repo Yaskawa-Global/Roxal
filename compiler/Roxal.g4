@@ -477,7 +477,8 @@ LFALSE : 'False'|'false'|'OFF'|'Off'|'off';
 LNIL: 'nil';
 
 str
- : STRING_LITERAL
+ : SINGLE_STRING
+ | DOUBLE_STRING
  ;
 
 
@@ -517,9 +518,13 @@ FLOAT_NUMBER
  | EXPONENT_FLOAT
  ;
 
- STRING_LITERAL
-  : SHORT_STRING
-  ;
+SINGLE_STRING
+ : '\'' ( STRING_ESCAPE_SEQ | ~[\\\r\n\f'] )* '\''
+ ;
+
+DOUBLE_STRING
+ : '"' ( STRING_ESCAPE_SEQ | ~[\\\r\n\f"] )* '"'
+ ;
 
 
 // this must be below keywords so they're not matched as identifiers
@@ -595,10 +600,6 @@ fragment FRACTION
  : [eE] [+-]? DIGIT+
  ;
 
- fragment SHORT_STRING
- : '\'' ( STRING_ESCAPE_SEQ | ~[\\\r\n\f'] )* '\''
- | '"' ( STRING_ESCAPE_SEQ | ~[\\\r\n\f"] )* '"'
- ;
 
  fragment STRING_ESCAPE_SEQ
  : '\\' .

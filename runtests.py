@@ -35,7 +35,7 @@ tests = [
     'module_strict_assign_err', 'func_nonstrict', 'conversions1',
     'byteops', 'byte_int_bits', 'object_init', 'object_inherit_is',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'lambda1',
-    'conversion1',
+    'conversion1', 'string_interp',
     'call_param_type_nonstrict', 'call_param_type_strict', 'param_assign_static_err',
     'linkedlist', 'structbindassign',
     'if', 'for1',
