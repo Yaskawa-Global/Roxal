@@ -338,7 +338,7 @@ builtin_type
  | BOOL | BYTE | NUMBER | INT | REAL | DECIMAL
  | STRING | RANGE
 | LIST | DICT
-| VECTOR | MATRIX | TENSOR
+| VECTOR | MATRIX | SIGNAL | TENSOR
 | ORIENT | EVENT
 ;
 
@@ -406,6 +406,7 @@ LIST: 'list';
 DICT: 'dict';
 VECTOR: 'vector';
 MATRIX: 'matrix';
+SIGNAL: 'signal';
 TENSOR: 'tensor';
 ORIENT: 'orient';
 EVENT: 'event';

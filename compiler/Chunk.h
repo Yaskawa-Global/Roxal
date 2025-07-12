@@ -89,6 +89,8 @@ enum class OpCode {
     IfDictToItems,
     ToType,
     ToTypeStrict,
+    ToTypeSpec,
+    ToTypeSpecStrict,
     EventOn,
     EventOff,
     SetupExcept,

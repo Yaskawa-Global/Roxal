@@ -655,9 +655,13 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
 {
     currentNode = ast;
 
-    std::optional<ValueType> declType{};
-    if (ast->varType.has_value() && std::holds_alternative<BuiltinType>(ast->varType.value()))
-        declType = builtinToValueType(std::get<BuiltinType>(ast->varType.value()));
+    std::optional<VarTypeSpec> declType{};
+    if (ast->varType.has_value()) {
+        if (std::holds_alternative<BuiltinType>(ast->varType.value()))
+            declType = std::get<BuiltinType>(ast->varType.value());
+        else
+            declType = std::get<icu::UnicodeString>(ast->varType.value());
+    }
 
     declareVariable(ast->name, declType);
     uint16_t var { 0 };
@@ -669,13 +673,22 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
 
     if (ast->initializer.has_value()) {
         ast->initializer.value()->accept(*this);
-        if (declType.has_value())
-            emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
-                      uint8_t(declType.value()));
+        if (declType.has_value()) {
+            if (std::holds_alternative<BuiltinType>(*declType))
+                emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                          uint8_t(builtinToValueType(std::get<BuiltinType>(*declType))));
+            else {
+                namedVariable(std::get<icu::UnicodeString>(*declType), false);
+                emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+            }
+        }
     } else {
-        if (declType.has_value())
-            emitConstant(defaultValue(declType.value()));
-        else
+        if (declType.has_value()) {
+            if (std::holds_alternative<BuiltinType>(*declType))
+                emitConstant(defaultValue(builtinToValueType(std::get<BuiltinType>(*declType))));
+            else
+                emitByte(OpCode::ConstNil);
+        } else
             emitByte(OpCode::ConstNil);
     }
 
@@ -830,7 +843,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
 
     // declare local vars for each for target
     std::vector<icu::UnicodeString> targetVarNames {};
-    std::vector<std::optional<ValueType>> targetVarTypes {};
+    std::vector<std::optional<VarTypeSpec>> targetVarTypes {};
 
     uint8_t numTargets = ast->targetList.size();
     if (numTargets > 128) {
@@ -841,14 +854,18 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
         assert(isa<VarDecl>(ast->targetList.at(i)));
         auto vdecl = as<VarDecl>(ast->targetList.at(i));
         auto name = vdecl->name;
-        std::optional<ValueType> vtype{};
-        if (vdecl->varType.has_value() && std::holds_alternative<BuiltinType>(vdecl->varType.value()))
-            vtype = builtinToValueType(std::get<BuiltinType>(vdecl->varType.value()));
+        std::optional<VarTypeSpec> vtype{};
+        if (vdecl->varType.has_value()) {
+            if (std::holds_alternative<BuiltinType>(vdecl->varType.value()))
+                vtype = std::get<BuiltinType>(vdecl->varType.value());
+            else
+                vtype = std::get<icu::UnicodeString>(vdecl->varType.value());
+        }
         targetVarNames.push_back(name);
         targetVarTypes.push_back(vtype);
         declareVariable(name, vtype);
-        if (vtype.has_value())
-            emitConstant(defaultValue(vtype.value()));
+        if (vtype.has_value() && std::holds_alternative<BuiltinType>(*vtype))
+            emitConstant(defaultValue(builtinToValueType(std::get<BuiltinType>(*vtype))));
         else
             emitByte(OpCode::ConstNil);
         defineVariable();
@@ -911,9 +928,16 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     // if there is a single target, just assign the target the result of indexing the iterable (stack top)
     bool strict = asFuncScope(funcScope())->strict;
     if (numTargets == 1) {
-        if (targetVarTypes.at(0).has_value())
-            emitBytes(strict ? OpCode::ToTypeStrict : OpCode::ToType,
-                      uint8_t(targetVarTypes.at(0).value()));
+        if (targetVarTypes.at(0).has_value()) {
+            auto tv = targetVarTypes.at(0).value();
+            if (std::holds_alternative<BuiltinType>(tv))
+                emitBytes(strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                          uint8_t(builtinToValueType(std::get<BuiltinType>(tv))));
+            else {
+                namedVariable(std::get<icu::UnicodeString>(tv), false);
+                emitByte(strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+            }
+        }
         namedVariable(targetVarNames.at(0),/*assign=*/true);
         emitByte(OpCode::Pop, "index result"); // discard index
     }
@@ -930,9 +954,16 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
             emitBytes(OpCode::Index, 1);
 
             // assign it to target
-            if (targetVarTypes.at(i).has_value())
-                emitBytes(strict ? OpCode::ToTypeStrict : OpCode::ToType,
-                          uint8_t(targetVarTypes.at(i).value()));
+            if (targetVarTypes.at(i).has_value()) {
+                auto tv = targetVarTypes.at(i).value();
+                if (std::holds_alternative<BuiltinType>(tv))
+                    emitBytes(strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                              uint8_t(builtinToValueType(std::get<BuiltinType>(tv))));
+                else {
+                    namedVariable(std::get<icu::UnicodeString>(tv), false);
+                    emitByte(strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+                }
+            }
             namedVariable(targetVarNames.at(i),/*assign=*/true);
 
             emitByte(OpCode::Pop, "subindex result"); // discard index
@@ -1323,9 +1354,15 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
         auto vtype = localVarType(name);
         if (!vtype.has_value())
             vtype = moduleVarType(name);
-        if (vtype.has_value())
-            emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
-                      uint8_t(vtype.value()));
+        if (vtype.has_value()) {
+            if (std::holds_alternative<BuiltinType>(*vtype))
+                emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                          uint8_t(builtinToValueType(std::get<BuiltinType>(*vtype))));
+            else {
+                namedVariable(std::get<icu::UnicodeString>(*vtype), false);
+                emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+            }
+        }
 
         namedVariable(name, /*assign=*/true);
     }
@@ -1396,9 +1433,15 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                 auto vtype = localVarType(varname);
                 if (!vtype.has_value())
                     vtype = moduleVarType(varname);
-                if (vtype.has_value())
-                    emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
-                              uint8_t(vtype.value()));
+                if (vtype.has_value()) {
+                    if (std::holds_alternative<BuiltinType>(*vtype))
+                        emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                                  uint8_t(builtinToValueType(std::get<BuiltinType>(*vtype))));
+                    else {
+                        namedVariable(std::get<icu::UnicodeString>(*vtype), false);
+                        emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+                    }
+                }
                 namedVariable(varname, /*assign=*/true);
 
             }
@@ -2268,6 +2311,7 @@ ValueType RoxalCompiler::builtinToValueType(ast::BuiltinType bt)
         case ast::BuiltinType::Vector: type = ValueType::Vector; break;
         case ast::BuiltinType::Matrix: type = ValueType::Matrix; break;
         case ast::BuiltinType::Tensor: type = ValueType::Tensor; break;
+        case ast::BuiltinType::Signal: type = ValueType::Signal; break;
         case ast::BuiltinType::Orient: type = ValueType::Orient; break;
         case ast::BuiltinType::Event: type = ValueType::Event; break;
         default:
@@ -2418,7 +2462,7 @@ int16_t RoxalCompiler::identifierConstant(const icu::UnicodeString& ident)
 }
 
 
-void RoxalCompiler::addLocal(const icu::UnicodeString& name, std::optional<ValueType> type)
+void RoxalCompiler::addLocal(const icu::UnicodeString& name, std::optional<VarTypeSpec> type)
 {
     //std::cout << (&(*state()) - &(*states.begin())) << " addLocal(" << toUTF8StdString(name) << ")" << std::endl;
     if (asFuncScope(funcScope())->locals.size() == 255) {
@@ -2546,7 +2590,7 @@ int16_t RoxalCompiler::resolveUpvalue(Scope scopeState, const icu::UnicodeString
 
 
 
-void RoxalCompiler::declareVariable(const icu::UnicodeString& name, std::optional<ValueType> type)
+void RoxalCompiler::declareVariable(const icu::UnicodeString& name, std::optional<VarTypeSpec> type)
 {
     if (asFuncScope(funcScope())->scopeDepth == 0)
         return;
@@ -2564,14 +2608,14 @@ void RoxalCompiler::declareVariable(const icu::UnicodeString& name, std::optiona
     addLocal(name, type);
 }
 
-std::optional<ValueType> RoxalCompiler::localVarType(const icu::UnicodeString& name)
+std::optional<RoxalCompiler::VarTypeSpec> RoxalCompiler::localVarType(const icu::UnicodeString& name)
 {
     auto& locals { asFuncScope(funcScope())->locals };
     if (!locals.empty()) {
         for(int i = locals.size()-1; i>=0; i--) {
             if (locals[i].name == name) {
-                if (locals[i].typed)
-                    return locals[i].type;
+                if (locals[i].type.has_value())
+                    return locals[i].type.value();
                 break;
             }
         }
@@ -2579,7 +2623,7 @@ std::optional<ValueType> RoxalCompiler::localVarType(const icu::UnicodeString& n
     return {};
 }
 
-std::optional<ValueType> RoxalCompiler::moduleVarType(const icu::UnicodeString& name)
+std::optional<RoxalCompiler::VarTypeSpec> RoxalCompiler::moduleVarType(const icu::UnicodeString& name)
 {
     auto module = asModuleScope(moduleScope());
     auto it = module->moduleVarTypes.find(name);

@@ -1110,6 +1110,30 @@ Value roxal::toType(ValueType t, Value v, bool strict)
 }
 
 
+Value roxal::toType(const Value& typeSpec, Value v, bool strict)
+{
+    if (isTypeSpec(typeSpec)) {
+        ObjTypeSpec* ts = asTypeSpec(typeSpec);
+
+        if (ts->typeValue == ValueType::Nil)
+            return v;
+
+        if (ts->typeValue == ValueType::Object || ts->typeValue == ValueType::Actor) {
+            if (v.is(typeSpec))
+                return v;
+            throw std::invalid_argument("unable to convert value of type "+to_string(v.type())+" to "+to_string(ts->typeValue));
+        }
+
+        return toType(ts->typeValue, v, strict);
+    }
+
+    if (typeSpec.isType())
+        return toType(typeSpec.asType(), v, strict);
+
+    throw std::invalid_argument("toType: typeSpec argument is not a type specification");
+}
+
+
 Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin, std::vector<Value>::const_iterator end)
 {
     // If a single signal of the target built-in type is passed, sample it and use its value.
@@ -1127,6 +1151,20 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 return sample;
             }
         }
+    }
+
+    if (type == ValueType::Signal) {
+        size_t count = end - begin;
+        if (count < 1 || count > 2 || !(*begin).isNumber())
+            throw std::runtime_error("signal constructor expects frequency and optional initial value");
+
+        double freq = toType(ValueType::Real, *begin, false).asReal();
+        Value initial = nilVal();
+        if (count == 2)
+            initial = *(begin + 1);
+
+        auto sig = df::Signal::newSourceSignal(freq, initial);
+        return objVal(signalVal(sig));
     }
 
     if (type == ValueType::Byte) {
