@@ -44,6 +44,7 @@ tests = [
     'object_to_dict_private', 'object_from_dict', 'virtual_method',
     'implements1', 'object_inherit_bank',
     'importmodule1', 'importstar', 'importsyms', 'importdiamond', 'pkg1/main',
+    'import_folder_init', 'import_folder_single',
     'method_named_param',
     'annot1', 'generic', 'objscopes',
     'threads1', 'fork_upvalue_error', 'fork_no_upvalues',
