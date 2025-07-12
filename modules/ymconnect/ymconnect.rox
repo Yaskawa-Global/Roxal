@@ -238,6 +238,35 @@ func job_interface_get_job_stack(controller :motoman_controller_t, selection :in
   _
 
 
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const char* fileName,const char* contentsToLoad',ret='status_info_t')
+func file_interface_LoadToControllerFromString(controller :motoman_controller_t, fileName :string, contentsToLoad :string) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const char* filePath',ret='status_info_t')
+func file_interface_LoadToControllerFromPath(controller :motoman_controller_t, filePath :string) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const char* fileName,const char* destinationFile,bool overwriteFlag',ret='status_info_t')
+func file_interface_SaveFromControllerToFile(controller :motoman_controller_t, fileName :string, destinationFile :string, overwriteFlag :bool) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const char* fileName,status_info_t* status',ret='char*')
+func file_interface_SaveFromControllerToString(controller :motoman_controller_t, fileName :string, status :status_info_t) -> string:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const char* fileName',ret='status_info_t')
+func file_interface_DeleteJobFile(controller :motoman_controller_t, fileName :string) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t fileType,int32_t* fileCount',ret='status_info_t')
+func file_interface_GetFileCount(controller :motoman_controller_t, fileType :int, fileCount :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t fileType,status_info_t* status,bool sorted',ret='char*')
+func file_interface_ListFiles(controller :motoman_controller_t, fileType :int, status :status_info_t, sorted :bool) -> string:
+  _
+
+
 
 // test it
 func test():
