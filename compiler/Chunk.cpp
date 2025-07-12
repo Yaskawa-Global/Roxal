@@ -406,6 +406,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("END_EXCEPT", offset);
         case asByte(OpCode::Throw):
             return simpleInstruction("THROW", offset);
+        case asByte(OpCode::CopyAssign):
+            return simpleInstruction("COPY_ASSIGN", offset);
         case asByte(OpCode::Nop):
             return simpleInstruction("NOP", offset);
         default:

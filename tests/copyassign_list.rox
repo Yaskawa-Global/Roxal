@@ -1,0 +1,7 @@
+var l = [1,2,3]
+var l2 = [4,5,6]
+l3 = l2
+l3 <- l
+print(l3)
+print(l3 is l)
+print(l2)

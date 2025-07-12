@@ -1345,6 +1345,73 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 {
     currentNode = ast;
 
+    if (ast->op == ast::Assignment::CopyAssign) {
+        if (isa<Variable>(ast->lhs)) {
+            auto name { as<Variable>(ast->lhs)->name };
+            namedVariable(name, false); // push current value
+
+            ast->rhs->accept(*this);
+
+            auto vtype = localVarType(name);
+            if (!vtype.has_value())
+                vtype = moduleVarType(name);
+            if (vtype.has_value()) {
+                if (std::holds_alternative<BuiltinType>(*vtype))
+                    emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                              uint8_t(builtinToValueType(std::get<BuiltinType>(*vtype))));
+                else {
+                    namedVariable(std::get<icu::UnicodeString>(*vtype), false);
+                    emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+                }
+            }
+
+            emitByte(OpCode::CopyAssign);
+        }
+        else if (isa<UnaryOp>(ast->lhs) && as<UnaryOp>(ast->lhs)->op==UnaryOp::Accessor) {
+            auto accessor = as<UnaryOp>(ast->lhs);
+            accessor->arg->accept(*this);
+
+            if (!accessor->member.has_value())
+                throw std::runtime_error("accessor unary operator expects member name");
+            int16_t propName = identifierConstant(accessor->member.value());
+
+            OpCode op = OpCode::GetPropCheck;
+            if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
+                auto itType = typePropertyRegistry.find(asTypeScope(typeScope())->name);
+                if (itType != typePropertyRegistry.end()) {
+                    auto itMem = itType->second.find(accessor->member.value());
+                    if (itMem != itType->second.end()) {
+                        const auto& info = itMem->second;
+                        if (info.access == Access::Private && info.owner != asTypeScope(typeScope())->name)
+                            error("Cannot access private member '"+toUTF8StdString(accessor->member.value())+"'");
+                        op = OpCode::GetProp;
+                    }
+                }
+            }
+
+            emitBytes(op, propName);
+
+            ast->rhs->accept(*this);
+
+            emitByte(OpCode::CopyAssign);
+        }
+        else if (isa<Index>(ast->lhs)) {
+            auto index { as<Index>(ast->lhs) };
+
+            index->indexable->accept(*this);
+            for(auto& arg : index->args)
+                arg->accept(*this);
+            emitBytes(OpCode::Index, index->args.size());
+
+            ast->rhs->accept(*this);
+            emitByte(OpCode::CopyAssign);
+        }
+        else {
+            throw std::runtime_error("LHS of copy assignment must be a variable, property accessor or indexing");
+        }
+        return {};
+    }
+
     if (isa<Variable>(ast->lhs)) {
 
         ast->rhs->accept(*this);
