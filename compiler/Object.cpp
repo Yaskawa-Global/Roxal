@@ -9,6 +9,7 @@
 #include <core/types.h>
 #include "Object.h"
 #include "VM.h"
+#include "FFI.h"
 #include "Value.h"
 #include "Thread.h"
 #include "dataflow/Signal.h"
