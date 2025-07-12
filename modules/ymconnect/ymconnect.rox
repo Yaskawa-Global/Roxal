@@ -266,6 +266,46 @@ func file_interface_GetFileCount(controller :motoman_controller_t, fileType :int
 func file_interface_ListFiles(controller :motoman_controller_t, fileType :int, status :status_info_t, sorted :bool) -> string:
   _
 
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t type,uint16_t group,uint8_t bitPosition,int32_t* ioBit',ret='status_info_t')
+func io_interface_type_ReadBit(controller :motoman_controller_t, type :int, group :int, bitPosition :int, ioBit :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint32_t address,int32_t* ioBit',ret='status_info_t')
+func io_interface_address_ReadBit(controller :motoman_controller_t, address :int, ioBit :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t type,uint16_t group,uint32_t* io',ret='status_info_t')
+func io_interface_type_ReadByte(controller :motoman_controller_t, type :int, group :int, io :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint32_t address,uint32_t* io',ret='status_info_t')
+func io_interface_address_ReadByte(controller :motoman_controller_t, address :int, io :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t type,uint16_t group,uint8_t* io',ret='status_info_t')
+func io_interface_uint8_type_ReadByte(controller :motoman_controller_t, type :int, group :int, io :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint32_t address,uint8_t* io',ret='status_info_t')
+func io_interface_uint8_address_ReadByte(controller :motoman_controller_t, address :int, io :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t type,uint16_t group,uint32_t* io',ret='status_info_t')
+func io_interface_type_ReadWord(controller :motoman_controller_t, type :int, group :int, io :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint32_t address,uint32_t* io',ret='status_info_t')
+func io_interface_address_ReadWord(controller :motoman_controller_t, address :int, io :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t type,uint16_t group,uint16_t* io',ret='status_info_t')
+func io_interface_uint16_type_ReadWord(controller :motoman_controller_t, type :int, group :int, io :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint32_t address,uint16_t* io',ret='status_info_t')
+func io_interface_uint16_address_ReadWord(controller :motoman_controller_t, address :int, io :int) -> status_info_t:
+  _
+
 
 
 // test it
