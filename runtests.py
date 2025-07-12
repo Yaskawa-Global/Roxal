@@ -65,7 +65,8 @@ tests = [
     'is_operator_type',
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
     'stacktrace', 'object_user_ref_cycle',
-    'runtime_error_snippet'
+    'runtime_error_snippet',
+    'cmdline_execute', 'invalid_option'
 ]
 
 # implementation doesn't yet allow these tests to pass
@@ -135,6 +136,12 @@ try:
         cmd = [roxal, rel_testrox]
         if test.startswith('typededucer_'):
             cmd = [roxal, '--ast', rel_testrox]
+        if test == 'cmdline_execute':
+            with open(testrox, 'r') as f:
+                snippet = f.read().strip()
+            cmd = [roxal, '-e', snippet]
+        if test == 'invalid_option':
+            cmd = [roxal, '--bogus']
 
         opt_expected = (" [expected]" if test in failing_tests else '')
 
