@@ -786,15 +786,14 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
     }
 
     if (context->COLON()) { // type specified
-        if (context->builtin_type())
-            if (context->builtin_type()) {
-                auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
-                vardecl->varType = builtinType;
-            }
-            else if (context->IDENTIFIER().size()>1) {
-                auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
-                vardecl->varType = typeIdent;
-            }
+        if (context->builtin_type()) {
+            auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
+            vardecl->varType = builtinType;
+        }
+        else if (context->IDENTIFIER().size()>1) {
+            auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
+            vardecl->varType = typeIdent;
+        }
     }
 
     if (context->EQUALS())
@@ -1955,6 +1954,8 @@ std::any ASTGenerator::visitBuiltin_type(RoxalParser::Builtin_typeContext *conte
         type = BuiltinType::Vector;
     else if (context->MATRIX())
         type = BuiltinType::Matrix;
+    else if (context->SIGNAL())
+        type = BuiltinType::Signal;
     else if (context->TENSOR())
         type = BuiltinType::Tensor;
     else if (context->ORIENT())

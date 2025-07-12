@@ -614,9 +614,56 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
 bool VM::call(ValueType builtinType, const CallSpec& callSpec)
 {
 
-    if (!callSpec.allPositional)
-        throw std::runtime_error("Named parameters unsupported in constructor for "+to_string(builtinType));
     auto argBegin = thread->stackTop - callSpec.argCount;
+
+    if (!callSpec.allPositional) {
+        if (builtinType == ValueType::Signal) {
+            static const uint16_t freqHash = toUnicodeString("freq").hashCode() & 0x7fff;
+            static const uint16_t initHash = toUnicodeString("initial").hashCode() & 0x7fff;
+
+            Value freq = nilVal();
+            Value initial = nilVal();
+            bool freqSet = false;
+            bool initSet = false;
+            for (int i = 0; i < callSpec.argCount; ++i) {
+                const Value& arg = *(argBegin + i);
+                if (callSpec.args[i].positional) {
+                    if (!freqSet) { freq = arg; freqSet = true; }
+                    else if (!initSet) { initial = arg; initSet = true; }
+                    else {
+                        runtimeError("Too many positional args in signal constructor");
+                        return false;
+                    }
+                } else {
+                    uint16_t h = callSpec.args[i].paramNameHash & 0x7fff;
+                    if (h == freqHash) { freq = arg; freqSet = true; }
+                    else if (h == initHash) { initial = arg; initSet = true; }
+                    else {
+                        runtimeError("Unknown parameter in signal constructor");
+                        return false;
+                    }
+                }
+            }
+            if (freq.isNil()) {
+                runtimeError("signal constructor expects frequency parameter");
+                return false;
+            }
+            std::vector<Value> args{freq};
+            if (!initial.isNil()) args.push_back(initial);
+            try {
+                *(thread->stackTop - callSpec.argCount - 1) =
+                    construct(builtinType, args.begin(), args.end());
+                popN(callSpec.argCount);
+                return true;
+            } catch (std::exception& e) {
+                runtimeError(e.what());
+                return false;
+            }
+        }
+        runtimeError("Named parameters unsupported in constructor for " + to_string(builtinType));
+        return false;
+    }
+
     auto argEnd = thread->stackTop;
     try {
         *(thread->stackTop - callSpec.argCount - 1) = construct(builtinType, argBegin, argEnd);
@@ -896,7 +943,9 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 else if (ts->typeValue == ValueType::Vector) {
                     return call(ValueType::Vector, callSpec);
                 }
-                else {
+                else if (ts->typeValue == ValueType::Signal) {
+                    return call(ValueType::Signal, callSpec);
+                } else {
                     throw std::runtime_error("unimplemented construction for type '"+to_string(ts->typeValue)+"'");
                 }
             }
@@ -1559,7 +1608,7 @@ void VM::defineProperty(ObjString* name)
             ObjTypeSpec* typeSpec = asTypeSpec(propertyType);
             if (typeSpec->typeValue != ValueType::Nil)
                 // TODO: implement & use a canConvertToType()
-                propertyInitial = toType(typeSpec->typeValue,propertyInitial,/*strict=*/false);
+                propertyInitial = toType(propertyType, propertyInitial, /*strict=*/false);
         }
     }
 
@@ -2163,7 +2212,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                 if (typeSpec->typeValue != ValueType::Nil)
                                     try {
                                         // TODO: implement & use a canConvertToType()
-                                        value = toType(typeSpec->typeValue,value, strictConv);
+                                        value = toType(prop.type, value, strictConv);
                                     } catch(std::exception& e) {
                                         runtimeError(e.what());
                                         return errorReturn;
@@ -2193,7 +2242,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
                                     try {
-                                        value = toType(typeSpec->typeValue,value, strictConv);
+                                        value = toType(prop.type, value, strictConv);
                                     } catch(std::exception& e) {
                                         runtimeError(e.what());
                                         return errorReturn;
@@ -2252,7 +2301,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
                                     try {
-                                        value = toType(typeSpec->typeValue,value, strictConv);
+                                        value = toType(prop.type, value, strictConv);
                                     } catch(std::exception& e) {
                                         runtimeError(e.what());
                                         return errorReturn;
@@ -2293,7 +2342,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
                                     try {
-                                        value = toType(typeSpec->typeValue,value, strictConv);
+                                        value = toType(prop.type, value, strictConv);
                                     } catch(std::exception& e) {
                                         runtimeError(e.what());
                                         return errorReturn;
@@ -2965,6 +3014,26 @@ std::pair<InterpretResult,Value> VM::execute()
                 try {
                     peek(0) = toType(ValueType(typeByte), peek(0), /*strict=*/true);
                 } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case asByte(OpCode::ToTypeSpec): {
+                Value typeSpec = pop();
+                try {
+                    peek(0) = toType(typeSpec, peek(0), /*strict=*/false);
+                } catch(std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case asByte(OpCode::ToTypeSpecStrict): {
+                Value typeSpec = pop();
+                try {
+                    peek(0) = toType(typeSpec, peek(0), /*strict=*/true);
+                } catch(std::exception& e) {
                     runtimeError(e.what());
                     return errorReturn;
                 }

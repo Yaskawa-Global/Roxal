@@ -1,0 +1,10 @@
+var s = signal(freq=20, [1 2 3])
+
+on s:
+  print(vector(s))
+
+wait(ms=70)
+
+s.set([3 4 5])
+
+wait(ms=70)
