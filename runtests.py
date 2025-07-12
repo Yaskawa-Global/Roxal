@@ -8,6 +8,8 @@ import time
 
 # Maximum time in seconds to allow each test to run
 TEST_TIMEOUT_SECS = 5
+# Width of the test name column when printing results
+TEST_NAME_WIDTH = 32
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Run Roxal tests.")
@@ -121,7 +123,7 @@ total_start_time = time.perf_counter()
 
 try:
     for test in tests:
-        print(f"Test {test} ", end='', flush=True)
+        print(f"Test {test:<{TEST_NAME_WIDTH}} ", end='', flush=True)
         start_time = time.perf_counter()
         testrox = os.path.join(test_dir, test + '.rox')
         testout = os.path.join(test_dir, test + '.out')
