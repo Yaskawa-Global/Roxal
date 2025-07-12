@@ -290,9 +290,12 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
             std::ifstream sourcestream(absoluteModuleFilePath);
 
             ObjFunction* function { nullptr };
+            bool prevRepl = replModeFlag;
 
             try {
+                replModeFlag = false; // don't auto-print expressions when compiling imported module
                 function = compile(sourcestream, toUTF8StdString(module.name));
+                replModeFlag = prevRepl;
 
                 importedModuleType = function->moduleType;
 
@@ -311,6 +314,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
                 importedModules[module] = importedModuleType;
 
             } catch (std::exception& e) {
+                replModeFlag = prevRepl;
                 error(e.what());
                 return {};
             }
