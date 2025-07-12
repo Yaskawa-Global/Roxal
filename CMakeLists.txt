@@ -84,6 +84,7 @@ set(SOURCES
     compiler/ASTGraphviz.cpp
     compiler/Chunk.cpp
     compiler/Object.cpp
+    compiler/FFI.cpp
     compiler/RoxalCompiler.cpp
     compiler/RoxalIndentationLexer.cpp
     compiler/TypeDeducer.cpp
