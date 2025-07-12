@@ -347,6 +347,7 @@ struct ObjList : public Obj
     // List operations (in-place)
     void concatenate(const ObjList* other);  // Concatenate other list to this list
     void append(const Value& value);         // Append value to this list
+    void set(const ObjList* other);          // Shallow copy from other list
 
     atomic_vector<Value> elts;
 };
@@ -411,6 +412,8 @@ struct ObjDict : public Obj
         entries[key] = val; // insert or replace
     }
 
+    void set(const ObjDict* other); // Shallow copy from other dict
+
     struct ValueComparitor
     {
         using is_transparent = std::true_type;
@@ -455,6 +458,8 @@ struct ObjVector : public Obj
 
     bool equals(const ObjVector* other, double eps = 1e-15) const;
 
+    void set(const ObjVector* other); // Shallow copy from other vector
+
     Eigen::VectorXd vec;
 };
 
@@ -494,6 +499,8 @@ struct ObjMatrix : public Obj
     void setIndex(const Value& row, const Value& col, const Value& value);
 
     bool equals(const ObjMatrix* other, double eps = 1e-15) const;
+
+    void set(const ObjMatrix* other); // Shallow copy from other matrix
 
     Eigen::MatrixXd mat;
 };
