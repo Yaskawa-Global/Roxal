@@ -3507,6 +3507,17 @@ void VM::runtimeError(const std::string& format, ...)
             entry.second->wake();
     });
 
+    if (!thread || thread->frames.empty()) {
+        fprintf(stderr, "error: ");
+        va_list args;
+        va_start(args, format);
+        vfprintf(stderr, format.c_str(), args);
+        va_end(args);
+        fputs("\n", stderr);
+        resetStack();
+        return;
+    }
+
     auto frame { thread->frames.end()-1 };
 
     size_t instruction = frame->ip - frame->closure->function->chunk->code.begin() - 1;
