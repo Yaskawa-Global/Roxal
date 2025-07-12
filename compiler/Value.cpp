@@ -1153,6 +1153,20 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
         }
     }
 
+    if (type == ValueType::Signal) {
+        size_t count = end - begin;
+        if (count < 1 || count > 2 || !(*begin).isNumber())
+            throw std::runtime_error("signal constructor expects frequency and optional initial value");
+
+        double freq = toType(ValueType::Real, *begin, false).asReal();
+        Value initial = nilVal();
+        if (count == 2)
+            initial = *(begin + 1);
+
+        auto sig = df::Signal::newSourceSignal(freq, initial);
+        return objVal(signalVal(sig));
+    }
+
     if (type == ValueType::Byte) {
         size_t count = end - begin;
         if (count == 1) {

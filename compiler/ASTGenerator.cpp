@@ -792,10 +792,7 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
         }
         else if (context->IDENTIFIER().size()>1) {
             auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
-            if (toUTF8StdString(typeIdent) == "signal")
-                vardecl->varType = BuiltinType::Signal;
-            else
-                vardecl->varType = typeIdent;
+            vardecl->varType = typeIdent;
         }
     }
 
@@ -1957,6 +1954,8 @@ std::any ASTGenerator::visitBuiltin_type(RoxalParser::Builtin_typeContext *conte
         type = BuiltinType::Vector;
     else if (context->MATRIX())
         type = BuiltinType::Matrix;
+    else if (context->SIGNAL())
+        type = BuiltinType::Signal;
     else if (context->TENSOR())
         type = BuiltinType::Tensor;
     else if (context->ORIENT())
