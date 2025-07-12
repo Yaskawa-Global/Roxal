@@ -148,6 +148,17 @@ static InterpretResult runFile(const std::string& path,
     return vm.interpret(sourcestream, filePath.string());
 }
 
+static InterpretResult runString(const std::string& source,
+                                 const std::vector<std::string>& modulePaths,
+                                 bool outputBytecodeDisassembly=false)
+{
+    std::istringstream sourcestream(source);
+    VM& vm { VM::instance() };
+    vm.setDisassemblyOutput(outputBytecodeDisassembly);
+    vm.appendModulePaths(modulePaths);
+    return vm.interpret(sourcestream, "cli");
+}
+
 
 static void generateAST(const std::string& inputPath, bool graph, const std::string& outputPath="")
 {
@@ -200,6 +211,7 @@ int main(int argc, const char* argv[])
         ("help,h", "options help")
         ("input-file,f", po::value< std::vector<std::string> >(), "input .rox file to execute (run)")
         ("module-paths,p", po::value< std::vector<std::string> >(), "module search paths")
+        ("execute,e", po::value<std::string>(), "execute code supplied as a string")
         ("dis", "output dissasembly of VM bytecodes during compilation")
         ("ast", "parse only and output text Abstract Syntax Tree (AST)")
         ("astgraph", po::value< std::vector<std::string> >(), "parse only and output GraphViz dot file")
@@ -209,8 +221,14 @@ int main(int argc, const char* argv[])
     pos.add("input-file", -1);
 
     po::variables_map vmap;
-    po::store(po::command_line_parser(argc, argv).options(desc).positional(pos).run(), vmap);
-    po::notify(vmap);
+    try {
+        po::store(po::command_line_parser(argc, argv).options(desc).positional(pos).run(), vmap);
+        po::notify(vmap);
+    } catch(const po::error& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        std::cerr << desc << std::endl;
+        return 1;
+    }
 
     if (vmap.count("help")) {
         std::cout << desc << std::endl;
@@ -241,7 +259,15 @@ int main(int argc, const char* argv[])
     }
 
 
-    if (vmap.count("input-file")==0) {
+    if (vmap.count("execute")) {
+        bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
+        InterpretResult res =
+            runString(vmap["execute"].as<std::string>(), modulePaths,
+                      outputBytecodeDisassembly);
+        if (res != InterpretResult::OK)
+            return 1;
+    }
+    else if (vmap.count("input-file") == 0) {
         VM::instance().appendModulePaths(modulePaths);
         repl();
     }
