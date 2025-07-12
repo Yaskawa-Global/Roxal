@@ -26,6 +26,51 @@ type string_variable_data_t object:
   var variableIndex :int
 
 
+@cstruct
+type figure_t object:
+
+  @ctype(ctype='int32_t')
+  var frontOrBack :int
+
+  @ctype(ctype='int32_t')
+  var upperOrLower :int
+
+  @ctype(ctype='int32_t')
+  var flipOrNoFlip :int
+
+  @ctype(ctype='int32_t[8]')
+  var axisAngles :list
+
+
+@cstruct
+type position_data_t object:
+
+  @ctype(ctype='int32_t')
+  var coordinateType :int
+
+  @ctype(ctype='figure_t')
+  var figure :figure_t
+
+  @ctype(ctype='uint32_t')
+  var toolNumber :int
+
+  @ctype(ctype='uint32_t')
+  var userCoordinateNumber :int
+
+  @ctype(ctype='double[8]')
+  var axisData :list
+
+
+@cstruct
+type position_variable_data_t object:
+
+  @ctype(ctype='position_data_t')
+  var positionData :position_data_t
+
+  @ctype(ctype='uint16_t')
+  var variableIndex :int
+
+
 
 @cfunc(lib=ymlib, args='const char* ip_address, status_info_t* status, int32_t receivePacketTimeout_ms, int32_t sendPacketRetries, bool loggingEnabled, const char* version', ret='motoman_controller_t')
 func open_connection(ip_address :string, status :status_info_t, receivePacketTimeout_ms :int, sendPacketRetries :int, loggingEnabled :bool, version :string) -> motoman_controller_t:
@@ -38,7 +83,32 @@ proc close_connection(controller :motoman_controller_t):
 
 @cfunc(lib=ymlib, args='motoman_controller_t controller,uint16_t variableIndex,string_variable_data_t* stringVariableData',ret='status_info_t')
 func string_variable_interface_read(controller :motoman_controller_t, variableIndex :int,
-		                                stringVariableData :string_variable_data_t) -> status_info_t:
+                                                stringVariableData :string_variable_data_t) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const string_variable_data_t* stringVariableData',ret='status_info_t')
+func string_variable_interface_write(controller :motoman_controller_t,
+                                                stringVariableData :string_variable_data_t) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint16_t variableIndex,position_variable_data_t* positionVariableData',ret='status_info_t')
+func robot_position_variable_interface_read(controller :motoman_controller_t, variableIndex :int,
+                                                   positionVariableData :position_variable_data_t) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const position_variable_data_t* positionVariableData',ret='status_info_t')
+func robot_position_variable_interface_write(controller :motoman_controller_t,
+                                                   positionVariableData :position_variable_data_t) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint16_t variableIndex,position_variable_data_t* positionVariableData',ret='status_info_t')
+func base_position_variable_interface_read(controller :motoman_controller_t, variableIndex :int,
+                                                  positionVariableData :position_variable_data_t) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const position_variable_data_t* positionVariableData',ret='status_info_t')
+func base_position_variable_interface_write(controller :motoman_controller_t,
+                                                  positionVariableData :position_variable_data_t) -> status_info_t:
   _
 
 
