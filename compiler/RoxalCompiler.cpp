@@ -252,7 +252,11 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
             }
         }
         if (!builtinModule) {
-            error("import '"+toUTF8StdString(join(ast->packages,"."))+"' not found.");
+            if (module.invalidFolder) {
+                error("import '"+toUTF8StdString(join(ast->packages,"."))+"' not found: folder lacks init.rox or a single .rox file");
+            } else {
+                error("import '"+toUTF8StdString(join(ast->packages,"."))+"' not found.");
+            }
             return {};
         }
     }
@@ -1877,9 +1881,31 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
     // found
     auto path { candidatePaths.at(0) }; // take first (if multiple)
     ModuleInfo module {};
-    module.filename = path.filename().string();
     module.isPackage = std::filesystem::is_directory(path);
     module.name = toUnicodeString(path.stem().string());
+
+    module.filename = path.filename().string();
+    if (module.isPackage) {
+        std::filesystem::path initPath = path / "init.rox";
+        if (std::filesystem::exists(initPath)) {
+            path = initPath;
+            module.filename += "/init.rox";
+        } else {
+            std::vector<std::filesystem::path> roxFiles;
+            for (const auto& entry : std::filesystem::directory_iterator(path)) {
+                if (!entry.is_directory() && entry.path().extension() == ".rox")
+                    roxFiles.push_back(entry.path());
+            }
+            if (roxFiles.size() == 1) {
+                path = roxFiles[0];
+                module.filename += "/" + roxFiles[0].filename().string();
+            } else {
+                module.invalidFolder = true;
+                module.name = icu::UnicodeString();
+                return module;
+            }
+        }
+    }
 
     // join components except the last to build packagePath
     icu::UnicodeString pkgPath;
@@ -2694,7 +2720,8 @@ std::ostream& roxal::operator<<(std::ostream& out, const RoxalCompiler::ModuleIn
         << "packagePath: " << toUTF8StdString(mi.packagePath) << ", "
         << "name: " << toUTF8StdString(mi.name) << ", "
         << "isPackage: " << (mi.isPackage ? "true" : "false") << ", "
-        << "filename: " << mi.filename
+        << "filename: " << mi.filename << ", "
+        << "invalidFolder: " << (mi.invalidFolder ? "true" : "false")
         << "}";
     return out;
 }

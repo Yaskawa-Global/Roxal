@@ -73,6 +73,7 @@ public:
         icu::UnicodeString name;    // name of the module
         bool isPackage;
         std::string filename;       // filename of the module (e.g. with .rox extension)
+        bool invalidFolder{false};  // folder existed but didn't contain init.rox or a single .rox file
 
         // FIXME: make members protected, cache hashCode
 
@@ -97,7 +98,7 @@ protected:
     std::map<ModuleInfo,Value> importedModules;
 
     // given the components of an import, such as "package.subpackage.module", return
-    //  the module path root that contains it, the relative path to the package and the module filename
+    //  information about the module, including the file that should be executed
     ModuleInfo findImport(const std::vector<icu::UnicodeString>& components) const;
 
     struct Local {
