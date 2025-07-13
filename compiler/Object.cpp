@@ -1334,14 +1334,116 @@ void ObjPackageType::write(std::ostream&) const { throw std::runtime_error("ObjP
 void ObjPackageType::read(std::istream&) { throw std::runtime_error("ObjPackageType deserialization not implemented"); }
 void ObjModuleType::write(std::ostream&) const { throw std::runtime_error("ObjModuleType serialization not implemented"); }
 void ObjModuleType::read(std::istream&) { throw std::runtime_error("ObjModuleType deserialization not implemented"); }
-void ObjectInstance::write(std::ostream&) const { throw std::runtime_error("ObjectInstance serialization not implemented"); }
-void ObjectInstance::read(std::istream&) { throw std::runtime_error("ObjectInstance deserialization not implemented"); }
+void ObjectInstance::write(std::ostream& out) const
+{
+    auto* ctx = serializationWriteContext();
+    if(!ctx) throw std::runtime_error("ObjectInstance::write without context");
+    auto it = ctx->objToId.find(this);
+    uint8_t flag = 1;
+    uint64_t id;
+    if(it != ctx->objToId.end()) {
+        flag = 0;
+        id = it->second;
+        out.write(reinterpret_cast<char*>(&flag),1);
+        out.write(reinterpret_cast<char*>(&id),8);
+        return;
+    }
+    id = ctx->nextId++;
+    ctx->objToId[this] = id;
+    out.write(reinterpret_cast<char*>(&flag),1);
+    out.write(reinterpret_cast<char*>(&id),8);
+    writeValue(out, Value(instanceType));
+    uint32_t count = properties.size();
+    out.write(reinterpret_cast<char*>(&count),4);
+    for(const auto& kv : properties) {
+        int32_t h = kv.first;
+        out.write(reinterpret_cast<char*>(&h),4);
+        writeValue(out, kv.second);
+    }
+}
+
+void ObjectInstance::read(std::istream& in)
+{
+    auto* ctx = serializationReadContext();
+    if(!ctx) throw std::runtime_error("ObjectInstance::read without context");
+    uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
+    uint64_t id;  in.read(reinterpret_cast<char*>(&id),8);
+    if(flag==0) {
+        auto it = ctx->idToObj.find(id);
+        if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown object ref id");
+        auto* other = static_cast<ObjectInstance*>(it->second);
+        instanceType = other->instanceType; instanceType->incRef();
+        properties = other->properties;
+        return;
+    }
+    Value typeVal = readValue(in);
+    instanceType = asObjectType(typeVal);
+    instanceType->incRef();
+    ctx->idToObj[id] = this;
+    uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
+    properties.clear();
+    for(uint32_t i=0;i<count;i++) {
+        int32_t h; in.read(reinterpret_cast<char*>(&h),4);
+        Value v = readValue(in);
+        properties[h] = v;
+    }
+}
 void ObjBoundMethod::write(std::ostream&) const { throw std::runtime_error("ObjBoundMethod serialization not implemented"); }
 void ObjBoundMethod::read(std::istream&) { throw std::runtime_error("ObjBoundMethod deserialization not implemented"); }
 void ObjBoundNative::write(std::ostream&) const { throw std::runtime_error("ObjBoundNative serialization not implemented"); }
 void ObjBoundNative::read(std::istream&) { throw std::runtime_error("ObjBoundNative deserialization not implemented"); }
-void ActorInstance::write(std::ostream&) const { throw std::runtime_error("ActorInstance serialization not implemented"); }
-void ActorInstance::read(std::istream&) { throw std::runtime_error("ActorInstance deserialization not implemented"); }
+
+void ActorInstance::write(std::ostream& out) const
+{
+    auto* ctx = serializationWriteContext();
+    if(!ctx) throw std::runtime_error("ActorInstance::write without context");
+    auto it = ctx->objToId.find(this);
+    uint8_t flag = 1; uint64_t id;
+    if(it != ctx->objToId.end()) {
+        flag = 0; id = it->second;
+        out.write(reinterpret_cast<char*>(&flag),1);
+        out.write(reinterpret_cast<char*>(&id),8);
+        return;
+    }
+    id = ctx->nextId++; ctx->objToId[this] = id;
+    out.write(reinterpret_cast<char*>(&flag),1);
+    out.write(reinterpret_cast<char*>(&id),8);
+    writeValue(out, Value(instanceType));
+    uint32_t count = properties.size();
+    out.write(reinterpret_cast<char*>(&count),4);
+    for(const auto& kv : properties) {
+        int32_t h = kv.first;
+        out.write(reinterpret_cast<char*>(&h),4);
+        writeValue(out, kv.second);
+    }
+}
+
+void ActorInstance::read(std::istream& in)
+{
+    auto* ctx = serializationReadContext();
+    if(!ctx) throw std::runtime_error("ActorInstance::read without context");
+    uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
+    uint64_t id; in.read(reinterpret_cast<char*>(&id),8);
+    if(flag==0) {
+        auto it = ctx->idToObj.find(id);
+        if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown actor ref id");
+        auto* other = static_cast<ActorInstance*>(it->second);
+        instanceType = other->instanceType; instanceType->incRef();
+        properties = other->properties;
+        return;
+    }
+    Value typeVal = readValue(in);
+    instanceType = asObjectType(typeVal);
+    instanceType->incRef();
+    ctx->idToObj[id] = this;
+    uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
+    properties.clear();
+    for(uint32_t i=0;i<count;i++) {
+        int32_t h; in.read(reinterpret_cast<char*>(&h),4);
+        Value v = readValue(in);
+        properties[h] = v;
+    }
+}
 
 void ObjMatrix::write(std::ostream& out) const
 {

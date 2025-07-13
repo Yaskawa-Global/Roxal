@@ -300,6 +300,8 @@ public:
     Value weakref_builtin(int argCount, Value* args);
     Value weak_alive_builtin(int argCount, Value* args);
     Value strongref_builtin(int argCount, Value* args);
+    Value serialize_builtin(int argCount, Value* args);
+    Value deserialize_builtin(int argCount, Value* args);
 
 
 

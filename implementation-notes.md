@@ -69,3 +69,20 @@ Function nodes wrap standard functions (`func`) and execute their `Chunk` code (
 The data flow engine is represented as a builtin actor instance.  Hence, the evaluation of all functions (`FuncNode`s) happens on the dataflow engine's actor thread.
 
 Signals can be sampled to yield their current value at any time on any thread, either via the builtin `value` property, or by using them to construct their underlying value type (e.g. `vector(vecsignal)`, or `real(realsig)`)
+
+## Serialization
+
+Values can be persisted by serializing them to a binary stream via the `write()`
+and `read()` methods. Primitive by-value types are written directly, while
+reference types delegate to their corresponding `Obj` subclasses.  In order to
+support shared references and cyclic graphs when serializing object and actor
+instances, each instance will be assigned a unique `uint64_t` identifier during
+serialization.  The serializer maintains a map from object pointers to these
+identifiers.  When an instance is encountered for the first time its full
+contents are written along with its id; subsequent references only emit the id,
+avoiding duplication.
+
+During deserialization the process is reversed.  A map of ids to newly created
+instances ensures that references resolve to the same object even when cycles
+are present.  Actor instances only persist their declared properties—runtime
+queues or threads are reinitialised when the instance is restored.
