@@ -74,6 +74,12 @@ DataflowEngine::~DataflowEngine()
     clear();
 }
 
+void DataflowEngine::markNetworkModified()
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_networkModified = true;
+}
+
 
 void DataflowEngine::addSignal(ptr<Signal> signal)
 {

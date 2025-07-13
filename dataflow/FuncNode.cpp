@@ -13,8 +13,9 @@ using namespace df;
 FuncNode::FuncNode(const std::string& name,
                    const roxal::Value& closure_,
                    const ConstArgMap& constArgs_,
-                   const std::vector<ptr<Signal>>& signalArgs_)
-  : m_name(name), m_operatorSignalsCalled(false), closure(closure_), constArgs(constArgs_), signalArgs(signalArgs_)
+                   const std::vector<ptr<Signal>>& signalArgs_,
+                   const std::vector<ptr<Signal>>& outputSignals)
+  : m_name(name), m_operatorSignalsCalled(false), closure(closure_), constArgs(constArgs_), signalArgs(signalArgs_), m_overrideOutputSignals(outputSignals)
 {
     m_outputNames = {"result"};
     if (roxal::isClosure(closure) && roxal::asClosure(closure)->function->funcType.has_value()) {
@@ -73,9 +74,10 @@ FuncNode::FuncNode(const std::string& name,
                    const std::vector<std::string>& paramNames_,
                    const ConstArgMap& constArgs_,
                    const std::vector<ptr<Signal>>& signalArgs_,
-                   const Names& outputNames_)
+                   const Names& outputNames_,
+                   const std::vector<ptr<Signal>>& outputSignals)
   : m_name(name), m_operatorSignalsCalled(false), closure(roxal::nilVal()),
-    nativeFunc(nativeFunc_), constArgs(constArgs_), signalArgs(signalArgs_)
+    nativeFunc(nativeFunc_), constArgs(constArgs_), signalArgs(signalArgs_), m_overrideOutputSignals(outputSignals)
 {
     m_outputNames = outputNames_;
     paramNames = paramNames_;
@@ -241,10 +243,24 @@ Signals FuncNode::operator()(const Signals& signals, const std::optional<ParamMa
 void FuncNode::createOutputSignals(double freq)
 {
     m_outputs.clear();
-    // create output signals(freq may be updated as inputs added)
-    for(auto& outputName : outputNames()) {
-        auto outputSignal = Signal::newSignal(freq, roxal::Value(), outputName);
-        addOutput(outputName, outputSignal);
+    if (!m_overrideOutputSignals.empty()) {
+        size_t count = std::min(m_overrideOutputSignals.size(), outputNames().size());
+        for(size_t i=0;i<count;++i) {
+            auto sig = m_overrideOutputSignals[i];
+            sig->setFrequency(freq);
+            addOutput(outputNames()[i], sig);
+        }
+        for(size_t i=count;i<outputNames().size();++i) {
+            auto outputSignal = Signal::newSignal(freq, roxal::Value(), outputNames()[i]);
+            addOutput(outputNames()[i], outputSignal);
+        }
+        m_overrideOutputSignals.clear();
+    } else {
+        // create output signals(freq may be updated as inputs added)
+        for(auto& outName : outputNames()) {
+            auto outputSignal = Signal::newSignal(freq, roxal::Value(), outName);
+            addOutput(outName, outputSignal);
+        }
     }
 }
 

@@ -23,7 +23,8 @@ public:
     FuncNode(const std::string& name,
              const roxal::Value& closure,
              const ConstArgMap& constArgs,
-             const std::vector<ptr<Signal>>& signalArgs);
+             const std::vector<ptr<Signal>>& signalArgs,
+             const std::vector<ptr<Signal>>& outputSignals = {});
 
     using NativeFunc = std::function<Values(const Values&)>;
 
@@ -32,7 +33,8 @@ public:
              const std::vector<std::string>& paramNames,
              const ConstArgMap& constArgs,
              const std::vector<ptr<Signal>>& signalArgs,
-             const Names& outputNames = {"result"});
+             const Names& outputNames = {"result"},
+             const std::vector<ptr<Signal>>& outputSignals = {});
 
     virtual ~FuncNode() {}
 
@@ -125,6 +127,7 @@ protected:
 
 private:
     Names m_inputNames;
+    std::vector<ptr<Signal>> m_overrideOutputSignals;
 
     friend class DataflowEngine;
 };

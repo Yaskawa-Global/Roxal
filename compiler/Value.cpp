@@ -1893,6 +1893,32 @@ void roxal::copyAssign(Value& lhs, const Value& rhs)
                 throw std::invalid_argument("copy assign matrix requires matrix RHS");
             asMatrix(lhs)->set(asMatrix(rhs));
             break;
+        case ObjType::Signal:
+            if (!isSignal(rhs))
+                throw std::invalid_argument("copy assign signal requires signal RHS");
+            {
+                auto lhsSig = asSignal(lhs)->signal;
+                auto rhsSig = asSignal(rhs)->signal;
+
+                df::FuncNode::ConstArgMap constArgs;
+                std::vector<ptr<df::Signal>> sigArgs{ rhsSig };
+                std::vector<std::string> paramNames{"in"};
+                std::vector<ptr<df::Signal>> outSignals{ lhsSig };
+
+                auto name = df::DataflowEngine::uniqueFuncName("copyAssignSig");
+                auto node = roxal::make_ptr<df::FuncNode>(
+                    name,
+                    [](const df::Values& vals) -> df::Values { return df::Values{ vals[0] }; },
+                    paramNames,
+                    constArgs,
+                    sigArgs,
+                    df::Names{"result"},
+                    outSignals);
+                node->addToEngine();
+                df::DataflowEngine::instance()->markNetworkModified();
+                df::DataflowEngine::instance()->evaluate();
+            }
+            break;
         case ObjType::Instance:
         case ObjType::Actor:
             throw std::runtime_error("copy assignment not supported for user-defined types");
