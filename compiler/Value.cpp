@@ -11,6 +11,7 @@
 #include <core/types.h>
 #include <Eigen/Dense>
 #include <functional>
+#include <cmath>
 #include <sstream>
 
 
@@ -1019,6 +1020,19 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
                     }
                 }
             }
+            else if (isObjPrimitive(v) && isObjPrimitive(read)) {
+                auto p1 = asObjPrimitive(v); auto p2 = asObjPrimitive(read);
+                pass = p1->type == p2->type;
+                if(pass) {
+                    switch(p1->type) {
+                        case ObjType::Bool:   pass = p1->as.boolean == p2->as.boolean; break;
+                        case ObjType::Int:    pass = p1->as.integer == p2->as.integer; break;
+                        case ObjType::Real:   pass = std::abs(p1->as.real - p2->as.real) < 1e-15; break;
+                        case ObjType::Type:   pass = p1->as.btype == p2->as.btype; break;
+                        default: pass = false; break;
+                    }
+                }
+            }
             else {
                 pass = v.equals(read, true);
             }
@@ -1053,6 +1067,10 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
     Eigen::MatrixXd mat(1,2);
     mat(0,0) = 1.0; mat(0,1) = 2.0;
     roundTrip("matrix_val", objVal(matrixVal(mat)));
+
+    roundTrip("boxed_bool", objVal(newObj<ObjPrimitive>(__func__, true)));
+    roundTrip("boxed_int", objVal(newObj<ObjPrimitive>(__func__, int32_t(-7))));
+    roundTrip("boxed_real", objVal(newObj<ObjPrimitive>(__func__, 1.25)));
 
     return results;
 }
@@ -1935,6 +1953,23 @@ std::ostream& roxal::operator<<(std::ostream& out, const Value& v)
 
 void roxal::writeValue(std::ostream& out, const Value& v)
 {
+    if (isForeignPtr(v))
+        throw std::runtime_error("Cannot serialize foreign pointers");
+
+    if (isFuture(v)) {
+        Value resolved = v;
+        resolved.resolveFuture();
+        writeValue(out, resolved);
+        return;
+    }
+
+    if (v.isBoxed()) {
+        uint8_t type = static_cast<uint8_t>(ValueType::Boxed);
+        out.write(reinterpret_cast<char*>(&type), 1);
+        v.asObj()->write(out);
+        return;
+    }
+
     uint8_t type = static_cast<uint8_t>(v.type());
     out.write(reinterpret_cast<char*>(&type), 1);
 
@@ -1985,6 +2020,12 @@ Value roxal::readValue(std::istream& in)
     if(!in.read(reinterpret_cast<char*>(&typeByte),1))
         throw std::runtime_error("readValue: unable to read type");
     ValueType t = static_cast<ValueType>(typeByte);
+
+    if (t == ValueType::Boxed) {
+        auto obj = newObj<ObjPrimitive>(__func__, false);
+        obj->read(in);
+        return objVal(obj);
+    }
 
     switch(t) {
         case ValueType::Nil:

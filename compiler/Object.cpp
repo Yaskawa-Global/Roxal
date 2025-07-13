@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <dlfcn.h>
+#include <future>
 
 #include <core/types.h>
 #include "Object.h"
@@ -920,17 +921,73 @@ ObjMatrix* roxal::cloneMatrix(const ObjMatrix* m)
     return newm;
 }
 
+void ObjPrimitive::write(std::ostream& out) const
+{
+    ValueType vt = valueType();
+    uint8_t t = static_cast<uint8_t>(vt);
+    out.write(reinterpret_cast<char*>(&t), 1);
+    switch(vt) {
+        case ValueType::Bool: {
+            uint8_t b = as.boolean ? 1 : 0;
+            out.write(reinterpret_cast<char*>(&b), 1);
+            break; }
+        case ValueType::Int: {
+            int32_t i = as.integer;
+            out.write(reinterpret_cast<char*>(&i), 4);
+            break; }
+        case ValueType::Real: {
+            double d = as.real;
+            out.write(reinterpret_cast<char*>(&d), 8);
+            break; }
+        case ValueType::Type: {
+            uint8_t bt = static_cast<uint8_t>(as.btype);
+            out.write(reinterpret_cast<char*>(&bt),1);
+            break; }
+        default:
+            throw std::runtime_error("ObjPrimitive serialization unsupported type" );
+    }
+}
+
+void ObjPrimitive::read(std::istream& in)
+{
+    uint8_t t; in.read(reinterpret_cast<char*>(&t),1);
+    ValueType vt = static_cast<ValueType>(t);
+
+    switch(vt) {
+        case ValueType::Bool: {
+            type = ObjType::Bool;
+            uint8_t b; in.read(reinterpret_cast<char*>(&b),1);
+            as.boolean = b!=0;
+            break; }
+        case ValueType::Int: {
+            type = ObjType::Int;
+            int32_t i; in.read(reinterpret_cast<char*>(&i),4);
+            as.integer = i;
+            break; }
+        case ValueType::Real: {
+            type = ObjType::Real;
+            double d; in.read(reinterpret_cast<char*>(&d),8);
+            as.real = d;
+            break; }
+        case ValueType::Type: {
+            type = ObjType::Type;
+            uint8_t bt; in.read(reinterpret_cast<char*>(&bt),1);
+            as.btype = static_cast<ValueType>(bt);
+            break; }
+        default:
+            throw std::runtime_error("ObjPrimitive deserialization unsupported type" );
+    }
+}
+
 // Default serialization stubs for unsupported object types
-void ObjPrimitive::write(std::ostream&) const { throw std::runtime_error("ObjPrimitive serialization not implemented"); }
-void ObjPrimitive::read(std::istream&) { throw std::runtime_error("ObjPrimitive deserialization not implemented"); }
 void ObjSignal::write(std::ostream&) const { throw std::runtime_error("ObjSignal serialization not implemented"); }
 void ObjSignal::read(std::istream&) { throw std::runtime_error("ObjSignal deserialization not implemented"); }
 void ObjEvent::write(std::ostream&) const { throw std::runtime_error("ObjEvent serialization not implemented"); }
 void ObjEvent::read(std::istream&) { throw std::runtime_error("ObjEvent deserialization not implemented"); }
 void ObjLibrary::write(std::ostream&) const { throw std::runtime_error("ObjLibrary serialization not implemented"); }
 void ObjLibrary::read(std::istream&) { throw std::runtime_error("ObjLibrary deserialization not implemented"); }
-void ObjForeignPtr::write(std::ostream&) const { throw std::runtime_error("ObjForeignPtr serialization not implemented"); }
-void ObjForeignPtr::read(std::istream&) { throw std::runtime_error("ObjForeignPtr deserialization not implemented"); }
+void ObjForeignPtr::write(std::ostream&) const { throw std::runtime_error("Cannot serialize foreign pointers"); }
+void ObjForeignPtr::read(std::istream&) { throw std::runtime_error("Cannot deserialize foreign pointers"); }
 void ObjException::write(std::ostream&) const { throw std::runtime_error("ObjException serialization not implemented"); }
 void ObjException::read(std::istream&) { throw std::runtime_error("ObjException deserialization not implemented"); }
 void ObjFunction::write(std::ostream&) const { throw std::runtime_error("ObjFunction serialization not implemented"); }
@@ -939,8 +996,20 @@ void ObjUpvalue::write(std::ostream&) const { throw std::runtime_error("ObjUpval
 void ObjUpvalue::read(std::istream&) { throw std::runtime_error("ObjUpvalue deserialization not implemented"); }
 void ObjClosure::write(std::ostream&) const { throw std::runtime_error("ObjClosure serialization not implemented"); }
 void ObjClosure::read(std::istream&) { throw std::runtime_error("ObjClosure deserialization not implemented"); }
-void ObjFuture::write(std::ostream&) const { throw std::runtime_error("ObjFuture serialization not implemented"); }
-void ObjFuture::read(std::istream&) { throw std::runtime_error("ObjFuture deserialization not implemented"); }
+void ObjFuture::write(std::ostream& out) const
+{
+    Value resolved = future.valid() ? future.get() : nilVal();
+    writeValue(out, resolved);
+}
+
+void ObjFuture::read(std::istream& in)
+{
+    // Deserialize as resolved value and wrap back into a fulfilled future
+    Value val = readValue(in);
+    std::promise<Value> p;
+    p.set_value(val);
+    future = p.get_future().share();
+}
 void ObjNative::write(std::ostream&) const { throw std::runtime_error("ObjNative serialization not implemented"); }
 void ObjNative::read(std::istream&) { throw std::runtime_error("ObjNative deserialization not implemented"); }
 void ObjTypeSpec::write(std::ostream& out) const

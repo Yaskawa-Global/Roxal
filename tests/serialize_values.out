@@ -8,4 +8,7 @@ Test: list_val passed ok
 Test: dict_val passed ok
 Test: vector_val passed ok
 Test: matrix_val passed ok
-Passed 10 failed 0
+Test: boxed_bool passed ok
+Test: boxed_int passed ok
+Test: boxed_real passed ok
+Passed 13 failed 0
