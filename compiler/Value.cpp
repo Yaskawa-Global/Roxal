@@ -1999,7 +1999,12 @@ void roxal::writeValue(std::ostream& out, const Value& v)
             out.write(reinterpret_cast<char*>(&id),2);
             break; }
         case ValueType::Type:
-            v.asObj()->write(out);
+            if (v.isObj())
+                v.asObj()->write(out);
+            else {
+                uint8_t tv = static_cast<uint8_t>(v.asType());
+                out.write(reinterpret_cast<char*>(&tv),1);
+            }
             break;
         case ValueType::String:
         case ValueType::Range:
@@ -2050,18 +2055,20 @@ Value roxal::readValue(std::istream& in)
         case ValueType::Type: {
             uint8_t subType;
             in.read(reinterpret_cast<char*>(&subType),1);
-            in.putback(static_cast<char>(subType));
-
             ValueType tv = static_cast<ValueType>(subType);
-            if (tv == ValueType::Object || tv == ValueType::Actor || tv == ValueType::Enum) {
-                auto obj = newObj<ObjObjectType>(__func__, icu::UnicodeString(), false, false, false);
-                obj->read(in);
-                return objVal(obj);
-            } else {
-                auto obj = newObj<ObjTypeSpec>(__func__);
-                obj->read(in);
-                return objVal(obj);
+            if (tv == ValueType::Object || tv == ValueType::Actor || tv == ValueType::Enum || tv == ValueType::Module) {
+                in.putback(static_cast<char>(subType));
+                if (tv == ValueType::Object || tv == ValueType::Actor || tv == ValueType::Enum) {
+                    auto obj = newObj<ObjObjectType>(__func__, icu::UnicodeString(), false, false, false);
+                    obj->read(in);
+                    return objVal(obj);
+                } else {
+                    auto obj = newObj<ObjTypeSpec>(__func__);
+                    obj->read(in);
+                    return objVal(obj);
+                }
             }
+            return typeVal(tv);
         }
         case ValueType::String: {
             auto obj = newObj<ObjString>(__func__);
