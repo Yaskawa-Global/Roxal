@@ -52,6 +52,9 @@ std::string roxal::to_string(ValueType t)
     case ValueType::Actor: return "actor"; break;
     case ValueType::Module: return "module"; break;
     case ValueType::Event: return "event"; break;
+    case ValueType::Function: return "function"; break;
+    case ValueType::Closure: return "closure"; break;
+    case ValueType::Upvalue: return "upvalue"; break;
     default:
         throw std::runtime_error("Unhandled type for to_string "+std::to_string(int(t)));
     }
@@ -935,6 +938,9 @@ static type::BuiltinType valueTypeToBuiltin(ValueType t)
         case ValueType::Matrix:  return BuiltinType::Matrix;
         case ValueType::Signal:  return BuiltinType::Signal;
         case ValueType::Event:   return BuiltinType::Event;
+        case ValueType::Function:
+        case ValueType::Closure: return BuiltinType::Func;
+        case ValueType::Upvalue: return BuiltinType::Object;
         case ValueType::Tensor:  return BuiltinType::Tensor;
         case ValueType::Orient:  return BuiltinType::Orient;
         case ValueType::Object:  return BuiltinType::Object;
@@ -1071,6 +1077,77 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
     roundTrip("boxed_bool", objVal(newObj<ObjPrimitive>(__func__, true)));
     roundTrip("boxed_int", objVal(newObj<ObjPrimitive>(__func__, int32_t(-7))));
     roundTrip("boxed_real", objVal(newObj<ObjPrimitive>(__func__, 1.25)));
+
+    // simple chunk round trip
+    {
+        try {
+            Chunk ch(toUnicodeString("pkg"), toUnicodeString("mod"), toUnicodeString("src"));
+            ch.write(OpCode::ConstNil,0,0);
+            ch.write(OpCode::Return,0,0);
+            std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
+            ch.serialize(ss);
+            ss.seekg(0);
+            Chunk ch2(toUnicodeString(""),toUnicodeString(""),toUnicodeString(""));
+            ch2.deserialize(ss);
+            bool pass = (ch.code == ch2.code) && (ch.constants.size()==ch2.constants.size());
+            if(pass) {
+                for(size_t i=0;i<ch.constants.size();i++)
+                    if(!ch.constants[i].equals(ch2.constants[i],true)) { pass=false; break; }
+            }
+            results.push_back({"chunk_round", pass, pass?"ok":"mismatch"});
+        } catch(std::exception& e) {
+            results.push_back({"chunk_round", false, std::string("exception: ")+e.what()});
+        }
+    }
+
+    // function round trip
+    {
+        try {
+            ObjFunction* fn = functionVal(toUnicodeString("pkg"), toUnicodeString("mod"), toUnicodeString("src"));
+            fn->name = toUnicodeString("fn");
+            fn->arity = 0; fn->upvalueCount = 0; fn->strict=false; fn->fnType=FunctionType::Function;
+            fn->chunk->write(OpCode::ConstNil,0,0);
+            fn->chunk->write(OpCode::Return,0,0);
+            std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
+            fn->write(ss);
+            ss.seekg(0);
+            auto fn2 = newObj<ObjFunction>(__func__, toUnicodeString(""), toUnicodeString(""), toUnicodeString(""));
+            fn2->read(ss);
+            bool pass = fn->name == fn2->name && fn->arity==fn2->arity && fn->upvalueCount==fn2->upvalueCount && fn->chunk->code==fn2->chunk->code;
+            results.push_back({"function_round", pass, pass?"ok":"mismatch"});
+            delObj(fn2);
+            delObj(fn);
+        } catch(std::exception& e) {
+            results.push_back({"function_round", false, std::string("exception: ")+e.what()});
+        }
+    }
+
+    // closure round trip
+    {
+        try {
+            ObjFunction* fn = functionVal(toUnicodeString("pkg"), toUnicodeString("mod"), toUnicodeString("src"));
+            fn->name = toUnicodeString("cl");
+            fn->arity = 0; fn->upvalueCount = 1;
+            fn->chunk->write(OpCode::ConstNil,0,0);
+            fn->chunk->write(OpCode::Return,0,0);
+            ObjClosure* cl = closureVal(fn);
+            Value* local = new Value(intVal(3));
+            cl->upvalues[0] = upvalueVal(local);
+            std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
+            cl->write(ss);
+            ss.seekg(0);
+            auto cl2 = newObj<ObjClosure>(__func__, nullptr);
+            cl2->read(ss);
+            bool pass = cl2->function->name == cl->function->name && cl2->upvalues.size()==cl->upvalues.size() && cl2->upvalues[0]->closed.equals(intVal(3), true);
+            results.push_back({"closure_round", pass, pass?"ok":"mismatch"});
+            delObj(cl2);
+            delObj(cl);
+            delObj(fn);
+            delete local;
+        } catch(std::exception& e) {
+            results.push_back({"closure_round", false, std::string("exception: ")+e.what()});
+        }
+    }
 
     return results;
 }
@@ -2014,6 +2091,11 @@ void roxal::writeValue(std::ostream& out, const Value& v)
         case ValueType::Matrix:
             v.asObj()->write(out);
             break;
+        case ValueType::Function:
+        case ValueType::Closure:
+        case ValueType::Upvalue:
+            v.asObj()->write(out);
+            break;
         default:
             throw std::runtime_error("writeValue: unsupported type " + v.typeName());
     }
@@ -2094,8 +2176,20 @@ Value roxal::readValue(std::istream& in)
             auto obj = newObj<ObjMatrix>(__func__);
             obj->read(in);
             return objVal(obj); }
+        case ValueType::Function: {
+            auto obj = newObj<ObjFunction>(__func__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+            obj->read(in);
+            return objVal(obj); }
+        case ValueType::Closure: {
+            auto obj = newObj<ObjClosure>(__func__, nullptr);
+            obj->read(in);
+            return objVal(obj); }
+        case ValueType::Upvalue: {
+            auto obj = newObj<ObjUpvalue>(__func__, nullptr);
+            obj->read(in);
+            return objVal(obj); }
         default:
-            throw std::runtime_error("readValue: unsupported type " + std::to_string(static_cast<int>(t))); 
+            throw std::runtime_error("readValue: unsupported type " + std::to_string(static_cast<int>(t)));
     }
 }
 

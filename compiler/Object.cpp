@@ -46,6 +46,9 @@ ValueType Obj::valueType() const
         case ObjType::Matrix: return ValueType::Matrix;
         case ObjType::Signal: return ValueType::Signal;
         case ObjType::Event: return ValueType::Event;
+        case ObjType::Function: return ValueType::Function;
+        case ObjType::Closure: return ValueType::Closure;
+        case ObjType::Upvalue: return ValueType::Upvalue;
         case ObjType::Exception: return ValueType::Object;
         case ObjType::Instance: return static_cast<const ObjObjectType*>(this)->isActor ? ValueType::Actor : ValueType::Object;
         case ObjType::Actor: return ValueType::Actor;
@@ -1081,10 +1084,68 @@ void ObjFunction::read(std::istream& in)
 
     moduleType = readValue(in);
 }
-void ObjUpvalue::write(std::ostream&) const { throw std::runtime_error("ObjUpvalue serialization not implemented"); }
-void ObjUpvalue::read(std::istream&) { throw std::runtime_error("ObjUpvalue deserialization not implemented"); }
-void ObjClosure::write(std::ostream&) const { throw std::runtime_error("ObjClosure serialization not implemented"); }
-void ObjClosure::read(std::istream&) { throw std::runtime_error("ObjClosure deserialization not implemented"); }
+void ObjUpvalue::write(std::ostream& out) const
+{
+    ObjUpvalue* self = const_cast<ObjUpvalue*>(this);
+    if (self->location != &self->closed) {
+        self->closed = *self->location;
+        self->location = &self->closed;
+    }
+
+    uint8_t tag = static_cast<uint8_t>(ObjType::Upvalue);
+    out.write(reinterpret_cast<char*>(&tag),1);
+    writeValue(out, self->closed);
+}
+
+void ObjUpvalue::read(std::istream& in)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
+    if(tag != static_cast<uint8_t>(ObjType::Upvalue))
+        throw std::runtime_error("ObjUpvalue::read mismatched tag");
+    type = ObjType::Upvalue;
+    closed = readValue(in);
+    location = &closed;
+}
+
+void ObjClosure::write(std::ostream& out) const
+{
+    uint8_t tag = static_cast<uint8_t>(ObjType::Closure);
+    out.write(reinterpret_cast<char*>(&tag),1);
+    function->write(out);
+    uint32_t count = upvalues.size();
+    out.write(reinterpret_cast<char*>(&count),4);
+    for(auto* uv : upvalues) {
+        uint8_t present = uv ? 1 : 0;
+        out.write(reinterpret_cast<char*>(&present),1);
+        if(present)
+            uv->write(out);
+    }
+}
+
+void ObjClosure::read(std::istream& in)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
+    if(tag != static_cast<uint8_t>(ObjType::Closure))
+        throw std::runtime_error("ObjClosure::read mismatched tag");
+    type = ObjType::Closure;
+
+    auto fn = newObj<ObjFunction>(__func__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+    fn->read(in);
+    function = fn;
+    function->incRef();
+
+    uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
+    upvalues.resize(count,nullptr);
+    for(uint32_t i=0;i<count;i++) {
+        uint8_t present; in.read(reinterpret_cast<char*>(&present),1);
+        if(present) {
+            auto uv = newObj<ObjUpvalue>(__func__, nullptr);
+            uv->read(in);
+            upvalues[i] = uv;
+            uv->incRef();
+        }
+    }
+}
 void ObjFuture::write(std::ostream& out) const
 {
     Value resolved = future.valid() ? future.get() : nilVal();

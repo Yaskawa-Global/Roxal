@@ -11,4 +11,7 @@ Test: matrix_val passed ok
 Test: boxed_bool passed ok
 Test: boxed_int passed ok
 Test: boxed_real passed ok
-Passed 13 failed 0
+Test: chunk_round passed ok
+Test: function_round passed ok
+Test: closure_round passed ok
+Passed 16 failed 0
