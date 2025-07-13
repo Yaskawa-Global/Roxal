@@ -152,6 +152,8 @@ void roxal::Value::decWeakObj()
 
 bool Value::asBool(bool strict) const
 {
+    if (isFuture(*this))
+        return asFuture(*this)->asValue().asBool(strict);
     if (isSignal(*this))
         return asSignal(*this)->signal->lastValue().asBool(strict);
     Value unboxed;
@@ -204,6 +206,8 @@ bool Value::asBool(bool strict) const
 
 uint8_t Value::asByte(bool strict) const
 {
+    if (isFuture(*this))
+        return asFuture(*this)->asValue().asByte(strict);
     if (isSignal(*this))
         return asSignal(*this)->signal->lastValue().asByte(strict);
     Value unboxed;
@@ -261,6 +265,8 @@ uint8_t Value::asByte(bool strict) const
 
 int32_t Value::asInt(bool strict) const
 {
+    if (isFuture(*this))
+        return asFuture(*this)->asValue().asInt(strict);
     if (isSignal(*this))
         return asSignal(*this)->signal->lastValue().asInt(strict);
     Value unboxed;
@@ -320,6 +326,8 @@ int16_t Value::asEnum() const
 
 double Value::asReal(bool strict) const
 {
+    if (isFuture(*this))
+        return asFuture(*this)->asValue().asReal(strict);
     if (isSignal(*this))
         return asSignal(*this)->signal->lastValue().asReal(strict);
     Value unboxed;
@@ -514,6 +522,8 @@ void roxal::Value::decRefObj()
 
 bool Value::asBool(bool strict) const
 {
+    if (isFuture(*this))
+        return asFuture(*this)->asValue().asBool(strict);
     if (isSignal(*this))
         return asSignal(*this)->signal->lastValue().asBool(strict);
     Value unboxed;
@@ -557,6 +567,8 @@ bool Value::asBool(bool strict) const
 
 int32_t Value::asInt(bool strict) const
 {
+    if (isFuture(*this))
+        return asFuture(*this)->asValue().asInt(strict);
     if (isSignal(*this))
         return asSignal(*this)->signal->lastValue().asInt(strict);
     Value unboxed;
@@ -602,6 +614,8 @@ int32_t Value::asInt(bool strict) const
 
 double Value::asReal(bool strict) const
 {
+    if (isFuture(*this))
+        return asFuture(*this)->asValue().asReal(strict);
     if (isSignal(*this))
         return asSignal(*this)->signal->lastValue().asReal(strict);
     Value unboxed;
