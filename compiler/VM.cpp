@@ -2556,7 +2556,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                push(rhs);
+                push(lhs);
                 break;
             }
             case asByte(OpCode::JumpIfFalse): {

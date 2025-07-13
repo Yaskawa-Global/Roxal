@@ -1366,6 +1366,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             }
 
             emitByte(OpCode::CopyAssign);
+            namedVariable(name, /*assign=*/true); // store result back
         }
         else if (isa<UnaryOp>(ast->lhs) && as<UnaryOp>(ast->lhs)->op==UnaryOp::Accessor) {
             auto accessor = as<UnaryOp>(ast->lhs);
@@ -1375,7 +1376,8 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                 throw std::runtime_error("accessor unary operator expects member name");
             int16_t propName = identifierConstant(accessor->member.value());
 
-            OpCode op = OpCode::GetPropCheck;
+            OpCode getOp = OpCode::GetPropCheck;
+            OpCode setOp = (propName <= 255 ? OpCode::SetPropCheck : OpCode::SetProp2);
             if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
                 auto itType = typePropertyRegistry.find(asTypeScope(typeScope())->name);
                 if (itType != typePropertyRegistry.end()) {
@@ -1384,27 +1386,37 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                         const auto& info = itMem->second;
                         if (info.access == Access::Private && info.owner != asTypeScope(typeScope())->name)
                             error("Cannot access private member '"+toUTF8StdString(accessor->member.value())+"'");
-                        op = OpCode::GetProp;
+                        getOp = OpCode::GetProp;
+                        setOp = (propName <= 255 ? OpCode::SetProp : OpCode::SetProp2);
                     }
                 }
             }
 
-            emitBytes(op, propName);
+            emitByte(OpCode::Dup);                 // keep instance for SetProp
+            emitBytes(getOp, propName);            // push current property value
 
             ast->rhs->accept(*this);
 
-            emitByte(OpCode::CopyAssign);
+            emitByte(OpCode::CopyAssign);          // mutate property value
+            emitBytes(setOp, propName);            // store back
         }
         else if (isa<Index>(ast->lhs)) {
             auto index { as<Index>(ast->lhs) };
 
+            // obtain current element
             index->indexable->accept(*this);
             for(auto& arg : index->args)
                 arg->accept(*this);
             emitBytes(OpCode::Index, index->args.size());
 
             ast->rhs->accept(*this);
-            emitByte(OpCode::CopyAssign);
+            emitByte(OpCode::CopyAssign);          // mutate element
+
+            // set element back
+            index->indexable->accept(*this);
+            for(auto& arg : index->args)
+                arg->accept(*this);
+            emitBytes(OpCode::SetIndex, index->args.size());
         }
         else {
             throw std::runtime_error("LHS of copy assignment must be a variable, property accessor or indexing");
