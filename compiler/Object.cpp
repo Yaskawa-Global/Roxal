@@ -118,6 +118,13 @@ Obj* Obj::clone() const
 // interned strings table
 static atomic_unordered_map<int32_t, ObjString*> strings {};
 
+ObjString::ObjString()
+    : s()
+{
+    type = ObjType::String;
+    hash = 0;
+}
+
 
 ObjString::ObjString(const UnicodeString& us)
     :  s(us)
@@ -221,6 +228,25 @@ void roxal::updateInternedString(ObjString* obj, const UnicodeString& newVal)
     strings.store(obj->hash, obj);
 }
 
+void ObjString::write(std::ostream& out) const
+{
+    std::string ss;
+    s.toUTF8String(ss);
+    uint32_t len = ss.size();
+    out.write(reinterpret_cast<char*>(&len), 4);
+    out.write(ss.data(), len);
+}
+
+void ObjString::read(std::istream& in)
+{
+    uint32_t len;
+    in.read(reinterpret_cast<char*>(&len), 4);
+    std::string ss(len, '\0');
+    if (len > 0) in.read(ss.data(), len);
+    UnicodeString us = UnicodeString::fromUTF8(ss);
+    updateInternedString(this, us);
+}
+
 
 
 // range
@@ -236,6 +262,24 @@ ObjRange::ObjRange(const Value& rstart, const Value& rstop, const Value& rstep, 
     : start(rstart), stop(rstop), step(rstep), closed(rclosed)
 {
     type = ObjType::Range;
+}
+
+void ObjRange::write(std::ostream& out) const
+{
+    writeValue(out, start);
+    writeValue(out, stop);
+    writeValue(out, step);
+    uint8_t c = closed ? 1 : 0;
+    out.write(reinterpret_cast<char*>(&c), 1);
+}
+
+void ObjRange::read(std::istream& in)
+{
+    start = readValue(in);
+    stop  = readValue(in);
+    step  = readValue(in);
+    uint8_t c; in.read(reinterpret_cast<char*>(&c), 1);
+    closed = c != 0;
 }
 
 
@@ -605,6 +649,24 @@ void ObjList::append(const Value& value)
     elts.push_back(value);
 }
 
+void ObjList::write(std::ostream& out) const
+{
+    uint32_t len = length();
+    out.write(reinterpret_cast<char*>(&len), 4);
+    auto list = elts.get();
+    for(const auto& v : list)
+        writeValue(out, v);
+}
+
+void ObjList::read(std::istream& in)
+{
+    uint32_t len;
+    in.read(reinterpret_cast<char*>(&len), 4);
+    elts.clear();
+    for(uint32_t i=0;i<len;i++)
+        elts.push_back(readValue(in));
+}
+
 
 
 ObjList* roxal::listVal()
@@ -704,6 +766,31 @@ std::string roxal::objDictToString(const ObjDict* od)
     return os.str();
 }
 
+void ObjDict::write(std::ostream& out) const
+{
+    auto ents = items();
+    uint32_t len = ents.size();
+    out.write(reinterpret_cast<char*>(&len), 4);
+    for(const auto& p : ents) {
+        writeValue(out, p.first);
+        writeValue(out, p.second);
+    }
+}
+
+void ObjDict::read(std::istream& in)
+{
+    uint32_t len;
+    in.read(reinterpret_cast<char*>(&len), 4);
+    m_keys.clear();
+    entries.clear();
+    for(uint32_t i=0;i<len;i++) {
+        Value k = readValue(in);
+        Value v = readValue(in);
+        m_keys.push_back(k);
+        entries[k] = v;
+    }
+}
+
 
 ObjVector* roxal::vectorVal()
 {
@@ -754,6 +841,27 @@ bool ObjVector::equals(const ObjVector* other, double eps) const
 
     // Use Eigen's isApprox for element-wise comparison with tolerance
     return vec.isApprox(other->vec, eps);
+}
+
+void ObjVector::write(std::ostream& out) const
+{
+    uint32_t len = vec.size();
+    out.write(reinterpret_cast<char*>(&len), 4);
+    for(uint32_t i=0;i<len;i++) {
+        double d = vec[i];
+        out.write(reinterpret_cast<char*>(&d), 8);
+    }
+}
+
+void ObjVector::read(std::istream& in)
+{
+    uint32_t len;
+    in.read(reinterpret_cast<char*>(&len), 4);
+    vec.resize(len);
+    for(uint32_t i=0;i<len;i++) {
+        double d; in.read(reinterpret_cast<char*>(&d), 8);
+        vec[i] = d;
+    }
 }
 
 
@@ -810,6 +918,72 @@ ObjMatrix* roxal::cloneMatrix(const ObjMatrix* m)
     auto newm = newObj<ObjMatrix>(__func__, m->mat.rows(), m->mat.cols());
     newm->mat = m->mat;
     return newm;
+}
+
+// Default serialization stubs for unsupported object types
+void ObjPrimitive::write(std::ostream&) const { throw std::runtime_error("ObjPrimitive serialization not implemented"); }
+void ObjPrimitive::read(std::istream&) { throw std::runtime_error("ObjPrimitive deserialization not implemented"); }
+void ObjSignal::write(std::ostream&) const { throw std::runtime_error("ObjSignal serialization not implemented"); }
+void ObjSignal::read(std::istream&) { throw std::runtime_error("ObjSignal deserialization not implemented"); }
+void ObjEvent::write(std::ostream&) const { throw std::runtime_error("ObjEvent serialization not implemented"); }
+void ObjEvent::read(std::istream&) { throw std::runtime_error("ObjEvent deserialization not implemented"); }
+void ObjLibrary::write(std::ostream&) const { throw std::runtime_error("ObjLibrary serialization not implemented"); }
+void ObjLibrary::read(std::istream&) { throw std::runtime_error("ObjLibrary deserialization not implemented"); }
+void ObjForeignPtr::write(std::ostream&) const { throw std::runtime_error("ObjForeignPtr serialization not implemented"); }
+void ObjForeignPtr::read(std::istream&) { throw std::runtime_error("ObjForeignPtr deserialization not implemented"); }
+void ObjException::write(std::ostream&) const { throw std::runtime_error("ObjException serialization not implemented"); }
+void ObjException::read(std::istream&) { throw std::runtime_error("ObjException deserialization not implemented"); }
+void ObjFunction::write(std::ostream&) const { throw std::runtime_error("ObjFunction serialization not implemented"); }
+void ObjFunction::read(std::istream&) { throw std::runtime_error("ObjFunction deserialization not implemented"); }
+void ObjUpvalue::write(std::ostream&) const { throw std::runtime_error("ObjUpvalue serialization not implemented"); }
+void ObjUpvalue::read(std::istream&) { throw std::runtime_error("ObjUpvalue deserialization not implemented"); }
+void ObjClosure::write(std::ostream&) const { throw std::runtime_error("ObjClosure serialization not implemented"); }
+void ObjClosure::read(std::istream&) { throw std::runtime_error("ObjClosure deserialization not implemented"); }
+void ObjFuture::write(std::ostream&) const { throw std::runtime_error("ObjFuture serialization not implemented"); }
+void ObjFuture::read(std::istream&) { throw std::runtime_error("ObjFuture deserialization not implemented"); }
+void ObjNative::write(std::ostream&) const { throw std::runtime_error("ObjNative serialization not implemented"); }
+void ObjNative::read(std::istream&) { throw std::runtime_error("ObjNative deserialization not implemented"); }
+void ObjTypeSpec::write(std::ostream&) const { throw std::runtime_error("ObjTypeSpec serialization not implemented"); }
+void ObjTypeSpec::read(std::istream&) { throw std::runtime_error("ObjTypeSpec deserialization not implemented"); }
+void ObjObjectType::write(std::ostream&) const { throw std::runtime_error("ObjObjectType serialization not implemented"); }
+void ObjObjectType::read(std::istream&) { throw std::runtime_error("ObjObjectType deserialization not implemented"); }
+void ObjPackageType::write(std::ostream&) const { throw std::runtime_error("ObjPackageType serialization not implemented"); }
+void ObjPackageType::read(std::istream&) { throw std::runtime_error("ObjPackageType deserialization not implemented"); }
+void ObjModuleType::write(std::ostream&) const { throw std::runtime_error("ObjModuleType serialization not implemented"); }
+void ObjModuleType::read(std::istream&) { throw std::runtime_error("ObjModuleType deserialization not implemented"); }
+void ObjectInstance::write(std::ostream&) const { throw std::runtime_error("ObjectInstance serialization not implemented"); }
+void ObjectInstance::read(std::istream&) { throw std::runtime_error("ObjectInstance deserialization not implemented"); }
+void ObjBoundMethod::write(std::ostream&) const { throw std::runtime_error("ObjBoundMethod serialization not implemented"); }
+void ObjBoundMethod::read(std::istream&) { throw std::runtime_error("ObjBoundMethod deserialization not implemented"); }
+void ObjBoundNative::write(std::ostream&) const { throw std::runtime_error("ObjBoundNative serialization not implemented"); }
+void ObjBoundNative::read(std::istream&) { throw std::runtime_error("ObjBoundNative deserialization not implemented"); }
+void ActorInstance::write(std::ostream&) const { throw std::runtime_error("ActorInstance serialization not implemented"); }
+void ActorInstance::read(std::istream&) { throw std::runtime_error("ActorInstance deserialization not implemented"); }
+
+void ObjMatrix::write(std::ostream& out) const
+{
+    uint32_t rows = mat.rows();
+    uint32_t cols = mat.cols();
+    out.write(reinterpret_cast<char*>(&rows), 4);
+    out.write(reinterpret_cast<char*>(&cols), 4);
+    for(uint32_t r=0;r<rows;r++)
+        for(uint32_t c=0;c<cols;c++) {
+            double d = mat(r,c);
+            out.write(reinterpret_cast<char*>(&d), 8);
+        }
+}
+
+void ObjMatrix::read(std::istream& in)
+{
+    uint32_t rows, cols;
+    in.read(reinterpret_cast<char*>(&rows), 4);
+    in.read(reinterpret_cast<char*>(&cols), 4);
+    mat.resize(rows, cols);
+    for(uint32_t r=0;r<rows;r++)
+        for(uint32_t c=0;c<cols;c++) {
+            double d; in.read(reinterpret_cast<char*>(&d), 8);
+            mat(r,c) = d;
+        }
 }
 
 ObjSignal::ObjSignal(ptr<df::Signal> s)

@@ -9,6 +9,8 @@
 #include <condition_variable>
 #include <memory>
 #include <unicode/ustring.h>
+#include <ostream>
+#include <istream>
 
 #include <core/common.h>
 #include <core/AST.h>
@@ -89,6 +91,9 @@ struct Obj {
     ValueType valueType() const;
 
     Obj* clone() const; // deep copy
+
+    virtual void write(std::ostream& out) const = 0;
+    virtual void read(std::istream& in) = 0;
 
     inline void incRef()
     {
@@ -227,6 +232,9 @@ struct ObjPrimitive : public Obj
         int32_t integer;
         ValueType btype;
     } as;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isObjPrimitive(const Value& v) { return isObjType(v, ObjType::Bool) || isObjType(v, ObjType::Int) || isObjType(v, ObjType::Real) || isObjType(v,ObjType::Type); }
@@ -255,6 +263,7 @@ inline ObjPrimitive* cloneObjPrimitive(const ObjPrimitive* op) {
 
 struct ObjString : public Obj
 {
+    ObjString();
     ObjString(const UnicodeString& us);
     virtual ~ObjString();
 
@@ -263,6 +272,9 @@ struct ObjString : public Obj
 
     // number of 16bit Unicode code units
     int32_t length() const { return s.length(); }
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 
     // Elements are Unicode code units (not code points or characters)
     Value index(const Value& i) const;
@@ -298,6 +310,9 @@ struct ObjRange : public Obj
     Value stop;
     Value step;
     bool closed;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 
     // length can depend on target length due to use of -ve offsets from end
     int32_t length(int32_t targetLen) const;
@@ -349,6 +364,9 @@ struct ObjList : public Obj
     void append(const Value& value);         // Append value to this list
 
     atomic_vector<Value> elts;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 
@@ -424,6 +442,10 @@ private:
     std::vector<Value> m_keys;
     // TODO: transition unordered map (since m_keys provides ordering) - Value hash?
     std::map<Value,Value,ValueComparitor> entries;
+
+public:
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 
@@ -456,6 +478,9 @@ struct ObjVector : public Obj
     bool equals(const ObjVector* other, double eps = 1e-15) const;
 
     Eigen::VectorXd vec;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isVector(const Value& v) { return isObjType(v, ObjType::Vector); }
@@ -496,6 +521,9 @@ struct ObjMatrix : public Obj
     bool equals(const ObjMatrix* other, double eps = 1e-15) const;
 
     Eigen::MatrixXd mat;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isMatrix(const Value& v) { return isObjType(v, ObjType::Matrix); }
@@ -517,6 +545,9 @@ struct ObjSignal : public Obj {
     ObjEvent* ensureChangeEvent();
     ptr<df::Signal> signal;
     Value changeEvent;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isSignal(const Value& v) { return isObjType(v, ObjType::Signal); }
@@ -535,6 +566,9 @@ struct ObjEvent : public Obj {
 
     // list of subscribed handler closures (weak references)
     std::vector<Value> subscribers;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isEvent(const Value& v) { return isObjType(v, ObjType::Event); }
@@ -551,6 +585,9 @@ struct ObjLibrary : public Obj {
     ObjLibrary(void* h) : handle(h) { type = ObjType::Library; }
     virtual ~ObjLibrary();
     void* handle;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isLibrary(const Value& v) { return isObjType(v, ObjType::Library); }
@@ -566,6 +603,9 @@ struct ObjForeignPtr : public Obj {
     ObjForeignPtr(void* p) : ptr(p) { type = ObjType::ForeignPtr; }
     virtual ~ObjForeignPtr() {}
     void* ptr;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isForeignPtr(const Value& v) { return isObjType(v, ObjType::ForeignPtr); }
@@ -586,6 +626,9 @@ struct ObjException : public Obj {
 
     Value message;
     Value exType; // object type of the exception
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isException(const Value& v) { return isObjType(v, ObjType::Exception); }
@@ -635,6 +678,9 @@ struct ObjFunction : public Obj
     std::map<int32_t, ObjFunction*> paramDefaultFunc;
 
     Value moduleType; // ObjModuleType
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isFunction(const Value& v) { return isObjType(v, ObjType::Function); }
@@ -669,6 +715,9 @@ struct ObjUpvalue : public Obj {
 
     Value* location;
     Value closed;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isUpvalue(const Value& v) { return isObjType(v, ObjType::Upvalue); }
@@ -711,6 +760,9 @@ struct ObjClosure : public Obj
 
     // thread expected to execute this closure when used as an event handler
     std::weak_ptr<Thread> handlerThread;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isClosure(const Value& v) { return isObjType(v, ObjType::Closure); }
@@ -750,6 +802,9 @@ struct ObjFuture : public Obj
     Value asValue() { return future.valid() ? future.get() : nilVal(); }
 
     std::shared_future<Value> future;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isFuture(const Value& v) { return isObjType(v, ObjType::Future); }
@@ -789,6 +844,9 @@ struct ObjNative : public Obj
     void* data;
     ptr<roxal::type::Type> funcType;
     std::vector<Value> defaultValues;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isNative(const Value& v) { return isObjType(v, ObjType::Native); }
@@ -815,6 +873,9 @@ struct ObjTypeSpec : public Obj
     virtual ~ObjTypeSpec() {}
 
     ValueType typeValue;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isTypeSpec(const Value& v) { return isObjType(v,ObjType::Type); }
@@ -877,6 +938,9 @@ struct ObjObjectType : public ObjTypeSpec
     // global enum type id -> ObjObjectType
     //  TODO: make thread safe?
     static std::unordered_map<uint16_t, ObjObjectType*> enumTypes;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 
@@ -891,6 +955,9 @@ ObjObjectType* objectTypeVal(const icu::UnicodeString& typeName, bool isActor, b
 struct ObjPackageType : public ObjTypeSpec
 {
     // TODO
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 struct ObjModuleType : public ObjTypeSpec
@@ -910,6 +977,9 @@ struct ObjModuleType : public ObjTypeSpec
     std::unordered_map<int32_t, std::unordered_map<int32_t, icu::UnicodeString>> propertyCTypes;
 
     static atomic_vector<ObjModuleType*> allModules;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isModuleType(const Value& v) { return isObjType(v, ObjType::Type) && (asTypeSpec(v)->typeValue == ValueType::Module); }
@@ -931,6 +1001,9 @@ struct ObjectInstance : public Obj
 
     ObjObjectType* instanceType;
     std::unordered_map<int32_t, Value> properties;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isObjectInstance(const Value& v) { return isObjType(v, ObjType::Instance); }
@@ -973,6 +1046,9 @@ struct ActorInstance : public Obj
 
     std::thread::id thread_id;
     std::weak_ptr<Thread> thread;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isActorInstance(const Value& v) { return isObjType(v, ObjType::Actor); }
@@ -992,6 +1068,9 @@ struct ObjBoundMethod : public Obj
 
     Value receiver;
     ObjClosure* method;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isBoundMethod(const Value& v) { return isObjType(v, ObjType::BoundMethod); }
@@ -1024,6 +1103,9 @@ struct ObjBoundNative : public Obj
     bool isProc;  // true for proc methods, false for func methods
     ptr<roxal::type::Type> funcType;
     std::vector<Value> defaultValues;
+
+    void write(std::ostream& out) const override;
+    void read(std::istream& in) override;
 };
 
 inline bool isBoundNative(const Value& v) { return isObjType(v, ObjType::BoundNative); }

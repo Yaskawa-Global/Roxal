@@ -6,6 +6,8 @@
 #include <vector>
 #include <tuple>
 #include <cassert>
+#include <ostream>
+#include <istream>
 
 #include <core/common.h>
 #include "ObjControl.h"
@@ -85,6 +87,9 @@ const uint64_t TagType  = uint64_t(ValueType::Type) << TypeTagOffset;
 //ValueType valueType(ValueType t); // value type (ignoring boxing - so primitive type if boxed)
 
 class Value;
+// Binary serialization helpers
+void writeValue(std::ostream& out, const Value& v);
+Value readValue(std::istream& in);
 bool isObjPrimitive(const Value& v); // forward from Object.h
 
 
@@ -333,6 +338,12 @@ public:
     /// @brief Determine if this value's type can be converted to another type.
     bool convertibleTo(ValueType to, bool strict=true) const;
 
+    /// @brief Write this value to the given stream using the internal binary format.
+    void write(std::ostream& out) const { writeValue(out, *this); }
+
+    /// @brief Read a value from the given stream using the internal binary format.
+    static Value read(std::istream& in) { return readValue(in); }
+
 protected:
     std::atomic_uint64_t val;
 
@@ -412,6 +423,7 @@ Value equal(Value l, Value r, bool strict = false);
 std::string toString(const Value& v);
 
 std::ostream& operator<<(std::ostream& out, const Value& v);
+
 
 
 

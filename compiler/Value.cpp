@@ -1853,6 +1853,112 @@ std::ostream& roxal::operator<<(std::ostream& out, const Value& v)
     return out;
 }
 
+void roxal::writeValue(std::ostream& out, const Value& v)
+{
+    uint8_t type = static_cast<uint8_t>(v.type());
+    out.write(reinterpret_cast<char*>(&type), 1);
+
+    switch(v.type()) {
+        case ValueType::Nil:
+            break;
+        case ValueType::Bool: {
+            uint8_t b = v.asBool();
+            out.write(reinterpret_cast<char*>(&b),1);
+            break; }
+        case ValueType::Byte: {
+            uint8_t b = v.asByte();
+            out.write(reinterpret_cast<char*>(&b),1);
+            break; }
+        case ValueType::Int: {
+            int32_t i = v.asInt();
+            out.write(reinterpret_cast<char*>(&i),4);
+            break; }
+        case ValueType::Real: {
+            double d = v.asReal();
+            out.write(reinterpret_cast<char*>(&d),8);
+            break; }
+        case ValueType::Enum: {
+            int16_t val = v.asEnum();
+            uint16_t id = v.enumTypeId();
+            out.write(reinterpret_cast<char*>(&val),2);
+            out.write(reinterpret_cast<char*>(&id),2);
+            break; }
+        case ValueType::Type: {
+            uint8_t b = static_cast<uint8_t>(v.asType());
+            out.write(reinterpret_cast<char*>(&b),1);
+            break; }
+        case ValueType::String:
+        case ValueType::Range:
+        case ValueType::List:
+        case ValueType::Dict:
+        case ValueType::Vector:
+        case ValueType::Matrix:
+            v.asObj()->write(out);
+            break;
+        default:
+            throw std::runtime_error("writeValue: unsupported type " + v.typeName());
+    }
+}
+
+Value roxal::readValue(std::istream& in)
+{
+    uint8_t typeByte;
+    if(!in.read(reinterpret_cast<char*>(&typeByte),1))
+        throw std::runtime_error("readValue: unable to read type");
+    ValueType t = static_cast<ValueType>(typeByte);
+
+    switch(t) {
+        case ValueType::Nil:
+            return nilVal();
+        case ValueType::Bool: {
+            uint8_t b; in.read(reinterpret_cast<char*>(&b),1);
+            return boolVal(b!=0); }
+        case ValueType::Byte: {
+            uint8_t b; in.read(reinterpret_cast<char*>(&b),1);
+            return byteVal(b); }
+        case ValueType::Int: {
+            int32_t i; in.read(reinterpret_cast<char*>(&i),4);
+            return intVal(i); }
+        case ValueType::Real: {
+            double d; in.read(reinterpret_cast<char*>(&d),8);
+            return realVal(d); }
+        case ValueType::Enum: {
+            int16_t val; uint16_t id;
+            in.read(reinterpret_cast<char*>(&val),2);
+            in.read(reinterpret_cast<char*>(&id),2);
+            return enumVal(val, id); }
+        case ValueType::Type: {
+            uint8_t b; in.read(reinterpret_cast<char*>(&b),1);
+            return typeVal(static_cast<ValueType>(b)); }
+        case ValueType::String: {
+            auto obj = newObj<ObjString>(__func__);
+            obj->read(in);
+            return objVal(obj); }
+        case ValueType::Range: {
+            auto obj = newObj<ObjRange>(__func__);
+            obj->read(in);
+            return objVal(obj); }
+        case ValueType::List: {
+            auto obj = newObj<ObjList>(__func__);
+            obj->read(in);
+            return objVal(obj); }
+        case ValueType::Dict: {
+            auto obj = newObj<ObjDict>(__func__);
+            obj->read(in);
+            return objVal(obj); }
+        case ValueType::Vector: {
+            auto obj = newObj<ObjVector>(__func__);
+            obj->read(in);
+            return objVal(obj); }
+        case ValueType::Matrix: {
+            auto obj = newObj<ObjMatrix>(__func__);
+            obj->read(in);
+            return objVal(obj); }
+        default:
+            throw std::runtime_error("readValue: unsupported type " + std::to_string(static_cast<int>(t))); 
+    }
+}
+
 
 std::mutex VariablesMap::globalsLock {};
 VariablesMap::VarsMap VariablesMap::globals {};
