@@ -1,10 +1,10 @@
 c = clock(10)
 sum = c + c
 c.tick()
-wait(ms=120)
+wait(ms=140)
 print(int(sum)) // 2
 c.tick()
-wait(ms=120)
+wait(ms=140)
 print(int(sum)) // 4
 wait(ms=80)
 
