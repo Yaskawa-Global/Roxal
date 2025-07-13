@@ -67,7 +67,7 @@ tests = [
     'weakref', 'strongref', 'is_operator', 'stackdepth',
     'is_operator_type',
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
-    'stacktrace', 'object_user_ref_cycle',
+    'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle',
     'runtime_error_snippet',
     'cmdline_execute', 'invalid_option'
 ]

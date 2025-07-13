@@ -4,5 +4,5 @@ func foo():
 try:
   foo()
 except RuntimeException as e:
-  print(stacktrace_string(e.stackTrace))
+  print(e.stackTraceString)
 

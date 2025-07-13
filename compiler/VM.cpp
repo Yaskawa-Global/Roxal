@@ -3663,7 +3663,6 @@ void VM::defineBuiltinFunctions()
     addSys("_weakref", &VM::weakref_builtin);
     addSys("_weak_alive", &VM::weak_alive_builtin);
     addSys("_strongref", &VM::strongref_builtin);
-    addSys("stacktrace_string", &VM::stacktrace_string_builtin);
 }
 
 void VM::defineBuiltinMethods()
@@ -3719,6 +3718,7 @@ void VM::defineBuiltinProperties()
     // Signal properties
     defineBuiltinProperty(ValueType::Signal, "value", &VM::signal_value_getter);
     defineBuiltinProperty(ValueType::Object, "stackTrace", &VM::exception_stacktrace_getter);
+    defineBuiltinProperty(ValueType::Object, "stackTraceString", &VM::exception_stacktrace_string_getter);
 }
 
 void VM::defineBuiltinProperty(ValueType type, const std::string& name, NativePropertyGetter getter, NativePropertySetter setter)
@@ -3750,6 +3750,21 @@ Value VM::exception_stacktrace_getter(Value& receiver)
     }
     ObjException* ex = asException(receiver);
     return ex->stackTrace;
+}
+
+Value VM::exception_stacktrace_string_getter(Value& receiver)
+{
+#ifdef DEBUG_BUILD
+    if (!isException(receiver))
+        throw std::invalid_argument("exception.stackTraceString property on non-exception");
+#endif
+    if (!isException(receiver)) {
+        runtimeError("Undefined property 'stackTraceString'");
+        return nilVal();
+    }
+    ObjException* ex = asException(receiver);
+    std::string out = stackTraceToString(ex->stackTrace);
+    return objVal(stringVal(toUnicodeString(out)));
 }
 
 
@@ -4110,20 +4125,6 @@ Value VM::strongref_builtin(int argCount, Value* args)
     return args[0].strongRef();
 }
 
-Value VM::stacktrace_string_builtin(int argCount, Value* args)
-{
-    if (argCount != 1)
-        throw std::invalid_argument("stacktrace_string expects single argument");
-
-    Value st = args[0];
-    if (isException(st))
-        st = asException(st)->stackTrace;
-    if (!isList(st))
-        throw std::invalid_argument("stacktrace_string expects stacktrace list or exception");
-
-    std::string out = stackTraceToString(st);
-    return objVal(stringVal(toUnicodeString(out)));
-}
 
 Value VM::vector_norm_builtin(int argCount, Value* args)
 {
