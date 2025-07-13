@@ -55,6 +55,18 @@ std::string to_string(ValueType t);
 struct Obj;
 struct ObjString;
 
+struct SerializationContext {
+    std::unordered_map<const Obj*, uint64_t> objToId;
+    std::unordered_map<uint64_t, Obj*> idToObj;
+    uint64_t nextId = 1;
+};
+SerializationContext* serializationWriteContext();
+SerializationContext* serializationReadContext();
+void enterWriteContext();
+void exitWriteContext();
+void enterReadContext();
+void exitReadContext();
+
 
 // If Values are real (IEEE C++ double), then no bit conversions necessary
 //  IEEE Quiet NAN values are used to place type tag in mantissa (bits 46..49)

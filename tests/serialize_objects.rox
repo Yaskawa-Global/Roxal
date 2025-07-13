@@ -1,0 +1,6 @@
+var l = [1,2,3]
+var s = serialize(l)
+var l2 = deserialize(s)
+var s2 = serialize(l2)
+print(s == s2)
+print(len(l2))

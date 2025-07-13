@@ -11,8 +11,36 @@
 #include <core/types.h>
 #include <Eigen/Dense>
 #include <functional>
+#include <memory>
 #include <cmath>
 #include <sstream>
+
+
+namespace roxal {
+static thread_local ptr<SerializationContext> writeCtx = nullptr;
+static thread_local int writeDepth = 0;
+static thread_local ptr<SerializationContext> readCtx = nullptr;
+static thread_local int readDepth = 0;
+
+SerializationContext* serializationWriteContext() { return writeCtx.get(); }
+SerializationContext* serializationReadContext() { return readCtx.get(); }
+void enterWriteContext() {
+    if(writeDepth==0) writeCtx = make_ptr<SerializationContext>();
+    writeDepth++;
+}
+void exitWriteContext() {
+    writeDepth--;
+    if(writeDepth==0) { writeCtx = nullptr; }
+}
+void enterReadContext() {
+    if(readDepth==0) readCtx = make_ptr<SerializationContext>();
+    readDepth++;
+}
+void exitReadContext() {
+    readDepth--;
+    if(readDepth==0) { readCtx = nullptr; }
+}
+} // namespace roxal
 
 
 namespace roxal {
@@ -2093,6 +2121,8 @@ std::ostream& roxal::operator<<(std::ostream& out, const Value& v)
 
 void roxal::writeValue(std::ostream& out, const Value& v)
 {
+    enterWriteContext();
+    auto guard = std::unique_ptr<int, std::function<void(int*)>>(new int(0), [](int*){ exitWriteContext(); });
     if (isForeignPtr(v))
         throw std::runtime_error("Cannot serialize foreign pointers");
 
@@ -2154,6 +2184,10 @@ void roxal::writeValue(std::ostream& out, const Value& v)
         case ValueType::Matrix:
             v.asObj()->write(out);
             break;
+        case ValueType::Object:
+        case ValueType::Actor:
+            v.asObj()->write(out);
+            break;
         case ValueType::Function:
         case ValueType::Closure:
         case ValueType::Upvalue:
@@ -2166,6 +2200,8 @@ void roxal::writeValue(std::ostream& out, const Value& v)
 
 Value roxal::readValue(std::istream& in)
 {
+    enterReadContext();
+    auto guard = std::unique_ptr<int, std::function<void(int*)>>(new int(0), [](int*){ exitReadContext(); });
     uint8_t typeByte;
     if(!in.read(reinterpret_cast<char*>(&typeByte),1))
         throw std::runtime_error("readValue: unable to read type");
@@ -2238,6 +2274,46 @@ Value roxal::readValue(std::istream& in)
         case ValueType::Matrix: {
             auto obj = newObj<ObjMatrix>(__func__);
             obj->read(in);
+            return objVal(obj); }
+        case ValueType::Object: {
+            uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
+            uint64_t id; in.read(reinterpret_cast<char*>(&id),8);
+            auto* ctx = serializationReadContext();
+            if(flag==0) {
+                auto it = ctx->idToObj.find(id);
+                if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown object ref id");
+                return objVal(it->second);
+            }
+            Value typeVal = readValue(in);
+            ObjObjectType* t = asObjectType(typeVal);
+            ObjectInstance* obj = objectInstanceVal(t);
+            ctx->idToObj[id] = obj;
+            uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
+            obj->properties.clear();
+            for(uint32_t i=0;i<count;i++) {
+                int32_t h; in.read(reinterpret_cast<char*>(&h),4);
+                obj->properties[h] = readValue(in);
+            }
+            return objVal(obj); }
+        case ValueType::Actor: {
+            uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
+            uint64_t id; in.read(reinterpret_cast<char*>(&id),8);
+            auto* ctx = serializationReadContext();
+            if(flag==0) {
+                auto it = ctx->idToObj.find(id);
+                if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown actor ref id");
+                return objVal(it->second);
+            }
+            Value typeVal = readValue(in);
+            ObjObjectType* t = asObjectType(typeVal);
+            ActorInstance* obj = actorInstanceVal(t);
+            ctx->idToObj[id] = obj;
+            uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
+            obj->properties.clear();
+            for(uint32_t i=0;i<count;i++) {
+                int32_t h; in.read(reinterpret_cast<char*>(&h),4);
+                obj->properties[h] = readValue(in);
+            }
             return objVal(obj); }
         case ValueType::Function: {
             auto obj = newObj<ObjFunction>(__func__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());

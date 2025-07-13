@@ -237,7 +237,17 @@ struct ObjPrimitive : public Obj
     void read(std::istream& in) override;
 };
 
-inline bool isObjPrimitive(const Value& v) { return isObjType(v, ObjType::Bool) || isObjType(v, ObjType::Int) || isObjType(v, ObjType::Real) || isObjType(v,ObjType::Type); }
+inline bool isObjPrimitive(const Value& v)
+{
+    if (!v.isObj())
+        return false;
+    ObjType t = objType(v);
+    if (t == ObjType::Bool || t == ObjType::Int || t == ObjType::Real)
+        return true;
+    if (t == ObjType::Type)
+        return dynamic_cast<ObjPrimitive*>(v.asObj()) != nullptr;
+    return false;
+}
 inline ObjPrimitive* asObjPrimitive(const Value& v) { return static_cast<ObjPrimitive*>(v.asObj()); }
 
 inline ObjPrimitive* cloneObjPrimitive(const ObjPrimitive* op) {

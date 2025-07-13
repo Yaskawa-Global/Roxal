@@ -5,6 +5,8 @@
 #include <thread>
 #include <utility>
 #include <memory>
+#include <iomanip>
+#include <sstream>
 #include <ffi.h>
 #include <dlfcn.h>
 
@@ -81,6 +83,36 @@ static bool isExceptionType(ObjObjectType* type)
         type = asObjectType(type->superType);
     }
     return false;
+}
+
+static std::string hexEncode(const std::string& data)
+{
+    static const char* hex = "0123456789abcdef";
+    std::string out;
+    out.reserve(data.size()*2);
+    for(unsigned char c : data) {
+        out.push_back(hex[c>>4]);
+        out.push_back(hex[c&0xf]);
+    }
+    return out;
+}
+
+static std::string hexDecode(const std::string& hex)
+{
+    std::string out;
+    out.reserve(hex.size()/2);
+    for(size_t i=0;i+1<hex.size();i+=2) {
+        auto toNib=[&](char ch)->unsigned char{
+            if(ch>='0'&&ch<='9') return ch-'0';
+            if(ch>='a'&&ch<='f') return 10+(ch-'a');
+            if(ch>='A'&&ch<='F') return 10+(ch-'A');
+            return 0;
+        };
+        unsigned char h=toNib(hex[i]);
+        unsigned char l=toNib(hex[i+1]);
+        out.push_back(char((h<<4)|l));
+    }
+    return out;
 }
 
 std::vector<Value> VM::marshalArgs(ptr<type::Type> funcType,
@@ -3663,6 +3695,8 @@ void VM::defineBuiltinFunctions()
     addSys("_weakref", &VM::weakref_builtin);
     addSys("_weak_alive", &VM::weak_alive_builtin);
     addSys("_strongref", &VM::strongref_builtin);
+    addSys("serialize", &VM::serialize_builtin);
+    addSys("deserialize", &VM::deserialize_builtin);
 }
 
 void VM::defineBuiltinMethods()
@@ -4146,6 +4180,47 @@ Value VM::strongref_builtin(int argCount, Value* args)
     return args[0].strongRef();
 }
 
+Value VM::serialize_builtin(int argCount, Value* args)
+{
+    if(argCount < 1 || argCount > 2)
+        throw std::invalid_argument("serialize expects value and optional protocol string");
+    std::string protocol = "default";
+    if(argCount == 2) {
+        if(!isString(args[1]))
+            throw std::invalid_argument("serialize protocol must be string");
+        protocol = toUTF8StdString(asString(args[1])->s);
+    }
+    if(protocol != "default")
+        throw std::invalid_argument("unknown serialization protocol");
+
+    std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
+    writeValue(ss, args[0]);
+    std::string data = ss.str();
+    std::string hex = hexEncode(data);
+    return objVal(stringVal(toUnicodeString(hex)));
+}
+
+Value VM::deserialize_builtin(int argCount, Value* args)
+{
+    if(argCount < 1 || argCount > 2 || !isString(args[0]))
+        throw std::invalid_argument("deserialize expects string and optional protocol string");
+
+    std::string protocol = "default";
+    if(argCount == 2) {
+        if(!isString(args[1]))
+            throw std::invalid_argument("deserialize protocol must be string");
+        protocol = toUTF8StdString(asString(args[1])->s);
+    }
+    if(protocol != "default")
+        throw std::invalid_argument("unknown serialization protocol");
+
+    std::string hex = toUTF8StdString(asString(args[0])->s);
+    std::string data = hexDecode(hex);
+    std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
+    ss.write(data.data(), data.size());
+    ss.seekg(0);
+    return readValue(ss);
+}
 
 Value VM::vector_norm_builtin(int argCount, Value* args)
 {

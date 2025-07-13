@@ -1,0 +1,19 @@
+type First object:
+  var x:int
+
+type Second object:
+  var other:First
+
+var f = First()
+f.x = 42
+var s = Second()
+s.other = f
+
+var arr = [s, f]
+var data = serialize(arr)
+var arr2 = deserialize(data)
+var data2 = serialize(arr2)
+print(data == data2)
+print(arr2[0].other.x)
+print(arr2[0].other is arr2[1])
+
