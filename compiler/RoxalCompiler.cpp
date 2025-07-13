@@ -1369,7 +1369,6 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             namedVariable(name, /*assign=*/true); // store result back
         }
         else if (isa<UnaryOp>(ast->lhs) && as<UnaryOp>(ast->lhs)->op==UnaryOp::Accessor) {
-            // TODO: revisit implementation of property copy assignment
             auto accessor = as<UnaryOp>(ast->lhs);
             accessor->arg->accept(*this);
 
@@ -1402,7 +1401,6 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             emitBytes(setOp, propName);            // store back
         }
         else if (isa<Index>(ast->lhs)) {
-            // TODO: revisit implementation of indexed copy assignment
             auto index { as<Index>(ast->lhs) };
 
             // obtain current element
