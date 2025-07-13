@@ -11,6 +11,7 @@
 #include <core/types.h>
 #include <Eigen/Dense>
 #include <functional>
+#include <sstream>
 
 
 namespace roxal {
@@ -974,6 +975,85 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testConversions()
     } catch (std::exception& e) {
         results.push_back({"convertibleTo", false, std::string("exception: ")+e.what()});
     }
+    return results;
+}
+
+std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerialization()
+{
+    using Result = std::tuple<std::string,bool,std::string>;
+    std::vector<Result> results;
+
+    auto roundTrip = [&results](const std::string& name, const Value& v)
+    {
+        try {
+            std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+            writeValue(ss, v);
+            ss.seekg(0);
+            Value read = readValue(ss);
+            bool pass = false;
+
+            if (isRange(v) && isRange(read)) {
+                auto r1 = asRange(v); auto r2 = asRange(read);
+                pass = r1->start.equals(r2->start, true) &&
+                       r1->stop.equals(r2->stop, true) &&
+                       r1->step.equals(r2->step, true) &&
+                       r1->closed == r2->closed;
+            }
+            else if (isList(v) && isList(read)) {
+                auto l1 = asList(v); auto l2 = asList(read);
+                pass = l1->length() == l2->length();
+                if (pass) {
+                    for(int i=0;i<l1->length();i++)
+                        if(!l1->elts.at(i).equals(l2->elts.at(i), true)) { pass=false; break; }
+                }
+            }
+            else if (isDict(v) && isDict(read)) {
+                auto d1 = asDict(v); auto d2 = asDict(read);
+                auto items1 = d1->items();
+                auto items2 = d2->items();
+                pass = items1.size() == items2.size();
+                if(pass) {
+                    for(size_t i=0;i<items1.size();i++) {
+                        if(!items1[i].first.equals(items2[i].first, true) ||
+                           !items1[i].second.equals(items2[i].second, true)) { pass=false; break; }
+                    }
+                }
+            }
+            else {
+                pass = v.equals(read, true);
+            }
+
+            results.push_back({name, pass, pass ? "ok" : std::string("got ") + toString(read)});
+        } catch (std::exception& e) {
+            results.push_back({name, false, std::string("exception: ") + e.what()});
+        }
+    };
+
+    roundTrip("bool_true", boolVal(true));
+    roundTrip("byte_val", byteVal(123));
+    roundTrip("int_val", intVal(-42));
+    roundTrip("real_val", realVal(3.5));
+    roundTrip("string_val", objVal(stringVal(UnicodeString("hello"))));
+    roundTrip("range_val", objVal(rangeVal(intVal(1), intVal(3), intVal(1), false)));
+
+    ObjList* lst = listVal();
+    lst->append(intVal(1));
+    lst->append(intVal(2));
+    roundTrip("list_val", objVal(lst));
+
+    ObjDict* d = dictVal();
+    d->store(intVal(1), intVal(2));
+    roundTrip("dict_val", objVal(d));
+
+    ObjVector* vec = vectorVal(2);
+    vec->vec[0] = 1.0;
+    vec->vec[1] = 2.0;
+    roundTrip("vector_val", objVal(vec));
+
+    Eigen::MatrixXd mat(1,2);
+    mat(0,0) = 1.0; mat(0,1) = 2.0;
+    roundTrip("matrix_val", objVal(matrixVal(mat)));
+
     return results;
 }
 

@@ -401,6 +401,8 @@ bool convertibleTo(ValueType from, ValueType to, bool strict=true);
 
 // run conversion unit tests used by the runtime '_runtests' builtin
 std::vector<std::tuple<std::string,bool,std::string>> testConversions();
+// run serialization unit tests used by the runtime '_runtests' builtin
+std::vector<std::tuple<std::string,bool,std::string>> testValueSerialization();
 
 bool isFalsey(const Value& v);
 bool isTruthy(const Value& v);
