@@ -943,10 +943,155 @@ void ObjFuture::write(std::ostream&) const { throw std::runtime_error("ObjFuture
 void ObjFuture::read(std::istream&) { throw std::runtime_error("ObjFuture deserialization not implemented"); }
 void ObjNative::write(std::ostream&) const { throw std::runtime_error("ObjNative serialization not implemented"); }
 void ObjNative::read(std::istream&) { throw std::runtime_error("ObjNative deserialization not implemented"); }
-void ObjTypeSpec::write(std::ostream&) const { throw std::runtime_error("ObjTypeSpec serialization not implemented"); }
-void ObjTypeSpec::read(std::istream&) { throw std::runtime_error("ObjTypeSpec deserialization not implemented"); }
-void ObjObjectType::write(std::ostream&) const { throw std::runtime_error("ObjObjectType serialization not implemented"); }
-void ObjObjectType::read(std::istream&) { throw std::runtime_error("ObjObjectType deserialization not implemented"); }
+void ObjTypeSpec::write(std::ostream& out) const
+{
+    uint8_t tv = static_cast<uint8_t>(typeValue);
+    out.write(reinterpret_cast<char*>(&tv), 1);
+}
+
+void ObjTypeSpec::read(std::istream& in)
+{
+    uint8_t tv;
+    in.read(reinterpret_cast<char*>(&tv), 1);
+    typeValue = static_cast<ValueType>(tv);
+}
+void ObjObjectType::write(std::ostream& out) const
+{
+    ObjTypeSpec::write(out);
+
+    std::string n; name.toUTF8String(n);
+    uint32_t len = n.size();
+    out.write(reinterpret_cast<char*>(&len), 4);
+    out.write(n.data(), len);
+
+    uint8_t b = isActor ? 1 : 0; out.write(reinterpret_cast<char*>(&b),1);
+    b = isInterface ? 1 : 0; out.write(reinterpret_cast<char*>(&b),1);
+    b = isEnumeration ? 1 : 0; out.write(reinterpret_cast<char*>(&b),1);
+
+    writeValue(out, superType);
+
+    b = isCStruct ? 1 : 0; out.write(reinterpret_cast<char*>(&b),1);
+    out.write(reinterpret_cast<const char*>(&cstructArch),4);
+    out.write(reinterpret_cast<const char*>(&enumTypeId),2);
+
+    uint32_t pcount = propertyOrder.size();
+    out.write(reinterpret_cast<char*>(&pcount),4);
+    for(int32_t h : propertyOrder) {
+        const auto& prop = properties.at(h);
+        std::string pn; prop.name.toUTF8String(pn);
+        uint32_t plen = pn.size();
+        out.write(reinterpret_cast<char*>(&plen),4);
+        out.write(pn.data(), plen);
+        writeValue(out, prop.type);
+        writeValue(out, prop.initialValue);
+        uint8_t acc = static_cast<uint8_t>(prop.access);
+        out.write(reinterpret_cast<char*>(&acc),1);
+        uint8_t hasC = prop.ctype.has_value() ? 1 : 0;
+        out.write(reinterpret_cast<char*>(&hasC),1);
+        if(hasC) {
+            std::string ct; prop.ctype->toUTF8String(ct);
+            uint32_t ctlen = ct.size();
+            out.write(reinterpret_cast<char*>(&ctlen),4);
+            out.write(ct.data(), ctlen);
+        }
+    }
+
+    uint32_t mcount = methods.size();
+    out.write(reinterpret_cast<char*>(&mcount),4);
+    for(const auto& kv : methods) {
+        const auto& method = kv.second;
+        std::string mn; method.name.toUTF8String(mn);
+        uint32_t mlen = mn.size();
+        out.write(reinterpret_cast<char*>(&mlen),4);
+        out.write(mn.data(), mlen);
+        uint8_t placeholder = 0; // closure not serialized yet
+        out.write(reinterpret_cast<char*>(&placeholder),1);
+        uint8_t acc = static_cast<uint8_t>(method.access);
+        out.write(reinterpret_cast<char*>(&acc),1);
+    }
+
+    uint32_t lcount = enumLabelValues.size();
+    out.write(reinterpret_cast<char*>(&lcount),4);
+    for(const auto& kv : enumLabelValues) {
+        const auto& label = kv.second;
+        std::string ln; label.first.toUTF8String(ln);
+        uint32_t llen = ln.size();
+        out.write(reinterpret_cast<char*>(&llen),4);
+        out.write(ln.data(), llen);
+        writeValue(out, label.second);
+    }
+}
+
+void ObjObjectType::read(std::istream& in)
+{
+    ObjTypeSpec::read(in);
+
+    uint32_t len; in.read(reinterpret_cast<char*>(&len),4);
+    std::string ns(len, '\0');
+    if(len>0) in.read(ns.data(), len);
+    name = icu::UnicodeString::fromUTF8(ns);
+
+    uint8_t b;
+    in.read(reinterpret_cast<char*>(&b),1); isActor = b!=0;
+    in.read(reinterpret_cast<char*>(&b),1); isInterface = b!=0;
+    in.read(reinterpret_cast<char*>(&b),1); isEnumeration = b!=0;
+
+    superType = readValue(in);
+
+    in.read(reinterpret_cast<char*>(&b),1); isCStruct = b!=0;
+    in.read(reinterpret_cast<char*>(&cstructArch),4);
+    in.read(reinterpret_cast<char*>(&enumTypeId),2);
+
+    uint32_t pcount; in.read(reinterpret_cast<char*>(&pcount),4);
+    properties.clear(); propertyOrder.clear();
+    for(uint32_t i=0;i<pcount;i++) {
+        uint32_t plen; in.read(reinterpret_cast<char*>(&plen),4);
+        std::string pn(plen,'\0'); if(plen>0) in.read(pn.data(), plen);
+        icu::UnicodeString uname = icu::UnicodeString::fromUTF8(pn);
+        Value ptype = readValue(in);
+        Value init  = readValue(in);
+        uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
+        uint8_t hasC; in.read(reinterpret_cast<char*>(&hasC),1);
+        std::optional<icu::UnicodeString> ct;
+        if(hasC) {
+            uint32_t ctlen; in.read(reinterpret_cast<char*>(&ctlen),4);
+            std::string cts(ctlen,'\0'); if(ctlen>0) in.read(cts.data(), ctlen);
+            ct = icu::UnicodeString::fromUTF8(cts);
+        }
+        int32_t hash = uname.hashCode();
+        Property prop{uname, ptype, init, static_cast<ast::Access>(acc), nilVal(), ct};
+        properties[hash] = prop;
+        propertyOrder.push_back(hash);
+    }
+
+    uint32_t mcount; in.read(reinterpret_cast<char*>(&mcount),4);
+    methods.clear();
+    for(uint32_t i=0;i<mcount;i++) {
+        uint32_t mlen; in.read(reinterpret_cast<char*>(&mlen),4);
+        std::string mn(mlen,'\0'); if(mlen>0) in.read(mn.data(), mlen);
+        icu::UnicodeString uname = icu::UnicodeString::fromUTF8(mn);
+        uint8_t placeholder; in.read(reinterpret_cast<char*>(&placeholder),1); // skip
+        uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
+        int32_t hash = uname.hashCode();
+        Method m{uname, nilVal(), static_cast<ast::Access>(acc), nilVal()};
+        methods[hash] = m;
+    }
+
+    uint32_t lcount; in.read(reinterpret_cast<char*>(&lcount),4);
+    enumLabelValues.clear();
+    for(uint32_t i=0;i<lcount;i++) {
+        uint32_t llen; in.read(reinterpret_cast<char*>(&llen),4);
+        std::string ln(llen,'\0'); if(llen>0) in.read(ln.data(), llen);
+        icu::UnicodeString uname = icu::UnicodeString::fromUTF8(ln);
+        Value val = readValue(in);
+        int32_t hash = uname.hashCode();
+        enumLabelValues[hash] = {uname, val};
+    }
+
+    if(isEnumeration) {
+        enumTypes[enumTypeId] = this;
+    }
+}
 void ObjPackageType::write(std::ostream&) const { throw std::runtime_error("ObjPackageType serialization not implemented"); }
 void ObjPackageType::read(std::istream&) { throw std::runtime_error("ObjPackageType deserialization not implemented"); }
 void ObjModuleType::write(std::ostream&) const { throw std::runtime_error("ObjModuleType serialization not implemented"); }

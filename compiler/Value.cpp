@@ -1883,10 +1883,9 @@ void roxal::writeValue(std::ostream& out, const Value& v)
             out.write(reinterpret_cast<char*>(&val),2);
             out.write(reinterpret_cast<char*>(&id),2);
             break; }
-        case ValueType::Type: {
-            uint8_t b = static_cast<uint8_t>(v.asType());
-            out.write(reinterpret_cast<char*>(&b),1);
-            break; }
+        case ValueType::Type:
+            v.asObj()->write(out);
+            break;
         case ValueType::String:
         case ValueType::Range:
         case ValueType::List:
@@ -1928,8 +1927,21 @@ Value roxal::readValue(std::istream& in)
             in.read(reinterpret_cast<char*>(&id),2);
             return enumVal(val, id); }
         case ValueType::Type: {
-            uint8_t b; in.read(reinterpret_cast<char*>(&b),1);
-            return typeVal(static_cast<ValueType>(b)); }
+            uint8_t subType;
+            in.read(reinterpret_cast<char*>(&subType),1);
+            in.putback(static_cast<char>(subType));
+
+            ValueType tv = static_cast<ValueType>(subType);
+            if (tv == ValueType::Object || tv == ValueType::Actor || tv == ValueType::Enum) {
+                auto obj = newObj<ObjObjectType>(__func__, icu::UnicodeString(), false, false, false);
+                obj->read(in);
+                return objVal(obj);
+            } else {
+                auto obj = newObj<ObjTypeSpec>(__func__);
+                obj->read(in);
+                return objVal(obj);
+            }
+        }
         case ValueType::String: {
             auto obj = newObj<ObjString>(__func__);
             obj->read(in);
