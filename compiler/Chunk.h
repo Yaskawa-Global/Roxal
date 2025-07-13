@@ -148,6 +148,9 @@ public:
     void disassemble(const icu::UnicodeString& name);
     size_type disassembleInstruction(size_type offset);
 
+    void serialize(std::ostream& out) const;
+    void deserialize(std::istream& in);
+
 protected:
     std::vector<LineEntry> lineTable; // sparse line/column table
 
