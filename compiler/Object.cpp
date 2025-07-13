@@ -990,8 +990,97 @@ void ObjForeignPtr::write(std::ostream&) const { throw std::runtime_error("Canno
 void ObjForeignPtr::read(std::istream&) { throw std::runtime_error("Cannot deserialize foreign pointers"); }
 void ObjException::write(std::ostream&) const { throw std::runtime_error("ObjException serialization not implemented"); }
 void ObjException::read(std::istream&) { throw std::runtime_error("ObjException deserialization not implemented"); }
-void ObjFunction::write(std::ostream&) const { throw std::runtime_error("ObjFunction serialization not implemented"); }
-void ObjFunction::read(std::istream&) { throw std::runtime_error("ObjFunction deserialization not implemented"); }
+void ObjFunction::write(std::ostream& out) const
+{
+    uint8_t tag = static_cast<uint8_t>(ObjType::Function);
+    out.write(reinterpret_cast<char*>(&tag), 1);
+
+    std::string n; name.toUTF8String(n);
+    uint32_t len = n.size();
+    out.write(reinterpret_cast<char*>(&len), 4);
+    out.write(n.data(), len);
+
+    uint8_t hasType = funcType.has_value() ? 1 : 0;
+    out.write(reinterpret_cast<char*>(&hasType), 1);
+    if(hasType)
+        throw std::runtime_error("ObjFunction funcType serialization not implemented");
+
+    out.write(reinterpret_cast<const char*>(&arity), 4);
+    out.write(reinterpret_cast<const char*>(&upvalueCount), 4);
+
+    chunk->serialize(out);
+
+    uint32_t annCount = annotations.size();
+    out.write(reinterpret_cast<char*>(&annCount), 4);
+    if(annCount)
+        throw std::runtime_error("ObjFunction annotations serialization not implemented");
+
+    uint8_t s = strict ? 1 : 0; out.write(reinterpret_cast<char*>(&s),1);
+
+    uint8_t ft = static_cast<uint8_t>(fnType); out.write(reinterpret_cast<char*>(&ft),1);
+
+    writeValue(out, ownerType);
+
+    uint8_t acc = static_cast<uint8_t>(access); out.write(reinterpret_cast<char*>(&acc),1);
+
+    uint32_t defCount = paramDefaultFunc.size();
+    out.write(reinterpret_cast<char*>(&defCount),4);
+    if(defCount) {
+        for(const auto& kv : paramDefaultFunc) {
+            int32_t key = kv.first;
+            out.write(reinterpret_cast<char*>(&key),4);
+            kv.second->write(out);
+        }
+    }
+
+    writeValue(out, moduleType);
+}
+
+void ObjFunction::read(std::istream& in)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
+    if(tag != static_cast<uint8_t>(ObjType::Function))
+        throw std::runtime_error("ObjFunction::read mismatched tag");
+    type = ObjType::Function;
+
+    uint32_t len; in.read(reinterpret_cast<char*>(&len),4);
+    std::string ns(len,'\0'); if(len) in.read(ns.data(),len);
+    name = icu::UnicodeString::fromUTF8(ns);
+
+    uint8_t hasType; in.read(reinterpret_cast<char*>(&hasType),1);
+    if(hasType)
+        throw std::runtime_error("ObjFunction funcType deserialization not implemented");
+    funcType.reset();
+
+    in.read(reinterpret_cast<char*>(&arity),4);
+    in.read(reinterpret_cast<char*>(&upvalueCount),4);
+
+    chunk = std::make_shared<Chunk>(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+    chunk->deserialize(in);
+
+    uint32_t annCount; in.read(reinterpret_cast<char*>(&annCount),4);
+    if(annCount)
+        throw std::runtime_error("ObjFunction annotations deserialization not implemented");
+
+    uint8_t s; in.read(reinterpret_cast<char*>(&s),1); strict = s!=0;
+
+    uint8_t ft; in.read(reinterpret_cast<char*>(&ft),1); fnType = static_cast<FunctionType>(ft);
+
+    ownerType = readValue(in);
+
+    uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1); access = static_cast<ast::Access>(acc);
+
+    uint32_t defCount; in.read(reinterpret_cast<char*>(&defCount),4);
+    paramDefaultFunc.clear();
+    for(uint32_t i=0;i<defCount;i++) {
+        int32_t key; in.read(reinterpret_cast<char*>(&key),4);
+        auto func = newObj<ObjFunction>(__func__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+        func->read(in);
+        paramDefaultFunc[key] = func;
+    }
+
+    moduleType = readValue(in);
+}
 void ObjUpvalue::write(std::ostream&) const { throw std::runtime_error("ObjUpvalue serialization not implemented"); }
 void ObjUpvalue::read(std::istream&) { throw std::runtime_error("ObjUpvalue deserialization not implemented"); }
 void ObjClosure::write(std::ostream&) const { throw std::runtime_error("ObjClosure serialization not implemented"); }
