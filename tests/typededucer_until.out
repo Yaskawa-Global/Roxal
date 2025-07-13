@@ -4,7 +4,7 @@ File
  Until
   stmt:
    ExprStmt
-    Assignment
+    Assignment =
      Variable x
      BinaryOp +  → int
       Variable x

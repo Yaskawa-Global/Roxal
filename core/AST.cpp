@@ -1044,6 +1044,15 @@ void UnaryOp::output(std::ostream& os, int indent) const
 
 
 
+std::string Assignment::opString() const
+{
+    switch (op) {
+        case Assign: return "=";
+        case CopyAssign: return "<-";
+        default: return "?";
+    }
+}
+
 std::any Assignment::accept(ASTVisitor& v)
 {
     Anys results {};
@@ -1069,7 +1078,7 @@ void Assignment::acceptChildren(ASTVisitor& v, Anys& results)
 
 void Assignment::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"Assignment" << std::endl;
+    os << spaces(indent)+"Assignment " << opString() << std::endl;
     //sourceOut();
     lhs->output(os,indent+1);
     rhs->output(os,indent+1);
