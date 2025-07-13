@@ -55,6 +55,9 @@ public:
     // useful for initializing signal values when new nodes are added
     void evaluate();
 
+    // Mark the network as modified so caches will be rebuilt on next tick/evaluate
+    void markNetworkModified();
+
     // clear everything ready for new network to be instantiated
     void clear();
 
