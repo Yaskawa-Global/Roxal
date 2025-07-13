@@ -1956,6 +1956,18 @@ std::pair<InterpretResult,Value> VM::execute()
                             break;
                         }
                     }
+                    // Check builtin properties
+                    auto pit = builtinProperties.find(vt);
+                    if (pit != builtinProperties.end()) {
+                        auto propIt = pit->second.find(name->hash);
+                        if (propIt != pit->second.end()) {
+                            const BuiltinPropertyInfo& propInfo = propIt->second;
+                            Value result = (this->*(propInfo.getter))(inst);
+                            pop();
+                            push(result);
+                            break;
+                        }
+                    }
                 }
 
                 runtimeError("Only object and actor instances have methods and only objects instances have properties.");
@@ -2112,6 +2124,18 @@ std::pair<InterpretResult,Value> VM::execute()
                                                                methodInfo.funcType, methodInfo.defaultValues);
                             pop();
                             push(objVal(bm));
+                            break;
+                        }
+                    }
+                    // Check builtin properties
+                    auto pit = builtinProperties.find(vt);
+                    if (pit != builtinProperties.end()) {
+                        auto propIt = pit->second.find(name->hash);
+                        if (propIt != pit->second.end()) {
+                            const BuiltinPropertyInfo& propInfo = propIt->second;
+                            Value result = (this->*(propInfo.getter))(inst);
+                            pop();
+                            push(result);
                             break;
                         }
                     }
@@ -3070,6 +3094,9 @@ std::pair<InterpretResult,Value> VM::execute()
                 Value exc = pop();
                 if (!isException(exc))
                     exc = objVal(exceptionVal(exc));
+                ObjException* exObj = asException(exc);
+                if (exObj->stackTrace.isNil())
+                    exObj->stackTrace = captureStacktrace();
                 while (true) {
                     if (thread->frames.empty()) {
                         runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
@@ -3379,6 +3406,10 @@ void VM::raiseException(Value exc)
     if (!isException(exc))
         exc = objVal(exceptionVal(exc));
 
+    ObjException* exObj = asException(exc);
+    if (exObj->stackTrace.isNil())
+        exObj->stackTrace = captureStacktrace();
+
     while (true) {
         if (thread->frames.empty()) {
             runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
@@ -3632,6 +3663,7 @@ void VM::defineBuiltinFunctions()
     addSys("_weakref", &VM::weakref_builtin);
     addSys("_weak_alive", &VM::weak_alive_builtin);
     addSys("_strongref", &VM::strongref_builtin);
+    addSys("stacktrace_string", &VM::stacktrace_string_builtin);
 }
 
 void VM::defineBuiltinMethods()
@@ -3686,6 +3718,7 @@ void VM::defineBuiltinProperties()
 
     // Signal properties
     defineBuiltinProperty(ValueType::Signal, "value", &VM::signal_value_getter);
+    defineBuiltinProperty(ValueType::Object, "stackTrace", &VM::exception_stacktrace_getter);
 }
 
 void VM::defineBuiltinProperty(ValueType type, const std::string& name, NativePropertyGetter getter, NativePropertySetter setter)
@@ -3703,6 +3736,20 @@ Value VM::signal_value_getter(Value& receiver)
 
     ObjSignal* objSignal = asSignal(receiver);
     return objSignal->signal->lastValue();
+}
+
+Value VM::exception_stacktrace_getter(Value& receiver)
+{
+#ifdef DEBUG_BUILD
+    if (!isException(receiver))
+        throw std::invalid_argument("exception.stackTrace property on non-exception");
+#endif
+    if (!isException(receiver)) {
+        runtimeError("Undefined property 'stackTrace'");
+        return nilVal();
+    }
+    ObjException* ex = asException(receiver);
+    return ex->stackTrace;
 }
 
 
@@ -3827,11 +3874,8 @@ Value VM::threadid_builtin(int argCount, Value* args)
 }
 
 
-Value VM::stacktrace_builtin(int argCount, Value* args)
+Value VM::captureStacktrace()
 {
-    if (argCount != 0)
-        throw std::invalid_argument("stacktrace takes no arguments");
-
     ObjList* framesList = listVal();
 
     for(auto it = thread->frames.begin(); it != thread->frames.end(); ++it) {
@@ -3862,6 +3906,14 @@ Value VM::stacktrace_builtin(int argCount, Value* args)
     }
 
     return objVal(framesList);
+}
+
+Value VM::stacktrace_builtin(int argCount, Value* args)
+{
+    if (argCount != 0)
+        throw std::invalid_argument("stacktrace takes no arguments");
+
+    return captureStacktrace();
 }
 
 
@@ -4056,6 +4108,21 @@ Value VM::strongref_builtin(int argCount, Value* args)
         throw std::invalid_argument("strongref expects single argument");
 
     return args[0].strongRef();
+}
+
+Value VM::stacktrace_string_builtin(int argCount, Value* args)
+{
+    if (argCount != 1)
+        throw std::invalid_argument("stacktrace_string expects single argument");
+
+    Value st = args[0];
+    if (isException(st))
+        st = asException(st)->stackTrace;
+    if (!isList(st))
+        throw std::invalid_argument("stacktrace_string expects stacktrace list or exception");
+
+    std::string out = stackTraceToString(st);
+    return objVal(stringVal(toUnicodeString(out)));
 }
 
 Value VM::vector_norm_builtin(int argCount, Value* args)

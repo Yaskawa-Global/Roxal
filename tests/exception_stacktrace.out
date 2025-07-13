@@ -1,0 +1,4 @@
+tests/exception_stacktrace.rox:5:2: in exception_stacktrace
+tests/exception_stacktrace.rox:2:8: in foo
+
+

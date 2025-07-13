@@ -300,6 +300,9 @@ public:
     Value weakref_builtin(int argCount, Value* args);
     Value weak_alive_builtin(int argCount, Value* args);
     Value strongref_builtin(int argCount, Value* args);
+    Value stacktrace_string_builtin(int argCount, Value* args);
+
+    Value captureStacktrace();
 
 
 
@@ -319,6 +322,7 @@ public:
 
     // Builtin property getters
     Value signal_value_getter(Value& receiver);
+    Value exception_stacktrace_getter(Value& receiver);
 
     Value loadlib_native(int argCount, Value* args);
     Value ffi_native(int argCount, Value* args);

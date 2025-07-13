@@ -587,19 +587,22 @@ std::string objForeignPtrToString(const ObjForeignPtr* fp);
 
 struct ObjException : public Obj {
     ObjException() { type = ObjType::Exception; }
-    ObjException(Value msg, Value exType = nilVal())
-        : message(msg), exType(exType) { type = ObjType::Exception; }
+    ObjException(Value msg, Value exType = nilVal(), Value st = nilVal())
+        : message(msg), exType(exType), stackTrace(st) { type = ObjType::Exception; }
     virtual ~ObjException() {}
 
     Value message;
     Value exType; // object type of the exception
+    Value stackTrace; // list of stack frames when raised
 };
 
 inline bool isException(const Value& v) { return isObjType(v, ObjType::Exception); }
 inline ObjException* asException(const Value& v) { return static_cast<ObjException*>(v.asObj()); }
 
-ObjException* exceptionVal(Value message = nilVal(), Value exType = nilVal());
+ObjException* exceptionVal(Value message = nilVal(), Value exType = nilVal(), Value stackTrace = nilVal());
 std::string objExceptionToString(const ObjException* ex);
+std::string objExceptionStackTraceToString(const ObjException* ex);
+std::string stackTraceToString(Value frames);
 
 
 //

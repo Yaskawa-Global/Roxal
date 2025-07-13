@@ -1,0 +1,8 @@
+func foo():
+  raise RuntimeException('fail')
+
+try:
+  foo()
+except RuntimeException as e:
+  print(stacktrace_string(e.stackTrace))
+
