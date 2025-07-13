@@ -11,6 +11,8 @@
 #include <core/types.h>
 #include <Eigen/Dense>
 #include <functional>
+#include <cmath>
+#include <sstream>
 
 
 namespace roxal {
@@ -50,6 +52,9 @@ std::string roxal::to_string(ValueType t)
     case ValueType::Actor: return "actor"; break;
     case ValueType::Module: return "module"; break;
     case ValueType::Event: return "event"; break;
+    case ValueType::Function: return "function"; break;
+    case ValueType::Closure: return "closure"; break;
+    case ValueType::Upvalue: return "upvalue"; break;
     default:
         throw std::runtime_error("Unhandled type for to_string "+std::to_string(int(t)));
     }
@@ -933,6 +938,9 @@ static type::BuiltinType valueTypeToBuiltin(ValueType t)
         case ValueType::Matrix:  return BuiltinType::Matrix;
         case ValueType::Signal:  return BuiltinType::Signal;
         case ValueType::Event:   return BuiltinType::Event;
+        case ValueType::Function:
+        case ValueType::Closure: return BuiltinType::Func;
+        case ValueType::Upvalue: return BuiltinType::Object;
         case ValueType::Tensor:  return BuiltinType::Tensor;
         case ValueType::Orient:  return BuiltinType::Orient;
         case ValueType::Object:  return BuiltinType::Object;
@@ -974,6 +982,172 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testConversions()
     } catch (std::exception& e) {
         results.push_back({"convertibleTo", false, std::string("exception: ")+e.what()});
     }
+    return results;
+}
+
+std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerialization()
+{
+    using Result = std::tuple<std::string,bool,std::string>;
+    std::vector<Result> results;
+
+    auto roundTrip = [&results](const std::string& name, const Value& v)
+    {
+        try {
+            std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+            writeValue(ss, v);
+            ss.seekg(0);
+            Value read = readValue(ss);
+            bool pass = false;
+
+            if (isRange(v) && isRange(read)) {
+                auto r1 = asRange(v); auto r2 = asRange(read);
+                pass = r1->start.equals(r2->start, true) &&
+                       r1->stop.equals(r2->stop, true) &&
+                       r1->step.equals(r2->step, true) &&
+                       r1->closed == r2->closed;
+            }
+            else if (isList(v) && isList(read)) {
+                auto l1 = asList(v); auto l2 = asList(read);
+                pass = l1->length() == l2->length();
+                if (pass) {
+                    for(int i=0;i<l1->length();i++)
+                        if(!l1->elts.at(i).equals(l2->elts.at(i), true)) { pass=false; break; }
+                }
+            }
+            else if (isDict(v) && isDict(read)) {
+                auto d1 = asDict(v); auto d2 = asDict(read);
+                auto items1 = d1->items();
+                auto items2 = d2->items();
+                pass = items1.size() == items2.size();
+                if(pass) {
+                    for(size_t i=0;i<items1.size();i++) {
+                        if(!items1[i].first.equals(items2[i].first, true) ||
+                           !items1[i].second.equals(items2[i].second, true)) { pass=false; break; }
+                    }
+                }
+            }
+            else if (isObjPrimitive(v) && isObjPrimitive(read)) {
+                auto p1 = asObjPrimitive(v); auto p2 = asObjPrimitive(read);
+                pass = p1->type == p2->type;
+                if(pass) {
+                    switch(p1->type) {
+                        case ObjType::Bool:   pass = p1->as.boolean == p2->as.boolean; break;
+                        case ObjType::Int:    pass = p1->as.integer == p2->as.integer; break;
+                        case ObjType::Real:   pass = std::abs(p1->as.real - p2->as.real) < 1e-15; break;
+                        case ObjType::Type:   pass = p1->as.btype == p2->as.btype; break;
+                        default: pass = false; break;
+                    }
+                }
+            }
+            else {
+                pass = v.equals(read, true);
+            }
+
+            results.push_back({name, pass, pass ? "ok" : std::string("got ") + toString(read)});
+        } catch (std::exception& e) {
+            results.push_back({name, false, std::string("exception: ") + e.what()});
+        }
+    };
+
+    roundTrip("bool_true", boolVal(true));
+    roundTrip("byte_val", byteVal(123));
+    roundTrip("int_val", intVal(-42));
+    roundTrip("real_val", realVal(3.5));
+    roundTrip("string_val", objVal(stringVal(UnicodeString("hello"))));
+    roundTrip("range_val", objVal(rangeVal(intVal(1), intVal(3), intVal(1), false)));
+
+    ObjList* lst = listVal();
+    lst->append(intVal(1));
+    lst->append(intVal(2));
+    roundTrip("list_val", objVal(lst));
+
+    ObjDict* d = dictVal();
+    d->store(intVal(1), intVal(2));
+    roundTrip("dict_val", objVal(d));
+
+    ObjVector* vec = vectorVal(2);
+    vec->vec[0] = 1.0;
+    vec->vec[1] = 2.0;
+    roundTrip("vector_val", objVal(vec));
+
+    Eigen::MatrixXd mat(1,2);
+    mat(0,0) = 1.0; mat(0,1) = 2.0;
+    roundTrip("matrix_val", objVal(matrixVal(mat)));
+
+    roundTrip("boxed_bool", objVal(newObj<ObjPrimitive>(__func__, true)));
+    roundTrip("boxed_int", objVal(newObj<ObjPrimitive>(__func__, int32_t(-7))));
+    roundTrip("boxed_real", objVal(newObj<ObjPrimitive>(__func__, 1.25)));
+
+    // simple chunk round trip
+    {
+        try {
+            Chunk ch(toUnicodeString("pkg"), toUnicodeString("mod"), toUnicodeString("src"));
+            ch.write(OpCode::ConstNil,0,0);
+            ch.write(OpCode::Return,0,0);
+            std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
+            ch.serialize(ss);
+            ss.seekg(0);
+            Chunk ch2(toUnicodeString(""),toUnicodeString(""),toUnicodeString(""));
+            ch2.deserialize(ss);
+            bool pass = (ch.code == ch2.code) && (ch.constants.size()==ch2.constants.size());
+            if(pass) {
+                for(size_t i=0;i<ch.constants.size();i++)
+                    if(!ch.constants[i].equals(ch2.constants[i],true)) { pass=false; break; }
+            }
+            results.push_back({"chunk_round", pass, pass?"ok":"mismatch"});
+        } catch(std::exception& e) {
+            results.push_back({"chunk_round", false, std::string("exception: ")+e.what()});
+        }
+    }
+
+    // function round trip
+    {
+        try {
+            ObjFunction* fn = functionVal(toUnicodeString("pkg"), toUnicodeString("mod"), toUnicodeString("src"));
+            fn->name = toUnicodeString("fn");
+            fn->arity = 0; fn->upvalueCount = 0; fn->strict=false; fn->fnType=FunctionType::Function;
+            fn->chunk->write(OpCode::ConstNil,0,0);
+            fn->chunk->write(OpCode::Return,0,0);
+            std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
+            fn->write(ss);
+            ss.seekg(0);
+            auto fn2 = newObj<ObjFunction>(__func__, toUnicodeString(""), toUnicodeString(""), toUnicodeString(""));
+            fn2->read(ss);
+            bool pass = fn->name == fn2->name && fn->arity==fn2->arity && fn->upvalueCount==fn2->upvalueCount && fn->chunk->code==fn2->chunk->code;
+            results.push_back({"function_round", pass, pass?"ok":"mismatch"});
+            delObj(fn2);
+            delObj(fn);
+        } catch(std::exception& e) {
+            results.push_back({"function_round", false, std::string("exception: ")+e.what()});
+        }
+    }
+
+    // closure round trip
+    {
+        try {
+            ObjFunction* fn = functionVal(toUnicodeString("pkg"), toUnicodeString("mod"), toUnicodeString("src"));
+            fn->name = toUnicodeString("cl");
+            fn->arity = 0; fn->upvalueCount = 1;
+            fn->chunk->write(OpCode::ConstNil,0,0);
+            fn->chunk->write(OpCode::Return,0,0);
+            ObjClosure* cl = closureVal(fn);
+            Value* local = new Value(intVal(3));
+            cl->upvalues[0] = upvalueVal(local);
+            std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
+            cl->write(ss);
+            ss.seekg(0);
+            auto cl2 = newObj<ObjClosure>(__func__, nullptr);
+            cl2->read(ss);
+            bool pass = cl2->function->name == cl->function->name && cl2->upvalues.size()==cl->upvalues.size() && cl2->upvalues[0]->closed.equals(intVal(3), true);
+            results.push_back({"closure_round", pass, pass?"ok":"mismatch"});
+            delObj(cl2);
+            delObj(cl);
+            delete local;
+        } catch(std::exception& e) {
+            results.push_back({"closure_round", false, std::string("exception: ")+e.what()});
+        }
+    }
+
     return results;
 }
 
@@ -1889,6 +2063,171 @@ std::ostream& roxal::operator<<(std::ostream& out, const Value& v)
 {
     out << toString(v);
     return out;
+}
+
+void roxal::writeValue(std::ostream& out, const Value& v)
+{
+    if (isForeignPtr(v))
+        throw std::runtime_error("Cannot serialize foreign pointers");
+
+    if (isFuture(v)) {
+        Value resolved = v;
+        resolved.resolveFuture();
+        writeValue(out, resolved);
+        return;
+    }
+
+    if (v.isBoxed()) {
+        uint8_t type = static_cast<uint8_t>(ValueType::Boxed);
+        out.write(reinterpret_cast<char*>(&type), 1);
+        v.asObj()->write(out);
+        return;
+    }
+
+    uint8_t type = static_cast<uint8_t>(v.type());
+    out.write(reinterpret_cast<char*>(&type), 1);
+
+    switch(v.type()) {
+        case ValueType::Nil:
+            break;
+        case ValueType::Bool: {
+            uint8_t b = v.asBool();
+            out.write(reinterpret_cast<char*>(&b),1);
+            break; }
+        case ValueType::Byte: {
+            uint8_t b = v.asByte();
+            out.write(reinterpret_cast<char*>(&b),1);
+            break; }
+        case ValueType::Int: {
+            int32_t i = v.asInt();
+            out.write(reinterpret_cast<char*>(&i),4);
+            break; }
+        case ValueType::Real: {
+            double d = v.asReal();
+            out.write(reinterpret_cast<char*>(&d),8);
+            break; }
+        case ValueType::Enum: {
+            int16_t val = v.asEnum();
+            uint16_t id = v.enumTypeId();
+            out.write(reinterpret_cast<char*>(&val),2);
+            out.write(reinterpret_cast<char*>(&id),2);
+            break; }
+        case ValueType::Type:
+            if (v.isObj())
+                v.asObj()->write(out);
+            else {
+                uint8_t tv = static_cast<uint8_t>(v.asType());
+                out.write(reinterpret_cast<char*>(&tv),1);
+            }
+            break;
+        case ValueType::String:
+        case ValueType::Range:
+        case ValueType::List:
+        case ValueType::Dict:
+        case ValueType::Vector:
+        case ValueType::Matrix:
+            v.asObj()->write(out);
+            break;
+        case ValueType::Function:
+        case ValueType::Closure:
+        case ValueType::Upvalue:
+            v.asObj()->write(out);
+            break;
+        default:
+            throw std::runtime_error("writeValue: unsupported type " + v.typeName());
+    }
+}
+
+Value roxal::readValue(std::istream& in)
+{
+    uint8_t typeByte;
+    if(!in.read(reinterpret_cast<char*>(&typeByte),1))
+        throw std::runtime_error("readValue: unable to read type");
+    ValueType t = static_cast<ValueType>(typeByte);
+
+    if (t == ValueType::Boxed) {
+        auto obj = newObj<ObjPrimitive>(__func__, false);
+        obj->read(in);
+        return objVal(obj);
+    }
+
+    switch(t) {
+        case ValueType::Nil:
+            return nilVal();
+        case ValueType::Bool: {
+            uint8_t b; in.read(reinterpret_cast<char*>(&b),1);
+            return boolVal(b!=0); }
+        case ValueType::Byte: {
+            uint8_t b; in.read(reinterpret_cast<char*>(&b),1);
+            return byteVal(b); }
+        case ValueType::Int: {
+            int32_t i; in.read(reinterpret_cast<char*>(&i),4);
+            return intVal(i); }
+        case ValueType::Real: {
+            double d; in.read(reinterpret_cast<char*>(&d),8);
+            return realVal(d); }
+        case ValueType::Enum: {
+            int16_t val; uint16_t id;
+            in.read(reinterpret_cast<char*>(&val),2);
+            in.read(reinterpret_cast<char*>(&id),2);
+            return enumVal(val, id); }
+        case ValueType::Type: {
+            uint8_t subType;
+            in.read(reinterpret_cast<char*>(&subType),1);
+            ValueType tv = static_cast<ValueType>(subType);
+            if (tv == ValueType::Object || tv == ValueType::Actor || tv == ValueType::Enum || tv == ValueType::Module) {
+                in.putback(static_cast<char>(subType));
+                if (tv == ValueType::Object || tv == ValueType::Actor || tv == ValueType::Enum) {
+                    auto obj = newObj<ObjObjectType>(__func__, icu::UnicodeString(), false, false, false);
+                    obj->read(in);
+                    return objVal(obj);
+                } else {
+                    auto obj = newObj<ObjTypeSpec>(__func__);
+                    obj->read(in);
+                    return objVal(obj);
+                }
+            }
+            return typeVal(tv);
+        }
+        case ValueType::String: {
+            auto obj = newObj<ObjString>(__func__);
+            obj->read(in);
+            return objVal(obj); }
+        case ValueType::Range: {
+            auto obj = newObj<ObjRange>(__func__);
+            obj->read(in);
+            return objVal(obj); }
+        case ValueType::List: {
+            auto obj = newObj<ObjList>(__func__);
+            obj->read(in);
+            return objVal(obj); }
+        case ValueType::Dict: {
+            auto obj = newObj<ObjDict>(__func__);
+            obj->read(in);
+            return objVal(obj); }
+        case ValueType::Vector: {
+            auto obj = newObj<ObjVector>(__func__);
+            obj->read(in);
+            return objVal(obj); }
+        case ValueType::Matrix: {
+            auto obj = newObj<ObjMatrix>(__func__);
+            obj->read(in);
+            return objVal(obj); }
+        case ValueType::Function: {
+            auto obj = newObj<ObjFunction>(__func__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+            obj->read(in);
+            return objVal(obj); }
+        case ValueType::Closure: {
+            auto obj = newObj<ObjClosure>(__func__, nullptr);
+            obj->read(in);
+            return objVal(obj); }
+        case ValueType::Upvalue: {
+            auto obj = newObj<ObjUpvalue>(__func__, nullptr);
+            obj->read(in);
+            return objVal(obj); }
+        default:
+            throw std::runtime_error("readValue: unsupported type " + std::to_string(static_cast<int>(t)));
+    }
 }
 
 

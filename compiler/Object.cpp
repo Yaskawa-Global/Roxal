@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <dlfcn.h>
+#include <future>
 
 #include <core/types.h>
 #include "Object.h"
@@ -45,6 +46,9 @@ ValueType Obj::valueType() const
         case ObjType::Matrix: return ValueType::Matrix;
         case ObjType::Signal: return ValueType::Signal;
         case ObjType::Event: return ValueType::Event;
+        case ObjType::Function: return ValueType::Function;
+        case ObjType::Closure: return ValueType::Closure;
+        case ObjType::Upvalue: return ValueType::Upvalue;
         case ObjType::Exception: return ValueType::Object;
         case ObjType::Instance: return static_cast<const ObjObjectType*>(this)->isActor ? ValueType::Actor : ValueType::Object;
         case ObjType::Actor: return ValueType::Actor;
@@ -118,6 +122,12 @@ Obj* Obj::clone() const
 // interned strings table
 static atomic_unordered_map<int32_t, ObjString*> strings {};
 
+ObjString::ObjString()
+    : s()
+{
+    type = ObjType::String;
+    hash = 0;
+}
 
 ObjString::ObjString(const UnicodeString& us)
     :  s(us)
@@ -221,6 +231,25 @@ void roxal::updateInternedString(ObjString* obj, const UnicodeString& newVal)
     strings.store(obj->hash, obj);
 }
 
+void ObjString::write(std::ostream& out) const
+{
+    std::string ss;
+    s.toUTF8String(ss);
+    uint32_t len = ss.size();
+    out.write(reinterpret_cast<char*>(&len), 4);
+    out.write(ss.data(), len);
+}
+
+void ObjString::read(std::istream& in)
+{
+    uint32_t len;
+    in.read(reinterpret_cast<char*>(&len), 4);
+    std::string ss(len, '\0');
+    if (len > 0) in.read(ss.data(), len);
+    UnicodeString us = UnicodeString::fromUTF8(ss);
+    updateInternedString(this, us);
+}
+
 
 
 // range
@@ -238,6 +267,23 @@ ObjRange::ObjRange(const Value& rstart, const Value& rstop, const Value& rstep, 
     type = ObjType::Range;
 }
 
+void ObjRange::write(std::ostream& out) const
+{
+    writeValue(out, start);
+    writeValue(out, stop);
+    writeValue(out, step);
+    uint8_t c = closed ? 1 : 0;
+    out.write(reinterpret_cast<char*>(&c), 1);
+}
+
+void ObjRange::read(std::istream& in)
+{
+    start = readValue(in);
+    stop  = readValue(in);
+    step  = readValue(in);
+    uint8_t c; in.read(reinterpret_cast<char*>(&c), 1);
+    closed = c != 0;
+}
 
 ObjVector::ObjVector(const Eigen::VectorXd& values)
     : vec(values)
@@ -605,11 +651,28 @@ void ObjList::append(const Value& value)
     elts.push_back(value);
 }
 
+void ObjList::write(std::ostream& out) const
+{
+    uint32_t len = length();
+    out.write(reinterpret_cast<char*>(&len), 4);
+    auto list = elts.get();
+    for(const auto& v : list)
+        writeValue(out, v);
+}
+
+void ObjList::read(std::istream& in)
+{
+    uint32_t len;
+    in.read(reinterpret_cast<char*>(&len), 4);
+    elts.clear();
+    for(uint32_t i=0;i<len;i++)
+        elts.push_back(readValue(in));
+}
+
 void ObjList::set(const ObjList* other)
 {
     elts = other->elts; // atomic_vector assignment performs copy
 }
-
 
 
 ObjList* roxal::listVal()
@@ -717,6 +780,31 @@ std::string roxal::objDictToString(const ObjDict* od)
     return os.str();
 }
 
+void ObjDict::write(std::ostream& out) const
+{
+    auto ents = items();
+    uint32_t len = ents.size();
+    out.write(reinterpret_cast<char*>(&len), 4);
+    for(const auto& p : ents) {
+        writeValue(out, p.first);
+        writeValue(out, p.second);
+    }
+}
+
+void ObjDict::read(std::istream& in)
+{
+    uint32_t len;
+    in.read(reinterpret_cast<char*>(&len), 4);
+    m_keys.clear();
+    entries.clear();
+    for(uint32_t i=0;i<len;i++) {
+        Value k = readValue(in);
+        Value v = readValue(in);
+        m_keys.push_back(k);
+        entries[k] = v;
+    }
+}
+
 
 ObjVector* roxal::vectorVal()
 {
@@ -772,6 +860,27 @@ bool ObjVector::equals(const ObjVector* other, double eps) const
 
     // Use Eigen's isApprox for element-wise comparison with tolerance
     return vec.isApprox(other->vec, eps);
+}
+
+void ObjVector::write(std::ostream& out) const
+{
+    uint32_t len = vec.size();
+    out.write(reinterpret_cast<char*>(&len), 4);
+    for(uint32_t i=0;i<len;i++) {
+        double d = vec[i];
+        out.write(reinterpret_cast<char*>(&d), 8);
+    }
+}
+
+void ObjVector::read(std::istream& in)
+{
+    uint32_t len;
+    in.read(reinterpret_cast<char*>(&len), 4);
+    vec.resize(len);
+    for(uint32_t i=0;i<len;i++) {
+        double d; in.read(reinterpret_cast<char*>(&d), 8);
+        vec[i] = d;
+    }
 }
 
 
@@ -833,6 +942,431 @@ ObjMatrix* roxal::cloneMatrix(const ObjMatrix* m)
 void ObjMatrix::set(const ObjMatrix* other)
 {
     mat = other->mat;
+}
+void ObjPrimitive::write(std::ostream& out) const
+{
+    ValueType vt = valueType();
+    uint8_t t = static_cast<uint8_t>(vt);
+    out.write(reinterpret_cast<char*>(&t), 1);
+    switch(vt) {
+        case ValueType::Bool: {
+            uint8_t b = as.boolean ? 1 : 0;
+            out.write(reinterpret_cast<char*>(&b), 1);
+            break; }
+        case ValueType::Int: {
+            int32_t i = as.integer;
+            out.write(reinterpret_cast<char*>(&i), 4);
+            break; }
+        case ValueType::Real: {
+            double d = as.real;
+            out.write(reinterpret_cast<char*>(&d), 8);
+            break; }
+        case ValueType::Type: {
+            uint8_t bt = static_cast<uint8_t>(as.btype);
+            out.write(reinterpret_cast<char*>(&bt),1);
+            break; }
+        default:
+            throw std::runtime_error("ObjPrimitive serialization unsupported type" );
+    }
+}
+
+void ObjPrimitive::read(std::istream& in)
+{
+    uint8_t t; in.read(reinterpret_cast<char*>(&t),1);
+    ValueType vt = static_cast<ValueType>(t);
+
+    switch(vt) {
+        case ValueType::Bool: {
+            type = ObjType::Bool;
+            uint8_t b; in.read(reinterpret_cast<char*>(&b),1);
+            as.boolean = b!=0;
+            break; }
+        case ValueType::Int: {
+            type = ObjType::Int;
+            int32_t i; in.read(reinterpret_cast<char*>(&i),4);
+            as.integer = i;
+            break; }
+        case ValueType::Real: {
+            type = ObjType::Real;
+            double d; in.read(reinterpret_cast<char*>(&d),8);
+            as.real = d;
+            break; }
+        case ValueType::Type: {
+            type = ObjType::Type;
+            uint8_t bt; in.read(reinterpret_cast<char*>(&bt),1);
+            as.btype = static_cast<ValueType>(bt);
+            break; }
+        default:
+            throw std::runtime_error("ObjPrimitive deserialization unsupported type" );
+    }
+}
+
+// Default serialization stubs for unsupported object types
+void ObjSignal::write(std::ostream&) const { throw std::runtime_error("ObjSignal serialization not implemented"); }
+void ObjSignal::read(std::istream&) { throw std::runtime_error("ObjSignal deserialization not implemented"); }
+void ObjEvent::write(std::ostream&) const { throw std::runtime_error("ObjEvent serialization not implemented"); }
+void ObjEvent::read(std::istream&) { throw std::runtime_error("ObjEvent deserialization not implemented"); }
+void ObjLibrary::write(std::ostream&) const { throw std::runtime_error("ObjLibrary serialization not implemented"); }
+void ObjLibrary::read(std::istream&) { throw std::runtime_error("ObjLibrary deserialization not implemented"); }
+void ObjForeignPtr::write(std::ostream&) const { throw std::runtime_error("Cannot serialize foreign pointers"); }
+void ObjForeignPtr::read(std::istream&) { throw std::runtime_error("Cannot deserialize foreign pointers"); }
+void ObjException::write(std::ostream&) const { throw std::runtime_error("ObjException serialization not implemented"); }
+void ObjException::read(std::istream&) { throw std::runtime_error("ObjException deserialization not implemented"); }
+void ObjFunction::write(std::ostream& out) const
+{
+    uint8_t tag = static_cast<uint8_t>(ObjType::Function);
+    out.write(reinterpret_cast<char*>(&tag), 1);
+
+    std::string n; name.toUTF8String(n);
+    uint32_t len = n.size();
+    out.write(reinterpret_cast<char*>(&len), 4);
+    out.write(n.data(), len);
+
+    uint8_t hasType = funcType.has_value() ? 1 : 0;
+    out.write(reinterpret_cast<char*>(&hasType), 1);
+    if(hasType)
+        throw std::runtime_error("ObjFunction funcType serialization not implemented");
+
+    out.write(reinterpret_cast<const char*>(&arity), 4);
+    out.write(reinterpret_cast<const char*>(&upvalueCount), 4);
+
+    chunk->serialize(out);
+
+    uint32_t annCount = annotations.size();
+    out.write(reinterpret_cast<char*>(&annCount), 4);
+    if(annCount)
+        throw std::runtime_error("ObjFunction annotations serialization not implemented");
+
+    uint8_t s = strict ? 1 : 0; out.write(reinterpret_cast<char*>(&s),1);
+
+    uint8_t ft = static_cast<uint8_t>(fnType); out.write(reinterpret_cast<char*>(&ft),1);
+
+    writeValue(out, ownerType);
+
+    uint8_t acc = static_cast<uint8_t>(access); out.write(reinterpret_cast<char*>(&acc),1);
+
+    uint32_t defCount = paramDefaultFunc.size();
+    out.write(reinterpret_cast<char*>(&defCount),4);
+    if(defCount) {
+        for(const auto& kv : paramDefaultFunc) {
+            int32_t key = kv.first;
+            out.write(reinterpret_cast<char*>(&key),4);
+            kv.second->write(out);
+        }
+    }
+
+    writeValue(out, moduleType);
+}
+
+void ObjFunction::read(std::istream& in)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
+    if(tag != static_cast<uint8_t>(ObjType::Function))
+        throw std::runtime_error("ObjFunction::read mismatched tag");
+    type = ObjType::Function;
+
+    uint32_t len; in.read(reinterpret_cast<char*>(&len),4);
+    std::string ns(len,'\0'); if(len) in.read(ns.data(),len);
+    name = icu::UnicodeString::fromUTF8(ns);
+
+    uint8_t hasType; in.read(reinterpret_cast<char*>(&hasType),1);
+    if(hasType)
+        throw std::runtime_error("ObjFunction funcType deserialization not implemented");
+    funcType.reset();
+
+    in.read(reinterpret_cast<char*>(&arity),4);
+    in.read(reinterpret_cast<char*>(&upvalueCount),4);
+
+    chunk = std::make_shared<Chunk>(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+    chunk->deserialize(in);
+
+    uint32_t annCount; in.read(reinterpret_cast<char*>(&annCount),4);
+    if(annCount)
+        throw std::runtime_error("ObjFunction annotations deserialization not implemented");
+
+    uint8_t s; in.read(reinterpret_cast<char*>(&s),1); strict = s!=0;
+
+    uint8_t ft; in.read(reinterpret_cast<char*>(&ft),1); fnType = static_cast<FunctionType>(ft);
+
+    ownerType = readValue(in);
+
+    uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1); access = static_cast<ast::Access>(acc);
+
+    uint32_t defCount; in.read(reinterpret_cast<char*>(&defCount),4);
+    paramDefaultFunc.clear();
+    for(uint32_t i=0;i<defCount;i++) {
+        int32_t key; in.read(reinterpret_cast<char*>(&key),4);
+        auto func = newObj<ObjFunction>(__func__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+        func->read(in);
+        paramDefaultFunc[key] = func;
+    }
+
+    moduleType = readValue(in);
+}
+void ObjUpvalue::write(std::ostream& out) const
+{
+    ObjUpvalue* self = const_cast<ObjUpvalue*>(this);
+    if (self->location != &self->closed) {
+        self->closed = *self->location;
+        self->location = &self->closed;
+    }
+
+    uint8_t tag = static_cast<uint8_t>(ObjType::Upvalue);
+    out.write(reinterpret_cast<char*>(&tag),1);
+    writeValue(out, self->closed);
+}
+
+void ObjUpvalue::read(std::istream& in)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
+    if(tag != static_cast<uint8_t>(ObjType::Upvalue))
+        throw std::runtime_error("ObjUpvalue::read mismatched tag");
+    type = ObjType::Upvalue;
+    closed = readValue(in);
+    location = &closed;
+}
+
+void ObjClosure::write(std::ostream& out) const
+{
+    uint8_t tag = static_cast<uint8_t>(ObjType::Closure);
+    out.write(reinterpret_cast<char*>(&tag),1);
+    function->write(out);
+    uint32_t count = upvalues.size();
+    out.write(reinterpret_cast<char*>(&count),4);
+    for(auto* uv : upvalues) {
+        uint8_t present = uv ? 1 : 0;
+        out.write(reinterpret_cast<char*>(&present),1);
+        if(present)
+            uv->write(out);
+    }
+}
+
+void ObjClosure::read(std::istream& in)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
+    if(tag != static_cast<uint8_t>(ObjType::Closure))
+        throw std::runtime_error("ObjClosure::read mismatched tag");
+    type = ObjType::Closure;
+
+    auto fn = newObj<ObjFunction>(__func__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+    fn->read(in);
+    function = fn;
+    function->incRef();
+
+    uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
+    upvalues.resize(count,nullptr);
+    for(uint32_t i=0;i<count;i++) {
+        uint8_t present; in.read(reinterpret_cast<char*>(&present),1);
+        if(present) {
+            auto uv = newObj<ObjUpvalue>(__func__, nullptr);
+            uv->read(in);
+            upvalues[i] = uv;
+            uv->incRef();
+        }
+    }
+}
+void ObjFuture::write(std::ostream& out) const
+{
+    Value resolved = future.valid() ? future.get() : nilVal();
+    writeValue(out, resolved);
+}
+
+void ObjFuture::read(std::istream& in)
+{
+    // Deserialize as resolved value and wrap back into a fulfilled future
+    Value val = readValue(in);
+    std::promise<Value> p;
+    p.set_value(val);
+    future = p.get_future().share();
+}
+void ObjNative::write(std::ostream&) const { throw std::runtime_error("ObjNative serialization not implemented"); }
+void ObjNative::read(std::istream&) { throw std::runtime_error("ObjNative deserialization not implemented"); }
+void ObjTypeSpec::write(std::ostream& out) const
+{
+    uint8_t tv = static_cast<uint8_t>(typeValue);
+    out.write(reinterpret_cast<char*>(&tv), 1);
+}
+
+void ObjTypeSpec::read(std::istream& in)
+{
+    uint8_t tv;
+    in.read(reinterpret_cast<char*>(&tv), 1);
+    typeValue = static_cast<ValueType>(tv);
+}
+void ObjObjectType::write(std::ostream& out) const
+{
+    ObjTypeSpec::write(out);
+
+    std::string n; name.toUTF8String(n);
+    uint32_t len = n.size();
+    out.write(reinterpret_cast<char*>(&len), 4);
+    out.write(n.data(), len);
+
+    uint8_t b = isActor ? 1 : 0; out.write(reinterpret_cast<char*>(&b),1);
+    b = isInterface ? 1 : 0; out.write(reinterpret_cast<char*>(&b),1);
+    b = isEnumeration ? 1 : 0; out.write(reinterpret_cast<char*>(&b),1);
+
+    writeValue(out, superType);
+
+    b = isCStruct ? 1 : 0; out.write(reinterpret_cast<char*>(&b),1);
+    out.write(reinterpret_cast<const char*>(&cstructArch),4);
+    out.write(reinterpret_cast<const char*>(&enumTypeId),2);
+
+    uint32_t pcount = propertyOrder.size();
+    out.write(reinterpret_cast<char*>(&pcount),4);
+    for(int32_t h : propertyOrder) {
+        const auto& prop = properties.at(h);
+        std::string pn; prop.name.toUTF8String(pn);
+        uint32_t plen = pn.size();
+        out.write(reinterpret_cast<char*>(&plen),4);
+        out.write(pn.data(), plen);
+        writeValue(out, prop.type);
+        writeValue(out, prop.initialValue);
+        uint8_t acc = static_cast<uint8_t>(prop.access);
+        out.write(reinterpret_cast<char*>(&acc),1);
+        uint8_t hasC = prop.ctype.has_value() ? 1 : 0;
+        out.write(reinterpret_cast<char*>(&hasC),1);
+        if(hasC) {
+            std::string ct; prop.ctype->toUTF8String(ct);
+            uint32_t ctlen = ct.size();
+            out.write(reinterpret_cast<char*>(&ctlen),4);
+            out.write(ct.data(), ctlen);
+        }
+    }
+
+    uint32_t mcount = methods.size();
+    out.write(reinterpret_cast<char*>(&mcount),4);
+    for(const auto& kv : methods) {
+        const auto& method = kv.second;
+        std::string mn; method.name.toUTF8String(mn);
+        uint32_t mlen = mn.size();
+        out.write(reinterpret_cast<char*>(&mlen),4);
+        out.write(mn.data(), mlen);
+        uint8_t placeholder = 0; // closure not serialized yet
+        out.write(reinterpret_cast<char*>(&placeholder),1);
+        uint8_t acc = static_cast<uint8_t>(method.access);
+        out.write(reinterpret_cast<char*>(&acc),1);
+    }
+
+    uint32_t lcount = enumLabelValues.size();
+    out.write(reinterpret_cast<char*>(&lcount),4);
+    for(const auto& kv : enumLabelValues) {
+        const auto& label = kv.second;
+        std::string ln; label.first.toUTF8String(ln);
+        uint32_t llen = ln.size();
+        out.write(reinterpret_cast<char*>(&llen),4);
+        out.write(ln.data(), llen);
+        writeValue(out, label.second);
+    }
+}
+
+void ObjObjectType::read(std::istream& in)
+{
+    ObjTypeSpec::read(in);
+
+    uint32_t len; in.read(reinterpret_cast<char*>(&len),4);
+    std::string ns(len, '\0');
+    if(len>0) in.read(ns.data(), len);
+    name = icu::UnicodeString::fromUTF8(ns);
+
+    uint8_t b;
+    in.read(reinterpret_cast<char*>(&b),1); isActor = b!=0;
+    in.read(reinterpret_cast<char*>(&b),1); isInterface = b!=0;
+    in.read(reinterpret_cast<char*>(&b),1); isEnumeration = b!=0;
+
+    superType = readValue(in);
+
+    in.read(reinterpret_cast<char*>(&b),1); isCStruct = b!=0;
+    in.read(reinterpret_cast<char*>(&cstructArch),4);
+    in.read(reinterpret_cast<char*>(&enumTypeId),2);
+
+    uint32_t pcount; in.read(reinterpret_cast<char*>(&pcount),4);
+    properties.clear(); propertyOrder.clear();
+    for(uint32_t i=0;i<pcount;i++) {
+        uint32_t plen; in.read(reinterpret_cast<char*>(&plen),4);
+        std::string pn(plen,'\0'); if(plen>0) in.read(pn.data(), plen);
+        icu::UnicodeString uname = icu::UnicodeString::fromUTF8(pn);
+        Value ptype = readValue(in);
+        Value init  = readValue(in);
+        uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
+        uint8_t hasC; in.read(reinterpret_cast<char*>(&hasC),1);
+        std::optional<icu::UnicodeString> ct;
+        if(hasC) {
+            uint32_t ctlen; in.read(reinterpret_cast<char*>(&ctlen),4);
+            std::string cts(ctlen,'\0'); if(ctlen>0) in.read(cts.data(), ctlen);
+            ct = icu::UnicodeString::fromUTF8(cts);
+        }
+        int32_t hash = uname.hashCode();
+        Property prop{uname, ptype, init, static_cast<ast::Access>(acc), nilVal(), ct};
+        properties[hash] = prop;
+        propertyOrder.push_back(hash);
+    }
+
+    uint32_t mcount; in.read(reinterpret_cast<char*>(&mcount),4);
+    methods.clear();
+    for(uint32_t i=0;i<mcount;i++) {
+        uint32_t mlen; in.read(reinterpret_cast<char*>(&mlen),4);
+        std::string mn(mlen,'\0'); if(mlen>0) in.read(mn.data(), mlen);
+        icu::UnicodeString uname = icu::UnicodeString::fromUTF8(mn);
+        uint8_t placeholder; in.read(reinterpret_cast<char*>(&placeholder),1); // skip
+        uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
+        int32_t hash = uname.hashCode();
+        Method m{uname, nilVal(), static_cast<ast::Access>(acc), nilVal()};
+        methods[hash] = m;
+    }
+
+    uint32_t lcount; in.read(reinterpret_cast<char*>(&lcount),4);
+    enumLabelValues.clear();
+    for(uint32_t i=0;i<lcount;i++) {
+        uint32_t llen; in.read(reinterpret_cast<char*>(&llen),4);
+        std::string ln(llen,'\0'); if(llen>0) in.read(ln.data(), llen);
+        icu::UnicodeString uname = icu::UnicodeString::fromUTF8(ln);
+        Value val = readValue(in);
+        int32_t hash = uname.hashCode();
+        enumLabelValues[hash] = {uname, val};
+    }
+
+    if(isEnumeration) {
+        enumTypes[enumTypeId] = this;
+    }
+}
+void ObjPackageType::write(std::ostream&) const { throw std::runtime_error("ObjPackageType serialization not implemented"); }
+void ObjPackageType::read(std::istream&) { throw std::runtime_error("ObjPackageType deserialization not implemented"); }
+void ObjModuleType::write(std::ostream&) const { throw std::runtime_error("ObjModuleType serialization not implemented"); }
+void ObjModuleType::read(std::istream&) { throw std::runtime_error("ObjModuleType deserialization not implemented"); }
+void ObjectInstance::write(std::ostream&) const { throw std::runtime_error("ObjectInstance serialization not implemented"); }
+void ObjectInstance::read(std::istream&) { throw std::runtime_error("ObjectInstance deserialization not implemented"); }
+void ObjBoundMethod::write(std::ostream&) const { throw std::runtime_error("ObjBoundMethod serialization not implemented"); }
+void ObjBoundMethod::read(std::istream&) { throw std::runtime_error("ObjBoundMethod deserialization not implemented"); }
+void ObjBoundNative::write(std::ostream&) const { throw std::runtime_error("ObjBoundNative serialization not implemented"); }
+void ObjBoundNative::read(std::istream&) { throw std::runtime_error("ObjBoundNative deserialization not implemented"); }
+void ActorInstance::write(std::ostream&) const { throw std::runtime_error("ActorInstance serialization not implemented"); }
+void ActorInstance::read(std::istream&) { throw std::runtime_error("ActorInstance deserialization not implemented"); }
+
+void ObjMatrix::write(std::ostream& out) const
+{
+    uint32_t rows = mat.rows();
+    uint32_t cols = mat.cols();
+    out.write(reinterpret_cast<char*>(&rows), 4);
+    out.write(reinterpret_cast<char*>(&cols), 4);
+    for(uint32_t r=0;r<rows;r++)
+        for(uint32_t c=0;c<cols;c++) {
+            double d = mat(r,c);
+            out.write(reinterpret_cast<char*>(&d), 8);
+        }
+}
+
+void ObjMatrix::read(std::istream& in)
+{
+    uint32_t rows, cols;
+    in.read(reinterpret_cast<char*>(&rows), 4);
+    in.read(reinterpret_cast<char*>(&cols), 4);
+    mat.resize(rows, cols);
+    for(uint32_t r=0;r<rows;r++)
+        for(uint32_t c=0;c<cols;c++) {
+            double d; in.read(reinterpret_cast<char*>(&d), 8);
+            mat(r,c) = d;
+        }
 }
 
 ObjSignal::ObjSignal(ptr<df::Signal> s)

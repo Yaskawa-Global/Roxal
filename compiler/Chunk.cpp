@@ -705,3 +705,72 @@ void CallSpec::testParamPositions()
     } catch (...) {}
 }
 #endif
+
+void Chunk::serialize(std::ostream& out) const
+{
+    auto writeUS = [&](const icu::UnicodeString& us) {
+        std::string s; us.toUTF8String(s);
+        uint32_t len = s.size();
+        out.write(reinterpret_cast<char*>(&len), 4);
+        out.write(s.data(), len);
+    };
+
+    writeUS(packageName);
+    writeUS(moduleName);
+    writeUS(sourceName);
+
+    uint32_t codeSize = code.size();
+    out.write(reinterpret_cast<char*>(&codeSize), 4);
+    if(codeSize)
+        out.write(reinterpret_cast<const char*>(code.data()), codeSize);
+
+    uint32_t constCount = constants.size();
+    out.write(reinterpret_cast<char*>(&constCount), 4);
+    for(const auto& v : constants)
+        writeValue(out, v);
+
+    uint32_t lineCount = lineTable.size();
+    out.write(reinterpret_cast<char*>(&lineCount), 4);
+    for(const auto& e : lineTable) {
+        uint32_t off = e.offset;
+        int32_t line = e.line;
+        int32_t col = e.column;
+        out.write(reinterpret_cast<char*>(&off), 4);
+        out.write(reinterpret_cast<char*>(&line), 4);
+        out.write(reinterpret_cast<char*>(&col), 4);
+    }
+}
+
+void Chunk::deserialize(std::istream& in)
+{
+    auto readUS = [&]() {
+        uint32_t len; in.read(reinterpret_cast<char*>(&len), 4);
+        std::string s(len, '\0');
+        if(len) in.read(s.data(), len);
+        return icu::UnicodeString::fromUTF8(s);
+    };
+
+    packageName = readUS();
+    moduleName  = readUS();
+    sourceName  = readUS();
+
+    uint32_t codeSize; in.read(reinterpret_cast<char*>(&codeSize), 4);
+    code.resize(codeSize);
+    if(codeSize)
+        in.read(reinterpret_cast<char*>(code.data()), codeSize);
+
+    uint32_t constCount; in.read(reinterpret_cast<char*>(&constCount), 4);
+    constants.clear();
+    for(uint32_t i=0;i<constCount;i++)
+        constants.push_back(readValue(in));
+
+    uint32_t lineCount; in.read(reinterpret_cast<char*>(&lineCount), 4);
+    lineTable.clear();
+    for(uint32_t i=0;i<lineCount;i++) {
+        uint32_t off; int32_t line; int32_t col;
+        in.read(reinterpret_cast<char*>(&off), 4);
+        in.read(reinterpret_cast<char*>(&line), 4);
+        in.read(reinterpret_cast<char*>(&col), 4);
+        lineTable.push_back(LineEntry{off,line,col});
+    }
+}
