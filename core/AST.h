@@ -562,10 +562,18 @@ struct UnaryOp : public Expression {
 
 
 struct Assignment : public Expression {
-    Assignment() : Expression(ExprType::Assignment) {}
+    enum Op {
+        Assign,      // "="
+        CopyAssign   // "<-"
+    };
 
+    Assignment() : Expression(ExprType::Assignment), op(Assign) {}
+
+    Op op;
     ptr<Expression> lhs;
     ptr<Expression> rhs;
+
+    std::string opString() const;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

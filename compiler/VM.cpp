@@ -2527,6 +2527,18 @@ std::pair<InterpretResult,Value> VM::execute()
                 std::swap(peek(0), peek(1));
                 break;
             }
+            case asByte(OpCode::CopyAssign): {
+                Value rhs = pop();
+                Value lhs = pop();
+                try {
+                    copyAssign(lhs, rhs);
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                push(lhs);
+                break;
+            }
             case asByte(OpCode::JumpIfFalse): {
                 uint16_t jumpDist = readShort();
                 peek(0).resolve();

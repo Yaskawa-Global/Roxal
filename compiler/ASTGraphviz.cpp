@@ -486,7 +486,7 @@ std::any ASTGraphviz::visit(ptr<ast::Assignment> ast)
     addLink(name, stackPop());
     addLink(name, stackPop());
 
-    nodes[name] = node(name,"Assign");
+    nodes[name] = node(name, std::string("Assign ")+ast->opString());
     stackPush(name);
     endVisit();
     return {};

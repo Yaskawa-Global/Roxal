@@ -129,7 +129,6 @@ ObjString::ObjString()
     hash = 0;
 }
 
-
 ObjString::ObjString(const UnicodeString& us)
     :  s(us)
 {
@@ -285,7 +284,6 @@ void ObjRange::read(std::istream& in)
     uint8_t c; in.read(reinterpret_cast<char*>(&c), 1);
     closed = c != 0;
 }
-
 
 ObjVector::ObjVector(const Eigen::VectorXd& values)
     : vec(values)
@@ -671,6 +669,10 @@ void ObjList::read(std::istream& in)
         elts.push_back(readValue(in));
 }
 
+void ObjList::set(const ObjList* other)
+{
+    elts = other->elts; // atomic_vector assignment performs copy
+}
 
 
 ObjList* roxal::listVal()
@@ -748,6 +750,14 @@ ObjDict* roxal::cloneDict(const ObjDict* d)
     return newd;
 }
 
+void ObjDict::set(const ObjDict* other)
+{
+    std::lock_guard<std::mutex> lockThis(m);
+    std::lock_guard<std::mutex> lockOther(other->m);
+    m_keys = other->m_keys;
+    entries = other->entries;
+}
+
 
 std::string roxal::objDictToString(const ObjDict* od)
 {
@@ -818,6 +828,11 @@ ObjVector* roxal::cloneVector(const ObjVector* v)
     auto newv = newObj<ObjVector>(__func__, v->vec.size());
     newv->vec = v->vec;
     return newv;
+}
+
+void ObjVector::set(const ObjVector* other)
+{
+    vec = other->vec;
 }
 
 
@@ -924,6 +939,10 @@ ObjMatrix* roxal::cloneMatrix(const ObjMatrix* m)
     return newm;
 }
 
+void ObjMatrix::set(const ObjMatrix* other)
+{
+    mat = other->mat;
+}
 void ObjPrimitive::write(std::ostream& out) const
 {
     ValueType vt = valueType();

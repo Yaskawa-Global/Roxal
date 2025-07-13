@@ -418,6 +418,9 @@ Value multiply(Value l, Value r);
 Value divide(Value l, Value r);
 Value mod(Value l, Value r);
 
+// Copy assignment: shallow copy for reference types
+void copyAssign(Value& lhs, const Value& rhs);
+
 Value land(Value l, Value r);
 Value lor(Value l, Value r);
 

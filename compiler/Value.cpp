@@ -1865,6 +1865,44 @@ Value roxal::mod(Value l, Value r)
     return intVal(lhs % rhs);
 }
 
+void roxal::copyAssign(Value& lhs, const Value& rhs)
+{
+    if (!lhs.isObj()) {
+        lhs = rhs;
+        return;
+    }
+
+    switch (objType(lhs)) {
+        case ObjType::List:
+            if (!isList(rhs))
+                throw std::invalid_argument("copy assign list requires list RHS");
+            asList(lhs)->set(asList(rhs));
+            break;
+        case ObjType::Dict:
+            if (!isDict(rhs))
+                throw std::invalid_argument("copy assign dict requires dict RHS");
+            asDict(lhs)->set(asDict(rhs));
+            break;
+        case ObjType::Vector:
+            if (!isVector(rhs))
+                throw std::invalid_argument("copy assign vector requires vector RHS");
+            asVector(lhs)->set(asVector(rhs));
+            break;
+        case ObjType::Matrix:
+            if (!isMatrix(rhs))
+                throw std::invalid_argument("copy assign matrix requires matrix RHS");
+            asMatrix(lhs)->set(asMatrix(rhs));
+            break;
+        case ObjType::Instance:
+        case ObjType::Actor:
+            throw std::runtime_error("copy assignment not supported for user-defined types");
+        default:
+            // Immutable or unsupported types - behave like normal assignment
+            lhs = rhs;
+            break;
+    }
+}
+
 
 Value roxal::land(Value l, Value r)
 {

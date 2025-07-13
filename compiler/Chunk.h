@@ -95,7 +95,8 @@ enum class OpCode {
     EventOff,
     SetupExcept,
     EndExcept,
-    Throw
+    Throw,
+    CopyAssign
 };
 
 inline constexpr uint8_t asByte(OpCode op) { return uint8_t(op); }
