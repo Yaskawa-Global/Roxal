@@ -1552,9 +1552,9 @@ std::string roxal::objForeignPtrToString(const ObjForeignPtr* fp)
     return oss.str();
 }
 
-ObjException* roxal::exceptionVal(Value message, Value exType)
+ObjException* roxal::exceptionVal(Value message, Value exType, Value stackTrace)
 {
-    return newObj<ObjException>(__func__, message, exType);
+    return newObj<ObjException>(__func__, message, exType, stackTrace);
 }
 
 std::string roxal::objExceptionToString(const ObjException* ex)
@@ -1563,6 +1563,40 @@ std::string roxal::objExceptionToString(const ObjException* ex)
     if (!ex->message.isNil())
         return std::string("<exception ") + toString(ex->message) + ">";
     return std::string("<exception>");
+}
+
+std::string roxal::stackTraceToString(Value frames)
+{
+    if (frames.isNil() || !isList(frames)) return "";
+    ObjList* listObj = asList(frames);
+    std::ostringstream oss;
+    auto list = listObj->elts.get();
+    for(const auto& v : list) {
+        if (!isDict(v)) continue;
+        ObjDict* d = asDict(v);
+        Value funcVal = d->at(objVal(stringVal(UnicodeString("function"))));
+        Value lineVal = d->at(objVal(stringVal(UnicodeString("line"))));
+        Value colVal  = d->at(objVal(stringVal(UnicodeString("col"))));
+        Value fileVal = d->at(objVal(stringVal(UnicodeString("filename"))));
+
+        UnicodeString funcName = isString(funcVal) ? asString(funcVal)->s : UnicodeString("<script>");
+        int line = lineVal.isNumber() ? lineVal.asInt() : -1;
+        int col  = colVal.isNumber() ? colVal.asInt() : -1;
+        std::string fname = isString(fileVal) ? toUTF8StdString(asString(fileVal)->s) : "";
+
+        if (!fname.empty())
+            oss << fname << ":" << line << ":" << col << ": in " << toUTF8StdString(funcName) << "\n";
+        else
+            oss << "[line " << line << ":" << col << "]: in " << toUTF8StdString(funcName) << "\n";
+    }
+    return oss.str();
+}
+
+std::string roxal::objExceptionStackTraceToString(const ObjException* ex)
+{
+    if (!ex)
+        return "";
+    return stackTraceToString(ex->stackTrace);
 }
 
 Value ObjMatrix::index(const Value& row) const

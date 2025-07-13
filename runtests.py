@@ -23,7 +23,7 @@ tests = [
     'comments', 'primitive1', 'constants', 'scopetest2', 'scopetest3',
     'andtest', 'ortest', 'not',
     'arith', 'factorial', 'defaultvalues', 'typeof_test',
-    'dict', 'dict2', 'dict_keyerror', 'list', 'list2', 'copyassign_list', 'copyassign_sublist',
+    'dict', 'dict2', 'dict_keyerror', 'list', 'list2', 'copyassign_list', 'copyassign_sublist', 'copyassign_signal',
     'list_add_test', 'range', 'range2', 'enum1', 'enum2', 'enum3', 'upvalue_leak',
     'unicode', 'signal_clock', 'signal_add', 'signal_subtract', 'signal_multiply', 'signal_divide', 'signal_modulo',
     'signal_greater', 'signal_less', 'signal_equal',
@@ -68,7 +68,7 @@ tests = [
     'weakref', 'strongref', 'is_operator', 'stackdepth',
     'is_operator_type',
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
-    'stacktrace', 'object_user_ref_cycle',
+    'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle',
     'runtime_error_snippet',
     'cmdline_execute', 'invalid_option'
 ]
