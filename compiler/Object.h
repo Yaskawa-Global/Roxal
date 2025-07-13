@@ -741,18 +741,20 @@ inline ObjUpvalue* cloneUpvalue(const ObjUpvalue* u) {
 
 struct ObjClosure : public Obj
 {
-    ObjClosure(ObjFunction* f) : function(f) {
-        function->incRef();
-
+    ObjClosure(ObjFunction* f=nullptr) : function(f) {
         type = ObjType::Closure;
-        upvalues.resize(function->upvalueCount, nullptr);
+        if (function) {
+            function->incRef();
+            upvalues.resize(function->upvalueCount, nullptr);
+        }
     }
     virtual ~ObjClosure() {
-        for(size_t i=0; i<upvalues.size();i++)
+        for(size_t i=0; i<upvalues.size(); i++)
             if (upvalues[i] != nullptr)
                 upvalues[i]->decRef();
 
-        function->decRef();
+        if (function)
+            function->decRef();
     }
 
     ObjFunction* function;

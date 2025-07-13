@@ -1142,7 +1142,6 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
             results.push_back({"closure_round", pass, pass?"ok":"mismatch"});
             delObj(cl2);
             delObj(cl);
-            delObj(fn);
             delete local;
         } catch(std::exception& e) {
             results.push_back({"closure_round", false, std::string("exception: ")+e.what()});
