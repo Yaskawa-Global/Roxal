@@ -1,7 +1,7 @@
 func bytes_equal(a:list,b:list) -> bool:
   if len(a) != len(b):
     return false
-  for i in range(len(a)):
+  for i in range(:len(a)):
     if a[i] != b[i]:
       return false
   return true

@@ -4193,7 +4193,7 @@ Value VM::deserialize_builtin(int argCount, Value* args)
     data.reserve(lst->length());
     for(int i=0;i<lst->length();i++) {
         Value v = lst->elts.at(i);
-        if(!isByte(v))
+        if(!v.isByte())
             throw std::invalid_argument("deserialize expects list of bytes");
         data.push_back(static_cast<char>(v.asByte()));
     }
