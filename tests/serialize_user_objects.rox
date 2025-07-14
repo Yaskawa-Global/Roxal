@@ -9,11 +9,19 @@ f.x = 42
 var s = Second()
 s.other = f
 
+func bytes_equal(a:list,b:list) -> bool:
+  if len(a) != len(b):
+    return false
+  for i in range(:len(a)):
+    if a[i] != b[i]:
+      return false
+  return true
+
 var arr = [s, f]
 var data = serialize(arr)
 var arr2 = deserialize(data)
 var data2 = serialize(arr2)
-print(data == data2)
+print(bytes_equal(data, data2))
 print(arr2[0].other.x)
 print(arr2[0].other is arr2[1])
 
