@@ -2754,19 +2754,16 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::DefineModuleVar): {
-                if (!checkActorVarAccess()) return errorReturn;
                 ObjString* name = readString();
                 moduleVars().store(name->hash, name->s,pop());
                 break;
             }
             case asByte(OpCode::DefineModuleVar2): {
-                if (!checkActorVarAccess()) return errorReturn;
                 ObjString* name = readString2();
                 moduleVars().store(name->hash, name->s,pop());
                 break;
             }
             case asByte(OpCode::GetModuleVar): {
-                if (!checkActorVarAccess()) return errorReturn;
                 ObjString* name = readString();
                 auto& vars { moduleVars() };
                 auto optValue { vars.load(name->hash) };
@@ -2781,7 +2778,6 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::GetModuleVar2): {
-                if (!checkActorVarAccess()) return errorReturn;
                 ObjString* name = readString2();
                 const auto& vars { moduleVars() };
                 auto optValue { vars.load(name->hash) };
@@ -2796,7 +2792,6 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::SetModuleVar): {
-                if (!checkActorVarAccess()) return errorReturn;
                 ObjString* name = readString();
                 auto& vars { moduleVars() };
                 // set new value, but leave it on stack (as assignment is an expression)
@@ -2808,7 +2803,6 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::SetModuleVar2): {
-                if (!checkActorVarAccess()) return errorReturn;
                 ObjString* name = readString2();
                 auto& vars { moduleVars() };
                 // set new value, but leave it on stack (as assignment is an expression)
@@ -2820,7 +2814,6 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::SetNewModuleVar): {
-                if (!checkActorVarAccess()) return errorReturn;
                 ObjString* name = readString();
                 auto& vars { moduleVars() };
 
@@ -2839,7 +2832,6 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::SetNewModuleVar2): {
-                if (!checkActorVarAccess()) return errorReturn;
                 ObjString* name = readString2();
                 auto& vars { moduleVars() };
 
@@ -3244,7 +3236,6 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::ImportModuleVars): {
-                if (!checkActorVarAccess()) return errorReturn;
                 // given a list of var identifiers and two module types, copy the list of vars from
                 //  one module's vars to the other (copy the declarations, not deep copying values)
 
@@ -3384,7 +3375,6 @@ bool VM::processPendingEvents()
                         }
                     }
                     if (raise) {
-                        if (!checkActorVarAccess()) return false;
                         Value excType = globals.load(toUnicodeString("ConditionalInterrupt")).value();
                         Value exc = objVal(exceptionVal(nilVal(), excType));
                         raiseException(exc);
@@ -3521,15 +3511,6 @@ void VM::outputAllocatedObjs()
         std::cout << std::dec;
     }
     #endif
-}
-
-bool VM::checkActorVarAccess()
-{
-    if (thread && thread->actor) {
-        runtimeError("Actor threads cannot access module or global variables");
-        return false;
-    }
-    return true;
 }
 
 

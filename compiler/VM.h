@@ -222,9 +222,6 @@ public:
     void raiseException(Value exc);
     void outputAllocatedObjs();
 
-    // Return false and raise runtime error if current thread is an actor
-    bool checkActorVarAccess();
-
     void concatenate();
 
     void runtimeError(const std::string& format, ...);
