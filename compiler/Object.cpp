@@ -1166,16 +1166,93 @@ void ObjPrimitive::read(std::istream& in)
 }
 
 // Default serialization stubs for unsupported object types
-void ObjSignal::write(std::ostream&) const { throw std::runtime_error("ObjSignal serialization not implemented"); }
-void ObjSignal::read(std::istream&) { throw std::runtime_error("ObjSignal deserialization not implemented"); }
-void ObjEvent::write(std::ostream&) const { throw std::runtime_error("ObjEvent serialization not implemented"); }
-void ObjEvent::read(std::istream&) { throw std::runtime_error("ObjEvent deserialization not implemented"); }
-void ObjLibrary::write(std::ostream&) const { throw std::runtime_error("ObjLibrary serialization not implemented"); }
-void ObjLibrary::read(std::istream&) { throw std::runtime_error("ObjLibrary deserialization not implemented"); }
+void ObjSignal::write(std::ostream& out) const
+{
+    uint8_t tag = static_cast<uint8_t>(ObjType::Signal);
+    out.write(reinterpret_cast<char*>(&tag),1);
+    std::string n = signal ? signal->name() : "";
+    uint32_t len = n.size();
+    out.write(reinterpret_cast<char*>(&len),4);
+    out.write(n.data(), len);
+    double freq = signal ? signal->frequency() : 0.0;
+    out.write(reinterpret_cast<char*>(&freq),8);
+    Value val = signal ? signal->lastValue() : nilVal();
+    writeValue(out, val);
+}
+
+void ObjSignal::read(std::istream& in)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
+    if(tag != static_cast<uint8_t>(ObjType::Signal))
+        throw std::runtime_error("ObjSignal::read mismatched tag");
+    uint32_t len; in.read(reinterpret_cast<char*>(&len),4);
+    std::string n(len,'\0'); if(len) in.read(n.data(), len);
+    double freq; in.read(reinterpret_cast<char*>(&freq),8);
+    Value v = readValue(in);
+    signal = df::Signal::newSignal(freq, v, n);
+    changeEvent = nilVal();
+    type = ObjType::Signal;
+}
+
+void ObjEvent::write(std::ostream& out) const
+{
+    uint8_t tag = static_cast<uint8_t>(ObjType::Event);
+    out.write(reinterpret_cast<char*>(&tag),1);
+    uint32_t count = subscribers.size();
+    out.write(reinterpret_cast<char*>(&count),4);
+    for(const auto& s : subscribers)
+        writeValue(out, s);
+}
+
+void ObjEvent::read(std::istream& in)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
+    if(tag != static_cast<uint8_t>(ObjType::Event))
+        throw std::runtime_error("ObjEvent::read mismatched tag");
+    uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
+    subscribers.clear();
+    for(uint32_t i=0;i<count;i++)
+        subscribers.push_back(readValue(in));
+    type = ObjType::Event;
+}
+
+void ObjLibrary::write(std::ostream& out) const
+{
+    uint8_t tag = static_cast<uint8_t>(ObjType::Library);
+    out.write(reinterpret_cast<char*>(&tag),1);
+    uint8_t h = 0; out.write(reinterpret_cast<char*>(&h),1);
+}
+
+void ObjLibrary::read(std::istream& in)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
+    if(tag != static_cast<uint8_t>(ObjType::Library))
+        throw std::runtime_error("ObjLibrary::read mismatched tag");
+    uint8_t h; in.read(reinterpret_cast<char*>(&h),1);
+    handle = nullptr;
+    type = ObjType::Library;
+}
 void ObjForeignPtr::write(std::ostream&) const { throw std::runtime_error("Cannot serialize foreign pointers"); }
 void ObjForeignPtr::read(std::istream&) { throw std::runtime_error("Cannot deserialize foreign pointers"); }
-void ObjException::write(std::ostream&) const { throw std::runtime_error("ObjException serialization not implemented"); }
-void ObjException::read(std::istream&) { throw std::runtime_error("ObjException deserialization not implemented"); }
+void ObjException::write(std::ostream& out) const
+{
+    uint8_t tag = static_cast<uint8_t>(ObjType::Exception);
+    out.write(reinterpret_cast<char*>(&tag),1);
+    writeValue(out, message);
+    writeValue(out, exType);
+    writeValue(out, stackTrace);
+}
+
+void ObjException::read(std::istream& in)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
+    if(tag != static_cast<uint8_t>(ObjType::Exception))
+        throw std::runtime_error("ObjException::read mismatched tag");
+    message = readValue(in);
+    exType = readValue(in);
+    stackTrace = readValue(in);
+    type = ObjType::Exception;
+}
 void ObjFunction::write(std::ostream& out) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Function);
@@ -1408,8 +1485,7 @@ void ObjObjectType::write(std::ostream& out) const
         uint32_t mlen = mn.size();
         out.write(reinterpret_cast<char*>(&mlen),4);
         out.write(mn.data(), mlen);
-        uint8_t placeholder = 0; // closure not serialized yet
-        out.write(reinterpret_cast<char*>(&placeholder),1);
+        writeValue(out, method.closure);
         uint8_t acc = static_cast<uint8_t>(method.access);
         out.write(reinterpret_cast<char*>(&acc),1);
     }
@@ -1474,10 +1550,10 @@ void ObjObjectType::read(std::istream& in)
         uint32_t mlen; in.read(reinterpret_cast<char*>(&mlen),4);
         std::string mn(mlen,'\0'); if(mlen>0) in.read(mn.data(), mlen);
         icu::UnicodeString uname = icu::UnicodeString::fromUTF8(mn);
-        uint8_t placeholder; in.read(reinterpret_cast<char*>(&placeholder),1); // skip
+        Value clos = readValue(in);
         uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
         int32_t hash = uname.hashCode();
-        Method m{uname, nilVal(), static_cast<ast::Access>(acc), nilVal()};
+        Method m{uname, clos, static_cast<ast::Access>(acc), nilVal()};
         methods[hash] = m;
     }
 
@@ -1496,8 +1572,19 @@ void ObjObjectType::read(std::istream& in)
         enumTypes[enumTypeId] = this;
     }
 }
-void ObjPackageType::write(std::ostream&) const { throw std::runtime_error("ObjPackageType serialization not implemented"); }
-void ObjPackageType::read(std::istream&) { throw std::runtime_error("ObjPackageType deserialization not implemented"); }
+void ObjPackageType::write(std::ostream& out) const
+{
+    uint8_t tag = static_cast<uint8_t>(ObjType::Type);
+    out.write(reinterpret_cast<char*>(&tag),1);
+}
+
+void ObjPackageType::read(std::istream& in)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
+    if(tag != static_cast<uint8_t>(ObjType::Type))
+        throw std::runtime_error("ObjPackageType::read mismatched tag");
+    typeValue = ValueType::Type;
+}
 void ObjModuleType::write(std::ostream& out) const
 {
     ObjTypeSpec::write(out);
@@ -1573,10 +1660,53 @@ void ObjectInstance::read(std::istream& in)
         properties[h] = v;
     }
 }
-void ObjBoundMethod::write(std::ostream&) const { throw std::runtime_error("ObjBoundMethod serialization not implemented"); }
-void ObjBoundMethod::read(std::istream&) { throw std::runtime_error("ObjBoundMethod deserialization not implemented"); }
-void ObjBoundNative::write(std::ostream&) const { throw std::runtime_error("ObjBoundNative serialization not implemented"); }
-void ObjBoundNative::read(std::istream&) { throw std::runtime_error("ObjBoundNative deserialization not implemented"); }
+void ObjBoundMethod::write(std::ostream& out) const
+{
+    uint8_t tag = static_cast<uint8_t>(ObjType::BoundMethod);
+    out.write(reinterpret_cast<char*>(&tag),1);
+    writeValue(out, receiver);
+    writeValue(out, objVal(method));
+}
+
+void ObjBoundMethod::read(std::istream& in)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
+    if(tag != static_cast<uint8_t>(ObjType::BoundMethod))
+        throw std::runtime_error("ObjBoundMethod::read mismatched tag");
+    receiver = readValue(in);
+    Value mval = readValue(in);
+    method = asClosure(mval);
+    method->incRef();
+    type = ObjType::BoundMethod;
+}
+
+void ObjBoundNative::write(std::ostream& out) const
+{
+    uint8_t tag = static_cast<uint8_t>(ObjType::BoundNative);
+    out.write(reinterpret_cast<char*>(&tag),1);
+    writeValue(out, receiver);
+    uint8_t p = isProc ? 1 : 0; out.write(reinterpret_cast<char*>(&p),1);
+    uint32_t defc = defaultValues.size();
+    out.write(reinterpret_cast<char*>(&defc),4);
+    for(const auto& v : defaultValues)
+        writeValue(out, v);
+}
+
+void ObjBoundNative::read(std::istream& in)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
+    if(tag != static_cast<uint8_t>(ObjType::BoundNative))
+        throw std::runtime_error("ObjBoundNative::read mismatched tag");
+    receiver = readValue(in);
+    uint8_t p; in.read(reinterpret_cast<char*>(&p),1); isProc = p!=0;
+    uint32_t defc; in.read(reinterpret_cast<char*>(&defc),4);
+    defaultValues.clear();
+    for(uint32_t i=0;i<defc;i++)
+        defaultValues.push_back(readValue(in));
+    function = nullptr;
+    funcType = nullptr;
+    type = ObjType::BoundNative;
+}
 
 void ActorInstance::write(std::ostream& out) const
 {

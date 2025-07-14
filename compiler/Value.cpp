@@ -8,6 +8,8 @@
 #include "dataflow/Signal.h"
 #include "dataflow/FuncNode.h"
 #include "dataflow/DataflowEngine.h"
+#include "Thread.h"
+#include "VM.h"
 #include <core/types.h>
 #include <Eigen/Dense>
 #include <functional>
@@ -2075,6 +2077,8 @@ Value roxal::readValue(std::istream& in)
                 int32_t h; in.read(reinterpret_cast<char*>(&h),4);
                 obj->properties[h] = readValue(in);
             }
+            auto newThread = std::make_shared<Thread>();
+            newThread->act(objVal(obj));
             return objVal(obj); }
         case ValueType::Function: {
             auto obj = newObj<ObjFunction>(__func__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
