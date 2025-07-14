@@ -2004,8 +2004,8 @@ Value roxal::readValue(std::istream& in)
                     auto obj = newObj<ObjObjectType>(__func__, icu::UnicodeString(), false, false, false);
                     obj->read(in);
                     return objVal(obj);
-                } else {
-                    auto obj = newObj<ObjTypeSpec>(__func__);
+                } else { // Module
+                    auto obj = newObj<ObjModuleType>(__func__, icu::UnicodeString());
                     obj->read(in);
                     return objVal(obj);
                 }
