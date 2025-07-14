@@ -262,58 +262,69 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                         if (!t->isCStruct)
                             throw std::runtime_error("arg type not cstruct: "+type);
                         std::vector<ffi_type*> elems;
-                        for (int32_t h : t->propertyOrder) {
-                            const auto& prop = t->properties.at(h);
-                            std::string ct;
-                            if (prop.ctype.has_value())
-                                ct = toUTF8StdString(prop.ctype.value());
-                            auto byName = [&](const std::string& n) -> ffi_type* {
-                                if (n=="float") return &ffi_type_float;
-                                if (n=="double" || n=="real") return &ffi_type_double;
-                                if (n=="int" || n=="int32_t") return &ffi_type_sint32;
-                                if (n=="uint32_t") return &ffi_type_uint32;
-                                if (n=="int16_t") return &ffi_type_sint16;
-                                if (n=="uint16_t") return &ffi_type_uint16;
-                                if (n=="int8_t") return &ffi_type_sint8;
-                                if (n=="uint8_t") return &ffi_type_uint8;
-                                if (n=="bool") return &ffi_type_uint8;
-                                if (n=="char*" || n=="const char*" || !n.empty() && n.back()=='*')
-                                    return &ffi_type_pointer;
-                                return nullptr;
-                            };
-                            auto parseArray = [&](const std::string& str, std::string& base, size_t& len) -> bool {
-                                auto lb=str.find('['); auto rb=str.find(']', lb==std::string::npos?0:lb);
-                                if(lb!=std::string::npos && rb==str.size()-1){
-                                    base=str.substr(0,lb); while(!base.empty() && isspace(base.back())) base.pop_back();
-                                    std::string ls=str.substr(lb+1, rb-lb-1); len=strtoul(ls.c_str(),nullptr,10); return len>0; }
-                                return false; };
+                        std::function<void(ObjObjectType*)> appendStruct;
+                        appendStruct = [&](ObjObjectType* st) {
+                            for (int32_t h : st->propertyOrder) {
+                                const auto& prop = st->properties.at(h);
+                                std::string ct;
+                                if (prop.ctype.has_value())
+                                    ct = toUTF8StdString(prop.ctype.value());
+                                auto byName = [&](const std::string& n) -> ffi_type* {
+                                    if (n=="float") return &ffi_type_float;
+                                    if (n=="double" || n=="real") return &ffi_type_double;
+                                    if (n=="int" || n=="int32_t") return &ffi_type_sint32;
+                                    if (n=="uint32_t") return &ffi_type_uint32;
+                                    if (n=="int16_t") return &ffi_type_sint16;
+                                    if (n=="uint16_t") return &ffi_type_uint16;
+                                    if (n=="int8_t") return &ffi_type_sint8;
+                                    if (n=="uint8_t") return &ffi_type_uint8;
+                                    if (n=="bool") return &ffi_type_uint8;
+                                    if (n=="char*" || n=="const char*" || !n.empty() && n.back()=='*')
+                                        return &ffi_type_pointer;
+                                    return nullptr;
+                                };
+                                auto parseArray = [&](const std::string& str, std::string& base, size_t& len) -> bool {
+                                    auto lb=str.find('['); auto rb=str.find(']', lb==std::string::npos?0:lb);
+                                    if(lb!=std::string::npos && rb==str.size()-1){
+                                        base=str.substr(0,lb); while(!base.empty() && isspace(base.back())) base.pop_back();
+                                        std::string ls=str.substr(lb+1, rb-lb-1); len=strtoul(ls.c_str(),nullptr,10); return len>0; }
+                                    return false; };
 
-                            ffi_type* et = nullptr;
-                            size_t arrLen = 0; std::string arrBase;
-                            bool isArr = (!ct.empty() && parseArray(ct, arrBase, arrLen));
-                            if (isArr) {
-                                et = byName(arrBase);
-                            } else if (!ct.empty()) {
-                                et = byName(ct);
-                            } else if (isTypeSpec(prop.type)) {
-                                ObjTypeSpec* ts = asTypeSpec(prop.type);
-                                switch(ts->typeValue) {
-                                    case ValueType::Bool: et=&ffi_type_uint8; break;
-                                    case ValueType::Byte: et=&ffi_type_uint8; break;
-                                    case ValueType::Int: et=&ffi_type_sint32; break;
-                                    case ValueType::Real: et=&ffi_type_double; break;
-                                    case ValueType::Enum: et=&ffi_type_sint32; break;
-                                    default: break;
+                                ffi_type* et = nullptr;
+                                size_t arrLen = 0; std::string arrBase;
+                                bool isArr = (!ct.empty() && parseArray(ct, arrBase, arrLen));
+                                if (isArr) {
+                                    et = byName(arrBase);
+                                } else if (!ct.empty()) {
+                                    et = byName(ct);
+                                    if (!et && isObjectType(prop.type) && ct.back()!='*') {
+                                        ObjObjectType* nt = asObjectType(prop.type);
+                                        if (!nt->isCStruct)
+                                            throw std::runtime_error("nested struct field not cstruct in arg type "+type);
+                                        appendStruct(nt);
+                                        continue;
+                                    }
+                                } else if (isTypeSpec(prop.type)) {
+                                    ObjTypeSpec* ts = asTypeSpec(prop.type);
+                                    switch(ts->typeValue) {
+                                        case ValueType::Bool: et=&ffi_type_uint8; break;
+                                        case ValueType::Byte: et=&ffi_type_uint8; break;
+                                        case ValueType::Int: et=&ffi_type_sint32; break;
+                                        case ValueType::Real: et=&ffi_type_double; break;
+                                        case ValueType::Enum: et=&ffi_type_sint32; break;
+                                        default: break;
+                                    }
+                                }
+                                if (!et)
+                                    throw std::runtime_error("unsupported struct field type "+ct+" in arg type "+type);
+                                if (isArr) {
+                                    for(size_t ai=0; ai<arrLen; ++ai) elems.push_back(et);
+                                } else {
+                                    elems.push_back(et);
                                 }
                             }
-                            if (!et)
-                                throw std::runtime_error("unsupported struct field type "+ct+" in arg type "+type);
-                            if (isArr) {
-                                for(size_t ai=0; ai<arrLen; ++ai) elems.push_back(et);
-                            } else {
-                                elems.push_back(et);
-                            }
-                        }
+                        };
+                        appendStruct(t);
                         elems.push_back(nullptr);
                         ffi_type st; st.size=0; st.alignment=0; st.type=FFI_TYPE_STRUCT; st.elements=elems.data();
                         argStructElems.push_back(elems);
@@ -380,58 +391,69 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                     if (!t->isCStruct)
                         throw std::runtime_error("return type not cstruct: "+r);
                     retObjType = t;
-                    for (int32_t h : t->propertyOrder) {
-                        const auto& prop = t->properties.at(h);
-                        std::string ct;
-                        if (prop.ctype.has_value())
-                            ct = toUTF8StdString(prop.ctype.value());
-                        auto byName = [&](const std::string& n) -> ffi_type* {
-                            if (n=="float") return &ffi_type_float;
-                            if (n=="double" || n=="real") return &ffi_type_double;
-                            if (n=="int" || n=="int32_t") return &ffi_type_sint32;
-                            if (n=="uint32_t") return &ffi_type_uint32;
-                            if (n=="int16_t") return &ffi_type_sint16;
-                            if (n=="uint16_t") return &ffi_type_uint16;
-                            if (n=="int8_t") return &ffi_type_sint8;
-                            if (n=="uint8_t") return &ffi_type_uint8;
-                            if (n=="bool") return &ffi_type_uint8;
-                            if (n=="char*" || n=="const char*" || !n.empty() && n.back()=='*')
-                                return &ffi_type_pointer;
-                            return nullptr;
-                        };
-                        auto parseArray = [&](const std::string& str, std::string& base, size_t& len) -> bool {
-                            auto lb=str.find('['); auto rb=str.find(']', lb==std::string::npos?0:lb);
-                            if(lb!=std::string::npos && rb==str.size()-1){
-                                base=str.substr(0,lb); while(!base.empty() && isspace(base.back())) base.pop_back();
-                                std::string ls=str.substr(lb+1, rb-lb-1); len=strtoul(ls.c_str(),nullptr,10); return len>0; }
-                            return false; };
+                    std::function<void(ObjObjectType*)> appendStruct;
+                    appendStruct = [&](ObjObjectType* st) {
+                        for (int32_t h : st->propertyOrder) {
+                            const auto& prop = st->properties.at(h);
+                            std::string ct;
+                            if (prop.ctype.has_value())
+                                ct = toUTF8StdString(prop.ctype.value());
+                            auto byName = [&](const std::string& n) -> ffi_type* {
+                                if (n=="float") return &ffi_type_float;
+                                if (n=="double" || n=="real") return &ffi_type_double;
+                                if (n=="int" || n=="int32_t") return &ffi_type_sint32;
+                                if (n=="uint32_t") return &ffi_type_uint32;
+                                if (n=="int16_t") return &ffi_type_sint16;
+                                if (n=="uint16_t") return &ffi_type_uint16;
+                                if (n=="int8_t") return &ffi_type_sint8;
+                                if (n=="uint8_t") return &ffi_type_uint8;
+                                if (n=="bool") return &ffi_type_uint8;
+                                if (n=="char*" || n=="const char*" || !n.empty() && n.back()=='*')
+                                    return &ffi_type_pointer;
+                                return nullptr;
+                            };
+                            auto parseArray = [&](const std::string& str, std::string& base, size_t& len) -> bool {
+                                auto lb=str.find('['); auto rb=str.find(']', lb==std::string::npos?0:lb);
+                                if(lb!=std::string::npos && rb==str.size()-1){
+                                    base=str.substr(0,lb); while(!base.empty() && isspace(base.back())) base.pop_back();
+                                    std::string ls=str.substr(lb+1, rb-lb-1); len=strtoul(ls.c_str(),nullptr,10); return len>0; }
+                                return false; };
 
-                        ffi_type* et = nullptr;
-                        size_t arrLen = 0; std::string arrBase;
-                        bool isArr = (!ct.empty() && parseArray(ct, arrBase, arrLen));
-                        if (isArr) {
-                            et = byName(arrBase);
-                        } else if (!ct.empty()) {
-                            et = byName(ct);
-                        } else if (isTypeSpec(prop.type)) {
-                            ObjTypeSpec* ts = asTypeSpec(prop.type);
-                            switch(ts->typeValue) {
-                                case ValueType::Bool: et=&ffi_type_uint8; break;
-                                case ValueType::Byte: et=&ffi_type_uint8; break;
-                                case ValueType::Int: et=&ffi_type_sint32; break;
-                                case ValueType::Real: et=&ffi_type_double; break;
-                                case ValueType::Enum: et=&ffi_type_sint32; break;
-                                default: break;
+                            ffi_type* et = nullptr;
+                            size_t arrLen = 0; std::string arrBase;
+                            bool isArr = (!ct.empty() && parseArray(ct, arrBase, arrLen));
+                            if (isArr) {
+                                et = byName(arrBase);
+                            } else if (!ct.empty()) {
+                                et = byName(ct);
+                                if (!et && isObjectType(prop.type) && ct.back()!='*') {
+                                    ObjObjectType* nt = asObjectType(prop.type);
+                                    if (!nt->isCStruct)
+                                        throw std::runtime_error("nested struct field not cstruct in return type "+r);
+                                    appendStruct(nt);
+                                    continue;
+                                }
+                            } else if (isTypeSpec(prop.type)) {
+                                ObjTypeSpec* ts = asTypeSpec(prop.type);
+                                switch(ts->typeValue) {
+                                    case ValueType::Bool: et=&ffi_type_uint8; break;
+                                    case ValueType::Byte: et=&ffi_type_uint8; break;
+                                    case ValueType::Int: et=&ffi_type_sint32; break;
+                                    case ValueType::Real: et=&ffi_type_double; break;
+                                    case ValueType::Enum: et=&ffi_type_sint32; break;
+                                    default: break;
+                                }
+                            }
+                            if (!et)
+                                throw std::runtime_error("unsupported struct field type "+ct+" in return type "+r);
+                            if (isArr) {
+                                for(size_t ai=0; ai<arrLen; ++ai) retElems.push_back(et);
+                            } else {
+                                retElems.push_back(et);
                             }
                         }
-                        if (!et)
-                            throw std::runtime_error("unsupported struct field type "+ct+" in return type "+r);
-                        if (isArr) {
-                            for(size_t ai=0; ai<arrLen; ++ai) retElems.push_back(et);
-                        } else {
-                            retElems.push_back(et);
-                        }
-                    }
+                    };
+                    appendStruct(t);
                     retElems.push_back(nullptr);
                     retStruct.size = 0; retStruct.alignment = 0; retStruct.type = FFI_TYPE_STRUCT;
                     retStruct.elements = retElems.data();
@@ -732,6 +754,29 @@ void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& pro
         return;
     }
 
+    if (isObjectType(prop.type) && !ctypeStr.empty() && ctypeStr.back() != '*') {
+        if (!isObjectInstance(val))
+            throw std::runtime_error("struct field expects object instance");
+        ObjectInstance* inst = asObjectInstance(val);
+        ObjObjectType* t = inst->instanceType;
+        if (!t->isCStruct)
+            throw std::runtime_error("nested struct field not cstruct type");
+        size_t startOffset = offset;
+        size_t nestedAlign = 1;
+        for (int32_t h : t->propertyOrder) {
+            const auto& subProp = t->properties.at(h);
+            auto it = inst->properties.find(subProp.name.hashCode());
+            if (it == inst->properties.end())
+                throw std::runtime_error("instance missing property in nested struct");
+            marshalProperty(it->second, subProp, ptrSize, buffer, offset, nestedAlign, stringStore, ctx);
+        }
+        size_t finalPad = (nestedAlign - ((offset - startOffset) % nestedAlign)) % nestedAlign;
+        buffer.insert(buffer.end(), finalPad, 0);
+        offset += finalPad;
+        structAlign = std::max(structAlign, nestedAlign);
+        return;
+    }
+
     auto writeByName = [&](const std::string& ctype) -> bool { return writeByNameVal(ctype, val); };
 
     if (!ctypeStr.empty()) {
@@ -835,6 +880,25 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
         if (ctype == "void*" || (!ctype.empty() && ctype.back()=='*')) { void* p; readPadded(&p, ptrSize, ptrSize); out = p ? objVal(foreignPtrVal(p)) : nilVal(); return true; }
         return false;
     };
+
+    if (isObjectType(prop.type) && !ctypeStr.empty() && ctypeStr.back() != '*') {
+        ObjObjectType* t = asObjectType(prop.type);
+        ObjectInstance* inst = objectInstanceVal(t);
+        size_t startOffset = offset;
+        size_t nestedAlign = 1;
+        for (int32_t h : t->propertyOrder) {
+            const auto& subProp = t->properties.at(h);
+            Value subVal = unmarshalProperty(subProp, ptrSize, bytes, len, offset, nestedAlign, ctx);
+            inst->properties[subProp.name.hashCode()] = subVal;
+        }
+        size_t finalPad = (nestedAlign - ((offset - startOffset) % nestedAlign)) % nestedAlign;
+        if (offset + finalPad > len)
+            throw std::runtime_error("buffer too small for cstruct unmarshalling");
+        offset += finalPad;
+        structAlign = std::max(structAlign, nestedAlign);
+        val = Value(inst);
+        return val;
+    }
 
     auto readByName = [&](const std::string& ctype) -> bool { return readByNameVal(ctype, val); };
 
