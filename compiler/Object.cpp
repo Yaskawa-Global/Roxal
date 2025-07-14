@@ -1498,8 +1498,27 @@ void ObjObjectType::read(std::istream& in)
 }
 void ObjPackageType::write(std::ostream&) const { throw std::runtime_error("ObjPackageType serialization not implemented"); }
 void ObjPackageType::read(std::istream&) { throw std::runtime_error("ObjPackageType deserialization not implemented"); }
-void ObjModuleType::write(std::ostream&) const { throw std::runtime_error("ObjModuleType serialization not implemented"); }
-void ObjModuleType::read(std::istream&) { throw std::runtime_error("ObjModuleType deserialization not implemented"); }
+void ObjModuleType::write(std::ostream& out) const
+{
+    ObjTypeSpec::write(out);
+
+    std::string n; name.toUTF8String(n);
+    uint32_t len = n.size();
+    out.write(reinterpret_cast<char*>(&len), 4);
+    out.write(n.data(), len);
+}
+
+void ObjModuleType::read(std::istream& in)
+{
+    ObjTypeSpec::read(in);
+
+    uint32_t len; in.read(reinterpret_cast<char*>(&len),4);
+    std::string ns(len, '\0');
+    if(len>0) in.read(ns.data(), len);
+    name = icu::UnicodeString::fromUTF8(ns);
+
+    allModules.push_back(this);
+}
 void ObjectInstance::write(std::ostream& out) const
 {
     auto* ctx = serializationWriteContext();
