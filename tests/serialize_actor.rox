@@ -1,0 +1,22 @@
+type A actor:
+  private var x:int
+  proc set(val:int):
+    x = val
+  func get() -> int:
+    return x
+
+var a = A()
+a.set(5)
+wait(ms=50)
+
+var data = serialize(a)
+var a2 = deserialize(data)
+
+var res1 = int(a2.get())
+print('val='+res1)
+
+a2.set(7)
+wait(ms=50)
+var res2 = int(a2.get())
+print('val2='+res2)
+

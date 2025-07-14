@@ -36,7 +36,7 @@ tests = [
     'until_event', 'until_signal',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
     'module_strict_assign_err', 'func_nonstrict', 'conversions1',
-    'serialize_values', 'serialize_objects', 'serialize_user_objects',
+    'serialize_values', 'serialize_objects', 'serialize_user_objects', 'serialize_actor',
     'byteops', 'byte_int_bits', 'object_init', 'object_inherit_is',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'lambda1',
     'conversion1', 'string_interp',
@@ -74,7 +74,7 @@ tests = [
 ]
 
 # implementation doesn't yet allow these tests to pass (do not add to this list without human consent)
-failing_tests = ['object_user_ref_cycle', 'signal_network1', 'nested_cstruct']
+failing_tests = ['object_user_ref_cycle', 'signal_network1', 'nested_cstruct', 'serialize_actor']
 assert(set(failing_tests).issubset(tests))
 
 
