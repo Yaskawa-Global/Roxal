@@ -35,3 +35,6 @@ typedef struct { double darr[4]; } ACStruct;
 double sum_acstruct(ACStruct* s) { double total = 0; for(int i=0;i<4;i++) total += s->darr[i]; return total; }
 void fill_acstruct(ACStruct* s) { for(int i=0;i<4;i++) s->darr[i] = (double)(i+1); }
 ACStruct make_acstruct() { ACStruct s; for(int i=0;i<4;i++) s.darr[i] = (double)(i+1)*2; return s; }
+
+double nested_sum(MyStruct2 ms2) { return ms2.r + ms2.h.i; }
+MyStruct2 make_nested_struct() { MyStruct2 s; s.r = 4.5; s.h.i = 2; return s; }
