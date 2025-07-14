@@ -64,7 +64,7 @@ tests = [
     'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'unary_vector_matrix', 
     'matrix_index', 'matrix_methods', 'matrix_assign', 'matrix_equal', 'matrix_math',
     'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_toupper', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3', 'cstruct_byval', 'cstruct_array',
-    'nested_cstruct', 'nested_cstruct_ptr',
+    'nested_cstruct', 'nested_cstruct_ptr', 'nested_cstruct_byval',
     'weakref', 'strongref', 'is_operator', 'stackdepth',
     'is_operator_type',
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
@@ -74,7 +74,7 @@ tests = [
 ]
 
 # implementation doesn't yet allow these tests to pass (do not add to this list without human consent)
-failing_tests = ['object_user_ref_cycle', 'signal_network1', 'nested_cstruct', 'serialize_actor']
+failing_tests = ['object_user_ref_cycle', 'signal_network1', 'serialize_actor']
 assert(set(failing_tests).issubset(tests))
 
 
