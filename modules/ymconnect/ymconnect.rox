@@ -130,7 +130,7 @@ type controller_state_data_t object:
 
 
 @cstruct
- type job_data_t object:
+type job_data_t object:
 
   @ctype(ctype='char*')
   var jobName :string
@@ -146,7 +146,7 @@ type controller_state_data_t object:
 
 
 @cstruct
- type job_stack_t object:
+type job_stack_t object:
 
   @ctype(ctype='char*[12]')
   var JobNames :list
@@ -266,40 +266,40 @@ func file_interface_GetFileCount(controller :motoman_controller_t, fileType :int
 func file_interface_ListFiles(controller :motoman_controller_t, fileType :int, status :status_info_t, sorted :bool) -> string:
   _
 
-@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t type,uint16_t group,uint8_t bitPosition,int32_t* ioBit',ret='status_info_t')
-func io_interface_type_ReadBit(controller :motoman_controller_t, type :int, group :int, bitPosition :int, ioBit :int) -> status_info_t:
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t iotype,uint16_t group,uint8_t bitPosition,int32_t* ioBit',ret='status_info_t')
+func io_interface_type_ReadBit(controller :motoman_controller_t, iotype :int, group :int, bitPosition :int, ioBit :int) -> status_info_t:
   _
 
 @cfunc(lib=ymlib, args='motoman_controller_t controller,uint32_t address,int32_t* ioBit',ret='status_info_t')
 func io_interface_address_ReadBit(controller :motoman_controller_t, address :int, ioBit :int) -> status_info_t:
   _
 
-@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t type,uint16_t group,uint32_t* io',ret='status_info_t')
-func io_interface_type_ReadByte(controller :motoman_controller_t, type :int, group :int, io :int) -> status_info_t:
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t iotype,uint16_t group,uint32_t* io',ret='status_info_t')
+func io_interface_type_ReadByte(controller :motoman_controller_t, iotype :int, group :int, io :int) -> status_info_t:
   _
 
 @cfunc(lib=ymlib, args='motoman_controller_t controller,uint32_t address,uint32_t* io',ret='status_info_t')
 func io_interface_address_ReadByte(controller :motoman_controller_t, address :int, io :int) -> status_info_t:
   _
 
-@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t type,uint16_t group,uint8_t* io',ret='status_info_t')
-func io_interface_uint8_type_ReadByte(controller :motoman_controller_t, type :int, group :int, io :int) -> status_info_t:
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t iotype,uint16_t group,uint8_t* io',ret='status_info_t')
+func io_interface_uint8_type_ReadByte(controller :motoman_controller_t, iotype :int, group :int, io :int) -> status_info_t:
   _
 
 @cfunc(lib=ymlib, args='motoman_controller_t controller,uint32_t address,uint8_t* io',ret='status_info_t')
 func io_interface_uint8_address_ReadByte(controller :motoman_controller_t, address :int, io :int) -> status_info_t:
   _
 
-@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t type,uint16_t group,uint32_t* io',ret='status_info_t')
-func io_interface_type_ReadWord(controller :motoman_controller_t, type :int, group :int, io :int) -> status_info_t:
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t iotype,uint16_t group,uint32_t* io',ret='status_info_t')
+func io_interface_type_ReadWord(controller :motoman_controller_t, iotype :int, group :int, io :int) -> status_info_t:
   _
 
 @cfunc(lib=ymlib, args='motoman_controller_t controller,uint32_t address,uint32_t* io',ret='status_info_t')
 func io_interface_address_ReadWord(controller :motoman_controller_t, address :int, io :int) -> status_info_t:
   _
 
-@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t type,uint16_t group,uint16_t* io',ret='status_info_t')
-func io_interface_uint16_type_ReadWord(controller :motoman_controller_t, type :int, group :int, io :int) -> status_info_t:
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t iotype,uint16_t group,uint16_t* io',ret='status_info_t')
+func io_interface_uint16_type_ReadWord(controller :motoman_controller_t, iotype :int, group :int, io :int) -> status_info_t:
   _
 
 @cfunc(lib=ymlib, args='motoman_controller_t controller,uint32_t address,uint16_t* io',ret='status_info_t')
@@ -309,20 +309,47 @@ func io_interface_uint16_address_ReadWord(controller :motoman_controller_t, addr
 
 
 // test it
-func test():
+
+proc raiseIfNotOk(status :status_info_t, function_name :string = ''):
+  if status.StatusCode != 0:
+      var code = status.StatusCode
+      var msg = status.Message
+      raise ProgramException("{function_name} error {code}: {msg}")
+
+
+proc test(ip :string):
+
+  // Open connection
   var status = status_info_t()
   var ver :string = '1.1.5'
-  controller = open_connection('10.7.3.41',status,200,5,true,ver)
+  var controller = open_connection(ip,status,200,5,true,ver)
+  raiseIfNotOk(status,'open_connection')
 
-  print("open_connection returned "+status.StatusCode+" - "+status.Message)
-  //print(dict(controller))
-  //print(typeof(controller))
-
-  print('Reading S14')
   var svar_info  = string_variable_data_t()
   status = string_variable_interface_read(controller,14,svar_info)
-  print("status:"+status.StatusCode+" - "+status.Message)
+  raiseIfNotOk(status,'string_variable_interface_read')
   print("S14="+svar_info.stringVariableData)
+
+  // S var read/write
+  svar_info.variableIndex = 16
+  svar_info.stringVariableData = 'fromroxal'
+  status = string_variable_interface_write(controller, svar_info)
+  raiseIfNotOk(status,'string_variable_interface_write')
+  // read it back to check
+  var svar_info2  = string_variable_data_t()
+  status = string_variable_interface_read(controller,16,svar_info2)
+  raiseIfNotOk(status,'string_variable_interface_read')
+  if svar_info2.stringVariableData != svar_info.stringVariableData or svar_info2.variableIndex != 16:
+    raise ProgramException("read back S16 didn't contain written content")
+
+  // P var read/write
+  var pvar_data = position_variable_data_t()
+  status = robot_position_variable_interface_read(controller,10,pvar_data)
+  raiseIfNotOk(status,'robot_position_variable_interface_read')
+  print(dict(pvar_data))
+
+
 
   close_connection(controller)
 
+test(ip='10.7.3.41')
