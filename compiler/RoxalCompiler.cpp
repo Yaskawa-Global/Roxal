@@ -532,8 +532,12 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         }
         else { // no initializer
             bool declaredBuiltinType = prop->varType.has_value() && std::holds_alternative<BuiltinType>(prop->varType.value());
-            if (declaredBuiltinType)
-                emitConstant(defaultValue(builtinToValueType(std::get<BuiltinType>(prop->varType.value()))));
+            if (declaredBuiltinType) {
+                auto bt = std::get<BuiltinType>(prop->varType.value());
+                if (bt == BuiltinType::Signal)
+                    error("Can't default-construct signal");
+                emitConstant(defaultValue(builtinToValueType(bt)));
+            }
             else
                 emitByte(OpCode::ConstNil);
         }
@@ -684,8 +688,12 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
         }
     } else {
         if (declType.has_value()) {
-            if (std::holds_alternative<BuiltinType>(*declType))
-                emitConstant(defaultValue(builtinToValueType(std::get<BuiltinType>(*declType))));
+            if (std::holds_alternative<BuiltinType>(*declType)) {
+                auto bt = std::get<BuiltinType>(*declType);
+                if (bt == BuiltinType::Signal)
+                    error("Can't default-construct signal");
+                emitConstant(defaultValue(builtinToValueType(bt)));
+            }
             else
                 emitByte(OpCode::ConstNil);
         } else
@@ -864,9 +872,12 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
         targetVarNames.push_back(name);
         targetVarTypes.push_back(vtype);
         declareVariable(name, vtype);
-        if (vtype.has_value() && std::holds_alternative<BuiltinType>(*vtype))
-            emitConstant(defaultValue(builtinToValueType(std::get<BuiltinType>(*vtype))));
-        else
+        if (vtype.has_value() && std::holds_alternative<BuiltinType>(*vtype)) {
+            auto bt = std::get<BuiltinType>(*vtype);
+            if (bt == BuiltinType::Signal)
+                error("Can't default-construct signal");
+            emitConstant(defaultValue(builtinToValueType(bt)));
+        } else
             emitByte(OpCode::ConstNil);
         defineVariable();
     }

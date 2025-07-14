@@ -29,7 +29,7 @@ tests = [
     'signal_greater', 'signal_less', 'signal_equal',
     'signal_and', 'signal_or', 'signal_not',
     'signal_func_nocall', 'signal_func_exec', 'signal_index', 'signal_on_stmt', 'signal_on_threads', 'on_expression',
-    'test_signal_value_property', 'construct_by_signal', 'signal_run_stop', 'signal_source', 'signal_network1',
+    'test_signal_value_property', 'construct_by_signal', 'signal_run_stop', 'signal_source', 'signal_default_err', 'signal_network1',
     'dataflow_clocktest1', 'multi_clock', 'clock_error',
     'event1', 'event_on_stmt', 'event_emit_keyword', 'event_on_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4',
     'event_in_sleep', 'event_in_sleep2',

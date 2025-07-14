@@ -1,0 +1,1 @@
+.*signal_default_err\.rox:1:0: error: Can't default-construct signal\n\s*1 \| var s :signal\n\s*\|\s*\^\n?
