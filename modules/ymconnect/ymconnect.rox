@@ -344,9 +344,12 @@ proc test(ip :string):
 
   // P var read/write
   var pvar_data = position_variable_data_t()
+  pvar_data.positionData = position_data_t()
+  pvar_data.positionData.figure = figure_t()
   status = robot_position_variable_interface_read(controller,10,pvar_data)
   raiseIfNotOk(status,'robot_position_variable_interface_read')
   print(dict(pvar_data))
+  print(dict(pvar_data.positionData))
 
 
 

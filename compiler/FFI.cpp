@@ -742,7 +742,7 @@ void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& pro
         void* p = nullptr;
         if (!val.isNil()) {
             if (!isObjectInstance(val))
-                throw std::runtime_error("struct pointer field expects object instance");
+                throw std::runtime_error("struct pointer field '"+toUTF8StdString(prop.name)+"' expects object instance of type "+toString(prop.type));
             if (!ctx)
                 throw std::runtime_error("marshalProperty missing context for nested struct pointer");
             ObjectInstance* inst = asObjectInstance(val);
@@ -756,7 +756,7 @@ void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& pro
 
     if (isObjectType(prop.type) && !ctypeStr.empty() && ctypeStr.back() != '*') {
         if (!isObjectInstance(val))
-            throw std::runtime_error("struct field expects object instance");
+            throw std::runtime_error("struct field '"+toUTF8StdString(prop.name)+"' expects object instance of type "+toString(prop.type));
         ObjectInstance* inst = asObjectInstance(val);
         ObjObjectType* t = inst->instanceType;
         if (!t->isCStruct)
@@ -1020,4 +1020,3 @@ void roxal::updateObjectFromCStruct(ObjectInstance* instance, const void* data, 
     if (offset + finalPad > len)
         throw std::runtime_error("buffer too small for updateObjectFromCStruct");
 }
-
