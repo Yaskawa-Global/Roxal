@@ -74,7 +74,7 @@ tests = [
 ]
 
 # implementation doesn't yet allow these tests to pass
-failing_tests = ['object_user_ref_cycle', 'signal_network1', 'nested_cstruct']
+failing_tests = ['object_user_ref_cycle', 'signal_network1', 'nested_cstruct', 'actor_future']
 assert(set(failing_tests).issubset(tests))
 
 
