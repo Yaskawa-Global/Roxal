@@ -395,7 +395,7 @@ void roxal::updateInternedString(ObjString* obj, const UnicodeString& newVal)
     strings.store(obj->hash, obj);
 }
 
-void ObjString::write(std::ostream& out) const
+void ObjString::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     std::string ss;
     s.toUTF8String(ss);
@@ -404,7 +404,7 @@ void ObjString::write(std::ostream& out) const
     out.write(ss.data(), len);
 }
 
-void ObjString::read(std::istream& in)
+void ObjString::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint32_t len;
     in.read(reinterpret_cast<char*>(&len), 4);
@@ -431,20 +431,20 @@ ObjRange::ObjRange(const Value& rstart, const Value& rstop, const Value& rstep, 
     type = ObjType::Range;
 }
 
-void ObjRange::write(std::ostream& out) const
+void ObjRange::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
-    writeValue(out, start);
-    writeValue(out, stop);
-    writeValue(out, step);
+    writeValue(out, start, ctx);
+    writeValue(out, stop, ctx);
+    writeValue(out, step, ctx);
     uint8_t c = closed ? 1 : 0;
     out.write(reinterpret_cast<char*>(&c), 1);
 }
 
-void ObjRange::read(std::istream& in)
+void ObjRange::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
-    start = readValue(in);
-    stop  = readValue(in);
-    step  = readValue(in);
+    start = readValue(in, ctx);
+    stop  = readValue(in, ctx);
+    step  = readValue(in, ctx);
     uint8_t c; in.read(reinterpret_cast<char*>(&c), 1);
     closed = c != 0;
 }
@@ -815,22 +815,22 @@ void ObjList::append(const Value& value)
     elts.push_back(value);
 }
 
-void ObjList::write(std::ostream& out) const
+void ObjList::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint32_t len = length();
     out.write(reinterpret_cast<char*>(&len), 4);
     auto list = elts.get();
     for(const auto& v : list)
-        writeValue(out, v);
+        writeValue(out, v, ctx);
 }
 
-void ObjList::read(std::istream& in)
+void ObjList::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint32_t len;
     in.read(reinterpret_cast<char*>(&len), 4);
     elts.clear();
     for(uint32_t i=0;i<len;i++)
-        elts.push_back(readValue(in));
+        elts.push_back(readValue(in, ctx));
 }
 
 void ObjList::set(const ObjList* other)
@@ -944,26 +944,26 @@ std::string roxal::objDictToString(const ObjDict* od)
     return os.str();
 }
 
-void ObjDict::write(std::ostream& out) const
+void ObjDict::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     auto ents = items();
     uint32_t len = ents.size();
     out.write(reinterpret_cast<char*>(&len), 4);
     for(const auto& p : ents) {
-        writeValue(out, p.first);
-        writeValue(out, p.second);
+        writeValue(out, p.first, ctx);
+        writeValue(out, p.second, ctx);
     }
 }
 
-void ObjDict::read(std::istream& in)
+void ObjDict::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint32_t len;
     in.read(reinterpret_cast<char*>(&len), 4);
     m_keys.clear();
     entries.clear();
     for(uint32_t i=0;i<len;i++) {
-        Value k = readValue(in);
-        Value v = readValue(in);
+        Value k = readValue(in, ctx);
+        Value v = readValue(in, ctx);
         m_keys.push_back(k);
         entries[k] = v;
     }
@@ -1026,7 +1026,7 @@ bool ObjVector::equals(const ObjVector* other, double eps) const
     return vec.isApprox(other->vec, eps);
 }
 
-void ObjVector::write(std::ostream& out) const
+void ObjVector::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint32_t len = vec.size();
     out.write(reinterpret_cast<char*>(&len), 4);
@@ -1036,7 +1036,7 @@ void ObjVector::write(std::ostream& out) const
     }
 }
 
-void ObjVector::read(std::istream& in)
+void ObjVector::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint32_t len;
     in.read(reinterpret_cast<char*>(&len), 4);
@@ -1107,7 +1107,7 @@ void ObjMatrix::set(const ObjMatrix* other)
 {
     mat = other->mat;
 }
-void ObjPrimitive::write(std::ostream& out) const
+void ObjPrimitive::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     ValueType vt = valueType();
     uint8_t t = static_cast<uint8_t>(vt);
@@ -1134,7 +1134,7 @@ void ObjPrimitive::write(std::ostream& out) const
     }
 }
 
-void ObjPrimitive::read(std::istream& in)
+void ObjPrimitive::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint8_t t; in.read(reinterpret_cast<char*>(&t),1);
     ValueType vt = static_cast<ValueType>(t);
@@ -1166,7 +1166,7 @@ void ObjPrimitive::read(std::istream& in)
 }
 
 // Default serialization stubs for unsupported object types
-void ObjSignal::write(std::ostream& out) const
+void ObjSignal::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Signal);
     out.write(reinterpret_cast<char*>(&tag),1);
@@ -1177,10 +1177,10 @@ void ObjSignal::write(std::ostream& out) const
     double freq = signal ? signal->frequency() : 0.0;
     out.write(reinterpret_cast<char*>(&freq),8);
     Value val = signal ? signal->lastValue() : nilVal();
-    writeValue(out, val);
+    writeValue(out, val, ctx);
 }
 
-void ObjSignal::read(std::istream& in)
+void ObjSignal::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
     if(tag != static_cast<uint8_t>(ObjType::Signal))
@@ -1188,23 +1188,23 @@ void ObjSignal::read(std::istream& in)
     uint32_t len; in.read(reinterpret_cast<char*>(&len),4);
     std::string n(len,'\0'); if(len) in.read(n.data(), len);
     double freq; in.read(reinterpret_cast<char*>(&freq),8);
-    Value v = readValue(in);
+    Value v = readValue(in, ctx);
     signal = df::Signal::newSignal(freq, v, n);
     changeEvent = nilVal();
     type = ObjType::Signal;
 }
 
-void ObjEvent::write(std::ostream& out) const
+void ObjEvent::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Event);
     out.write(reinterpret_cast<char*>(&tag),1);
     uint32_t count = subscribers.size();
     out.write(reinterpret_cast<char*>(&count),4);
     for(const auto& s : subscribers)
-        writeValue(out, s);
+        writeValue(out, s, ctx);
 }
 
-void ObjEvent::read(std::istream& in)
+void ObjEvent::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
     if(tag != static_cast<uint8_t>(ObjType::Event))
@@ -1212,18 +1212,18 @@ void ObjEvent::read(std::istream& in)
     uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
     subscribers.clear();
     for(uint32_t i=0;i<count;i++)
-        subscribers.push_back(readValue(in));
+        subscribers.push_back(readValue(in, ctx));
     type = ObjType::Event;
 }
 
-void ObjLibrary::write(std::ostream& out) const
+void ObjLibrary::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Library);
     out.write(reinterpret_cast<char*>(&tag),1);
     uint8_t h = 0; out.write(reinterpret_cast<char*>(&h),1);
 }
 
-void ObjLibrary::read(std::istream& in)
+void ObjLibrary::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
     if(tag != static_cast<uint8_t>(ObjType::Library))
@@ -1232,28 +1232,28 @@ void ObjLibrary::read(std::istream& in)
     handle = nullptr;
     type = ObjType::Library;
 }
-void ObjForeignPtr::write(std::ostream&) const { throw std::runtime_error("Cannot serialize foreign pointers"); }
-void ObjForeignPtr::read(std::istream&) { throw std::runtime_error("Cannot deserialize foreign pointers"); }
-void ObjException::write(std::ostream& out) const
+void ObjForeignPtr::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("Cannot serialize foreign pointers"); }
+void ObjForeignPtr::read(std::istream&, roxal::ptr<SerializationContext>) { throw std::runtime_error("Cannot deserialize foreign pointers"); }
+void ObjException::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Exception);
     out.write(reinterpret_cast<char*>(&tag),1);
-    writeValue(out, message);
-    writeValue(out, exType);
-    writeValue(out, stackTrace);
+    writeValue(out, message, ctx);
+    writeValue(out, exType, ctx);
+    writeValue(out, stackTrace, ctx);
 }
 
-void ObjException::read(std::istream& in)
+void ObjException::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
     if(tag != static_cast<uint8_t>(ObjType::Exception))
         throw std::runtime_error("ObjException::read mismatched tag");
-    message = readValue(in);
-    exType = readValue(in);
-    stackTrace = readValue(in);
+    message = readValue(in, ctx);
+    exType = readValue(in, ctx);
+    stackTrace = readValue(in, ctx);
     type = ObjType::Exception;
 }
-void ObjFunction::write(std::ostream& out) const
+void ObjFunction::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Function);
     out.write(reinterpret_cast<char*>(&tag), 1);
@@ -1271,7 +1271,7 @@ void ObjFunction::write(std::ostream& out) const
     out.write(reinterpret_cast<const char*>(&arity), 4);
     out.write(reinterpret_cast<const char*>(&upvalueCount), 4);
 
-    chunk->serialize(out);
+    chunk->serialize(out, ctx);
 
     uint32_t annCount = annotations.size();
     out.write(reinterpret_cast<char*>(&annCount), 4);
@@ -1282,7 +1282,7 @@ void ObjFunction::write(std::ostream& out) const
 
     uint8_t ft = static_cast<uint8_t>(fnType); out.write(reinterpret_cast<char*>(&ft),1);
 
-    writeValue(out, ownerType);
+    writeValue(out, ownerType, ctx);
 
     uint8_t acc = static_cast<uint8_t>(access); out.write(reinterpret_cast<char*>(&acc),1);
 
@@ -1296,10 +1296,10 @@ void ObjFunction::write(std::ostream& out) const
         }
     }
 
-    writeValue(out, moduleType);
+    writeValue(out, moduleType, ctx);
 }
 
-void ObjFunction::read(std::istream& in)
+void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
     if(tag != static_cast<uint8_t>(ObjType::Function))
@@ -1320,7 +1320,7 @@ void ObjFunction::read(std::istream& in)
     in.read(reinterpret_cast<char*>(&upvalueCount),4);
 
     chunk = std::make_shared<Chunk>(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
-    chunk->deserialize(in);
+    chunk->deserialize(in, ctx);
 
     uint32_t annCount; in.read(reinterpret_cast<char*>(&annCount),4);
     annotations.clear();
@@ -1331,7 +1331,7 @@ void ObjFunction::read(std::istream& in)
 
     uint8_t ft; in.read(reinterpret_cast<char*>(&ft),1); fnType = static_cast<FunctionType>(ft);
 
-    ownerType = readValue(in);
+    ownerType = readValue(in, ctx);
 
     uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1); access = static_cast<ast::Access>(acc);
 
@@ -1344,9 +1344,9 @@ void ObjFunction::read(std::istream& in)
         paramDefaultFunc[key] = func;
     }
 
-    moduleType = readValue(in);
+    moduleType = readValue(in, ctx);
 }
-void ObjUpvalue::write(std::ostream& out) const
+void ObjUpvalue::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     ObjUpvalue* self = const_cast<ObjUpvalue*>(this);
     if (self->location != &self->closed) {
@@ -1356,20 +1356,20 @@ void ObjUpvalue::write(std::ostream& out) const
 
     uint8_t tag = static_cast<uint8_t>(ObjType::Upvalue);
     out.write(reinterpret_cast<char*>(&tag),1);
-    writeValue(out, self->closed);
+    writeValue(out, self->closed, ctx);
 }
 
-void ObjUpvalue::read(std::istream& in)
+void ObjUpvalue::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
     if(tag != static_cast<uint8_t>(ObjType::Upvalue))
         throw std::runtime_error("ObjUpvalue::read mismatched tag");
     type = ObjType::Upvalue;
-    closed = readValue(in);
+    closed = readValue(in, ctx);
     location = &closed;
 }
 
-void ObjClosure::write(std::ostream& out) const
+void ObjClosure::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Closure);
     out.write(reinterpret_cast<char*>(&tag),1);
@@ -1384,7 +1384,7 @@ void ObjClosure::write(std::ostream& out) const
     }
 }
 
-void ObjClosure::read(std::istream& in)
+void ObjClosure::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
     if(tag != static_cast<uint8_t>(ObjType::Closure))
@@ -1408,35 +1408,35 @@ void ObjClosure::read(std::istream& in)
         }
     }
 }
-void ObjFuture::write(std::ostream& out) const
+void ObjFuture::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     Value resolved = future.valid() ? future.get() : nilVal();
-    writeValue(out, resolved);
+    writeValue(out, resolved, ctx);
 }
 
-void ObjFuture::read(std::istream& in)
+void ObjFuture::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     // Deserialize as resolved value and wrap back into a fulfilled future
-    Value val = readValue(in);
+    Value val = readValue(in, ctx);
     std::promise<Value> p;
     p.set_value(val);
     future = p.get_future().share();
 }
-void ObjNative::write(std::ostream&) const { throw std::runtime_error("ObjNative serialization not implemented"); }
-void ObjNative::read(std::istream&) { throw std::runtime_error("ObjNative deserialization not implemented"); }
-void ObjTypeSpec::write(std::ostream& out) const
+void ObjNative::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("ObjNative serialization not implemented"); }
+void ObjNative::read(std::istream&, roxal::ptr<SerializationContext>) { throw std::runtime_error("ObjNative deserialization not implemented"); }
+void ObjTypeSpec::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tv = static_cast<uint8_t>(typeValue);
     out.write(reinterpret_cast<char*>(&tv), 1);
 }
 
-void ObjTypeSpec::read(std::istream& in)
+void ObjTypeSpec::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint8_t tv;
     in.read(reinterpret_cast<char*>(&tv), 1);
     typeValue = static_cast<ValueType>(tv);
 }
-void ObjObjectType::write(std::ostream& out) const
+void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     ObjTypeSpec::write(out);
 
@@ -1449,7 +1449,7 @@ void ObjObjectType::write(std::ostream& out) const
     b = isInterface ? 1 : 0; out.write(reinterpret_cast<char*>(&b),1);
     b = isEnumeration ? 1 : 0; out.write(reinterpret_cast<char*>(&b),1);
 
-    writeValue(out, superType);
+    writeValue(out, superType, ctx);
 
     b = isCStruct ? 1 : 0; out.write(reinterpret_cast<char*>(&b),1);
     out.write(reinterpret_cast<const char*>(&cstructArch),4);
@@ -1463,8 +1463,8 @@ void ObjObjectType::write(std::ostream& out) const
         uint32_t plen = pn.size();
         out.write(reinterpret_cast<char*>(&plen),4);
         out.write(pn.data(), plen);
-        writeValue(out, prop.type);
-        writeValue(out, prop.initialValue);
+        writeValue(out, prop.type, ctx);
+        writeValue(out, prop.initialValue, ctx);
         uint8_t acc = static_cast<uint8_t>(prop.access);
         out.write(reinterpret_cast<char*>(&acc),1);
         uint8_t hasC = prop.ctype.has_value() ? 1 : 0;
@@ -1485,7 +1485,7 @@ void ObjObjectType::write(std::ostream& out) const
         uint32_t mlen = mn.size();
         out.write(reinterpret_cast<char*>(&mlen),4);
         out.write(mn.data(), mlen);
-        writeValue(out, method.closure);
+        writeValue(out, method.closure, ctx);
         uint8_t acc = static_cast<uint8_t>(method.access);
         out.write(reinterpret_cast<char*>(&acc),1);
     }
@@ -1498,11 +1498,11 @@ void ObjObjectType::write(std::ostream& out) const
         uint32_t llen = ln.size();
         out.write(reinterpret_cast<char*>(&llen),4);
         out.write(ln.data(), llen);
-        writeValue(out, label.second);
+        writeValue(out, label.second, ctx);
     }
 }
 
-void ObjObjectType::read(std::istream& in)
+void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     ObjTypeSpec::read(in);
 
@@ -1516,7 +1516,7 @@ void ObjObjectType::read(std::istream& in)
     in.read(reinterpret_cast<char*>(&b),1); isInterface = b!=0;
     in.read(reinterpret_cast<char*>(&b),1); isEnumeration = b!=0;
 
-    superType = readValue(in);
+    superType = readValue(in, ctx);
 
     in.read(reinterpret_cast<char*>(&b),1); isCStruct = b!=0;
     in.read(reinterpret_cast<char*>(&cstructArch),4);
@@ -1528,8 +1528,8 @@ void ObjObjectType::read(std::istream& in)
         uint32_t plen; in.read(reinterpret_cast<char*>(&plen),4);
         std::string pn(plen,'\0'); if(plen>0) in.read(pn.data(), plen);
         icu::UnicodeString uname = icu::UnicodeString::fromUTF8(pn);
-        Value ptype = readValue(in);
-        Value init  = readValue(in);
+        Value ptype = readValue(in, ctx);
+        Value init  = readValue(in, ctx);
         uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
         uint8_t hasC; in.read(reinterpret_cast<char*>(&hasC),1);
         std::optional<icu::UnicodeString> ct;
@@ -1550,7 +1550,7 @@ void ObjObjectType::read(std::istream& in)
         uint32_t mlen; in.read(reinterpret_cast<char*>(&mlen),4);
         std::string mn(mlen,'\0'); if(mlen>0) in.read(mn.data(), mlen);
         icu::UnicodeString uname = icu::UnicodeString::fromUTF8(mn);
-        Value clos = readValue(in);
+        Value clos = readValue(in, ctx);
         uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
         int32_t hash = uname.hashCode();
         Method m{uname, clos, static_cast<ast::Access>(acc), nilVal()};
@@ -1563,7 +1563,7 @@ void ObjObjectType::read(std::istream& in)
         uint32_t llen; in.read(reinterpret_cast<char*>(&llen),4);
         std::string ln(llen,'\0'); if(llen>0) in.read(ln.data(), llen);
         icu::UnicodeString uname = icu::UnicodeString::fromUTF8(ln);
-        Value val = readValue(in);
+        Value val = readValue(in, ctx);
         int32_t hash = uname.hashCode();
         enumLabelValues[hash] = {uname, val};
     }
@@ -1572,20 +1572,20 @@ void ObjObjectType::read(std::istream& in)
         enumTypes[enumTypeId] = this;
     }
 }
-void ObjPackageType::write(std::ostream& out) const
+void ObjPackageType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Type);
     out.write(reinterpret_cast<char*>(&tag),1);
 }
 
-void ObjPackageType::read(std::istream& in)
+void ObjPackageType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
     if(tag != static_cast<uint8_t>(ObjType::Type))
         throw std::runtime_error("ObjPackageType::read mismatched tag");
     typeValue = ValueType::Type;
 }
-void ObjModuleType::write(std::ostream& out) const
+void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     ObjTypeSpec::write(out);
 
@@ -1595,7 +1595,7 @@ void ObjModuleType::write(std::ostream& out) const
     out.write(n.data(), len);
 }
 
-void ObjModuleType::read(std::istream& in)
+void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     ObjTypeSpec::read(in);
 
@@ -1606,9 +1606,8 @@ void ObjModuleType::read(std::istream& in)
 
     allModules.push_back(this);
 }
-void ObjectInstance::write(std::ostream& out) const
+void ObjectInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
-    auto* ctx = serializationWriteContext();
     if(!ctx) throw std::runtime_error("ObjectInstance::write without context");
     auto it = ctx->objToId.find(this);
     uint8_t flag = 1;
@@ -1630,13 +1629,12 @@ void ObjectInstance::write(std::ostream& out) const
     for(const auto& kv : properties) {
         int32_t h = kv.first;
         out.write(reinterpret_cast<char*>(&h),4);
-        writeValue(out, kv.second);
+        writeValue(out, kv.second, ctx);
     }
 }
 
-void ObjectInstance::read(std::istream& in)
+void ObjectInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
-    auto* ctx = serializationReadContext();
     if(!ctx) throw std::runtime_error("ObjectInstance::read without context");
     uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
     uint64_t id;  in.read(reinterpret_cast<char*>(&id),8);
@@ -1648,7 +1646,7 @@ void ObjectInstance::read(std::istream& in)
         properties = other->properties;
         return;
     }
-    Value typeVal = readValue(in);
+    Value typeVal = readValue(in, ctx);
     instanceType = asObjectType(typeVal);
     instanceType->incRef();
     ctx->idToObj[id] = this;
@@ -1656,61 +1654,60 @@ void ObjectInstance::read(std::istream& in)
     properties.clear();
     for(uint32_t i=0;i<count;i++) {
         int32_t h; in.read(reinterpret_cast<char*>(&h),4);
-        Value v = readValue(in);
+        Value v = readValue(in, ctx);
         properties[h] = v;
     }
 }
-void ObjBoundMethod::write(std::ostream& out) const
+void ObjBoundMethod::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::BoundMethod);
     out.write(reinterpret_cast<char*>(&tag),1);
-    writeValue(out, receiver);
+    writeValue(out, receiver, ctx);
     writeValue(out, objVal(method));
 }
 
-void ObjBoundMethod::read(std::istream& in)
+void ObjBoundMethod::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
     if(tag != static_cast<uint8_t>(ObjType::BoundMethod))
         throw std::runtime_error("ObjBoundMethod::read mismatched tag");
-    receiver = readValue(in);
-    Value mval = readValue(in);
+    receiver = readValue(in, ctx);
+    Value mval = readValue(in, ctx);
     method = asClosure(mval);
     method->incRef();
     type = ObjType::BoundMethod;
 }
 
-void ObjBoundNative::write(std::ostream& out) const
+void ObjBoundNative::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::BoundNative);
     out.write(reinterpret_cast<char*>(&tag),1);
-    writeValue(out, receiver);
+    writeValue(out, receiver, ctx);
     uint8_t p = isProc ? 1 : 0; out.write(reinterpret_cast<char*>(&p),1);
     uint32_t defc = defaultValues.size();
     out.write(reinterpret_cast<char*>(&defc),4);
     for(const auto& v : defaultValues)
-        writeValue(out, v);
+        writeValue(out, v, ctx);
 }
 
-void ObjBoundNative::read(std::istream& in)
+void ObjBoundNative::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
     if(tag != static_cast<uint8_t>(ObjType::BoundNative))
         throw std::runtime_error("ObjBoundNative::read mismatched tag");
-    receiver = readValue(in);
+    receiver = readValue(in, ctx);
     uint8_t p; in.read(reinterpret_cast<char*>(&p),1); isProc = p!=0;
     uint32_t defc; in.read(reinterpret_cast<char*>(&defc),4);
     defaultValues.clear();
     for(uint32_t i=0;i<defc;i++)
-        defaultValues.push_back(readValue(in));
+        defaultValues.push_back(readValue(in, ctx));
     function = nullptr;
     funcType = nullptr;
     type = ObjType::BoundNative;
 }
 
-void ActorInstance::write(std::ostream& out) const
+void ActorInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
-    auto* ctx = serializationWriteContext();
     if(!ctx) throw std::runtime_error("ActorInstance::write without context");
     auto it = ctx->objToId.find(this);
     uint8_t flag = 1; uint64_t id;
@@ -1729,13 +1726,12 @@ void ActorInstance::write(std::ostream& out) const
     for(const auto& kv : properties) {
         int32_t h = kv.first;
         out.write(reinterpret_cast<char*>(&h),4);
-        writeValue(out, kv.second);
+        writeValue(out, kv.second, ctx);
     }
 }
 
-void ActorInstance::read(std::istream& in)
+void ActorInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
-    auto* ctx = serializationReadContext();
     if(!ctx) throw std::runtime_error("ActorInstance::read without context");
     uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
     uint64_t id; in.read(reinterpret_cast<char*>(&id),8);
@@ -1747,7 +1743,7 @@ void ActorInstance::read(std::istream& in)
         properties = other->properties;
         return;
     }
-    Value typeVal = readValue(in);
+    Value typeVal = readValue(in, ctx);
     instanceType = asObjectType(typeVal);
     instanceType->incRef();
     ctx->idToObj[id] = this;
@@ -1755,12 +1751,12 @@ void ActorInstance::read(std::istream& in)
     properties.clear();
     for(uint32_t i=0;i<count;i++) {
         int32_t h; in.read(reinterpret_cast<char*>(&h),4);
-        Value v = readValue(in);
+        Value v = readValue(in, ctx);
         properties[h] = v;
     }
 }
 
-void ObjMatrix::write(std::ostream& out) const
+void ObjMatrix::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint32_t rows = mat.rows();
     uint32_t cols = mat.cols();
@@ -1773,7 +1769,7 @@ void ObjMatrix::write(std::ostream& out) const
         }
 }
 
-void ObjMatrix::read(std::istream& in)
+void ObjMatrix::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint32_t rows, cols;
     in.read(reinterpret_cast<char*>(&rows), 4);

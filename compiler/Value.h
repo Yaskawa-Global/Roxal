@@ -60,12 +60,6 @@ struct SerializationContext {
     std::unordered_map<uint64_t, Obj*> idToObj;
     uint64_t nextId = 1;
 };
-SerializationContext* serializationWriteContext();
-SerializationContext* serializationReadContext();
-void enterWriteContext();
-void exitWriteContext();
-void enterReadContext();
-void exitReadContext();
 
 
 // If Values are real (IEEE C++ double), then no bit conversions necessary
@@ -103,8 +97,9 @@ const uint64_t TagType  = uint64_t(ValueType::Type) << TypeTagOffset;
 
 class Value;
 // Binary serialization helpers
-void writeValue(std::ostream& out, const Value& v);
-Value readValue(std::istream& in);
+void writeValue(std::ostream& out, const Value& v,
+                roxal::ptr<SerializationContext> ctx = nullptr);
+Value readValue(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr);
 bool isObjPrimitive(const Value& v); // forward from Object.h
 
 
@@ -354,10 +349,14 @@ public:
     bool convertibleTo(ValueType to, bool strict=true) const;
 
     /// @brief Write this value to the given stream using the internal binary format.
-    void write(std::ostream& out) const { writeValue(out, *this); }
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const {
+        writeValue(out, *this, ctx);
+    }
 
     /// @brief Read a value from the given stream using the internal binary format.
-    static Value read(std::istream& in) { return readValue(in); }
+    static Value read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) {
+        return readValue(in, ctx);
+    }
 
 protected:
     std::atomic_uint64_t val;
