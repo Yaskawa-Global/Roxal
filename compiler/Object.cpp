@@ -20,6 +20,170 @@ using namespace roxal;
 
 atomic_vector<Obj*> Obj::unrefedObjs {};
 
+#include <core/AST.h>
+
+namespace {
+
+using namespace roxal;
+
+void writeTypeInfo(std::ostream& out, const type::Type& t);
+ptr<type::Type> readTypeInfo(std::istream& in);
+void writeAnnotation(std::ostream& out, const ast::Annotation& a);
+ptr<ast::Annotation> readAnnotation(std::istream& in);
+
+void writeString(std::ostream& out, const icu::UnicodeString& s) {
+    std::string u8; s.toUTF8String(u8);
+    uint32_t len = u8.size();
+    out.write(reinterpret_cast<char*>(&len),4);
+    out.write(u8.data(), len);
+}
+
+icu::UnicodeString readString(std::istream& in) {
+    uint32_t len; in.read(reinterpret_cast<char*>(&len),4);
+    std::string u8(len,'\0'); if(len) in.read(u8.data(), len);
+    return icu::UnicodeString::fromUTF8(u8);
+}
+
+void writeTypeInfo(std::ostream& out, const type::Type& t) {
+    uint8_t b = static_cast<uint8_t>(t.builtin);
+    out.write(reinterpret_cast<char*>(&b),1);
+    if (t.builtin == type::BuiltinType::Func && t.func.has_value()) {
+        uint8_t hasFunc = 1; out.write(reinterpret_cast<char*>(&hasFunc),1);
+        const auto& ft = t.func.value();
+        uint8_t proc = ft.isProc ? 1 : 0; out.write(reinterpret_cast<char*>(&proc),1);
+        uint32_t pc = ft.params.size();
+        out.write(reinterpret_cast<char*>(&pc),4);
+        for(const auto& p : ft.params){
+            uint8_t present = p.has_value()?1:0; out.write(reinterpret_cast<char*>(&present),1);
+            if(present){
+                writeString(out, p->name);
+                uint8_t ht = p->type.has_value()?1:0; out.write(reinterpret_cast<char*>(&ht),1);
+                if(ht) writeTypeInfo(out, *p->type.value());
+                uint8_t hd = p->hasDefault?1:0; out.write(reinterpret_cast<char*>(&hd),1);
+            }
+        }
+        uint32_t rc = ft.returnTypes.size();
+        out.write(reinterpret_cast<char*>(&rc),4);
+        for(const auto& rt : ft.returnTypes)
+            writeTypeInfo(out, *rt);
+    } else if (t.builtin == type::BuiltinType::Func) {
+        uint8_t hasFunc = 0; out.write(reinterpret_cast<char*>(&hasFunc),1);
+    }
+}
+
+ptr<type::Type> readTypeInfo(std::istream& in) {
+    uint8_t b; in.read(reinterpret_cast<char*>(&b),1);
+    auto t = std::make_shared<type::Type>(static_cast<type::BuiltinType>(b));
+    if (t->builtin == type::BuiltinType::Func) {
+        uint8_t hasFunc; in.read(reinterpret_cast<char*>(&hasFunc),1);
+        if(hasFunc){
+            t->func = type::Type::FuncType();
+            auto& ft = t->func.value();
+            uint8_t proc; in.read(reinterpret_cast<char*>(&proc),1); ft.isProc = proc!=0;
+            uint32_t pc; in.read(reinterpret_cast<char*>(&pc),4); ft.params.resize(pc);
+            for(uint32_t i=0;i<pc;i++){
+                uint8_t present; in.read(reinterpret_cast<char*>(&present),1);
+                if(present){
+                    type::Type::FuncType::ParamType param;
+                    param.name = readString(in);
+                    param.nameHashCode = param.name.hashCode();
+                    uint8_t ht; in.read(reinterpret_cast<char*>(&ht),1);
+                    if(ht) param.type = readTypeInfo(in);
+                    uint8_t hd; in.read(reinterpret_cast<char*>(&hd),1); param.hasDefault = hd!=0;
+                    ft.params[i] = param;
+                }
+            }
+            uint32_t rc; in.read(reinterpret_cast<char*>(&rc),4);
+            for(uint32_t i=0;i<rc;i++)
+                ft.returnTypes.push_back(readTypeInfo(in));
+        }
+    }
+    return t;
+}
+
+void writeExpr(std::ostream& out, const ptr<ast::Expression>& expr){
+    using namespace ast;
+    if(auto s = std::dynamic_pointer_cast<Str>(expr)){
+        uint8_t tag=0; out.write(reinterpret_cast<char*>(&tag),1);
+        writeString(out, s->str);
+    } else if(auto n = std::dynamic_pointer_cast<Num>(expr)){
+        uint8_t tag=1; out.write(reinterpret_cast<char*>(&tag),1);
+        if(std::holds_alternative<int32_t>(n->num)){
+            uint8_t ty=0; out.write(reinterpret_cast<char*>(&ty),1);
+            int32_t v=std::get<int32_t>(n->num); out.write(reinterpret_cast<char*>(&v),4);
+        } else {
+            uint8_t ty=1; out.write(reinterpret_cast<char*>(&ty),1);
+            double v=std::get<double>(n->num); out.write(reinterpret_cast<char*>(&v),8);
+        }
+    } else if(auto b = std::dynamic_pointer_cast<Bool>(expr)){
+        uint8_t tag=2; out.write(reinterpret_cast<char*>(&tag),1);
+        uint8_t v=b->value?1:0; out.write(reinterpret_cast<char*>(&v),1);
+    } else if(auto v = std::dynamic_pointer_cast<Variable>(expr)){
+        uint8_t tag=3; out.write(reinterpret_cast<char*>(&tag),1);
+        writeString(out, v->name);
+    } else {
+        throw std::runtime_error("unsupported annotation expr serialization");
+    }
+}
+
+ptr<ast::Expression> readExpr(std::istream& in){
+    using namespace ast;
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
+    switch(tag){
+        case 0: {
+            auto s = std::make_shared<Str>();
+            s->str = readString(in);
+            return s;
+        }
+        case 1: {
+            auto n = std::make_shared<Num>();
+            uint8_t ty; in.read(reinterpret_cast<char*>(&ty),1);
+            if(ty==0){
+                int32_t v; in.read(reinterpret_cast<char*>(&v),4);
+                n->num = v;
+            } else {
+                double v; in.read(reinterpret_cast<char*>(&v),8);
+                n->num = v;
+            }
+            return n;
+        }
+        case 2: {
+            auto b = std::make_shared<Bool>();
+            uint8_t v; in.read(reinterpret_cast<char*>(&v),1);
+            b->value = v!=0; return b;
+        }
+        case 3: {
+            auto v = std::make_shared<Variable>();
+            v->name = readString(in);
+            return v;
+        }
+    }
+    throw std::runtime_error("unsupported annotation expr tag");
+}
+
+void writeAnnotation(std::ostream& out, const ast::Annotation& a){
+    writeString(out, a.name);
+    uint32_t count = a.args.size(); out.write(reinterpret_cast<char*>(&count),4);
+    for(const auto& arg : a.args){
+        writeString(out, arg.first);
+        writeExpr(out, arg.second);
+    }
+}
+
+ptr<ast::Annotation> readAnnotation(std::istream& in){
+    auto a = std::make_shared<ast::Annotation>();
+    a->name = readString(in);
+    uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
+    for(uint32_t i=0;i<count;i++){
+        icu::UnicodeString name = readString(in);
+        ptr<ast::Expression> expr = readExpr(in);
+        a->args.emplace_back(name, expr);
+    }
+    return a;
+}
+
+}
+
 #ifdef DEBUG_TRACE_MEMORY
 atomic_map<Obj*, const char*> Obj::allocatedObjs {};
 #endif
@@ -1025,7 +1189,7 @@ void ObjFunction::write(std::ostream& out) const
     uint8_t hasType = funcType.has_value() ? 1 : 0;
     out.write(reinterpret_cast<char*>(&hasType), 1);
     if(hasType)
-        throw std::runtime_error("ObjFunction funcType serialization not implemented");
+        writeTypeInfo(out, *funcType.value());
 
     out.write(reinterpret_cast<const char*>(&arity), 4);
     out.write(reinterpret_cast<const char*>(&upvalueCount), 4);
@@ -1034,8 +1198,8 @@ void ObjFunction::write(std::ostream& out) const
 
     uint32_t annCount = annotations.size();
     out.write(reinterpret_cast<char*>(&annCount), 4);
-    if(annCount)
-        throw std::runtime_error("ObjFunction annotations serialization not implemented");
+    for(const auto& a : annotations)
+        writeAnnotation(out, *a);
 
     uint8_t s = strict ? 1 : 0; out.write(reinterpret_cast<char*>(&s),1);
 
@@ -1071,8 +1235,9 @@ void ObjFunction::read(std::istream& in)
 
     uint8_t hasType; in.read(reinterpret_cast<char*>(&hasType),1);
     if(hasType)
-        throw std::runtime_error("ObjFunction funcType deserialization not implemented");
-    funcType.reset();
+        funcType = readTypeInfo(in);
+    else
+        funcType.reset();
 
     in.read(reinterpret_cast<char*>(&arity),4);
     in.read(reinterpret_cast<char*>(&upvalueCount),4);
@@ -1081,8 +1246,9 @@ void ObjFunction::read(std::istream& in)
     chunk->deserialize(in);
 
     uint32_t annCount; in.read(reinterpret_cast<char*>(&annCount),4);
-    if(annCount)
-        throw std::runtime_error("ObjFunction annotations deserialization not implemented");
+    annotations.clear();
+    for(uint32_t i=0;i<annCount;i++)
+        annotations.push_back(readAnnotation(in));
 
     uint8_t s; in.read(reinterpret_cast<char*>(&s),1); strict = s!=0;
 
