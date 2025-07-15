@@ -2679,6 +2679,25 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
+            case asByte(OpCode::Closure2): {
+                ObjFunction* function = asFunction(readConstant2());
+                ObjClosure* closure = closureVal(function);
+                if (function->ownerType.isNil() && !frame->closure->function->ownerType.isNil())
+                    function->ownerType = frame->closure->function->ownerType;
+                push(objVal(closure));
+                for (int i = 0; i < closure->upvalues.size(); i++) {
+                    uint8_t isLocal = readByte();
+                    uint8_t index = readByte();
+                    ObjUpvalue* upvalue;
+                    if (isLocal)
+                        upvalue = captureUpvalue(*(frame->slots + index));
+                    else
+                        upvalue = frame->closure->upvalues[index];
+                    upvalue->incRef();
+                    closure->upvalues[i] = upvalue;
+                }
+                break;
+            }
             case asByte(OpCode::CloseUpvalue): {
                 closeUpvalues(&(*(thread->stackTop -1)));
                 pop();
@@ -4209,7 +4228,8 @@ Value VM::serialize_builtin(int argCount, Value* args)
         throw std::invalid_argument("unknown serialization protocol");
 
     std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
-    writeValue(ss, args[0]);
+    auto ctx = make_ptr<SerializationContext>();
+    writeValue(ss, args[0], ctx);
     std::string data = ss.str();
     std::vector<Value> bytes;
     bytes.reserve(data.size());
@@ -4245,7 +4265,8 @@ Value VM::deserialize_builtin(int argCount, Value* args)
     std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
     ss.write(data.data(), data.size());
     ss.seekg(0);
-    return readValue(ss);
+    auto ctx = make_ptr<SerializationContext>();
+    return readValue(ss, ctx);
 }
 
 Value VM::vector_norm_builtin(int argCount, Value* args)

@@ -1,0 +1,9 @@
+
+func f(i :int) -> real:
+  return 2.0*i
+
+l = serialize(f)
+g = deserialize(l)
+
+print(g(2)) // 4
+
