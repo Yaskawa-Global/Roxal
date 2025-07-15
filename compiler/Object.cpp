@@ -1722,6 +1722,7 @@ void ActorInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     // causing std::terminate since the underlying std::thread is still
     // joinable.
     VM::instance().registerThread(newThread);
+    thread = newThread;
     newThread->act(objVal(this));
 }
 
