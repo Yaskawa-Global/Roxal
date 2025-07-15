@@ -430,6 +430,11 @@ Value multiply(Value l, Value r);
 Value divide(Value l, Value r);
 Value mod(Value l, Value r);
 
+Value band(Value l, Value r);
+Value bor(Value l, Value r);
+Value bxor(Value l, Value r);
+Value bnot(Value v);
+
 // Copy assignment: shallow copy for reference types
 void copyAssign(Value& lhs, const Value& rhs);
 

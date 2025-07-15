@@ -223,7 +223,19 @@ logic_or
  ;
 
 logic_and
- : equality ( AND equality )*
+ : bitwise_or ( AND bitwise_or )*
+ ;
+
+bitwise_or
+ : bitwise_xor ( BIT_OR bitwise_xor )*
+ ;
+
+bitwise_xor
+ : bitwise_and ( BIT_XOR bitwise_and )*
+ ;
+
+bitwise_and
+ : equality ( BIT_AND equality )*
  ;
 
 equality
@@ -262,7 +274,8 @@ multdiv
 
 
 unary
- : ( NOT | MINUS ) unary | call
+ : ( NOT | MINUS | BIT_NOT ) unary
+ | call
  ;
 
 call
@@ -461,6 +474,11 @@ ISNOTEQUALS: '!=' | '<>' | '\u2260'; // ≠
 YIELDS: '->' | '\u2192'; // →
 UNDERSCORE: '_' ;
 DASH: MINUS ;
+
+BIT_AND: '&';
+BIT_OR: '|';
+BIT_XOR: '^';
+BIT_NOT: '~';
 
 OPEN_PAREN : '(';
 CLOSE_PAREN : ')';

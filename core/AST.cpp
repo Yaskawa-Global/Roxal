@@ -941,6 +941,9 @@ std::string BinaryOp::opString() const
         case Modulo: return "%";
         case And: return "and";
         case Or: return "or";
+        case BitAnd: return "&";
+        case BitOr: return "|";
+        case BitXor: return "^";
         case Equal: return "\u225F";
         case NotEqual: return "\u2260";
         case Is: return "is";
@@ -1002,6 +1005,7 @@ std::string UnaryOp::opString() const
         case None: return "";
         case Negate: return "-";
         case Not: return "not";
+        case BitNot: return "~";
         case Accessor: return ".";
         default: return "";
     }

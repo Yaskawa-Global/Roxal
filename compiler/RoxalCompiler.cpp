@@ -1611,6 +1611,9 @@ std::any RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
             case BinaryOp::NotEqual: emitByte(OpCode::Equal); emitByte(OpCode::Negate); break;
             case BinaryOp::Is: emitByte(OpCode::Is); break;
             case BinaryOp::Modulo: emitByte(OpCode::Modulo); break;
+            case BinaryOp::BitAnd: emitByte(OpCode::BitAnd); break;
+            case BinaryOp::BitOr: emitByte(OpCode::BitOr); break;
+            case BinaryOp::BitXor: emitByte(OpCode::BitXor); break;
             case BinaryOp::LessThan: emitByte(OpCode::Less); break;
             case BinaryOp::GreaterThan: emitByte(OpCode::Greater); break;
             case BinaryOp::LessOrEqual: emitByte(OpCode::Greater); emitByte(OpCode::Negate); break;
@@ -1665,6 +1668,7 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
     switch (ast->op) {
         case UnaryOp::Negate: emitByte(OpCode::Negate); break;
         case UnaryOp::Not: emitByte(OpCode::Negate); break;
+        case UnaryOp::BitNot: emitByte(OpCode::BitNot); break;
         case UnaryOp::Accessor: {
             if (!ast->member.has_value())
                 throw std::runtime_error("Accessor . requires member name");

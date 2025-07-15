@@ -90,6 +90,10 @@ public:
 
     virtual std::any visitLogic_and(RoxalParser::Logic_andContext *context);
 
+    virtual std::any visitBitwise_or(RoxalParser::Bitwise_orContext *context);
+    virtual std::any visitBitwise_xor(RoxalParser::Bitwise_xorContext *context);
+    virtual std::any visitBitwise_and(RoxalParser::Bitwise_andContext *context);
+
     virtual std::any visitEquality(RoxalParser::EqualityContext *context);
 
     virtual std::any visitEqualnotequal(RoxalParser::EqualnotequalContext *context);

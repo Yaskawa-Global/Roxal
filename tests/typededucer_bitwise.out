@@ -1,0 +1,39 @@
+File
+ VarDecl a
+  BinaryOp & 
+   Bool true
+   Bool false
+ VarDecl b
+  BinaryOp & 
+   Call
+    Type byte
+    args:
+     Num 5:int
+   Call
+    Type byte
+    args:
+     Num 3:int
+ VarDecl c
+  BinaryOp | 
+   Num 5:int
+   Num 3:int
+ VarDecl d
+  BinaryOp ^ 
+   Call
+    Type byte
+    args:
+     Num 12:int
+   Call
+    Type byte
+    args:
+     Num 10:int
+ VarDecl e
+  UnaryOp ~ 
+   Call
+    Type byte
+    args:
+     Num 1:int
+ VarDecl f
+  UnaryOp ~ 
+   Num 4:int
+

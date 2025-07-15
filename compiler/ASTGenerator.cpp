@@ -1337,22 +1337,22 @@ std::any ASTGenerator::visitLogic_and(RoxalParser::Logic_andContext *context)
 {
     visitStart();
 
-    auto equality = visitEquality(context->equality().at(0));
+    auto bw_or = visitBitwise_or(context->bitwise_or().at(0));
     if (context->AND().size()==0) // just passing through
-        return equality;
+        return bw_or;
 
-    auto lhs = as<Expression>(equality);
+    auto lhs = as<Expression>(bw_or);
 
     ptr<BinaryOp> andOp;
 
-    if (context->equality().size() > 1) {
+    if (context->bitwise_or().size() > 1) {
 
-        for(auto i=1; i<context->equality().size(); i++) {
+        for(auto i=1; i<context->bitwise_or().size(); i++) {
             andOp = std::make_shared<BinaryOp>(BinaryOp::And);
             setSourceInfo(andOp,context);//!!!
             andOp->lhs = lhs;
 
-            auto rhs = visitEquality(context->equality().at(i));
+            auto rhs = visitBitwise_or(context->bitwise_or().at(i));
             andOp->rhs = as<Expression>(rhs);
 
             lhs = andOp;
@@ -1360,6 +1360,81 @@ std::any ASTGenerator::visitLogic_and(RoxalParser::Logic_andContext *context)
     }
 
     return typeValue(andOp);
+    visitEnd();
+}
+
+
+std::any ASTGenerator::visitBitwise_or(RoxalParser::Bitwise_orContext *context)
+{
+    visitStart();
+
+    auto xorExpr = visitBitwise_xor(context->bitwise_xor().at(0));
+    if (context->BIT_OR().size()==0)
+        return xorExpr;
+
+    auto lhs = as<Expression>(xorExpr);
+    ptr<BinaryOp> op;
+
+    for (size_t i=1; i<context->bitwise_xor().size(); ++i) {
+        op = std::make_shared<BinaryOp>(BinaryOp::BitOr);
+        setSourceInfo(op, context);
+        op->lhs = lhs;
+        auto rhs = visitBitwise_xor(context->bitwise_xor().at(i));
+        op->rhs = as<Expression>(rhs);
+        lhs = op;
+    }
+
+    return typeValue(op);
+    visitEnd();
+}
+
+
+std::any ASTGenerator::visitBitwise_xor(RoxalParser::Bitwise_xorContext *context)
+{
+    visitStart();
+
+    auto andExpr = visitBitwise_and(context->bitwise_and().at(0));
+    if (context->BIT_XOR().size()==0)
+        return andExpr;
+
+    auto lhs = as<Expression>(andExpr);
+    ptr<BinaryOp> op;
+
+    for (size_t i=1; i<context->bitwise_and().size(); ++i) {
+        op = std::make_shared<BinaryOp>(BinaryOp::BitXor);
+        setSourceInfo(op, context);
+        op->lhs = lhs;
+        auto rhs = visitBitwise_and(context->bitwise_and().at(i));
+        op->rhs = as<Expression>(rhs);
+        lhs = op;
+    }
+
+    return typeValue(op);
+    visitEnd();
+}
+
+
+std::any ASTGenerator::visitBitwise_and(RoxalParser::Bitwise_andContext *context)
+{
+    visitStart();
+
+    auto equality = visitEquality(context->equality().at(0));
+    if (context->BIT_AND().size()==0)
+        return equality;
+
+    auto lhs = as<Expression>(equality);
+    ptr<BinaryOp> op;
+
+    for (size_t i=1; i<context->equality().size(); ++i) {
+        op = std::make_shared<BinaryOp>(BinaryOp::BitAnd);
+        setSourceInfo(op, context);
+        op->lhs = lhs;
+        auto rhs = visitEquality(context->equality().at(i));
+        op->rhs = as<Expression>(rhs);
+        lhs = op;
+    }
+
+    return typeValue(op);
     visitEnd();
 }
 
@@ -1559,11 +1634,12 @@ std::any ASTGenerator::visitUnary(RoxalParser::UnaryContext *context)
             return typeValue(numarg);
         }
 
-        auto op = std::make_shared<UnaryOp>(context->NOT() ?
-                                              UnaryOp::Not
-                                              : (context->MINUS() ? UnaryOp::Negate
-                                              : UnaryOp::None )
-                                           );
+        UnaryOp::Op uop = UnaryOp::None;
+        if (context->NOT()) uop = UnaryOp::Not;
+        else if (context->MINUS()) uop = UnaryOp::Negate;
+        else if (context->BIT_NOT()) uop = UnaryOp::BitNot;
+
+        auto op = std::make_shared<UnaryOp>(uop);
 
         setSourceInfo(op, context);
         op->arg = as<Expression>(arg);
