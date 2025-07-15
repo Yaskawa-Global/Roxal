@@ -1747,6 +1747,22 @@ Value roxal::band(Value l, Value r)
                               l, r);
     }
 
+    if (isDict(l) && isDict(r)) {
+        const ObjDict* ld = asDict(l);
+        const ObjDict* rd = asDict(r);
+        ObjDict* result = dictVal();
+
+        auto lkeys = ld->keys();
+        for (const auto& k : lkeys) {
+            if (rd->contains(k)) {
+                result->store(k, ld->at(k));
+            }
+        }
+
+        return objVal(result);
+    }
+
+
     if ((l.isBool() || l.isByte() || l.isInt()) &&
         (r.isBool() || r.isByte() || r.isInt())) {
         if (l.isBool() && r.isBool())
@@ -1760,7 +1776,7 @@ Value roxal::band(Value l, Value r)
         return intVal(static_cast<int32_t>(lhs & rhs));
     }
 
-    throw std::invalid_argument("Operands must be bool, byte or int");
+    throw std::invalid_argument("Operands must be bool, byte, int or dict");
 }
 
 Value roxal::bor(Value l, Value r)
@@ -1769,6 +1785,23 @@ Value roxal::bor(Value l, Value r)
         return signalBinaryOp("bor",
                               [](Value a, Value b) { return bor(a, b); },
                               l, r);
+    }
+
+    if (isDict(l) && isDict(r)) {
+        const ObjDict* ld = asDict(l);
+        const ObjDict* rd = asDict(r);
+        ObjDict* result = dictVal();
+
+        auto lkeys = ld->keys();
+        for (const auto& k : lkeys) {
+            result->store(k, ld->at(k));
+        }
+
+        auto rkeys = rd->keys();
+        for (const auto& k : rkeys) {
+            result->store(k, rd->at(k));
+        }
+        return objVal(result);
     }
 
     if ((l.isBool() || l.isByte() || l.isInt()) &&
@@ -1784,7 +1817,7 @@ Value roxal::bor(Value l, Value r)
         return intVal(static_cast<int32_t>(lhs | rhs));
     }
 
-    throw std::invalid_argument("Operands must be bool, byte or int");
+    throw std::invalid_argument("Operands must be bool, byte, int or dict");
 }
 
 Value roxal::bxor(Value l, Value r)

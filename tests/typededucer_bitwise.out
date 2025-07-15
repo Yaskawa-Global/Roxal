@@ -36,4 +36,44 @@ File
  VarDecl f
   UnaryOp ~ 
    Num 4:int
+ VarDecl g
+  BinaryOp | 
+   Dict
+    key:
+     Str "a"
+    value:
+     Num 1:int
+    key:
+     Str "b"
+    value:
+     Num 2:int
+   Dict
+    key:
+     Str "b"
+    value:
+     Num 3:int
+    key:
+     Str "c"
+    value:
+     Num 4:int
+ VarDecl h
+  BinaryOp & 
+   Dict
+    key:
+     Str "a"
+    value:
+     Num 1:int
+    key:
+     Str "b"
+    value:
+     Num 2:int
+   Dict
+    key:
+     Str "b"
+    value:
+     Num 3:int
+    key:
+     Str "c"
+    value:
+     Num 4:int
 

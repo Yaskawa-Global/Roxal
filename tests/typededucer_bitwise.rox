@@ -4,3 +4,5 @@ var c = 5 | 3
 var d = byte(12) ^ byte(10)
 var e = ~byte(1)
 var f = ~4
+var g = {'a':1,'b':2} | {'b':3,'c':4}
+var h = {'a':1,'b':2} & {'b':3,'c':4}
