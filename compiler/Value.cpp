@@ -2200,14 +2200,15 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                 int32_t h; in.read(reinterpret_cast<char*>(&h),4);
                 obj->properties[h] = readValue(in, ctx);
             }
+            Value objValue = objVal(obj); // keep strong ref while starting thread
             auto newThread = std::make_shared<Thread>();
             // Keep the thread alive by registering it with the VM.  Without
             // this the Thread object would be destroyed immediately after
             // deserialization, causing std::terminate since the underlying
             // std::thread is still joinable.
             VM::instance().registerThread(newThread);
-            newThread->act(objVal(obj));
-            return objVal(obj); }
+            newThread->act(objValue);
+            return objValue; }
         case ValueType::Function: {
             auto make = [&](){ return static_cast<Obj*>(newObj<ObjFunction>(__func__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString())); };
             return readObjWithRef(make); }
