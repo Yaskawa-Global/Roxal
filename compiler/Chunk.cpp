@@ -345,10 +345,16 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("ENUMERATION_TYPE", offset);
         case asByte(OpCode::Property):
             return constantInstruction("PROPERTY", offset);
+        case asByte(OpCode::Property2):
+            return constantInstruction2("PROPERTY2", offset);
         case asByte(OpCode::Method):
             return constantInstruction("METHOD", offset);
+        case asByte(OpCode::Method2):
+            return constantInstruction2("METHOD2", offset);
         case asByte(OpCode::EnumLabel):
             return constantInstruction("ENUM_LABEL", offset);
+        case asByte(OpCode::EnumLabel2):
+            return constantInstruction2("ENUM_LABEL2", offset);
         case asByte(OpCode::Extend):
             return simpleInstruction("EXTEND", offset);
         case asByte(OpCode::DefineModuleVar):

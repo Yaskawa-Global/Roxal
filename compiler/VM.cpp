@@ -2350,11 +2350,230 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::GetProp2): {
-                throw std::runtime_error("unimplemented");
+                Value& inst { peek(0) };
+                ObjString* name = readString2();
+
+                // Copy of GetProp handling
+                if (isSignal(inst)) {
+                    auto vt = inst.type();
+                    auto pit = builtinProperties.find(vt);
+                    if (pit != builtinProperties.end()) {
+                        auto propIt = pit->second.find(name->hash);
+                        if (propIt != pit->second.end()) {
+                            const BuiltinPropertyInfo& propInfo = propIt->second;
+                            Value result = (this->*(propInfo.getter))(inst);
+                            pop();
+                            push(result);
+                            break;
+                        }
+                    }
+
+                    auto mit = builtinMethods.find(vt);
+                    if (mit != builtinMethods.end()) {
+                        auto methodIt = mit->second.find(name->hash);
+                        if (methodIt != mit->second.end()) {
+                            const BuiltinMethodInfo& methodInfo = methodIt->second;
+                            ObjBoundNative* bm = boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
+                                                               methodInfo.funcType, methodInfo.defaultValues);
+                            pop();
+                            push(objVal(bm));
+                            break;
+                        }
+                    }
+
+                    runtimeError("Undefined property '"+toUTF8StdString(name->s)+"' for signal.");
+                    return errorReturn;
+                }
+
+                inst.resolve();
+                if (isObjectInstance(inst)) {
+                    ObjectInstance* objInst = asObjectInstance(inst);
+                    auto it = objInst->properties.find(name->hash);
+                    if (it != objInst->properties.end()) {
+                        pop();
+                        push(it->second);
+                        break;
+                    } else {
+                        auto br = bindMethod(objInst->instanceType, name);
+                        if (br == BindResult::Bound)
+                            break;
+                        if (br == BindResult::Private)
+                            return errorReturn;
+
+                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(objInst->instanceType->name)+"'.");
+                        return errorReturn;
+                    }
+                } else if (isActorInstance(inst)) {
+                    ActorInstance* actorInst = asActorInstance(inst);
+                    auto it = actorInst->properties.find(name->hash);
+                    if (it != actorInst->properties.end()) {
+                        pop();
+                        push(it->second);
+                        break;
+                    } else {
+                        auto br = bindMethod(actorInst->instanceType, name);
+                        if (br == BindResult::Bound)
+                            break;
+                        if (br == BindResult::Private)
+                            return errorReturn;
+
+                        auto vt = inst.type();
+                        auto mit = builtinMethods.find(vt);
+                        if (mit != builtinMethods.end()) {
+                            auto methodIt = mit->second.find(name->hash);
+                            if (methodIt != mit->second.end()) {
+                                const BuiltinMethodInfo& methodInfo = methodIt->second;
+                                NativeFn fn = methodInfo.function;
+                                ObjBoundNative* boundNative = boundNativeVal(inst, fn, methodInfo.isProc,
+                                                                              methodInfo.funcType, methodInfo.defaultValues);
+                                pop();
+                                push(objVal(boundNative));
+                                break;
+                            }
+                        }
+
+                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(actorInst->instanceType->name)+"'.");
+                        return errorReturn;
+                    }
+
+                } else if (isEnumType(inst)) {
+                    auto enumObjType = asObjectType(inst);
+                    auto it = enumObjType->enumLabelValues.find(name->hash);
+                    if (it != enumObjType->enumLabelValues.end()) {
+                        pop();
+                        push(it->second.second);
+                        break;
+                    }
+
+                    runtimeError("Undefined enum label '"+toUTF8StdString(name->s)+"' for enum type '"+toUTF8StdString(enumObjType->name)+"'.");
+                    return errorReturn;
+                } else if (isModuleType(inst)) {
+                    auto moduleType = asModuleType(inst);
+
+                    auto optValue { moduleType->vars.load(name->hash) };
+                    if (optValue.has_value()) {
+                        Value value = optValue.value();
+                        pop();
+                        push(value);
+                        break;
+                    } else {
+                        runtimeError("Undefined variable '"+name->toStdString()+"'");
+                        return errorReturn;
+                    }
+                }
+
+                if (inst.isObj()) {
+                    auto vt = inst.type();
+                    auto mit = builtinMethods.find(vt);
+                    if (mit != builtinMethods.end()) {
+                        auto it2 = mit->second.find(name->hash);
+                        if (it2 != mit->second.end()) {
+                            const BuiltinMethodInfo& methodInfo = it2->second;
+                            ObjBoundNative* bm = boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
+                                                               methodInfo.funcType, methodInfo.defaultValues);
+                            pop();
+                            push(objVal(bm));
+                            break;
+                        }
+                    }
+                    auto pit = builtinProperties.find(vt);
+                    if (pit != builtinProperties.end()) {
+                        auto propIt = pit->second.find(name->hash);
+                        if (propIt != pit->second.end()) {
+                            const BuiltinPropertyInfo& propInfo = propIt->second;
+                            Value result = (this->*(propInfo.getter))(inst);
+                            pop();
+                            push(result);
+                            break;
+                        }
+                    }
+                }
+
+                runtimeError("Only object and actor instances have methods and only objects instances have properties.");
+                return errorReturn;
                 break;
             }
             case asByte(OpCode::SetProp2): {
-                throw std::runtime_error("unimplemented");
+                Value& inst { peek(1) };
+                inst.resolve();
+                if (isObjectInstance(inst)) {
+                    ObjectInstance* objInst = asObjectInstance(inst);
+                    ObjString* name = readString2();
+
+                    Value value { peek(0) };
+
+                    if (!value.isNil()) {
+                        bool strictConv = frame->closure->function->strict;
+                        const auto& properties { objInst->instanceType->properties };
+                        const auto& property = properties.find(name->hash);
+                        if (property != properties.end()) {
+                            const auto& prop { property->second };
+                            if (!prop.type.isNil() && isTypeSpec(prop.type)) {
+                                ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
+                                if (typeSpec->typeValue != ValueType::Nil)
+                                    try {
+                                        value = toType(prop.type, value, strictConv);
+                                    } catch(std::exception& e) {
+                                        runtimeError(e.what());
+                                        return errorReturn;
+                                    }
+                            }
+                        }
+                    }
+
+                    objInst->properties[name->hash] = value;
+                    popN(2);
+                    push(value);
+                    break;
+                } else if (isActorInstance(inst)) {
+                    ActorInstance* actorInst = asActorInstance(inst);
+                    ObjString* name = readString2();
+
+                    Value value { peek(0) };
+
+                    if (!value.isNil()) {
+                        bool strictConv = frame->closure->function->strict;
+                        const auto& properties { actorInst->instanceType->properties };
+                        const auto& property = properties.find(name->hash);
+                        if (property != properties.end()) {
+                            const auto& prop { property->second };
+                            if (!prop.type.isNil() && isTypeSpec(prop.type)) {
+                                ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
+                                if (typeSpec->typeValue != ValueType::Nil)
+                                    try {
+                                        value = toType(prop.type, value, strictConv);
+                                    } catch(std::exception& e) {
+                                        runtimeError(e.what());
+                                        return errorReturn;
+                                    }
+                            }
+                        }
+                    }
+
+                    actorInst->properties[name->hash] = value;
+                    popN(2);
+                    push(value);
+                    break;
+                } else if (isModuleType(inst)) {
+                    auto moduleType = asModuleType(inst);
+
+                    ObjString* name = readString2();
+
+                    auto& vars { moduleType->vars };
+
+                    if (vars.exists(name->hash)) {
+                        Value value { peek(0) };
+                        vars.store(name->hash, name->s, value, /*overwrite=*/true);
+                        popN(2);
+                        push(value);
+                    } else {
+                        runtimeError("Declaring new module variables in another module ('"+toUTF8StdString(moduleType->name)+"') is not allowed.");
+                        return errorReturn;
+                    }
+                    break;
+                }
+                runtimeError("Only instances have properties.");
+                return errorReturn;
                 break;
             }
             case asByte(OpCode::GetSuper): {
@@ -3257,6 +3476,15 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
+            case asByte(OpCode::Property2): {
+                try {
+                    defineProperty(readString2());
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
             case asByte(OpCode::Method): {
                 try {
                     defineMethod(readString());
@@ -3266,9 +3494,27 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
+            case asByte(OpCode::Method2): {
+                try {
+                    defineMethod(readString2());
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
             case asByte(OpCode::EnumLabel): {
                 try {
                     defineEnumLabel(readString());
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case asByte(OpCode::EnumLabel2): {
+                try {
+                    defineEnumLabel(readString2());
                 } catch (std::exception& e) {
                     runtimeError(e.what());
                     return errorReturn;

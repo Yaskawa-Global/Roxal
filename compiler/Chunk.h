@@ -101,7 +101,10 @@ enum class OpCode {
     SetupExcept,
     EndExcept,
     Throw,
-    CopyAssign
+    CopyAssign,
+    Property2,
+    Method2,
+    EnumLabel2
 };
 
 inline constexpr uint8_t asByte(OpCode op) { return uint8_t(op); }
