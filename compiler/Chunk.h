@@ -45,6 +45,7 @@ enum class OpCode {
     SetIndex,
     Invoke,
     Closure,
+    Closure2,
     CloseUpvalue,
     Return,
     ReturnStore,

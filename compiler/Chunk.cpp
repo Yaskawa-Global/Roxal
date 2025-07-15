@@ -304,6 +304,23 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
 
             return offset;
         }
+        case asByte(OpCode::Closure2): {
+            offset++;
+            uint16_t constant = (code.at(offset++) << 8) + code.at(offset++);
+            std::cout << format("%-16s %4d ","CLOSURE2", constant);
+            std::cout << toString(constants.at(constant)) << std::endl;
+
+            ObjFunction* function = asFunction(constants.at(constant));
+            for (int j=0; j < function->upvalueCount; j++) {
+                int isLocal = code.at(offset++);
+                int index = code.at(offset++);
+                std::cout << format("%04d      |                     %s %d",
+                                    offset - 2, isLocal ? "local" : "upvalue", index)
+                          << std::endl;
+            }
+
+            return offset;
+        }
         case asByte(OpCode::CloseUpvalue):
             return simpleInstruction("CLOSE_UPVALUE", offset);
         case asByte(OpCode::Return):
