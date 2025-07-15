@@ -2207,6 +2207,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             // deserialization, causing std::terminate since the underlying
             // std::thread is still joinable.
             VM::instance().registerThread(newThread);
+            obj->thread = newThread;
             newThread->act(objValue);
             return objValue; }
         case ValueType::Function: {
