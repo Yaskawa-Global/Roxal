@@ -1,4 +1,5 @@
 #include "FFI.h"
+#include "VM.h"
 
 #include <cstring>
 #include <sstream>
@@ -497,6 +498,15 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                          spec->argTypes.data()) != FFI_OK)
             throw std::runtime_error("ffi_prep_cif failed");
         function->nativeSpec = spec;
+    }
+
+    if (callSpec.argCount != spec->argTypes.size()) {
+        VM::instance().runtimeError("Passed " + std::to_string(callSpec.argCount) +
+                                   " arguments for cfunc " +
+                                   toUTF8StdString(function->name) +
+                                   " which expects " +
+                                   std::to_string(spec->argTypes.size()) + " parameters.");
+        return nilVal();
     }
 
     std::vector<Value> argVector(callSpec.argCount);
