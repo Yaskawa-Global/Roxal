@@ -38,7 +38,7 @@ tests = [
     'module_strict_assign_err', 'func_nonstrict', 'conversions1',
     'serialize_values', 'serialize_objects', 'serialize_user_objects', 'serialize_func', 'serialize_actor',
     'byteops', 'byte_int_bits', 'object_init', 'object_inherit_is',
-    'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'lambda1',
+    'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'closure_many', 'lambda1',
     'conversion1', 'string_interp',
     'call_param_type_nonstrict', 'call_param_type_strict', 'param_assign_static_err',
     'linkedlist', 'structbindassign',

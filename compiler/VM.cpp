@@ -2635,6 +2635,25 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
+            case asByte(OpCode::Closure2): {
+                ObjFunction* function = asFunction(readConstant2());
+                ObjClosure* closure = closureVal(function);
+                if (function->ownerType.isNil() && !frame->closure->function->ownerType.isNil())
+                    function->ownerType = frame->closure->function->ownerType;
+                push(objVal(closure));
+                for (int i = 0; i < closure->upvalues.size(); i++) {
+                    uint8_t isLocal = readByte();
+                    uint8_t index = readByte();
+                    ObjUpvalue* upvalue;
+                    if (isLocal)
+                        upvalue = captureUpvalue(*(frame->slots + index));
+                    else
+                        upvalue = frame->closure->upvalues[index];
+                    upvalue->incRef();
+                    closure->upvalues[i] = upvalue;
+                }
+                break;
+            }
             case asByte(OpCode::CloseUpvalue): {
                 closeUpvalues(&(*(thread->stackTop -1)));
                 pop();

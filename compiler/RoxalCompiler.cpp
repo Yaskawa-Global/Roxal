@@ -301,7 +301,13 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 
                 // emit code to place module's main chunk on stack as closure
                 assert(function->upvalueCount == 0);
-                emitBytes(OpCode::Closure, makeConstant(objVal(function)));
+                {
+                    uint16_t constIdx = makeConstant(objVal(function));
+                    if (constIdx <= 255)
+                        emitBytes(OpCode::Closure, uint8_t(constIdx));
+                    else
+                        emitBytes(OpCode::Closure2, uint8_t(constIdx >> 8), uint8_t(constIdx & 0xff));
+                }
 
                 // call it to have it executed (which will result in module vars being declared)
                 CallSpec callSpec {};
@@ -1031,7 +1037,13 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
     auto fs = *asFuncScope(funcScope());
     exitFuncScope();
 
-    emitBytes(OpCode::Closure, makeConstant(objVal(function)));
+    {
+        uint16_t constIdx = makeConstant(objVal(function));
+        if (constIdx <= 255)
+            emitBytes(OpCode::Closure, uint8_t(constIdx));
+        else
+            emitBytes(OpCode::Closure2, uint8_t(constIdx >> 8), uint8_t(constIdx & 0xff));
+    }
     for (int i = 0; i < function->upvalueCount; i++) {
         emitByte(fs.upvalues[i].isLocal ? 1 : 0);
         emitByte(fs.upvalues[i].index);
@@ -1280,7 +1292,13 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 
     // std::cout << "Closure " << toUTF8StdString(function->name) << ": #" << function->upvalueCount << std::endl;
     // std::cout << "   #" << functionState.upvalues.size() << std::endl;
-    emitBytes(OpCode::Closure, makeConstant(objVal(function)));
+    {
+        uint16_t constIdx = makeConstant(objVal(function));
+        if (constIdx <= 255)
+            emitBytes(OpCode::Closure, uint8_t(constIdx));
+        else
+            emitBytes(OpCode::Closure2, uint8_t(constIdx >> 8), uint8_t(constIdx & 0xff));
+    }
     for (int i = 0; i < function->upvalueCount; i++) {
         #ifdef DEBUG_BUILD
         if (i >= functionScope.upvalues.size())
