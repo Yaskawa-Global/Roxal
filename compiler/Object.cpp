@@ -1292,7 +1292,7 @@ void ObjFunction::write(std::ostream& out, roxal::ptr<SerializationContext> ctx)
         for(const auto& kv : paramDefaultFunc) {
             int32_t key = kv.first;
             out.write(reinterpret_cast<char*>(&key),4);
-            kv.second->write(out);
+            kv.second->write(out, ctx);
         }
     }
 
@@ -1340,7 +1340,7 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     for(uint32_t i=0;i<defCount;i++) {
         int32_t key; in.read(reinterpret_cast<char*>(&key),4);
         auto func = newObj<ObjFunction>(__func__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
-        func->read(in);
+        func->read(in, ctx);
         paramDefaultFunc[key] = func;
     }
 
@@ -1373,14 +1373,19 @@ void ObjClosure::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) 
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Closure);
     out.write(reinterpret_cast<char*>(&tag),1);
-    function->write(out);
+    // Preserve object identity of the referenced function by using the same
+    // serialization context.  Without this we end up creating a new
+    // SerializationContext inside ObjFunction::write which breaks reference
+    // tracking and can lead to infinite recursion when a closure references its
+    // owning type.
+    function->write(out, ctx);
     uint32_t count = upvalues.size();
     out.write(reinterpret_cast<char*>(&count),4);
     for(auto* uv : upvalues) {
         uint8_t present = uv ? 1 : 0;
         out.write(reinterpret_cast<char*>(&present),1);
         if(present)
-            uv->write(out);
+            uv->write(out, ctx);
     }
 }
 
@@ -1392,7 +1397,9 @@ void ObjClosure::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     type = ObjType::Closure;
 
     auto fn = newObj<ObjFunction>(__func__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
-    fn->read(in);
+    // Use the same serialization context so that references from the function
+    // back to this closure's owning structures are properly resolved.
+    fn->read(in, ctx);
     function = fn;
     function->incRef();
 
@@ -1402,7 +1409,7 @@ void ObjClosure::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         uint8_t present; in.read(reinterpret_cast<char*>(&present),1);
         if(present) {
             auto uv = newObj<ObjUpvalue>(__func__, nullptr);
-            uv->read(in);
+            uv->read(in, ctx);
             upvalues[i] = uv;
             uv->incRef();
         }
