@@ -2733,10 +2733,10 @@ void RoxalCompiler::defineVariable(uint16_t moduleVar)
     }
 
     // emit code to define named module scope variable at runtime
-    if (moduleVar > 255) // TODO: remove when DefineModuleVar2 supported
-        throw std::runtime_error("Max of 255 module vars supported");
-
-    emitBytes(OpCode::DefineModuleVar, uint8_t(moduleVar));
+    if (moduleVar <= 255)
+        emitBytes(OpCode::DefineModuleVar, uint8_t(moduleVar));
+    else
+        emitBytes(OpCode::DefineModuleVar2, uint8_t(moduleVar >> 8), uint8_t(moduleVar & 0xff));
 }
 
 
