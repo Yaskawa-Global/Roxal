@@ -538,27 +538,27 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                 argValues[i] = &floatVals[i];
             }
         } else if (spec->argTypes[i] == &ffi_type_sint32) {
-            if (!argVector[i].isNumber())
+            if (!argVector[i].isNumber() && !argVector[i].isEnum())
                 throw std::invalid_argument(funcNameAndArg(i)+" not a number for C int32");
             intVals[i] = argVector[i].asInt();
             argValues[i] = &intVals[i];
         } else if (spec->argTypes[i] == &ffi_type_uint32) {
-            if (!argVector[i].isNumber())
+            if (!argVector[i].isNumber() && !argVector[i].isEnum())
                 throw std::invalid_argument(funcNameAndArg(i)+" not a number for C uint32");
             uint32Vals[i] = uint32_t(argVector[i].asInt());
             argValues[i] = &uint32Vals[i];
         } else if (spec->argTypes[i] == &ffi_type_sint16) {
-            if (!argVector[i].isNumber())
+            if (!argVector[i].isNumber() && !argVector[i].isEnum())
                 throw std::invalid_argument(funcNameAndArg(i)+" not a number for C int16");
             sint16Vals[i] = int16_t(argVector[i].asInt());
             argValues[i] = &sint16Vals[i];
         } else if (spec->argTypes[i] == &ffi_type_uint16) {
-            if (!argVector[i].isNumber())
+            if (!argVector[i].isNumber() && !argVector[i].isEnum())
                 throw std::invalid_argument(funcNameAndArg(i)+" not a number for C uint16");
             uint16Vals[i] = uint16_t(argVector[i].asInt());
             argValues[i] = &uint16Vals[i];
         } else if (spec->argTypes[i] == &ffi_type_sint8) {
-            if (!argVector[i].isNumber())
+            if (!argVector[i].isNumber() && !argVector[i].isEnum())
                 throw std::invalid_argument(funcNameAndArg(i)+" not a number for C int8_t");
             byteVals[i] = uint8_t(int8_t(argVector[i].asInt()));
             argValues[i] = &byteVals[i];
@@ -569,7 +569,7 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                 boolVals[i] = argVector[i].asBool() ? 1 : 0;
                 argValues[i] = &boolVals[i];
             } else {
-                if (!argVector[i].isNumber())
+                if (!argVector[i].isNumber() && !argVector[i].isEnum())
                     throw std::invalid_argument(funcNameAndArg(i)+" not a number for C uint8_t");
                 byteVals[i] = uint8_t(argVector[i].asInt());
                 argValues[i] = &byteVals[i];
