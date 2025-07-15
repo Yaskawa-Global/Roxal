@@ -1608,22 +1608,9 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 }
 void ObjectInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
-    if(!ctx) throw std::runtime_error("ObjectInstance::write without context");
-    auto it = ctx->objToId.find(this);
-    uint8_t flag = 1;
-    uint64_t id;
-    if(it != ctx->objToId.end()) {
-        flag = 0;
-        id = it->second;
-        out.write(reinterpret_cast<char*>(&flag),1);
-        out.write(reinterpret_cast<char*>(&id),8);
-        return;
-    }
-    id = ctx->nextId++;
-    ctx->objToId[this] = id;
-    out.write(reinterpret_cast<char*>(&flag),1);
-    out.write(reinterpret_cast<char*>(&id),8);
-    writeValue(out, Value(instanceType));
+    // Only serialize the object contents here.  Reference tracking is handled
+    // by the calling writeValue() helper.
+    writeValue(out, Value(instanceType), ctx);
     uint32_t count = properties.size();
     out.write(reinterpret_cast<char*>(&count),4);
     for(const auto& kv : properties) {
@@ -1635,21 +1622,11 @@ void ObjectInstance::write(std::ostream& out, roxal::ptr<SerializationContext> c
 
 void ObjectInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
-    if(!ctx) throw std::runtime_error("ObjectInstance::read without context");
-    uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
-    uint64_t id;  in.read(reinterpret_cast<char*>(&id),8);
-    if(flag==0) {
-        auto it = ctx->idToObj.find(id);
-        if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown object ref id");
-        auto* other = static_cast<ObjectInstance*>(it->second);
-        instanceType = other->instanceType; instanceType->incRef();
-        properties = other->properties;
-        return;
-    }
+    // Reference tracking is handled by readValue().  Just read the object
+    // contents here.
     Value typeVal = readValue(in, ctx);
     instanceType = asObjectType(typeVal);
     instanceType->incRef();
-    ctx->idToObj[id] = this;
     uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
     properties.clear();
     for(uint32_t i=0;i<count;i++) {
@@ -1708,19 +1685,8 @@ void ObjBoundNative::read(std::istream& in, roxal::ptr<SerializationContext> ctx
 
 void ActorInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
-    if(!ctx) throw std::runtime_error("ActorInstance::write without context");
-    auto it = ctx->objToId.find(this);
-    uint8_t flag = 1; uint64_t id;
-    if(it != ctx->objToId.end()) {
-        flag = 0; id = it->second;
-        out.write(reinterpret_cast<char*>(&flag),1);
-        out.write(reinterpret_cast<char*>(&id),8);
-        return;
-    }
-    id = ctx->nextId++; ctx->objToId[this] = id;
-    out.write(reinterpret_cast<char*>(&flag),1);
-    out.write(reinterpret_cast<char*>(&id),8);
-    writeValue(out, Value(instanceType));
+    // Only serialize the contents. Reference tracking is handled by writeValue().
+    writeValue(out, Value(instanceType), ctx);
     uint32_t count = properties.size();
     out.write(reinterpret_cast<char*>(&count),4);
     for(const auto& kv : properties) {
@@ -1732,21 +1698,10 @@ void ActorInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ct
 
 void ActorInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
-    if(!ctx) throw std::runtime_error("ActorInstance::read without context");
-    uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
-    uint64_t id; in.read(reinterpret_cast<char*>(&id),8);
-    if(flag==0) {
-        auto it = ctx->idToObj.find(id);
-        if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown actor ref id");
-        auto* other = static_cast<ActorInstance*>(it->second);
-        instanceType = other->instanceType; instanceType->incRef();
-        properties = other->properties;
-        return;
-    }
+    // Only read the contents. Reference tracking is handled by readValue().
     Value typeVal = readValue(in, ctx);
     instanceType = asObjectType(typeVal);
     instanceType->incRef();
-    ctx->idToObj[id] = this;
     uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
     properties.clear();
     for(uint32_t i=0;i<count;i++) {
@@ -1754,6 +1709,8 @@ void ActorInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         Value v = readValue(in, ctx);
         properties[h] = v;
     }
+    auto newThread = std::make_shared<Thread>();
+    newThread->act(objVal(this));
 }
 
 void ObjMatrix::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
