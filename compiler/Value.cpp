@@ -1741,6 +1741,12 @@ Value roxal::lor(Value l, Value r)
 
 Value roxal::band(Value l, Value r)
 {
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("band",
+                              [](Value a, Value b) { return band(a, b); },
+                              l, r);
+    }
+
     if ((l.isBool() || l.isByte() || l.isInt()) &&
         (r.isBool() || r.isByte() || r.isInt())) {
         if (l.isBool() && r.isBool())
@@ -1759,6 +1765,12 @@ Value roxal::band(Value l, Value r)
 
 Value roxal::bor(Value l, Value r)
 {
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("bor",
+                              [](Value a, Value b) { return bor(a, b); },
+                              l, r);
+    }
+
     if ((l.isBool() || l.isByte() || l.isInt()) &&
         (r.isBool() || r.isByte() || r.isInt())) {
         if (l.isBool() && r.isBool())
@@ -1777,6 +1789,12 @@ Value roxal::bor(Value l, Value r)
 
 Value roxal::bxor(Value l, Value r)
 {
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("bxor",
+                              [](Value a, Value b) { return bxor(a, b); },
+                              l, r);
+    }
+
     if ((l.isBool() || l.isByte() || l.isInt()) &&
         (r.isBool() || r.isByte() || r.isInt())) {
         if (l.isBool() && r.isBool())
@@ -1795,6 +1813,10 @@ Value roxal::bxor(Value l, Value r)
 
 Value roxal::bnot(Value v)
 {
+    if (isSignal(v)) {
+        return signalUnaryOp("bnot", [](Value a) { return bnot(a); }, v);
+    }
+
     if (v.isBool())
         return boolVal(!v.asBool());
     if (v.isByte())

@@ -1,0 +1,8 @@
+c = clock(10)
+n = ~c
+c.tick()
+wait(ms=150)
+print(int(n))
+c.tick()
+wait(ms=150)
+print(int(n))
