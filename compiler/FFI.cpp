@@ -1,4 +1,5 @@
 #include "FFI.h"
+#include "VM.h"
 
 #include <cstring>
 #include <sstream>
@@ -499,6 +500,13 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         function->nativeSpec = spec;
     }
 
+    if (callSpec.argCount != spec->argTypes.size()) {
+        throw std::invalid_argument(
+            "Invalid argument count for cfunc " + toUTF8StdString(function->name) +
+            ": expected " + std::to_string(spec->argTypes.size()) +
+            ", got " + std::to_string(callSpec.argCount));
+    }
+
     std::vector<Value> argVector(callSpec.argCount);
     for(size_t i=0;i<callSpec.argCount;i++)
         argVector[i] = args[i];
@@ -727,13 +735,13 @@ void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& pro
 
     if (isArray) {
         if (!isList(val))
-            throw std::runtime_error("ctype array field expects list value");
+            throw std::runtime_error("ctype array field " + toUTF8StdString(prop.name) + " expects list value");
         ObjList* list = asList(val);
         size_t len = list->length();
         for (size_t i = 0; i < arrayLen; ++i) {
             Value elem = (i < len) ? list->elts.at(i) : Value(0);
             if (!writeByNameVal(arrayBase, elem))
-                throw std::runtime_error("unsupported ctype annotation: " + ctypeStr);
+                throw std::runtime_error("unsupported ctype annotation: " + ctypeStr+" for field '"+toUTF8StdString(prop.name)+"'");
         }
         return;
     }
@@ -768,7 +776,11 @@ void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& pro
             auto it = inst->properties.find(subProp.name.hashCode());
             if (it == inst->properties.end())
                 throw std::runtime_error("instance missing property in nested struct");
-            marshalProperty(it->second, subProp, ptrSize, buffer, offset, nestedAlign, stringStore, ctx);
+            try {
+                marshalProperty(it->second, subProp, ptrSize, buffer, offset, nestedAlign, stringStore, ctx);
+            } catch (const std::runtime_error& e) {
+                throw std::runtime_error("Error marshalling nested struct property '" + toUTF8StdString(subProp.name) + "' of type " + toString(subProp.type) + ": " + e.what());
+            }
         }
         size_t finalPad = (nestedAlign - ((offset - startOffset) % nestedAlign)) % nestedAlign;
         buffer.insert(buffer.end(), finalPad, 0);
@@ -781,7 +793,7 @@ void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& pro
 
     if (!ctypeStr.empty()) {
         if (!writeByName(ctypeStr))
-            throw std::runtime_error("unsupported ctype annotation: " + ctypeStr);
+            throw std::runtime_error("unsupported ctype annotation: " + ctypeStr + " for field '" + toUTF8StdString(prop.name) + "'");
         return;
     }
 
@@ -944,7 +956,7 @@ std::vector<uint8_t> roxal::objectToCStruct(ObjectInstance* instance, std::vecto
 
     ObjObjectType* type = instance->instanceType;
     if (!type->isCStruct)
-        throw std::runtime_error("objectToCStruct called on non-cstruct type");
+        throw std::runtime_error("cannot convert non-cstruct type "+toUTF8StdString(type->name)+" to a cstruct");
 
     std::vector<uint8_t> buffer;
     size_t ptrSize = (type->cstructArch==64)?8:4;
@@ -958,7 +970,11 @@ std::vector<uint8_t> roxal::objectToCStruct(ObjectInstance* instance, std::vecto
         auto it = instance->properties.find(prop.name.hashCode());
         if (it == instance->properties.end())
             throw std::runtime_error("instance missing property in objectToCStruct");
-        marshalProperty(it->second, prop, ptrSize, buffer, offset, structAlign, stringStore, ctx);
+        try {
+            marshalProperty(it->second, prop, ptrSize, buffer, offset, structAlign, stringStore, ctx);
+        } catch (const std::exception& e) {
+            throw std::runtime_error("Error marshalling type '"+toUTF8StdString(type->name)+"': " + e.what());
+        }
     }
 
     size_t finalPad = (structAlign - (buffer.size() % structAlign)) % structAlign;
