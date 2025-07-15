@@ -123,6 +123,11 @@ public:
                       bool includeReceiver = false,
                       const Value& receiver = nilVal());
 
+    // Expose a simple helper to keep track of active threads.  Actor
+    // deserialization needs this to prevent the thread object from being
+    // destroyed immediately after creation.
+    inline void registerThread(ptr<Thread> t) { threads.store(t->id(), t); }
+
 
     const int MaxStack = 1024;
     typedef std::vector<Value> ValueStack;
