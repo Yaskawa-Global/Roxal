@@ -1332,6 +1332,8 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     uint8_t ft; in.read(reinterpret_cast<char*>(&ft),1); fnType = static_cast<FunctionType>(ft);
 
     ownerType = readValue(in, ctx);
+    if(!ownerType.isNil())
+        ownerType = ownerType.weakRef();
 
     uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1); access = static_cast<ast::Access>(acc);
 
