@@ -492,8 +492,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         auto propName { prop->name };
         int16_t propNameConstant = identifierConstant(propName);
-        if (propNameConstant >= 255)
-            error("Too many properties for one actor or object type.");
+        OpCode propOp = (propNameConstant <= 255) ? OpCode::Property : OpCode::Property2;
 
         // record property name for implicit access within methods
         asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name};
@@ -550,7 +549,11 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         emitByte(prop->access == Access::Private ? OpCode::ConstTrue : OpCode::ConstFalse);
 
-        emitBytes(OpCode::Property, uint8_t(propNameConstant), "property "+toUTF8StdString(propName));
+        if (propNameConstant <= 255)
+            emitBytes(propOp, uint8_t(propNameConstant), "property "+toUTF8StdString(propName));
+        else
+            emitBytes(propOp, uint8_t(propNameConstant>>8), uint8_t(propNameConstant&0xff),
+                     "property "+toUTF8StdString(propName));
 
     } // properties
 
@@ -563,12 +566,15 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         auto methodName { func->name.value() };
         asTypeScope(typeScope())->propertyNames[methodName] = {func->access, ast->name};
         int16_t methodNameConstant = identifierConstant(methodName);
-        if (methodNameConstant >= 255)
-            error("Too many methods for one actor or object type.");
+        OpCode methodOp = (methodNameConstant <= 255) ? OpCode::Method : OpCode::Method2;
 
         func->accept(*this);
 
-        emitBytes(OpCode::Method, uint8_t(methodNameConstant), "method "+toUTF8StdString(methodName));
+        if (methodNameConstant <= 255)
+            emitBytes(methodOp, uint8_t(methodNameConstant), "method "+toUTF8StdString(methodName));
+        else
+            emitBytes(methodOp, uint8_t(methodNameConstant>>8), uint8_t(methodNameConstant&0xff),
+                     "method "+toUTF8StdString(methodName));
     }
 
 
@@ -584,8 +590,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
             auto labelName { enumLabel.first };
             int16_t propNameConstant = identifierConstant(labelName);
-            if (propNameConstant >= 255)
-                error("Too many enum labels for one enum type.");
+            OpCode labelOp = (propNameConstant <= 255) ? OpCode::EnumLabel : OpCode::EnumLabel2;
 
             assert(enumLabel.second->type.has_value());
             auto valType { enumLabel.second->type.value() };
@@ -607,7 +612,11 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
             emitConstant(value);
 
-            emitBytes(OpCode::EnumLabel, uint8_t(propNameConstant), "enum value "+toUTF8StdString(labelName));
+            if (propNameConstant <= 255)
+                emitBytes(labelOp, uint8_t(propNameConstant), "enum value "+toUTF8StdString(labelName));
+            else
+                emitBytes(labelOp, uint8_t(propNameConstant>>8), uint8_t(propNameConstant&0xff),
+                         "enum value "+toUTF8StdString(labelName));
         }
     }
 
