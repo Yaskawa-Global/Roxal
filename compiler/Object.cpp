@@ -1717,6 +1717,11 @@ void ActorInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         properties[h] = v;
     }
     auto newThread = std::make_shared<Thread>();
+    // Keep the thread alive by registering it with the VM. Without this the
+    // Thread object would be destroyed immediately after deserialization,
+    // causing std::terminate since the underlying std::thread is still
+    // joinable.
+    VM::instance().registerThread(newThread);
     newThread->act(objVal(this));
 }
 
