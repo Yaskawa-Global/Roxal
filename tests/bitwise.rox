@@ -1,0 +1,6 @@
+print(true & false)
+print(byte(5) & byte(3))
+print(5 | 3)
+print(byte(12) ^ byte(10))
+print(~byte(1))
+print(~4)

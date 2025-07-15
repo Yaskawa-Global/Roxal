@@ -2530,6 +2530,50 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
+            case asByte(OpCode::BitAnd): {
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
+                try {
+                    binaryOp([](Value a, Value b) -> Value { return band(a,b); });
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case asByte(OpCode::BitOr): {
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
+                try {
+                    binaryOp([](Value a, Value b) -> Value { return bor(a,b); });
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case asByte(OpCode::BitXor): {
+                peek(0).resolveFuture();
+                peek(1).resolveFuture();
+                try {
+                    binaryOp([](Value a, Value b) -> Value { return bxor(a,b); });
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case asByte(OpCode::BitNot): {
+                Value& operand { peek(0) };
+                operand.resolveFuture();
+                try {
+                    push(bnot(pop()));
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
             case asByte(OpCode::Pop): {
                 pop();
                 break;

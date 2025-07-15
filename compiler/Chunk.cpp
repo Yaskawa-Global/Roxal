@@ -247,6 +247,14 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("AND", offset);
         case asByte(OpCode::Or):
             return simpleInstruction("OR", offset);
+        case asByte(OpCode::BitAnd):
+            return simpleInstruction("BIT_AND", offset);
+        case asByte(OpCode::BitOr):
+            return simpleInstruction("BIT_OR", offset);
+        case asByte(OpCode::BitXor):
+            return simpleInstruction("BIT_XOR", offset);
+        case asByte(OpCode::BitNot):
+            return simpleInstruction("BIT_NOT", offset);
         case asByte(OpCode::Pop):
             return simpleInstruction("POP", offset);
         case asByte(OpCode::PopN):

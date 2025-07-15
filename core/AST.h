@@ -519,6 +519,7 @@ struct BinaryOp : public Expression {
         None,
         Add, Subtract, Multiply, Divide, Modulo,
         And, Or,
+        BitAnd, BitOr, BitXor,
         Equal, NotEqual, Is,
         LessThan, GreaterThan, LessOrEqual, GreaterOrEqual
     };
@@ -543,6 +544,7 @@ struct UnaryOp : public Expression {
     enum Op {
         None,
         Negate, Not,
+        BitNot,
         Accessor
     };
 

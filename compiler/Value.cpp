@@ -1739,6 +1739,75 @@ Value roxal::lor(Value l, Value r)
 }
 
 
+Value roxal::band(Value l, Value r)
+{
+    if ((l.isBool() || l.isByte() || l.isInt()) &&
+        (r.isBool() || r.isByte() || r.isInt())) {
+        if (l.isBool() && r.isBool())
+            return boolVal(l.asBool() & r.asBool());
+
+        if (l.isByte() && r.isByte())
+            return byteVal(l.asByte(false) & r.asByte(false));
+
+        uint32_t lhs = static_cast<uint32_t>(toType(ValueType::Int, l, false).asInt());
+        uint32_t rhs = static_cast<uint32_t>(toType(ValueType::Int, r, false).asInt());
+        return intVal(static_cast<int32_t>(lhs & rhs));
+    }
+
+    throw std::invalid_argument("Operands must be bool, byte or int");
+}
+
+Value roxal::bor(Value l, Value r)
+{
+    if ((l.isBool() || l.isByte() || l.isInt()) &&
+        (r.isBool() || r.isByte() || r.isInt())) {
+        if (l.isBool() && r.isBool())
+            return boolVal(l.asBool() | r.asBool());
+
+        if (l.isByte() && r.isByte())
+            return byteVal(l.asByte(false) | r.asByte(false));
+
+        uint32_t lhs = static_cast<uint32_t>(toType(ValueType::Int, l, false).asInt());
+        uint32_t rhs = static_cast<uint32_t>(toType(ValueType::Int, r, false).asInt());
+        return intVal(static_cast<int32_t>(lhs | rhs));
+    }
+
+    throw std::invalid_argument("Operands must be bool, byte or int");
+}
+
+Value roxal::bxor(Value l, Value r)
+{
+    if ((l.isBool() || l.isByte() || l.isInt()) &&
+        (r.isBool() || r.isByte() || r.isInt())) {
+        if (l.isBool() && r.isBool())
+            return boolVal(l.asBool() ^ r.asBool());
+
+        if (l.isByte() && r.isByte())
+            return byteVal(l.asByte(false) ^ r.asByte(false));
+
+        uint32_t lhs = static_cast<uint32_t>(toType(ValueType::Int, l, false).asInt());
+        uint32_t rhs = static_cast<uint32_t>(toType(ValueType::Int, r, false).asInt());
+        return intVal(static_cast<int32_t>(lhs ^ rhs));
+    }
+
+    throw std::invalid_argument("Operands must be bool, byte or int");
+}
+
+Value roxal::bnot(Value v)
+{
+    if (v.isBool())
+        return boolVal(!v.asBool());
+    if (v.isByte())
+        return byteVal(~v.asByte(false));
+    if (v.isInt()) {
+        uint32_t val = static_cast<uint32_t>(v.asInt());
+        return intVal(static_cast<int32_t>(~val));
+    }
+
+    throw std::invalid_argument("Operand must be bool, byte or int");
+}
+
+
 
 Value roxal::greater(Value l, Value r)
 {
