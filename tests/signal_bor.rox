@@ -1,0 +1,8 @@
+c = clock(10)
+o = c | 1
+c.tick()
+wait(ms=200)
+print(int(o))
+c.tick()
+wait(ms=200)
+print(int(o))
