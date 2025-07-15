@@ -72,17 +72,20 @@ Signals can be sampled to yield their current value at any time on any thread, e
 
 ## Serialization
 
-Values can be persisted by serializing them to a binary stream via the `write()`
-and `read()` methods. Primitive by-value types are written directly, while
-reference types delegate to their corresponding `Obj` subclasses.  In order to
-support shared references and cyclic graphs when serializing object and actor
-instances, each instance will be assigned a unique `uint64_t` identifier during
-serialization.  The serializer maintains a map from object pointers to these
-identifiers.  When an instance is encountered for the first time its full
-contents are written along with its id; subsequent references only emit the id,
-avoiding duplication.
+Values are persisted using the `Value::write` and `Value::read` helpers, which
+implement the VM's binary format.  Primitive types are written directly, while
+reference types delegate to their specific `Obj` subclass implementation.  The
+built‑in `serialize(value)` function returns this binary representation as a
+`list` of bytes and `deserialize(bytes)` performs the inverse operation.
 
-During deserialization the process is reversed.  A map of ids to newly created
-instances ensures that references resolve to the same object even when cycles
-are present.  Actor instances only persist their declared properties—runtime
-queues or threads are reinitialised when the instance is restored.
+To retain object identity and support cycles, a `SerializationContext` is passed
+through the write/read calls.  Each object pointer is assigned a unique
+64‑bit identifier.  The first time an object is seen its id and full contents
+are written and recorded in the context; subsequent references emit only the id
+flagged as an existing instance.
+
+Deserialization reverses this process, reconstructing objects from the id map so
+that shared references and cycles are preserved.  Actor instances only persist
+their declared properties—runtime queues and threads are reinitialised when the
+actor is restored.  Functions and closures serialise their `Chunk` bytecode and
+captured upvalues so they can be executed after being deserialised.
