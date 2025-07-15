@@ -706,7 +706,7 @@ void CallSpec::testParamPositions()
 }
 #endif
 
-void Chunk::serialize(std::ostream& out) const
+void Chunk::serialize(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     auto writeUS = [&](const icu::UnicodeString& us) {
         std::string s; us.toUTF8String(s);
@@ -727,7 +727,7 @@ void Chunk::serialize(std::ostream& out) const
     uint32_t constCount = constants.size();
     out.write(reinterpret_cast<char*>(&constCount), 4);
     for(const auto& v : constants)
-        writeValue(out, v);
+        writeValue(out, v, ctx);
 
     uint32_t lineCount = lineTable.size();
     out.write(reinterpret_cast<char*>(&lineCount), 4);
@@ -741,7 +741,7 @@ void Chunk::serialize(std::ostream& out) const
     }
 }
 
-void Chunk::deserialize(std::istream& in)
+void Chunk::deserialize(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     auto readUS = [&]() {
         uint32_t len; in.read(reinterpret_cast<char*>(&len), 4);
@@ -762,7 +762,7 @@ void Chunk::deserialize(std::istream& in)
     uint32_t constCount; in.read(reinterpret_cast<char*>(&constCount), 4);
     constants.clear();
     for(uint32_t i=0;i<constCount;i++)
-        constants.push_back(readValue(in));
+        constants.push_back(readValue(in, ctx));
 
     uint32_t lineCount; in.read(reinterpret_cast<char*>(&lineCount), 4);
     lineTable.clear();

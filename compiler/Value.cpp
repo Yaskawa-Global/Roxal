@@ -19,29 +19,6 @@
 
 
 namespace roxal {
-static thread_local ptr<SerializationContext> writeCtx = nullptr;
-static thread_local int writeDepth = 0;
-static thread_local ptr<SerializationContext> readCtx = nullptr;
-static thread_local int readDepth = 0;
-
-SerializationContext* serializationWriteContext() { return writeCtx.get(); }
-SerializationContext* serializationReadContext() { return readCtx.get(); }
-void enterWriteContext() {
-    if(writeDepth==0) writeCtx = make_ptr<SerializationContext>();
-    writeDepth++;
-}
-void exitWriteContext() {
-    writeDepth--;
-    if(writeDepth==0) { writeCtx = nullptr; }
-}
-void enterReadContext() {
-    if(readDepth==0) readCtx = make_ptr<SerializationContext>();
-    readDepth++;
-}
-void exitReadContext() {
-    readDepth--;
-    if(readDepth==0) { readCtx = nullptr; }
-}
 } // namespace roxal
 
 
@@ -785,9 +762,10 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
     {
         try {
             std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
-            writeValue(ss, v);
+            auto ctx = make_ptr<SerializationContext>();
+            writeValue(ss, v, ctx);
             ss.seekg(0);
-            Value read = readValue(ss);
+            Value read = readValue(ss, ctx);
             bool pass = false;
 
             if (isRange(v) && isRange(read)) {
@@ -1882,24 +1860,42 @@ std::ostream& roxal::operator<<(std::ostream& out, const Value& v)
     return out;
 }
 
-void roxal::writeValue(std::ostream& out, const Value& v)
+void roxal::writeValue(std::ostream& out, const Value& v, roxal::ptr<SerializationContext> ctx)
 {
-    enterWriteContext();
-    auto guard = std::unique_ptr<int, std::function<void(int*)>>(new int(0), [](int*){ exitWriteContext(); });
+    bool useCtx = ctx != nullptr;
+    auto localCtx = make_ptr<SerializationContext>();
+    if(!ctx) ctx = localCtx;
     if (isForeignPtr(v))
         throw std::runtime_error("Cannot serialize foreign pointers");
 
     if (isFuture(v)) {
         Value resolved = v;
         resolved.resolveFuture();
-        writeValue(out, resolved);
+        writeValue(out, resolved, ctx);
         return;
     }
+
+    auto writeObjWithRef = [&](Obj* o){
+        uint8_t flag = 1;
+        uint64_t id = 0;
+        if(useCtx) {
+            auto it = ctx->objToId.find(o);
+            if(it != ctx->objToId.end()) {
+                flag = 0; id = it->second;
+            } else {
+                flag = 1; id = ctx->nextId++; ctx->objToId[o] = id;
+            }
+        }
+        out.write(reinterpret_cast<char*>(&flag),1);
+        out.write(reinterpret_cast<char*>(&id),8);
+        if(flag==1)
+            o->write(out, ctx);
+    };
 
     if (v.isBoxed()) {
         uint8_t type = static_cast<uint8_t>(ValueType::Boxed);
         out.write(reinterpret_cast<char*>(&type), 1);
-        v.asObj()->write(out);
+        writeObjWithRef(v.asObj());
         return;
     }
 
@@ -1933,7 +1929,7 @@ void roxal::writeValue(std::ostream& out, const Value& v)
             break; }
         case ValueType::Type:
             if (v.isObj())
-                v.asObj()->write(out);
+                v.asObj()->write(out, ctx);
             else {
                 uint8_t tv = static_cast<uint8_t>(v.asType());
                 out.write(reinterpret_cast<char*>(&tv),1);
@@ -1945,35 +1941,46 @@ void roxal::writeValue(std::ostream& out, const Value& v)
         case ValueType::Dict:
         case ValueType::Vector:
         case ValueType::Matrix:
-            v.asObj()->write(out);
-            break;
         case ValueType::Object:
         case ValueType::Actor:
-            v.asObj()->write(out);
-            break;
         case ValueType::Function:
         case ValueType::Closure:
         case ValueType::Upvalue:
-            v.asObj()->write(out);
+            writeObjWithRef(v.asObj());
             break;
         default:
             throw std::runtime_error("writeValue: unsupported type " + v.typeName());
     }
 }
 
-Value roxal::readValue(std::istream& in)
+Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
-    enterReadContext();
-    auto guard = std::unique_ptr<int, std::function<void(int*)>>(new int(0), [](int*){ exitReadContext(); });
+    bool useCtx = ctx != nullptr;
+    auto localCtx = make_ptr<SerializationContext>();
+    if(!ctx) ctx = localCtx;
     uint8_t typeByte;
     if(!in.read(reinterpret_cast<char*>(&typeByte),1))
         throw std::runtime_error("readValue: unable to read type");
     ValueType t = static_cast<ValueType>(typeByte);
 
+    auto readObjWithRef = [&](auto objMaker){
+        uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
+        uint64_t id;  in.read(reinterpret_cast<char*>(&id),8);
+        Obj* obj = nullptr;
+        if(useCtx && flag==0){
+            auto it = ctx->idToObj.find(id);
+            if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown object ref id");
+            return Value(objVal(it->second));
+        }
+        obj = objMaker();
+        if(useCtx) ctx->idToObj[id] = obj;
+        obj->read(in, ctx);
+        return Value(objVal(obj));
+    };
+
     if (t == ValueType::Boxed) {
-        auto obj = newObj<ObjPrimitive>(__func__, false);
-        obj->read(in);
-        return objVal(obj);
+        auto make = [&](){ return static_cast<Obj*>(newObj<ObjPrimitive>(__func__, false)); };
+        return readObjWithRef(make);
     }
 
     switch(t) {
@@ -2004,94 +2011,83 @@ Value roxal::readValue(std::istream& in)
                 in.putback(static_cast<char>(subType));
                 if (tv == ValueType::Object || tv == ValueType::Actor || tv == ValueType::Enum) {
                     auto obj = newObj<ObjObjectType>(__func__, icu::UnicodeString(), false, false, false);
-                    obj->read(in);
+                    obj->read(in, ctx);
                     return objVal(obj);
                 } else { // Module
                     auto obj = newObj<ObjModuleType>(__func__, icu::UnicodeString());
-                    obj->read(in);
+                    obj->read(in, ctx);
                     return objVal(obj);
                 }
             }
             return typeVal(tv);
         }
         case ValueType::String: {
-            auto obj = newObj<ObjString>(__func__);
-            obj->read(in);
-            return objVal(obj); }
+            auto make = [&](){ return static_cast<Obj*>(newObj<ObjString>(__func__)); };
+            return readObjWithRef(make); }
         case ValueType::Range: {
-            auto obj = newObj<ObjRange>(__func__);
-            obj->read(in);
-            return objVal(obj); }
+            auto make = [&](){ return static_cast<Obj*>(newObj<ObjRange>(__func__)); };
+            return readObjWithRef(make); }
         case ValueType::List: {
-            auto obj = newObj<ObjList>(__func__);
-            obj->read(in);
-            return objVal(obj); }
+            auto make = [&](){ return static_cast<Obj*>(newObj<ObjList>(__func__)); };
+            return readObjWithRef(make); }
         case ValueType::Dict: {
-            auto obj = newObj<ObjDict>(__func__);
-            obj->read(in);
-            return objVal(obj); }
+            auto make = [&](){ return static_cast<Obj*>(newObj<ObjDict>(__func__)); };
+            return readObjWithRef(make); }
         case ValueType::Vector: {
-            auto obj = newObj<ObjVector>(__func__);
-            obj->read(in);
-            return objVal(obj); }
+            auto make = [&](){ return static_cast<Obj*>(newObj<ObjVector>(__func__)); };
+            return readObjWithRef(make); }
         case ValueType::Matrix: {
-            auto obj = newObj<ObjMatrix>(__func__);
-            obj->read(in);
-            return objVal(obj); }
+            auto make = [&](){ return static_cast<Obj*>(newObj<ObjMatrix>(__func__)); };
+            return readObjWithRef(make); }
         case ValueType::Object: {
             uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
-            uint64_t id; in.read(reinterpret_cast<char*>(&id),8);
-            auto* ctx = serializationReadContext();
-            if(flag==0) {
+            uint64_t id;  in.read(reinterpret_cast<char*>(&id),8);
+            if(useCtx && flag==0) {
                 auto it = ctx->idToObj.find(id);
                 if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown object ref id");
                 return objVal(it->second);
             }
-            Value typeVal = readValue(in);
+            Value typeVal = readValue(in, ctx);
             ObjObjectType* t = asObjectType(typeVal);
             ObjectInstance* obj = objectInstanceVal(t);
-            ctx->idToObj[id] = obj;
+            if(useCtx) ctx->idToObj[id] = obj;
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
             obj->properties.clear();
             for(uint32_t i=0;i<count;i++) {
                 int32_t h; in.read(reinterpret_cast<char*>(&h),4);
-                obj->properties[h] = readValue(in);
+                obj->properties[h] = readValue(in, ctx);
             }
             return objVal(obj); }
         case ValueType::Actor: {
             uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
-            uint64_t id; in.read(reinterpret_cast<char*>(&id),8);
-            auto* ctx = serializationReadContext();
-            if(flag==0) {
+            uint64_t id;  in.read(reinterpret_cast<char*>(&id),8);
+            if(useCtx && flag==0) {
                 auto it = ctx->idToObj.find(id);
                 if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown actor ref id");
                 return objVal(it->second);
             }
-            Value typeVal = readValue(in);
+            Value typeVal = readValue(in, ctx);
             ObjObjectType* t = asObjectType(typeVal);
             ActorInstance* obj = actorInstanceVal(t);
-            ctx->idToObj[id] = obj;
+            if(useCtx) ctx->idToObj[id] = obj;
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
             obj->properties.clear();
             for(uint32_t i=0;i<count;i++) {
                 int32_t h; in.read(reinterpret_cast<char*>(&h),4);
-                obj->properties[h] = readValue(in);
+                obj->properties[h] = readValue(in, ctx);
             }
             auto newThread = std::make_shared<Thread>();
             newThread->act(objVal(obj));
             return objVal(obj); }
         case ValueType::Function: {
-            auto obj = newObj<ObjFunction>(__func__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
-            obj->read(in);
-            return objVal(obj); }
+            auto make = [&](){ return static_cast<Obj*>(newObj<ObjFunction>(__func__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString())); };
+            return readObjWithRef(make); }
         case ValueType::Closure: {
-            auto obj = newObj<ObjClosure>(__func__, nullptr);
-            obj->read(in);
-            return objVal(obj); }
+            auto make = [&](){ return static_cast<Obj*>(newObj<ObjClosure>(__func__, nullptr)); };
+            return readObjWithRef(make); }
         case ValueType::Upvalue: {
-            auto obj = newObj<ObjUpvalue>(__func__, nullptr);
-            obj->read(in);
-            return objVal(obj); }
+            auto make = [&](){ return static_cast<Obj*>(newObj<ObjUpvalue>(__func__, nullptr)); };
+            return readObjWithRef(make); }
         default:
             throw std::runtime_error("readValue: unsupported type " + std::to_string(static_cast<int>(t)));
     }

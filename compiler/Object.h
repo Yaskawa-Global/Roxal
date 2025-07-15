@@ -92,8 +92,8 @@ struct Obj {
 
     Obj* clone() const; // deep copy
 
-    virtual void write(std::ostream& out) const = 0;
-    virtual void read(std::istream& in) = 0;
+    virtual void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const = 0;
+    virtual void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) = 0;
 
     inline void incRef()
     {
@@ -233,8 +233,8 @@ struct ObjPrimitive : public Obj
         ValueType btype;
     } as;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isObjPrimitive(const Value& v)
@@ -283,8 +283,8 @@ struct ObjString : public Obj
     // number of 16bit Unicode code units
     int32_t length() const { return s.length(); }
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     // Elements are Unicode code units (not code points or characters)
     Value index(const Value& i) const;
@@ -321,8 +321,8 @@ struct ObjRange : public Obj
     Value step;
     bool closed;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     // length can depend on target length due to use of -ve offsets from end
     int32_t length(int32_t targetLen) const;
@@ -376,8 +376,8 @@ struct ObjList : public Obj
 
     atomic_vector<Value> elts;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 
@@ -457,8 +457,8 @@ private:
     std::map<Value,Value,ValueComparitor> entries;
 
 public:
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 
@@ -494,8 +494,8 @@ struct ObjVector : public Obj
 
     Eigen::VectorXd vec;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isVector(const Value& v) { return isObjType(v, ObjType::Vector); }
@@ -539,8 +539,8 @@ struct ObjMatrix : public Obj
 
     Eigen::MatrixXd mat;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isMatrix(const Value& v) { return isObjType(v, ObjType::Matrix); }
@@ -563,8 +563,8 @@ struct ObjSignal : public Obj {
     ptr<df::Signal> signal;
     Value changeEvent;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isSignal(const Value& v) { return isObjType(v, ObjType::Signal); }
@@ -584,8 +584,8 @@ struct ObjEvent : public Obj {
     // list of subscribed handler closures (weak references)
     std::vector<Value> subscribers;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isEvent(const Value& v) { return isObjType(v, ObjType::Event); }
@@ -603,8 +603,8 @@ struct ObjLibrary : public Obj {
     virtual ~ObjLibrary();
     void* handle;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isLibrary(const Value& v) { return isObjType(v, ObjType::Library); }
@@ -621,8 +621,8 @@ struct ObjForeignPtr : public Obj {
     virtual ~ObjForeignPtr() {}
     void* ptr;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isForeignPtr(const Value& v) { return isObjType(v, ObjType::ForeignPtr); }
@@ -646,8 +646,8 @@ struct ObjException : public Obj {
 
     Value stackTrace; // list of stack frames when raised
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isException(const Value& v) { return isObjType(v, ObjType::Exception); }
@@ -700,8 +700,8 @@ struct ObjFunction : public Obj
 
     Value moduleType; // ObjModuleType
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isFunction(const Value& v) { return isObjType(v, ObjType::Function); }
@@ -737,8 +737,8 @@ struct ObjUpvalue : public Obj {
     Value* location;
     Value closed;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isUpvalue(const Value& v) { return isObjType(v, ObjType::Upvalue); }
@@ -784,8 +784,8 @@ struct ObjClosure : public Obj
     // thread expected to execute this closure when used as an event handler
     std::weak_ptr<Thread> handlerThread;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isClosure(const Value& v) { return isObjType(v, ObjType::Closure); }
@@ -826,8 +826,8 @@ struct ObjFuture : public Obj
 
     std::shared_future<Value> future;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isFuture(const Value& v) { return isObjType(v, ObjType::Future); }
@@ -868,8 +868,8 @@ struct ObjNative : public Obj
     ptr<roxal::type::Type> funcType;
     std::vector<Value> defaultValues;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isNative(const Value& v) { return isObjType(v, ObjType::Native); }
@@ -897,8 +897,8 @@ struct ObjTypeSpec : public Obj
 
     ValueType typeValue;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isTypeSpec(const Value& v) { return isObjType(v,ObjType::Type); }
@@ -962,8 +962,8 @@ struct ObjObjectType : public ObjTypeSpec
     //  TODO: make thread safe?
     static std::unordered_map<uint16_t, ObjObjectType*> enumTypes;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 
@@ -979,8 +979,8 @@ struct ObjPackageType : public ObjTypeSpec
 {
     // TODO
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 struct ObjModuleType : public ObjTypeSpec
@@ -1001,8 +1001,8 @@ struct ObjModuleType : public ObjTypeSpec
 
     static atomic_vector<ObjModuleType*> allModules;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isModuleType(const Value& v) { return isObjType(v, ObjType::Type) && (asTypeSpec(v)->typeValue == ValueType::Module); }
@@ -1025,8 +1025,8 @@ struct ObjectInstance : public Obj
     ObjObjectType* instanceType;
     std::unordered_map<int32_t, Value> properties;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isObjectInstance(const Value& v) { return isObjType(v, ObjType::Instance); }
@@ -1070,8 +1070,8 @@ struct ActorInstance : public Obj
     std::thread::id thread_id;
     std::weak_ptr<Thread> thread;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isActorInstance(const Value& v) { return isObjType(v, ObjType::Actor); }
@@ -1092,8 +1092,8 @@ struct ObjBoundMethod : public Obj
     Value receiver;
     ObjClosure* method;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isBoundMethod(const Value& v) { return isObjType(v, ObjType::BoundMethod); }
@@ -1127,8 +1127,8 @@ struct ObjBoundNative : public Obj
     ptr<roxal::type::Type> funcType;
     std::vector<Value> defaultValues;
 
-    void write(std::ostream& out) const override;
-    void read(std::istream& in) override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isBoundNative(const Value& v) { return isObjType(v, ObjType::BoundNative); }
