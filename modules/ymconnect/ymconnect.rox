@@ -348,8 +348,9 @@ proc test(ip :string):
   pvar_data.positionData.figure = figure_t()
   status = robot_position_variable_interface_read(controller,10,pvar_data)
   raiseIfNotOk(status,'robot_position_variable_interface_read')
-  print(dict(pvar_data))
-  print(dict(pvar_data.positionData))
+  if pvar_data.variableIndex != 10:
+    raise ProgramException("read back P10 didn't contain the right index")
+  print(""+dict(pvar_data)+" "+dict(pvar_data.positionData))
 
 
 

@@ -47,6 +47,9 @@ public:
     void detach();
     void wake();
 
+    // is this thread associated with an actor instance?
+    bool isActorThread() const { return actor; }
+
     void push(const Value& value);
     Value pop();
     void popN(size_t n);
