@@ -217,6 +217,10 @@ Value Signal::valueAtIndex(int index) const
 
     TimePoint lastTime = values.rbegin()->first;
     TimePoint t = lastTime - m_period * stepsBack;
+    // If t predates the earliest recorded value, return the
+    // initial value instead of throwing an exception.
+    if (t < values.begin()->first)
+        return values.begin()->second;
 
     return valueAt(t);
 }
@@ -241,6 +245,10 @@ ptr<Signal> Signal::indexedSignal(int index)
     // desired index on FuncInputInfo.  Here we emulate that behaviour by
     // generating a separate Signal updated whenever the source updates.
     auto newSig = std::shared_ptr<Signal>(new Signal(m_frequency, initial, m_name + "[" + std::to_string(index) + "]"));
+    // Indexed signals are derived from an existing signal and are neither
+    // clocks nor source signals themselves.
+    newSig->isClock = false;
+    newSig->isSource = false;
     newSig->setMaxHistoryPeriods(std::max(m_maxHistoryPeriods, -index + 1));
 
     std::weak_ptr<Signal> weakNew = newSig;
