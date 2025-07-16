@@ -4512,9 +4512,18 @@ Value VM::deserialize_builtin(int argCount, Value* args)
     data.reserve(lst->length());
     for(int i=0;i<lst->length();i++) {
         Value v = lst->elts.at(i);
-        if(!v.isByte())
-            throw std::invalid_argument("deserialize expects list of bytes");
-        data.push_back(static_cast<char>(v.asByte()));
+        uint8_t b;
+        if(v.isByte()) {
+            b = v.asByte();
+        } else if(v.isInt()) {
+            int iv = v.asInt();
+            if(iv < 0 || iv > 255)
+                throw std::runtime_error("deserialize int out of byte range");
+            b = static_cast<uint8_t>(iv);
+        } else {
+            throw std::invalid_argument("deserialize expects list of bytes or ints");
+        }
+        data.push_back(static_cast<char>(b));
     }
 
     std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
