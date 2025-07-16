@@ -17,6 +17,6 @@ on out:
 
 // run the network for a while
 c.run()
-wait(s=2)
+wait(ms=400)
 
 print('done')
