@@ -95,6 +95,16 @@ type ApplicationNumber enum:
     ApplicationEight
 
 
+type SystemParameterType enum:
+    S1CG = 0     // S1CxG requires group number.
+    S2C = 1      // S2C
+    S3C = 2      // S3C
+    S4C = 3      // S4C
+    RS = 4       // RS
+    AP = 5       // AxP   requires group number
+    SE = 6       // SxE   requires group number
+
+
 @cstruct
 type elapsed_time_t object:
 
@@ -111,8 +121,10 @@ type elapsed_time_t object:
 @cstruct
 type time_data_t object:
 
-  @ctype(ctype='long int')
-  var startTime :int
+  // Note: Actually a C++ std::time_t, which may be a long int (which is 64bits on x86 64, but 32 bits on ARMv7 32)
+  // So, we assume 64bits here and marshal into 2 ints (note int is signed)
+  @ctype(ctype='uint32_t[2]')
+  var startTime :list
 
   @ctype(ctype='elapsed_time_t')
   var elapsedTime :elapsed_time_t
@@ -188,6 +200,13 @@ type job_stack_t object:
   var JobNames :list
 
 
+@cstruct
+type ParamValue object:
+
+  @ctype(ctype='int32_t')
+  var value :int
+
+
 @cfunc(lib=ymlib, args='const char* ip_address, status_info_t* status, int32_t receivePacketTimeout_ms, int32_t sendPacketRetries, bool loggingEnabled, const char* version', ret='motoman_controller_t')
 func open_connection(ip_address :string, status :status_info_t, receivePacketTimeout_ms :int, sendPacketRetries :int, loggingEnabled :bool, version :string) -> motoman_controller_t:
   _
@@ -253,12 +272,13 @@ func controller_state_interface_read_operating_times(controller :motoman_control
                                                           timeData :time_data_t, appNumber :ApplicationNumber) -> status_info_t:
   _
 
-@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t parameterType,int32_t parameterNumber,int32_t* parameterValue',ret='status_info_t')
-func controller_state_read_system_param(controller :motoman_controller_t, parameterType :int, parameterNumber :int, parameterValue :int) -> status_info_t:
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t parameterType,int32_t parameterNumber,ParamValue* parameterValue',ret='status_info_t')
+func controller_state_read_system_param(controller :motoman_controller_t, parameterType :SystemParameterType, parameterNumber :int, parameterValue :ParamValue) -> status_info_t:
   _
 
-@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t parameterType,int32_t parameterNumber,int32_t parameterGroup,int32_t* parameterValue',ret='status_info_t')
-func controller_state_group_read_system_param(controller :motoman_controller_t, parameterType :int, parameterNumber :int, parameterGroup :int, parameterValue :int) -> status_info_t:
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t parameterType,int32_t parameterNumber,int32_t parameterGroup,ParamValue* parameterValue',ret='status_info_t')
+func controller_state_group_read_system_param(controller :motoman_controller_t, parameterType :int, parameterNumber :int, parameterGroup :int, parameterValue :ParamValue) -> status_info_t:
   _
 
 @cfunc(lib=ymlib, args='motoman_controller_t controller,const char* jobName,uint32_t lineNumber',ret='status_info_t')
@@ -347,10 +367,13 @@ func io_interface_uint16_address_ReadWord(controller :motoman_controller_t, addr
 // test it
 
 proc raiseIfNotOk(status :status_info_t, function_name :string = ''):
+  if status is nil:
+    raise ProgramException("{function_name} error: nil status")
+
   if status.StatusCode != 0:
-      var code = status.StatusCode
-      var msg = status.Message
-      raise ProgramException("{function_name} error {code}: {msg}")
+    var code = status.StatusCode
+    var msg = status.Message
+    raise ProgramException("{function_name} error {code}: {msg}")
 
 
 proc test(ip :string):
@@ -373,9 +396,10 @@ proc test(ip :string):
   print(dict(controllerStateData))
 
   var timeData = time_data_t()
+  timeData.elapsedTime = elapsed_time_t()
   status = controller_state_interface_read_operating_times(controller, ControlGroupId.R1, TimeType.ControllerOnTime, timeData, ApplicationNumber.ApplicationOne)
   raiseIfNotOk(status,'controller_state_interface_read_operating_times')
-  print(dict(systemInfoData))
+  print(dict(timeData)|dict(timeData.elapsedTime))
 
 
   // S var read/write
@@ -405,6 +429,13 @@ proc test(ip :string):
     raise ProgramException("read back P10 didn't contain the right index")
   print(""+dict(pvar_data)+" "+dict(pvar_data.positionData))
 
+
+  // Param
+  //var paramValue = ParamValue()
+  //status = controller_state_read_system_param(controller, SystemParameterType.S2C,210,paramValue)
+  //print(paramValue.value)
+  //raiseIfNotOk(status,'controller_state_read_system_param')
+  //print("S2C210={paramValue}")
 
 
   close_connection(controller)

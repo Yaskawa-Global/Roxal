@@ -1678,7 +1678,14 @@ std::pair<InterpretResult,Value> VM::execute()
     };
 
     auto readString = [&]() -> ObjString* {
-        return asString(readConstant());
+        #ifdef DEBUG_BUILD
+        auto constant { readConstant() };
+        if (!isString(constant))
+            throw std::runtime_error("Chunk instruction read string expected a string constant, got "+constant.typeName());
+        return asString(constant);
+        #else
+          return asString(readConstant());
+        #endif
     };
 
     auto readString2 = [&]() -> ObjString* {
@@ -5037,4 +5044,3 @@ ObjModuleType* VM::getBuiltinModule(const icu::UnicodeString& name)
         return mathModule;
     return nullptr;
 }
-
