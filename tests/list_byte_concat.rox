@@ -1,0 +1,5 @@
+l = []
+i = 1
+l = l+[byte(i)]
+l = l+[byte(i)]
+print(l)

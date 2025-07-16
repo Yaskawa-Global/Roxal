@@ -288,7 +288,7 @@ public:
     /// @brief Checks if the value is a primitive type (not an object - excludes boxed ObjPrimitive).
     /// @return True if the value is a primitive type, false otherwise.
     inline bool isPrimitive() const {
-        return isNil() || isBool() || isInt() || isReal() || isType();
+        return isNil() || isBool() || isInt() || isReal() || isType() || isByte() || isEnum();
     }
 
     /// @brief Checks if the value is an object.
