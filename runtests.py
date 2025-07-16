@@ -22,7 +22,7 @@ args = parser.parse_args()
 tests = [
     'comments', 'primitive1', 'constants', 'scopetest2', 'scopetest3',
     'andtest', 'ortest', 'not',
-    'arith', 'factorial', 'defaultvalues', 'typeof_test',
+    'arith', 'factorial', 'defaultvalues', 'construct_defaults', 'typeof_test',
     'dict', 'dict2', 'dict_keyerror', 'list', 'list2', 'copyassign_list', 'copyassign_sublist', 'copyassign_signal',
     'list_add_test', 'range', 'range2', 'enum1', 'enum2', 'enum3', 'upvalue_leak',
     'unicode', 'signal_clock', 'signal_add', 'signal_subtract', 'signal_multiply', 'signal_divide', 'signal_modulo',
