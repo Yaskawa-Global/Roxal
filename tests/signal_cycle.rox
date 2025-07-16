@@ -10,7 +10,7 @@ var out = signal(10,0.0)
 
 sum = c + out[-1]
 
-out <- sum + 1
+out <- sum * 2.0
 
 on out:
   print(real(out))
