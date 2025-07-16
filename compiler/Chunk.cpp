@@ -397,6 +397,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("GET_PROP", offset);
         case asByte(OpCode::SetPropCheck):
             return constantInstruction("SET_PROP_CHECK", offset);
+        case asByte(OpCode::SetPropCheck2):
+            return constantInstruction2("SET_PROP_CHECK", offset);
         case asByte(OpCode::GetPropCheck):
             return constantInstruction("GET_PROP_CHECK", offset);
         case asByte(OpCode::GetPropCheck2):

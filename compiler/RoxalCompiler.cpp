@@ -1415,7 +1415,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             int16_t propName = identifierConstant(accessor->member.value());
 
             OpCode getOp = (propName <= 255 ? OpCode::GetPropCheck : OpCode::GetPropCheck2);
-            OpCode setOp = (propName <= 255 ? OpCode::SetPropCheck : OpCode::SetProp2);
+            OpCode setOp = (propName <= 255 ? OpCode::SetPropCheck : OpCode::SetPropCheck2);
             if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
                 auto itType = typePropertyRegistry.find(asTypeScope(typeScope())->name);
                 if (itType != typePropertyRegistry.end()) {
@@ -1499,7 +1499,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             throw std::runtime_error("accessor unary operator expects member name");
         int16_t propName = identifierConstant(accessor->member.value());
 
-        OpCode op = (propName <= 255 ? OpCode::SetPropCheck : OpCode::SetProp2);
+        OpCode op = (propName <= 255 ? OpCode::SetPropCheck : OpCode::SetPropCheck2);
         if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
             auto itType = typePropertyRegistry.find(asTypeScope(typeScope())->name);
             if (itType != typePropertyRegistry.end()) {
