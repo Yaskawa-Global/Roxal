@@ -251,14 +251,24 @@ ptr<Signal> Signal::indexedSignal(int index)
     newSig->isSource = false;
     newSig->setMaxHistoryPeriods(std::max(m_maxHistoryPeriods, -index + 1));
 
+    // ensure the delayed value is available for the first tick
+    TimeDuration srcPeriod = m_period;
+    TimePoint firstDestTime = TimePoint::zero() + srcPeriod * -index;
+    newSig->setValueAt(firstDestTime, initial);
+    DataflowEngine::instance()->updateSignalConsumerInputAvailability(newSig, firstDestTime);
+
     std::weak_ptr<Signal> weakNew = newSig;
     addValueChangedCallback([weakNew, index](TimePoint t, ptr<Signal> src, const Value& v){
         if (auto s = weakNew.lock()) {
             try {
                 Value val = src->valueAtIndex(index);
-                s->setValueAt(t, val);
+                TimePoint destTime = t - src->period()*index; // index is negative
+                s->setValueAt(destTime, val);
+                DataflowEngine::instance()->updateSignalConsumerInputAvailability(s, destTime);
             } catch(...) {
-                s->setValueAt(t, Value());
+                TimePoint destTime = t - src->period()*index;
+                s->setValueAt(destTime, Value());
+                DataflowEngine::instance()->updateSignalConsumerInputAvailability(s, destTime);
             }
         }
     });
