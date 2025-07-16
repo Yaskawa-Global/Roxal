@@ -233,7 +233,7 @@ ptr<Signal> Signal::indexedSignal(int index)
     try {
         initial = valueAtIndex(index);
     } catch(...) {
-        initial = Value();
+        initial = lastValue();
     }
 
     // Create a new signal that mirrors this one but with a time delay.
@@ -250,7 +250,7 @@ ptr<Signal> Signal::indexedSignal(int index)
                 Value val = src->valueAtIndex(index);
                 s->setValueAt(t, val);
             } catch(...) {
-                s->setValueAt(t, Value());
+                // insufficient history - keep previous value
             }
         }
     });
