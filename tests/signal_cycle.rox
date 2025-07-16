@@ -15,7 +15,8 @@ out <- sum + 1
 on out:
   print(real(out))
 
+// run the network for a while
 c.run()
+wait(s=2)
 
-wait(s=5)
-
+print('done')
