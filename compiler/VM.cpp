@@ -1984,9 +1984,10 @@ std::pair<InterpretResult,Value> VM::execute()
                 return errorReturn;
                 break;
             }
+            case asByte(OpCode::GetPropCheck2):
             case asByte(OpCode::GetPropCheck): {
                 Value& inst { peek(0) };
-                ObjString* name = readString();
+                ObjString* name = (instruction == asByte(OpCode::GetPropCheck)) ? readString() : readString2();
 
                 // Check for signal properties BEFORE resolving
                 if (isSignal(inst)) {
