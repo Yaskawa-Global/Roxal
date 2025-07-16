@@ -2195,7 +2195,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     break;
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
-                    ObjString* name = (instruction == asByte(OpCode::SetPropCheck)) ? readString() : readString2();
+                    ObjString* name = readString();
 
                     Value value { peek(0) };
 
@@ -2225,7 +2225,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 } else if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
 
-                    ObjString* name = (instruction == asByte(OpCode::SetPropCheck)) ? readString() : readString2();
+                    ObjString* name = readString();
 
                     auto& vars { moduleType->vars };
 
@@ -2296,7 +2296,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     break;
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
-                    ObjString* name = readString();
+                    ObjString* name = (instruction == asByte(OpCode::SetPropCheck)) ? readString() : readString2();
 
                     Value value { peek(0) };
 
