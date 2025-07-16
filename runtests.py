@@ -26,7 +26,7 @@ tests = [
     'dict', 'dict2', 'dict_keyerror', 'list', 'list2', 'copyassign_list', 'copyassign_sublist', 'copyassign_signal',
     'list_add_test', 'range', 'range2', 'enum1', 'enum2', 'enum3', 'upvalue_leak',
     'unicode', 'signal_clock', 'signal_add', 'signal_subtract', 'signal_multiply', 'signal_divide', 'signal_modulo',
-    'signal_greater', 'signal_less', 'signal_equal',
+    'signal_greater', 'signal_less', 'signal_equal', 'signal_history',
     'signal_and', 'signal_or', 'signal_not', 'signal_band', 'signal_bor', 'signal_bxor', 'signal_bnot',
     'signal_func_nocall', 'signal_func_exec', 'signal_index', 'signal_on_stmt', 'signal_on_threads', 'on_expression',
     'test_signal_value_property', 'construct_by_signal', 'signal_run_stop', 'signal_source', 'signal_default_err', 'signal_network1',
