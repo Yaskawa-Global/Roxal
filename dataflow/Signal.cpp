@@ -260,6 +260,9 @@ ptr<Signal> Signal::indexedSignal(int index)
             } catch(...) {
                 s->setValueAt(t, Value());
             }
+
+            // update availability even if value didn't change
+            DataflowEngine::instance()->updateSignalConsumerInputAvailability(s, t);
         }
     });
 
