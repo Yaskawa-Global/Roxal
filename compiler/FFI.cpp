@@ -213,6 +213,7 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         std::vector<ObjObjectType*> argObjTypes;
         std::vector<std::vector<ffi_type*>> argStructElems;
         std::vector<ffi_type> argStructTypes;
+        std::vector<PrimitivePtrType> argPrimPtrTypes;
         if (argsExpr) {
             std::string argsStr = toUTF8StdString(asUString(evalExpr(argsExpr)));
             std::stringstream ss(argsStr);
@@ -254,8 +255,24 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                     argIsCharPtr.push_back(true);
                     argIsConstCharPtr.push_back(true);
                 }
-                else if (!type.empty() && (type.back()=='*' || type.back()=='&'))
-                    argTypes.push_back(&ffi_type_pointer);
+                else if (!type.empty() && (type.back()=='*' || type.back()=='&')) {
+                    std::string base = type.substr(0, type.size()-1);
+                    while(!base.empty() && isspace(base.back())) base.pop_back();
+                    PrimitivePtrType ppt = PrimitivePtrType::None;
+                    if (base=="uint8_t") ppt = PrimitivePtrType::UInt8;
+                    else if (base=="int8_t") ppt = PrimitivePtrType::Int8;
+                    else if (base=="uint16_t") ppt = PrimitivePtrType::UInt16;
+                    else if (base=="int16_t") ppt = PrimitivePtrType::Int16;
+                    else if (base=="uint32_t") ppt = PrimitivePtrType::UInt32;
+                    else if (base=="int32_t" || base=="int") ppt = PrimitivePtrType::Int32;
+                    if (ppt != PrimitivePtrType::None) {
+                        argTypes.push_back(&ffi_type_pointer);
+                        argPrimPtrTypes.push_back(ppt);
+                    } else {
+                        argTypes.push_back(&ffi_type_pointer);
+                        argPrimPtrTypes.push_back(PrimitivePtrType::None);
+                    }
+                }
                 else {
                     auto opt = mod->vars.load(toUnicodeString(type));
                     if (opt.has_value() && isObjectType(opt.value())) {
@@ -348,6 +365,8 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                     argStructElems.emplace_back();
                 if (argStructTypes.size() < argTypes.size())
                     argStructTypes.emplace_back();
+                if (argPrimPtrTypes.size() < argTypes.size())
+                    argPrimPtrTypes.push_back(PrimitivePtrType::None);
             }
         }
 
@@ -478,6 +497,7 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         spec->argObjTypes = argObjTypes;
         spec->argStructElems = argStructElems;
         spec->argStructTypes = argStructTypes;
+        spec->argPrimPtrTypes = argPrimPtrTypes;
         for (size_t i=0;i<spec->argStructTypes.size();i++)
             if (spec->argObjTypes[i])
                 spec->argStructTypes[i].elements = spec->argStructElems[i].data();
@@ -529,6 +549,13 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
     std::vector<uint16_t> uint16Vals(callSpec.argCount);
     std::vector<uint8_t> byteVals(callSpec.argCount);
     std::vector<uint8_t> boolVals(callSpec.argCount);
+    std::vector<int32_t> intPtrVals(callSpec.argCount);
+    std::vector<uint32_t> uint32PtrVals(callSpec.argCount);
+    std::vector<int16_t> sint16PtrVals(callSpec.argCount);
+    std::vector<uint16_t> uint16PtrVals(callSpec.argCount);
+    std::vector<int8_t> sint8PtrVals(callSpec.argCount);
+    std::vector<uint8_t> uint8PtrVals(callSpec.argCount);
+    std::vector<void*> primPtrPtrs(callSpec.argCount);
 
     auto funcNameAndArg = [&](int i) {
         return toUTF8StdString(function->name)+" arg"+std::to_string(i);
@@ -582,6 +609,37 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                 byteVals[i] = uint8_t(argVector[i].asInt());
                 argValues[i] = &byteVals[i];
             }
+        } else if (spec->argPrimPtrTypes.size()>i && spec->argPrimPtrTypes[i] != PrimitivePtrType::None) {
+            PrimitivePtrType pt = spec->argPrimPtrTypes[i];
+            switch(pt) {
+                case PrimitivePtrType::Int32:
+                    intPtrVals[i] = argVector[i].asInt();
+                    primPtrPtrs[i] = &intPtrVals[i];
+                    break;
+                case PrimitivePtrType::UInt32:
+                    uint32PtrVals[i] = uint32_t(argVector[i].asInt());
+                    primPtrPtrs[i] = &uint32PtrVals[i];
+                    break;
+                case PrimitivePtrType::Int16:
+                    sint16PtrVals[i] = int16_t(argVector[i].asInt());
+                    primPtrPtrs[i] = &sint16PtrVals[i];
+                    break;
+                case PrimitivePtrType::UInt16:
+                    uint16PtrVals[i] = uint16_t(argVector[i].asInt());
+                    primPtrPtrs[i] = &uint16PtrVals[i];
+                    break;
+                case PrimitivePtrType::Int8:
+                    sint8PtrVals[i] = int8_t(argVector[i].asInt());
+                    primPtrPtrs[i] = &sint8PtrVals[i];
+                    break;
+                case PrimitivePtrType::UInt8:
+                    uint8PtrVals[i] = uint8_t(argVector[i].asInt());
+                    primPtrPtrs[i] = &uint8PtrVals[i];
+                    break;
+                default:
+                    break;
+            }
+            argValues[i] = &primPtrPtrs[i];
         } else if (spec->argObjTypes[i]) {
             if (!isObjectInstance(argVector[i]))
                 throw std::invalid_argument(funcNameAndArg(i)+" not object instance for C struct value");
@@ -641,6 +699,31 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
             std::string newStr(mutableBuffers[i].data());
             if (newStr != toUTF8StdString(mutableStringObjs[i]->s))
                 updateInternedString(mutableStringObjs[i], toUnicodeString(newStr));
+        }
+        if (spec->argPrimPtrTypes.size()>i && spec->argPrimPtrTypes[i] != PrimitivePtrType::None) {
+            PrimitivePtrType pt = spec->argPrimPtrTypes[i];
+            switch(pt) {
+                case PrimitivePtrType::Int32:
+                    argVector[i] = intVal(intPtrVals[i]);
+                    break;
+                case PrimitivePtrType::UInt32:
+                    argVector[i] = intVal(int32_t(uint32PtrVals[i]));
+                    break;
+                case PrimitivePtrType::Int16:
+                    argVector[i] = intVal(int32_t(sint16PtrVals[i]));
+                    break;
+                case PrimitivePtrType::UInt16:
+                    argVector[i] = intVal(int32_t(uint16PtrVals[i]));
+                    break;
+                case PrimitivePtrType::Int8:
+                    argVector[i] = byteVal(uint8_t(sint8PtrVals[i]));
+                    break;
+                case PrimitivePtrType::UInt8:
+                    argVector[i] = byteVal(uint8PtrVals[i]);
+                    break;
+                default: break;
+            }
+            args[i] = argVector[i];
         }
     }
 
@@ -720,6 +803,38 @@ void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& pro
             appendPadded(&p, ptrSize, ptrSize);
             return true;
         }
+        if (!ctype.empty() && ctype.back()=='*') {
+            if (!ctx)
+                throw std::runtime_error("marshalProperty missing context for primitive pointer");
+            std::string base = ctype.substr(0, ctype.size()-1);
+            while(!base.empty() && isspace(base.back())) base.pop_back();
+            PrimitivePtrType ppt = PrimitivePtrType::None;
+            if (base=="uint8_t") ppt = PrimitivePtrType::UInt8;
+            else if (base=="int8_t") ppt = PrimitivePtrType::Int8;
+            else if (base=="uint16_t") ppt = PrimitivePtrType::UInt16;
+            else if (base=="int16_t") ppt = PrimitivePtrType::Int16;
+            else if (base=="uint32_t") ppt = PrimitivePtrType::UInt32;
+            else if (base=="int32_t" || base=="int") ppt = PrimitivePtrType::Int32;
+            if (ppt != PrimitivePtrType::None) {
+                size_t sz = (ppt==PrimitivePtrType::UInt8 || ppt==PrimitivePtrType::Int8)?1:
+                             (ppt==PrimitivePtrType::UInt16 || ppt==PrimitivePtrType::Int16?2:4);
+                ctx->buffers.emplace_back(sz);
+                ctx->instances.push_back(nullptr);
+                ctx->primPtrTypes.push_back(ppt);
+                void* pbuf = ctx->buffers.back().data();
+                switch(ppt) {
+                    case PrimitivePtrType::UInt8: ctx->buffers.back()[0] = toType(ValueType::Byte,v,false).asByte(); break;
+                    case PrimitivePtrType::Int8: ctx->buffers.back()[0] = uint8_t(int8_t(toType(ValueType::Byte,v,false).asByte())); break;
+                    case PrimitivePtrType::UInt16: { uint16_t u = uint16_t(toType(ValueType::Int,v,false).asInt()); memcpy(pbuf,&u,2); break; }
+                    case PrimitivePtrType::Int16: { int16_t s = int16_t(toType(ValueType::Int,v,false).asInt()); memcpy(pbuf,&s,2); break; }
+                    case PrimitivePtrType::UInt32: { uint32_t u = uint32_t(toType(ValueType::Int,v,false).asInt()); memcpy(pbuf,&u,4); break; }
+                    case PrimitivePtrType::Int32: { int32_t s = toType(ValueType::Int,v,false).asInt(); memcpy(pbuf,&s,4); break; }
+                    default: break;
+                }
+                appendPadded(&pbuf, ptrSize, ptrSize);
+                return true;
+            }
+        }
         if (ctype == "void*" || (!ctype.empty() && ctype.back()=='*')) {
             void* p = nullptr;
             if (!v.isNil()) {
@@ -756,8 +871,11 @@ void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& pro
             ObjectInstance* inst = asObjectInstance(val);
             ctx->buffers.push_back(objectToCStruct(inst, stringStore, ctx));
             ctx->instances.push_back(inst);
+            ctx->primPtrTypes.push_back(PrimitivePtrType::None);
             p = ctx->buffers.back().data();
         }
+        if (ctx && ctx->primPtrTypes.size() < ctx->buffers.size())
+            ctx->primPtrTypes.push_back(PrimitivePtrType::None);
         appendPadded(&p, ptrSize, ptrSize);
         return;
     }
@@ -869,7 +987,7 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
             return nilVal();
         if (ctx) {
             for (size_t i = 0; i < ctx->buffers.size(); i++) {
-                if (ctx->buffers[i].data() == p) {
+                if (ctx->buffers[i].data() == p && ctx->instances[i]) {
                     updateObjectFromCStruct(ctx->instances[i], ctx->buffers[i].data(), ctx->buffers[i].size(), ctx);
                     return Value(ctx->instances[i]);
                 }
@@ -878,6 +996,45 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
         return nilVal();
     }
 
+
+    if (!ctypeStr.empty() && ctypeStr.back()=='*') {
+        std::string base = ctypeStr.substr(0, ctypeStr.size()-1);
+        while(!base.empty() && isspace(base.back())) base.pop_back();
+        PrimitivePtrType ppt = PrimitivePtrType::None;
+        if (base=="uint8_t") ppt = PrimitivePtrType::UInt8;
+        else if (base=="int8_t") ppt = PrimitivePtrType::Int8;
+        else if (base=="uint16_t") ppt = PrimitivePtrType::UInt16;
+        else if (base=="int16_t") ppt = PrimitivePtrType::Int16;
+        else if (base=="uint32_t") ppt = PrimitivePtrType::UInt32;
+        else if (base=="int32_t" || base=="int") ppt = PrimitivePtrType::Int32;
+        if (ppt != PrimitivePtrType::None) {
+            void* p = nullptr;
+            readPadded(&p, ptrSize, ptrSize);
+            if (!p) {
+                val = (ppt==PrimitivePtrType::UInt8||ppt==PrimitivePtrType::Int8)?byteVal(0):intVal(0);
+                return val;
+            }
+            if (ctx) {
+                for (size_t i=0;i<ctx->buffers.size();i++) {
+                    if (ctx->buffers[i].data()==p && ctx->primPtrTypes[i]==ppt) {
+                        const uint8_t* buf = ctx->buffers[i].data();
+                        switch(ppt) {
+                            case PrimitivePtrType::UInt8: val = byteVal(buf[0]); break;
+                            case PrimitivePtrType::Int8: val = byteVal(uint8_t(*(int8_t*)buf)); break;
+                            case PrimitivePtrType::UInt16: { uint16_t u; memcpy(&u,buf,2); val=intVal(int32_t(u)); break; }
+                            case PrimitivePtrType::Int16: { int16_t s; memcpy(&s,buf,2); val=intVal(int32_t(s)); break; }
+                            case PrimitivePtrType::UInt32: { uint32_t u; memcpy(&u,buf,4); val=intVal(int32_t(u)); break; }
+                            case PrimitivePtrType::Int32: { int32_t s; memcpy(&s,buf,4); val=intVal(s); break; }
+                            default: break;
+                        }
+                        return val;
+                    }
+                }
+            }
+            val = (ppt==PrimitivePtrType::UInt8||ppt==PrimitivePtrType::Int8)?byteVal(0):intVal(0);
+            return val;
+        }
+    }
     auto readByNameVal = [&](const std::string& ctype, Value& out) -> bool {
         if (ctype == "float") { float f; readPadded(&f, sizeof(f), 4); out = Value(double(f)); return true; }
         if (ctype == "double" || ctype == "real") { double d; readPadded(&d, sizeof(d), 8); out = Value(d); return true; }

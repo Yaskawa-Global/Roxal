@@ -38,3 +38,9 @@ ACStruct make_acstruct() { ACStruct s; for(int i=0;i<4;i++) s.darr[i] = (double)
 
 double nested_sum(MyStruct2 ms2) { return ms2.r + ms2.h.i; }
 MyStruct2 make_nested_struct() { MyStruct2 s; s.r = 4.5; s.h.i = 2; return s; }
+
+typedef struct { int32_t* p; } IntBox;
+void inc_intbox(IntBox* b) { if(b && b->p) (*b->p)++; }
+
+typedef struct { uint8_t* p; } ByteBox;
+void inc_bytebox(ByteBox* b) { if(b && b->p) (*b->p)++; }

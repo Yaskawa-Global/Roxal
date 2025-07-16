@@ -12,6 +12,16 @@
 
 namespace roxal {
 
+enum class PrimitivePtrType {
+    None,
+    UInt8,
+    Int8,
+    UInt16,
+    Int16,
+    UInt32,
+    Int32
+};
+
 struct FFIWrapper {
     ffi_cif cif;
     void* fn;
@@ -22,6 +32,7 @@ struct FFIWrapper {
     std::vector<ObjObjectType*> argObjTypes;
     std::vector<std::vector<ffi_type*>> argStructElems;
     std::vector<ffi_type> argStructTypes;
+    std::vector<PrimitivePtrType> argPrimPtrTypes; // primitive pointer arg types
     ffi_type* retType;
     bool retIsCharPtr{false};
     bool retIsBool{false};
@@ -33,6 +44,7 @@ struct FFIWrapper {
 struct CStructContext {
     std::vector<std::vector<uint8_t>> buffers;
     std::vector<ObjectInstance*> instances;
+    std::vector<PrimitivePtrType> primPtrTypes; // primitive pointer buffer types
 };
 
 void* createFFIWrapper(void* fn, ffi_type* retType,
