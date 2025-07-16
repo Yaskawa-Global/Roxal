@@ -287,6 +287,21 @@ void DataflowEngine::tick(bool waitForTickStart)
         }
     }
 
+    for(const auto& signal : signals) {
+        if (signal->isDerived) {
+            auto src = signal->baseSignal.lock();
+            if (src) {
+                try {
+                    Value val = src->valueAtIndex(signal->baseIndex);
+                    signal->setValueAt(m_tickStart, val);
+                } catch(...) {
+                    signal->setValueAt(m_tickStart, Value());
+                }
+                updateSignalConsumerInputAvailability(signal, m_tickStart);
+            }
+        }
+    }
+
     evaluateNetwork(m_tickStart);
 
     #if 0

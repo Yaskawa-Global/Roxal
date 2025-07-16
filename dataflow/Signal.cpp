@@ -245,23 +245,13 @@ ptr<Signal> Signal::indexedSignal(int index)
     // desired index on FuncInputInfo.  Here we emulate that behaviour by
     // generating a separate Signal updated whenever the source updates.
     auto newSig = std::shared_ptr<Signal>(new Signal(m_frequency, initial, m_name + "[" + std::to_string(index) + "]"));
-    // Indexed signals are derived from an existing signal and are neither
-    // clocks nor source signals themselves.
     newSig->isClock = false;
     newSig->isSource = false;
+    newSig->isDerived = true;
+    newSig->baseSignal = shared_from_this();
+    newSig->baseIndex = index;
     newSig->setMaxHistoryPeriods(std::max(m_maxHistoryPeriods, -index + 1));
-
-    std::weak_ptr<Signal> weakNew = newSig;
-    addValueChangedCallback([weakNew, index](TimePoint t, ptr<Signal> src, const Value& v){
-        if (auto s = weakNew.lock()) {
-            try {
-                Value val = src->valueAtIndex(index);
-                s->setValueAt(t, val);
-            } catch(...) {
-                s->setValueAt(t, Value());
-            }
-        }
-    });
+    DataflowEngine::instance()->addSignal(newSig);
 
     return newSig;
 }
