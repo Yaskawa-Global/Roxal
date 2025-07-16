@@ -1515,7 +1515,10 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
         ast->rhs->accept(*this);
 
-        emitBytes(op, propName);
+        if (propName <= 255)
+            emitBytes(op, uint8_t(propName));
+        else
+            emitBytes(op, uint8_t(propName>>8), uint8_t(propName&0xff));
     } 
     else if (isa<Index>(ast->lhs)) {
 
@@ -1579,7 +1582,10 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
                 emitByte(OpCode::Swap);
 
-                emitBytes(propName <= 255 ? OpCode::SetProp : OpCode::SetProp2, propName);
+                if (propName <= 255)
+                    emitBytes(OpCode::SetProp, uint8_t(propName));
+                else
+                    emitBytes(OpCode::SetProp2, uint8_t(propName>>8), uint8_t(propName&0xff));
             }
             else if (isa<Index>(lhsElt)) {
 
@@ -2834,11 +2840,17 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
                 // treat as property access
                 if (!assign) {
                     namedVariable(UnicodeString("this"), false);
-                    emitBytes(arg<=255 ? OpCode::GetProp : OpCode::GetProp2, arg);
+                    if (arg <= 255)
+                        emitBytes(OpCode::GetProp, uint8_t(arg));
+                    else
+                        emitBytes(OpCode::GetProp2, uint8_t(arg>>8), uint8_t(arg&0xff));
                 } else {
                     namedVariable(UnicodeString("this"), false);
                     emitByte(OpCode::Swap);
-                    emitBytes(arg<=255 ? OpCode::SetProp : OpCode::SetProp2, arg);
+                    if (arg <= 255)
+                        emitBytes(OpCode::SetProp, uint8_t(arg));
+                    else
+                        emitBytes(OpCode::SetProp2, uint8_t(arg>>8), uint8_t(arg&0xff));
                 }
                 return true;
             }
