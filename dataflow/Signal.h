@@ -60,6 +60,17 @@ public:
     TimeDuration period() const { return m_period; }
 
     bool isSourceSignal() const { return isSource; }
+    bool isClockSignal() const { return isClock; }
+    bool isRunning() const { return running; }
+    bool isTickPending() const { return tickPending; }
+    uint64_t getClockCount() const { return clockCount; }
+
+    // allow external code to update signal role flags
+    void setIsSource(bool src) { isSource = src; }
+    void setIsClock(bool clock) { isClock = clock; }
+    void setRunning(bool r) { running = r; }
+    void setTickPending(bool p) { tickPending = p; }
+    void setClockCount(uint64_t c) { clockCount = c; }
 
     // Get the last value of the signal
     Value lastValue() const;

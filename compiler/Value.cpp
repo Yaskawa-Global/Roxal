@@ -1675,6 +1675,15 @@ void roxal::copyAssign(Value& lhs, const Value& rhs)
                 auto lhsSig = asSignal(lhs)->signal;
                 auto rhsSig = asSignal(rhs)->signal;
 
+                // copy source/clock status from RHS so the dataflow engine
+                // treats the LHS the same way
+                lhsSig->setIsSource(rhsSig->isSourceSignal());
+                lhsSig->setIsClock(rhsSig->isClockSignal());
+                lhsSig->setRunning(rhsSig->isRunning());
+                lhsSig->setTickPending(rhsSig->isTickPending());
+                lhsSig->setClockCount(rhsSig->getClockCount());
+                lhsSig->setFrequency(rhsSig->frequency());
+
                 df::FuncNode::ConstArgMap constArgs;
                 std::vector<ptr<df::Signal>> sigArgs{ rhsSig };
                 std::vector<std::string> paramNames{"in"};
