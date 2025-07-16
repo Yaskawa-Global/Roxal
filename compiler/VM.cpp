@@ -1984,9 +1984,10 @@ std::pair<InterpretResult,Value> VM::execute()
                 return errorReturn;
                 break;
             }
+            case asByte(OpCode::GetPropCheck2):
             case asByte(OpCode::GetPropCheck): {
                 Value& inst { peek(0) };
-                ObjString* name = readString();
+                ObjString* name = (instruction == asByte(OpCode::GetPropCheck)) ? readString() : readString2();
 
                 // Check for signal properties BEFORE resolving
                 if (isSignal(inst)) {
@@ -2194,7 +2195,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     break;
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
-                    ObjString* name = readString();
+                    ObjString* name = (instruction == asByte(OpCode::SetPropCheck)) ? readString() : readString2();
 
                     Value value { peek(0) };
 
@@ -2224,7 +2225,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 } else if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
 
-                    ObjString* name = readString();
+                    ObjString* name = (instruction == asByte(OpCode::SetPropCheck)) ? readString() : readString2();
 
                     auto& vars { moduleType->vars };
 
@@ -2248,12 +2249,13 @@ std::pair<InterpretResult,Value> VM::execute()
                 return errorReturn;
                 break;
             }
+            case asByte(OpCode::SetPropCheck2):
             case asByte(OpCode::SetPropCheck): {
                 Value& inst { peek(1) };
                 inst.resolve();
                 if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
-                    ObjString* name = readString();
+                    ObjString* name = (instruction == asByte(OpCode::SetPropCheck)) ? readString() : readString2();
 
                     Value value { peek(0) };
 

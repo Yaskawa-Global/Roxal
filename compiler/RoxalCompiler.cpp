@@ -1414,8 +1414,8 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                 throw std::runtime_error("accessor unary operator expects member name");
             int16_t propName = identifierConstant(accessor->member.value());
 
-            OpCode getOp = OpCode::GetPropCheck;
-            OpCode setOp = (propName <= 255 ? OpCode::SetPropCheck : OpCode::SetProp2);
+            OpCode getOp = (propName <= 255 ? OpCode::GetPropCheck : OpCode::GetPropCheck2);
+            OpCode setOp = (propName <= 255 ? OpCode::SetPropCheck : OpCode::SetPropCheck2);
             if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
                 auto itType = typePropertyRegistry.find(asTypeScope(typeScope())->name);
                 if (itType != typePropertyRegistry.end()) {
@@ -1424,19 +1424,25 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                         const auto& info = itMem->second;
                         if (info.access == Access::Private && info.owner != asTypeScope(typeScope())->name)
                             error("Cannot access private member '"+toUTF8StdString(accessor->member.value())+"'");
-                        getOp = OpCode::GetProp;
+                        getOp = (propName <= 255 ? OpCode::GetProp : OpCode::GetProp2);
                         setOp = (propName <= 255 ? OpCode::SetProp : OpCode::SetProp2);
                     }
                 }
             }
 
             emitByte(OpCode::Dup);                 // keep instance for SetProp
-            emitBytes(getOp, propName);            // push current property value
+            if (propName <= 255)
+                emitBytes(getOp, uint8_t(propName));            // push current property value
+            else
+                emitBytes(getOp, uint8_t(propName>>8), uint8_t(propName&0xff));
 
             ast->rhs->accept(*this);
 
             emitByte(OpCode::CopyAssign);          // mutate property value
-            emitBytes(setOp, propName);            // store back
+            if (propName <= 255)
+                emitBytes(setOp, uint8_t(propName));            // store back
+            else
+                emitBytes(setOp, uint8_t(propName>>8), uint8_t(propName&0xff));
         }
         else if (isa<Index>(ast->lhs)) {
             auto index { as<Index>(ast->lhs) };
@@ -1493,7 +1499,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             throw std::runtime_error("accessor unary operator expects member name");
         int16_t propName = identifierConstant(accessor->member.value());
 
-        OpCode op = (propName <= 255 ? OpCode::SetPropCheck : OpCode::SetProp2);
+        OpCode op = (propName <= 255 ? OpCode::SetPropCheck : OpCode::SetPropCheck2);
         if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
             auto itType = typePropertyRegistry.find(asTypeScope(typeScope())->name);
             if (itType != typePropertyRegistry.end()) {
@@ -1701,10 +1707,7 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
                 throw std::runtime_error("Accessor . requires member name");
 
             int16_t identConstant = identifierConstant(ast->member.value());
-            if (identConstant > 255)
-                error("Too many constants in scope");
-
-            OpCode op = OpCode::GetPropCheck;
+            OpCode op = (identConstant <= 255 ? OpCode::GetPropCheck : OpCode::GetPropCheck2);
             if (isa<Variable>(ast->arg) && as<Variable>(ast->arg)->name == "this" && inTypeScope()) {
                 auto itType = typePropertyRegistry.find(asTypeScope(typeScope())->name);
                 if (itType != typePropertyRegistry.end()) {
@@ -1713,11 +1716,14 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
                         const auto& info = itMem->second;
                         if (info.access == Access::Private && info.owner != asTypeScope(typeScope())->name)
                             error("Cannot access private member '"+toUTF8StdString(ast->member.value())+"'");
-                        op = OpCode::GetProp;
+                        op = (identConstant <= 255 ? OpCode::GetProp : OpCode::GetProp2);
                     }
                 }
             }
-            emitBytes(op, uint8_t(identConstant));
+            if (identConstant <= 255)
+                emitBytes(op, uint8_t(identConstant));
+            else
+                emitBytes(op, uint8_t(identConstant>>8), uint8_t(identConstant&0xff));
         } break;
         default:
             throw std::runtime_error("unimplemented unary opertor:"+ast->opString());
