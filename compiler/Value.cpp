@@ -1096,6 +1096,12 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
         }
     }
 
+    if (begin == end) {
+        if (type == ValueType::Signal)
+            throw std::runtime_error("signal constructor expects frequency and optional initial value");
+        return defaultValue(type);
+    }
+
     if (type == ValueType::Signal) {
         size_t count = end - begin;
         if (count < 1 || count > 2 || !(*begin).isNumber())
