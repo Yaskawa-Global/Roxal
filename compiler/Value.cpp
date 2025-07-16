@@ -1112,7 +1112,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
         if (count == 2)
             initial = *(begin + 1);
 
-        auto sig = df::Signal::newSourceSignal(freq, initial);
+        auto sig = df::Signal::newSourceSignal(freq, initial,df::DataflowEngine::uniqueFuncName("signal("+ std::to_string(int(freq)) + "," + toString(initial) + ")"));
         return objVal(signalVal(sig));
     }
 

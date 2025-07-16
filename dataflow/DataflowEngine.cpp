@@ -18,7 +18,10 @@ static std::atomic<uint64_t> gFuncCounter{0};
 
 std::string DataflowEngine::uniqueFuncName(const std::string& base)
 {
-    return base + "#" + std::to_string(gFuncCounter++);
+    gFuncCounter++;
+    if (gFuncCounter == 1)
+        return base;
+    return base + "#" + std::to_string(gFuncCounter);
 }
 
 

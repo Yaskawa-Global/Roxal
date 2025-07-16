@@ -4703,7 +4703,7 @@ Value VM::clock_signal_native(int argCount, Value* args)
         throw std::invalid_argument("clock expects single numeric argument");
 
     double freq = args[0].asReal();
-    auto sig = df::Signal::newClockSignal(freq);
+    auto sig = df::Signal::newClockSignal(freq,df::DataflowEngine::uniqueFuncName("clock("+ std::to_string(int(freq)) + ")"));
     return objVal(signalVal(sig));
 }
 
