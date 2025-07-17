@@ -1,0 +1,9 @@
+import fileio
+
+var out = '/tmp/roxal_write_test.bin'
+var h = fileio.open(out, true, 'binary')
+fileio.write(h, [65, 66, 67])
+fileio.close(h)
+var data = fileio.readFile(out, 'binary')
+print(data[len(data)-3..])
+
