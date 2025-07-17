@@ -3835,6 +3835,7 @@ void VM::defineBuiltinFunctions()
     addFile("read", &VM::fileio_read_builtin);
     addFile("readLine", &VM::fileio_readline_builtin);
     addFile("readFile", &VM::fileio_readfile_builtin);
+    addFile("write", &VM::fileio_write_builtin);
 #endif
     {
         auto t = make_ptr<type::Type>(type::BuiltinType::Func);
@@ -5145,6 +5146,13 @@ Value VM::fileio_read_builtin(int argCount, Value* args)
     char buf[4096];
     f->file->read(buf, sizeof(buf));
     std::streamsize n = f->file->gcount();
+    if (f->binary) {
+        ObjList* lst = listVal();
+        lst->elts.reserve(static_cast<size_t>(n));
+        for (std::streamsize i = 0; i < n; ++i)
+            lst->elts.push_back(byteVal(static_cast<uint8_t>(buf[i])));
+        return objVal(lst);
+    }
     std::string s(buf, static_cast<size_t>(n));
     return objVal(stringVal(toUnicodeString(s)));
 }
@@ -5195,7 +5203,46 @@ Value VM::fileio_readfile_builtin(int argCount, Value* args)
     std::stringstream ss;
     ss << in.rdbuf();
     std::string data = ss.str();
+    if (format == "binary") {
+        ObjList* lst = listVal();
+        lst->elts.reserve(data.size());
+        for (char c : data)
+            lst->elts.push_back(byteVal(static_cast<uint8_t>(c)));
+        return objVal(lst);
+    }
     return objVal(stringVal(toUnicodeString(data)));
+}
+
+Value VM::fileio_write_builtin(int argCount, Value* args)
+{
+    if (argCount != 2 || !isFile(args[0]))
+        throw std::invalid_argument("fileio.write expects file handle and data");
+    ObjFile* f = asFile(args[0]);
+    if (!f->file || !f->file->is_open()) return nilVal();
+    if (f->binary) {
+        if (!isList(args[1]))
+            throw std::invalid_argument("fileio.write expects list of bytes in binary mode");
+        ObjList* lst = asList(args[1]);
+        for (int i = 0; i < lst->length(); ++i) {
+            const Value& v = lst->elts.at(i);
+            uint8_t b;
+            if (v.isByte())
+                b = v.asByte();
+            else if (v.isInt()) {
+                int iv = v.asInt();
+                if (iv < 0 || iv > 255)
+                    throw std::invalid_argument("fileio.write int out of byte range");
+                b = static_cast<uint8_t>(iv);
+            } else {
+                throw std::invalid_argument("fileio.write expects list of bytes or ints");
+            }
+            f->file->put(static_cast<char>(b));
+        }
+    } else {
+        std::string s = toString(args[1]);
+        (*f->file) << s;
+    }
+    return nilVal();
 }
 
 #endif // ROXAL_ENABLE_FILEIO

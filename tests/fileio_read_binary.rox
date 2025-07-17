@@ -1,0 +1,4 @@
+import fileio
+
+print(fileio.readFile('../tests/testfile.txt', 'binary'))
+
