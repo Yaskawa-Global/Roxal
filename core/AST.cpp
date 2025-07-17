@@ -1052,7 +1052,7 @@ std::string Assignment::opString() const
 {
     switch (op) {
         case Assign: return "=";
-        case CopyAssign: return "<-";
+        case CopyInto: return "<-";
         default: return "?";
     }
 }

@@ -2681,11 +2681,11 @@ std::pair<InterpretResult,Value> VM::execute()
                 std::swap(peek(0), peek(1));
                 break;
             }
-            case asByte(OpCode::CopyAssign): {
+            case asByte(OpCode::CopyInto): {
                 Value rhs = pop();
                 Value lhs = pop();
                 try {
-                    copyAssign(lhs, rhs);
+                    copyInto(lhs, rhs);
                 } catch (std::exception& e) {
                     runtimeError(e.what());
                     return errorReturn;

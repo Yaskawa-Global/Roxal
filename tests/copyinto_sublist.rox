@@ -7,7 +7,7 @@ print(l[1] is l2) // true
 print(l) 
 
 var l4 = [4,4,4]
-// hence, if we shallow copy assign l[1], it should behave like copy assigning any other list lvalue
+// hence, if we shallow copy into l[1], it should behave like copying into any other list lvalue
 
 l[1] <- l4  // just copy the values in l4 ([4,4,4]) into l[1] which is l2
 

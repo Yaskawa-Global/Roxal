@@ -1256,10 +1256,10 @@ std::any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *context)
 {
     visitStart();
 
-    if (context->EQUALS() || context->COPYASSIGN()) { // assignment or copy-assignment
+    if (context->EQUALS() || context->COPYASSIGN()) { // assignment or copy-into
         auto assign = std::make_shared<Assignment>();
         setSourceInfo(assign, context);
-        assign->op = context->COPYASSIGN() ? Assignment::CopyAssign : Assignment::Assign;
+        assign->op = context->COPYASSIGN() ? Assignment::CopyInto : Assignment::Assign;
 
         if (context->IDENTIFIER()) {  // property or variable set
 
