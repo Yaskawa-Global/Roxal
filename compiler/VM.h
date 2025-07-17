@@ -293,11 +293,6 @@ public:
     Value signal_freq_builtin(int argCount, Value* args);
     Value signal_set_builtin(int argCount, Value* args);
 
-    Value math_identity_builtin(int argCount, Value* args);
-    Value math_zeros_builtin(int argCount, Value* args);
-    Value math_ones_builtin(int argCount, Value* args);
-    Value math_dot_builtin(int argCount, Value* args);
-    Value math_cross_builtin(int argCount, Value* args);
 
     Value print_builtin(int argCount, Value* args);
     Value len_builtin(int argCount, Value* args);
