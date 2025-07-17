@@ -101,6 +101,10 @@ set(COMPILER_SOURCES
     compiler/linenoise.c
 )
 
+if(ROXAL_ENABLE_FILEIO)
+    list(APPEND COMPILER_SOURCES compiler/ModuleFileIO.cpp)
+endif()
+
 set(MAIN_SOURCE compiler/roxal.cpp)
 
 
