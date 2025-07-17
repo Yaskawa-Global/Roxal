@@ -24,7 +24,7 @@ tests = [
     'andtest', 'ortest', 'not',
     'arith', 'factorial', 'defaultvalues', 'construct_defaults', 'typeof_test',
     'dict', 'dict2', 'dict_keyerror', 'dict_dot', 'dict_dot_keyerror', 'list', 'list2', 'copyinto_list', 'copyinto_sublist', 'copyinto_signal',
-    'list_add_test', 'range', 'range2', 'enum1', 'enum2', 'enum3', 'upvalue_leak',
+    'list_add_test', 'list_dict_equal', 'range', 'range2', 'enum1', 'enum2', 'enum3', 'upvalue_leak',
     'unicode', 'signal_clock', 'signal_add', 'signal_subtract', 'signal_multiply', 'signal_divide', 'signal_modulo',
     'signal_greater', 'signal_less', 'signal_equal', 'signal_history', 'signal_cycle',
     'signal_and', 'signal_or', 'signal_not', 'signal_band', 'signal_bor', 'signal_bxor', 'signal_bnot',

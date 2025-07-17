@@ -1,0 +1,14 @@
+var l1 = [1,2,3]
+var l2 = [1,2,3]
+var l3 = l1
+print(l1 == l2)
+print(l1 == l3)
+print(l1 == [3,2,1])
+
+var d1 = { 'a': 1, 'b': 2 }
+var d2 = { 'a': 1, 'b': 2 }
+var d3 = d1
+print(d1 == d2)
+print(d1 == { 'b': 2, 'a': 1 })
+print(d1 == d3)
+
