@@ -48,7 +48,7 @@ list(APPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-linux")
 # Set ANTLR4_ROOT to the location where ANTLR4 is installed by vcpkg
 set(ANTLR4_ROOT "${VCPKG_ROOT}/installed/x64-linux")
 
-# Find ANTLR4 package
+# Find ANTLR4 package (if updated, adjust the -v command below)
 find_package(antlr4-runtime 4.13.1 CONFIG REQUIRED)
 
 #
@@ -130,7 +130,7 @@ set(GRAMMAR_FILE ${CMAKE_SOURCE_DIR}/compiler/Roxal.g4)
 # Custom command to generate ANTLR4 parser and lexer
 add_custom_command(
     OUTPUT ${GENERATED_SOURCES}
-    COMMAND antlr4 -Dlanguage=Cpp -package "roxal" -no-listener -visitor ${GRAMMAR_FILE} -o ${GENERATED_DIR}
+    COMMAND antlr4 -v 4.13.1 -Dlanguage=Cpp -package "roxal" -no-listener -visitor ${GRAMMAR_FILE} -o ${GENERATED_DIR}
     DEPENDS ${GRAMMAR_FILE}
     COMMENT "Generating ANTLR4 parser and lexer from Roxal.g4"
 )
