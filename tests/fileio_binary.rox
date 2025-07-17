@@ -1,0 +1,5 @@
+import fileio
+
+var h = fileio.open('../tests/testfile.txt', false, 'binary')
+print(fileio.isOpen(h))
+fileio.readLine(h)

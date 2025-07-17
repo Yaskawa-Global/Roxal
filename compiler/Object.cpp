@@ -1840,9 +1840,9 @@ std::string roxal::objForeignPtrToString(const ObjForeignPtr* fp)
     return oss.str();
 }
 
-ObjFile* roxal::fileVal(std::fstream* f)
+ObjFile* roxal::fileVal(roxal::ptr<std::fstream> f, bool binary)
 {
-    return newObj<ObjFile>(__func__, f);
+    return newObj<ObjFile>(__func__, std::move(f), binary);
 }
 
 std::string roxal::objFileToString(const ObjFile* f)
