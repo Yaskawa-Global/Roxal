@@ -1888,7 +1888,31 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
 
                 inst.resolve();
-                if (isObjectInstance(inst)) {
+                if (isDict(inst)) {
+                    ObjDict* dict = asDict(inst);
+                    Value key { objVal(name) };
+                    bool hasKey = false;
+                    try {
+                        hasKey = dict->contains(key);
+                    } catch (std::exception&) {
+                        hasKey = false;
+                    }
+                    if (hasKey) {
+                        Value result {};
+                        try {
+                            result = dict->at(key);
+                        } catch (std::exception&) {
+                            runtimeError("KeyError: key '" + toString(key) + "' not found in dict.");
+                            return errorReturn;
+                        }
+                        pop();
+                        push(result);
+                        break;
+                    } else {
+                        runtimeError("KeyError: key '" + toString(key) + "' not found in dict.");
+                        return errorReturn;
+                    }
+                } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     // is it an instance property?
                     auto it = objInst->properties.find(name->hash);
@@ -2001,7 +2025,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                 }
 
-                runtimeError("Only object and actor instances have methods and only objects instances have properties.");
+                runtimeError("Only object and actor instances have methods and only object, actor, and dictionary instances have properties (string keys only).");
                 return errorReturn;
                 break;
             }
@@ -2045,7 +2069,31 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
 
                 inst.resolve();
-                if (isObjectInstance(inst)) {
+                if (isDict(inst)) {
+                    ObjDict* dict = asDict(inst);
+                    Value key { objVal(name) };
+                    bool hasKey = false;
+                    try {
+                        hasKey = dict->contains(key);
+                    } catch (std::exception&) {
+                        hasKey = false;
+                    }
+                    if (hasKey) {
+                        Value result {};
+                        try {
+                            result = dict->at(key);
+                        } catch (std::exception&) {
+                            runtimeError("KeyError: key '" + toString(key) + "' not found in dict.");
+                            return errorReturn;
+                        }
+                        pop();
+                        push(result);
+                        break;
+                    } else {
+                        runtimeError("KeyError: key '" + toString(key) + "' not found in dict.");
+                        return errorReturn;
+                    }
+                } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     auto it = objInst->properties.find(name->hash);
                     if (it != objInst->properties.end()) {
@@ -2173,7 +2221,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                 }
 
-                runtimeError("Only object and actor instances have methods and only objects instances have properties.");
+                runtimeError("Only object and actor instances have methods and only object, actor, and dictionary instances have properties (string keys only).");
                 return errorReturn;
                 break;
             }
@@ -2182,7 +2230,15 @@ std::pair<InterpretResult,Value> VM::execute()
                 Value& inst { peek(1) };
                 inst.resolve();
                 ObjString* name = (instruction == asByte(OpCode::SetProp)) ? readString() : readString2();
-                if (isObjectInstance(inst)) {
+                if (isDict(inst)) {
+                    ObjDict* dict = asDict(inst);
+                    Value value { peek(0) };
+                    Value key { objVal(name) };
+                    dict->store(key, value);
+                    popN(2);
+                    push(value);
+                    break;
+                } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     //std::cout << "setting prop " << toUTF8StdString(name->s) << " of " << toString(inst) << " to " << toString(peek(0)) << std::endl;
 
@@ -2264,7 +2320,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                     break;
                 }
-                runtimeError("Only instances have properties.");
+                runtimeError("Only object, actor, and dictionary instances have properties (string keys only).");
                 return errorReturn;
                 break;
             }
@@ -2272,7 +2328,17 @@ std::pair<InterpretResult,Value> VM::execute()
             case asByte(OpCode::SetPropCheck): {
                 Value& inst { peek(1) };
                 inst.resolve();
-                if (isObjectInstance(inst)) {
+                if (isDict(inst)) {
+                    ObjDict* dict = asDict(inst);
+                    ObjString* name = (instruction == asByte(OpCode::SetPropCheck)) ? readString() : readString2();
+
+                    Value value { peek(0) };
+
+                    dict->store(objVal(name), value);
+                    popN(2);
+                    push(value);
+                    break;
+                } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjString* name = (instruction == asByte(OpCode::SetPropCheck)) ? readString() : readString2();
 
@@ -2373,7 +2439,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                     break;
                 }
-                runtimeError("Only instances have properties.");
+                runtimeError("Only object, actor, and dictionary instances have properties (string keys only).");
                 return errorReturn;
                 break;
             }
