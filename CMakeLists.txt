@@ -5,6 +5,9 @@ project(roxal VERSION 1.0 LANGUAGES CXX C)
 enable_testing()
 
 
+option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
+
+
 add_compile_definitions(
 #    DEBUG_OUTPUT_LEXER_TOKENS
 #    DEBUG_OUTPUT_PARSE_TREE
@@ -82,7 +85,7 @@ set(CORE_SOURCES
     core/json11.cpp
 )
 
-set(SOURCES
+set(COMPILER_SOURCES
     compiler/ASTEditor.cpp
     compiler/ASTGenerator.cpp
     compiler/ASTGraphviz.cpp
@@ -96,8 +99,9 @@ set(SOURCES
     compiler/Thread.cpp
     compiler/VM.cpp
     compiler/linenoise.c
-    compiler/roxal.cpp
 )
+
+set(MAIN_SOURCE compiler/roxal.cpp)
 
 
 #
@@ -149,50 +153,60 @@ link_directories(
 # Add libffi include directories discovered via pkg-config
 include_directories(${LIBFFI_INCLUDE_DIRS})
 
-# Add the executable target
-add_executable(roxal ${CORE_SOURCES} ${SOURCES} ${GENERATED_SOURCES})
 
-add_dependencies(roxal generate_parser)
+# Build the static library containing the core compiler and VM
+add_library(roxalcore STATIC ${CORE_SOURCES} ${COMPILER_SOURCES} ${GENERATED_SOURCES})
+
+add_dependencies(roxalcore generate_parser)
 
 
-target_link_libraries(roxal
-    antlr4-runtime
-    icuio
-    icui18n
-    icuuc
-    icudata
-    pthread
-    boost_program_options
-    dataflow
-    ${LIBFFI_LIBRARIES}
+target_link_libraries(roxalcore
+    PUBLIC
+        antlr4-runtime
+        icuio
+        icui18n
+        icuuc
+        icudata
+        pthread
+        dataflow
+        ${LIBFFI_LIBRARIES}
 )
 
 
 # Set compile options based on the build type
-target_compile_options(roxal PRIVATE
+target_compile_options(roxalcore PRIVATE
     $<$<CONFIG:DEBUG>:-fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1>
     $<$<CONFIG:RELEASE>:-O3>
 )
 
 # Set compile definitions based on the build type
-target_compile_definitions(roxal PRIVATE
+target_compile_definitions(roxalcore PRIVATE
     $<$<CONFIG:DEBUG>:DEBUG_BUILD>
     $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
 )
 
 
-#
-# Testing
+if(ROXAL_BUILD_MAIN)
+    add_executable(roxal ${MAIN_SOURCE})
+    target_link_libraries(roxal PRIVATE roxalcore boost_program_options)
+    target_compile_options(roxal PRIVATE
+        $<$<CONFIG:DEBUG>:-fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1>
+        $<$<CONFIG:RELEASE>:-O3>
+    )
+    target_compile_definitions(roxal PRIVATE
+        $<$<CONFIG:DEBUG>:DEBUG_BUILD>
+        $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
+    )
 
-add_test(NAME RoxalSourceTests
-    COMMAND python3 ${CMAKE_SOURCE_DIR}/runtests.py
-)
+    add_test(NAME RoxalSourceTests
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/runtests.py
+    )
 
-# Set properties to always show output
-set_tests_properties(RoxalSourceTests PROPERTIES
-    PASS_REGULAR_EXPRESSION ".*"
-    FAIL_REGULAR_EXPRESSION ".*FAIL.*"
-)
+    set_tests_properties(RoxalSourceTests PROPERTIES
+        PASS_REGULAR_EXPRESSION ".*"
+        FAIL_REGULAR_EXPRESSION ".*FAIL.*"
+    )
+endif()
 
 
 add_custom_target(check
