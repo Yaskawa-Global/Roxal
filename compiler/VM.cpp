@@ -4611,6 +4611,7 @@ void VM::defineNativeFunctions()
     }
     addSys("_engine_stop", &VM::engine_stop_native);
     addSys("typeof", &VM::typeof_native);
+    addSys("_df_graph", &VM::df_graph_native);
     addSys("_df_graphdot", &VM::df_graphdot_native);
     addSys("loadlib", &VM::loadlib_native);
 
@@ -4783,11 +4784,21 @@ Value VM::typeof_native(int argCount, Value* args)
     return objVal(typeObj);
 }
 
+Value VM::df_graph_native(int argCount, Value* args)
+{
+    if (argCount != 0)
+        throw std::invalid_argument("_df_graph has no arguments");
+
+    auto engine = df::DataflowEngine::instance();
+    auto dot = engine->graph();
+    return objVal(stringVal(toUnicodeString(dot)));
+}
+
 Value VM::df_graphdot_native(int argCount, Value* args)
 {
     std::string title;
     if (argCount > 1)
-        throw std::invalid_argument("_df_graphdot expects zero or one string argument");
+        throw std::invalid_argument("_df_graphdot expects zero or one title :string argument");
     if (argCount == 1) {
         if (!isString(args[0]))
             throw std::invalid_argument("_df_graphdot expects string argument");
