@@ -60,24 +60,6 @@ static ValueType builtinToValueType(type::BuiltinType bt)
     }
 }
 
-static std::vector<type::Type::FuncType::ParamType>
-constructParams(const std::vector<std::pair<std::string, type::BuiltinType>>& infos,
-                const std::vector<Value>& defaults)
-{
-    using PT = type::Type::FuncType::ParamType;
-    std::vector<PT> params;
-    params.reserve(infos.size());
-    for(size_t i=0; i<infos.size(); ++i) {
-        PT p(toUnicodeString(infos[i].first));
-        p.type = make_ptr<type::Type>(infos[i].second);
-        if (i < defaults.size() && !defaults[i].isNil())
-            p.hasDefault = true;
-        else
-            p.hasDefault = false;
-        params.push_back(p);
-    }
-    return params;
-}
 
 static bool isExceptionType(ObjObjectType* type)
 {

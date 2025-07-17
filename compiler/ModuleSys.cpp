@@ -1,7 +1,6 @@
 #include "ModuleSys.h"
 #include "VM.h"
 #include "Object.h"
-#include "FFI.h"
 
 using namespace roxal;
 
@@ -10,24 +9,6 @@ ModuleSys::ModuleSys(Value moduleType)
 {
 }
 
-static std::vector<type::Type::FuncType::ParamType>
-constructParams(const std::vector<std::pair<std::string, type::BuiltinType>>& infos,
-                const std::vector<Value>& defaults)
-{
-    using PT = type::Type::FuncType::ParamType;
-    std::vector<PT> params;
-    params.reserve(infos.size());
-    for(size_t i=0; i<infos.size(); ++i) {
-        PT p(toUnicodeString(infos[i].first));
-        p.type = make_ptr<type::Type>(infos[i].second);
-        if (i < defaults.size() && !defaults[i].isNil())
-            p.hasDefault = true;
-        else
-            p.hasDefault = false;
-        params.push_back(p);
-    }
-    return params;
-}
 
 void ModuleSys::registerBuiltins(VM& vm)
 {
@@ -48,7 +29,7 @@ void ModuleSys::registerBuiltins(VM& vm)
             t->func = type::Type::FuncType();
             t->func->isProc = true;
             std::vector<Value> defaults { intVal(0), intVal(0), intVal(0), intVal(0) };
-            auto params = constructParams({ {"s", type::BuiltinType::Int},
+            auto params = BuiltinModule::constructParams({ {"s", type::BuiltinType::Int},
                                            {"ms", type::BuiltinType::Int},
                                            {"us", type::BuiltinType::Int},
                                            {"ns", type::BuiltinType::Int} },
@@ -78,7 +59,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         {
             auto t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
-            auto params = constructParams({{"freq", type::BuiltinType::Int}}, {});
+            auto params = BuiltinModule::constructParams({{"freq", type::BuiltinType::Int}}, {});
             t->func->params.resize(params.size());
             for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
             addSys("clock", std::mem_fn(&VM::clock_signal_native), t, {});
