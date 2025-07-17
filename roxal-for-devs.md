@@ -270,26 +270,155 @@ for [k,v] in d:  // keys and values of dict d
   print("k={k} v={v})
 ```
 
-## Objects & Actors
 
 
 ## Modules
 
-Similar to Python, a roxal file is a module.
+Similar to Python, a roxal file (`.rox`) is a module.  The variables declared at the 'top level' of the file are considered 'module scoped' variables.
+You can import one module into another via the `import` statement.
 
+`mymain.rox`:
+```roxal
+import mymodule
 
+mymodule.showVersion() // prints Version 1.0
+```
 
+`mymodule.rox`: (same folder)
+```roxal
+func showVersion():
+  print('Version 1.0')
+```
 
+Notice that accessing the symbol names from the imported module required prefixing them with the module name separated by period(s).
+If you want to import all of the module's names into the current module scope, you can use `import mymodule.*'
 
+```roxal
+import math.*
+print(cos(0.0)) // didn't need to write math.cos
+```
 
+You can nest module using folders in the filesystem: e.g. to import `mymodule/submodule/toplevel.rox`
+
+```roxal
+import mymodule.submodule.toplevel
+```
+
+(the folder containing the `mymodule/` folder must be the module paths - see below)
+
+If you need to have several .rox files in your module, you can place them in a folder containing a specially named `init.rox` file, and the import will execute that file as the module's file (the module name will be the folder name).  This file could, for example, import other files from that folder to help implement the module.
 
 ### Module search paths
 
 Roxal resolves `import` statements by searching a list of module paths. The
 paths can be supplied explicitly via the `ROXALPATH` environment variable or the
-`--module-paths` command line option. Multiple paths may be provided by
-repeating the option or using the platform-specific separator (`:` on POSIX,
-`;` on Windows) in `ROXALPATH`.
+`-p` command line option. Multiple paths may be provided by repeating the option or using the platform-specific
+separator (`:` on POSIX, `;` on Windows) in `ROXALPATH`.
 
 When executing a script file, the directory containing that script is always
 added implicitly as the first search path.
+
+
+## Objects
+
+While understanding Object-Oriented-Programming (OOP) may not be necessary for robotics application programmers, Roxal has a familiar set of OOP features.
+
+An object type (aka class) can be declared and instantiated thus:
+
+```roxal
+type MyObjType object:
+
+  var a :int  // member variable (sometimes called a property)
+  private var b :int = 3
+
+  proc init():  // init is the constructor (can have params)
+    print('constructed')
+
+  func double_a_by_b():
+    return 2*a*b  // no need to use this.a (unlike self. in Python)
+
+
+// instantiate an instance:
+
+myobj = MyObjType()
+myobj.a = 2    // a is public (b it not)
+print( myobj.double_a_by_b() ) // method call - prints 12
+```
+
+Inheritance uses the `extends` keyword:
+
+```roxal
+type ChildObjType object extends MyObjType:
+
+  var c :real
+
+child = ChildObjType()
+child.a = 2
+child.c = 1.5
+d = child.double_a_by_b()
+print(child is MyObjType)        // true
+print(ChildObjType is MyObjType) // true
+```
+
+(`interface` is not fully implemented, but it'll be possible to inherit from multiple interfaces and one object type)
+
+## Actors
+
+Actors are similar to objects, with a key difference - each actor instance has its *own associated execution thread*.  That is the only thread that executes the actor's methods.
+
+This is an ideal way to achieve concurrency, because actors don't share any state with other actors (or the main program thread) - so there is no need to think about reentrancy or locking.
+
+The syntax for declaring an actor is similar to an object, except it cannot have any non-private member variables.  You can think of calling a method on an actor instance as being more like sending it a message to execute that method.
+
+Note that the caller is not blocked when calling an actor method - instead the call returns immediately with a 'future' for the return value (sometimes called a promise).  This behaves just like the actual return value, but won't be useable until the actor method completes and provide the value.  An attempt to use the return value future before it is ready will block the using thead (- though you can pass futures to other functions, store them etc.).  A future value is always implicitly convertible to the underlying value type.
+
+```roxal
+type Worker actor:
+
+  private var amount :real = 1.0
+
+  proc addto(r :real):
+    amount = amount + r
+    wait(ms=200)  // 'sleep' for a bit
+
+  func currentAmount() -> real:
+    wait(ms=300)
+    return amount
+
+w = Worker()
+w.addto(2.0) // doesn't block
+
+amt = w.currentAmount()  // also doesn't block (amt is a 'future real')
+
+// constructing a real() from a 'future real' always resolves it to the real value
+//  (hence, this will block for ~300ms until the Worker currentAmount() method completes
+//    - i.e. until that future promise has been fulfilled)
+print( real(amt) ) // 3
+```
+
+(Note: the VM doesn't currently prohibit accessing/mutating any module scope vars from an actor, but in future it will prohibit mutating all module scope variables and prohibit access to non-const or reference module variable.  So, for now, only 'read' value-type module variables that are not modified elsewhere (i.e. logical 'constants'))
+
+## Events
+
+Events are useful for constructing responsive programs.  For robotics, this may be to respond to I/O, sensor data or other internal states of the program.
+A variable of type `event` can be declared to refer to a type of event that can be 'triggered' to occur as desired.
+
+```roxal
+var e :event
+
+// declare an event 'handler' that will be triggered whenever e occurs
+//  (not executed here now - more like a func declaration)
+on e:
+  print('e occurred')
+
+// some code in another thread (e.g. actor)
+emit e   // trigger the event e to occur
+
+// some time later in another place
+emit e   // triggered again
+```
+
+## Signals
+
+
+## Builtin Modules & Functions
