@@ -320,6 +320,8 @@ public:
     Value fileio_readline_builtin(int argCount, Value* args);
     Value fileio_readfile_builtin(int argCount, Value* args);
 #endif
+    Value toJson_builtin(int argCount, Value* args);
+    Value fromJson_builtin(int argCount, Value* args);
 
     Value captureStacktrace();
 

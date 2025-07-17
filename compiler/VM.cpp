@@ -10,6 +10,8 @@
 #include <ffi.h>
 #include <dlfcn.h>
 
+#include <core/json11.h>
+
 
 #include "ASTGenerator.h"
 #include "ASTGraphviz.h"
@@ -3794,6 +3796,8 @@ void VM::defineBuiltinFunctions()
     addSys("_strongref", &VM::strongref_builtin);
     addSys("serialize", &VM::serialize_builtin);
     addSys("deserialize", &VM::deserialize_builtin);
+    addSys("toJson", &VM::toJson_builtin);
+    addSys("fromJson", &VM::fromJson_builtin);
 }
 
 void VM::defineBuiltinMethods()
@@ -4339,6 +4343,140 @@ Value VM::deserialize_builtin(int argCount, Value* args)
     ss.seekg(0);
     auto ctx = make_ptr<SerializationContext>();
     return readValue(ss, ctx);
+}
+
+static json11::Json valueToJson(const Value& v) {
+    using json11::Json;
+    switch(v.type()) {
+        case ValueType::Nil:   return Json();
+        case ValueType::Bool:  return Json(v.asBool());
+        case ValueType::Byte:  return Json(int(v.asByte()));
+        case ValueType::Int:   return Json(v.asInt());
+        case ValueType::Real:  return Json(v.asReal());
+        case ValueType::String: return Json(toUTF8StdString(asString(v)->s));
+        case ValueType::List: {
+            Json::array arr; arr.reserve(asList(v)->length());
+            for(int i=0;i<asList(v)->length();++i)
+                arr.push_back(valueToJson(asList(v)->elts.at(i)));
+            return Json(arr);
+        }
+        case ValueType::Dict: {
+            Json::object obj;
+            for(const auto& kv : asDict(v)->items()) {
+                if(!isString(kv.first))
+                    throw std::runtime_error("dict key not string");
+                obj[toUTF8StdString(asString(kv.first)->s)] = valueToJson(kv.second);
+            }
+            return Json(obj);
+        }
+        default:
+            if(isObjectInstance(v) || isActorInstance(v))
+                return valueToJson(toType(ValueType::Dict, v, false));
+            throw std::runtime_error("unsupported type for toJson");
+    }
+}
+
+static void dumpJsonPretty(const json11::Json& j, std::string& out, int indent=0) {
+    using json11::Json;
+    switch(j.type()) {
+        case Json::ARRAY: {
+            out += "[";
+            auto arr = j.array_items();
+            if(!arr.empty()) {
+                out += "\n";
+                int nIndent = indent+2;
+                for(size_t i=0;i<arr.size();++i) {
+                    out += std::string(nIndent,' ');
+                    dumpJsonPretty(arr[i], out, nIndent);
+                    if(i+1<arr.size()) out += ",\n";
+                }
+                out += "\n" + std::string(indent,' ');
+            }
+            out += "]";
+            break;
+        }
+        case Json::OBJECT: {
+            out += "{";
+            auto obj = j.object_items();
+            if(!obj.empty()) {
+                out += "\n";
+                int nIndent = indent+2;
+                size_t count=0;
+                for(auto it=obj.begin(); it!=obj.end(); ++it,++count) {
+                    out += std::string(nIndent,' ');
+                    dumpJsonPretty(Json(it->first), out, nIndent);
+                    out += ": ";
+                    dumpJsonPretty(it->second, out, nIndent);
+                    if(count+1<obj.size()) out += ",\n";
+                }
+                out += "\n" + std::string(indent,' ');
+            }
+            out += "}";
+            break;
+        }
+        default:
+            out += j.dump();
+    }
+}
+
+Value VM::toJson_builtin(int argCount, Value* args)
+{
+    if(argCount < 1 || argCount > 2)
+        throw std::invalid_argument("toJson expects value and optional indent bool");
+
+    bool indent = true;
+    if(argCount == 2)
+        indent = toType(ValueType::Bool, args[1], false).asBool();
+
+    json11::Json j = valueToJson(args[0]);
+    std::string out;
+    if(indent)
+        dumpJsonPretty(j, out, 0);
+    else
+        out = j.dump();
+
+    return objVal(stringVal(toUnicodeString(out)));
+}
+
+static Value jsonToValue(const json11::Json& j) {
+    using json11::Json;
+    switch(j.type()) {
+        case Json::NUL: return nilVal();
+        case Json::BOOL: return boolVal(j.bool_value());
+        case Json::NUMBER: {
+            double n = j.number_value();
+            if(std::floor(n) == n && n >= std::numeric_limits<int32_t>::min() && n <= std::numeric_limits<int32_t>::max())
+                return intVal(static_cast<int32_t>(n));
+            return realVal(n);
+        }
+        case Json::STRING: return objVal(stringVal(toUnicodeString(j.string_value())));
+        case Json::ARRAY: {
+            std::vector<Value> elts; elts.reserve(j.array_items().size());
+            for(const auto& it : j.array_items()) elts.push_back(jsonToValue(it));
+            return objVal(listVal(elts));
+        }
+        case Json::OBJECT: {
+            ObjDict* d = dictVal();
+            for(const auto& kv : j.object_items()) {
+                d->store(objVal(stringVal(toUnicodeString(kv.first))), jsonToValue(kv.second));
+            }
+            return objVal(d);
+        }
+    }
+    return nilVal();
+}
+
+Value VM::fromJson_builtin(int argCount, Value* args)
+{
+    if(argCount != 1 || !isString(args[0]))
+        throw std::invalid_argument("fromJson expects json string");
+
+    std::string s = toUTF8StdString(asString(args[0])->s);
+    std::string err;
+    json11::Json j = json11::Json::parse(s, err);
+    if(!err.empty())
+        throw std::invalid_argument(std::string("invalid json: ")+err);
+    return jsonToValue(j);
 }
 
 Value VM::vector_norm_builtin(int argCount, Value* args)
