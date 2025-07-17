@@ -115,6 +115,46 @@ call_and_print(f,2) // print 3
 call_and_print(func (a): a+1, 5) // print 6
 ```
 
+### Assignments
+
+Like most programming languages, `=` is used for assignment (unlike in mathematics, where is means equality).
+This works as you'd expect for value types.  For reference types, the references are usually being assigned.
+
+```roxal
+i = 1 // int is a value type
+j = i // j now has value 1
+i = 2
+print(j) // j is still 1
+
+l = [1,2,3] // list is a reference type
+l2 = l      // l2 is now a reference to the same list as l
+l[0] = 11   // change first element of the one list
+print(l2)   // [11,2,3]
+```
+
+It is possible to assign multiple variables at once with a *binding assignment*.  This is convenient for returning multiple values from a function.
+
+```roxal
+func f(): // return an int, a string and a dict
+  return [1, 'a', {'a':'A'}]
+
+[i, s, d] = f()
+print(i)  // 1
+print(s)  // 'a'
+print(d)  // {'a':'A'}
+```
+
+Advanced: The _copy into_ operation (`<-`) makes a shallow copy of the RHS and copies it into the LHS (- hence, the LHS must be compatible - e.g. the same type)
+
+```roxal
+l = [1,2,3]
+l2 = []
+l2 <- l   // copy elements from l into l2
+print(l2) // [1,2,3]
+l[0] = 11 // change l
+print(l2) // [1,2,3]  (still same, list l content was changed, not l2's)
+```
+
 ### Parameters & Calls
 
 Function parameters can optionally have their type explicitly supplied.  Similarly for the return type. They can also have default values (like C++).  Calls can mix positional and named arguments (positional first)
@@ -130,9 +170,105 @@ print( f(b=7, a=2) ) // // "a is 2 and b is 7"
 
 ## Operators
 
+The operators +, -, \*, / and % work how you'd expect on builtin numeric types.  Vectors and Matrices also support +, - and \*, performing matrix multiplication, vector*matrix multiplication and dot products (two vectors).
+
+```roxal
+m = [1 2
+     3 4]
+v = [1 2]
+print(m*v) // [5 11]
+```
+
+In addition, + can also be used for:
+  * string concatenation (when the left-hand-side is a string) - "hello "+"world".  This also directly converts most types into strings: "hello "+5 → "hello 5"
+  * list concatenation: [1,2,3]+[4,5,6] → [1,2,3,4,5,6]
+
+Boolean operators and, or and not work on the bool type.  (true and true and not false) → true
+
+Bitwise operators | (or), & (and), ~ (not) and ^ (xor) work with bool, byte and int types.
+In addition, | for dict will merge two dicts into one (with precedence for the RHS keys) and & for dict will yield a dict with the intersection (common) keys (with values from the LHS in case of a common key in both)
+
+```roxal
+print({'a':1,'b':2} | {'b':3,'c':4}) // {"a": 1, "b": 3, "c": 4} - keys from LHS or RHS
+print({'a':1,'b':2} & {'b':3,'c':4}) /  {"b": 2} - keys in LHS and RHS
+```
+
+The equality operators `≟` (is equal to), `≠` (not equal to), `<` / `>` (less / greater than), `≤` / `≥` (less / greater than or equal to) function as expected bool, byte, int, decimal, range, vector & matrix.  Note that the `==` and `!=` or `<>` familiar from C are also available.
+
+```
+if 5 ≥ 4:
+  print('always')
+v = [1 2]         // vector
+print(v == [1 2]) // true
+```
+
+However, for reference types, like user-defined objects & actors (more below), equality only compares the reference.
+
+The `is` operator:
+  * Checks identity - when the operands are two (non-type) values, it compares the for being the same object (e.g. list, dict, vector, matrix, string)
+  * Checks type - when the LHS is a type
+
+```roxal
+l = [1,2,3]
+l2 = [1,2,3]
+print(l is l2)   // false, same content, different lists
+print(l is list) // true, it is a list
+l3 = l2
+print(l3 is l2)  // true, the two variables l3 & l2 reference the same list
+print(1 is 1)    // true, same as == for value types
+```
+
+
+## Indexing
+
+Indexing uses the [] notation.  It works as expected for lists, dicts (by key), strings, vectors and matrices.
+In addition, there is a builtin `range` type, that can be used for slicing lists.
+
+There are two notations for ranges:
+  * using `..` - range(_start_.._end_), range(_start_..<_one_past_end_) and also with an optional stride range(_start_.._end_ by _stride_)
+    * without the `<` the _end_ is inclusive, with `<` it is excluded
+  * or using `:` - range(_start_:_end_) - exclusive, or with a stride range(_start_:_end_:_stride_).
+
+In each case, the _start_ or _end_ can be omitted to indicate 'from 0' or 'to the end'.  Negative values count from the end of the value being indexed rather from the beginning.  A negative stride jumps backward.  Omitting both - range(:) is synonymous with 'everything'.
+
+To see what is included in a range, you can construct a list from it (when definite):
+
+```roxal
+print(list( range(1..5) ))   // [1, 2, 3, 4, 5]
+print(list( range(1..<5) )) // [1, 2, 3, 4]
+l = [1,2,3]
+print( l[range(::-1)] ) // [3, 2, 1]  (indexing everything, in reverse)
+print( len( range(0..<10) )) // use len() to count elements: 10
+for i in range(1..10 by 2):
+  print(i) // 1 3 5 ...
+```
+
 ## Control Statements
 
+Common control statements, `if`, `for`, `while`.  For can iterate over ranges, lists and dicts.
 
+```roxal
+if true:
+  for i in range(..<10):
+    print(i)
+
+for e in [-1,-2,-3,-4]:
+  print(e)
+
+i = 10
+while i > 10:
+  print(i)
+  i = i - 1
+
+for [k :int,l] in [[1,2],[3,4]]:
+  print("k={k} l={l}") // k=1 l=2 ; k=3 l=4
+
+for k in d: // keys of dict d
+  print(k)
+
+for [k,v] in d:  // keys and values of dict d
+  print("k={k} v={v})
+```
 
 ## Objects & Actors
 
