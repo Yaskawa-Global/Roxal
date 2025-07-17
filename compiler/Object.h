@@ -878,7 +878,7 @@ inline ObjFuture* futureVal(const std::shared_future<Value>& fv) {
 //typedef Value (*NativeFn)(int argCount, Value* args);
 //typedef std::function<Value(int argCount, Value* args)> NativeFn;
 class VM;
-typedef Value (VM::*NativeFn)(int,Value*);
+using NativeFn = std::function<Value(VM&, int, Value*)>;
 
 struct ObjNative : public Obj
 {

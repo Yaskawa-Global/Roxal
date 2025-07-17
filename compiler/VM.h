@@ -9,6 +9,10 @@
 #include "Value.h"
 #include "InterpretResult.h"
 #include "Thread.h"
+#include "BuiltinModule.h"
+#ifdef ROXAL_ENABLE_FILEIO
+#include "ModuleFileIO.h"
+#endif
 #include <ffi.h>
 #include <vector>
 
@@ -77,6 +81,8 @@ public:
     void appendModulePaths(const std::vector<std::string>& modulePaths);
 
     ObjModuleType* getBuiltinModule(const icu::UnicodeString& name);
+    std::optional<Value> loadGlobal(const icu::UnicodeString& name) { return globals.load(name); }
+    void registerBuiltinModule(ptr<BuiltinModule> module);
 
     InterpretResult interpret(std::istream& source, const std::string& sourceName);
     InterpretResult interpretLine(std::istream& linestream);
@@ -186,9 +192,10 @@ protected:
     ObjModuleType* sysModule;
     ObjModuleType* mathModule;
 #ifdef ROXAL_ENABLE_FILEIO
-    ObjModuleType* fileioModule;
     ObjObjectType* fileIOExceptionType;
 #endif
+
+    std::vector<ptr<BuiltinModule>> builtinModules;
 
     // builtin dataflow engine actor
     std::shared_ptr<df::DataflowEngine> dataflowEngine;
@@ -213,7 +220,7 @@ public:
         ptr<type::Type> funcType;
         std::vector<Value> defaultValues;
 
-        BuiltinMethodInfo() : function(nullptr), isProc(false) {}
+        BuiltinMethodInfo() : isProc(false) {}
         BuiltinMethodInfo(NativeFn fn, bool proc = false,
                           ptr<type::Type> type=nullptr,
                           std::vector<Value> defaults = {})
@@ -311,16 +318,6 @@ public:
     Value strongref_builtin(int argCount, Value* args);
     Value serialize_builtin(int argCount, Value* args);
     Value deserialize_builtin(int argCount, Value* args);
-#ifdef ROXAL_ENABLE_FILEIO
-    Value fileio_open_builtin(int argCount, Value* args);
-    Value fileio_close_builtin(int argCount, Value* args);
-    Value fileio_isopen_builtin(int argCount, Value* args);
-    Value fileio_moredata_builtin(int argCount, Value* args);
-    Value fileio_read_builtin(int argCount, Value* args);
-    Value fileio_readline_builtin(int argCount, Value* args);
-    Value fileio_readfile_builtin(int argCount, Value* args);
-    Value fileio_write_builtin(int argCount, Value* args);
-#endif
     Value toJson_builtin(int argCount, Value* args);
     Value fromJson_builtin(int argCount, Value* args);
 

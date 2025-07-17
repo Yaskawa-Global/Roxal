@@ -136,13 +136,13 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
         if (funcType) {
             auto argsVec = marshalArgs(funcType, defaults, callSpec,
                                        includeReceiver, receiver);
-            Value result { (this->*fn)(argsVec.size(), argsVec.data()) };
+            Value result { fn(*this, argsVec.size(), argsVec.data()) };
             *(thread->stackTop - callSpec.argCount - 1) = result;
             popN(callSpec.argCount);
             return true;
         } else {
             Value* base = &(*thread->stackTop) - callSpec.argCount - (includeReceiver ? 1 : 0);
-            Value result { (this->*fn)(callSpec.argCount + (includeReceiver ? 1 : 0), base) };
+            Value result { fn(*this, callSpec.argCount + (includeReceiver ? 1 : 0), base) };
             *(thread->stackTop - callSpec.argCount - 1) = result;
             popN(callSpec.argCount);
             return true;
@@ -190,14 +190,11 @@ VM::VM()
 
     sysModule = moduleTypeVal(UnicodeString("sys"));
     mathModule = moduleTypeVal(UnicodeString("math"));
-#ifdef ROXAL_ENABLE_FILEIO
-    fileioModule = moduleTypeVal(UnicodeString("fileio"));
-#endif
 
     sysModule->incRef();
     mathModule->incRef();
 #ifdef ROXAL_ENABLE_FILEIO
-    fileioModule->incRef();
+    registerBuiltinModule(make_ptr<ModuleFileIO>());
 #endif
 
     // Initialize dataflow engine as builtin actor
@@ -211,7 +208,7 @@ VM::VM()
     {
         ActorInstance* inst = asActorInstance(dataflowEngineActor);
         CallSpec cs{}; cs.argCount = 0; cs.allPositional = true;
-        Value callee = objVal(boundNativeVal(dataflowEngineActor, &VM::dataflow_run_native, true, nullptr, {}));
+        Value callee = objVal(boundNativeVal(dataflowEngineActor, std::mem_fn(&VM::dataflow_run_native), true, nullptr, {}));
         inst->queueCall(callee, cs, nullptr);
     }
 
@@ -296,9 +293,8 @@ VM::~VM()
     initString->decRef();
     sysModule->decRef();
     mathModule->decRef();
-#ifdef ROXAL_ENABLE_FILEIO
-    fileioModule->decRef();
-#endif
+
+    builtinModules.clear();
 
     if (conditionalInterruptClosure)
         conditionalInterruptClosure->decRef();
@@ -3816,28 +3812,10 @@ void VM::defineBuiltinFunctions()
         defineNative(name, fn, funcType, defaults);
         sysModule->vars.store(toUnicodeString(name), objVal(nativeVal(fn, nullptr, funcType, defaults)));
     };
-#ifdef ROXAL_ENABLE_FILEIO
-    auto addFile = [&](const std::string& name, NativeFn fn,
-                       ptr<type::Type> funcType = nullptr,
-                       std::vector<Value> defaults = {}){
-        defineNative(name, fn, funcType, defaults);
-        fileioModule->vars.store(toUnicodeString(name), objVal(nativeVal(fn, nullptr, funcType, defaults)));
-    };
-#endif
 
-    addSys("print", &VM::print_builtin);
-    addSys("len", &VM::len_builtin);
-    addSys("clone", &VM::clone_builtin);
-#ifdef ROXAL_ENABLE_FILEIO
-    addFile("open", &VM::fileio_open_builtin);
-    addFile("close", &VM::fileio_close_builtin);
-    addFile("isOpen", &VM::fileio_isopen_builtin);
-    addFile("moreData", &VM::fileio_moredata_builtin);
-    addFile("read", &VM::fileio_read_builtin);
-    addFile("readLine", &VM::fileio_readline_builtin);
-    addFile("readFile", &VM::fileio_readfile_builtin);
-    addFile("write", &VM::fileio_write_builtin);
-#endif
+    addSys("print", std::mem_fn(&VM::print_builtin));
+    addSys("len", std::mem_fn(&VM::len_builtin));
+    addSys("clone", std::mem_fn(&VM::clone_builtin));
     {
         auto t = make_ptr<type::Type>(type::BuiltinType::Func);
         t->func = type::Type::FuncType();
@@ -3850,22 +3828,25 @@ void VM::defineBuiltinFunctions()
                                      defaults);
         t->func->params.resize(params.size());
         for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
-        addSys("wait", &VM::wait_builtin, t, defaults);
+        addSys("wait", std::mem_fn(&VM::wait_builtin), t, defaults);
     }
-    addSys("fork", &VM::fork_builtin);
-    addSys("join", &VM::join_builtin);
-    addSys("stacktrace", &VM::stacktrace_builtin);
-    addSys("_threadid", &VM::threadid_builtin);
-    addSys("_stackdepth", &VM::stackdepth_builtin);
-    addSys("_wait", &VM::await_builtin);
-    addSys("_runtests", &VM::runtests_builtin);
-    addSys("_weakref", &VM::weakref_builtin);
-    addSys("_weak_alive", &VM::weak_alive_builtin);
-    addSys("_strongref", &VM::strongref_builtin);
-    addSys("serialize", &VM::serialize_builtin);
-    addSys("deserialize", &VM::deserialize_builtin);
-    addSys("toJson", &VM::toJson_builtin);
-    addSys("fromJson", &VM::fromJson_builtin);
+    addSys("fork", std::mem_fn(&VM::fork_builtin));
+    addSys("join", std::mem_fn(&VM::join_builtin));
+    addSys("stacktrace", std::mem_fn(&VM::stacktrace_builtin));
+    addSys("_threadid", std::mem_fn(&VM::threadid_builtin));
+    addSys("_stackdepth", std::mem_fn(&VM::stackdepth_builtin));
+    addSys("_wait", std::mem_fn(&VM::await_builtin));
+    addSys("_runtests", std::mem_fn(&VM::runtests_builtin));
+    addSys("_weakref", std::mem_fn(&VM::weakref_builtin));
+    addSys("_weak_alive", std::mem_fn(&VM::weak_alive_builtin));
+    addSys("_strongref", std::mem_fn(&VM::strongref_builtin));
+    addSys("serialize", std::mem_fn(&VM::serialize_builtin));
+    addSys("deserialize", std::mem_fn(&VM::deserialize_builtin));
+    addSys("toJson", std::mem_fn(&VM::toJson_builtin));
+    addSys("fromJson", std::mem_fn(&VM::fromJson_builtin));
+
+    for (auto& mod : builtinModules)
+        mod->registerBuiltins(*this);
 }
 
 void VM::defineBuiltinMethods()
@@ -3873,35 +3854,35 @@ void VM::defineBuiltinMethods()
     if (!builtinMethods.empty())
         return;
 
-    defineBuiltinMethod(ValueType::Vector, "norm", &VM::vector_norm_builtin);
-    defineBuiltinMethod(ValueType::Vector, "sum", &VM::vector_sum_builtin);
-    defineBuiltinMethod(ValueType::Vector, "normalized", &VM::vector_normalized_builtin);
-    defineBuiltinMethod(ValueType::Vector, "dot", &VM::vector_dot_builtin);
+    defineBuiltinMethod(ValueType::Vector, "norm", std::mem_fn(&VM::vector_norm_builtin));
+    defineBuiltinMethod(ValueType::Vector, "sum", std::mem_fn(&VM::vector_sum_builtin));
+    defineBuiltinMethod(ValueType::Vector, "normalized", std::mem_fn(&VM::vector_normalized_builtin));
+    defineBuiltinMethod(ValueType::Vector, "dot", std::mem_fn(&VM::vector_dot_builtin));
 
-    defineBuiltinMethod(ValueType::Matrix, "rows", &VM::matrix_rows_builtin);
-    defineBuiltinMethod(ValueType::Matrix, "cols", &VM::matrix_cols_builtin);
-    defineBuiltinMethod(ValueType::Matrix, "transpose", &VM::matrix_transpose_builtin);
-    defineBuiltinMethod(ValueType::Matrix, "determinant", &VM::matrix_determinant_builtin);
-    defineBuiltinMethod(ValueType::Matrix, "inverse", &VM::matrix_inverse_builtin);
-    defineBuiltinMethod(ValueType::Matrix, "trace", &VM::matrix_trace_builtin);
-    defineBuiltinMethod(ValueType::Matrix, "norm", &VM::matrix_norm_builtin);
-    defineBuiltinMethod(ValueType::Matrix, "sum", &VM::matrix_sum_builtin);
+    defineBuiltinMethod(ValueType::Matrix, "rows", std::mem_fn(&VM::matrix_rows_builtin));
+    defineBuiltinMethod(ValueType::Matrix, "cols", std::mem_fn(&VM::matrix_cols_builtin));
+    defineBuiltinMethod(ValueType::Matrix, "transpose", std::mem_fn(&VM::matrix_transpose_builtin));
+    defineBuiltinMethod(ValueType::Matrix, "determinant", std::mem_fn(&VM::matrix_determinant_builtin));
+    defineBuiltinMethod(ValueType::Matrix, "inverse", std::mem_fn(&VM::matrix_inverse_builtin));
+    defineBuiltinMethod(ValueType::Matrix, "trace", std::mem_fn(&VM::matrix_trace_builtin));
+    defineBuiltinMethod(ValueType::Matrix, "norm", std::mem_fn(&VM::matrix_norm_builtin));
+    defineBuiltinMethod(ValueType::Matrix, "sum", std::mem_fn(&VM::matrix_sum_builtin));
 
-    defineBuiltinMethod(ValueType::List, "append", &VM::list_append_builtin);
+    defineBuiltinMethod(ValueType::List, "append", std::mem_fn(&VM::list_append_builtin));
 
-    defineBuiltinMethod(ValueType::Signal, "run", &VM::signal_run_builtin);
-    defineBuiltinMethod(ValueType::Signal, "stop", &VM::signal_stop_builtin);
-    defineBuiltinMethod(ValueType::Signal, "tick", &VM::signal_tick_builtin);
-    defineBuiltinMethod(ValueType::Signal, "freq", &VM::signal_freq_builtin);
-    defineBuiltinMethod(ValueType::Signal, "set", &VM::signal_set_builtin);
+    defineBuiltinMethod(ValueType::Signal, "run", std::mem_fn(&VM::signal_run_builtin));
+    defineBuiltinMethod(ValueType::Signal, "stop", std::mem_fn(&VM::signal_stop_builtin));
+    defineBuiltinMethod(ValueType::Signal, "tick", std::mem_fn(&VM::signal_tick_builtin));
+    defineBuiltinMethod(ValueType::Signal, "freq", std::mem_fn(&VM::signal_freq_builtin));
+    defineBuiltinMethod(ValueType::Signal, "set", std::mem_fn(&VM::signal_set_builtin));
 
-    defineBuiltinMethod(ValueType::Event, "emit", &VM::event_emit_builtin, true);
-    defineBuiltinMethod(ValueType::Event, "on", &VM::event_on_builtin, true);
-    defineBuiltinMethod(ValueType::Event, "off", &VM::event_off_builtin, true);
+    defineBuiltinMethod(ValueType::Event, "emit", std::mem_fn(&VM::event_emit_builtin), true);
+    defineBuiltinMethod(ValueType::Event, "on", std::mem_fn(&VM::event_on_builtin), true);
+    defineBuiltinMethod(ValueType::Event, "off", std::mem_fn(&VM::event_off_builtin), true);
 
-    defineBuiltinMethod(ValueType::Actor, "tick", &VM::dataflow_tick_native, true);  // proc
-    defineBuiltinMethod(ValueType::Actor, "run", &VM::dataflow_run_native, true);   // proc
-    defineBuiltinMethod(ValueType::Actor, "runFor", &VM::dataflow_run_for_native, true);  // proc
+    defineBuiltinMethod(ValueType::Actor, "tick", std::mem_fn(&VM::dataflow_tick_native), true);  // proc
+    defineBuiltinMethod(ValueType::Actor, "run", std::mem_fn(&VM::dataflow_run_native), true);   // proc
+    defineBuiltinMethod(ValueType::Actor, "runFor", std::mem_fn(&VM::dataflow_run_for_native), true);  // proc
 }
 
 void VM::defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn,
@@ -4831,14 +4812,14 @@ void VM::defineNativeFunctions()
         sysModule->vars.store(toUnicodeString(name), objVal(nativeVal(fn, nullptr, funcType, defaults)));
     };
 
-    addSys("_clock", &VM::clock_native);
+    addSys("_clock", std::mem_fn(&VM::clock_native));
     {
         auto t = make_ptr<type::Type>(type::BuiltinType::Func);
         t->func = type::Type::FuncType();
         auto params = constructParams({{"freq", type::BuiltinType::Int}}, {});
         t->func->params.resize(params.size());
         for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
-        addSys("clock", &VM::clock_signal_native, t, {});
+        addSys("clock", std::mem_fn(&VM::clock_signal_native), t, {});
     }
     {
         auto t = make_ptr<type::Type>(type::BuiltinType::Func);
@@ -4849,19 +4830,19 @@ void VM::defineNativeFunctions()
         t->func->params.resize(2);
         t->func->params[0] = p1;
         t->func->params[1] = p2;
-        addSys("signal", &VM::signal_source_native, t, {});
+        addSys("signal", std::mem_fn(&VM::signal_source_native), t, {});
     }
-    addSys("_engine_stop", &VM::engine_stop_native);
-    addSys("typeof", &VM::typeof_native);
-    addSys("_df_graph", &VM::df_graph_native);
-    addSys("_df_graphdot", &VM::df_graphdot_native);
-    addSys("loadlib", &VM::loadlib_native);
+    addSys("_engine_stop", std::mem_fn(&VM::engine_stop_native));
+    addSys("typeof", std::mem_fn(&VM::typeof_native));
+    addSys("_df_graph", std::mem_fn(&VM::df_graph_native));
+    addSys("_df_graphdot", std::mem_fn(&VM::df_graphdot_native));
+    addSys("loadlib", std::mem_fn(&VM::loadlib_native));
 
     auto addMath = [&](const std::string& name, void* fnPtr,
                        std::vector<ffi_type*> args){
         void* spec = createFFIWrapper(fnPtr, &ffi_type_double, args);
         mathModule->vars.store(toUnicodeString(name),
-                               objVal(nativeVal(&VM::ffi_native, spec, nullptr, {})));
+                               objVal(nativeVal(std::mem_fn(&VM::ffi_native), spec, nullptr, {})));
     };
 
     auto addMathBuiltin = [&](const std::string& name, NativeFn fn){
@@ -4926,11 +4907,11 @@ void VM::defineNativeFunctions()
     addMath("rint", (void*)(double (*)(double))rint, {&ffi_type_double});
     addMath("tgamma", (void*)(double (*)(double))tgamma, {&ffi_type_double});
 
-    addMathBuiltin("identity", &VM::math_identity_builtin);
-    addMathBuiltin("zeros", &VM::math_zeros_builtin);
-    addMathBuiltin("ones", &VM::math_ones_builtin);
-    addMathBuiltin("dot", &VM::math_dot_builtin);
-    addMathBuiltin("cross", &VM::math_cross_builtin);
+    addMathBuiltin("identity", std::mem_fn(&VM::math_identity_builtin));
+    addMathBuiltin("zeros", std::mem_fn(&VM::math_zeros_builtin));
+    addMathBuiltin("ones", std::mem_fn(&VM::math_ones_builtin));
+    addMathBuiltin("dot", std::mem_fn(&VM::math_dot_builtin));
+    addMathBuiltin("cross", std::mem_fn(&VM::math_cross_builtin));
 }
 
 
@@ -5076,177 +5057,6 @@ Value VM::dataflow_run_for_native(int argCount, Value* args)
     return nilVal();
 }
 
-#ifdef ROXAL_ENABLE_FILEIO
-
-Value VM::fileio_open_builtin(int argCount, Value* args)
-{
-    if (argCount < 1 || argCount > 3 || !isString(args[0]))
-        throw std::invalid_argument("fileio.open expects path string, optional append bool and format string");
-    bool append = false;
-    if (argCount >= 2)
-        append = args[1].asBool();
-    std::string format = "text";
-    if (argCount == 3) {
-        if (!isString(args[2]))
-            throw std::invalid_argument("fileio.open format must be 'text' or 'binary'");
-        format = toUTF8StdString(asString(args[2])->s);
-    }
-    bool binary = false;
-    std::filesystem::path path = std::filesystem::path(toUTF8StdString(asString(args[0])->s));
-    auto f = roxal::make_ptr<std::fstream>();
-    std::ios_base::openmode mode = std::ios::in | std::ios::out;
-    if (append)
-        mode |= std::ios::app;
-    if (format == "binary") {
-        mode |= std::ios::binary;
-        binary = true;
-    } else if (format != "text") {
-        throw std::invalid_argument("fileio.open format must be 'text' or 'binary'");
-    }
-    f->open(path, mode);
-    if (!f->is_open()) {
-        return falseVal();
-    }
-    return objVal(fileVal(f, binary));
-}
-
-Value VM::fileio_close_builtin(int argCount, Value* args)
-{
-    if (argCount != 1 || !isFile(args[0]))
-        throw std::invalid_argument("fileio.close expects file handle");
-    ObjFile* f = asFile(args[0]);
-    if (f->file && f->file->is_open())
-        f->file->close();
-    return nilVal();
-}
-
-Value VM::fileio_isopen_builtin(int argCount, Value* args)
-{
-    if (argCount != 1 || !isFile(args[0]))
-        throw std::invalid_argument("fileio.isOpen expects file handle");
-    ObjFile* f = asFile(args[0]);
-    return f->file && f->file->is_open() ? trueVal() : falseVal();
-}
-
-Value VM::fileio_moredata_builtin(int argCount, Value* args)
-{
-    if (argCount != 1 || !isFile(args[0]))
-        throw std::invalid_argument("fileio.moreData expects file handle");
-    ObjFile* f = asFile(args[0]);
-    if (!f->file || !f->file->is_open()) return falseVal();
-    int c = f->file->peek();
-    return (c == std::char_traits<char>::eof()) ? falseVal() : trueVal();
-}
-
-Value VM::fileio_read_builtin(int argCount, Value* args)
-{
-    if (argCount != 1 || !isFile(args[0]))
-        throw std::invalid_argument("fileio.read expects file handle");
-    ObjFile* f = asFile(args[0]);
-    if (!f->file || !f->file->is_open()) return nilVal();
-    char buf[4096];
-    f->file->read(buf, sizeof(buf));
-    std::streamsize n = f->file->gcount();
-    if (f->binary) {
-        ObjList* lst = listVal();
-        lst->elts.reserve(static_cast<size_t>(n));
-        for (std::streamsize i = 0; i < n; ++i)
-            lst->elts.push_back(byteVal(static_cast<uint8_t>(buf[i])));
-        return objVal(lst);
-    }
-    std::string s(buf, static_cast<size_t>(n));
-    return objVal(stringVal(toUnicodeString(s)));
-}
-
-Value VM::fileio_readline_builtin(int argCount, Value* args)
-{
-    if (argCount != 1 || !isFile(args[0]))
-        throw std::invalid_argument("fileio.readLine expects file handle");
-    ObjFile* f = asFile(args[0]);
-    if (!f->file || !f->file->is_open()) return nilVal();
-    if (f->binary) {
-        Value exType = globals.load(toUnicodeString("FileIOException")).value();
-        Value msg = objVal(stringVal(toUnicodeString("readLine requires text mode")));
-        Value exc = objVal(exceptionVal(msg, exType));
-        raiseException(exc);
-        return nilVal();
-    }
-    std::string line;
-    if (!std::getline(*f->file, line))
-        return nilVal();
-    return objVal(stringVal(toUnicodeString(line)));
-}
-
-Value VM::fileio_readfile_builtin(int argCount, Value* args)
-{
-    if (argCount < 1 || argCount > 2 || !isString(args[0]))
-        throw std::invalid_argument("fileio.readFile expects path string and optional format");
-    std::string format = "text";
-    if (argCount == 2) {
-        if (!isString(args[1]))
-            throw std::invalid_argument("fileio.readFile format must be 'text' or 'binary'");
-        format = toUTF8StdString(asString(args[1])->s);
-    }
-    std::ios_base::openmode mode = std::ios::in;
-    if (format == "binary")
-        mode |= std::ios::binary;
-    else if (format != "text")
-        throw std::invalid_argument("fileio.readFile format must be 'text' or 'binary'");
-    std::filesystem::path path = std::filesystem::path(toUTF8StdString(asString(args[0])->s));
-    std::ifstream in(path, mode);
-    if (!in.is_open()) {
-        Value exType = globals.load(toUnicodeString("FileIOException")).value();
-        Value msg = objVal(stringVal(toUnicodeString("open failed")));
-        Value exc = objVal(exceptionVal(msg, exType));
-        raiseException(exc);
-        return nilVal();
-    }
-    std::stringstream ss;
-    ss << in.rdbuf();
-    std::string data = ss.str();
-    if (format == "binary") {
-        ObjList* lst = listVal();
-        lst->elts.reserve(data.size());
-        for (char c : data)
-            lst->elts.push_back(byteVal(static_cast<uint8_t>(c)));
-        return objVal(lst);
-    }
-    return objVal(stringVal(toUnicodeString(data)));
-}
-
-Value VM::fileio_write_builtin(int argCount, Value* args)
-{
-    if (argCount != 2 || !isFile(args[0]))
-        throw std::invalid_argument("fileio.write expects file handle and data");
-    ObjFile* f = asFile(args[0]);
-    if (!f->file || !f->file->is_open()) return nilVal();
-    if (f->binary) {
-        if (!isList(args[1]))
-            throw std::invalid_argument("fileio.write expects list of bytes in binary mode");
-        ObjList* lst = asList(args[1]);
-        for (int i = 0; i < lst->length(); ++i) {
-            const Value& v = lst->elts.at(i);
-            uint8_t b;
-            if (v.isByte())
-                b = v.asByte();
-            else if (v.isInt()) {
-                int iv = v.asInt();
-                if (iv < 0 || iv > 255)
-                    throw std::invalid_argument("fileio.write int out of byte range");
-                b = static_cast<uint8_t>(iv);
-            } else {
-                throw std::invalid_argument("fileio.write expects list of bytes or ints");
-            }
-            f->file->put(static_cast<char>(b));
-        }
-    } else {
-        std::string s = toString(args[1]);
-        (*f->file) << s;
-    }
-    return nilVal();
-}
-
-#endif // ROXAL_ENABLE_FILEIO
 
 Value VM::loadlib_native(int argCount, Value* args)
 {
@@ -5267,9 +5077,14 @@ ObjModuleType* VM::getBuiltinModule(const icu::UnicodeString& name)
         return sysModule;
     if (name == UnicodeString("math"))
         return mathModule;
-#ifdef ROXAL_ENABLE_FILEIO
-    if (name == UnicodeString("fileio"))
-        return fileioModule;
-#endif
+    for (auto& m : builtinModules) {
+        if (m->moduleType()->name == name)
+            return m->moduleType();
+    }
     return nullptr;
+}
+
+void VM::registerBuiltinModule(ptr<BuiltinModule> module)
+{
+    builtinModules.push_back(module);
 }
