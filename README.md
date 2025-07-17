@@ -16,3 +16,9 @@ repeating the option or using the platform-specific separator (`:` on POSIX,
 
 When executing a script file, the directory containing that script is always
 added implicitly as the first search path.
+
+## Dictionaries
+
+Dictionaries can be accessed using bracket syntax as usual. Additionally, if a
+dictionary has a string key, it can be read or written using dot syntax
+(`d.key`). Non-string keys must continue to use brackets.
