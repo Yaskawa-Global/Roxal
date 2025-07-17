@@ -144,7 +144,7 @@ print(s)  // 'a'
 print(d)  // {'a':'A'}
 ```
 
-Advanced: The _copy into_ operation (`<-`) makes a shallow copy of the RHS and copies it into the LHS (- hence, the LHS must be compatible - e.g. the same type)
+Advanced: The _copy into_ operation (`←` or `<-`) makes a shallow copy of the RHS and copies it into the LHS (- hence, the LHS must be compatible - e.g. the same type)
 
 ```roxal
 l = [1,2,3]
@@ -229,7 +229,7 @@ There are two notations for ranges:
     * without the `<` the _end_ is inclusive, with `<` it is excluded
   * or using `:` - range(_start_:_end_) - exclusive, or with a stride range(_start_:_end_:_stride_).
 
-In each case, the _start_ or _end_ can be omitted to indicate 'from 0' or 'to the end'.  Negative values count from the end of the value being indexed rather from the beginning.  A negative stride jumps backward.  Omitting both - range(:) is synonymous with 'everything'.
+In each case, the _start_ or _end_ can be omitted to indicate 'from 0' or 'to the end'.  Negative values count from the end of the value being indexed rather from the beginning.  A negative stride jumps backward.  Omitting both - range(\:) is synonymous with 'everything'.
 
 To see what is included in a range, you can construct a list from it (when definite):
 
@@ -241,6 +241,21 @@ print( l[range(::-1)] ) // [3, 2, 1]  (indexing everything, in reverse)
 print( len( range(0..<10) )) // use len() to count elements: 10
 for i in range(1..10 by 2):
   print(i) // 1 3 5 ...
+```
+
+Indexing with ranges:
+```roxal
+l = list(range(0..<10)) // make a list [0,1,2,...,9]
+print( l[0] )         // 0
+print( l[1..2] )      // [1,2] - notice don't need range() here
+print( l[1..8 by 2] ) // [1,3,5,7]
+print( l[5::-1] )     // [5, 4, 3, 2, 1, 0]
+s = 'Hello world'
+print( s[::-1] )      // "dlrow olleH" ('by -1' reverses)
+print( s[:-1] )       // "Hello worl" (all but last)
+m = [1 2 3            // 2x3 matrix
+     4 5 6]
+print( m[0..1,0..1] ) // [1 2; 4 5] submatrix
 ```
 
 ## Control Statements
@@ -298,7 +313,7 @@ import math.*
 print(cos(0.0)) // didn't need to write math.cos
 ```
 
-You can nest module using folders in the filesystem: e.g. to import `mymodule/submodule/toplevel.rox`
+You can nest modules using folders in the filesystem: e.g. to import `mymodule/submodule/toplevel.rox`
 
 ```roxal
 import mymodule.submodule.toplevel
@@ -370,7 +385,7 @@ This is an ideal way to achieve concurrency, because actors don't share any stat
 
 The syntax for declaring an actor is similar to an object, except it cannot have any non-private member variables.  You can think of calling a method on an actor instance as being more like sending it a message to execute that method.
 
-Note that the caller is not blocked when calling an actor method - instead the call returns immediately with a 'future' for the return value (sometimes called a promise).  This behaves just like the actual return value, but won't be useable until the actor method completes and provide the value.  An attempt to use the return value future before it is ready will block the using thead (- though you can pass futures to other functions, store them etc.).  A future value is always implicitly convertible to the underlying value type.
+Note that the caller is not blocked when calling an actor method - instead the call returns immediately with a 'future' for the return value (sometimes called a promise).  This behaves just like the actual return value, but won't be useable until the actor method completes and provides the value.  An attempt to use the return value future before it is ready will block the using thead (- though you can pass futures to other functions, store them etc.).  A future value is always implicitly convertible to the value it is promising.
 
 ```roxal
 type Worker actor:
@@ -398,6 +413,19 @@ print( real(amt) ) // 3
 
 (Note: the VM doesn't currently prohibit accessing/mutating any module scope vars from an actor, but in future it will prohibit mutating all module scope variables and prohibit access to non-const or reference module variable.  So, for now, only 'read' value-type module variables that are not modified elsewhere (i.e. logical 'constants'))
 
+## Exceptions
+
+```roxal
+try:
+  dostuff()
+except RuntimeException as e:
+  print("Something exceptional happened: "+e)
+finally:
+  print("That's all")
+```
+
+(Note: the except syntax will be changed to `except e :RuntimeException`)
+
 ## Events
 
 Events are useful for constructing responsive programs.  For robotics, this may be to respond to I/O, sensor data or other internal states of the program.
@@ -420,5 +448,38 @@ emit e   // triggered again
 
 ## Signals
 
+Signals in roxal represent values that can (spontaneously) change.  For example, for robotics, they might represent an external input.  Signals can be transformed, using functions (func) into new signals.  There are also builtin functions to create signals who's value has to be explicitly updated by your roxal code (`signal()`) or that automatically count up (`clock()`).  A signal's value can be any of the usual roxal value types, but most usefully bool, byte, int, real, vector or matrix.
+
+Conceptually, you can think of signals as like wires in circuit, arious 'func' processing nodes that have input (parameter) and output (return) signals.
+
+### Examples
+
+A single clock signal:
+```roxal
+
+c = clock(freq=10)  // an int signal that counts up from 0 at 10Hz (initially stopped)
+
+// register a signal change handler
+// (same as handlers for events, but trigger whenever the indicated signal value changes)
+on c:
+  print( int(c) )  // will print an int every .1s while the script runs
+                   // 'constructing' an int() from a signal samples the value at the time of evaluation
+
+c.run()    // start the clock counting
+wait(s=1)  // keep the script running so we can see ~10 prints
+```
+
+Transforming a some signals:
+```roxal
+c = clock(10)
+... TODO ...
+```
+
 
 ## Builtin Modules & Functions
+
+### sys
+
+### math
+
+### fileio

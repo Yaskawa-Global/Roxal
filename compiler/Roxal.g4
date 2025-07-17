@@ -212,7 +212,7 @@ expression
  : assignment ;
 
 assignment
- : ( call DOT )? IDENTIFIER (EQUALS | COPYASSIGN) assignment
+ : ( call DOT )? IDENTIFIER (EQUALS | COPYINTO) assignment
  | call (EQUALS | COPYASSIGN) assignment
  | logic_or
  ;
@@ -469,7 +469,7 @@ LT_EQ : '<=' | '\u2264' | '\u2A7D'; // ≤ ⩽
 GT_EQ : '>=' | '\u2265' | '\u2A7E'; // ≥ ⩾
 ISEQUAL: '==' | '\u225F'; // ≟
 EQUALS: '=';
-COPYASSIGN: '<-';
+COPYINTO: '<-'| '\u2190' ; // ←
 ISNOTEQUALS: '!=' | '<>' | '\u2260'; // ≠
 YIELDS: '->' | '\u2192'; // →
 UNDERSCORE: '_' ;
