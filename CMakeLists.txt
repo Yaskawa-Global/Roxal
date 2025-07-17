@@ -102,6 +102,7 @@ set(COMPILER_SOURCES
 )
 
 list(APPEND COMPILER_SOURCES compiler/ModuleMath.cpp)
+list(APPEND COMPILER_SOURCES compiler/ModuleSys.cpp)
 
 if(ROXAL_ENABLE_FILEIO)
     list(APPEND COMPILER_SOURCES compiler/ModuleFileIO.cpp)
