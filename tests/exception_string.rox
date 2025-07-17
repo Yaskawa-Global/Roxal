@@ -1,6 +1,6 @@
 try:
   raise ProgramException('fail')
-except ProgramException as e:
+except e :ProgramException:
   print(string(e))
   print(typeof(e))
 print('done')

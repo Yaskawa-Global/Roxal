@@ -418,13 +418,12 @@ print( real(amt) ) // 3
 ```roxal
 try:
   dostuff()
-except RuntimeException as e:
+except e :RuntimeException:
   print("Something exceptional happened: "+e)
 finally:
   print("That's all")
 ```
 
-(Note: the except syntax will be changed to `except e :RuntimeException`)
 
 ## Events
 
