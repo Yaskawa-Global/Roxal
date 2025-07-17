@@ -638,9 +638,11 @@ std::string objForeignPtrToString(const ObjForeignPtr* fp);
 // file handle
 
 struct ObjFile : public Obj {
-    ObjFile(std::fstream* f) : file(f) { type = ObjType::File; }
-    virtual ~ObjFile() { if (file) { if (file->is_open()) file->close(); delete file; } }
-    std::fstream* file;
+    ObjFile(roxal::ptr<std::fstream> f, bool binary = false)
+        : file(std::move(f)), binary(binary) { type = ObjType::File; }
+    virtual ~ObjFile() { if (file && file->is_open()) file->close(); }
+    roxal::ptr<std::fstream> file;
+    bool binary;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -649,7 +651,7 @@ struct ObjFile : public Obj {
 inline bool isFile(const Value& v) { return isObjType(v, ObjType::File); }
 inline ObjFile* asFile(const Value& v) { return static_cast<ObjFile*>(v.asObj()); }
 
-ObjFile* fileVal(std::fstream* f);
+ObjFile* fileVal(roxal::ptr<std::fstream> f, bool binary = false);
 std::string objFileToString(const ObjFile* f);
 
 

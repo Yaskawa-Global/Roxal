@@ -5078,26 +5078,34 @@ Value VM::dataflow_run_for_native(int argCount, Value* args)
 
 Value VM::fileio_open_builtin(int argCount, Value* args)
 {
-    if (argCount < 1 || argCount > 2 || !isString(args[0]))
-        throw std::invalid_argument("fileio.open expects path string and optional append bool");
+    if (argCount < 1 || argCount > 3 || !isString(args[0]))
+        throw std::invalid_argument("fileio.open expects path string, optional append bool and format string");
     bool append = false;
-    if (argCount == 2)
+    if (argCount >= 2)
         append = args[1].asBool();
+    std::string format = "text";
+    if (argCount == 3) {
+        if (!isString(args[2]))
+            throw std::invalid_argument("fileio.open format must be 'text' or 'binary'");
+        format = toUTF8StdString(asString(args[2])->s);
+    }
+    bool binary = false;
     std::string path = toUTF8StdString(asString(args[0])->s);
-    std::fstream* f = new std::fstream();
+    auto f = roxal::make_ptr<std::fstream>();
     std::ios_base::openmode mode = std::ios::in | std::ios::out;
     if (append)
         mode |= std::ios::app;
+    if (format == "binary") {
+        mode |= std::ios::binary;
+        binary = true;
+    } else if (format != "text") {
+        throw std::invalid_argument("fileio.open format must be 'text' or 'binary'");
+    }
     f->open(path, mode);
     if (!f->is_open()) {
-        delete f;
-        Value exType = globals.load(toUnicodeString("FileIOException")).value();
-        Value msg = objVal(stringVal(toUnicodeString("open failed")));
-        Value exc = objVal(exceptionVal(msg, exType));
-        raiseException(exc);
-        return nilVal();
+        return falseVal();
     }
-    return objVal(fileVal(f));
+    return objVal(fileVal(f, binary));
 }
 
 Value VM::fileio_close_builtin(int argCount, Value* args)
@@ -5147,6 +5155,13 @@ Value VM::fileio_readline_builtin(int argCount, Value* args)
         throw std::invalid_argument("fileio.readLine expects file handle");
     ObjFile* f = asFile(args[0]);
     if (!f->file || !f->file->is_open()) return nilVal();
+    if (f->binary) {
+        Value exType = globals.load(toUnicodeString("FileIOException")).value();
+        Value msg = objVal(stringVal(toUnicodeString("readLine requires text mode")));
+        Value exc = objVal(exceptionVal(msg, exType));
+        raiseException(exc);
+        return nilVal();
+    }
     std::string line;
     if (!std::getline(*f->file, line))
         return nilVal();
@@ -5155,10 +5170,21 @@ Value VM::fileio_readline_builtin(int argCount, Value* args)
 
 Value VM::fileio_readfile_builtin(int argCount, Value* args)
 {
-    if (argCount != 1 || !isString(args[0]))
-        throw std::invalid_argument("fileio.readFile expects path string");
+    if (argCount < 1 || argCount > 2 || !isString(args[0]))
+        throw std::invalid_argument("fileio.readFile expects path string and optional format");
+    std::string format = "text";
+    if (argCount == 2) {
+        if (!isString(args[1]))
+            throw std::invalid_argument("fileio.readFile format must be 'text' or 'binary'");
+        format = toUTF8StdString(asString(args[1])->s);
+    }
+    std::ios_base::openmode mode = std::ios::in;
+    if (format == "binary")
+        mode |= std::ios::binary;
+    else if (format != "text")
+        throw std::invalid_argument("fileio.readFile format must be 'text' or 'binary'");
     std::string path = toUTF8StdString(asString(args[0])->s);
-    std::ifstream in(path);
+    std::ifstream in(path, mode);
     if (!in.is_open()) {
         Value exType = globals.load(toUnicodeString("FileIOException")).value();
         Value msg = objVal(stringVal(toUnicodeString("open failed")));
