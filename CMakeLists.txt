@@ -101,6 +101,10 @@ set(COMPILER_SOURCES
     compiler/linenoise.c
 )
 
+if(ROXAL_ENABLE_FILEIO)
+    list(APPEND COMPILER_SOURCES compiler/ModuleFileIO.cpp)
+endif()
+
 set(MAIN_SOURCE compiler/roxal.cpp)
 
 
@@ -156,6 +160,7 @@ include_directories(${LIBFFI_INCLUDE_DIRS})
 
 # Build the static library containing the core compiler and VM
 add_library(roxalcore STATIC ${CORE_SOURCES} ${COMPILER_SOURCES} ${GENERATED_SOURCES})
+set_target_properties(roxalcore PROPERTIES OUTPUT_NAME roxal)
 
 add_dependencies(roxalcore generate_parser)
 

@@ -1646,7 +1646,7 @@ Value roxal::mod(Value l, Value r)
     return intVal(lhs % rhs);
 }
 
-void roxal::copyAssign(Value& lhs, const Value& rhs)
+void roxal::copyInto(Value& lhs, const Value& rhs)
 {
     if (!lhs.isObj()) {
         lhs = rhs;
@@ -1656,27 +1656,27 @@ void roxal::copyAssign(Value& lhs, const Value& rhs)
     switch (objType(lhs)) {
         case ObjType::List:
             if (!isList(rhs))
-                throw std::invalid_argument("copy assign list requires list RHS");
+                throw std::invalid_argument("copy into list requires list RHS");
             asList(lhs)->set(asList(rhs));
             break;
         case ObjType::Dict:
             if (!isDict(rhs))
-                throw std::invalid_argument("copy assign dict requires dict RHS");
+                throw std::invalid_argument("copy into dict requires dict RHS");
             asDict(lhs)->set(asDict(rhs));
             break;
         case ObjType::Vector:
             if (!isVector(rhs))
-                throw std::invalid_argument("copy assign vector requires vector RHS");
+                throw std::invalid_argument("copy into vector requires vector RHS");
             asVector(lhs)->set(asVector(rhs));
             break;
         case ObjType::Matrix:
             if (!isMatrix(rhs))
-                throw std::invalid_argument("copy assign matrix requires matrix RHS");
+                throw std::invalid_argument("copy into matrix requires matrix RHS");
             asMatrix(lhs)->set(asMatrix(rhs));
             break;
         case ObjType::Signal:
             if (!isSignal(rhs))
-                throw std::invalid_argument("copy assign signal requires signal RHS");
+                throw std::invalid_argument("copy into signal requires signal RHS");
             {
                 auto lhsSig = asSignal(lhs)->signal;
                 auto rhsSig = asSignal(rhs)->signal;
@@ -1686,7 +1686,7 @@ void roxal::copyAssign(Value& lhs, const Value& rhs)
                 std::vector<std::string> paramNames{"in"};
                 std::vector<ptr<df::Signal>> outSignals{ lhsSig };
 
-                auto name = df::DataflowEngine::uniqueFuncName("copyAssignSig");
+                auto name = df::DataflowEngine::uniqueFuncName("copyIntoSig");
                 auto node = roxal::make_ptr<df::FuncNode>(
                     name,
                     [](const df::Values& vals) -> df::Values { return df::Values{ vals[0] }; },
@@ -1702,7 +1702,7 @@ void roxal::copyAssign(Value& lhs, const Value& rhs)
             break;
         case ObjType::Instance:
         case ObjType::Actor:
-            throw std::runtime_error("copy assignment not supported for user-defined types");
+            throw std::runtime_error("copy into not supported for user-defined types");
         default:
             // Immutable or unsupported types - behave like normal assignment
             lhs = rhs;

@@ -1383,7 +1383,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 {
     currentNode = ast;
 
-    if (ast->op == ast::Assignment::CopyAssign) {
+    if (ast->op == ast::Assignment::CopyInto) {
         if (isa<Variable>(ast->lhs)) {
             auto name { as<Variable>(ast->lhs)->name };
             namedVariable(name, false); // push current value
@@ -1403,7 +1403,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                 }
             }
 
-            emitByte(OpCode::CopyAssign);
+            emitByte(OpCode::CopyInto);
             namedVariable(name, /*assign=*/true); // store result back
         }
         else if (isa<UnaryOp>(ast->lhs) && as<UnaryOp>(ast->lhs)->op==UnaryOp::Accessor) {
@@ -1438,7 +1438,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
             ast->rhs->accept(*this);
 
-            emitByte(OpCode::CopyAssign);          // mutate property value
+            emitByte(OpCode::CopyInto);          // mutate property value
             if (propName <= 255)
                 emitBytes(setOp, uint8_t(propName));            // store back
             else
@@ -1454,7 +1454,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             emitBytes(OpCode::Index, index->args.size());
 
             ast->rhs->accept(*this);
-            emitByte(OpCode::CopyAssign);          // mutate element
+            emitByte(OpCode::CopyInto);          // mutate element
 
             // set element back
             index->indexable->accept(*this);
@@ -1463,7 +1463,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             emitBytes(OpCode::SetIndex, index->args.size());
         }
         else {
-            throw std::runtime_error("LHS of copy assignment must be a variable, property accessor or indexing");
+            throw std::runtime_error("LHS of copy into must be a variable, property accessor or indexing");
         }
         return {};
     }
