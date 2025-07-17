@@ -7,6 +7,7 @@
 #include <memory>
 #include <iomanip>
 #include <sstream>
+#include <filesystem>
 #include <ffi.h>
 #include <dlfcn.h>
 
@@ -5091,7 +5092,7 @@ Value VM::fileio_open_builtin(int argCount, Value* args)
         format = toUTF8StdString(asString(args[2])->s);
     }
     bool binary = false;
-    std::string path = toUTF8StdString(asString(args[0])->s);
+    std::filesystem::path path = std::filesystem::path(toUTF8StdString(asString(args[0])->s));
     auto f = roxal::make_ptr<std::fstream>();
     std::ios_base::openmode mode = std::ios::in | std::ios::out;
     if (append)
@@ -5191,7 +5192,7 @@ Value VM::fileio_readfile_builtin(int argCount, Value* args)
         mode |= std::ios::binary;
     else if (format != "text")
         throw std::invalid_argument("fileio.readFile format must be 'text' or 'binary'");
-    std::string path = toUTF8StdString(asString(args[0])->s);
+    std::filesystem::path path = std::filesystem::path(toUTF8StdString(asString(args[0])->s));
     std::ifstream in(path, mode);
     if (!in.is_open()) {
         Value exType = globals.load(toUnicodeString("FileIOException")).value();
