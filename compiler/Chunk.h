@@ -103,7 +103,7 @@ enum class OpCode {
     SetupExcept,
     EndExcept,
     Throw,
-    CopyAssign,
+    CopyInto,
     Property2,
     Method2,
     EnumLabel2

@@ -566,7 +566,7 @@ struct UnaryOp : public Expression {
 struct Assignment : public Expression {
     enum Op {
         Assign,      // "="
-        CopyAssign   // "<-"
+        CopyInto   // "<-"
     };
 
     Assignment() : Expression(ExprType::Assignment), op(Assign) {}

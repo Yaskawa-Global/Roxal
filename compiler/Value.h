@@ -434,8 +434,8 @@ Value bor(Value l, Value r);
 Value bxor(Value l, Value r);
 Value bnot(Value v);
 
-// Copy assignment: shallow copy for reference types
-void copyAssign(Value& lhs, const Value& rhs);
+// Copy into: shallow copy for reference types
+void copyInto(Value& lhs, const Value& rhs);
 
 Value land(Value l, Value r);
 Value lor(Value l, Value r);
