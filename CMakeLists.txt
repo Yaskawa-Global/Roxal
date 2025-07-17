@@ -101,6 +101,8 @@ set(COMPILER_SOURCES
     compiler/linenoise.c
 )
 
+list(APPEND COMPILER_SOURCES compiler/ModuleMath.cpp)
+
 if(ROXAL_ENABLE_FILEIO)
     list(APPEND COMPILER_SOURCES compiler/ModuleFileIO.cpp)
 endif()
