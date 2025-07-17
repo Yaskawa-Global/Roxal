@@ -185,6 +185,10 @@ protected:
     // builtin modules
     ObjModuleType* sysModule;
     ObjModuleType* mathModule;
+#ifdef ROXAL_ENABLE_FILEIO
+    ObjModuleType* fileioModule;
+    ObjObjectType* fileIOExceptionType;
+#endif
 
     // builtin dataflow engine actor
     std::shared_ptr<df::DataflowEngine> dataflowEngine;
@@ -307,6 +311,15 @@ public:
     Value strongref_builtin(int argCount, Value* args);
     Value serialize_builtin(int argCount, Value* args);
     Value deserialize_builtin(int argCount, Value* args);
+#ifdef ROXAL_ENABLE_FILEIO
+    Value fileio_open_builtin(int argCount, Value* args);
+    Value fileio_close_builtin(int argCount, Value* args);
+    Value fileio_isopen_builtin(int argCount, Value* args);
+    Value fileio_moredata_builtin(int argCount, Value* args);
+    Value fileio_read_builtin(int argCount, Value* args);
+    Value fileio_readline_builtin(int argCount, Value* args);
+    Value fileio_readfile_builtin(int argCount, Value* args);
+#endif
     Value toJson_builtin(int argCount, Value* args);
     Value fromJson_builtin(int argCount, Value* args);
 

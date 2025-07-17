@@ -29,6 +29,7 @@
 #include <core/common.h>
 #include <core/AST.h>
 #include <fstream>
+#include <cstdio>
 
 
 using namespace roxal;
@@ -188,9 +189,15 @@ VM::VM()
 
     sysModule = moduleTypeVal(UnicodeString("sys"));
     mathModule = moduleTypeVal(UnicodeString("math"));
+#ifdef ROXAL_ENABLE_FILEIO
+    fileioModule = moduleTypeVal(UnicodeString("fileio"));
+#endif
 
     sysModule->incRef();
     mathModule->incRef();
+#ifdef ROXAL_ENABLE_FILEIO
+    fileioModule->incRef();
+#endif
 
     // Initialize dataflow engine as builtin actor
     dataflowEngine = df::DataflowEngine::instance();
@@ -218,11 +225,19 @@ VM::VM()
     asObjectType(programExType)->superType = exType;
     Value condIntType = objVal(objectTypeVal(toUnicodeString("ConditionalInterrupt"), false));
     asObjectType(condIntType)->superType = exType;
+#ifdef ROXAL_ENABLE_FILEIO
+    Value fileIOExceptionTypeVal = objVal(objectTypeVal(toUnicodeString("FileIOException"), false));
+    asObjectType(fileIOExceptionTypeVal)->superType = runtimeExType;
+#endif
 
     globals.storeGlobal(toUnicodeString("exception"), exType);
     globals.storeGlobal(toUnicodeString("RuntimeException"), runtimeExType);
     globals.storeGlobal(toUnicodeString("ProgramException"), programExType);
     globals.storeGlobal(toUnicodeString("ConditionalInterrupt"), condIntType);
+#ifdef ROXAL_ENABLE_FILEIO
+    globals.storeGlobal(toUnicodeString("FileIOException"), fileIOExceptionTypeVal);
+    fileIOExceptionType = asObjectType(fileIOExceptionTypeVal);
+#endif
 
     defineBuiltinFunctions();
     defineBuiltinMethods();
@@ -280,6 +295,9 @@ VM::~VM()
     initString->decRef();
     sysModule->decRef();
     mathModule->decRef();
+#ifdef ROXAL_ENABLE_FILEIO
+    fileioModule->decRef();
+#endif
 
     if (conditionalInterruptClosure)
         conditionalInterruptClosure->decRef();
@@ -3724,16 +3742,34 @@ void VM::defineBuiltinFunctions()
     if (globals.existsGlobal(toUnicodeString("print")))
         return; // already defined
 
+
     auto addSys = [&](const std::string& name, NativeFn fn,
                       ptr<type::Type> funcType = nullptr,
                       std::vector<Value> defaults = {}){
         defineNative(name, fn, funcType, defaults);
         sysModule->vars.store(toUnicodeString(name), objVal(nativeVal(fn, nullptr, funcType, defaults)));
     };
+#ifdef ROXAL_ENABLE_FILEIO
+    auto addFile = [&](const std::string& name, NativeFn fn,
+                       ptr<type::Type> funcType = nullptr,
+                       std::vector<Value> defaults = {}){
+        defineNative(name, fn, funcType, defaults);
+        fileioModule->vars.store(toUnicodeString(name), objVal(nativeVal(fn, nullptr, funcType, defaults)));
+    };
+#endif
 
     addSys("print", &VM::print_builtin);
     addSys("len", &VM::len_builtin);
     addSys("clone", &VM::clone_builtin);
+#ifdef ROXAL_ENABLE_FILEIO
+    addFile("open", &VM::fileio_open_builtin);
+    addFile("close", &VM::fileio_close_builtin);
+    addFile("isOpen", &VM::fileio_isopen_builtin);
+    addFile("moreData", &VM::fileio_moredata_builtin);
+    addFile("read", &VM::fileio_read_builtin);
+    addFile("readLine", &VM::fileio_readline_builtin);
+    addFile("readFile", &VM::fileio_readfile_builtin);
+#endif
     {
         auto t = make_ptr<type::Type>(type::BuiltinType::Func);
         t->func = type::Type::FuncType();
@@ -4972,6 +5008,106 @@ Value VM::dataflow_run_for_native(int argCount, Value* args)
     return nilVal();
 }
 
+#ifdef ROXAL_ENABLE_FILEIO
+
+Value VM::fileio_open_builtin(int argCount, Value* args)
+{
+    if (argCount < 1 || argCount > 2 || !isString(args[0]))
+        throw std::invalid_argument("fileio.open expects path string and optional append bool");
+    bool append = false;
+    if (argCount == 2)
+        append = args[1].asBool();
+    std::string path = toUTF8StdString(asString(args[0])->s);
+    std::fstream* f = new std::fstream();
+    std::ios_base::openmode mode = std::ios::in | std::ios::out;
+    if (append)
+        mode |= std::ios::app;
+    f->open(path, mode);
+    if (!f->is_open()) {
+        delete f;
+        Value exType = globals.load(toUnicodeString("FileIOException")).value();
+        Value msg = objVal(stringVal(toUnicodeString("open failed")));
+        Value exc = objVal(exceptionVal(msg, exType));
+        raiseException(exc);
+        return nilVal();
+    }
+    return objVal(fileVal(f));
+}
+
+Value VM::fileio_close_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isFile(args[0]))
+        throw std::invalid_argument("fileio.close expects file handle");
+    ObjFile* f = asFile(args[0]);
+    if (f->file && f->file->is_open())
+        f->file->close();
+    return nilVal();
+}
+
+Value VM::fileio_isopen_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isFile(args[0]))
+        throw std::invalid_argument("fileio.isOpen expects file handle");
+    ObjFile* f = asFile(args[0]);
+    return f->file && f->file->is_open() ? trueVal() : falseVal();
+}
+
+Value VM::fileio_moredata_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isFile(args[0]))
+        throw std::invalid_argument("fileio.moreData expects file handle");
+    ObjFile* f = asFile(args[0]);
+    if (!f->file || !f->file->is_open()) return falseVal();
+    int c = f->file->peek();
+    return (c == std::char_traits<char>::eof()) ? falseVal() : trueVal();
+}
+
+Value VM::fileio_read_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isFile(args[0]))
+        throw std::invalid_argument("fileio.read expects file handle");
+    ObjFile* f = asFile(args[0]);
+    if (!f->file || !f->file->is_open()) return nilVal();
+    char buf[4096];
+    f->file->read(buf, sizeof(buf));
+    std::streamsize n = f->file->gcount();
+    std::string s(buf, static_cast<size_t>(n));
+    return objVal(stringVal(toUnicodeString(s)));
+}
+
+Value VM::fileio_readline_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isFile(args[0]))
+        throw std::invalid_argument("fileio.readLine expects file handle");
+    ObjFile* f = asFile(args[0]);
+    if (!f->file || !f->file->is_open()) return nilVal();
+    std::string line;
+    if (!std::getline(*f->file, line))
+        return nilVal();
+    return objVal(stringVal(toUnicodeString(line)));
+}
+
+Value VM::fileio_readfile_builtin(int argCount, Value* args)
+{
+    if (argCount != 1 || !isString(args[0]))
+        throw std::invalid_argument("fileio.readFile expects path string");
+    std::string path = toUTF8StdString(asString(args[0])->s);
+    std::ifstream in(path);
+    if (!in.is_open()) {
+        Value exType = globals.load(toUnicodeString("FileIOException")).value();
+        Value msg = objVal(stringVal(toUnicodeString("open failed")));
+        Value exc = objVal(exceptionVal(msg, exType));
+        raiseException(exc);
+        return nilVal();
+    }
+    std::stringstream ss;
+    ss << in.rdbuf();
+    std::string data = ss.str();
+    return objVal(stringVal(toUnicodeString(data)));
+}
+
+#endif // ROXAL_ENABLE_FILEIO
+
 Value VM::loadlib_native(int argCount, Value* args)
 {
     return roxal::loadlib_native(argCount, args);
@@ -4991,5 +5127,9 @@ ObjModuleType* VM::getBuiltinModule(const icu::UnicodeString& name)
         return sysModule;
     if (name == UnicodeString("math"))
         return mathModule;
+#ifdef ROXAL_ENABLE_FILEIO
+    if (name == UnicodeString("fileio"))
+        return fileioModule;
+#endif
     return nullptr;
 }

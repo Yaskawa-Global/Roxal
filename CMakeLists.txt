@@ -69,6 +69,9 @@ pkg_check_modules(LIBFFI REQUIRED libffi)
 add_subdirectory(dataflow)
 
 
+option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
+
+
 
 # Add the source files
 set(CORE_SOURCES
@@ -174,6 +177,7 @@ target_compile_options(roxal PRIVATE
 # Set compile definitions based on the build type
 target_compile_definitions(roxal PRIVATE
     $<$<CONFIG:DEBUG>:DEBUG_BUILD>
+    $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
 )
 
 

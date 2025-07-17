@@ -11,6 +11,7 @@
 #include <unicode/ustring.h>
 #include <ostream>
 #include <istream>
+#include <fstream>
 
 #include <core/common.h>
 #include <core/AST.h>
@@ -69,6 +70,7 @@ enum class ObjType {
     Signal,
     Library,
     ForeignPtr,
+    File,
     Event,
     Exception
 };
@@ -630,6 +632,26 @@ inline ObjForeignPtr* asForeignPtr(const Value& v) { return static_cast<ObjForei
 
 ObjForeignPtr* foreignPtrVal(void* ptr);
 std::string objForeignPtrToString(const ObjForeignPtr* fp);
+
+
+//
+// file handle
+
+struct ObjFile : public Obj {
+    ObjFile(std::fstream* f) : file(f) { type = ObjType::File; }
+    virtual ~ObjFile() { if (file) { if (file->is_open()) file->close(); delete file; } }
+    std::fstream* file;
+
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+};
+
+inline bool isFile(const Value& v) { return isObjType(v, ObjType::File); }
+inline ObjFile* asFile(const Value& v) { return static_cast<ObjFile*>(v.asObj()); }
+
+ObjFile* fileVal(std::fstream* f);
+std::string objFileToString(const ObjFile* f);
+
 
 
 //
