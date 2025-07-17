@@ -76,6 +76,7 @@ set(CORE_SOURCES
     core/atomic.cpp
     core/common.cpp
     core/types.cpp
+    core/json11.cpp
 )
 
 set(SOURCES
