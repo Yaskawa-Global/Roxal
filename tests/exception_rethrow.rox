@@ -1,9 +1,9 @@
 try:
   try:
     raise ProgramException('bad')
-  except ProgramException as e:
+  except e :ProgramException:
     print('inner')
     raise
-except exception as e:
+except e :exception:
   print('outer')
 print('done')

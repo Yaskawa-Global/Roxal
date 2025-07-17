@@ -3,6 +3,6 @@ func foo():
 
 try:
   foo()
-except RuntimeException as e:
+except e :RuntimeException:
   print(e.stackTraceString)
 
