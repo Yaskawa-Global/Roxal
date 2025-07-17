@@ -563,6 +563,12 @@ bool Value::equals(const Value& rhs, bool strict) const
         // List compared to matrix - symmetric case
         return rhs.equals(*this, strict);
     }
+    else if (isList(*this) && isList(rhs)) {
+        return asList(*this)->equals(asList(rhs));
+    }
+    else if (isDict(*this) && isDict(rhs)) {
+        return asDict(*this)->equals(asDict(rhs));
+    }
     else if (isObj()) {
         if (!rhs.isObj())
             return false;

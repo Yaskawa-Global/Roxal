@@ -872,6 +872,24 @@ ObjList* roxal::cloneList(const ObjList* l)
     return newl;
 }
 
+bool ObjList::equals(const ObjList* other) const
+{
+    if (other == nullptr)
+        return false;
+
+    auto lst1 = elts.get();
+    auto lst2 = other->elts.get();
+
+    if (lst1.size() != lst2.size())
+        return false;
+
+    for(size_t i=0;i<lst1.size();++i)
+        if (!lst1[i].equals(lst2[i], false))
+            return false;
+
+    return true;
+}
+
 
 
 std::string roxal::objListToString(const ObjList* ol)
@@ -923,6 +941,27 @@ void ObjDict::set(const ObjDict* other)
     std::lock_guard<std::mutex> lockOther(other->m);
     m_keys = other->m_keys;
     entries = other->entries;
+}
+
+bool ObjDict::equals(const ObjDict* other) const
+{
+    if (other == nullptr)
+        return false;
+
+    auto items1 = items();
+    auto items2 = other->items();
+
+    if (items1.size() != items2.size())
+        return false;
+
+    for(size_t i=0;i<items1.size();++i) {
+        if (!items1[i].first.equals(items2[i].first, false))
+            return false;
+        if (!items1[i].second.equals(items2[i].second, false))
+            return false;
+    }
+
+    return true;
 }
 
 

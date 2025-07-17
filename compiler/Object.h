@@ -376,6 +376,8 @@ struct ObjList : public Obj
     void append(const Value& value);         // Append value to this list
     void set(const ObjList* other);          // Shallow copy from other list
 
+    bool equals(const ObjList* other) const;  // Deep equality comparison
+
     atomic_vector<Value> elts;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
@@ -443,6 +445,8 @@ struct ObjDict : public Obj
     }
 
     void set(const ObjDict* other); // Shallow copy from other dict
+
+    bool equals(const ObjDict* other) const;  // Deep equality comparison
 
     struct ValueComparitor
     {
