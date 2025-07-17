@@ -307,6 +307,8 @@ public:
     Value strongref_builtin(int argCount, Value* args);
     Value serialize_builtin(int argCount, Value* args);
     Value deserialize_builtin(int argCount, Value* args);
+    Value toJson_builtin(int argCount, Value* args);
+    Value fromJson_builtin(int argCount, Value* args);
 
     Value captureStacktrace();
 
