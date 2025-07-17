@@ -1,0 +1,11 @@
+import fileio
+
+print(fileio.readFile('../tests/testfile.txt'))
+var h = fileio.open('../tests/testfile.txt')
+print(fileio.isOpen(h))
+print(fileio.readLine(h))
+print(fileio.moreData(h))
+print(fileio.readLine(h))
+print(fileio.moreData(h))
+fileio.close(h)
+print(fileio.isOpen(h))

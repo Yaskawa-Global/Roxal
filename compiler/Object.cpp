@@ -209,6 +209,7 @@ ValueType Obj::valueType() const
         case ObjType::Vector: return ValueType::Vector;
         case ObjType::Matrix: return ValueType::Matrix;
         case ObjType::Signal: return ValueType::Signal;
+        case ObjType::File: return ValueType::Object;
         case ObjType::Event: return ValueType::Event;
         case ObjType::Function: return ValueType::Function;
         case ObjType::Closure: return ValueType::Closure;
@@ -270,6 +271,8 @@ Obj* Obj::clone() const
     else if (type == ObjType::Library)
         return mutableThis;
     else if (type == ObjType::ForeignPtr)
+        return mutableThis;
+    else if (type == ObjType::File)
         return mutableThis;
     else if (type == ObjType::Event)
         // Note: currently ObjEvents have no user-mutable state, so we can just share the reference
@@ -1234,6 +1237,8 @@ void ObjLibrary::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 }
 void ObjForeignPtr::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("Cannot serialize foreign pointers"); }
 void ObjForeignPtr::read(std::istream&, roxal::ptr<SerializationContext>) { throw std::runtime_error("Cannot deserialize foreign pointers"); }
+void ObjFile::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("Cannot serialize file handles"); }
+void ObjFile::read(std::istream&, roxal::ptr<SerializationContext>) { throw std::runtime_error("Cannot deserialize file handles"); }
 void ObjException::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Exception);
@@ -1835,6 +1840,20 @@ std::string roxal::objForeignPtrToString(const ObjForeignPtr* fp)
     return oss.str();
 }
 
+ObjFile* roxal::fileVal(std::fstream* f)
+{
+    return newObj<ObjFile>(__func__, f);
+}
+
+std::string roxal::objFileToString(const ObjFile* f)
+{
+    std::ostringstream oss;
+    oss << "<file";
+    if (f->file && f->file->is_open()) oss << " open";
+    oss << ">";
+    return oss.str();
+}
+
 ObjException* roxal::exceptionVal(Value message, Value exType, Value stackTrace)
 {
     return newObj<ObjException>(__func__, message, exType, stackTrace);
@@ -2207,6 +2226,9 @@ std::string roxal::objToString(const Value& v)
         }
         case ObjType::Signal: {
             return objSignalToString(asSignal(v));
+        }
+        case ObjType::File: {
+            return objFileToString(asFile(v));
         }
         case ObjType::Event: {
             return objEventToString(asEvent(v));
@@ -2588,6 +2610,7 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::Vector: return "vector";
     case ObjType::Matrix: return "matrix";
     case ObjType::Signal: return "signal";
+    case ObjType::File: return "file";
     case ObjType::Event: return "event";
     case ObjType::Library: return "library";
     case ObjType::ForeignPtr: return "foreignptr";
