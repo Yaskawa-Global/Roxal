@@ -947,17 +947,23 @@ bool ObjDict::equals(const ObjDict* other) const
 {
     if (other == nullptr)
         return false;
+    if (other == this)
+        return true;
 
-    auto items1 = items();
-    auto items2 = other->items();
+    // lock both dictionaries while comparing
+    std::lock_guard<std::mutex> lockThis(m);
+    std::lock_guard<std::mutex> lockOther(other->m);
 
-    if (items1.size() != items2.size())
+    if (entries.size() != other->entries.size())
         return false;
 
-    for(size_t i=0;i<items1.size();++i) {
-        if (!items1[i].first.equals(items2[i].first, false))
+    // entries is a std::map keyed by Value, which provides ordering
+    // irrespective of insertion order.  Compare by keys and values
+    for(const auto& [key, val] : entries) {
+        auto it = other->entries.find(key);
+        if (it == other->entries.end())
             return false;
-        if (!items1[i].second.equals(items2[i].second, false))
+        if (!val.equals(it->second, false))
             return false;
     }
 
