@@ -172,13 +172,11 @@ VM::VM()
     initString = stringVal(UnicodeString("init"));
     initString->incRef();
 
-    sysModule = moduleTypeVal(UnicodeString("sys"));
-    mathModule = moduleTypeVal(UnicodeString("math"));
+    Value sysModuleVal = objVal(moduleTypeVal(UnicodeString("sys")));
+    Value mathModuleVal = objVal(moduleTypeVal(UnicodeString("math")));
 
-    sysModule->incRef();
-    mathModule->incRef();
-    registerBuiltinModule(make_ptr<ModuleMath>(objVal(mathModule)));
-    registerBuiltinModule(make_ptr<ModuleSys>(objVal(sysModule)));
+    registerBuiltinModule(make_ptr<ModuleMath>(mathModuleVal));
+    registerBuiltinModule(make_ptr<ModuleSys>(sysModuleVal));
 #ifdef ROXAL_ENABLE_FILEIO
     registerBuiltinModule(make_ptr<ModuleFileIO>());
 #endif
@@ -220,7 +218,6 @@ VM::VM()
     globals.storeGlobal(toUnicodeString("ConditionalInterrupt"), condIntType);
 #ifdef ROXAL_ENABLE_FILEIO
     globals.storeGlobal(toUnicodeString("FileIOException"), fileIOExceptionTypeVal);
-    fileIOExceptionType = asObjectType(fileIOExceptionTypeVal);
 #endif
 
     defineBuiltinFunctions();
@@ -277,8 +274,6 @@ VM::~VM()
     globals.clearGlobals();
 
     initString->decRef();
-    sysModule->decRef();
-    mathModule->decRef();
 
     builtinModules.clear();
 
@@ -4847,10 +4842,6 @@ Value VM::ffi_native(int argCount, Value* args)
 
 ObjModuleType* VM::getBuiltinModule(const icu::UnicodeString& name)
 {
-    if (name == UnicodeString("sys"))
-        return sysModule;
-    if (name == UnicodeString("math"))
-        return mathModule;
     for (auto& m : builtinModules) {
         if (m->moduleType()->name == name)
             return m->moduleType();

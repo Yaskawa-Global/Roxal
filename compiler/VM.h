@@ -189,12 +189,6 @@ protected:
     VariablesMap globals;
 
     // builtin modules
-    ObjModuleType* sysModule;
-    ObjModuleType* mathModule;
-#ifdef ROXAL_ENABLE_FILEIO
-    ObjObjectType* fileIOExceptionType;
-#endif
-
     std::vector<ptr<BuiltinModule>> builtinModules;
 
     // builtin dataflow engine actor
