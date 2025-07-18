@@ -1,3 +1,4 @@
+
 @doc("""Add two numbers together.
 Second line.""")
 func add(a:int, b:int) -> int:
