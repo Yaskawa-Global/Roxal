@@ -1,0 +1,10 @@
+import fileio
+
+print(fileio.fileExists('../tests/testfile.txt'))
+print(fileio.dirExists('../tests'))
+print(fileio.fileSize('../tests/testfile.txt'))
+var abs = fileio.absoluteFilePath('../tests/testfile.txt')
+print(fileio.pathFile(abs))
+print(fileio.pathDirectory('folder/sub/file.ext'))
+print(fileio.fileExtension('folder/file.ext'))
+print(fileio.fileWithoutExtension('folder/file.ext'))
