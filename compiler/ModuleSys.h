@@ -8,7 +8,7 @@ namespace roxal {
 
 class ModuleSys : public BuiltinModule {
 public:
-    explicit ModuleSys(Value moduleType);
+    ModuleSys();
 
     // Register builtin sys functions and natives
     void registerBuiltins(VM& vm) override;

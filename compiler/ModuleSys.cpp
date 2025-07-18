@@ -4,9 +4,9 @@
 
 using namespace roxal;
 
-ModuleSys::ModuleSys(Value moduleType)
-    : moduleTypeValue(moduleType)
+ModuleSys::ModuleSys()
 {
+    moduleTypeValue = objVal(moduleTypeVal(toUnicodeString("sys")));
 }
 
 
