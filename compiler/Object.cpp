@@ -14,6 +14,7 @@
 #include "Value.h"
 #include "Thread.h"
 #include "dataflow/Signal.h"
+#include "dataflow/DataflowEngine.h"
 
 using namespace roxal;
 
@@ -1831,6 +1832,12 @@ ObjSignal::ObjSignal(ptr<df::Signal> s)
     : signal(s), changeEvent(nilVal())
 {
     type = ObjType::Signal;
+}
+
+ObjSignal::~ObjSignal()
+{
+    if (signal)
+        df::DataflowEngine::instance()->removeSignal(signal);
 }
 
 ObjEvent* ObjSignal::ensureChangeEvent()

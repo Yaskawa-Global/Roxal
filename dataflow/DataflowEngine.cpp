@@ -98,6 +98,92 @@ void DataflowEngine::addFunc(ptr<FuncNode> func)
     m_networkModified = true;
 }
 
+void DataflowEngine::removeSignal(ptr<Signal> signal)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
+    // Check if any function still references this signal
+    bool used = false;
+    for (const auto& kv : funcs) {
+        const auto& func = kv.second;
+        for (const auto& ip : func->m_inputs)
+            if (ip.signal == signal) { used = true; break; }
+        if (used) break;
+        for (const auto& op : func->m_outputs)
+            if (op.signal == signal) { used = true; break; }
+        if (used) break;
+    }
+
+    if (used)
+        return;
+
+    // Remove from signal list
+    auto it = std::remove(signals.begin(), signals.end(), signal);
+    if (it != signals.end())
+        signals.erase(it, signals.end());
+    else
+        return;
+
+    // Remove from signalConsumers mapping
+    signalConsumers.erase(signal);
+
+    // Remove references from funcs and mark any funcs with no outputs
+    std::vector<ptr<FuncNode>> funcsToRemove;
+    for (auto& kv : funcs) {
+        auto& func = kv.second;
+        auto& inputs = func->m_inputs;
+        inputs.erase(std::remove_if(inputs.begin(), inputs.end(),
+                        [&](const FuncNode::InputPort& p){ return p.signal == signal; }),
+                     inputs.end());
+
+        auto& outputs = func->m_outputs;
+        outputs.erase(std::remove_if(outputs.begin(), outputs.end(),
+                        [&](const FuncNode::OutputPort& p){ return p.signal == signal; }),
+                      outputs.end());
+
+        if (func->m_outputs.empty())
+            funcsToRemove.push_back(func);
+    }
+
+    for (auto& f : funcsToRemove)
+        removeFunc(f);
+
+    m_networkModified = true;
+}
+
+void DataflowEngine::removeFunc(ptr<FuncNode> func)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
+    auto it = funcs.find(func->name());
+    if (it != funcs.end())
+        funcs.erase(it);
+    else {
+        for (auto it2 = funcs.begin(); it2 != funcs.end(); ++it2) {
+            if (it2->second == func) { funcs.erase(it2); break; }
+        }
+    }
+
+    // Remove func from signalConsumers lists
+    for (auto itSig = signalConsumers.begin(); itSig != signalConsumers.end(); ) {
+        auto& vec = itSig->second;
+        vec.erase(std::remove_if(vec.begin(), vec.end(),
+                   [&](const FuncInputInfo& fi){ return fi.func == func; }), vec.end());
+        if (vec.empty())
+            itSig = signalConsumers.erase(itSig);
+        else
+            ++itSig;
+    }
+
+    // After removing the function, attempt to remove its signals if unused
+    for (const auto& input : func->m_inputs)
+        removeSignal(input.signal);
+    for (const auto& output : func->m_outputs)
+        removeSignal(output.signal);
+
+    m_networkModified = true;
+}
+
 
 void DataflowEngine::clear()
 {
