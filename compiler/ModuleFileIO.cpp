@@ -4,6 +4,7 @@
 #include <sstream>
 #include <fstream>
 #include <filesystem>
+#include <optional>
 
 using namespace roxal;
 
@@ -22,14 +23,44 @@ void ModuleFileIO::registerBuiltins(VM& vm)
             objVal(nativeVal(fn, nullptr, funcType, defaults)));
     };
 
-    addFile("open", [this](VM& vm, ArgsView a){ return fileio_open_builtin(vm,a); });
-    addFile("close", [this](VM& vm, ArgsView a){ return fileio_close_builtin(vm,a); });
-    addFile("isOpen", [this](VM& vm, ArgsView a){ return fileio_isopen_builtin(vm,a); });
-    addFile("moreData", [this](VM& vm, ArgsView a){ return fileio_moredata_builtin(vm,a); });
-    addFile("read", [this](VM& vm, ArgsView a){ return fileio_read_builtin(vm,a); });
-    addFile("readLine", [this](VM& vm, ArgsView a){ return fileio_readline_builtin(vm,a); });
-    addFile("readFile", [this](VM& vm, ArgsView a){ return fileio_readfile_builtin(vm,a); });
-    addFile("write", [this](VM& vm, ArgsView a){ return fileio_write_builtin(vm,a); });
+    {
+        std::vector<Value> d{ nilVal(), falseVal(), objVal(stringVal(toUnicodeString("text"))) };
+        auto t = BuiltinModule::makeFuncType({{"path", type::BuiltinType::String},
+                                              {"append", type::BuiltinType::Bool},
+                                              {"format", type::BuiltinType::String}}, d);
+        addFile("open", [this](VM& vm, ArgsView a){ return fileio_open_builtin(vm,a); }, t, d);
+    }
+    {
+        auto t = BuiltinModule::makeFuncType({{"file", std::nullopt}});
+        addFile("close", [this](VM& vm, ArgsView a){ return fileio_close_builtin(vm,a); }, t, {});
+    }
+    {
+        auto t = BuiltinModule::makeFuncType({{"file", std::nullopt}});
+        addFile("isOpen", [this](VM& vm, ArgsView a){ return fileio_isopen_builtin(vm,a); }, t, {});
+    }
+    {
+        auto t = BuiltinModule::makeFuncType({{"file", std::nullopt}});
+        addFile("moreData", [this](VM& vm, ArgsView a){ return fileio_moredata_builtin(vm,a); }, t, {});
+    }
+    {
+        auto t = BuiltinModule::makeFuncType({{"file", std::nullopt}});
+        addFile("read", [this](VM& vm, ArgsView a){ return fileio_read_builtin(vm,a); }, t, {});
+    }
+    {
+        auto t = BuiltinModule::makeFuncType({{"file", std::nullopt}});
+        addFile("readLine", [this](VM& vm, ArgsView a){ return fileio_readline_builtin(vm,a); }, t, {});
+    }
+    {
+        std::vector<Value> d{ nilVal(), objVal(stringVal(toUnicodeString("text"))) };
+        auto t = BuiltinModule::makeFuncType({{"path", type::BuiltinType::String},
+                                              {"format", type::BuiltinType::String}}, d);
+        addFile("readFile", [this](VM& vm, ArgsView a){ return fileio_readfile_builtin(vm,a); }, t, d);
+    }
+    {
+        auto t = BuiltinModule::makeFuncType({{"file", std::nullopt},
+                                              {"data", std::nullopt}});
+        addFile("write", [this](VM& vm, ArgsView a){ return fileio_write_builtin(vm,a); }, t, {});
+    }
 }
 
 Value ModuleFileIO::fileio_open_builtin(VM& vm, ArgsView args)
