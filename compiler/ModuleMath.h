@@ -8,7 +8,7 @@ namespace roxal {
 
 class ModuleMath : public BuiltinModule {
 public:
-    explicit ModuleMath(Value moduleType);
+    ModuleMath();
 
     void registerBuiltins(VM& vm) override;
 

@@ -172,11 +172,8 @@ VM::VM()
     initString = stringVal(UnicodeString("init"));
     initString->incRef();
 
-    Value sysModuleVal = objVal(moduleTypeVal(UnicodeString("sys")));
-    Value mathModuleVal = objVal(moduleTypeVal(UnicodeString("math")));
-
-    registerBuiltinModule(make_ptr<ModuleMath>(mathModuleVal));
-    registerBuiltinModule(make_ptr<ModuleSys>(sysModuleVal));
+    registerBuiltinModule(make_ptr<ModuleMath>());
+    registerBuiltinModule(make_ptr<ModuleSys>());
 #ifdef ROXAL_ENABLE_FILEIO
     registerBuiltinModule(make_ptr<ModuleFileIO>());
 #endif
