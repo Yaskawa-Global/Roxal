@@ -4,13 +4,13 @@ A quick overview of the Roxal language for existing software developers.
 
 ## Syntax
 
-The superficial syntax is similar to Python: blocks ar indicated using indentation.  A statement introducing a new block ends with a colon.
+The superficial syntax is similar to Python: blocks are indicated using indentation.  A statement introducing a new block ends with a colon.
 
 ```roxal
   if somehing:
-    print('something is true')
+    print('something is true')  // C++-style comment
 
-  print('always print')
+  print('always print')         # Python-style comment
 ```
 
 Like Python/Java/Ruby and other languages, there is a distinction between by-value builtin types and by-reference types.  The builtin types are:
@@ -470,8 +470,28 @@ wait(s=1)  // keep the script running so we can see ~10 prints
 
 Transforming a some signals:
 ```roxal
-c = clock(10)
-... TODO ...
+initial_v = [1.0 2.0 3.0]  // vector
+
+// source signals need to be explicitly updated with their set() method
+s  = signal(freq=10,initial_v)  // source signal at 10Hz with initial vector value
+s2 = signal(freq=10,initial_v)  //  (these won't change value unless set() is called)
+
+dp = s*s2    // vector dot product (real scalar signal)
+
+on dp: // print if dp changes
+  print('dp='+real(dp))
+
+// set the signals in motion
+s.run()
+s2.run()
+
+// change them
+s.set([1.0 3.0 3.0])  // handler above will print dp=16 on next 10Hz boundary
+wait(ms=100)
+s2.set([2.0 1.0 0.5]) // handler above will print dp=6.5 on next 10Hz boundary
+
+wait(ms=500)  // don't exit until after next tick & handler runs
+print('done')
 ```
 
 
