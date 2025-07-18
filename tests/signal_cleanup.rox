@@ -1,0 +1,23 @@
+print('before:')
+print(_df_graph())
+
+
+func createSignals():
+
+  var s = signal(10,1.0)
+  var c = clock(10)
+ 
+  var sum = s + c
+  
+  var add1 = sum + 1
+
+  c.run()
+  wait(ms=100)
+
+
+createSignals()
+wait(ms=100)
+
+print('after:')
+print(_df_graph())
+
