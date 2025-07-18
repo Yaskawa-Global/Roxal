@@ -747,7 +747,10 @@ Value ObjList::index(const Value& i) const
 {
     if (i.isNumber()) {
         auto index = i.asInt();
-        if (index < 0 || index >= length())
+        auto len = length();
+        if (index < 0)
+            index = len - (-index);
+        if (index < 0 || index >= len)
             throw std::invalid_argument("List index out-of-range.");
         return elts.at(index);
     }
@@ -775,7 +778,10 @@ void ObjList::setIndex(const Value& i, const Value& v)
 {
     if (i.isNumber()) {
         auto index = i.asInt();
-        if (index < 0 || index >= length())
+        auto len = length();
+        if (index < 0)
+            index = len - (-index);
+        if (index < 0 || index >= len)
             throw std::invalid_argument("List index out-of-range.");
         elts.store(index, v);
     }
