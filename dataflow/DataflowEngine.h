@@ -75,6 +75,10 @@ public:
     // graphviz .dot file format string of network (optionally with signal values shown)
     std::string graphDot(const std::string& title, std::map<std::string,Value> signalValues = {}) const;
 
+    // remove a signal or func from the engine
+    void removeSignal(ptr<Signal> signal);
+    void removeFunc(ptr<FuncNode> func);
+
     // Generate a unique function name based on the supplied base name
     static std::string uniqueFuncName(const std::string& base);
 
