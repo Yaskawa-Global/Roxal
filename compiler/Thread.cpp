@@ -202,8 +202,9 @@ void Thread::act(Value actorInstance)
                         push(*it);
 
                     NativeFn native = bn->function;
-                    native(vm, callInfo.callSpec.argCount + 1,
-                           &(*vm.thread->stackTop) - callInfo.callSpec.argCount - 1);
+                    ArgsView view{&(*vm.thread->stackTop) - callInfo.callSpec.argCount - 1,
+                                   static_cast<size_t>(callInfo.callSpec.argCount + 1)};
+                    native(vm, view);
 
                     popN(callInfo.callSpec.argCount);
                 }

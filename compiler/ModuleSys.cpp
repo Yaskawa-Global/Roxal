@@ -29,9 +29,9 @@ void ModuleSys::registerBuiltins(VM& vm)
     };
 
     if (!vm.loadGlobal(toUnicodeString("print")).has_value()) {
-        addSys("print", [this](VM& vm, int c, Value* a){ return print_builtin(vm,c,a); });
-        addSys("len", [this](VM& vm, int c, Value* a){ return len_builtin(vm,c,a); });
-        addSys("clone", [this](VM& vm, int c, Value* a){ return clone_builtin(vm,c,a); });
+        addSys("print", [this](VM& vm, ArgsView a){ return print_builtin(vm,a); });
+        addSys("len", [this](VM& vm, ArgsView a){ return len_builtin(vm,a); });
+        addSys("clone", [this](VM& vm, ArgsView a){ return clone_builtin(vm,a); });
         {
             auto t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
@@ -44,33 +44,33 @@ void ModuleSys::registerBuiltins(VM& vm)
                                          defaults);
             t->func->params.resize(params.size());
             for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
-            addSys("wait", [this](VM& vm, int c, Value* a){ return wait_builtin(vm,c,a); }, t, defaults);
+            addSys("wait", [this](VM& vm, ArgsView a){ return wait_builtin(vm,a); }, t, defaults);
         }
-        addSys("fork", [this](VM& vm, int c, Value* a){ return fork_builtin(vm,c,a); });
-        addSys("join", [this](VM& vm, int c, Value* a){ return join_builtin(vm,c,a); });
-        addSys("stacktrace", [this](VM& vm, int c, Value* a){ return stacktrace_builtin(vm,c,a); });
-        addSys("_threadid", [this](VM& vm, int c, Value* a){ return threadid_builtin(vm,c,a); });
-        addSys("_stackdepth", [this](VM& vm, int c, Value* a){ return stackdepth_builtin(vm,c,a); });
-        addSys("_wait", [this](VM& vm, int c, Value* a){ return await_builtin(vm,c,a); });
-        addSys("_runtests", [this](VM& vm, int c, Value* a){ return runtests_builtin(vm,c,a); });
-        addSys("_weakref", [this](VM& vm, int c, Value* a){ return weakref_builtin(vm,c,a); });
-        addSys("_weak_alive", [this](VM& vm, int c, Value* a){ return weak_alive_builtin(vm,c,a); });
-        addSys("_strongref", [this](VM& vm, int c, Value* a){ return strongref_builtin(vm,c,a); });
-        addSys("serialize", [this](VM& vm, int c, Value* a){ return serialize_builtin(vm,c,a); });
-        addSys("deserialize", [this](VM& vm, int c, Value* a){ return deserialize_builtin(vm,c,a); });
-        addSys("toJson", [this](VM& vm, int c, Value* a){ return toJson_builtin(vm,c,a); });
-        addSys("fromJson", [this](VM& vm, int c, Value* a){ return fromJson_builtin(vm,c,a); });
+        addSys("fork", [this](VM& vm, ArgsView a){ return fork_builtin(vm,a); });
+        addSys("join", [this](VM& vm, ArgsView a){ return join_builtin(vm,a); });
+        addSys("stacktrace", [this](VM& vm, ArgsView a){ return stacktrace_builtin(vm,a); });
+        addSys("_threadid", [this](VM& vm, ArgsView a){ return threadid_builtin(vm,a); });
+        addSys("_stackdepth", [this](VM& vm, ArgsView a){ return stackdepth_builtin(vm,a); });
+        addSys("_wait", [this](VM& vm, ArgsView a){ return await_builtin(vm,a); });
+        addSys("_runtests", [this](VM& vm, ArgsView a){ return runtests_builtin(vm,a); });
+        addSys("_weakref", [this](VM& vm, ArgsView a){ return weakref_builtin(vm,a); });
+        addSys("_weak_alive", [this](VM& vm, ArgsView a){ return weak_alive_builtin(vm,a); });
+        addSys("_strongref", [this](VM& vm, ArgsView a){ return strongref_builtin(vm,a); });
+        addSys("serialize", [this](VM& vm, ArgsView a){ return serialize_builtin(vm,a); });
+        addSys("deserialize", [this](VM& vm, ArgsView a){ return deserialize_builtin(vm,a); });
+        addSys("toJson", [this](VM& vm, ArgsView a){ return toJson_builtin(vm,a); });
+        addSys("fromJson", [this](VM& vm, ArgsView a){ return fromJson_builtin(vm,a); });
     }
 
     if (!vm.loadGlobal(toUnicodeString("_clock")).has_value()) {
-        addSys("_clock", [this](VM& vm, int c, Value* a){ return clock_native(vm,c,a); });
+        addSys("_clock", [this](VM& vm, ArgsView a){ return clock_native(vm,a); });
         {
             auto t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
             auto params = BuiltinModule::constructParams({{"freq", type::BuiltinType::Int}}, {});
             t->func->params.resize(params.size());
             for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
-            addSys("clock", [this](VM& vm, int c, Value* a){ return clock_signal_native(vm,c,a); }, t, {});
+            addSys("clock", [this](VM& vm, ArgsView a){ return clock_signal_native(vm,a); }, t, {});
         }
         {
             auto t = make_ptr<type::Type>(type::BuiltinType::Func);
@@ -81,23 +81,23 @@ void ModuleSys::registerBuiltins(VM& vm)
             t->func->params.resize(2);
             t->func->params[0] = p1;
             t->func->params[1] = p2;
-            addSys("signal", [this](VM& vm, int c, Value* a){ return signal_source_native(vm,c,a); }, t, {});
+            addSys("signal", [this](VM& vm, ArgsView a){ return signal_source_native(vm,a); }, t, {});
         }
-        addSys("_engine_stop", [this](VM& vm, int c, Value* a){ return engine_stop_native(vm,c,a); });
-        addSys("typeof", [this](VM& vm, int c, Value* a){ return typeof_native(vm,c,a); });
-        addSys("_df_graph", [this](VM& vm, int c, Value* a){ return df_graph_native(vm,c,a); });
-        addSys("_df_graphdot", [this](VM& vm, int c, Value* a){ return df_graphdot_native(vm,c,a); });
-        addSys("loadlib", [this](VM& vm, int c, Value* a){ return loadlib_native(vm,c,a); });
+        addSys("_engine_stop", [this](VM& vm, ArgsView a){ return engine_stop_native(vm,a); });
+        addSys("typeof", [this](VM& vm, ArgsView a){ return typeof_native(vm,a); });
+        addSys("_df_graph", [this](VM& vm, ArgsView a){ return df_graph_native(vm,a); });
+        addSys("_df_graphdot", [this](VM& vm, ArgsView a){ return df_graphdot_native(vm,a); });
+        addSys("loadlib", [this](VM& vm, ArgsView a){ return loadlib_native(vm,a); });
     }
 }
 
-Value ModuleSys::print_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::print_builtin(VM& vm, ArgsView args)
 {
-    if (argCount == 0) {
+    if (args.size() == 0) {
         std::cout << std::endl;
         return nilVal();
     }
-    else if (argCount != 1)
+    else if (args.size() != 1)
         throw std::invalid_argument("print expects either no arguments (to output a newline) or single argument convertable to a string");
 
     auto str = toString(args[0]);
@@ -105,9 +105,9 @@ Value ModuleSys::print_builtin(VM& vm, int argCount, Value* args)
     return nilVal();
 }
 
-Value ModuleSys::len_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::len_builtin(VM& vm, ArgsView args)
 {
-    if (argCount != 1)
+    if (args.size() != 1)
         throw std::invalid_argument("len expects single argument");
 
     const Value& v (args[0]);
@@ -132,17 +132,17 @@ Value ModuleSys::len_builtin(VM& vm, int argCount, Value* args)
     return intVal(len);
 }
 
-Value ModuleSys::clone_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::clone_builtin(VM& vm, ArgsView args)
 {
-    if (argCount != 1)
+    if (args.size() != 1)
         throw std::invalid_argument("clone takes a single argument (the value to deep-copy)");
 
     return args[0].clone();
 }
 
-Value ModuleSys::wait_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::wait_builtin(VM& vm, ArgsView args)
 {
-    if (argCount != 4)
+    if (args.size() != 4)
         throw std::invalid_argument("wait expects 4 arguments");
 
     int64_t s = toType(ValueType::Int, args[0], false).asInt();
@@ -159,9 +159,9 @@ Value ModuleSys::wait_builtin(VM& vm, int argCount, Value* args)
     return nilVal();
 }
 
-Value ModuleSys::fork_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::fork_builtin(VM& vm, ArgsView args)
 {
-    if ((argCount != 1) || !isClosure(args[0]))
+    if ((args.size() != 1) || !isClosure(args[0]))
         throw std::invalid_argument("fork expects single callable argument (e.g. func or proc)");
 
     ObjClosure* closure = asClosure(args[0]);
@@ -179,9 +179,9 @@ Value ModuleSys::fork_builtin(VM& vm, int argCount, Value* args)
     return intVal(id);
 }
 
-Value ModuleSys::join_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::join_builtin(VM& vm, ArgsView args)
 {
-    if ((argCount != 1) || !args[0].isNumber())
+    if ((args.size() != 1) || !args[0].isNumber())
         throw std::invalid_argument("join expects single numeric argument (thread id)");
 
     uint64_t id = args[0].asInt();
@@ -193,36 +193,36 @@ Value ModuleSys::join_builtin(VM& vm, int argCount, Value* args)
     return count > 0 ? trueVal() : falseVal();
 }
 
-Value ModuleSys::threadid_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::threadid_builtin(VM& vm, ArgsView args)
 {
-    if (argCount != 0)
+    if (args.size() != 0)
         throw std::invalid_argument("_threadid takes no arguments");
 
     int32_t id = int32_t(VM::thread->id());
     return intVal(id);
 }
 
-Value ModuleSys::stacktrace_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::stacktrace_builtin(VM& vm, ArgsView args)
 {
-    if (argCount != 0)
+    if (args.size() != 0)
         throw std::invalid_argument("stacktrace takes no arguments");
 
     return vm.captureStacktrace();
 }
 
-Value ModuleSys::stackdepth_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::stackdepth_builtin(VM& vm, ArgsView args)
 {
-    if (argCount != 0)
+    if (args.size() != 0)
         throw std::invalid_argument("_stackdepth takes no arguments");
 
     int32_t depth = int32_t(VM::thread->stackTop - VM::thread->stack.begin());
     return intVal(depth);
 }
 
-Value ModuleSys::await_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::await_builtin(VM& vm, ArgsView args)
 {
     int32_t numFuturesResolved { 0 };
-    if (argCount == 1) {
+    if (args.size() == 1) {
         if (isFuture(args[0])) {
             args[0].resolve();
             numFuturesResolved++;
@@ -236,7 +236,7 @@ Value ModuleSys::await_builtin(VM& vm, int argCount, Value* args)
         }
     }
     else {
-        for(int i=0; i<argCount; i++) {
+        for(size_t i=0; i<args.size(); i++) {
             if (isFuture(args[i])) {
                 args[i].resolve();
                 numFuturesResolved++;
@@ -247,9 +247,9 @@ Value ModuleSys::await_builtin(VM& vm, int argCount, Value* args)
     return intVal(numFuturesResolved);
 }
 
-Value ModuleSys::runtests_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
 {
-    if (argCount != 1 || !isString(args[0]))
+    if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("_runtests expects single string argument");
 
     auto suite = toUTF8StdString(asString(args[0])->s);
@@ -304,36 +304,36 @@ Value ModuleSys::runtests_builtin(VM& vm, int argCount, Value* args)
     return nilVal();
 }
 
-Value ModuleSys::weakref_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::weakref_builtin(VM& vm, ArgsView args)
 {
-    if (argCount != 1)
+    if (args.size() != 1)
         throw std::invalid_argument("weakref expects single argument");
 
     return args[0].weakRef();
 }
 
-Value ModuleSys::weak_alive_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::weak_alive_builtin(VM& vm, ArgsView args)
 {
-    if (argCount != 1)
+    if (args.size() != 1)
         throw std::invalid_argument("weak_alive expects single argument");
 
     return args[0].isAlive() ? trueVal() : falseVal();
 }
 
-Value ModuleSys::strongref_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::strongref_builtin(VM& vm, ArgsView args)
 {
-    if (argCount != 1)
+    if (args.size() != 1)
         throw std::invalid_argument("strongref expects single argument");
 
     return args[0].strongRef();
 }
 
-Value ModuleSys::serialize_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::serialize_builtin(VM& vm, ArgsView args)
 {
-    if(argCount < 1 || argCount > 2)
+    if(args.size() < 1 || args.size() > 2)
         throw std::invalid_argument("serialize expects value and optional protocol string");
     std::string protocol = "default";
-    if(argCount == 2) {
+    if(args.size() == 2) {
         if(!isString(args[1]))
             throw std::invalid_argument("serialize protocol must be string");
         protocol = toUTF8StdString(asString(args[1])->s);
@@ -352,13 +352,13 @@ Value ModuleSys::serialize_builtin(VM& vm, int argCount, Value* args)
     return objVal(listVal(bytes));
 }
 
-Value ModuleSys::deserialize_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::deserialize_builtin(VM& vm, ArgsView args)
 {
-    if(argCount < 1 || argCount > 2 || !isList(args[0]))
+    if(args.size() < 1 || args.size() > 2 || !isList(args[0]))
         throw std::invalid_argument("deserialize expects list of bytes and optional protocol string");
 
     std::string protocol = "default";
-    if(argCount == 2) {
+    if(args.size() == 2) {
         if(!isString(args[1]))
             throw std::invalid_argument("deserialize protocol must be string");
         protocol = toUTF8StdString(asString(args[1])->s);
@@ -466,13 +466,13 @@ static void dumpJsonPretty(const json11::Json& j, std::string& out, int indent=0
     }
 }
 
-Value ModuleSys::toJson_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::toJson_builtin(VM& vm, ArgsView args)
 {
-    if(argCount < 1 || argCount > 2)
+    if(args.size() < 1 || args.size() > 2)
         throw std::invalid_argument("toJson expects value and optional indent bool");
 
     bool indent = true;
-    if(argCount == 2)
+    if(args.size() == 2)
         indent = toType(ValueType::Bool, args[1], false).asBool();
 
     json11::Json j = valueToJson(args[0]);
@@ -513,9 +513,9 @@ static Value jsonToValue(const json11::Json& j) {
     return nilVal();
 }
 
-Value ModuleSys::fromJson_builtin(VM& vm, int argCount, Value* args)
+Value ModuleSys::fromJson_builtin(VM& vm, ArgsView args)
 {
-    if(argCount != 1 || !isString(args[0]))
+    if(args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fromJson expects json string");
 
     std::string s = toUTF8StdString(asString(args[0])->s);
@@ -526,14 +526,14 @@ Value ModuleSys::fromJson_builtin(VM& vm, int argCount, Value* args)
     return jsonToValue(j);
 }
 
-Value ModuleSys::clock_native(VM& vm, int argCount, Value* args)
+Value ModuleSys::clock_native(VM& vm, ArgsView args)
 {
     return realVal(double(clock())/CLOCKS_PER_SEC);
 }
 
-Value ModuleSys::clock_signal_native(VM& vm, int argCount, Value* args)
+Value ModuleSys::clock_signal_native(VM& vm, ArgsView args)
 {
-    if ((argCount != 1) || !args[0].isNumber())
+    if ((args.size() != 1) || !args[0].isNumber())
         throw std::invalid_argument("clock expects single numeric argument");
 
     double freq = args[0].asReal();
@@ -541,28 +541,28 @@ Value ModuleSys::clock_signal_native(VM& vm, int argCount, Value* args)
     return objVal(signalVal(sig));
 }
 
-Value ModuleSys::signal_source_native(VM& vm, int argCount, Value* args)
+Value ModuleSys::signal_source_native(VM& vm, ArgsView args)
 {
-    if (argCount < 1 || argCount > 2 || !args[0].isNumber())
+    if (args.size() < 1 || args.size() > 2 || !args[0].isNumber())
         throw std::invalid_argument("signal expects frequency and optional initial value");
 
     double freq = args[0].asReal();
     Value initial;
-    if (argCount >= 2)
+    if (args.size() >= 2)
         initial = args[1];
     auto sig = df::Signal::newSourceSignal(freq, initial);
     return objVal(signalVal(sig));
 }
 
-Value ModuleSys::engine_stop_native(VM& vm, int argCount, Value* args)
+Value ModuleSys::engine_stop_native(VM& vm, ArgsView args)
 {
     df::DataflowEngine::instance()->stop();
     return nilVal();
 }
 
-Value ModuleSys::typeof_native(VM& vm, int argCount, Value* args)
+Value ModuleSys::typeof_native(VM& vm, ArgsView args)
 {
-    if (argCount != 1)
+    if (args.size() != 1)
         throw std::invalid_argument("typeof expects single argument");
 
     Value val = args[0];
@@ -613,9 +613,9 @@ Value ModuleSys::typeof_native(VM& vm, int argCount, Value* args)
     return objVal(typeObj);
 }
 
-Value ModuleSys::df_graph_native(VM& vm, int argCount, Value* args)
+Value ModuleSys::df_graph_native(VM& vm, ArgsView args)
 {
-    if (argCount != 0)
+    if (args.size() != 0)
         throw std::invalid_argument("_df_graph has no arguments");
 
     auto engine = df::DataflowEngine::instance();
@@ -623,12 +623,12 @@ Value ModuleSys::df_graph_native(VM& vm, int argCount, Value* args)
     return objVal(stringVal(toUnicodeString(dot)));
 }
 
-Value ModuleSys::df_graphdot_native(VM& vm, int argCount, Value* args)
+Value ModuleSys::df_graphdot_native(VM& vm, ArgsView args)
 {
     std::string title;
-    if (argCount > 1)
+    if (args.size() > 1)
         throw std::invalid_argument("_df_graphdot expects zero or one title :string argument");
-    if (argCount == 1) {
+    if (args.size() == 1) {
         if (!isString(args[0]))
             throw std::invalid_argument("_df_graphdot expects string argument");
         title = toUTF8StdString(asString(args[0])->s);
@@ -639,7 +639,7 @@ Value ModuleSys::df_graphdot_native(VM& vm, int argCount, Value* args)
     return objVal(stringVal(toUnicodeString(dot)));
 }
 
-Value ModuleSys::loadlib_native(VM& vm, int argCount, Value* args)
-{
-    return roxal::loadlib_native(argCount, args);
+Value ModuleSys::loadlib_native(VM& vm, ArgsView args)
+{ 
+    return roxal::loadlib_native(args); 
 }

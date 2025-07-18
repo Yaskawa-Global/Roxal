@@ -74,19 +74,19 @@ static bool isExceptionType(ObjObjectType* type)
 }
 
 
-std::vector<Value> VM::marshalArgs(ptr<type::Type> funcType,
-                                   const std::vector<Value>& defaults,
-                                   const CallSpec& callSpec,
-                                   bool includeReceiver,
-                                   const Value& receiver)
+size_t VM::marshalArgs(ptr<type::Type> funcType,
+                       const std::vector<Value>& defaults,
+                       const CallSpec& callSpec,
+                       Value* out,
+                       bool includeReceiver,
+                       const Value& receiver)
 {
     const auto& params = funcType->func.value().params;
     auto paramPositions = callSpec.paramPositions(funcType, true);
 
-    std::vector<Value> argsVec(params.size() + (includeReceiver ? 1 : 0));
     size_t idx = 0;
     if (includeReceiver)
-        argsVec[idx++] = receiver;
+        out[idx++] = receiver;
 
     for(size_t pi = 0; pi < params.size(); ++pi) {
         Value arg;
@@ -105,9 +105,9 @@ std::vector<Value> VM::marshalArgs(ptr<type::Type> funcType,
                 strictConv = (thread->frames.end()-1)->strict;
             arg = toType(vt, arg, strictConv);
         }
-        argsVec[idx++] = arg;
+        out[idx++] = arg;
     }
-    return argsVec;
+    return idx;
 }
 
 bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
@@ -118,15 +118,25 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
 {
     try {
         if (funcType) {
-            auto argsVec = marshalArgs(funcType, defaults, callSpec,
-                                       includeReceiver, receiver);
-            Value result { fn(*this, argsVec.size(), argsVec.data()) };
+            size_t paramCount = funcType->func.value().params.size() + (includeReceiver ? 1 : 0);
+            constexpr size_t Small = 8;
+            Value stackArgs[Small];
+            std::vector<Value> heapArgs;
+            Value* buf = stackArgs;
+            if (paramCount > Small) {
+                heapArgs.resize(paramCount);
+                buf = heapArgs.data();
+            }
+            size_t actual = marshalArgs(funcType, defaults, callSpec, buf, includeReceiver, receiver);
+            ArgsView view{buf, actual};
+            Value result { fn(*this, view) };
             *(thread->stackTop - callSpec.argCount - 1) = result;
             popN(callSpec.argCount);
             return true;
         } else {
             Value* base = &(*thread->stackTop) - callSpec.argCount - (includeReceiver ? 1 : 0);
-            Value result { fn(*this, callSpec.argCount + (includeReceiver ? 1 : 0), base) };
+            ArgsView view{base, static_cast<size_t>(callSpec.argCount + (includeReceiver ? 1 : 0))};
+            Value result { fn(*this, view) };
             *(thread->stackTop - callSpec.argCount - 1) = result;
             popN(callSpec.argCount);
             return true;
@@ -3920,13 +3930,13 @@ Value VM::captureStacktrace()
     return objVal(framesList);
 }
 
-Value VM::event_emit_builtin(int argCount, Value* args)
+Value VM::event_emit_builtin(ArgsView args)
 {
-    if (argCount > 2 || !isEvent(args[0]))
+    if (args.size() > 2 || !isEvent(args[0]))
         throw std::invalid_argument("event.emit expects optional time argument in microseconds");
 
     TimePoint when = TimePoint::currentTime();
-    if (argCount == 2) {
+    if (args.size() == 2) {
         if (!args[1].isNumber())
             throw std::invalid_argument("event.emit time argument must be numeric microseconds");
         when = TimePoint::microSecs(args[1].asInt());
@@ -3942,9 +3952,9 @@ Value VM::event_emit_builtin(int argCount, Value* args)
     return nilVal();
 }
 
-Value VM::event_on_builtin(int argCount, Value* args)
+Value VM::event_on_builtin(ArgsView args)
 {
-    if (argCount != 2 || !isEvent(args[0]) || !isClosure(args[1]))
+    if (args.size() != 2 || !isEvent(args[0]) || !isClosure(args[1]))
         throw std::invalid_argument("event.on expects event and closure argument");
 
     Value eventVal = args[0];
@@ -3961,9 +3971,9 @@ Value VM::event_on_builtin(int argCount, Value* args)
     return nilVal();
 }
 
-Value VM::event_off_builtin(int argCount, Value* args)
+Value VM::event_off_builtin(ArgsView args)
 {
-    if (argCount != 2 || !(isEvent(args[0]) || isSignal(args[0])) || !isClosure(args[1]))
+    if (args.size() != 2 || !(isEvent(args[0]) || isSignal(args[0])) || !isClosure(args[1]))
         throw std::invalid_argument("event.off expects event/signal and closure argument");
 
     Value eventVal = args[0];
@@ -4005,9 +4015,9 @@ Value VM::event_off_builtin(int argCount, Value* args)
 
 
 
-Value VM::vector_norm_builtin(int argCount, Value* args)
+Value VM::vector_norm_builtin(ArgsView args)
 {
-    if (argCount != 1 || !isVector(args[0]))
+    if (args.size() != 1 || !isVector(args[0]))
         throw std::invalid_argument("vector.norm expects no arguments");
 
     ObjVector* vec = asVector(args[0]);
@@ -4015,9 +4025,9 @@ Value VM::vector_norm_builtin(int argCount, Value* args)
     return realVal(n);
 }
 
-Value VM::vector_sum_builtin(int argCount, Value* args)
+Value VM::vector_sum_builtin(ArgsView args)
 {
-    if (argCount != 1 || !isVector(args[0]))
+    if (args.size() != 1 || !isVector(args[0]))
         throw std::invalid_argument("vector.sum expects no arguments");
 
     ObjVector* vec = asVector(args[0]);
@@ -4025,9 +4035,9 @@ Value VM::vector_sum_builtin(int argCount, Value* args)
     return realVal(s);
 }
 
-Value VM::vector_normalized_builtin(int argCount, Value* args)
+Value VM::vector_normalized_builtin(ArgsView args)
 {
-    if (argCount != 1 || !isVector(args[0]))
+    if (args.size() != 1 || !isVector(args[0]))
         throw std::invalid_argument("vector.normalized expects no arguments");
 
     ObjVector* vec = asVector(args[0]);
@@ -4035,9 +4045,9 @@ Value VM::vector_normalized_builtin(int argCount, Value* args)
     return objVal(vectorVal(nvec));
 }
 
-Value VM::vector_dot_builtin(int argCount, Value* args)
+Value VM::vector_dot_builtin(ArgsView args)
 {
-    if (argCount != 2 || !isVector(args[0]) || !isVector(args[1]))
+    if (args.size() != 2 || !isVector(args[0]) || !isVector(args[1]))
         throw std::invalid_argument("vector.dot expects single vector argument");
 
     ObjVector* v1 = asVector(args[0]);
@@ -4049,27 +4059,27 @@ Value VM::vector_dot_builtin(int argCount, Value* args)
     return realVal(d);
 }
 
-Value VM::matrix_rows_builtin(int argCount, Value* args)
+Value VM::matrix_rows_builtin(ArgsView args)
 {
-    if (argCount != 1 || !isMatrix(args[0]))
+    if (args.size() != 1 || !isMatrix(args[0]))
         throw std::invalid_argument("matrix.rows expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
     return intVal(mat->rows());
 }
 
-Value VM::matrix_cols_builtin(int argCount, Value* args)
+Value VM::matrix_cols_builtin(ArgsView args)
 {
-    if (argCount != 1 || !isMatrix(args[0]))
+    if (args.size() != 1 || !isMatrix(args[0]))
         throw std::invalid_argument("matrix.cols expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
     return intVal(mat->cols());
 }
 
-Value VM::matrix_transpose_builtin(int argCount, Value* args)
+Value VM::matrix_transpose_builtin(ArgsView args)
 {
-    if (argCount != 1 || !isMatrix(args[0]))
+    if (args.size() != 1 || !isMatrix(args[0]))
         throw std::invalid_argument("matrix.transpose expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
@@ -4077,9 +4087,9 @@ Value VM::matrix_transpose_builtin(int argCount, Value* args)
     return objVal(matrixVal(tr));
 }
 
-Value VM::matrix_determinant_builtin(int argCount, Value* args)
+Value VM::matrix_determinant_builtin(ArgsView args)
 {
-    if (argCount != 1 || !isMatrix(args[0]))
+    if (args.size() != 1 || !isMatrix(args[0]))
         throw std::invalid_argument("matrix.determinant expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
@@ -4090,9 +4100,9 @@ Value VM::matrix_determinant_builtin(int argCount, Value* args)
     return realVal(det);
 }
 
-Value VM::matrix_inverse_builtin(int argCount, Value* args)
+Value VM::matrix_inverse_builtin(ArgsView args)
 {
-    if (argCount != 1 || !isMatrix(args[0]))
+    if (args.size() != 1 || !isMatrix(args[0]))
         throw std::invalid_argument("matrix.inverse expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
@@ -4103,9 +4113,9 @@ Value VM::matrix_inverse_builtin(int argCount, Value* args)
     return objVal(matrixVal(inv));
 }
 
-Value VM::matrix_trace_builtin(int argCount, Value* args)
+Value VM::matrix_trace_builtin(ArgsView args)
 {
-    if (argCount != 1 || !isMatrix(args[0]))
+    if (args.size() != 1 || !isMatrix(args[0]))
         throw std::invalid_argument("matrix.trace expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
@@ -4113,9 +4123,9 @@ Value VM::matrix_trace_builtin(int argCount, Value* args)
     return realVal(tr);
 }
 
-Value VM::matrix_norm_builtin(int argCount, Value* args)
+Value VM::matrix_norm_builtin(ArgsView args)
 {
-    if (argCount != 1 || !isMatrix(args[0]))
+    if (args.size() != 1 || !isMatrix(args[0]))
         throw std::invalid_argument("matrix.norm expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
@@ -4123,9 +4133,9 @@ Value VM::matrix_norm_builtin(int argCount, Value* args)
     return realVal(n);
 }
 
-Value VM::matrix_sum_builtin(int argCount, Value* args)
+Value VM::matrix_sum_builtin(ArgsView args)
 {
-    if (argCount != 1 || !isMatrix(args[0]))
+    if (args.size() != 1 || !isMatrix(args[0]))
         throw std::invalid_argument("matrix.sum expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
@@ -4133,9 +4143,9 @@ Value VM::matrix_sum_builtin(int argCount, Value* args)
     return realVal(s);
 }
 
-Value VM::list_append_builtin(int argCount, Value* args)
+Value VM::list_append_builtin(ArgsView args)
 {
-    if (argCount != 2 || !isList(args[0]))
+    if (args.size() != 2 || !isList(args[0]))
         throw std::invalid_argument("list.append expects single argument");
 
     // TODO: Signal values should be resolved when passed as function arguments
@@ -4145,9 +4155,9 @@ Value VM::list_append_builtin(int argCount, Value* args)
     return nilVal();
 }
 
-Value VM::signal_run_builtin(int argCount, Value* args)
+Value VM::signal_run_builtin(ArgsView args)
 {
-    if (argCount != 1 || !isSignal(args[0]))
+    if (args.size() != 1 || !isSignal(args[0]))
         throw std::invalid_argument("signal.run expects no arguments");
 
     ObjSignal* objSignal = asSignal(args[0]);
@@ -4159,9 +4169,9 @@ Value VM::signal_run_builtin(int argCount, Value* args)
     return nilVal();
 }
 
-Value VM::signal_stop_builtin(int argCount, Value* args)
+Value VM::signal_stop_builtin(ArgsView args)
 {
-    if (argCount != 1 || !isSignal(args[0]))
+    if (args.size() != 1 || !isSignal(args[0]))
         throw std::invalid_argument("signal.stop expects no arguments");
 
     ObjSignal* objSignal = asSignal(args[0]);
@@ -4173,9 +4183,9 @@ Value VM::signal_stop_builtin(int argCount, Value* args)
     return nilVal();
 }
 
-Value VM::signal_tick_builtin(int argCount, Value* args)
+Value VM::signal_tick_builtin(ArgsView args)
 {
-    if (argCount != 1 || !isSignal(args[0]))
+    if (args.size() != 1 || !isSignal(args[0]))
         throw std::invalid_argument("signal.tick expects no arguments");
 
     ObjSignal* objSignal = asSignal(args[0]);
@@ -4187,9 +4197,9 @@ Value VM::signal_tick_builtin(int argCount, Value* args)
     return nilVal();
 }
 
-Value VM::signal_freq_builtin(int argCount, Value* args)
+Value VM::signal_freq_builtin(ArgsView args)
 {
-    if (argCount != 1 || !isSignal(args[0]))
+    if (args.size() != 1 || !isSignal(args[0]))
         throw std::invalid_argument("signal.freq expects no arguments");
 
     ObjSignal* objSignal = asSignal(args[0]);
@@ -4197,9 +4207,9 @@ Value VM::signal_freq_builtin(int argCount, Value* args)
     return intVal(sig->frequency());
 }
 
-Value VM::signal_set_builtin(int argCount, Value* args)
+Value VM::signal_set_builtin(ArgsView args)
 {
-    if (argCount != 2 || !isSignal(args[0]))
+    if (args.size() != 2 || !isSignal(args[0]))
         throw std::invalid_argument("signal.set expects single value argument");
 
     ObjSignal* objSignal = asSignal(args[0]);
@@ -4223,21 +4233,21 @@ void VM::defineNativeFunctions()
 }
 
 
-Value VM::dataflow_tick_native(int argCount, Value* args)
+Value VM::dataflow_tick_native(ArgsView args)
 {
     df::DataflowEngine::instance()->tick(false);
     return nilVal();
 }
 
-Value VM::dataflow_run_native(int argCount, Value* args)
+Value VM::dataflow_run_native(ArgsView args)
 {
     df::DataflowEngine::instance()->run();
     return nilVal();
 }
 
-Value VM::dataflow_run_for_native(int argCount, Value* args)
+Value VM::dataflow_run_for_native(ArgsView args)
 {
-    if (argCount != 2 || !args[1].isNumber())
+    if (args.size() != 2 || !args[1].isNumber())
         throw std::invalid_argument("runFor expects single numeric argument");
 
     // TODO: _dataflow.runFor currently blocks the script thread instead of being asynchronous
@@ -4248,15 +4258,15 @@ Value VM::dataflow_run_for_native(int argCount, Value* args)
 }
 
 
-Value VM::loadlib_native(int argCount, Value* args)
+Value VM::loadlib_native(ArgsView args)
 {
-    return roxal::loadlib_native(argCount, args);
+    return roxal::loadlib_native(args);
 }
 
 
-Value VM::ffi_native(int argCount, Value* args)
+Value VM::ffi_native(ArgsView args)
 {
-    return roxal::ffi_native(argCount, args);
+    return roxal::ffi_native(args);
 }
 
 

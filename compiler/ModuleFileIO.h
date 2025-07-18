@@ -15,14 +15,14 @@ public:
     inline ObjModuleType* moduleType() const { return asModuleType(moduleTypeValue); }
 
     // builtin function implementations
-    Value fileio_open_builtin(VM& vm, int argCount, Value* args);
-    Value fileio_close_builtin(VM& vm, int argCount, Value* args);
-    Value fileio_isopen_builtin(VM& vm, int argCount, Value* args);
-    Value fileio_moredata_builtin(VM& vm, int argCount, Value* args);
-    Value fileio_read_builtin(VM& vm, int argCount, Value* args);
-    Value fileio_readline_builtin(VM& vm, int argCount, Value* args);
-    Value fileio_readfile_builtin(VM& vm, int argCount, Value* args);
-    Value fileio_write_builtin(VM& vm, int argCount, Value* args);
+    Value fileio_open_builtin(VM& vm, ArgsView args);
+    Value fileio_close_builtin(VM& vm, ArgsView args);
+    Value fileio_isopen_builtin(VM& vm, ArgsView args);
+    Value fileio_moredata_builtin(VM& vm, ArgsView args);
+    Value fileio_read_builtin(VM& vm, ArgsView args);
+    Value fileio_readline_builtin(VM& vm, ArgsView args);
+    Value fileio_readfile_builtin(VM& vm, ArgsView args);
+    Value fileio_write_builtin(VM& vm, ArgsView args);
 
 private:
     Value moduleTypeValue; // ObjModuleType*
