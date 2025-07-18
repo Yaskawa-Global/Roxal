@@ -564,7 +564,7 @@ std::string objMatrixToString(const ObjMatrix* om);
 
 struct ObjSignal : public Obj {
     ObjSignal(ptr<df::Signal> s);
-    virtual ~ObjSignal() {}
+    virtual ~ObjSignal();
     ObjEvent* ensureChangeEvent();
     ptr<df::Signal> signal;
     Value changeEvent;
@@ -713,6 +713,7 @@ struct ObjFunction : public Obj
     int upvalueCount;
     ptr<Chunk> chunk;
     std::vector<ptr<ast::Annotation>> annotations;
+    icu::UnicodeString doc;
     void* nativeSpec { nullptr }; // for ffi or other native info
 
     bool strict;        // true if function was compiled in strict mode

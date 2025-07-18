@@ -209,6 +209,22 @@ ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
     RoxalIndentationLexer lexer(&input);
     CommonTokenStream tokens(&lexer);
 
+    class ParserErrorListener : public antlr4::BaseErrorListener {
+    public:
+        bool hadError = false;
+        virtual void syntaxError(antlr4::Recognizer *recognizer,
+                                 antlr4::Token *offendingSymbol,
+                                 size_t line, size_t charPositionInLine,
+                                 const std::string &msg, std::exception_ptr e) override
+        {
+            if (!hadError) {
+                hadError = true;
+                compileError(std::to_string(line) + ":" +
+                             std::to_string(charPositionInLine) + " - " + msg);
+            }
+        }
+    } errorListener;
+
     #if defined(DEBUG_OUTPUT_LEXER_TOKENS)
     std::cout << "== tokens ==" << std::endl;
     tokens.fill();
@@ -222,8 +238,18 @@ ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
     #endif
 
     RoxalParser parser(&tokens);
+    lexer.removeErrorListeners();
+    parser.removeErrorListeners();
+    lexer.addErrorListener(&errorListener);
+    parser.addErrorListener(&errorListener);
 
     auto tree = parser.file_input();
+
+    if (errorListener.hadError) {
+        this->source = nullptr;
+        this->sourceName.clear();
+        return nullptr;
+    }
 
     #if defined(DEBUG_OUTPUT_PARSE_TREE)
     std::cout << "== parse tree ==" << std::endl << tree::Trees::toStringTree(tree,&parser,true) << std::endl;
@@ -2142,15 +2168,22 @@ std::any ASTGenerator::visitStr(RoxalParser::StrContext *context)
     visitStart();
     std::string text;
     bool isDouble = false;
+    bool isTriple = false;
     if (context->SINGLE_STRING()) {
         text = context->SINGLE_STRING()->getText();
-    } else {
+    } else if (context->DOUBLE_STRING()) {
         text = context->DOUBLE_STRING()->getText();
         isDouble = true;
+    } else {
+        text = context->TRIPLE_STRING()->getText();
+        isTriple = true;
     }
 
     // drop enclosing quotes
-    text = text.substr(1,text.size()-2);
+    if (isTriple)
+        text = text.substr(3, text.size()-6);
+    else
+        text = text.substr(1, text.size()-2);
 
     if (isDouble && text.find('{') != std::string::npos) {
         std::vector<ptr<Expression>> parts;

@@ -498,9 +498,10 @@ LTRUE : 'True'|'true'|'ON'|'On';
 LFALSE : 'False'|'false'|'OFF'|'Off'|'off';
 LNIL: 'nil';
 
-str
+ str
  : SINGLE_STRING
  | DOUBLE_STRING
+ | TRIPLE_STRING
  ;
 
 
@@ -538,6 +539,10 @@ BIN_INTEGER
 FLOAT_NUMBER
  : POINT_FLOAT
  | EXPONENT_FLOAT
+ ;
+
+TRIPLE_STRING
+ : '"""' ( . | '\r' | '\n' )*? '"""'
  ;
 
 SINGLE_STRING
