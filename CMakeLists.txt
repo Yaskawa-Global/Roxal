@@ -92,6 +92,7 @@ set(COMPILER_SOURCES
     compiler/Chunk.cpp
     compiler/Object.cpp
     compiler/FFI.cpp
+    compiler/Builtin.cpp
     compiler/RoxalCompiler.cpp
     compiler/RoxalIndentationLexer.cpp
     compiler/TypeDeducer.cpp

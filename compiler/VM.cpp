@@ -25,6 +25,7 @@
 #include "VM.h"
 #include "Object.h"
 #include "FFI.h"
+#include "Builtin.h"
 #include "ModuleMath.h"
 #include "ModuleSys.h"
 #include <Eigen/Dense>
@@ -892,8 +893,10 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             case ObjType::Closure: {
                 ObjClosure* closure = asClosure(callee);
                 bool cfunc = false;
+                bool builtin = false;
                 for(const auto& annot : closure->function->annotations) {
-                    if (annot->name == "cfunc") { cfunc = true; break; }
+                    if (annot->name == "cfunc") { cfunc = true; }
+                    else if (annot->name == "builtin") { builtin = true; }
                 }
                 if (cfunc) {
                     try {
@@ -901,6 +904,14 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         *(thread->stackTop - callSpec.argCount - 1) = result;
                         popN(callSpec.argCount);
                         return true;
+                    } catch (std::exception& e) {
+                        runtimeError(e.what());
+                        return false;
+                    }
+                }
+                if (builtin) {
+                    try {
+                        return roxal::callBuiltin(closure, callSpec);
                     } catch (std::exception& e) {
                         runtimeError(e.what());
                         return false;

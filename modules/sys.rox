@@ -1,0 +1,3 @@
+@builtin(name='wait')
+proc wait(s:int=0, ms:int=0, us:int=0, ns:int=0):
+  _
