@@ -120,7 +120,7 @@ Value ModuleSys::len_builtin(VM& vm, int argCount, Value* args)
         case ValueType::Vector: len = asVector(v)->length(); break;
         case ValueType::Range: {
             len = asRange(v)->length();
-            if (len<0) return nilVal();
+            if (len<0) return nilVal(); // has no defined length
         } break;
         default:
 #ifdef DEBUG_BUILD
@@ -166,6 +166,7 @@ Value ModuleSys::fork_builtin(VM& vm, int argCount, Value* args)
 
     ObjClosure* closure = asClosure(args[0]);
 
+    // Check if closure captures any outer variables (has upvalues)
     if (!closure->upvalues.empty()) {
         throw std::runtime_error("fork cannot execute functions that capture variables from outer scopes. "
                                 "The function must only use its parameters and global variables.");
@@ -184,7 +185,7 @@ Value ModuleSys::join_builtin(VM& vm, int argCount, Value* args)
     if ((argCount != 1) || !args[0].isNumber())
         throw std::invalid_argument("join expects single numeric argument (thread id)");
 
-    uint64_t id = args[0].asInt();
+    uint64_t id = args[0].asInt(); // FIXME: id is uint64
 
     auto count = vm.threads.erase_and_apply(id, [](ptr<Thread> t){
         t->join();
@@ -198,7 +199,7 @@ Value ModuleSys::threadid_builtin(VM& vm, int argCount, Value* args)
     if (argCount != 0)
         throw std::invalid_argument("_threadid takes no arguments");
 
-    int32_t id = int32_t(VM::thread->id());
+    int32_t id = int32_t(VM::thread->id()); // FIXME: id is uint64
     return intVal(id);
 }
 
@@ -221,6 +222,10 @@ Value ModuleSys::stackdepth_builtin(VM& vm, int argCount, Value* args)
 
 Value ModuleSys::await_builtin(VM& vm, int argCount, Value* args)
 {
+    // Iterate over all the arguments and resolve each if it is a Future.
+    // Resolving may block until the promise is fulfilled unless it already was.
+    // As a special case, if a single argument is a list, iterate over the
+    // elements of that list and resolve them.
     int32_t numFuturesResolved { 0 };
     if (argCount == 1) {
         if (isFuture(args[0])) {
@@ -255,6 +260,7 @@ Value ModuleSys::runtests_builtin(VM& vm, int argCount, Value* args)
     auto suite = toUTF8StdString(asString(args[0])->s);
 
     if (suite == "dataflow") {
+        // TODO: Dataflow tests have been moved out - need to implement new roxal-based tests
         std::cout << "Dataflow tests temporarily disabled during Func class elimination" << std::endl;
         df::DataflowEngine::instance()->clear();
     }
@@ -568,6 +574,8 @@ Value ModuleSys::typeof_native(VM& vm, int argCount, Value* args)
     Value val = args[0];
     ValueType valueType;
 
+    // Determine the ValueType of the argument
+
     if (val.isNil()) {
         valueType = ValueType::Nil;
     } else if (val.isBool()) {
@@ -596,16 +604,19 @@ Value ModuleSys::typeof_native(VM& vm, int argCount, Value* args)
             ObjException* ex = asException(val);
             if (!ex->exType.isNil())
                 return ex->exType;
+            // fall back to builtin 'exception' type if somehow missing
             auto maybe = vm.globals.load(toUnicodeString("exception"));
             if (maybe.has_value())
                 return maybe.value();
             return objVal(typeSpecVal(ValueType::Object));
         }
 
+        // For primitive object wrappers like strings
         valueType = obj->valueType();
         ObjTypeSpec* typeObj = typeSpecVal(valueType);
         return objVal(typeObj);
     } else {
+        // Fallback
         valueType = ValueType::Nil;
     }
 
