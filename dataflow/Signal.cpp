@@ -108,8 +108,20 @@ std::optional<Value> Signal::valueIfAvailableAt(TimePoint t) const
     auto it = values.find(t);
     if (it != values.end())
         return it->second;
-    else
-        return std::nullopt;
+
+    // For non-clock source signals, treat the last value prior to t as the
+    // value at t.  These signals maintain their last set value until changed
+    // explicitly, so consumers should consider that value available at all
+    // future tick times.
+    if (isSource && !isClock && !values.empty() && t >= values.begin()->first) {
+        auto it_before = values.upper_bound(t);
+        if (it_before != values.begin()) {
+            --it_before;
+            return it_before->second;
+        }
+    }
+
+    return std::nullopt;
 }
 
 
@@ -165,8 +177,14 @@ void Signal::setValueAt(TimePoint t, const Value& v)
 void Signal::set(const Value& v)
 {
     TimePoint t = DataflowEngine::instance()->tickStart();
-    setValueAt(t, v);
-    DataflowEngine::instance()->updateSignalConsumerInputAvailability(shared_from_this(), t);
+
+    // Update the value at the next tick boundary for this signal. This avoids
+    // races with the dataflow engine thread which may already be processing the
+    // current tick when set() is called from another thread.
+    TimePoint nextTick = t + m_period;
+
+    setValueAt(nextTick, v);
+    DataflowEngine::instance()->updateSignalConsumerInputAvailability(shared_from_this(), nextTick);
 }
 
 
