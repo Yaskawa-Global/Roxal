@@ -102,20 +102,10 @@ void DataflowEngine::removeSignal(ptr<Signal> signal)
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
-    // Check if any function still references this signal
-    bool used = false;
-    for (const auto& kv : funcs) {
-        const auto& func = kv.second;
-        for (const auto& ip : func->m_inputs)
-            if (ip.signal == signal) { used = true; break; }
-        if (used) break;
-        for (const auto& op : func->m_outputs)
-            if (op.signal == signal) { used = true; break; }
-        if (used) break;
-    }
-
-    if (used)
-        return;
+    // Remove the signal regardless of whether functions currently
+    // reference it. Any functions that depend on this signal will have
+    // their references cleaned up below, and may themselves be removed
+    // if they no longer produce outputs.
 
     // Remove from signal list
     auto it = std::remove(signals.begin(), signals.end(), signal);
