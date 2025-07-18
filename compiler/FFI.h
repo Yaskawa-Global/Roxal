@@ -6,6 +6,7 @@
 
 #include <core/common.h>
 #include "Value.h"
+#include "ArgsView.h"
 #include "Chunk.h"
 #include "Object.h"
 #include <core/AST.h>
@@ -50,8 +51,8 @@ struct CStructContext {
 void* createFFIWrapper(void* fn, ffi_type* retType,
                        const std::vector<ffi_type*>& argTypes);
 
-Value loadlib_native(int argCount, Value* args);
-Value ffi_native(int argCount, Value* args);
+Value loadlib_native(ArgsView args);
+Value ffi_native(ArgsView args);
 
 Value callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* args);
 

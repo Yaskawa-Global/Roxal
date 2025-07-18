@@ -84,16 +84,16 @@ void ModuleMath::registerBuiltins(VM& vm)
     addMath("rint", (void*)(double (*)(double))rint, {&ffi_type_double});
     addMath("tgamma", (void*)(double (*)(double))tgamma, {&ffi_type_double});
 
-    addMathBuiltin("identity", [this](VM& vm, int c, Value* a){ return math_identity_builtin(vm,c,a); });
-    addMathBuiltin("zeros", [this](VM& vm, int c, Value* a){ return math_zeros_builtin(vm,c,a); });
-    addMathBuiltin("ones", [this](VM& vm, int c, Value* a){ return math_ones_builtin(vm,c,a); });
-    addMathBuiltin("dot", [this](VM& vm, int c, Value* a){ return math_dot_builtin(vm,c,a); });
-    addMathBuiltin("cross", [this](VM& vm, int c, Value* a){ return math_cross_builtin(vm,c,a); });
+    addMathBuiltin("identity", [this](VM& vm, ArgsView a){ return math_identity_builtin(vm,a); });
+    addMathBuiltin("zeros", [this](VM& vm, ArgsView a){ return math_zeros_builtin(vm,a); });
+    addMathBuiltin("ones", [this](VM& vm, ArgsView a){ return math_ones_builtin(vm,a); });
+    addMathBuiltin("dot", [this](VM& vm, ArgsView a){ return math_dot_builtin(vm,a); });
+    addMathBuiltin("cross", [this](VM& vm, ArgsView a){ return math_cross_builtin(vm,a); });
 }
 
-Value ModuleMath::math_identity_builtin(VM& vm, int argCount, Value* args)
+Value ModuleMath::math_identity_builtin(VM& vm, ArgsView args)
 {
-    if (argCount != 1 || !args[0].isNumber())
+    if (args.size() != 1 || !args[0].isNumber())
         throw std::invalid_argument("math.identity expects single integer size");
 
     int n = toType(ValueType::Int, args[0], false).asInt();
@@ -101,9 +101,9 @@ Value ModuleMath::math_identity_builtin(VM& vm, int argCount, Value* args)
     return objVal(matrixVal(m));
 }
 
-Value ModuleMath::math_zeros_builtin(VM& vm, int argCount, Value* args)
+Value ModuleMath::math_zeros_builtin(VM& vm, ArgsView args)
 {
-    if (argCount != 2 || !args[0].isNumber() || !args[1].isNumber())
+    if (args.size() != 2 || !args[0].isNumber() || !args[1].isNumber())
         throw std::invalid_argument("math.zeros expects two integer arguments");
 
     int r = toType(ValueType::Int, args[0], false).asInt();
@@ -112,9 +112,9 @@ Value ModuleMath::math_zeros_builtin(VM& vm, int argCount, Value* args)
     return objVal(matrixVal(m));
 }
 
-Value ModuleMath::math_ones_builtin(VM& vm, int argCount, Value* args)
+Value ModuleMath::math_ones_builtin(VM& vm, ArgsView args)
 {
-    if (argCount != 2 || !args[0].isNumber() || !args[1].isNumber())
+    if (args.size() != 2 || !args[0].isNumber() || !args[1].isNumber())
         throw std::invalid_argument("math.ones expects two integer arguments");
 
     int r = toType(ValueType::Int, args[0], false).asInt();
@@ -123,9 +123,9 @@ Value ModuleMath::math_ones_builtin(VM& vm, int argCount, Value* args)
     return objVal(matrixVal(m));
 }
 
-Value ModuleMath::math_dot_builtin(VM& vm, int argCount, Value* args)
+Value ModuleMath::math_dot_builtin(VM& vm, ArgsView args)
 {
-    if (argCount != 2 || !isVector(args[0]) || !isVector(args[1]))
+    if (args.size() != 2 || !isVector(args[0]) || !isVector(args[1]))
         throw std::invalid_argument("math.dot expects two vector arguments");
 
     ObjVector* v1 = asVector(args[0]);
@@ -137,9 +137,9 @@ Value ModuleMath::math_dot_builtin(VM& vm, int argCount, Value* args)
     return realVal(d);
 }
 
-Value ModuleMath::math_cross_builtin(VM& vm, int argCount, Value* args)
+Value ModuleMath::math_cross_builtin(VM& vm, ArgsView args)
 {
-    if (argCount != 2 || !isVector(args[0]) || !isVector(args[1]))
+    if (args.size() != 2 || !isVector(args[0]) || !isVector(args[1]))
         throw std::invalid_argument("math.cross expects two vector arguments");
 
     ObjVector* v1 = asVector(args[0]);

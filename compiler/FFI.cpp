@@ -31,9 +31,9 @@ void* roxal::createFFIWrapper(void* fn, ffi_type* retType,
     return spec;
 }
 
-Value roxal::loadlib_native(int argCount, Value* args)
+Value roxal::loadlib_native(ArgsView args)
 {
-    if (argCount != 1 || !isString(args[0]))
+    if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("loadlib expects single string argument");
 
     std::string path = toUTF8StdString(asUString(args[0]));
@@ -44,13 +44,14 @@ Value roxal::loadlib_native(int argCount, Value* args)
     return objVal(libraryVal(h));
 }
 
-Value roxal::ffi_native(int argCount, Value* args)
+Value roxal::ffi_native(ArgsView args)
 {
-    ObjNative* native = asNative(*(args-1));
+    ObjNative* native = asNative(*(args.data-1));
     FFIWrapper* spec = static_cast<FFIWrapper*>(native->data);
     if (!spec)
         throw std::runtime_error("ffi_native called without spec");
-    if (argCount != (int)spec->argTypes.size())
+    size_t argCount = args.size();
+    if (argCount != spec->argTypes.size())
         throw std::invalid_argument("invalid argument count for ffi function");
 
     std::vector<void*> argValues(argCount);
@@ -63,7 +64,7 @@ Value roxal::ffi_native(int argCount, Value* args)
     std::vector<uint8_t> byteVals(argCount);
     std::vector<uint8_t> boolVals(argCount);
 
-    for(int i=0;i<argCount;i++) {
+    for(size_t i=0;i<argCount;i++) {
         if (spec->argTypes[i] == &ffi_type_double || spec->argTypes[i] == &ffi_type_float) {
             if (!args[i].isNumber())
                 throw std::invalid_argument("ffi argument not number");

@@ -7,6 +7,7 @@
 #include "core/atomic.h"
 #include "Chunk.h"
 #include "Value.h"
+#include "ArgsView.h"
 #include "InterpretResult.h"
 #include "Thread.h"
 #include "BuiltinModule.h"
@@ -118,11 +119,12 @@ public:
                       std::vector<Value> defaults = {});
 
     // Helper used by builtin call marshalling
-    std::vector<Value> marshalArgs(ptr<type::Type> funcType,
-                                   const std::vector<Value>& defaults,
-                                   const CallSpec& callSpec,
-                                   bool includeReceiver = false,
-                                   const Value& receiver = nilVal());
+    size_t marshalArgs(ptr<type::Type> funcType,
+                       const std::vector<Value>& defaults,
+                       const CallSpec& callSpec,
+                       Value* out,
+                       bool includeReceiver = false,
+                       const Value& receiver = nilVal());
 
     bool callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                       const std::vector<Value>& defaults,
@@ -267,31 +269,31 @@ public:
     void defineBuiltinProperties();
     void defineBuiltinProperty(ValueType type, const std::string& name, NativePropertyGetter getter, NativePropertySetter setter = nullptr);
 
-    Value vector_norm_builtin(int argCount, Value* args);
-    Value vector_sum_builtin(int argCount, Value* args);
-    Value vector_normalized_builtin(int argCount, Value* args);
-    Value vector_dot_builtin(int argCount, Value* args);
-    Value matrix_rows_builtin(int argCount, Value* args);
-    Value matrix_cols_builtin(int argCount, Value* args);
-    Value matrix_transpose_builtin(int argCount, Value* args);
-    Value matrix_determinant_builtin(int argCount, Value* args);
-    Value matrix_inverse_builtin(int argCount, Value* args);
-    Value matrix_trace_builtin(int argCount, Value* args);
-    Value matrix_norm_builtin(int argCount, Value* args);
-    Value matrix_sum_builtin(int argCount, Value* args);
+    Value vector_norm_builtin(ArgsView args);
+    Value vector_sum_builtin(ArgsView args);
+    Value vector_normalized_builtin(ArgsView args);
+    Value vector_dot_builtin(ArgsView args);
+    Value matrix_rows_builtin(ArgsView args);
+    Value matrix_cols_builtin(ArgsView args);
+    Value matrix_transpose_builtin(ArgsView args);
+    Value matrix_determinant_builtin(ArgsView args);
+    Value matrix_inverse_builtin(ArgsView args);
+    Value matrix_trace_builtin(ArgsView args);
+    Value matrix_norm_builtin(ArgsView args);
+    Value matrix_sum_builtin(ArgsView args);
 
-    Value list_append_builtin(int argCount, Value* args);
+    Value list_append_builtin(ArgsView args);
 
-    Value signal_run_builtin(int argCount, Value* args);
-    Value signal_stop_builtin(int argCount, Value* args);
-    Value signal_tick_builtin(int argCount, Value* args);
-    Value signal_freq_builtin(int argCount, Value* args);
-    Value signal_set_builtin(int argCount, Value* args);
+    Value signal_run_builtin(ArgsView args);
+    Value signal_stop_builtin(ArgsView args);
+    Value signal_tick_builtin(ArgsView args);
+    Value signal_freq_builtin(ArgsView args);
+    Value signal_set_builtin(ArgsView args);
 
 
-    Value event_emit_builtin(int argCount, Value* args);
-    Value event_on_builtin(int argCount, Value* args);
-    Value event_off_builtin(int argCount, Value* args);
+    Value event_emit_builtin(ArgsView args);
+    Value event_on_builtin(ArgsView args);
+    Value event_off_builtin(ArgsView args);
 
     Value captureStacktrace();
 
@@ -300,26 +302,26 @@ public:
     // Native functions
     void defineNativeFunctions();
 
-    Value clock_native(int argCount, Value* args);
-    Value clock_signal_native(int argCount, Value* args);
-    Value signal_source_native(int argCount, Value* args);
-    Value engine_stop_native(int argCount, Value* args);
-    Value typeof_native(int argCount, Value* args);
-    Value df_graph_native(int argCount, Value* args);
-    Value df_graphdot_native(int argCount, Value* args);
+    Value clock_native(ArgsView args);
+    Value clock_signal_native(ArgsView args);
+    Value signal_source_native(ArgsView args);
+    Value engine_stop_native(ArgsView args);
+    Value typeof_native(ArgsView args);
+    Value df_graph_native(ArgsView args);
+    Value df_graphdot_native(ArgsView args);
 
     // DataflowEngine actor native methods
-    Value dataflow_tick_native(int argCount, Value* args);
-    Value dataflow_run_native(int argCount, Value* args);
-    Value dataflow_run_for_native(int argCount, Value* args);
+    Value dataflow_tick_native(ArgsView args);
+    Value dataflow_run_native(ArgsView args);
+    Value dataflow_run_for_native(ArgsView args);
 
     // Builtin property getters
     Value signal_value_getter(Value& receiver);
     Value exception_stacktrace_getter(Value& receiver);
     Value exception_stacktrace_string_getter(Value& receiver);
 
-    Value loadlib_native(int argCount, Value* args);
-    Value ffi_native(int argCount, Value* args);
+    Value loadlib_native(ArgsView args);
+    Value ffi_native(ArgsView args);
 
 };
 
