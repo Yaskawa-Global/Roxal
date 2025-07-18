@@ -1,6 +1,7 @@
 #include "ModuleSys.h"
 #include "VM.h"
 #include "Object.h"
+#include "core/AST.h"
 #include <core/json11.h>
 #include <core/TimePoint.h>
 #include "dataflow/Signal.h"
@@ -31,6 +32,7 @@ void ModuleSys::registerBuiltins(VM& vm)
     if (!vm.loadGlobal(toUnicodeString("print")).has_value()) {
         addSys("print", [this](VM& vm, ArgsView a){ return print_builtin(vm,a); });
         addSys("len", [this](VM& vm, ArgsView a){ return len_builtin(vm,a); });
+        addSys("help", [this](VM& vm, ArgsView a){ return help_builtin(vm,a); });
         addSys("clone", [this](VM& vm, ArgsView a){ return clone_builtin(vm,a); });
         {
             auto t = make_ptr<type::Type>(type::BuiltinType::Func);
@@ -130,6 +132,66 @@ Value ModuleSys::len_builtin(VM& vm, ArgsView args)
     }
 
     return intVal(len);
+}
+
+Value ModuleSys::help_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("help expects single callable argument");
+
+    Value target = args[0];
+    ObjFunction* fn = nullptr;
+    ptr<type::Type> fnType = nullptr;
+    std::vector<ptr<ast::Annotation>> annots;
+
+    if (isClosure(target)) {
+        ObjClosure* c = asClosure(target);
+        fn = c->function;
+    } else if (isFunction(target)) {
+        fn = asFunction(target);
+    } else if (isBoundMethod(target)) {
+        fn = asBoundMethod(target)->method->function;
+    } else if (isBoundNative(target)) {
+        fnType = asBoundNative(target)->funcType;
+    } else if (isNative(target)) {
+        fnType = asNative(target)->funcType;
+    } else {
+        throw std::invalid_argument("help expects a function or closure");
+    }
+
+    if (fn && fn->funcType.has_value())
+        fnType = fn->funcType.value();
+
+    if (fn)
+        annots = fn->annotations;
+
+    std::string sig;
+    if (fnType)
+        sig = fnType->toString();
+
+    std::string doc;
+    if (fn && !fn->doc.isEmpty())
+        fn->doc.toUTF8String(doc);
+    else
+        for (const auto& a : annots) {
+            if (toUTF8StdString(a->name) == "doc") {
+                for (size_t i=0; i<a->args.size(); ++i) {
+                    auto expr = a->args[i].second;
+                    if (auto s = std::dynamic_pointer_cast<ast::Str>(expr)) {
+                        if (!doc.empty()) doc += "\n";
+                        std::string t; s->str.toUTF8String(t);
+                        doc += t;
+                    }
+                }
+            }
+        }
+
+    if (!doc.empty()) {
+        sig += "\n";
+        sig += doc;
+    }
+
+    return objVal(stringVal(toUnicodeString(sig)));
 }
 
 Value ModuleSys::clone_builtin(VM& vm, ArgsView args)

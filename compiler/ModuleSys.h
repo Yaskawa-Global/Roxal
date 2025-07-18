@@ -18,6 +18,7 @@ public:
     // builtin function implementations
     Value print_builtin(VM& vm, ArgsView args);
     Value len_builtin(VM& vm, ArgsView args);
+    Value help_builtin(VM& vm, ArgsView args);
     Value clone_builtin(VM& vm, ArgsView args);
     Value wait_builtin(VM& vm, ArgsView args);
     Value fork_builtin(VM& vm, ArgsView args);

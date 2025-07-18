@@ -1334,6 +1334,13 @@ void ObjFunction::write(std::ostream& out, roxal::ptr<SerializationContext> ctx)
     for(const auto& a : annotations)
         writeAnnotation(out, *a);
 
+    {
+        std::string ds; doc.toUTF8String(ds);
+        uint32_t dlen = ds.size();
+        out.write(reinterpret_cast<char*>(&dlen),4);
+        if(dlen) out.write(ds.data(), dlen);
+    }
+
     uint8_t s = strict ? 1 : 0; out.write(reinterpret_cast<char*>(&s),1);
 
     uint8_t ft = static_cast<uint8_t>(fnType); out.write(reinterpret_cast<char*>(&ft),1);
@@ -1382,6 +1389,16 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     annotations.clear();
     for(uint32_t i=0;i<annCount;i++)
         annotations.push_back(readAnnotation(in));
+
+    {
+        uint32_t dlen; in.read(reinterpret_cast<char*>(&dlen),4);
+        if(dlen) {
+            std::string ds(dlen,'\0'); in.read(ds.data(),dlen);
+            doc = icu::UnicodeString::fromUTF8(ds);
+        } else {
+            doc = icu::UnicodeString();
+        }
+    }
 
     uint8_t s; in.read(reinterpret_cast<char*>(&s),1); strict = s!=0;
 

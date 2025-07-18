@@ -72,7 +72,7 @@ tests = [
     'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle',
     'runtime_error_snippet',
     'property_count', 'cmdline_execute', 'invalid_option', 'fileio_basic', 'fileio_binary',
-    'fileio_read_binary', 'fileio_write_binary'
+    'fileio_read_binary', 'fileio_write_binary', 'help_doc'
 ]
 
 # implementation doesn't yet allow these tests to pass (do not add to this list without human consent)
