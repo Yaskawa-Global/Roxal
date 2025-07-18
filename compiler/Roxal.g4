@@ -118,7 +118,9 @@ try_stmt
  ;
 
 except_clause
- : EXCEPT expression? (AS IDENTIFIER)? ':' suite
+ : EXCEPT IDENTIFIER ':' expression ':' suite
+ | EXCEPT IDENTIFIER ':' suite
+ | EXCEPT ':' suite
  ;
 
 finally_clause
@@ -213,7 +215,7 @@ expression
 
 assignment
  : ( call DOT )? IDENTIFIER (EQUALS | COPYINTO) assignment
- | call (EQUALS | COPYASSIGN) assignment
+ | call (EQUALS | COPYINTO) assignment
  | logic_or
  ;
 
