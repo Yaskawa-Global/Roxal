@@ -2168,15 +2168,22 @@ std::any ASTGenerator::visitStr(RoxalParser::StrContext *context)
     visitStart();
     std::string text;
     bool isDouble = false;
+    bool isTriple = false;
     if (context->SINGLE_STRING()) {
         text = context->SINGLE_STRING()->getText();
-    } else {
+    } else if (context->DOUBLE_STRING()) {
         text = context->DOUBLE_STRING()->getText();
         isDouble = true;
+    } else {
+        text = context->TRIPLE_STRING()->getText();
+        isTriple = true;
     }
 
     // drop enclosing quotes
-    text = text.substr(1,text.size()-2);
+    if (isTriple)
+        text = text.substr(3, text.size()-6);
+    else
+        text = text.substr(1, text.size()-2);
 
     if (isDouble && text.find('{') != std::string::npos) {
         std::vector<ptr<Expression>> parts;

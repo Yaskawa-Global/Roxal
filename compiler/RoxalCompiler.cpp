@@ -663,6 +663,20 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
     // attached the FuncDecl annotations (which appear right before the func declaration)
     //  to the function object to make them available at runtime
     function->annotations = ast->annotations;
+    for(const auto& annot : ast->annotations) {
+        if (annot->name == "doc") {
+            std::string d;
+            for(size_t i=0;i<annot->args.size();++i) {
+                auto expr = annot->args[i].second;
+                if (auto s = std::dynamic_pointer_cast<ast::Str>(expr)) {
+                    if (!d.empty()) d += "\n";
+                    std::string t; s->str.toUTF8String(t);
+                    d += t;
+                }
+            }
+            function->doc = toUnicodeString(d);
+        }
+    }
 
     defineVariable(var);
 
