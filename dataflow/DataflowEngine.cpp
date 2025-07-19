@@ -98,14 +98,43 @@ void DataflowEngine::addFunc(ptr<FuncNode> func)
     m_networkModified = true;
 }
 
-void DataflowEngine::removeSignal(ptr<Signal> signal)
+size_t DataflowEngine::signalRefCount(ptr<Signal> signal) const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    size_t count = 0;
+    for (const auto& s : signals)
+        if (s == signal)
+            ++count;
+    if (signalConsumers.find(signal) != signalConsumers.end())
+        ++count;
+    for (const auto& kv : funcs) {
+        const auto& func = kv.second;
+        for (const auto& ip : func->m_inputs)
+            if (ip.signal == signal) ++count;
+        for (const auto& op : func->m_outputs)
+            if (op.signal == signal) ++count;
+    }
+    return count;
+}
+
+void DataflowEngine::removeSignal(ptr<Signal> signal, bool force)
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
-    // Remove the signal regardless of whether functions currently
-    // reference it. Any functions that depend on this signal will have
-    // their references cleaned up below, and may themselves be removed
-    // if they no longer produce outputs.
+    // Check if any function still references this signal
+    bool used = false;
+    for (const auto& kv : funcs) {
+        const auto& func = kv.second;
+        for (const auto& ip : func->m_inputs)
+            if (ip.signal == signal) { used = true; break; }
+        if (used) break;
+        for (const auto& op : func->m_outputs)
+            if (op.signal == signal) { used = true; break; }
+        if (used) break;
+    }
+
+    if (used && !force)
+        return;
 
     // Remove from signal list
     auto it = std::remove(signals.begin(), signals.end(), signal);

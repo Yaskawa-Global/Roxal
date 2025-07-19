@@ -76,8 +76,11 @@ public:
     std::string graphDot(const std::string& title, std::map<std::string,Value> signalValues = {}) const;
 
     // remove a signal or func from the engine
-    void removeSignal(ptr<Signal> signal);
+    void removeSignal(ptr<Signal> signal, bool force = false);
     void removeFunc(ptr<FuncNode> func);
+
+    // internal reference count for a signal held by the engine
+    size_t signalRefCount(ptr<Signal> signal) const;
 
     // Generate a unique function name based on the supplied base name
     static std::string uniqueFuncName(const std::string& base);
