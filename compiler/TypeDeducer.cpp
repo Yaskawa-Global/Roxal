@@ -184,8 +184,12 @@ std::any TypeDeducer::visit(ptr<ast::FuncDecl> ast)
 {
     ast::Anys results {};
     // propagate annotations to the underlying Function node so visitors
-    // like visit(Function) can inspect them
-    ast->func->annotations = ast->annotations;
+    // like visit(Function) can inspect them. Don't discard any annotations
+    // that may already be attached to the Function (e.g. a docstring
+    // converted during AST generation).
+    ast->func->annotations.insert(ast->func->annotations.end(),
+                                  ast->annotations.begin(),
+                                  ast->annotations.end());
     ast->acceptChildren(*this, results);
 
     // for completeness/convenience, set function type here too

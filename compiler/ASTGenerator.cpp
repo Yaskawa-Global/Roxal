@@ -344,6 +344,9 @@ std::any ASTGenerator::visitFile_input(RoxalParser::File_inputContext *context)
     }
 
 
+
+
+
     if (context->import_stmt().size() > 0) {
 
         for(size_t i=0; i < context->import_stmt().size(); i++) {
@@ -890,7 +893,26 @@ std::any ASTGenerator::visitFunction(RoxalParser::FunctionContext *context)
     auto func = as<Function>(visitFunc_sig(context->func_sig()));
 
     auto body = visitSuite(context->suite());
-    func->body = as<Suite>(body);
+    auto suite = as<Suite>(body);
+
+    if (!suite->declsOrStmts.empty()) {
+        auto first = suite->declsOrStmts.front();
+        if (std::holds_alternative<ptr<Statement>>(first)) {
+            auto stmt = std::get<ptr<Statement>>(first);
+            if (auto exprStmt = std::dynamic_pointer_cast<ExpressionStatement>(stmt)) {
+                if (auto str = std::dynamic_pointer_cast<Str>(exprStmt->expr)) {
+                    str->str = trim(str->str);
+                    auto annot = std::make_shared<Annotation>();
+                    annot->name = UnicodeString::fromUTF8("doc");
+                    annot->args.emplace_back(UnicodeString(), str);
+                    func->annotations.push_back(annot);
+                    suite->declsOrStmts.erase(suite->declsOrStmts.begin());
+                }
+            }
+        }
+    }
+
+    func->body = suite;
 
     return typeValue(func);
     visitEnd();
@@ -1048,8 +1070,17 @@ std::any ASTGenerator::visitType_decl(RoxalParser::Type_declContext *context)
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
 
-            typedecl->annotations.push_back(annotation);
+        typedecl->annotations.push_back(annotation);
         }
+    }
+
+    if (context->str()) {
+        auto strVal = as<Str>(visitStr(context->str()));
+        strVal->str = trim(strVal->str);
+        auto annotation = std::make_shared<Annotation>();
+        annotation->name = UnicodeString::fromUTF8("doc");
+        annotation->args.emplace_back(UnicodeString(), strVal);
+        typedecl->annotations.push_back(annotation);
     }
 
     if (context->EXTENDS()) {
@@ -2227,11 +2258,11 @@ std::any ASTGenerator::visitStr(RoxalParser::StrContext *context)
         }
         return typeValue(expr);
     } else {
-        auto str = std::make_shared<Str>();
-        setSourceInfo(str, context);
-        str->str = toUnicodeString(text).unescape();
-        return typeValue(str);
-    }
+            auto str = std::make_shared<Str>();
+            setSourceInfo(str, context);
+            str->str = toUnicodeString(text).unescape();
+            return typeValue(str);
+        }
     visitEnd();
 }
 
