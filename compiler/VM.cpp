@@ -189,11 +189,17 @@ VM::VM()
 #endif
 
     // Execute builtin module scripts to attach declarations and docs
+    std::shared_ptr<Thread> initThread = std::make_shared<Thread>();
+    thread = initThread;
 #ifdef ROXAL_ENABLE_FILEIO
-    executeBuiltinModuleScript("../compiler/fileio.rox", getBuiltinModule(toUnicodeString("fileio")));
+    executeBuiltinModuleScript("compiler/fileio.rox", getBuiltinModule(toUnicodeString("fileio")));
 #endif
-    executeBuiltinModuleScript("../compiler/sys.rox", getBuiltinModule(toUnicodeString("sys")));
-    executeBuiltinModuleScript("../compiler/math.rox", getBuiltinModule(toUnicodeString("math")));
+    executeBuiltinModuleScript("compiler/sys.rox", getBuiltinModule(toUnicodeString("sys")));
+    executeBuiltinModuleScript("compiler/math.rox", getBuiltinModule(toUnicodeString("math")));
+    thread = nullptr;
+
+    // Reset thread ids so the first real VM thread starts at 2
+    Thread::resetIdCounter(1);
 
     // Initialize dataflow engine as builtin actor
     dataflowEngine = df::DataflowEngine::instance();
@@ -4298,8 +4304,12 @@ ObjModuleType* VM::getBuiltinModule(const icu::UnicodeString& name)
 void VM::executeBuiltinModuleScript(const std::string& path, ObjModuleType* moduleType)
 {
     std::ifstream in(path);
-    if (!in.is_open())
-        return;
+    if (!in.is_open()) {
+        std::string alt = "../" + path;
+        in.open(alt);
+        if (!in.is_open())
+            return;
+    }
 
     RoxalCompiler compiler;
     compiler.setOutputBytecodeDisassembly(false);

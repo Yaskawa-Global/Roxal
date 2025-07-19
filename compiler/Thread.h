@@ -50,6 +50,8 @@ public:
     // is this thread associated with an actor instance?
     bool isActorThread() const { return actor; }
 
+    static void resetIdCounter(uint64_t value=1) { nextId.store(value); }
+
     void push(const Value& value);
     Value pop();
     void popN(size_t n);
