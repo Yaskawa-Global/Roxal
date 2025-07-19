@@ -1832,18 +1832,16 @@ ObjSignal::ObjSignal(ptr<df::Signal> s)
     : signal(s), changeEvent(nilVal())
 {
     type = ObjType::Signal;
+    if (signal)
+        df::DataflowEngine::instance()->registerSignalWrapper(signal);
 }
 
 ObjSignal::~ObjSignal()
 {
     if (signal) {
         auto eng = df::DataflowEngine::instance();
-        size_t engRefs = eng->signalRefCount(signal);
-        // if this is the last wrapper referencing the signal, force removal
-        if (signal.use_count() == engRefs + 1)
-            eng->removeSignal(signal, true);
-        else
-            eng->removeSignal(signal, false);
+        size_t remaining = eng->unregisterSignalWrapper(signal);
+        eng->removeSignal(signal, remaining == 0);
     }
 }
 

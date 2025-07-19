@@ -82,6 +82,11 @@ public:
     // internal reference count for a signal held by the engine
     size_t signalRefCount(ptr<Signal> signal) const;
 
+    // track how many ObjSignal wrappers reference a signal
+    void registerSignalWrapper(ptr<Signal> signal);
+    size_t unregisterSignalWrapper(ptr<Signal> signal); // returns remaining count
+    size_t wrapperRefCount(ptr<Signal> signal) const;
+
     // Generate a unique function name based on the supplied base name
     static std::string uniqueFuncName(const std::string& base);
 
@@ -123,6 +128,9 @@ private:
 
     std::vector<ptr<Signal>> signals;
     std::map<std::string, ptr<FuncNode>> funcs;
+
+    // number of ObjSignal wrappers referencing each signal
+    std::map<ptr<Signal>, size_t> signalWrapperRefs;
 
     // Mapping from signals to functions that consume them
     struct FuncInputInfo {

@@ -98,6 +98,34 @@ void DataflowEngine::addFunc(ptr<FuncNode> func)
     m_networkModified = true;
 }
 
+void DataflowEngine::registerSignalWrapper(ptr<Signal> signal)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    signalWrapperRefs[signal]++;
+}
+
+size_t DataflowEngine::unregisterSignalWrapper(ptr<Signal> signal)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    auto it = signalWrapperRefs.find(signal);
+    if (it == signalWrapperRefs.end())
+        return 0;
+    if (--it->second == 0) {
+        signalWrapperRefs.erase(it);
+        return 0;
+    }
+    return it->second;
+}
+
+size_t DataflowEngine::wrapperRefCount(ptr<Signal> signal) const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    auto it = signalWrapperRefs.find(signal);
+    if (it == signalWrapperRefs.end())
+        return 0;
+    return it->second;
+}
+
 size_t DataflowEngine::signalRefCount(ptr<Signal> signal) const
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -209,6 +237,7 @@ void DataflowEngine::clear()
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     signalConsumers.clear();
     precomputedExecutionOrders.clear();
+    signalWrapperRefs.clear();
     signals.clear();
     funcs.clear();
     m_networkModified = false;
