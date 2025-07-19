@@ -1,244 +1,244 @@
-@native
+@builtin
 func sin(x:real) -> real
   """sine of x"""
   _
 
-@native
+@builtin
 func cos(x:real) -> real
   """cosine of x"""
   _
 
-@native
+@builtin
 func tan(x:real) -> real
   """tangent of x"""
   _
 
-@native
+@builtin
 func asin(x:real) -> real
   """arc sine of x"""
   _
 
-@native
+@builtin
 func acos(x:real) -> real
   """arc cosine of x"""
   _
 
-@native
+@builtin
 func atan(x:real) -> real
   """arc tangent of x"""
   _
 
-@native
+@builtin
 func atan2(y:real, x:real) -> real
   """arc tangent of y/x"""
   _
 
-@native
+@builtin
 func sinh(x:real) -> real
   """hyperbolic sine"""
   _
 
-@native
+@builtin
 func cosh(x:real) -> real
   """hyperbolic cosine"""
   _
 
-@native
+@builtin
 func tanh(x:real) -> real
   """hyperbolic tangent"""
   _
 
-@native
+@builtin
 func asinh(x:real) -> real
   """inverse hyperbolic sine"""
   _
 
-@native
+@builtin
 func acosh(x:real) -> real
   """inverse hyperbolic cosine"""
   _
 
-@native
+@builtin
 func atanh(x:real) -> real
   """inverse hyperbolic tangent"""
   _
 
-@native
+@builtin
 func exp(x:real) -> real
   """e raised to x"""
   _
 
-@native
+@builtin
 func log(x:real) -> real
   """natural logarithm"""
   _
 
-@native
+@builtin
 func log10(x:real) -> real
   """base-10 logarithm"""
   _
 
-@native
+@builtin
 func log2(x:real) -> real
   """base-2 logarithm"""
   _
 
-@native
+@builtin
 func sqrt(x:real) -> real
   """square root"""
   _
 
-@native
+@builtin
 func cbrt(x:real) -> real
   """cube root"""
   _
 
-@native
+@builtin
 func ceil(x:real) -> real
   """smallest integer >= x"""
   _
 
-@native
+@builtin
 func floor(x:real) -> real
   """largest integer <= x"""
   _
 
-@native
+@builtin
 func round(x:real) -> real
   """round x to nearest integer"""
   _
 
-@native
+@builtin
 func trunc(x:real) -> real
   """truncate fractional part"""
   _
 
-@native
+@builtin
 func fabs(x:real) -> real
   """absolute value"""
   _
 
-@native
+@builtin
 func hypot(x:real, y:real) -> real
   """sqrt(x*x + y*y)"""
   _
 
-@native
+@builtin
 func fmod(x:real, y:real) -> real
   """floating-point remainder"""
   _
 
-@native
+@builtin
 func remainder(x:real, y:real) -> real
   """IEEE remainder"""
   _
 
-@native
+@builtin
 func fmax(x:real, y:real) -> real
   """maximum of x and y"""
   _
 
-@native
+@builtin
 func fmin(x:real, y:real) -> real
   """minimum of x and y"""
   _
 
-@native
+@builtin
 func pow(x:real, y:real) -> real
   """x raised to power y"""
   _
 
-@native
+@builtin
 func fma(x:real, y:real, z:real) -> real
   """fused multiply-add"""
   _
 
-@native
+@builtin
 func copysign(x:real, y:real) -> real
   """value of x with sign of y"""
   _
 
-@native
+@builtin
 func erf(x:real) -> real
   """error function"""
   _
 
-@native
+@builtin
 func erfc(x:real) -> real
   """complementary error function"""
   _
 
-@native
+@builtin
 func exp2(x:real) -> real
   """2 raised to x"""
   _
 
-@native
+@builtin
 func expm1(x:real) -> real
   """e^x - 1 with higher precision"""
   _
 
-@native
+@builtin
 func fdim(x:real, y:real) -> real
   """positive difference"""
   _
 
-@native
+@builtin
 func lgamma(x:real) -> real
   """log gamma"""
   _
 
-@native
+@builtin
 func log1p(x:real) -> real
   """log(1 + x)"""
   _
 
-@native
+@builtin
 func logb(x:real) -> real
   """exponent of x"""
   _
 
-@native
+@builtin
 func nearbyint(x:real) -> real
   """round to nearest integer"""
   _
 
-@native
+@builtin
 func nextafter(x:real, y:real) -> real
   """next representable after x toward y"""
   _
 
-@native
+@builtin
 func rint(x:real) -> real
   """round to integer using current rounding mode"""
   _
 
-@native
+@builtin
 func tgamma(x:real) -> real
   """gamma function"""
   _
 
-@native
+@builtin
 func identity(n:int) -> matrix
   """n by n identity matrix"""
   _
 
-@native
+@builtin
 func zeros(r:int, c:int) -> matrix
   """matrix of all zeros"""
   _
 
-@native
+@builtin
 func ones(r:int, c:int) -> matrix
   """matrix of all ones"""
   _
 
-@native
+@builtin
 func dot(a:vector, b:vector) -> real
   """dot product of two vectors"""
   _
 
-@native
+@builtin
 func cross(a:vector, b:vector) -> vector
   """cross product of two 3-element vectors"""
   _
