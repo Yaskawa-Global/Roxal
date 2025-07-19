@@ -23,6 +23,14 @@ public:
     Value fileio_readline_builtin(VM& vm, ArgsView args);
     Value fileio_readfile_builtin(VM& vm, ArgsView args);
     Value fileio_write_builtin(VM& vm, ArgsView args);
+    Value fileio_fileexists_builtin(VM& vm, ArgsView args);
+    Value fileio_direxists_builtin(VM& vm, ArgsView args);
+    Value fileio_filesize_builtin(VM& vm, ArgsView args);
+    Value fileio_abspathfile_builtin(VM& vm, ArgsView args);
+    Value fileio_pathdir_builtin(VM& vm, ArgsView args);
+    Value fileio_pathfile_builtin(VM& vm, ArgsView args);
+    Value fileio_fileext_builtin(VM& vm, ArgsView args);
+    Value fileio_filewoext_builtin(VM& vm, ArgsView args);
 
 private:
     Value moduleTypeValue; // ObjModuleType*

@@ -564,7 +564,7 @@ std::string objMatrixToString(const ObjMatrix* om);
 
 struct ObjSignal : public Obj {
     ObjSignal(ptr<df::Signal> s);
-    virtual ~ObjSignal() {}
+    virtual ~ObjSignal();
     ObjEvent* ensureChangeEvent();
     ptr<df::Signal> signal;
     Value changeEvent;
