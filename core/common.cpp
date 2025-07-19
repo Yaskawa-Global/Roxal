@@ -190,3 +190,17 @@ icu::UnicodeString roxal::join(const std::vector<icu::UnicodeString>& strings, c
                                 return a + usep + b;
                             });
 }
+
+std::string roxal::trim(const std::string& s)
+{
+    size_t start = s.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return "";
+    size_t end = s.find_last_not_of(" \t\r\n");
+    return s.substr(start, end - start + 1);
+}
+
+icu::UnicodeString roxal::trim(const icu::UnicodeString& s)
+{
+    std::string tmp; s.toUTF8String(tmp);
+    return toUnicodeString(trim(tmp));
+}

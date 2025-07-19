@@ -663,7 +663,8 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
     // attached the FuncDecl annotations (which appear right before the func declaration)
     //  to the function object to make them available at runtime
     function->annotations = ast->annotations;
-    for(const auto& annot : ast->annotations) {
+    function->annotations.insert(function->annotations.end(), ast->func->annotations.begin(), ast->func->annotations.end());
+    for(const auto& annot : function->annotations) {
         if (annot->name == "doc") {
             std::string d;
             for(size_t i=0;i<annot->args.size();++i) {

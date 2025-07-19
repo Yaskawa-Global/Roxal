@@ -114,6 +114,9 @@ std::string join(const std::vector<std::string>& strings, const std::string& sep
 
 icu::UnicodeString join(const std::vector<icu::UnicodeString>& strings, const std::string& separator = ",");
 
+std::string trim(const std::string& s);
+icu::UnicodeString trim(const icu::UnicodeString& s);
+
 
 }
 
