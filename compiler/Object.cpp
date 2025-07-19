@@ -1842,7 +1842,7 @@ ObjSignal::~ObjSignal()
         auto eng = df::DataflowEngine::instance();
         size_t remaining = eng->unregisterSignalWrapper(signal);
         if (remaining == 0)
-            eng->removeSignal(signal);
+            eng->removeSignal(signal, true);
     }
 }
 
