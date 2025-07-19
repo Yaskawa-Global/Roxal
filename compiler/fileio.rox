@@ -1,79 +1,79 @@
 @native
-func open(path:string, append:bool=false, format:string='text')
+func open(path:string, append:bool=false, format:string='text'):
   """open file at path with optional append and format"""
   _
 
 @native
-proc close(file)
+proc close(file):
   """close file handle"""
   _
 
 @native
-func isOpen(file) -> bool
+func isOpen(file) -> bool:
   """return true if file handle is open"""
   _
 
 @native
-func moreData(file) -> bool
+func moreData(file) -> bool:
   """return true if file has more data to read"""
   _
 
 @native
-func read(file)
+func read(file):
   """read data from file"""
   _
 
 @native
-func readLine(file)
+func readLine(file):
   """read a line of text from file"""
   _
 
 @native
-func readFile(path:string, format:string='text')
+func readFile(path:string, format:string='text'):
   """read entire file"""
   _
 
 @native
-proc write(file, data)
+proc write(file, data):
   """write data to file"""
   _
 
 @native
-func fileExists(path:string) -> bool
+func fileExists(path:string) -> bool:
   """return true if file exists"""
   _
 
 @native
-func dirExists(path:string) -> bool
+func dirExists(path:string) -> bool:
   """return true if directory exists"""
   _
 
 @native
-func fileSize(path:string) -> int
+func fileSize(path:string) -> int:
   """size of file in bytes"""
   _
 
 @native
-func absoluteFilePath(path:string) -> string
+func absoluteFilePath(path:string) -> string:
   """absolute path of file"""
   _
 
 @native
-func pathDirectory(path:string) -> string
+func pathDirectory(path:string) -> string:
   """directory part of path"""
   _
 
 @native
-func pathFile(path:string) -> string
+func pathFile(path:string) -> string:
   """file name part of path"""
   _
 
 @native
-func fileExtension(path:string) -> string
+func fileExtension(path:string) -> string:
   """extension of file path"""
   _
 
 @native
-func fileWithoutExtension(path:string) -> string
+func fileWithoutExtension(path:string) -> string:
   """path without extension"""
   _

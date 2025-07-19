@@ -715,6 +715,8 @@ struct ObjFunction : public Obj
     std::vector<ptr<ast::Annotation>> annotations;
     icu::UnicodeString doc;
     void* nativeSpec { nullptr }; // for ffi or other native info
+    NativeFn nativeImpl;
+    std::vector<Value> nativeDefaults;
 
     bool strict;        // true if function was compiled in strict mode
 

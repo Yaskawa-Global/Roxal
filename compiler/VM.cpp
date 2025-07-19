@@ -188,6 +188,13 @@ VM::VM()
     registerBuiltinModule(make_ptr<ModuleFileIO>());
 #endif
 
+    // Execute builtin module scripts to attach declarations and docs
+#ifdef ROXAL_ENABLE_FILEIO
+    executeBuiltinModuleScript("../compiler/fileio.rox", getBuiltinModule(toUnicodeString("fileio")));
+#endif
+    executeBuiltinModuleScript("../compiler/sys.rox", getBuiltinModule(toUnicodeString("sys")));
+    executeBuiltinModuleScript("../compiler/math.rox", getBuiltinModule(toUnicodeString("math")));
+
     // Initialize dataflow engine as builtin actor
     dataflowEngine = df::DataflowEngine::instance();
     ObjObjectType* dataflowType = objectTypeVal(toUnicodeString("_DataflowEngine"), true);
@@ -891,22 +898,30 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             }
             case ObjType::Closure: {
                 ObjClosure* closure = asClosure(callee);
-                bool cfunc = false;
-                for(const auto& annot : closure->function->annotations) {
-                    if (annot->name == "cfunc") { cfunc = true; break; }
-                }
-                if (cfunc) {
-                    try {
-                        Value result { roxal::callCFunc(closure, callSpec, &*(thread->stackTop - callSpec.argCount)) };
-                        *(thread->stackTop - callSpec.argCount - 1) = result;
-                        popN(callSpec.argCount);
-                        return true;
-                    } catch (std::exception& e) {
-                        runtimeError(e.what());
-                        return false;
+                if (closure->function->nativeImpl) {
+                    NativeFn native = closure->function->nativeImpl;
+                    ptr<type::Type> funcType = closure->function->funcType.has_value()
+                        ? closure->function->funcType.value() : nullptr;
+                    return callNativeFn(native, funcType,
+                                        closure->function->nativeDefaults, callSpec);
+                } else {
+                    bool cfunc = false;
+                    for(const auto& annot : closure->function->annotations) {
+                        if (annot->name == "cfunc") { cfunc = true; break; }
                     }
+                    if (cfunc) {
+                        try {
+                            Value result { roxal::callCFunc(closure, callSpec, &*(thread->stackTop - callSpec.argCount)) };
+                            *(thread->stackTop - callSpec.argCount - 1) = result;
+                            popN(callSpec.argCount);
+                            return true;
+                        } catch (std::exception& e) {
+                            runtimeError(e.what());
+                            return false;
+                        }
+                    }
+                    return call(closure, callSpec);
                 }
-                return call(closure, callSpec);
             }
             case ObjType::Native: {
                 ObjNative* nativeObj = asNative(callee);
@@ -4278,6 +4293,28 @@ ObjModuleType* VM::getBuiltinModule(const icu::UnicodeString& name)
             return m->moduleType();
     }
     return nullptr;
+}
+
+void VM::executeBuiltinModuleScript(const std::string& path, ObjModuleType* moduleType)
+{
+    std::ifstream in(path);
+    if (!in.is_open())
+        return;
+
+    RoxalCompiler compiler;
+    compiler.setOutputBytecodeDisassembly(false);
+    compiler.setModulePaths(modulePaths);
+
+    ObjFunction* fn = compiler.compile(in, path, moduleType);
+    if (!fn)
+        return;
+
+    ObjClosure* closure = closureVal(fn);
+    ptr<Thread> t = std::make_shared<Thread>();
+    thread = t;
+    resetStack();
+    callAndExec(closure, {});
+    thread = nullptr;
 }
 
 void VM::registerBuiltinModule(ptr<BuiltinModule> module)

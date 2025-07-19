@@ -15,83 +15,65 @@ ModuleFileIO::ModuleFileIO()
 
 void ModuleFileIO::registerBuiltins(VM& vm)
 {
-    auto addFile = [&](const std::string& name, NativeFn fn,
-                       ptr<type::Type> funcType = nullptr,
-                       std::vector<Value> defaults = {}){
-        vm.defineNative(name, fn, funcType, defaults);
-        moduleType()->vars.store(toUnicodeString(name),
-            objVal(nativeVal(fn, nullptr, funcType, defaults)));
+    auto link = [&](const std::string& name, NativeFn fn,
+                    std::vector<Value> defaults = {}){
+        auto val = moduleType()->vars.load(toUnicodeString(name));
+        if (val.has_value() && isClosure(val.value())) {
+            ObjClosure* cl = asClosure(val.value());
+            cl->function->nativeImpl = fn;
+            cl->function->nativeDefaults = defaults;
+        }
     };
 
     {
         std::vector<Value> d{ nilVal(), falseVal(), objVal(stringVal(toUnicodeString("text"))) };
-        auto t = BuiltinModule::makeFuncType({{"path", type::BuiltinType::String},
-                                              {"append", type::BuiltinType::Bool},
-                                              {"format", type::BuiltinType::String}}, d);
-        addFile("open", [this](VM& vm, ArgsView a){ return fileio_open_builtin(vm,a); }, t, d);
+        link("open", [this](VM& vm, ArgsView a){ return fileio_open_builtin(vm,a); }, d);
     }
     {
-        auto t = BuiltinModule::makeFuncType({{"file", std::nullopt}});
-        addFile("close", [this](VM& vm, ArgsView a){ return fileio_close_builtin(vm,a); }, t, {});
+        link("close", [this](VM& vm, ArgsView a){ return fileio_close_builtin(vm,a); });
     }
     {
-        auto t = BuiltinModule::makeFuncType({{"file", std::nullopt}});
-        addFile("isOpen", [this](VM& vm, ArgsView a){ return fileio_isopen_builtin(vm,a); }, t, {});
+        link("isOpen", [this](VM& vm, ArgsView a){ return fileio_isopen_builtin(vm,a); });
     }
     {
-        auto t = BuiltinModule::makeFuncType({{"file", std::nullopt}});
-        addFile("moreData", [this](VM& vm, ArgsView a){ return fileio_moredata_builtin(vm,a); }, t, {});
+        link("moreData", [this](VM& vm, ArgsView a){ return fileio_moredata_builtin(vm,a); });
     }
     {
-        auto t = BuiltinModule::makeFuncType({{"file", std::nullopt}});
-        addFile("read", [this](VM& vm, ArgsView a){ return fileio_read_builtin(vm,a); }, t, {});
+        link("read", [this](VM& vm, ArgsView a){ return fileio_read_builtin(vm,a); });
     }
     {
-        auto t = BuiltinModule::makeFuncType({{"file", std::nullopt}});
-        addFile("readLine", [this](VM& vm, ArgsView a){ return fileio_readline_builtin(vm,a); }, t, {});
+        link("readLine", [this](VM& vm, ArgsView a){ return fileio_readline_builtin(vm,a); });
     }
     {
         std::vector<Value> d{ nilVal(), objVal(stringVal(toUnicodeString("text"))) };
-        auto t = BuiltinModule::makeFuncType({{"path", type::BuiltinType::String},
-                                              {"format", type::BuiltinType::String}}, d);
-        addFile("readFile", [this](VM& vm, ArgsView a){ return fileio_readfile_builtin(vm,a); }, t, d);
+        link("readFile", [this](VM& vm, ArgsView a){ return fileio_readfile_builtin(vm,a); }, d);
     }
     {
-        auto t = BuiltinModule::makeFuncType({{"file", std::nullopt},
-                                              {"data", std::nullopt}});
-        addFile("write", [this](VM& vm, ArgsView a){ return fileio_write_builtin(vm,a); }, t, {});
+        link("write", [this](VM& vm, ArgsView a){ return fileio_write_builtin(vm,a); });
     }
     {
-        auto t = BuiltinModule::makeFuncType({{"path", type::BuiltinType::String}});
-        addFile("fileExists", [this](VM& vm, ArgsView a){ return fileio_fileexists_builtin(vm,a); }, t, {});
+        link("fileExists", [this](VM& vm, ArgsView a){ return fileio_fileexists_builtin(vm,a); });
     }
     {
-        auto t = BuiltinModule::makeFuncType({{"path", type::BuiltinType::String}});
-        addFile("dirExists", [this](VM& vm, ArgsView a){ return fileio_direxists_builtin(vm,a); }, t, {});
+        link("dirExists", [this](VM& vm, ArgsView a){ return fileio_direxists_builtin(vm,a); });
     }
     {
-        auto t = BuiltinModule::makeFuncType({{"path", type::BuiltinType::String}});
-        addFile("fileSize", [this](VM& vm, ArgsView a){ return fileio_filesize_builtin(vm,a); }, t, {});
+        link("fileSize", [this](VM& vm, ArgsView a){ return fileio_filesize_builtin(vm,a); });
     }
     {
-        auto t = BuiltinModule::makeFuncType({{"path", type::BuiltinType::String}});
-        addFile("absoluteFilePath", [this](VM& vm, ArgsView a){ return fileio_abspathfile_builtin(vm,a); }, t, {});
+        link("absoluteFilePath", [this](VM& vm, ArgsView a){ return fileio_abspathfile_builtin(vm,a); });
     }
     {
-        auto t = BuiltinModule::makeFuncType({{"path", type::BuiltinType::String}});
-        addFile("pathDirectory", [this](VM& vm, ArgsView a){ return fileio_pathdir_builtin(vm,a); }, t, {});
+        link("pathDirectory", [this](VM& vm, ArgsView a){ return fileio_pathdir_builtin(vm,a); });
     }
     {
-        auto t = BuiltinModule::makeFuncType({{"path", type::BuiltinType::String}});
-        addFile("pathFile", [this](VM& vm, ArgsView a){ return fileio_pathfile_builtin(vm,a); }, t, {});
+        link("pathFile", [this](VM& vm, ArgsView a){ return fileio_pathfile_builtin(vm,a); });
     }
     {
-        auto t = BuiltinModule::makeFuncType({{"path", type::BuiltinType::String}});
-        addFile("fileExtension", [this](VM& vm, ArgsView a){ return fileio_fileext_builtin(vm,a); }, t, {});
+        link("fileExtension", [this](VM& vm, ArgsView a){ return fileio_fileext_builtin(vm,a); });
     }
     {
-        auto t = BuiltinModule::makeFuncType({{"path", type::BuiltinType::String}});
-        addFile("fileWithoutExtension", [this](VM& vm, ArgsView a){ return fileio_filewoext_builtin(vm,a); }, t, {});
+        link("fileWithoutExtension", [this](VM& vm, ArgsView a){ return fileio_filewoext_builtin(vm,a); });
     }
 }
 
