@@ -15,16 +15,6 @@ ModuleFileIO::ModuleFileIO()
 
 void ModuleFileIO::registerBuiltins(VM& vm)
 {
-    auto link = [&](const std::string& name, NativeFn fn,
-                    std::vector<Value> defaults = {}){
-        auto val = moduleType()->vars.load(toUnicodeString(name));
-        if (val.has_value() && isClosure(val.value())) {
-            ObjClosure* cl = asClosure(val.value());
-            cl->function->nativeImpl = fn;
-            cl->function->nativeDefaults = defaults;
-        }
-    };
-
     {
         std::vector<Value> d{ nilVal(), falseVal(), objVal(stringVal(toUnicodeString("text"))) };
         link("open", [this](VM& vm, ArgsView a){ return fileio_open_builtin(vm,a); }, d);

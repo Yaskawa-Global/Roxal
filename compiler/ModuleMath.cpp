@@ -13,13 +13,6 @@ ModuleMath::ModuleMath()
 
 void ModuleMath::registerBuiltins(VM& vm)
 {
-    auto link = [&](const std::string& name, NativeFn fn){
-        auto val = moduleType()->vars.load(toUnicodeString(name));
-        if (val.has_value() && isClosure(val.value())) {
-            ObjClosure* cl = asClosure(val.value());
-            cl->function->nativeImpl = fn;
-        }
-    };
 
     auto unary = [&](const std::string& name, double(*fn)(double)) {
         link(name, [fn,name](VM& vm, ArgsView a)->Value{
