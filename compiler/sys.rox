@@ -1,134 +1,134 @@
-@native
+@builtin
 proc print(value='')
   """print the string representation of value followed by a newline"""
   _
 
-@native
+@builtin
 func len(v) -> int
   """return the length of v"""
   _
 
-@native
+@builtin
 func help(fn) -> string
   """return signature and documentation for fn"""
   _
 
-@native
+@builtin
 func clone(v)
   """return a deep copy of v"""
   _
 
-@native
+@builtin
 proc wait(s:int=0, ms:int=0, us:int=0, ns:int=0)
   """wait until the specified amount of time elapses"""
   _
 
-@native
+@builtin
 func fork(fn) -> int
   """run fn in a new thread and return its id"""
   _
 
-@native
+@builtin
 func join(id:int) -> bool
   """wait for thread id to finish and return true if joined"""
   _
 
-@native
+@builtin
 func stacktrace() -> list
   """return the current call stack as a list"""
   _
 
-@native
+@builtin
 func _threadid() -> int
   """return the id of the current thread"""
   _
 
-@native
+@builtin
 func _stackdepth() -> int
   """return the current call stack depth"""
   _
 
-@native
+@builtin
 func _wait(futures) -> int
   """await one or more futures and return the number resolved"""
   _
 
-@native
+@builtin
 proc _runtests(suite:string)
   """run builtin tests named by suite"""
   _
 
-@native
+@builtin
 func _weakref(value)
   """create a weak reference to value"""
   _
 
-@native
+@builtin
 func _weak_alive(value) -> bool
   """return true if weak reference is still alive"""
   _
 
-@native
+@builtin
 func _strongref(value)
   """return a strong reference from a weak reference"""
   _
 
-@native
+@builtin
 func serialize(value, protocol:string='default') -> list
   """serialize value using protocol and return list of bytes"""
   _
 
-@native
+@builtin
 func deserialize(bytes:list, protocol:string='default')
   """deserialize list of bytes using protocol"""
   _
 
-@native
+@builtin
 func toJson(value, indent:bool=true) -> string
   """convert value to JSON string; pretty if indent is true"""
   _
 
-@native
+@builtin
 func fromJson(json:string)
   """parse JSON string into a value"""
   _
 
-@native
+@builtin
 func _clock() -> real
   """return process time in seconds"""
   _
 
-@native
+@builtin
 func clock(freq:int)
   """create a clock signal at frequency freq"""
   _
 
-@native
+@builtin
 func signal(freq:int, initial)
   """create a source signal with frequency and optional initial value"""
   _
 
-@native
+@builtin
 proc _engine_stop()
   """stop the dataflow engine"""
   _
 
-@native
+@builtin
 func typeof(value) -> type
   """return the type of value"""
   _
 
-@native
+@builtin
 func _df_graph() -> string
   """return text of the dataflow graph"""
   _
 
-@native
+@builtin
 func _df_graphdot(title:string='') -> string
   """return graphviz dot of dataflow graph"""
   _
 
-@native
+@builtin
 func loadlib(path:string)
   """load a native library at path"""
   _
