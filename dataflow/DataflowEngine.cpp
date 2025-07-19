@@ -98,7 +98,63 @@ void DataflowEngine::addFunc(ptr<FuncNode> func)
     m_networkModified = true;
 }
 
-void DataflowEngine::removeSignal(ptr<Signal> signal)
+void DataflowEngine::registerSignalWrapper(ptr<Signal> signal)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    signalWrapperRefs[signal]++;
+}
+
+size_t DataflowEngine::unregisterSignalWrapper(ptr<Signal> signal)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    auto it = signalWrapperRefs.find(signal);
+    if (it == signalWrapperRefs.end())
+        return 0;
+    if (--it->second == 0) {
+        signalWrapperRefs.erase(it);
+        return 0;
+    }
+    return it->second;
+}
+
+size_t DataflowEngine::wrapperRefCount(ptr<Signal> signal) const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    auto it = signalWrapperRefs.find(signal);
+    if (it == signalWrapperRefs.end())
+        return 0;
+    return it->second;
+}
+
+size_t DataflowEngine::consumerCount(ptr<Signal> signal) const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    auto it = signalConsumers.find(signal);
+    if (it == signalConsumers.end())
+        return 0;
+    return it->second.size();
+}
+
+size_t DataflowEngine::signalRefCount(ptr<Signal> signal) const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    size_t count = 0;
+    for (const auto& s : signals)
+        if (s == signal)
+            ++count;
+    if (signalConsumers.find(signal) != signalConsumers.end())
+        ++count;
+    for (const auto& kv : funcs) {
+        const auto& func = kv.second;
+        for (const auto& ip : func->m_inputs)
+            if (ip.signal == signal) ++count;
+        for (const auto& op : func->m_outputs)
+            if (op.signal == signal) ++count;
+    }
+    return count;
+}
+
+void DataflowEngine::removeSignal(ptr<Signal> signal, bool force)
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
@@ -114,7 +170,7 @@ void DataflowEngine::removeSignal(ptr<Signal> signal)
         if (used) break;
     }
 
-    if (used)
+    if (used && !force)
         return;
 
     // Remove from signal list
@@ -177,9 +233,11 @@ void DataflowEngine::removeFunc(ptr<FuncNode> func)
 
     // After removing the function, attempt to remove its signals if unused
     for (const auto& input : func->m_inputs)
-        removeSignal(input.signal);
+        removeSignal(input.signal,
+                     wrapperRefCount(input.signal) == 0 && consumerCount(input.signal) == 0);
     for (const auto& output : func->m_outputs)
-        removeSignal(output.signal);
+        removeSignal(output.signal,
+                     wrapperRefCount(output.signal) == 0 && consumerCount(output.signal) == 0);
 
     m_networkModified = true;
 }
@@ -190,6 +248,7 @@ void DataflowEngine::clear()
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     signalConsumers.clear();
     precomputedExecutionOrders.clear();
+    signalWrapperRefs.clear();
     signals.clear();
     funcs.clear();
     m_networkModified = false;
