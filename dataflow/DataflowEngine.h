@@ -87,6 +87,9 @@ public:
     size_t unregisterSignalWrapper(ptr<Signal> signal); // returns remaining count
     size_t wrapperRefCount(ptr<Signal> signal) const;
 
+    // how many functions consume this signal
+    size_t consumerCount(ptr<Signal> signal) const;
+
     // Generate a unique function name based on the supplied base name
     static std::string uniqueFuncName(const std::string& base);
 

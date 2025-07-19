@@ -126,6 +126,15 @@ size_t DataflowEngine::wrapperRefCount(ptr<Signal> signal) const
     return it->second;
 }
 
+size_t DataflowEngine::consumerCount(ptr<Signal> signal) const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    auto it = signalConsumers.find(signal);
+    if (it == signalConsumers.end())
+        return 0;
+    return it->second.size();
+}
+
 size_t DataflowEngine::signalRefCount(ptr<Signal> signal) const
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -224,9 +233,11 @@ void DataflowEngine::removeFunc(ptr<FuncNode> func)
 
     // After removing the function, attempt to remove its signals if unused
     for (const auto& input : func->m_inputs)
-        removeSignal(input.signal);
+        removeSignal(input.signal,
+                     wrapperRefCount(input.signal) == 0 && consumerCount(input.signal) == 0);
     for (const auto& output : func->m_outputs)
-        removeSignal(output.signal);
+        removeSignal(output.signal,
+                     wrapperRefCount(output.signal) == 0 && consumerCount(output.signal) == 0);
 
     m_networkModified = true;
 }
