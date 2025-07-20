@@ -1505,6 +1505,39 @@ void ObjFuture::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     p.set_value(val);
     future = p.get_future().share();
 }
+
+void ObjFuture::addWaiter(const std::shared_ptr<Thread>& t)
+{
+    std::lock_guard<std::mutex> lk(waitMutex);
+    for (auto it = waiters.begin(); it != waiters.end(); ++it) {
+        if (auto sp = it->lock()) {
+            if (sp == t)
+                return;
+        } else {
+            it = waiters.erase(it);
+            if (it == waiters.end()) break;
+        }
+    }
+    waiters.push_back(t);
+}
+
+void ObjFuture::wakeWaiters()
+{
+    std::vector<std::shared_ptr<Thread>> toWake;
+    {
+        std::lock_guard<std::mutex> lk(waitMutex);
+        for (auto it = waiters.begin(); it != waiters.end(); ) {
+            if (auto sp = it->lock()) {
+                toWake.push_back(sp);
+                ++it;
+            } else {
+                it = waiters.erase(it);
+            }
+        }
+        waiters.clear();
+    }
+    for (auto& t : toWake) t->wake();
+}
 void ObjNative::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("ObjNative serialization not implemented"); }
 void ObjNative::read(std::istream&, roxal::ptr<SerializationContext>) { throw std::runtime_error("ObjNative deserialization not implemented"); }
 void ObjTypeSpec::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -2578,6 +2611,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
         callInfo.args.push_back(arg);
     }
     callInfo.returnPromise = nullptr;
+    callInfo.returnFuture = nullptr;
 
     if (isBoundMethod(callee)) {
         auto funcObj = asBoundMethod(callee)->method->function;
@@ -2586,6 +2620,9 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
             assert(funcType->func.has_value());
             if (!funcType->func.value().isProc) {
                 callInfo.returnPromise = std::make_shared<std::promise<Value>>();
+                std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
+                callInfo.returnFuture = futureVal(sf);
+                callInfo.returnFuture->incRef();
             }
         }
     }
@@ -2596,6 +2633,9 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
         // Only create a return promise if it's NOT a proc (i.e., it's a func)
         if (!bound->isProc) {
             callInfo.returnPromise = std::make_shared<std::promise<Value>>();
+            std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
+            callInfo.returnFuture = futureVal(sf);
+            callInfo.returnFuture->incRef();
         }
     }
 
@@ -2604,8 +2644,8 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
     queueConditionVar.notify_one();
 
     Value futureReturn {}; // nil by default
-    if (callInfo.returnPromise != nullptr)
-        futureReturn = Value(futureVal(callInfo.returnPromise->get_future()));
+    if (callInfo.returnFuture != nullptr)
+        futureReturn = objVal(callInfo.returnFuture);
 
     return futureReturn;
 }

@@ -861,6 +861,12 @@ struct ObjFuture : public Obj
 
     std::shared_future<Value> future;
 
+    mutable std::mutex waitMutex;
+    std::vector<std::weak_ptr<Thread>> waiters;
+
+    void addWaiter(const std::shared_ptr<Thread>& t);
+    void wakeWaiters();
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -1085,6 +1091,7 @@ struct ActorInstance : public Obj
         Value callee;
         std::vector<Value> args;
         ptr<std::promise<Value>> returnPromise;
+        ObjFuture* returnFuture;
         CallSpec callSpec;
 
         bool valid() const { return !callee.isNil(); }

@@ -12,6 +12,7 @@
 #include "VM.h"
 #include <core/types.h>
 #include <Eigen/Dense>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <cmath>
@@ -930,8 +931,32 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
 
 void Value::resolveFuture()
 {
-    if (isFuture(*this))
-        *this = asFuture(*this)->asValue();
+    if (!isFuture(*this))
+        return;
+
+    ObjFuture* fut = asFuture(*this);
+    auto& vm { VM::instance() };
+    auto thread = VM::thread;
+
+    bool added = false;
+    while (fut->future.wait_for(std::chrono::microseconds(0)) != std::future_status::ready) {
+        if (!added) {
+            fut->addWaiter(thread);
+            added = true;
+        }
+
+        {
+            std::unique_lock<std::mutex> lk(thread->sleepMutex);
+            thread->threadSleep = true;
+            thread->sleepCondVar.wait_for(lk, std::chrono::milliseconds(1));
+            thread->threadSleep = false;
+        }
+
+        vm.processPendingEvents();
+    }
+
+    if (fut->future.wait_for(std::chrono::microseconds(0)) == std::future_status::ready)
+        *this = fut->asValue();
 }
 
 void Value::resolveSignal()

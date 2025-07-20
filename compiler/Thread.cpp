@@ -175,10 +175,21 @@ void Thread::act(Value actorInstance)
                             if (!ret.isPrimitive())
                                 ret = ret.clone();
                             callInfo.returnPromise->set_value(ret);
+                            if (callInfo.returnFuture) {
+                                callInfo.returnFuture->wakeWaiters();
+                                callInfo.returnFuture->decRef();
+                                callInfo.returnFuture = nullptr;
+                            }
                         }
                     } else {
-                        if (callInfo.returnPromise != nullptr)
+                        if (callInfo.returnPromise != nullptr) {
                             callInfo.returnPromise->set_value(nilVal());
+                            if (callInfo.returnFuture) {
+                                callInfo.returnFuture->wakeWaiters();
+                                callInfo.returnFuture->decRef();
+                                callInfo.returnFuture = nullptr;
+                            }
+                        }
                         quit = true;
                         // reset stack before breaking
                         {
@@ -219,8 +230,14 @@ void Thread::act(Value actorInstance)
         // resolve any queued calls with nil so waiting futures complete
         while(!actorInst->callQueue.empty()) {
             auto pending = actorInst->callQueue.pop();
-            if (pending.returnPromise)
+            if (pending.returnPromise) {
                 pending.returnPromise->set_value(nilVal());
+                if (pending.returnFuture) {
+                    pending.returnFuture->wakeWaiters();
+                    pending.returnFuture->decRef();
+                    pending.returnFuture = nullptr;
+                }
+            }
         }
 
         stack.clear();
