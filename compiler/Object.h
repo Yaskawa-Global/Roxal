@@ -1091,7 +1091,7 @@ struct ActorInstance : public Obj
         Value callee;
         std::vector<Value> args;
         ptr<std::promise<Value>> returnPromise;
-        ObjFuture* returnFuture;
+        Value returnFuture;
         CallSpec callSpec;
 
         bool valid() const { return !callee.isNil(); }

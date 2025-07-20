@@ -175,19 +175,17 @@ void Thread::act(Value actorInstance)
                             if (!ret.isPrimitive())
                                 ret = ret.clone();
                             callInfo.returnPromise->set_value(ret);
-                            if (callInfo.returnFuture) {
-                                callInfo.returnFuture->wakeWaiters();
-                                callInfo.returnFuture->decRef();
-                                callInfo.returnFuture = nullptr;
+                            if (!callInfo.returnFuture.isNil()) {
+                                asFuture(callInfo.returnFuture)->wakeWaiters();
+                                callInfo.returnFuture = nilVal();
                             }
                         }
                     } else {
                         if (callInfo.returnPromise != nullptr) {
                             callInfo.returnPromise->set_value(nilVal());
-                            if (callInfo.returnFuture) {
-                                callInfo.returnFuture->wakeWaiters();
-                                callInfo.returnFuture->decRef();
-                                callInfo.returnFuture = nullptr;
+                            if (!callInfo.returnFuture.isNil()) {
+                                asFuture(callInfo.returnFuture)->wakeWaiters();
+                                callInfo.returnFuture = nilVal();
                             }
                         }
                         quit = true;
@@ -232,10 +230,9 @@ void Thread::act(Value actorInstance)
             auto pending = actorInst->callQueue.pop();
             if (pending.returnPromise) {
                 pending.returnPromise->set_value(nilVal());
-                if (pending.returnFuture) {
-                    pending.returnFuture->wakeWaiters();
-                    pending.returnFuture->decRef();
-                    pending.returnFuture = nullptr;
+                if (!pending.returnFuture.isNil()) {
+                    asFuture(pending.returnFuture)->wakeWaiters();
+                    pending.returnFuture = nilVal();
                 }
             }
         }

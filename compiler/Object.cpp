@@ -2611,7 +2611,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
         callInfo.args.push_back(arg);
     }
     callInfo.returnPromise = nullptr;
-    callInfo.returnFuture = nullptr;
+    callInfo.returnFuture = nilVal();
 
     if (isBoundMethod(callee)) {
         auto funcObj = asBoundMethod(callee)->method->function;
@@ -2621,8 +2621,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
             if (!funcType->func.value().isProc) {
                 callInfo.returnPromise = std::make_shared<std::promise<Value>>();
                 std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
-                callInfo.returnFuture = futureVal(sf);
-                callInfo.returnFuture->incRef();
+                callInfo.returnFuture = objVal(futureVal(sf));
             }
         }
     }
@@ -2634,8 +2633,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
         if (!bound->isProc) {
             callInfo.returnPromise = std::make_shared<std::promise<Value>>();
             std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
-            callInfo.returnFuture = futureVal(sf);
-            callInfo.returnFuture->incRef();
+            callInfo.returnFuture = objVal(futureVal(sf));
         }
     }
 
@@ -2644,8 +2642,8 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
     queueConditionVar.notify_one();
 
     Value futureReturn {}; // nil by default
-    if (callInfo.returnFuture != nullptr)
-        futureReturn = objVal(callInfo.returnFuture);
+    if (!callInfo.returnFuture.isNil())
+        futureReturn = callInfo.returnFuture;
 
     return futureReturn;
 }
