@@ -21,76 +21,57 @@ ModuleSys::ModuleSys()
 
 void ModuleSys::registerBuiltins(VM& vm)
 {
-    auto addSys = [&](const std::string& name, NativeFn fn,
-                      ptr<type::Type> funcType = nullptr,
-                      std::vector<Value> defaults = {}){
-        if (!vm.loadGlobal(toUnicodeString(name)).has_value())
-            vm.defineNative(name, fn, funcType, defaults);
+    auto linkGlobal = [&](const std::string& name, NativeFn fn,
+                         std::vector<Value> defaults = {}) {
         link(name, fn, defaults);
+        auto val = moduleType()->vars.load(toUnicodeString(name));
+        if (val.has_value())
+            vm.globals.storeGlobal(toUnicodeString(name), val.value());
     };
 
-    if (!vm.loadGlobal(toUnicodeString("print")).has_value()) {
-        addSys("print", [this](VM& vm, ArgsView a){ return print_builtin(vm,a); });
-        addSys("len", [this](VM& vm, ArgsView a){ return len_builtin(vm,a); });
-        addSys("help", [this](VM& vm, ArgsView a){ return help_builtin(vm,a); });
-        addSys("clone", [this](VM& vm, ArgsView a){ return clone_builtin(vm,a); });
-        {
-            auto t = make_ptr<type::Type>(type::BuiltinType::Func);
-            t->func = type::Type::FuncType();
-            t->func->isProc = true;
-            std::vector<Value> defaults { intVal(0), intVal(0), intVal(0), intVal(0) };
-            auto params = BuiltinModule::constructParams({ {"s", type::BuiltinType::Int},
-                                           {"ms", type::BuiltinType::Int},
-                                           {"us", type::BuiltinType::Int},
-                                           {"ns", type::BuiltinType::Int} },
-                                         defaults);
-            t->func->params.resize(params.size());
-            for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
-            addSys("wait", [this](VM& vm, ArgsView a){ return wait_builtin(vm,a); }, t, defaults);
-        }
-        addSys("fork", [this](VM& vm, ArgsView a){ return fork_builtin(vm,a); });
-        addSys("join", [this](VM& vm, ArgsView a){ return join_builtin(vm,a); });
-        addSys("stacktrace", [this](VM& vm, ArgsView a){ return stacktrace_builtin(vm,a); });
-        addSys("_threadid", [this](VM& vm, ArgsView a){ return threadid_builtin(vm,a); });
-        addSys("_stackdepth", [this](VM& vm, ArgsView a){ return stackdepth_builtin(vm,a); });
-        addSys("_wait", [this](VM& vm, ArgsView a){ return await_builtin(vm,a); });
-        addSys("_runtests", [this](VM& vm, ArgsView a){ return runtests_builtin(vm,a); });
-        addSys("_weakref", [this](VM& vm, ArgsView a){ return weakref_builtin(vm,a); });
-        addSys("_weak_alive", [this](VM& vm, ArgsView a){ return weak_alive_builtin(vm,a); });
-        addSys("_strongref", [this](VM& vm, ArgsView a){ return strongref_builtin(vm,a); });
-        addSys("serialize", [this](VM& vm, ArgsView a){ return serialize_builtin(vm,a); });
-        addSys("deserialize", [this](VM& vm, ArgsView a){ return deserialize_builtin(vm,a); });
-        addSys("toJson", [this](VM& vm, ArgsView a){ return toJson_builtin(vm,a); });
-        addSys("fromJson", [this](VM& vm, ArgsView a){ return fromJson_builtin(vm,a); });
+    linkGlobal("print", [this](VM& vm, ArgsView a){ return print_builtin(vm,a); });
+    linkGlobal("len", [this](VM& vm, ArgsView a){ return len_builtin(vm,a); });
+    linkGlobal("help", [this](VM& vm, ArgsView a){ return help_builtin(vm,a); });
+    linkGlobal("clone", [this](VM& vm, ArgsView a){ return clone_builtin(vm,a); });
+
+    linkGlobal("wait", [this](VM& vm, ArgsView a){ return wait_builtin(vm,a); });
+    linkGlobal("fork", [this](VM& vm, ArgsView a){ return fork_builtin(vm,a); });
+    linkGlobal("join", [this](VM& vm, ArgsView a){ return join_builtin(vm,a); });
+    linkGlobal("stacktrace", [this](VM& vm, ArgsView a){ return stacktrace_builtin(vm,a); });
+    linkGlobal("_threadid", [this](VM& vm, ArgsView a){ return threadid_builtin(vm,a); });
+    linkGlobal("_stackdepth", [this](VM& vm, ArgsView a){ return stackdepth_builtin(vm,a); });
+    linkGlobal("_wait", [this](VM& vm, ArgsView a){ return await_builtin(vm,a); });
+    linkGlobal("_runtests", [this](VM& vm, ArgsView a){ return runtests_builtin(vm,a); });
+    linkGlobal("_weakref", [this](VM& vm, ArgsView a){ return weakref_builtin(vm,a); });
+    linkGlobal("_weak_alive", [this](VM& vm, ArgsView a){ return weak_alive_builtin(vm,a); });
+    linkGlobal("_strongref", [this](VM& vm, ArgsView a){ return strongref_builtin(vm,a); });
+    linkGlobal("serialize", [this](VM& vm, ArgsView a){ return serialize_builtin(vm,a); });
+    linkGlobal("deserialize", [this](VM& vm, ArgsView a){ return deserialize_builtin(vm,a); });
+    linkGlobal("toJson", [this](VM& vm, ArgsView a){ return toJson_builtin(vm,a); });
+    linkGlobal("fromJson", [this](VM& vm, ArgsView a){ return fromJson_builtin(vm,a); });
+
+    linkGlobal("_clock", [this](VM& vm, ArgsView a){ return clock_native(vm,a); });
+    linkGlobal("clock", [this](VM& vm, ArgsView a){ return clock_signal_native(vm,a); });
+
+    // signal() cannot be declared in sys.rox since 'signal' is a builtin type.
+    // Register it purely as a native function.
+    if (!vm.loadGlobal(toUnicodeString("signal")).has_value()) {
+        auto t = make_ptr<type::Type>(type::BuiltinType::Func);
+        t->func = type::Type::FuncType();
+        type::Type::FuncType::ParamType p1(toUnicodeString("freq"));
+        p1.type = make_ptr<type::Type>(type::BuiltinType::Int);
+        type::Type::FuncType::ParamType p2(toUnicodeString("initial"));
+        t->func->params.resize(2);
+        t->func->params[0] = p1;
+        t->func->params[1] = p2;
+        vm.defineNative("signal", [this](VM& vm, ArgsView a){ return signal_source_native(vm,a); }, t, {});
     }
 
-    if (!vm.loadGlobal(toUnicodeString("_clock")).has_value()) {
-        addSys("_clock", [this](VM& vm, ArgsView a){ return clock_native(vm,a); });
-        {
-            auto t = make_ptr<type::Type>(type::BuiltinType::Func);
-            t->func = type::Type::FuncType();
-            auto params = BuiltinModule::constructParams({{"freq", type::BuiltinType::Int}}, {});
-            t->func->params.resize(params.size());
-            for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
-            addSys("clock", [this](VM& vm, ArgsView a){ return clock_signal_native(vm,a); }, t, {});
-        }
-        {
-            auto t = make_ptr<type::Type>(type::BuiltinType::Func);
-            t->func = type::Type::FuncType();
-            type::Type::FuncType::ParamType p1(toUnicodeString("freq"));
-            p1.type = make_ptr<type::Type>(type::BuiltinType::Int);
-            type::Type::FuncType::ParamType p2(toUnicodeString("initial"));
-            t->func->params.resize(2);
-            t->func->params[0] = p1;
-            t->func->params[1] = p2;
-            addSys("signal", [this](VM& vm, ArgsView a){ return signal_source_native(vm,a); }, t, {});
-        }
-        addSys("_engine_stop", [this](VM& vm, ArgsView a){ return engine_stop_native(vm,a); });
-        addSys("typeof", [this](VM& vm, ArgsView a){ return typeof_native(vm,a); });
-        addSys("_df_graph", [this](VM& vm, ArgsView a){ return df_graph_native(vm,a); });
-        addSys("_df_graphdot", [this](VM& vm, ArgsView a){ return df_graphdot_native(vm,a); });
-        addSys("loadlib", [this](VM& vm, ArgsView a){ return loadlib_native(vm,a); });
-    }
+    linkGlobal("_engine_stop", [this](VM& vm, ArgsView a){ return engine_stop_native(vm,a); });
+    linkGlobal("typeof", [this](VM& vm, ArgsView a){ return typeof_native(vm,a); });
+    linkGlobal("_df_graph", [this](VM& vm, ArgsView a){ return df_graph_native(vm,a); });
+    linkGlobal("_df_graphdot", [this](VM& vm, ArgsView a){ return df_graphdot_native(vm,a); });
+    linkGlobal("loadlib", [this](VM& vm, ArgsView a){ return loadlib_native(vm,a); });
 }
 
 Value ModuleSys::print_builtin(VM& vm, ArgsView args)

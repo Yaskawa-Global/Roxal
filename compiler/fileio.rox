@@ -1,63 +1,63 @@
 @builtin
-func open(path:string, append:bool=false, format:string='text')
+func open(path:string, append:bool=false, format:string='text'):
   """open file at path with optional append and format"""
 
 @builtin
-proc close(file)
+proc close(file):
   """close file handle"""
 
 @builtin
-func isOpen(file) -> bool
+func isOpen(file) -> bool:
   """return true if file handle is open"""
 
 @builtin
-func moreData(file) -> bool
+func moreData(file) -> bool:
   """return true if file has more data to read"""
 
 @builtin
-func read(file)
+func read(file):
   """read data from file"""
 
 @builtin
-func readLine(file)
+func readLine(file):
   """read a line of text from file"""
 
 @builtin
-func readFile(path:string, format:string='text')
+func readFile(path:string, format:string='text'):
   """read entire file"""
 
 @builtin
-proc write(file, data)
+proc write(file, data):
   """write data to file"""
 
 @builtin
-func fileExists(path:string) -> bool
+func fileExists(path:string) -> bool:
   """return true if file exists"""
 
 @builtin
-func dirExists(path:string) -> bool
+func dirExists(path:string) -> bool:
   """return true if directory exists"""
 
 @builtin
-func fileSize(path:string) -> int
+func fileSize(path:string) -> int:
   """size of file in bytes"""
 
 @builtin
-func absoluteFilePath(path:string) -> string
+func absoluteFilePath(path:string) -> string:
   """absolute path of file"""
 
 @builtin
-func pathDirectory(path:string) -> string
+func pathDirectory(path:string) -> string:
   """directory part of path"""
 
 @builtin
-func pathFile(path:string) -> string
+func pathFile(path:string) -> string:
   """file name part of path"""
 
 @builtin
-func fileExtension(path:string) -> string
+func fileExtension(path:string) -> string:
   """extension of file path"""
 
 @builtin
-func fileWithoutExtension(path:string) -> string
+func fileWithoutExtension(path:string) -> string:
   """path without extension"""
