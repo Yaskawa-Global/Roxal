@@ -24,9 +24,9 @@ void ModuleSys::registerBuiltins(VM& vm)
     auto addSys = [&](const std::string& name, NativeFn fn,
                       ptr<type::Type> funcType = nullptr,
                       std::vector<Value> defaults = {}){
-        vm.defineNative(name, fn, funcType, defaults);
-        moduleType()->vars.store(toUnicodeString(name),
-            objVal(nativeVal(fn, nullptr, funcType, defaults)));
+        if (!vm.loadGlobal(toUnicodeString(name)).has_value())
+            vm.defineNative(name, fn, funcType, defaults);
+        link(name, fn, defaults);
     };
 
     if (!vm.loadGlobal(toUnicodeString("print")).has_value()) {

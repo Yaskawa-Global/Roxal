@@ -2,6 +2,7 @@
 
 #include <core/common.h>
 #include "Value.h"
+#include "Object.h"
 #include <core/types.h>
 #include <optional>
 
@@ -30,6 +31,10 @@ protected:
                                              std::optional<type::BuiltinType>>>& infos,
                  const std::vector<Value>& defaults = {},
                  bool isProc = false);
+
+    // Attach C++ implementation to function declared in builtin .rox module
+    void link(const std::string& name, NativeFn fn,
+              std::vector<Value> defaults = {});
 };
 
 inline std::vector<type::Type::FuncType::ParamType>
@@ -66,6 +71,17 @@ BuiltinModule::makeFuncType(const std::vector<std::pair<std::string,
     t->func->params.resize(params.size());
     for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
     return t;
+}
+
+inline void BuiltinModule::link(const std::string& name, NativeFn fn,
+                                std::vector<Value> defaults)
+{
+    auto val = moduleType()->vars.load(toUnicodeString(name));
+    if (val.has_value() && isClosure(val.value())) {
+        ObjClosure* cl = asClosure(val.value());
+        cl->function->nativeImpl = fn;
+        cl->function->nativeDefaults = std::move(defaults);
+    }
 }
 
 } // namespace roxal

@@ -701,6 +701,10 @@ std::string toString(FunctionType ft);
 
 struct ObjModuleType; // forward
 
+class VM; // forward for native functions
+struct ArgsView; // forward for native functions
+using NativeFn = std::function<Value(VM&, ArgsView)>;
+
 struct ObjFunction : public Obj
 {
     ObjFunction(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName,
@@ -715,6 +719,8 @@ struct ObjFunction : public Obj
     std::vector<ptr<ast::Annotation>> annotations;
     icu::UnicodeString doc;
     void* nativeSpec { nullptr }; // for ffi or other native info
+    NativeFn nativeImpl;
+    std::vector<Value> nativeDefaults;
 
     bool strict;        // true if function was compiled in strict mode
 
@@ -874,17 +880,8 @@ inline ObjFuture* futureVal(const std::shared_future<Value>& fv) {
 
 
 
-
-
-
 //
 // native function
-
-//typedef Value (*NativeFn)(int argCount, Value* args);
-//typedef std::function<Value(int argCount, Value* args)> NativeFn;
-class VM;
-struct ArgsView;
-using NativeFn = std::function<Value(VM&, ArgsView)>;
 
 struct ObjNative : public Obj
 {

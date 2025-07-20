@@ -1,245 +1,196 @@
 @builtin
 func sin(x:real) -> real
   """sine of x"""
-  _
 
 @builtin
 func cos(x:real) -> real
   """cosine of x"""
-  _
 
 @builtin
 func tan(x:real) -> real
   """tangent of x"""
-  _
 
 @builtin
 func asin(x:real) -> real
   """arc sine of x"""
-  _
 
 @builtin
 func acos(x:real) -> real
   """arc cosine of x"""
-  _
 
 @builtin
 func atan(x:real) -> real
   """arc tangent of x"""
-  _
 
 @builtin
 func atan2(y:real, x:real) -> real
   """arc tangent of y/x"""
-  _
 
 @builtin
 func sinh(x:real) -> real
   """hyperbolic sine"""
-  _
 
 @builtin
 func cosh(x:real) -> real
   """hyperbolic cosine"""
-  _
 
 @builtin
 func tanh(x:real) -> real
   """hyperbolic tangent"""
-  _
 
 @builtin
 func asinh(x:real) -> real
   """inverse hyperbolic sine"""
-  _
 
 @builtin
 func acosh(x:real) -> real
   """inverse hyperbolic cosine"""
-  _
 
 @builtin
 func atanh(x:real) -> real
   """inverse hyperbolic tangent"""
-  _
 
 @builtin
 func exp(x:real) -> real
   """e raised to x"""
-  _
 
 @builtin
 func log(x:real) -> real
   """natural logarithm"""
-  _
 
 @builtin
 func log10(x:real) -> real
   """base-10 logarithm"""
-  _
 
 @builtin
 func log2(x:real) -> real
   """base-2 logarithm"""
-  _
 
 @builtin
 func sqrt(x:real) -> real
   """square root"""
-  _
 
 @builtin
 func cbrt(x:real) -> real
   """cube root"""
-  _
 
 @builtin
 func ceil(x:real) -> real
   """smallest integer >= x"""
-  _
 
 @builtin
 func floor(x:real) -> real
   """largest integer <= x"""
-  _
 
 @builtin
 func round(x:real) -> real
   """round x to nearest integer"""
-  _
 
 @builtin
 func trunc(x:real) -> real
   """truncate fractional part"""
-  _
 
 @builtin
 func fabs(x:real) -> real
   """absolute value"""
-  _
 
 @builtin
 func hypot(x:real, y:real) -> real
   """sqrt(x*x + y*y)"""
-  _
 
 @builtin
 func fmod(x:real, y:real) -> real
   """floating-point remainder"""
-  _
 
 @builtin
 func remainder(x:real, y:real) -> real
   """IEEE remainder"""
-  _
 
 @builtin
 func fmax(x:real, y:real) -> real
   """maximum of x and y"""
-  _
 
 @builtin
 func fmin(x:real, y:real) -> real
   """minimum of x and y"""
-  _
 
 @builtin
 func pow(x:real, y:real) -> real
   """x raised to power y"""
-  _
 
 @builtin
 func fma(x:real, y:real, z:real) -> real
   """fused multiply-add"""
-  _
 
 @builtin
 func copysign(x:real, y:real) -> real
   """value of x with sign of y"""
-  _
 
 @builtin
 func erf(x:real) -> real
   """error function"""
-  _
 
 @builtin
 func erfc(x:real) -> real
   """complementary error function"""
-  _
 
 @builtin
 func exp2(x:real) -> real
   """2 raised to x"""
-  _
 
 @builtin
 func expm1(x:real) -> real
   """e^x - 1 with higher precision"""
-  _
 
 @builtin
 func fdim(x:real, y:real) -> real
   """positive difference"""
-  _
 
 @builtin
 func lgamma(x:real) -> real
   """log gamma"""
-  _
 
 @builtin
 func log1p(x:real) -> real
   """log(1 + x)"""
-  _
 
 @builtin
 func logb(x:real) -> real
   """exponent of x"""
-  _
 
 @builtin
 func nearbyint(x:real) -> real
   """round to nearest integer"""
-  _
 
 @builtin
 func nextafter(x:real, y:real) -> real
   """next representable after x toward y"""
-  _
 
 @builtin
 func rint(x:real) -> real
   """round to integer using current rounding mode"""
-  _
 
 @builtin
 func tgamma(x:real) -> real
   """gamma function"""
-  _
 
 @builtin
 func identity(n:int) -> matrix
   """n by n identity matrix"""
-  _
 
 @builtin
 func zeros(r:int, c:int) -> matrix
   """matrix of all zeros"""
-  _
 
 @builtin
 func ones(r:int, c:int) -> matrix
   """matrix of all ones"""
-  _
 
 @builtin
 func dot(a:vector, b:vector) -> real
   """dot product of two vectors"""
-  _
 
 @builtin
 func cross(a:vector, b:vector) -> vector
   """cross product of two 3-element vectors"""
-  _
 

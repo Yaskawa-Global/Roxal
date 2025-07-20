@@ -1,8 +1,7 @@
 #include "ModuleMath.h"
 #include "VM.h"
 #include "Object.h"
-#include "FFI.h"
-#include <math.h>
+#include <cmath>
 #include <Eigen/Dense>
 
 using namespace roxal;
@@ -14,81 +13,87 @@ ModuleMath::ModuleMath()
 
 void ModuleMath::registerBuiltins(VM& vm)
 {
-    auto addMath = [&](const std::string& name, void* fnPtr,
-                       std::vector<ffi_type*> args){
-        void* spec = createFFIWrapper(fnPtr, &ffi_type_double, args);
-        moduleType()->vars.store(toUnicodeString(name),
-            objVal(nativeVal(std::mem_fn(&VM::ffi_native), spec, nullptr, {})));
+
+    auto unary = [&](const std::string& name, double(*fn)(double)) {
+        link(name, [fn,name](VM& vm, ArgsView a)->Value{
+            if (a.size() != 1)
+                throw std::invalid_argument("math." + name + " expects one argument");
+            double x = toType(ValueType::Real, a[0], false).asReal();
+            return realVal(fn(x));
+        });
     };
 
-    auto addMathBuiltin = [&](const std::string& name, NativeFn fn){
-        moduleType()->vars.store(toUnicodeString(name),
-            objVal(nativeVal(fn, nullptr, nullptr, {})));
+    auto binary = [&](const std::string& name, double(*fn)(double,double)) {
+        link(name, [fn,name](VM& vm, ArgsView a)->Value{
+            if (a.size() != 2)
+                throw std::invalid_argument("math." + name + " expects two arguments");
+            double x = toType(ValueType::Real, a[0], false).asReal();
+            double y = toType(ValueType::Real, a[1], false).asReal();
+            return realVal(fn(x,y));
+        });
     };
 
-    addMath("sin",  (void*)(double (*)(double))sin,  {&ffi_type_double});
-    addMath("cos",  (void*)(double (*)(double))cos,  {&ffi_type_double});
-    addMath("tan",  (void*)(double (*)(double))tan,  {&ffi_type_double});
-    addMath("asin", (void*)(double (*)(double))asin, {&ffi_type_double});
-    addMath("acos", (void*)(double (*)(double))acos, {&ffi_type_double});
-    addMath("atan", (void*)(double (*)(double))atan, {&ffi_type_double});
-    addMath("atan2", (void*)(double (*)(double,double))atan2,
-             {&ffi_type_double, &ffi_type_double});
-    addMath("sinh", (void*)(double (*)(double))sinh, {&ffi_type_double});
-    addMath("cosh", (void*)(double (*)(double))cosh, {&ffi_type_double});
-    addMath("tanh", (void*)(double (*)(double))tanh, {&ffi_type_double});
-    addMath("asinh", (void*)(double (*)(double))asinh, {&ffi_type_double});
-    addMath("acosh", (void*)(double (*)(double))acosh, {&ffi_type_double});
-    addMath("atanh", (void*)(double (*)(double))atanh, {&ffi_type_double});
-    addMath("exp",  (void*)(double (*)(double))exp,  {&ffi_type_double});
-    addMath("log",  (void*)(double (*)(double))log,  {&ffi_type_double});
-    addMath("log10",(void*)(double (*)(double))log10,{&ffi_type_double});
-    addMath("log2", (void*)(double (*)(double))log2, {&ffi_type_double});
-    addMath("sqrt", (void*)(double (*)(double))sqrt, {&ffi_type_double});
-    addMath("cbrt", (void*)(double (*)(double))cbrt, {&ffi_type_double});
-    addMath("ceil", (void*)(double (*)(double))ceil, {&ffi_type_double});
-    addMath("floor",(void*)(double (*)(double))floor,{&ffi_type_double});
-    addMath("round",(void*)(double (*)(double))round,{&ffi_type_double});
-    addMath("trunc",(void*)(double (*)(double))trunc,{&ffi_type_double});
-    addMath("fabs", (void*)(double (*)(double))fabs, {&ffi_type_double});
-    addMath("hypot",(void*)(double (*)(double,double))hypot,
-             {&ffi_type_double, &ffi_type_double});
-    addMath("fmod", (void*)(double (*)(double,double))fmod,
-             {&ffi_type_double, &ffi_type_double});
-    addMath("remainder", (void*)(double (*)(double,double))remainder,
-             {&ffi_type_double, &ffi_type_double});
-    addMath("fmax", (void*)(double (*)(double,double))fmax,
-             {&ffi_type_double, &ffi_type_double});
-    addMath("fmin", (void*)(double (*)(double,double))fmin,
-             {&ffi_type_double, &ffi_type_double});
-    addMath("pow",  (void*)(double (*)(double,double))pow,
-             {&ffi_type_double, &ffi_type_double});
-    addMath("fma",  (void*)(double (*)(double,double,double))fma,
-             {&ffi_type_double, &ffi_type_double, &ffi_type_double});
+    auto ternary = [&](const std::string& name, double(*fn)(double,double,double)) {
+        link(name, [fn,name](VM& vm, ArgsView a)->Value{
+            if (a.size() != 3)
+                throw std::invalid_argument("math." + name + " expects three arguments");
+            double x = toType(ValueType::Real, a[0], false).asReal();
+            double y = toType(ValueType::Real, a[1], false).asReal();
+            double z = toType(ValueType::Real, a[2], false).asReal();
+            return realVal(fn(x,y,z));
+        });
+    };
 
-    addMath("copysign", (void*)(double (*)(double,double))copysign,
-            {&ffi_type_double, &ffi_type_double});
-    addMath("erf",  (void*)(double (*)(double))erf,  {&ffi_type_double});
-    addMath("erfc", (void*)(double (*)(double))erfc, {&ffi_type_double});
-    addMath("exp2", (void*)(double (*)(double))exp2, {&ffi_type_double});
-    addMath("expm1", (void*)(double (*)(double))expm1, {&ffi_type_double});
-    addMath("fdim", (void*)(double (*)(double,double))fdim,
-            {&ffi_type_double, &ffi_type_double});
-    addMath("lgamma", (void*)(double (*)(double))lgamma, {&ffi_type_double});
-    addMath("log1p", (void*)(double (*)(double))log1p, {&ffi_type_double});
-    addMath("logb", (void*)(double (*)(double))logb, {&ffi_type_double});
-    addMath("nearbyint", (void*)(double (*)(double))nearbyint,
-            {&ffi_type_double});
-    addMath("nextafter", (void*)(double (*)(double,double))nextafter,
-            {&ffi_type_double, &ffi_type_double});
-    addMath("rint", (void*)(double (*)(double))rint, {&ffi_type_double});
-    addMath("tgamma", (void*)(double (*)(double))tgamma, {&ffi_type_double});
+    unary("sin",  std::sin);
+    unary("cos",  std::cos);
+    unary("tan",  std::tan);
+    unary("asin", std::asin);
+    unary("acos", std::acos);
+    unary("atan", std::atan);
+    binary("atan2", std::atan2);
+    unary("sinh", std::sinh);
+    unary("cosh", std::cosh);
+    unary("tanh", std::tanh);
+    unary("asinh", std::asinh);
+    unary("acosh", std::acosh);
+    unary("atanh", std::atanh);
+    unary("exp",  std::exp);
+    unary("log",  std::log);
+    unary("log10", std::log10);
+    unary("log2", std::log2);
+    unary("sqrt", std::sqrt);
+    unary("cbrt", std::cbrt);
+    unary("ceil", std::ceil);
+    unary("floor", std::floor);
+    unary("round", std::round);
+    unary("trunc", std::trunc);
+    unary("fabs", std::fabs);
+    binary("hypot", std::hypot);
+    binary("fmod", std::fmod);
+    binary("remainder", std::remainder);
+    binary("fmax", std::fmax);
+    binary("fmin", std::fmin);
+    binary("pow",  std::pow);
+    ternary("fma", std::fma);
+    binary("copysign", std::copysign);
+    unary("erf",  std::erf);
+    unary("erfc", std::erfc);
+    unary("exp2", std::exp2);
+    unary("expm1", std::expm1);
+    binary("fdim", std::fdim);
+    unary("lgamma", std::lgamma);
+    unary("log1p", std::log1p);
+    unary("logb", std::logb);
+    unary("nearbyint", std::nearbyint);
+    binary("nextafter", std::nextafter);
+    unary("rint", std::rint);
+    unary("tgamma", std::tgamma);
 
-    addMathBuiltin("identity", [this](VM& vm, ArgsView a){ return math_identity_builtin(vm,a); });
-    addMathBuiltin("zeros", [this](VM& vm, ArgsView a){ return math_zeros_builtin(vm,a); });
-    addMathBuiltin("ones", [this](VM& vm, ArgsView a){ return math_ones_builtin(vm,a); });
-    addMathBuiltin("dot", [this](VM& vm, ArgsView a){ return math_dot_builtin(vm,a); });
-    addMathBuiltin("cross", [this](VM& vm, ArgsView a){ return math_cross_builtin(vm,a); });
+    link("identity", [this](VM& vm, ArgsView a){ return math_identity_builtin(vm,a); });
+    link("zeros", [this](VM& vm, ArgsView a){ return math_zeros_builtin(vm,a); });
+    link("ones", [this](VM& vm, ArgsView a){ return math_ones_builtin(vm,a); });
+    link("dot", [this](VM& vm, ArgsView a){ return math_dot_builtin(vm,a); });
+    link("cross", [this](VM& vm, ArgsView a){ return math_cross_builtin(vm,a); });
 }
 
 Value ModuleMath::math_identity_builtin(VM& vm, ArgsView args)
@@ -151,4 +156,3 @@ Value ModuleMath::math_cross_builtin(VM& vm, ArgsView args)
     Eigen::VectorXd res = r;
     return objVal(vectorVal(res));
 }
-
