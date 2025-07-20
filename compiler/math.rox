@@ -1,196 +1,196 @@
-@native
-func sin(x:real) -> real:
+@builtin
+func sin(x:real) -> real
   """sine of x"""
 
-@native
-func cos(x:real) -> real:
+@builtin
+func cos(x:real) -> real
   """cosine of x"""
 
-@native
-func tan(x:real) -> real:
+@builtin
+func tan(x:real) -> real
   """tangent of x"""
 
-@native
-func asin(x:real) -> real:
+@builtin
+func asin(x:real) -> real
   """arc sine of x"""
 
-@native
-func acos(x:real) -> real:
+@builtin
+func acos(x:real) -> real
   """arc cosine of x"""
 
-@native
-func atan(x:real) -> real:
+@builtin
+func atan(x:real) -> real
   """arc tangent of x"""
 
-@native
-func atan2(y:real, x:real) -> real:
+@builtin
+func atan2(y:real, x:real) -> real
   """arc tangent of y/x"""
 
-@native
-func sinh(x:real) -> real:
+@builtin
+func sinh(x:real) -> real
   """hyperbolic sine"""
 
-@native
-func cosh(x:real) -> real:
+@builtin
+func cosh(x:real) -> real
   """hyperbolic cosine"""
 
-@native
-func tanh(x:real) -> real:
+@builtin
+func tanh(x:real) -> real
   """hyperbolic tangent"""
 
-@native
-func asinh(x:real) -> real:
+@builtin
+func asinh(x:real) -> real
   """inverse hyperbolic sine"""
 
-@native
-func acosh(x:real) -> real:
+@builtin
+func acosh(x:real) -> real
   """inverse hyperbolic cosine"""
 
-@native
-func atanh(x:real) -> real:
+@builtin
+func atanh(x:real) -> real
   """inverse hyperbolic tangent"""
 
-@native
-func exp(x:real) -> real:
+@builtin
+func exp(x:real) -> real
   """e raised to x"""
 
-@native
-func log(x:real) -> real:
+@builtin
+func log(x:real) -> real
   """natural logarithm"""
 
-@native
-func log10(x:real) -> real:
+@builtin
+func log10(x:real) -> real
   """base-10 logarithm"""
 
-@native
-func log2(x:real) -> real:
+@builtin
+func log2(x:real) -> real
   """base-2 logarithm"""
 
-@native
-func sqrt(x:real) -> real:
+@builtin
+func sqrt(x:real) -> real
   """square root"""
 
-@native
-func cbrt(x:real) -> real:
+@builtin
+func cbrt(x:real) -> real
   """cube root"""
 
-@native
-func ceil(x:real) -> real:
+@builtin
+func ceil(x:real) -> real
   """smallest integer >= x"""
 
-@native
-func floor(x:real) -> real:
+@builtin
+func floor(x:real) -> real
   """largest integer <= x"""
 
-@native
-func round(x:real) -> real:
+@builtin
+func round(x:real) -> real
   """round x to nearest integer"""
 
-@native
-func trunc(x:real) -> real:
+@builtin
+func trunc(x:real) -> real
   """truncate fractional part"""
 
-@native
-func fabs(x:real) -> real:
+@builtin
+func fabs(x:real) -> real
   """absolute value"""
 
-@native
-func hypot(x:real, y:real) -> real:
+@builtin
+func hypot(x:real, y:real) -> real
   """sqrt(x*x + y*y)"""
 
-@native
-func fmod(x:real, y:real) -> real:
+@builtin
+func fmod(x:real, y:real) -> real
   """floating-point remainder"""
 
-@native
-func remainder(x:real, y:real) -> real:
+@builtin
+func remainder(x:real, y:real) -> real
   """IEEE remainder"""
 
-@native
-func fmax(x:real, y:real) -> real:
+@builtin
+func fmax(x:real, y:real) -> real
   """maximum of x and y"""
 
-@native
-func fmin(x:real, y:real) -> real:
+@builtin
+func fmin(x:real, y:real) -> real
   """minimum of x and y"""
 
-@native
-func pow(x:real, y:real) -> real:
+@builtin
+func pow(x:real, y:real) -> real
   """x raised to power y"""
 
-@native
-func fma(x:real, y:real, z:real) -> real:
+@builtin
+func fma(x:real, y:real, z:real) -> real
   """fused multiply-add"""
 
-@native
-func copysign(x:real, y:real) -> real:
+@builtin
+func copysign(x:real, y:real) -> real
   """value of x with sign of y"""
 
-@native
-func erf(x:real) -> real:
+@builtin
+func erf(x:real) -> real
   """error function"""
 
-@native
-func erfc(x:real) -> real:
+@builtin
+func erfc(x:real) -> real
   """complementary error function"""
 
-@native
-func exp2(x:real) -> real:
+@builtin
+func exp2(x:real) -> real
   """2 raised to x"""
 
-@native
-func expm1(x:real) -> real:
+@builtin
+func expm1(x:real) -> real
   """e^x - 1 with higher precision"""
 
-@native
-func fdim(x:real, y:real) -> real:
+@builtin
+func fdim(x:real, y:real) -> real
   """positive difference"""
 
-@native
-func lgamma(x:real) -> real:
+@builtin
+func lgamma(x:real) -> real
   """log gamma"""
 
-@native
-func log1p(x:real) -> real:
+@builtin
+func log1p(x:real) -> real
   """log(1 + x)"""
 
-@native
-func logb(x:real) -> real:
+@builtin
+func logb(x:real) -> real
   """exponent of x"""
 
-@native
-func nearbyint(x:real) -> real:
+@builtin
+func nearbyint(x:real) -> real
   """round to nearest integer"""
 
-@native
-func nextafter(x:real, y:real) -> real:
+@builtin
+func nextafter(x:real, y:real) -> real
   """next representable after x toward y"""
 
-@native
-func rint(x:real) -> real:
+@builtin
+func rint(x:real) -> real
   """round to integer using current rounding mode"""
 
-@native
-func tgamma(x:real) -> real:
+@builtin
+func tgamma(x:real) -> real
   """gamma function"""
 
-@native
-func identity(n:int) -> matrix:
+@builtin
+func identity(n:int) -> matrix
   """n by n identity matrix"""
 
-@native
-func zeros(r:int, c:int) -> matrix:
+@builtin
+func zeros(r:int, c:int) -> matrix
   """matrix of all zeros"""
 
-@native
-func ones(r:int, c:int) -> matrix:
+@builtin
+func ones(r:int, c:int) -> matrix
   """matrix of all ones"""
 
-@native
-func dot(a:vector, b:vector) -> real:
+@builtin
+func dot(a:vector, b:vector) -> real
   """dot product of two vectors"""
 
-@native
-func cross(a:vector, b:vector) -> vector:
+@builtin
+func cross(a:vector, b:vector) -> vector
   """cross product of two 3-element vectors"""
 

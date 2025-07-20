@@ -1832,12 +1832,18 @@ ObjSignal::ObjSignal(ptr<df::Signal> s)
     : signal(s), changeEvent(nilVal())
 {
     type = ObjType::Signal;
+    if (signal)
+        df::DataflowEngine::instance()->registerSignalWrapper(signal);
 }
 
 ObjSignal::~ObjSignal()
 {
-    if (signal)
-        df::DataflowEngine::instance()->removeSignal(signal);
+    if (signal) {
+        auto eng = df::DataflowEngine::instance();
+        size_t remaining = eng->unregisterSignalWrapper(signal);
+        if (remaining == 0 && eng->consumerCount(signal) == 0)
+            eng->removeSignal(signal, true);
+    }
 }
 
 ObjEvent* ObjSignal::ensureChangeEvent()

@@ -1,104 +1,108 @@
-@native
-proc print(value=''):
+@builtin
+proc print(value='')
   """print the string representation of value followed by a newline"""
 
-@native
-func len(v) -> int:
+@builtin
+func len(v) -> int
   """return the length of v"""
 
-@native
-func help(fn) -> string:
+@builtin
+func help(fn) -> string
   """return signature and documentation for fn"""
 
-@native
-func clone(v):
+@builtin
+func clone(v)
   """return a deep copy of v"""
 
-@native
-proc wait(s:int=0, ms:int=0, us:int=0, ns:int=0):
+@builtin
+proc wait(s:int=0, ms:int=0, us:int=0, ns:int=0)
   """wait until the specified amount of time elapses"""
 
-@native
-func fork(fn) -> int:
+@builtin
+func fork(fn) -> int
   """run fn in a new thread and return its id"""
 
-@native
-func join(id:int) -> bool:
+@builtin
+func join(id:int) -> bool
   """wait for thread id to finish and return true if joined"""
 
-@native
-func stacktrace() -> list:
+@builtin
+func stacktrace() -> list
   """return the current call stack as a list"""
 
-@native
-func _threadid() -> int:
+@builtin
+func _threadid() -> int
   """return the id of the current thread"""
 
-@native
-func _stackdepth() -> int:
+@builtin
+func _stackdepth() -> int
   """return the current call stack depth"""
 
-@native
-func _wait(futures) -> int:
+@builtin
+func _wait(futures) -> int
   """await one or more futures and return the number resolved"""
 
-@native
-proc _runtests(suite:string):
+@builtin
+proc _runtests(suite:string)
   """run builtin tests named by suite"""
 
-@native
-func _weakref(value):
+@builtin
+func _weakref(value)
   """create a weak reference to value"""
 
-@native
-func _weak_alive(value) -> bool:
+@builtin
+func _weak_alive(value) -> bool
   """return true if weak reference is still alive"""
 
-@native
-func _strongref(value):
+@builtin
+func _strongref(value)
   """return a strong reference from a weak reference"""
 
-@native
-func serialize(value, protocol:string='default') -> list:
+@builtin
+func serialize(value, protocol:string='default') -> list
   """serialize value using protocol and return list of bytes"""
 
-@native
-func deserialize(bytes:list, protocol:string='default'):
+@builtin
+func deserialize(bytes:list, protocol:string='default')
   """deserialize list of bytes using protocol"""
 
-@native
-func toJson(value, indent:bool=true) -> string:
+@builtin
+func toJson(value, indent:bool=true) -> string
   """convert value to JSON string; pretty if indent is true"""
 
-@native
-func fromJson(json:string):
+@builtin
+func fromJson(json:string)
   """parse JSON string into a value"""
 
-@native
-func _clock() -> real:
+@builtin
+func _clock() -> real
   """return process time in seconds"""
 
-@native
-func clock(freq:int):
+@builtin
+func clock(freq:int)
   """create a clock signal at frequency freq"""
 
-@native
-proc _engine_stop():
+//@builtin
+//func signal(freq:int, initial)
+//  """create a source signal with frequency and optional initial value"""
+
+@builtin
+proc _engine_stop()
   """stop the dataflow engine"""
 
-@native
-func typeof(value):
+@builtin
+func typeof(value) -> type
   """return the type of value"""
 
-@native
-func _df_graph() -> string:
+@builtin
+func _df_graph() -> string
   """return text of the dataflow graph"""
 
-@native
-func _df_graphdot(title:string='') -> string:
+@builtin
+func _df_graphdot(title:string='') -> string
   """return graphviz dot of dataflow graph"""
 
-@native
-func loadlib(path:string):
+@builtin
+func loadlib(path:string)
   """load a native library at path"""
 

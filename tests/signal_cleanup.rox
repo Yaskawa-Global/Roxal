@@ -12,11 +12,10 @@ func createSignals():
   var add1 = sum + 1
 
   c.run()
-  wait(ms=100)
+  wait(ms=110)
 
 
 createSignals()
-wait(ms=100)
 
 print('after:')
 print(_df_graph())

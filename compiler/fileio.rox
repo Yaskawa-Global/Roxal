@@ -1,63 +1,63 @@
-@native
-func open(path:string, append:bool=false, format:string='text'):
+@builtin
+func open(path:string, append:bool=false, format:string='text')
   """open file at path with optional append and format"""
 
-@native
-proc close(file):
+@builtin
+proc close(file)
   """close file handle"""
 
-@native
-func isOpen(file) -> bool:
+@builtin
+func isOpen(file) -> bool
   """return true if file handle is open"""
 
-@native
-func moreData(file) -> bool:
+@builtin
+func moreData(file) -> bool
   """return true if file has more data to read"""
 
-@native
-func read(file):
+@builtin
+func read(file)
   """read data from file"""
 
-@native
-func readLine(file):
+@builtin
+func readLine(file)
   """read a line of text from file"""
 
-@native
-func readFile(path:string, format:string='text'):
+@builtin
+func readFile(path:string, format:string='text')
   """read entire file"""
 
-@native
-proc write(file, data):
+@builtin
+proc write(file, data)
   """write data to file"""
 
-@native
-func fileExists(path:string) -> bool:
+@builtin
+func fileExists(path:string) -> bool
   """return true if file exists"""
 
-@native
-func dirExists(path:string) -> bool:
+@builtin
+func dirExists(path:string) -> bool
   """return true if directory exists"""
 
-@native
-func fileSize(path:string) -> int:
+@builtin
+func fileSize(path:string) -> int
   """size of file in bytes"""
 
-@native
-func absoluteFilePath(path:string) -> string:
+@builtin
+func absoluteFilePath(path:string) -> string
   """absolute path of file"""
 
-@native
-func pathDirectory(path:string) -> string:
+@builtin
+func pathDirectory(path:string) -> string
   """directory part of path"""
 
-@native
-func pathFile(path:string) -> string:
+@builtin
+func pathFile(path:string) -> string
   """file name part of path"""
 
-@native
-func fileExtension(path:string) -> string:
+@builtin
+func fileExtension(path:string) -> string
   """extension of file path"""
 
-@native
-func fileWithoutExtension(path:string) -> string:
+@builtin
+func fileWithoutExtension(path:string) -> string
   """path without extension"""
