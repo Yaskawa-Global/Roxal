@@ -633,6 +633,13 @@ Value ModuleSys::typeof_native(VM& vm, ArgsView args)
         throw std::invalid_argument("typeof expects single argument");
 
     Value val = args[0];
+
+    // Signals don't follow the generic object path below and need to be
+    // detected explicitly. Without this check typeof(clock(10)) returned nil
+    // instead of <type signal>.
+    if (isSignal(val))
+        return objVal(typeSpecVal(ValueType::Signal));
+
     ValueType valueType;
 
     // Determine the ValueType of the argument
