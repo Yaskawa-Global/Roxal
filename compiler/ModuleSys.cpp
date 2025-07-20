@@ -29,12 +29,18 @@ void ModuleSys::registerBuiltins(VM& vm)
             vm.globals.storeGlobal(toUnicodeString(name), val.value());
     };
 
-    linkGlobal("print", [this](VM& vm, ArgsView a){ return print_builtin(vm,a); });
+    {
+        std::vector<Value> d{ objVal(stringVal(toUnicodeString(""))) };
+        linkGlobal("print", [this](VM& vm, ArgsView a){ return print_builtin(vm,a); }, d);
+    }
     linkGlobal("len", [this](VM& vm, ArgsView a){ return len_builtin(vm,a); });
     linkGlobal("help", [this](VM& vm, ArgsView a){ return help_builtin(vm,a); });
     linkGlobal("clone", [this](VM& vm, ArgsView a){ return clone_builtin(vm,a); });
 
-    linkGlobal("wait", [this](VM& vm, ArgsView a){ return wait_builtin(vm,a); });
+    {
+        std::vector<Value> d{ intVal(0), intVal(0), intVal(0), intVal(0) };
+        linkGlobal("wait", [this](VM& vm, ArgsView a){ return wait_builtin(vm,a); }, d);
+    }
     linkGlobal("fork", [this](VM& vm, ArgsView a){ return fork_builtin(vm,a); });
     linkGlobal("join", [this](VM& vm, ArgsView a){ return join_builtin(vm,a); });
     linkGlobal("stacktrace", [this](VM& vm, ArgsView a){ return stacktrace_builtin(vm,a); });
@@ -45,9 +51,18 @@ void ModuleSys::registerBuiltins(VM& vm)
     linkGlobal("_weakref", [this](VM& vm, ArgsView a){ return weakref_builtin(vm,a); });
     linkGlobal("_weak_alive", [this](VM& vm, ArgsView a){ return weak_alive_builtin(vm,a); });
     linkGlobal("_strongref", [this](VM& vm, ArgsView a){ return strongref_builtin(vm,a); });
-    linkGlobal("serialize", [this](VM& vm, ArgsView a){ return serialize_builtin(vm,a); });
-    linkGlobal("deserialize", [this](VM& vm, ArgsView a){ return deserialize_builtin(vm,a); });
-    linkGlobal("toJson", [this](VM& vm, ArgsView a){ return toJson_builtin(vm,a); });
+    {
+        std::vector<Value> d{ nilVal(), objVal(stringVal(toUnicodeString("default"))) };
+        linkGlobal("serialize", [this](VM& vm, ArgsView a){ return serialize_builtin(vm,a); }, d);
+    }
+    {
+        std::vector<Value> d{ nilVal(), objVal(stringVal(toUnicodeString("default"))) };
+        linkGlobal("deserialize", [this](VM& vm, ArgsView a){ return deserialize_builtin(vm,a); }, d);
+    }
+    {
+        std::vector<Value> d{ nilVal(), trueVal() };
+        linkGlobal("toJson", [this](VM& vm, ArgsView a){ return toJson_builtin(vm,a); }, d);
+    }
     linkGlobal("fromJson", [this](VM& vm, ArgsView a){ return fromJson_builtin(vm,a); });
 
     linkGlobal("_clock", [this](VM& vm, ArgsView a){ return clock_native(vm,a); });
@@ -70,7 +85,10 @@ void ModuleSys::registerBuiltins(VM& vm)
     linkGlobal("_engine_stop", [this](VM& vm, ArgsView a){ return engine_stop_native(vm,a); });
     linkGlobal("typeof", [this](VM& vm, ArgsView a){ return typeof_native(vm,a); });
     linkGlobal("_df_graph", [this](VM& vm, ArgsView a){ return df_graph_native(vm,a); });
-    linkGlobal("_df_graphdot", [this](VM& vm, ArgsView a){ return df_graphdot_native(vm,a); });
+    {
+        std::vector<Value> d{ objVal(stringVal(toUnicodeString(""))) };
+        linkGlobal("_df_graphdot", [this](VM& vm, ArgsView a){ return df_graphdot_native(vm,a); }, d);
+    }
     linkGlobal("loadlib", [this](VM& vm, ArgsView a){ return loadlib_native(vm,a); });
 }
 
