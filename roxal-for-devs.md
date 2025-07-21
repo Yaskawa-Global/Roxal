@@ -497,8 +497,113 @@ print('done')
 
 ## Builtin Modules & Functions
 
+The functions in the sys module are always globally available (- as if `import sys.*` were used).  See `sys.rox`.
+
 ### sys
+* `print(value='')` - print the string representation of `value` followed by a newline
+* `len(v)` - return the length of `v` if applicable
+* `help(fn)` - return signature and doc string for `fn`
+* `clone(v)` - deep copy `v`
+* `wait(s=0, ms=0, us=0, ns=0)` - pause execution for the specified time
+* `fork(fn)` - run `fn` in a new thread and return its id
+* `join(id)` - wait for thread `id` to finish and return true if joined
+* `stacktrace()` - return the current call stack as a list
+* `serialize(value, protocol='default')` - serialize `value` using protocol
+* `deserialize(bytes, protocol='default')` - deserialize bytes using protocol
+* `toJson(value, indent=true)` - convert value to a JSON string
+* `fromJson(json)` - parse JSON string into a value
+* `clock(freq)` - create a clock signal at `freq`
+* `signal(freq, initial)` - create a source signal
+* `typeof(value)` - return the type of `value`
+* `loadlib(path)` - load a native library from `path`
+
+#### Internal (likely to be removed or renamed)
+* `_clock()` - return process time in seconds
+* `_threadid()` - return the current thread id
+* `_stackdepth()` - depth of the current call stack
+* `_wait(futures)` - await one or more futures
+* `_runtests(suite)` - run builtin tests named by `suite`
+* `_weakref(value)` - create a weak reference to `value`
+* `_weak_alive(value)` - true if weak reference is still valid
+* `_strongref(value)` - convert weak reference back to strong reference
+* `_engine_stop()` - stop the dataflow engine
+* `_df_graph()` - textual representation of the dataflow graph
+* `_df_graphdot(title='')` - graphviz dot of the dataflow graph
 
 ### math
 
+Additional mathematical operations.
+Use `import math` or `import math.*`.  See `math.rox`.
+
+* `sin(x)` - sine of `x`
+* `cos(x)` - cosine of `x`
+* `tan(x)` - tangent of `x`
+* `asin(x)` - arc sine of `x`
+* `acos(x)` - arc cosine of `x`
+* `atan(x)` - arc tangent of `x`
+* `atan2(y, x)` - arc tangent of `y/x`
+* `sinh(x)` - hyperbolic sine of `x`
+* `cosh(x)` - hyperbolic cosine of `x`
+* `tanh(x)` - hyperbolic tangent of `x`
+* `asinh(x)` - inverse hyperbolic sine
+* `acosh(x)` - inverse hyperbolic cosine
+* `atanh(x)` - inverse hyperbolic tangent
+* `exp(x)` - `e` raised to `x`
+* `log(x)` - natural logarithm of `x`
+* `log10(x)` - base-10 logarithm of `x`
+* `log2(x)` - base-2 logarithm of `x`
+* `sqrt(x)` - square root of `x`
+* `cbrt(x)` - cube root of `x`
+* `ceil(x)` - smallest integer greater than or equal to `x`
+* `floor(x)` - largest integer less than or equal to `x`
+* `round(x)` - round `x` to nearest integer
+* `trunc(x)` - truncate fractional part of `x`
+* `fabs(x)` - absolute value of `x`
+* `hypot(x, y)` - square root of `x*x + y*y`
+* `fmod(x, y)` - floating point remainder of `x/y`
+* `remainder(x, y)` - IEEE remainder of `x/y`
+* `fmax(x, y)` - maximum of `x` and `y`
+* `fmin(x, y)` - minimum of `x` and `y`
+* `pow(x, y)` - `x` raised to the power `y`
+* `fma(x, y, z)` - fused multiply-add
+* `copysign(x, y)` - `x` with the sign of `y`
+* `erf(x)` - error function
+* `erfc(x)` - complementary error function
+* `exp2(x)` - `2` raised to `x`
+* `expm1(x)` - `e**x - 1` with extra precision
+* `fdim(x, y)` - positive difference of `x` and `y`
+* `lgamma(x)` - log gamma of `x`
+* `log1p(x)` - `log(1 + x)`
+* `logb(x)` - exponent of `x`
+* `nearbyint(x)` - round `x` to nearest integer
+* `nextafter(x, y)` - next representable number after `x` toward `y`
+* `rint(x)` - round `x` using current rounding mode
+* `tgamma(x)` - gamma function of `x`
+* `identity(n)` - `n` by `n` identity matrix
+* `zeros(r, c)` - `r` by `c` matrix of zeros
+* `ones(r, c)` - `r` by `c` matrix of ones
+* `dot(a, b)` - dot product of two vectors
+* `cross(a, b)` - cross product of two 3-element vectors
+
 ### fileio
+
+Functions for read & writing files and managing files, directories & paths.
+Use `import fileio` or `import fileio.*`.  See `fileio.sys`.
+(only available when built with cmake option ROXAL_ENABLE_FILEIO is on)
+
+* `open(path, append=false, format='text')` - open a file and return handle
+* `close(file)` - close a file handle
+* `isOpen(file)` - true if handle is open
+* `moreData(file)` - true if more data can be read
+* `read(file)` - read available data from file
+* `readLine(file)` - read a line of text
+* `readFile(path, format='text')` - read entire file
+* `write(file, data)` - write data to file
+* `fileExists(path)` - true if file exists
+* `dirExists(path)` - true if directory exists
+* `fileSize(path)` - size of file in bytes
+* `absoluteFilePath(path)` - absolute path of file
+* `pathDirectory(path)` - directory portion of path
+* `pathFile(path)` - file name portion of path
+* `fileExtension(path)` - extension of path
+* `fileWithoutExtension(path)` - path without the extension
