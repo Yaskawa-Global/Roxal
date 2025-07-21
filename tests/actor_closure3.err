@@ -1,0 +1,1 @@
+.*actor_closure3\.rox:4:4: error: Undefined variable 'doesnotexist'(.*)?\n\s*4 |     doesnotexist\(\)\n\s*|     \^\n?

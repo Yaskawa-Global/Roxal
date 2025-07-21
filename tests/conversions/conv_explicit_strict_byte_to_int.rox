@@ -1,0 +1,4 @@
+func test():
+  var v = int(byte(5))
+  print(v)
+test()

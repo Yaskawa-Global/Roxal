@@ -1,0 +1,14 @@
+func arg1():
+  print('arg1')
+  return true
+
+func arg2():
+  print('arg2')
+  return false
+
+func arg3():
+  print('arg3')
+  return true
+
+arg1() and arg2() and arg3() // should only output arg1 and arg2
+

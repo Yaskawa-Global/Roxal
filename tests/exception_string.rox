@@ -1,0 +1,6 @@
+try:
+  raise ProgramException('fail')
+except e :ProgramException:
+  print(string(e))
+  print(typeof(e))
+print('done')

@@ -1,0 +1,443 @@
+import sys
+ymlib = sys.loadlib('./libYMConnect.so')
+
+@cstruct
+type status_info_t object:
+
+  var StatusCode :int
+  @ctype(ctype='char*')
+  var Message :string
+
+
+@cstruct
+type motoman_controller_t object:
+
+  @ctype(ctype='void*')
+  var _motomanController
+
+
+@cstruct
+type string_variable_data_t object:
+
+  @ctype(ctype='char*')
+  var stringVariableData :string
+
+  @ctype(ctype='uint16_t')
+  var variableIndex :int
+
+
+@cstruct
+type figure_t object:
+
+  @ctype(ctype='int32_t')
+  var frontOrBack :int
+
+  @ctype(ctype='int32_t')
+  var upperOrLower :int
+
+  @ctype(ctype='int32_t')
+  var flipOrNoFlip :int
+
+  @ctype(ctype='int32_t[8]')
+  var axisAngles :list
+
+
+@cstruct
+type position_data_t object:
+
+  @ctype(ctype='int32_t')
+  var coordinateType :int
+
+  @ctype(ctype='figure_t')
+  var figure :figure_t
+
+  @ctype(ctype='uint32_t')
+  var toolNumber :int
+
+  @ctype(ctype='uint32_t')
+  var userCoordinateNumber :int
+
+  @ctype(ctype='double[8]')
+  var axisData :list
+
+
+@cstruct
+type position_variable_data_t object:
+
+  @ctype(ctype='position_data_t')
+  var positionData :position_data_t
+
+  @ctype(ctype='uint16_t')
+  var variableIndex :int
+
+type TimeType enum:
+    ControllerOnTime = 1
+    ServoPowerOnTimeTotal = 10
+    ServoPowerOnTimeRobot = 11
+    ServoPowerOnTimeStation = 20
+    PlayBackTimeTotal = 110
+    PlayBackTimeRobot = 111
+    PlayBackTimeStation = 120
+    MovingTimeTotal = 210
+    MovingTimeRobot = 211
+    MovingTimeStation = 221
+    ApplicationOperationTime = 300
+
+
+type ApplicationNumber enum:
+    ApplicationOne = 1
+    ApplicationTwo
+    ApplicationThree
+    ApplicationFour
+    ApplicationFive
+    ApplicationSix
+    ApplicationSeven
+    ApplicationEight
+
+
+type SystemParameterType enum:
+    S1CG = 0     // S1CxG requires group number.
+    S2C = 1      // S2C
+    S3C = 2      // S3C
+    S4C = 3      // S4C
+    RS = 4       // RS
+    AP = 5       // AxP   requires group number
+    SE = 6       // SxE   requires group number
+
+
+@cstruct
+type elapsed_time_t object:
+
+  @ctype(ctype='uint32_t')
+  var Seconds :int
+
+  @ctype(ctype='uint32_t')
+  var Minutes :int
+
+  @ctype(ctype='uint32_t')
+  var Hours :int
+
+
+@cstruct
+type time_data_t object:
+
+  // Note: Actually a C++ std::time_t, which may be a long int (which is 64bits on x86 64, but 32 bits on ARMv7 32)
+  // So, we assume 64bits here and marshal into 2 ints (note int is signed)
+  @ctype(ctype='uint32_t[2]')
+  var startTime :list
+
+  @ctype(ctype='elapsed_time_t')
+  var elapsedTime :elapsed_time_t
+
+
+type ControlGroupId enum:
+    R1 = 1, R2, R3, R4, R5, R6, R7, R8
+    B1 = 11, B2, B3, B4, B5, B6, B7, B8
+    S1 = 21, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12, S13, S14, S15, S16, S17, S18, S19, S20, S21, S22, S23, S24
+
+
+type SystemInfoId enum:
+    R1 = 11, R2, R3, R4, R5, R6, R7, R8
+    S1 = 21, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12, S13, S14, S15, S16, S17, S18, S19, S20, S21, S22, S23, S24
+    A1 = 101, A2, A3, A4, A5, A6, A7, A8
+
+
+@cstruct
+type system_info_data_t object:
+
+  @ctype(ctype='char*')
+  var softwareVersion :string
+
+  @ctype(ctype='char*')
+  var modelName :string
+
+
+@cstruct
+type controller_state_data_t object:
+
+  @ctype(ctype='int32_t')
+  var cycleMode :int
+
+  @ctype(ctype='bool')
+  var isRunning :bool
+
+  @ctype(ctype='int32_t')
+  var controlMode :int
+
+  @ctype(ctype='bool')
+  var isInHold :bool
+
+  @ctype(ctype='bool')
+  var isAlarming :bool
+
+  @ctype(ctype='bool')
+  var isErroring :bool
+
+  @ctype(ctype='bool')
+  var isServoOn :bool
+
+
+@cstruct
+type job_data_t object:
+
+  @ctype(ctype='char*')
+  var jobName :string
+
+  @ctype(ctype='uint32_t')
+  var line :int
+
+  @ctype(ctype='uint32_t')
+  var stepNumber :int
+
+  @ctype(ctype='double')
+  var speedOverride :real
+
+
+@cstruct
+type job_stack_t object:
+
+  @ctype(ctype='char*[12]')
+  var JobNames :list
+
+
+@cstruct
+type ParamValue object:
+
+  @ctype(ctype='int32_t')
+  var value :int
+
+
+@cfunc(lib=ymlib, args='const char* ip_address, status_info_t* status, int32_t receivePacketTimeout_ms, int32_t sendPacketRetries, bool loggingEnabled, const char* version', ret='motoman_controller_t')
+func open_connection(ip_address :string, status :status_info_t, receivePacketTimeout_ms :int, sendPacketRetries :int, loggingEnabled :bool, version :string) -> motoman_controller_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller')
+proc close_connection(controller :motoman_controller_t):
+  _
+
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint16_t variableIndex,string_variable_data_t* stringVariableData',ret='status_info_t')
+func string_variable_interface_read(controller :motoman_controller_t, variableIndex :int,
+                                                stringVariableData :string_variable_data_t) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const string_variable_data_t* stringVariableData',ret='status_info_t')
+func string_variable_interface_write(controller :motoman_controller_t,
+                                                stringVariableData :string_variable_data_t) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint16_t variableIndex,position_variable_data_t* positionVariableData',ret='status_info_t')
+func robot_position_variable_interface_read(controller :motoman_controller_t, variableIndex :int,
+                                                   positionVariableData :position_variable_data_t) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const position_variable_data_t* positionVariableData',ret='status_info_t')
+func robot_position_variable_interface_write(controller :motoman_controller_t,
+                                                   positionVariableData :position_variable_data_t) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint16_t variableIndex,position_variable_data_t* positionVariableData',ret='status_info_t')
+func base_position_variable_interface_read(controller :motoman_controller_t, variableIndex :int,
+                                                  positionVariableData :position_variable_data_t) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const position_variable_data_t* positionVariableData',ret='status_info_t')
+func base_position_variable_interface_write(controller :motoman_controller_t,
+                                                  positionVariableData :position_variable_data_t) -> status_info_t:
+  _
+
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint16_t variableIndex,position_variable_data_t* positionVariableData',ret='status_info_t')
+func station_position_variable_interface_read(controller :motoman_controller_t, variableIndex :int,
+                                                   positionVariableData :position_variable_data_t) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const position_variable_data_t* positionVariableData',ret='status_info_t')
+func station_position_variable_interface_write(controller :motoman_controller_t,
+                                                   positionVariableData :position_variable_data_t) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,controller_state_data_t* controllerStateData',ret='status_info_t')
+func controller_state_interface_read_state(controller :motoman_controller_t,
+                                                controllerStateData :controller_state_data_t) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t sysInfoId,system_info_data_t* systemInfoData',ret='status_info_t')
+func controller_state_interface_read_system_information(controller :motoman_controller_t, sysInfoId :SystemInfoId,
+                                                            systemInfoData :system_info_data_t) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t id,int32_t timeType,time_data_t* timeData,int32_t appNumber',ret='status_info_t')
+func controller_state_interface_read_operating_times(controller :motoman_controller_t, id :ControlGroupId, timeType :TimeType,
+                                                          timeData :time_data_t, appNumber :ApplicationNumber) -> status_info_t:
+  _
+
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t parameterType,int32_t parameterNumber,ParamValue* parameterValue',ret='status_info_t')
+func controller_state_read_system_param(controller :motoman_controller_t, parameterType :SystemParameterType, parameterNumber :int, parameterValue :ParamValue) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t parameterType,int32_t parameterNumber,int32_t parameterGroup,ParamValue* parameterValue',ret='status_info_t')
+func controller_state_group_read_system_param(controller :motoman_controller_t, parameterType :int, parameterNumber :int, parameterGroup :int, parameterValue :ParamValue) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const char* jobName,uint32_t lineNumber',ret='status_info_t')
+func job_interface_set_active_job(controller :motoman_controller_t, jobName :string, lineNumber :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t selection,job_data_t* jobData',ret='status_info_t')
+func job_interface_get_executing_job_information(controller :motoman_controller_t, selection :int, jobData :job_data_t) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t selection,job_stack_t* jobNameArray',ret='status_info_t')
+func job_interface_get_job_stack(controller :motoman_controller_t, selection :int, jobNameArray :job_stack_t) -> status_info_t:
+  _
+
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const char* fileName,const char* contentsToLoad',ret='status_info_t')
+func file_interface_LoadToControllerFromString(controller :motoman_controller_t, fileName :string, contentsToLoad :string) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const char* filePath',ret='status_info_t')
+func file_interface_LoadToControllerFromPath(controller :motoman_controller_t, filePath :string) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const char* fileName,const char* destinationFile,bool overwriteFlag',ret='status_info_t')
+func file_interface_SaveFromControllerToFile(controller :motoman_controller_t, fileName :string, destinationFile :string, overwriteFlag :bool) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const char* fileName,status_info_t* status',ret='char*')
+func file_interface_SaveFromControllerToString(controller :motoman_controller_t, fileName :string, status :status_info_t) -> string:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,const char* fileName',ret='status_info_t')
+func file_interface_DeleteJobFile(controller :motoman_controller_t, fileName :string) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t fileType,int32_t* fileCount',ret='status_info_t')
+func file_interface_GetFileCount(controller :motoman_controller_t, fileType :int, fileCount :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t fileType,status_info_t* status,bool sorted',ret='char*')
+func file_interface_ListFiles(controller :motoman_controller_t, fileType :int, status :status_info_t, sorted :bool) -> string:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t iotype,uint16_t group,uint8_t bitPosition,int32_t* ioBit',ret='status_info_t')
+func io_interface_type_ReadBit(controller :motoman_controller_t, iotype :int, group :int, bitPosition :int, ioBit :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint32_t address,int32_t* ioBit',ret='status_info_t')
+func io_interface_address_ReadBit(controller :motoman_controller_t, address :int, ioBit :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t iotype,uint16_t group,uint32_t* io',ret='status_info_t')
+func io_interface_type_ReadByte(controller :motoman_controller_t, iotype :int, group :int, io :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint32_t address,uint32_t* io',ret='status_info_t')
+func io_interface_address_ReadByte(controller :motoman_controller_t, address :int, io :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t iotype,uint16_t group,uint8_t* io',ret='status_info_t')
+func io_interface_uint8_type_ReadByte(controller :motoman_controller_t, iotype :int, group :int, io :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint32_t address,uint8_t* io',ret='status_info_t')
+func io_interface_uint8_address_ReadByte(controller :motoman_controller_t, address :int, io :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t iotype,uint16_t group,uint32_t* io',ret='status_info_t')
+func io_interface_type_ReadWord(controller :motoman_controller_t, iotype :int, group :int, io :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint32_t address,uint32_t* io',ret='status_info_t')
+func io_interface_address_ReadWord(controller :motoman_controller_t, address :int, io :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,int32_t iotype,uint16_t group,uint16_t* io',ret='status_info_t')
+func io_interface_uint16_type_ReadWord(controller :motoman_controller_t, iotype :int, group :int, io :int) -> status_info_t:
+  _
+
+@cfunc(lib=ymlib, args='motoman_controller_t controller,uint32_t address,uint16_t* io',ret='status_info_t')
+func io_interface_uint16_address_ReadWord(controller :motoman_controller_t, address :int, io :int) -> status_info_t:
+  _
+
+
+
+// test it
+
+proc raiseIfNotOk(status :status_info_t, function_name :string = ''):
+  if status is nil:
+    raise ProgramException("{function_name} error: nil status")
+
+  if status.StatusCode != 0:
+    var code = status.StatusCode
+    var msg = status.Message
+    raise ProgramException("{function_name} error {code}: {msg}")
+
+
+proc test(ip :string):
+
+  // Open connection
+  var status = status_info_t()
+  var ver :string = '1.1.5'
+  var controller = open_connection(ip,status,200,5,true,ver)
+  raiseIfNotOk(status,'open_connection')
+
+  // controller system info
+  var systemInfoData = system_info_data_t()
+  status = controller_state_interface_read_system_information(controller, SystemInfoId.R1, systemInfoData)
+  raiseIfNotOk(status,'controller_state_interface_read_system_information')
+  print("R1="+dict(systemInfoData))
+
+  var controllerStateData = controller_state_data_t()
+  status = controller_state_interface_read_state(controller, controllerStateData)
+  raiseIfNotOk(status,'controller_state_interface_read_state')
+  print(dict(controllerStateData))
+
+  var timeData = time_data_t()
+  timeData.elapsedTime = elapsed_time_t()
+  status = controller_state_interface_read_operating_times(controller, ControlGroupId.R1, TimeType.ControllerOnTime, timeData, ApplicationNumber.ApplicationOne)
+  raiseIfNotOk(status,'controller_state_interface_read_operating_times')
+  print(dict(timeData)|dict(timeData.elapsedTime))
+
+
+  // S var read/write
+  var svar_info  = string_variable_data_t()
+  status = string_variable_interface_read(controller,14,svar_info)
+  raiseIfNotOk(status,'string_variable_interface_read')
+  print("S14="+svar_info.stringVariableData)
+
+  svar_info.variableIndex = 16
+  svar_info.stringVariableData = 'fromroxal'
+  status = string_variable_interface_write(controller, svar_info)
+  raiseIfNotOk(status,'string_variable_interface_write')
+  // read it back to check
+  var svar_info2  = string_variable_data_t()
+  status = string_variable_interface_read(controller,16,svar_info2)
+  raiseIfNotOk(status,'string_variable_interface_read')
+  if svar_info2.stringVariableData != svar_info.stringVariableData or svar_info2.variableIndex != 16:
+    raise ProgramException("read back S16 didn't contain written content")
+
+  // P var read/write
+  var pvar_data = position_variable_data_t()
+  pvar_data.positionData = position_data_t()
+  pvar_data.positionData.figure = figure_t()
+  status = robot_position_variable_interface_read(controller,10,pvar_data)
+  raiseIfNotOk(status,'robot_position_variable_interface_read')
+  if pvar_data.variableIndex != 10:
+    raise ProgramException("read back P10 didn't contain the right index")
+  print(""+dict(pvar_data)+" "+dict(pvar_data.positionData))
+
+
+  // Param
+  //var paramValue = ParamValue()
+  //status = controller_state_read_system_param(controller, SystemParameterType.S2C,210,paramValue)
+  //print(paramValue.value)
+  //raiseIfNotOk(status,'controller_state_read_system_param')
+  //print("S2C210={paramValue}")
+
+
+  close_connection(controller)
+
+test(ip='10.7.3.41')

@@ -1,0 +1,2 @@
+func(a :int, b :int)→int
+Add two ints

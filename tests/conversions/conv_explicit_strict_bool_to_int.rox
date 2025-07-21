@@ -1,0 +1,4 @@
+func test():
+  var v = int(true)
+  print(v)
+test()

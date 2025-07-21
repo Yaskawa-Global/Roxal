@@ -1,0 +1,14 @@
+func simpleReturn() -> real:
+    return 3.14
+
+func multiReturn() -> [real, int]:
+    return [3.14, 42]
+
+func noReturn():
+    pass
+
+proc noReturnProc():
+    pass
+
+# Test the syntax
+print(simpleReturn())

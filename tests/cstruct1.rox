@@ -1,0 +1,7 @@
+@cstruct
+type MyStruct object:
+  var i:int
+  @ctype(ctype='float')
+  var f:real
+
+print('ok')

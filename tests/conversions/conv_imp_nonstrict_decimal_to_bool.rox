@@ -1,0 +1,3 @@
+var v:bool
+v = decimal(5)
+print(v)

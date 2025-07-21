@@ -1,0 +1,7 @@
+// non-strict
+var l
+l = [1,2,3]
+print(typeof(l)) // list
+l = "hello"
+print(l)
+print(typeof(l)) // string

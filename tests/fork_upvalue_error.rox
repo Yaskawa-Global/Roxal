@@ -1,0 +1,10 @@
+func outer():
+  var x = 42
+  
+  func inner():
+    print(x)  # capture x from outer scope
+  
+  return inner
+
+var closure = outer()
+var thread_id = fork(closure)

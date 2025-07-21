@@ -1,0 +1,30 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cstruct
+type IntBox object:
+  @ctype(ctype='int32_t*')
+  var p:int
+
+@cstruct
+type ByteBox object:
+  @ctype(ctype='uint8_t*')
+  var p:byte
+
+@cfunc(lib=mylib, cname='inc_intbox', args='IntBox* b')
+proc inc_int(b: IntBox):
+  _
+
+@cfunc(lib=mylib, cname='inc_bytebox', args='ByteBox* b')
+proc inc_byte(b: ByteBox):
+  _
+
+ib = IntBox()
+ib.p = 41
+inc_int(ib)
+print(ib.p)
+
+bb = ByteBox()
+bb.p = byte(5)
+inc_byte(bb)
+print(bb.p)

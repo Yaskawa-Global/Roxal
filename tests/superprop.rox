@@ -1,0 +1,13 @@
+type P object:
+  var prop: int = 1
+  func incProp():
+    prop = prop + 1
+
+type C object extends P:
+  func useParent():
+    incProp()
+    print(prop)
+
+var c = C()
+c.useParent()
+c.useParent()

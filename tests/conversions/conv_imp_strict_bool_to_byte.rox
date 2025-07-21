@@ -1,0 +1,5 @@
+func test():
+  var v:byte
+  v = true
+  print(v)
+test()

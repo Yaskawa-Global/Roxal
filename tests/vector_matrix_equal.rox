@@ -1,0 +1,83 @@
+// Test vector and matrix equality with deep comparison and automatic list conversion
+
+print("=== Vector Equality Tests ===")
+
+// Basic vector equality
+var v1 = [1.0 2.0 3.0]
+var v2 = [1.0 2.0 3.0]
+var v3 = [1.0 2.0 4.0]
+print("v1 == v2: " + (v1 == v2))  // Should be true
+print("v1 == v3: " + (v1 == v3))  // Should be false
+
+// Vector vs empty list
+var emptyVec = vector(0)
+var emptyList = []
+print("empty vector == []: " + (emptyVec == emptyList))  // Should be true
+
+// Vector vs single element list
+var singleVec = vector([5.0])
+var singleList = [5.0]
+print("[5.0] vector == [5.0] list: " + (singleVec == singleList))  // Should be true
+
+// Vector vs single element list with different value
+var singleList2 = [6.0]
+print("[5.0] vector == [6.0] list: " + (singleVec == singleList2))  // Should be false
+
+// Vector vs multi-element list (should not auto-convert)
+var multiList = [1.0, 2.0, 3.0]
+print("vector == multi-element list: " + (v1 == multiList))  // Should be false
+
+// Vector vs list with non-numeric element (should not auto-convert)
+var nonNumericList = ["hello"]
+print("vector == non-numeric list: " + (singleVec == nonNumericList))  // Should be false
+
+print("=== Matrix Equality Tests ===")
+
+// Basic matrix equality
+var m1 = [1.0 2.0; 3.0 4.0]
+var m2 = [1.0 2.0; 3.0 4.0]
+var m3 = [1.0 2.0; 3.0 5.0]
+print("m1 == m2: " + (m1 == m2))  // Should be true
+print("m1 == m3: " + (m1 == m3))  // Should be false
+
+// Matrix vs empty list (0x0 matrix)
+var emptyMat = matrix([])
+print("empty matrix == []: " + (emptyMat == emptyList))  // Should be true
+
+// Matrix vs single element list (1x1 matrix)
+var singleMat = matrix([7.0])  // 1x1 matrix
+print("[7.0] matrix == [5.0] list: " + (singleMat == singleList))  // Should be false (different values)
+var singleList3 = [7.0]
+print("[7.0] matrix == [7.0] list: " + (singleMat == singleList3))  // Should be true
+
+// Matrix vs multi-element list - test with compatible values
+var matrixRowList = [1.0 2.0 3.0]  // Single row matrix  
+print("matrix == multi-element list: " + (matrixRowList == multiList))  // Should be true in non-strict
+
+print("=== Strict Context Tests (Inside Functions) ===")
+
+// Test the same comparisons in strict context (inside functions)
+func testStrictVectorEquality():
+    var v1_strict = [1.0 2.0 3.0]  // vector
+    var multiList_strict = [1.0, 2.0, 3.0]  // list
+    var singleList_strict = [5.0]  // list
+    var emptyList_strict = []  // list
+    
+    print("STRICT: vector == vector: " + (v1_strict == v1_strict))  // Should be true
+    print("STRICT: empty vector == []: " + (vector(0) == emptyList_strict))  // Should be true
+    print("STRICT: single vector == [5.0] list: " + (vector([5.0]) == singleList_strict))  // Should be true
+    print("STRICT: vector == multi-element list: " + (v1_strict == multiList_strict))  // Should be false in strict context
+
+func testStrictMatrixEquality():
+    var matrixRowList_strict = [1.0 2.0 3.0]  // Single row matrix
+    var multiList_strict = [1.0, 2.0, 3.0]  // list  
+    var singleList_strict = [7.0]  // list
+    var emptyList_strict = []  // list
+    
+    print("STRICT: matrix == matrix: " + (matrixRowList_strict == matrixRowList_strict))  // Should be true
+    print("STRICT: empty matrix == []: " + (matrix([]) == emptyList_strict))  // Should be true
+    print("STRICT: single matrix == [7.0] list: " + (matrix([7.0]) == singleList_strict))  // Should be true
+    print("STRICT: matrix == multi-element list: " + (matrixRowList_strict == multiList_strict))  // Should be false in strict context
+
+testStrictVectorEquality()
+testStrictMatrixEquality()

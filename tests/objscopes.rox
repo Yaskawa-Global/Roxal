@@ -1,0 +1,34 @@
+func f():
+
+  var flocal = 'fl'
+
+  func g():
+
+    var glocal = 'gl'
+
+    type Obj object:
+
+      var prop :int = 1
+
+      func getPropFunc():
+
+        var tp = this.prop
+
+        func gpfunc():
+          return flocal+' '+tp
+
+        return gpfunc
+
+    return Obj
+
+  return g()
+
+var ObjType = f()
+var o = ObjType()
+
+gpf1 = o.getPropFunc()
+o.prop = 2
+gpf2 = o.getPropFunc()
+
+print(gpf1()) # fl 1
+print(gpf2()) # fl 2

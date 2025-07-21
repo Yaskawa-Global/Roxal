@@ -1,0 +1,17 @@
+var b1 :bool
+
+var bt = bool // var bt:type = bool
+print(bt) # bool
+
+var b2 :bt = true
+print(b2)
+b2 = 2
+
+func add(t):  // func add(t:type)
+  func gadd(a:t,b:t) -> t:
+    return a+b
+  return gadd
+
+print(add(int)(1,2))
+print(add(real)(1.2,2.3))
+

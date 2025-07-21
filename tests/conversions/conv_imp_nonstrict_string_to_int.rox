@@ -1,0 +1,3 @@
+var v:int
+v = "5"
+print(v)

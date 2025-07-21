@@ -1,0 +1,9 @@
+import math
+var v = vector([3,4])
+print(v.normalized())
+print(v.sum())
+print(v.dot(vector([4,3])))
+var a = vector([1,0,0])
+var b = vector([0,1,0])
+print(math.cross(a,b))
+print(math.dot(a,b))

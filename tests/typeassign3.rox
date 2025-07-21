@@ -1,0 +1,29 @@
+
+type Obj object:
+
+  var b:bool
+  var bt:byte
+  var i:int
+
+  func f():
+    b = 1    // int -> bool
+    print(b) // true
+    b = 1.0  // real -> bool
+    print(b) // true
+
+    bt = 255.0    // real -> byte
+    print(bt)     // 255
+    bt = "255.0"  // string -> byte
+    print(bt)     // 255
+
+    i = 2.1       // real -> int
+    print(i)      // 2
+    i = "2.2"     // string -> int
+    print(i)      // 2
+    i = b         // byte -> int
+    print(i)      // 1
+
+
+o = Obj()
+o.f()
+

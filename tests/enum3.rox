@@ -1,0 +1,15 @@
+type Shape enum:
+  Square, Rectangle   // mixture of line & comma sep allowed
+  Circle=10, Oval
+  Hexagon
+
+// can even put all one one line
+type Color enum: Red, Green=7, Blue
+
+print(Shape()) // Square
+print(Color()) // Red
+
+print(Shape(1))   // Rectangle
+print(Shape(11))  // Oval
+print(Color(7))   // Green
+print(Color.Blue)

@@ -1,0 +1,13 @@
+scope:
+  var a = 1
+  func f():
+    print(a)
+  
+  var b = 2
+  func g():
+    print(b)
+  
+  var c = 3
+  func h():
+    print(c)
+

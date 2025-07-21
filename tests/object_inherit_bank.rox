@@ -1,0 +1,30 @@
+
+type Depositing object:
+
+  var balance :real = 0
+
+  proc deposit(amount :real):
+    balance = balance + amount
+
+  func printBalance():
+    print(balance)
+
+
+type Account object extends Depositing:
+
+  proc withdrawal(amount :real):
+    balance = balance - amount
+
+
+a = Account()
+
+a.printBalance()
+
+a.deposit(10.0)
+
+a.printBalance()
+
+a.withdrawal(8.0)
+
+a.printBalance()
+

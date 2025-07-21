@@ -1,0 +1,34 @@
+
+//print('main thread id:'+_threadid())
+
+type EventProducer actor:
+
+  //proc printid():
+  //  print('EventProducer thread id '+_threadid())
+
+  func emitEvents(e :event):
+
+    wait(us=100000)
+
+    for i in range(1..2):
+      print('emit '+i)
+      emit e
+      wait(us=100000)
+    
+
+
+var e :event
+p = EventProducer()
+//p.printid()
+
+on e:
+  print('e occured')
+
+p.emitEvents(e)
+
+print('sleeping for .5s')
+wait(us=500000)
+print('awake')
+
+print('done')
+

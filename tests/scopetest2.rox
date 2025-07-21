@@ -1,0 +1,21 @@
+
+type Obj object:
+
+  func method():
+
+    func f(): 
+      return this.i
+
+    return f()
+  
+
+
+var o = Obj()
+o.i = 3
+
+print(o.method())
+
+o.i = 4
+print(o.method())
+
+

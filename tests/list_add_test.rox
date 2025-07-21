@@ -1,0 +1,21 @@
+// Test list + operator for concatenation and append
+
+// Test list + list (concatenation)
+var list1 = [1, 2, 3]
+var list2 = [4, 5, 6]
+var concat = list1 + list2
+print("List concatenation: " + concat)
+
+// Test list + value (append)
+var list3 = [1, 2, 3]
+var appended = list3 + 4
+print("List append: " + appended)
+
+// Test mixed types
+var mixed = [1, 2] + "hello"
+print("Mixed append: " + mixed)
+
+// Verify original lists unchanged (by-value semantics)
+print("Original list1: " + list1)
+print("Original list2: " + list2)
+print("Original list3: " + list3)

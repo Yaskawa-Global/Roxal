@@ -1,0 +1,19 @@
+func outer():
+  var x = "value"
+  func middle():
+    func inner():
+      print(x)
+    
+
+    print("create inner closure")
+    return inner
+  
+
+  print("return from outer")
+  return middle
+
+
+var mid = outer()
+var inn = mid()
+inn()
+

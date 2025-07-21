@@ -1,0 +1,4 @@
+func test():
+  var v = real(true)
+  print(v)
+test()

@@ -1,0 +1,16 @@
+func t_sig(x) -> bool:
+  return true
+
+func f_sig(x) -> bool:
+  return false
+
+c = clock(10)
+t = t_sig(c)
+f = f_sig(c)
+a = t and f
+c.tick()
+wait(ms=120)
+print(bool(a))
+c.tick()
+wait(ms=120)
+print(bool(a))

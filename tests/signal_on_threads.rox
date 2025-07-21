@@ -1,0 +1,19 @@
+var s = clock(10)
+
+type A actor:
+  proc setup():
+    on s:
+      wait(us=10000)
+      print("actor:"+int(s))
+
+a = A()
+a.setup()
+wait(us=2000)
+
+on s:
+  print("main:"+int(s))
+
+s.run()
+
+wait(us=250000)
+

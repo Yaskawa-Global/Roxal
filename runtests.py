@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+
+import os
+import subprocess
+import argparse
+import re
+import time
+
+# Maximum time in seconds to allow each test to run
+TEST_TIMEOUT_SECS = 5
+# Width of the test name column when printing results
+TEST_NAME_WIDTH = 32
+
+# Parse command-line arguments
+parser = argparse.ArgumentParser(description="Run Roxal tests.")
+parser.add_argument('--convs', action='store_true', help='Include tests/conversions/* tests')
+args = parser.parse_args()
+
+# for each named test, run the <test>.rox file in the tests folder
+# and compare its output with <test>.out (stdout) and <test>.err (stderr regex)
+
+tests = [
+    'comments', 'primitive1', 'constants', 'scopetest2', 'scopetest3',
+    'andtest', 'ortest', 'not',
+    'arith', 'factorial', 'defaultvalues', 'construct_defaults', 'typeof_test',
+    'dict', 'dict2', 'dict_keyerror', 'dict_dot', 'dict_dot_keyerror', 'list', 'list2', 'list_negative_index', 'copyinto_list', 'copyinto_list_unicode', 'copyinto_sublist', 'copyinto_signal',
+    'list_add_test', 'list_dict_equal', 'range', 'range2', 'enum1', 'enum2', 'enum3', 'upvalue_leak',
+    'unicode', 'signal_clock', 'signal_add', 'signal_subtract', 'signal_multiply', 'signal_divide', 'signal_modulo',
+    'signal_greater', 'signal_less', 'signal_equal', 'signal_history', 'signal_cycle', 'signal_cleanup',
+    'signal_and', 'signal_or', 'signal_not', 'signal_band', 'signal_bor', 'signal_bxor', 'signal_bnot',
+    'signal_func_nocall', 'signal_func_exec', 'signal_index', 'signal_on_stmt', 'signal_on_threads', 'on_expression',
+    'test_signal_value_property', 'construct_by_signal', 'signal_run_stop', 'signal_source', 'signal_default_err', 'signal_network1',
+    'dataflow_clocktest1', 'multi_clock', 'clock_error',
+    'event1', 'event_on_stmt', 'event_emit_keyword', 'event_on_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4',
+    'event_in_sleep', 'event_in_sleep2',
+    'until_event', 'until_signal', 'signal_vector_dot',
+    'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
+    'module_strict_assign_err', 'func_nonstrict', 'conversions1',
+    'serialize_values', 'serialize_objects', 'serialize_user_objects', 'serialize_func', 'serialize_actor',
+    'json_basic',
+    'byteops', 'bitwise', 'byte_int_bits', 'list_byte_concat', 'list_enum_concat', 'object_init', 'object_inherit_is',
+    'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'closure_many', 'lambda1',
+    'conversion1', 'string_interp',
+    'call_param_type_nonstrict', 'call_param_type_strict', 'param_assign_static_err',
+    'linkedlist', 'structbindassign',
+    'if', 'for1',
+    'func_param_default', 'func_param_default2', 'func_param_default3','func_param_default4',
+    'typeobj1', 'typeobj2', 'typeobj3', 'typeobj4', 'typeobj5', 'typeobj6', 'typeobj7',
+    'object_to_dict_private', 'object_from_dict', 'virtual_method',
+    'implements1', 'object_inherit_bank',
+    'importmodule1', 'importstar', 'importsyms', 'importdiamond', 'pkg1/main',
+    'import_folder_init', 'import_folder_single',
+    'method_named_param',
+    'annot1', 'generic', 'objscopes',
+    'threads1', 'fork_upvalue_error', 'fork_no_upvalues',
+    'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8', 'actor9',
+    'actor_init', 'actor_stack', 'actor_future',
+    'actor_closure1', 'actor_closure2', 'actor_closure3',
+    'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4',
+    'private_prop', 'private_method', 'private_inherit',
+    'typededucer_binop', 'typededucer_ops', 'typededucer_until', 'typededucer_bitwise',
+    'mathfuncs',
+    'typeassign1', 'typeassign2', 'typeassign3',
+    'vector1', 'vector2', 'vector3', 'vector4', 'vector5','vector_methods', 'vector_equal', 'vector_matrix_equal',
+    'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'unary_vector_matrix', 
+    'matrix_index', 'matrix_methods', 'matrix_assign', 'matrix_equal', 'matrix_math',
+    'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_toupper', 'ffi_primptr', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3', 'cstruct_byval', 'cstruct_array',
+    'nested_cstruct', 'nested_cstruct_ptr', 'nested_cstruct_byval',
+    'weakref', 'strongref', 'is_operator', 'stackdepth', 'modulevar2',
+    'is_operator_type',
+    'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
+    'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle',
+    'runtime_error_snippet',
+    'property_count', 'cmdline_execute', 'invalid_option', 'fileio_basic', 'fileio_binary',
+    'fileio_read_binary', 'fileio_write_binary', 'fileio_extra', 'help_doc', 'docstring_func'
+]
+
+# implementation doesn't yet allow these tests to pass (do not add to this list without human consent)
+failing_tests = ['object_user_ref_cycle', 'signal_network1']
+assert(set(failing_tests).issubset(tests))
+
+
+if args.convs:
+    conv_test_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tests/conversions')
+    conv_tests = sorted([
+        os.path.join('conversions', os.path.splitext(f)[0])
+        for f in os.listdir(conv_test_dir)
+        if f.endswith('.rox') and ('decimal' not in f) and os.path.exists(os.path.join(conv_test_dir, os.path.splitext(f)[0] + '.out'))
+    ])
+    tests += conv_tests
+
+project_root = os.path.dirname(os.path.abspath(__file__))
+test_dir = os.path.join(project_root, 'tests')
+
+roxalpath = 'build'
+roxal = './roxal'
+
+# Ensure the FFI test shared library is built
+testlib_c = os.path.join(test_dir, 'testlib.c')
+testlib_so = os.path.join(test_dir, 'testlib.so')
+if os.path.exists(testlib_c):
+    if (not os.path.exists(testlib_so) or
+            os.path.getmtime(testlib_so) < os.path.getmtime(testlib_c)):
+        try:
+            subprocess.check_call(
+                ['gcc', '-shared', '-fPIC', '-o', testlib_so, testlib_c])
+        except Exception as e:
+            print('Failed to build testlib.so:', e)
+        if os.path.exists(testlib_so):
+            print('Built testlib.so')
+
+    if not os.path.exists(testlib_so):
+        raise 'testlib.so was not built'
+
+
+# Track how many tests pass or fail
+passed_count = 0
+failed_count = 0
+
+cwd = os.getcwd()
+os.chdir(os.path.join(project_root, roxalpath))
+
+env_base = os.environ.copy()
+env_base['ROXALPATH'] = test_dir
+
+total_start_time = time.perf_counter()
+
+try:
+    for test in tests:
+        print(f"Test {test:<{TEST_NAME_WIDTH}} ", end='', flush=True)
+        start_time = time.perf_counter()
+        testrox = os.path.join(test_dir, test + '.rox')
+        testout = os.path.join(test_dir, test + '.out')
+        testerr = os.path.join(test_dir, test + '.err')
+        if not os.path.exists(testrox):
+            raise RuntimeError(f"Test {testrox} not found.")
+
+        if not (os.path.exists(testout) or os.path.exists(testerr)):
+            raise RuntimeError(f"Test expected output {testout} or {testerr} not found.")
+
+        rel_testrox = os.path.relpath(testrox, os.getcwd())
+        cmd = [roxal, rel_testrox]
+        if test.startswith('typededucer_'):
+            cmd = [roxal, '--ast', rel_testrox]
+        if test == 'cmdline_execute':
+            with open(testrox, 'r') as f:
+                snippet = f.read().strip()
+            cmd = [roxal, '-e', snippet]
+        if test == 'invalid_option':
+            cmd = [roxal, '--bogus']
+
+        opt_expected = (" [expected]" if test in failing_tests else '')
+
+        try:
+            compProc = subprocess.run(
+                cmd, capture_output=True, shell=False,
+                timeout=TEST_TIMEOUT_SECS, env=env_base)
+        except subprocess.TimeoutExpired:
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            print(f"FAIL: {opt_expected}", flush=True)
+            print(f"-- timeout after {TEST_TIMEOUT_SECS} s --")
+            print()
+            failed_count += 1
+            continue
+        duration_ms = (time.perf_counter() - start_time) * 1000
+
+
+        passed = True
+        expect_err = os.path.exists(testerr)
+        if compProc.returncode != 0 and not expect_err:
+            print(f"FAIL: {opt_expected}", flush=True)
+            print(f"-- return code {compProc.returncode} --")
+            if compProc.returncode < 0:
+                import signal
+                signum = -compProc.returncode
+                try:
+                    sig_name = signal.Signals(signum).name
+                except ValueError:
+                    sig_name = str(signum)
+                print(f"Process terminated by signal: {sig_name}")
+            print()
+            passed = False
+
+        crash_output = (b'segmentation fault' in compProc.stdout.lower() or
+                        b'segmentation fault' in compProc.stderr.lower() or
+                        b'abort' in compProc.stdout.lower() or
+                        b'abort' in compProc.stderr.lower())
+        if crash_output and passed:
+            print(f"FAIL: {opt_expected}", flush=True)
+            print("-- abnormal termination message detected --")
+            print(compProc.stdout)
+            print(compProc.stderr)
+            print("--")
+            passed = False
+        if os.path.exists(testout):
+            with open(testout, mode='rb') as file:
+                expected = file.read()
+            if expected != compProc.stdout:
+                print(f"FAIL: {opt_expected}", flush=True)
+                print("-- stdout --")
+                print(compProc.stdout)
+                print("-- expected stdout --")
+                print(expected)
+                print("--")
+                print()
+                passed = False
+        if os.path.exists(testerr):
+            with open(testerr, 'r') as file:
+                err_re = file.read().strip()
+            stderr_str = compProc.stderr.decode()
+            if re.search(err_re, stderr_str, re.MULTILINE | re.DOTALL) is None:
+                print(f"FAIL: {opt_expected}", flush=True)
+                print("-- stderr --")
+                print(stderr_str)
+                print("-- expected regex --")
+                print(err_re)
+                print("--")
+                print()
+                passed = False
+        if passed:
+            print(f"pass ({duration_ms:.0f} ms)", flush=True)
+            passed_count += 1
+        else:
+            print(f"({duration_ms:.1f} ms)", flush=True)
+            failed_count += 1
+
+except Exception as e:
+    print('Exception: ' + str(e))
+
+total_duration = time.perf_counter() - total_start_time
+failed_unexpected_count = failed_count - len(failing_tests)
+print()
+print(f"{passed_count} tests passed, {failed_unexpected_count} "+('FAILED' if failed_unexpected_count>0 else 'failed')+f" unexpectedly ({len(failing_tests)} were expected to fail)")
+if failed_count > 0:
+  print(f"Tests expecied to fail currently: {', '.join(failing_tests)}")
+print(f"Total time {total_duration:.2f} s")
+
+os.chdir(cwd)

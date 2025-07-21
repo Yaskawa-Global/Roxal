@@ -1,0 +1,18 @@
+File
+ VarDecl a
+  BinaryOp +  → bool
+   Bool true
+   Bool false
+ VarDecl b
+  BinaryOp +  → real
+   Num 1:int
+   Num 2.000000:real
+ VarDecl c
+  BinaryOp +  → real
+   Num 1.000000:real
+   Num 2:int
+ VarDecl d
+  BinaryOp %  → int
+   Num 1:int
+   Num 2.000000:real
+

@@ -1,0 +1,44 @@
+
+var c :signal = clock(10)
+
+var v :vector = [1 2 3 4 5 6]
+
+// split vector into its elements
+func split(v :vector) -> [real,real,real,real,real,real]:
+  var l :list
+  for e in v:
+    l.append(e)
+  return l
+
+// join a list of values into a vector
+func join(e0: real, e1:real, e2:real, e3:real, e4:real, e5:real) -> vector:
+  return vector([e0,e1,e2,e3,e4,e5])
+
+func addToElt0(v :vector, i: int) -> vector:
+  var newV = vector(v)  // Create a copy to avoid in-place modification
+  newV[0] = newV[0] + i
+  return newV
+
+[out0, out1, out2, out3, out4, out5] = split(addToElt0(v,c))
+
+// FIXME: either [sig,sig] should create a signal of vector type, or passing a list to a func should check if any list elts are signals
+out = join(out0, out1, out2, out3, out4, out5) 
+
+print(typeof(out0)) // signal
+print(typeof(out))  // signal
+
+c.tick()
+print("c="+int(c))
+wait(us=110000)
+print(real(out0))
+print(vector(out))
+
+c.tick()
+print("c="+int(c))
+wait(us=110000)
+print(vector(out))
+
+c.tick()
+print("c="+int(c))
+wait(us=110000)
+print(vector(out))

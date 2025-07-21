@@ -1,0 +1,22 @@
+//
+// clock 10Hz ──► (+) ──► (*2) ──► out ──► print
+//                 ▲             │
+//                 │             │
+//                 └──── out[-1]─┘
+
+c = clock(freq=10)
+
+var out = signal(10,0.0)
+
+sum = c + out[-1]
+
+out <- sum * 2.0
+
+on out:
+  print(real(out))
+
+// run the network for a while
+c.run()
+wait(ms=400)
+
+print('done')

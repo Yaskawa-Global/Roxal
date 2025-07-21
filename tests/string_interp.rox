@@ -1,0 +1,9 @@
+var s = "glad to meet you"
+print("Hi, I'm {s}")
+
+s2 = "."
+
+print("{s}{s2}") // 'glad to meet you.'
+
+print('{s}') // {s}
+

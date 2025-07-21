@@ -1,0 +1,11 @@
+var x = "global"
+func outer():
+  var x = "outer"
+  func inner():
+    print(x)
+  
+  inner()
+
+outer()
+
+

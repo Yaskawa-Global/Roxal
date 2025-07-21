@@ -1,0 +1,4 @@
+var c = clock(10)
+print(c.value)
+print(typeof(c))
+print(typeof(c.value))

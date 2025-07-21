@@ -1,0 +1,196 @@
+@builtin
+func sin(x:real) -> real:
+  """sine of x"""
+
+@builtin
+func cos(x:real) -> real:
+  """cosine of x"""
+
+@builtin
+func tan(x:real) -> real:
+  """tangent of x"""
+
+@builtin
+func asin(x:real) -> real:
+  """arc sine of x"""
+
+@builtin
+func acos(x:real) -> real:
+  """arc cosine of x"""
+
+@builtin
+func atan(x:real) -> real:
+  """arc tangent of x"""
+
+@builtin
+func atan2(y:real, x:real) -> real:
+  """arc tangent of y/x"""
+
+@builtin
+func sinh(x:real) -> real:
+  """hyperbolic sine"""
+
+@builtin
+func cosh(x:real) -> real:
+  """hyperbolic cosine"""
+
+@builtin
+func tanh(x:real) -> real:
+  """hyperbolic tangent"""
+
+@builtin
+func asinh(x:real) -> real:
+  """inverse hyperbolic sine"""
+
+@builtin
+func acosh(x:real) -> real:
+  """inverse hyperbolic cosine"""
+
+@builtin
+func atanh(x:real) -> real:
+  """inverse hyperbolic tangent"""
+
+@builtin
+func exp(x:real) -> real:
+  """e raised to x"""
+
+@builtin
+func log(x:real) -> real:
+  """natural logarithm"""
+
+@builtin
+func log10(x:real) -> real:
+  """base-10 logarithm"""
+
+@builtin
+func log2(x:real) -> real:
+  """base-2 logarithm"""
+
+@builtin
+func sqrt(x:real) -> real:
+  """square root"""
+
+@builtin
+func cbrt(x:real) -> real:
+  """cube root"""
+
+@builtin
+func ceil(x:real) -> real:
+  """smallest integer >= x"""
+
+@builtin
+func floor(x:real) -> real:
+  """largest integer <= x"""
+
+@builtin
+func round(x:real) -> real:
+  """round x to nearest integer"""
+
+@builtin
+func trunc(x:real) -> real:
+  """truncate fractional part"""
+
+@builtin
+func fabs(x:real) -> real:
+  """absolute value"""
+
+@builtin
+func hypot(x:real, y:real) -> real:
+  """sqrt(x*x + y*y)"""
+
+@builtin
+func fmod(x:real, y:real) -> real:
+  """floating-point remainder"""
+
+@builtin
+func remainder(x:real, y:real) -> real:
+  """IEEE remainder"""
+
+@builtin
+func fmax(x:real, y:real) -> real:
+  """maximum of x and y"""
+
+@builtin
+func fmin(x:real, y:real) -> real:
+  """minimum of x and y"""
+
+@builtin
+func pow(x:real, y:real) -> real:
+  """x raised to power y"""
+
+@builtin
+func fma(x:real, y:real, z:real) -> real:
+  """fused multiply-add"""
+
+@builtin
+func copysign(x:real, y:real) -> real:
+  """value of x with sign of y"""
+
+@builtin
+func erf(x:real) -> real:
+  """error function"""
+
+@builtin
+func erfc(x:real) -> real:
+  """complementary error function"""
+
+@builtin
+func exp2(x:real) -> real:
+  """2 raised to x"""
+
+@builtin
+func expm1(x:real) -> real:
+  """e^x - 1 with higher precision"""
+
+@builtin
+func fdim(x:real, y:real) -> real:
+  """positive difference"""
+
+@builtin
+func lgamma(x:real) -> real:
+  """log gamma"""
+
+@builtin
+func log1p(x:real) -> real:
+  """log(1 + x)"""
+
+@builtin
+func logb(x:real) -> real:
+  """exponent of x"""
+
+@builtin
+func nearbyint(x:real) -> real:
+  """round to nearest integer"""
+
+@builtin
+func nextafter(x:real, y:real) -> real:
+  """next representable after x toward y"""
+
+@builtin
+func rint(x:real) -> real:
+  """round to integer using current rounding mode"""
+
+@builtin
+func tgamma(x:real) -> real:
+  """gamma function"""
+
+@builtin
+func identity(n:int) -> matrix:
+  """n by n identity matrix"""
+
+@builtin
+func zeros(r:int, c:int) -> matrix:
+  """matrix of all zeros"""
+
+@builtin
+func ones(r:int, c:int) -> matrix:
+  """matrix of all ones"""
+
+@builtin
+func dot(a:vector, b:vector) -> real:
+  """dot product of two vectors"""
+
+@builtin
+func cross(a:vector, b:vector) -> vector:
+  """cross product of two 3-element vectors"""
+

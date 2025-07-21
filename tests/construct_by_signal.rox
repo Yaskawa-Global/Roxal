@@ -1,0 +1,76 @@
+var c = clock(10) // int signal
+
+var ints :signal = c // int signal
+var i = int(ints)
+print(typeof(i)) // int
+
+func retBool(c) -> bool:
+  return true
+
+var bs :signal = retBool(c)
+var b = bool(bs)
+print(typeof(b))
+
+func retByte(c) -> byte:
+  return byte(1)
+
+var bys :signal = retByte(c)
+var byt = byte(bys)
+print(typeof(byt))
+
+
+func retReal(c) -> real:
+  return 2.0
+
+var rs :signal = retReal(c)
+var r = real(rs)
+print(typeof(r)) // real
+
+type Color enum:
+  Red
+  Green
+  Blue
+
+func retEnum(c) -> Color:
+  return Color.Green
+
+var es :signal = retEnum(c)
+var e = Color(es)
+print(typeof(e)) // 
+
+
+
+func retList(c) -> list:
+  return [c,c]
+
+var ls :signal = retList(c)
+var l = list(ls)
+print(typeof(l)) // list
+
+
+func retDict(c) -> dict:
+  return {"c":c}
+
+var ds :signal = retDict(c)
+var d = dict(ds)
+print(typeof(d)) // dict
+
+
+func retVec(c) -> vector:
+  return [1 2 3]
+
+var vs :signal = retVec(c)
+var v = vector(vs)
+print(typeof(v)) // dict
+
+
+func retMat(c) -> matrix:
+  return [1 2 3; 4 5 6]
+
+var ms :signal = retMat(c)
+var m = matrix(ms)
+print(typeof(m)) // dict
+
+
+
+

@@ -1,0 +1,2 @@
+var v = bool(decimal(5))
+print(v)

@@ -1,0 +1,20 @@
+type A actor:
+  func f():
+    print('f id:'+_threadid())
+    return true
+
+  func g():
+    print('g id:'+_threadid())
+    return this.f()
+
+  func h():
+    print('h id:'+_threadid())
+    var gr = this.g() // regular method call
+    _wait(gr) // gr is not future (if it was because g() was queued call, h() would block here forever stopping g() from being run)
+    return true
+    
+var a = A()
+var h = a.h()
+
+_wait(h)
+

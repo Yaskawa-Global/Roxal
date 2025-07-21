@@ -1,0 +1,7 @@
+var l = [1,2,3,4,5]
+print(l[-1])
+print(l[-2])
+l[-1] = 99
+print(l)
+l[-2] = 88
+print(l)

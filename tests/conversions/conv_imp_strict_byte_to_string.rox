@@ -1,0 +1,5 @@
+func test():
+  var v:string
+  v = byte(5)
+  print(v)
+test()

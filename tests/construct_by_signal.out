@@ -1,0 +1,9 @@
+<type int>
+<type bool>
+<type byte>
+<type real>
+<type enum>
+<type list>
+<type dict>
+<type vector>
+<type matrix>

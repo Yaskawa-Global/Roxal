@@ -1,0 +1,6 @@
+var s = "hello"
+
+func f():
+  print(t)
+
+f()

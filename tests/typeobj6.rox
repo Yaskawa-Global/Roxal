@@ -1,0 +1,10 @@
+type A object:
+  proc init():
+    print('A instantiated')
+
+var a = A()
+a()  // error, can call a object without a method accessor
+
+print("won't get here")
+
+

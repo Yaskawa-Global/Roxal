@@ -1,0 +1,10 @@
+type Color enum:
+  Red
+  Blue
+  Green
+
+l = []
+c = Color.Blue
+l = l+[c]
+l = l+[c]
+print(l)

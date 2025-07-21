@@ -1,0 +1,44 @@
+
+type Parent object:
+
+  func show():
+    print('parent')
+
+
+type Child1 object extends Parent:
+
+  func show():
+    print('child 1')
+
+
+type Child2 object extends Parent:
+
+  func show():
+    print('child 2')
+
+
+type GrandChild object extends Child1:
+
+  func show():
+    print('grandchild')
+
+
+c1 = Child1()
+c2 = Child2()
+gc = GrandChild()
+
+print(c1 is Child1) // true
+print(c1 is Parent) // true
+print(c1 is Child2) // false
+print(c1 is GrandChild) // false
+
+print(c2 is Parent) // true
+print(c2 is Child1) // false
+print(c2 is GrandChild) // false
+
+print(gc is Parent) // true
+print(gc is Child1) // true
+print(gc is GrandChild) // true
+
+print(gc is Child2) // false
+

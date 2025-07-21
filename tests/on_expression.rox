@@ -1,0 +1,10 @@
+var s = clock(10)
+var signals = [s]
+
+on signals[0]:
+  print("tick")
+
+s.run()
+wait(us=350000)
+
+print('done')

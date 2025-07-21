@@ -1,0 +1,31 @@
+scope:
+  var x = 1
+  // now print x
+  print(x)
+
+var x = 2
+
+//
+// Multiple
+// comments
+  // grouped
+
+# 
+# Multiple
+# comments
+  # grouped
+
+x = x + 1  // add one
+
+x = x + 1  # add one
+
+# before
+x = x + 1 # around other comments
+# after
+
+// before
+x = x + 1 # around other comments
+// after
+
+print(x)
+// final

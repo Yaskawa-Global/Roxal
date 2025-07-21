@@ -1,0 +1,5 @@
+func add(a:int, b:int) -> int:
+  """Add two ints"""
+  return a + b
+
+print(help(add))

@@ -1,0 +1,39 @@
+var e:event
+
+func f():
+
+  type MyActor actor:
+
+    proc act():
+
+      on e:
+        print('e occured within MyActor.act')
+
+      print('act')
+
+
+  return MyActor()
+
+
+a = f()
+
+print('calling act')
+a.act()
+
+print('emitting e')
+emit e
+
+wait(us=1000)
+
+print('destroying a')
+a = nil
+
+wait(us=1000)
+
+print('emitting e')
+emit e
+
+wait(us=1000)
+
+print('done')
+

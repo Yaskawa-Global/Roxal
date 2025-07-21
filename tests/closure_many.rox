@@ -1,0 +1,781 @@
+func f0():
+  return 0
+
+func f1():
+  return 1
+
+func f2():
+  return 2
+
+func f3():
+  return 3
+
+func f4():
+  return 4
+
+func f5():
+  return 5
+
+func f6():
+  return 6
+
+func f7():
+  return 7
+
+func f8():
+  return 8
+
+func f9():
+  return 9
+
+func f10():
+  return 10
+
+func f11():
+  return 11
+
+func f12():
+  return 12
+
+func f13():
+  return 13
+
+func f14():
+  return 14
+
+func f15():
+  return 15
+
+func f16():
+  return 16
+
+func f17():
+  return 17
+
+func f18():
+  return 18
+
+func f19():
+  return 19
+
+func f20():
+  return 20
+
+func f21():
+  return 21
+
+func f22():
+  return 22
+
+func f23():
+  return 23
+
+func f24():
+  return 24
+
+func f25():
+  return 25
+
+func f26():
+  return 26
+
+func f27():
+  return 27
+
+func f28():
+  return 28
+
+func f29():
+  return 29
+
+func f30():
+  return 30
+
+func f31():
+  return 31
+
+func f32():
+  return 32
+
+func f33():
+  return 33
+
+func f34():
+  return 34
+
+func f35():
+  return 35
+
+func f36():
+  return 36
+
+func f37():
+  return 37
+
+func f38():
+  return 38
+
+func f39():
+  return 39
+
+func f40():
+  return 40
+
+func f41():
+  return 41
+
+func f42():
+  return 42
+
+func f43():
+  return 43
+
+func f44():
+  return 44
+
+func f45():
+  return 45
+
+func f46():
+  return 46
+
+func f47():
+  return 47
+
+func f48():
+  return 48
+
+func f49():
+  return 49
+
+func f50():
+  return 50
+
+func f51():
+  return 51
+
+func f52():
+  return 52
+
+func f53():
+  return 53
+
+func f54():
+  return 54
+
+func f55():
+  return 55
+
+func f56():
+  return 56
+
+func f57():
+  return 57
+
+func f58():
+  return 58
+
+func f59():
+  return 59
+
+func f60():
+  return 60
+
+func f61():
+  return 61
+
+func f62():
+  return 62
+
+func f63():
+  return 63
+
+func f64():
+  return 64
+
+func f65():
+  return 65
+
+func f66():
+  return 66
+
+func f67():
+  return 67
+
+func f68():
+  return 68
+
+func f69():
+  return 69
+
+func f70():
+  return 70
+
+func f71():
+  return 71
+
+func f72():
+  return 72
+
+func f73():
+  return 73
+
+func f74():
+  return 74
+
+func f75():
+  return 75
+
+func f76():
+  return 76
+
+func f77():
+  return 77
+
+func f78():
+  return 78
+
+func f79():
+  return 79
+
+func f80():
+  return 80
+
+func f81():
+  return 81
+
+func f82():
+  return 82
+
+func f83():
+  return 83
+
+func f84():
+  return 84
+
+func f85():
+  return 85
+
+func f86():
+  return 86
+
+func f87():
+  return 87
+
+func f88():
+  return 88
+
+func f89():
+  return 89
+
+func f90():
+  return 90
+
+func f91():
+  return 91
+
+func f92():
+  return 92
+
+func f93():
+  return 93
+
+func f94():
+  return 94
+
+func f95():
+  return 95
+
+func f96():
+  return 96
+
+func f97():
+  return 97
+
+func f98():
+  return 98
+
+func f99():
+  return 99
+
+func f100():
+  return 100
+
+func f101():
+  return 101
+
+func f102():
+  return 102
+
+func f103():
+  return 103
+
+func f104():
+  return 104
+
+func f105():
+  return 105
+
+func f106():
+  return 106
+
+func f107():
+  return 107
+
+func f108():
+  return 108
+
+func f109():
+  return 109
+
+func f110():
+  return 110
+
+func f111():
+  return 111
+
+func f112():
+  return 112
+
+func f113():
+  return 113
+
+func f114():
+  return 114
+
+func f115():
+  return 115
+
+func f116():
+  return 116
+
+func f117():
+  return 117
+
+func f118():
+  return 118
+
+func f119():
+  return 119
+
+func f120():
+  return 120
+
+func f121():
+  return 121
+
+func f122():
+  return 122
+
+func f123():
+  return 123
+
+func f124():
+  return 124
+
+func f125():
+  return 125
+
+func f126():
+  return 126
+
+func f127():
+  return 127
+
+func f128():
+  return 128
+
+func f129():
+  return 129
+
+func f130():
+  return 130
+
+func f131():
+  return 131
+
+func f132():
+  return 132
+
+func f133():
+  return 133
+
+func f134():
+  return 134
+
+func f135():
+  return 135
+
+func f136():
+  return 136
+
+func f137():
+  return 137
+
+func f138():
+  return 138
+
+func f139():
+  return 139
+
+func f140():
+  return 140
+
+func f141():
+  return 141
+
+func f142():
+  return 142
+
+func f143():
+  return 143
+
+func f144():
+  return 144
+
+func f145():
+  return 145
+
+func f146():
+  return 146
+
+func f147():
+  return 147
+
+func f148():
+  return 148
+
+func f149():
+  return 149
+
+func f150():
+  return 150
+
+func f151():
+  return 151
+
+func f152():
+  return 152
+
+func f153():
+  return 153
+
+func f154():
+  return 154
+
+func f155():
+  return 155
+
+func f156():
+  return 156
+
+func f157():
+  return 157
+
+func f158():
+  return 158
+
+func f159():
+  return 159
+
+func f160():
+  return 160
+
+func f161():
+  return 161
+
+func f162():
+  return 162
+
+func f163():
+  return 163
+
+func f164():
+  return 164
+
+func f165():
+  return 165
+
+func f166():
+  return 166
+
+func f167():
+  return 167
+
+func f168():
+  return 168
+
+func f169():
+  return 169
+
+func f170():
+  return 170
+
+func f171():
+  return 171
+
+func f172():
+  return 172
+
+func f173():
+  return 173
+
+func f174():
+  return 174
+
+func f175():
+  return 175
+
+func f176():
+  return 176
+
+func f177():
+  return 177
+
+func f178():
+  return 178
+
+func f179():
+  return 179
+
+func f180():
+  return 180
+
+func f181():
+  return 181
+
+func f182():
+  return 182
+
+func f183():
+  return 183
+
+func f184():
+  return 184
+
+func f185():
+  return 185
+
+func f186():
+  return 186
+
+func f187():
+  return 187
+
+func f188():
+  return 188
+
+func f189():
+  return 189
+
+func f190():
+  return 190
+
+func f191():
+  return 191
+
+func f192():
+  return 192
+
+func f193():
+  return 193
+
+func f194():
+  return 194
+
+func f195():
+  return 195
+
+func f196():
+  return 196
+
+func f197():
+  return 197
+
+func f198():
+  return 198
+
+func f199():
+  return 199
+
+func f200():
+  return 200
+
+func f201():
+  return 201
+
+func f202():
+  return 202
+
+func f203():
+  return 203
+
+func f204():
+  return 204
+
+func f205():
+  return 205
+
+func f206():
+  return 206
+
+func f207():
+  return 207
+
+func f208():
+  return 208
+
+func f209():
+  return 209
+
+func f210():
+  return 210
+
+func f211():
+  return 211
+
+func f212():
+  return 212
+
+func f213():
+  return 213
+
+func f214():
+  return 214
+
+func f215():
+  return 215
+
+func f216():
+  return 216
+
+func f217():
+  return 217
+
+func f218():
+  return 218
+
+func f219():
+  return 219
+
+func f220():
+  return 220
+
+func f221():
+  return 221
+
+func f222():
+  return 222
+
+func f223():
+  return 223
+
+func f224():
+  return 224
+
+func f225():
+  return 225
+
+func f226():
+  return 226
+
+func f227():
+  return 227
+
+func f228():
+  return 228
+
+func f229():
+  return 229
+
+func f230():
+  return 230
+
+func f231():
+  return 231
+
+func f232():
+  return 232
+
+func f233():
+  return 233
+
+func f234():
+  return 234
+
+func f235():
+  return 235
+
+func f236():
+  return 236
+
+func f237():
+  return 237
+
+func f238():
+  return 238
+
+func f239():
+  return 239
+
+func f240():
+  return 240
+
+func f241():
+  return 241
+
+func f242():
+  return 242
+
+func f243():
+  return 243
+
+func f244():
+  return 244
+
+func f245():
+  return 245
+
+func f246():
+  return 246
+
+func f247():
+  return 247
+
+func f248():
+  return 248
+
+func f249():
+  return 249
+
+func f250():
+  return 250
+
+func f251():
+  return 251
+
+func f252():
+  return 252
+
+func f253():
+  return 253
+
+func f254():
+  return 254
+
+func f255():
+  return 255
+
+func f256():
+  return 256
+
+func f257():
+  return 257
+
+func f258():
+  return 258
+
+func f259():
+  return 259
+
+print(f259())

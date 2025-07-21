@@ -1,0 +1,12 @@
+
+type P object:
+  var pi :int
+
+type C object extends P:
+  var ci :int
+
+var c :C // explicitly types
+
+c = P()  // error, can't assign instance of P to C as 'not c is P'
+
+

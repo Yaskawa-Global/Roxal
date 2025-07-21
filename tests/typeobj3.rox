@@ -1,0 +1,7 @@
+type MyObject object:
+  proc init(a):
+    print(a)
+
+var o = MyObject(22)
+
+

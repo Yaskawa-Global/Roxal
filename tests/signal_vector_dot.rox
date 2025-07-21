@@ -1,0 +1,23 @@
+initial_v = [1.0 2.0 3.0]  // vector
+
+// source signals need to be explicitly updated with their set() method
+s  = signal(10,initial_v)  // source signal at 10Hz with initial vector value
+s2 = signal(10,initial_v)  //  (these won't change value unless set() is called)
+
+dp = s*s2    // vector dot product (real scalar signal)
+
+on dp: // print if dp changes
+  print('dp='+real(dp))
+
+// set the signals in motion
+s.run()
+s2.run()
+
+// change them
+s.set([1.0 3.0 3.0])  // handler above will print dp=16 on next 10Hz boundary
+wait(ms=100)
+s2.set([2.0 1.0 0.5]) // handler above will print dp=6.5 on next 10Hz boundary
+
+wait(ms=200)  // don't exit until after next tick & handler runs
+print('done')
+

@@ -1,0 +1,31 @@
+
+//print('main thread id:'+_threadid())
+
+type EventConsumer actor:
+
+  //proc printid():
+  //  print('EventConsumer thread id '+_threadid())
+
+  func handleEvents(e :event):
+
+    on e:
+      print('event e occured')
+
+    print('handleEvents sleeping for .5s')
+    wait(us=500000)
+    print('handleEvents exiting')    
+
+
+var e :event
+p = EventConsumer()
+//p.printid()
+p.handleEvents(e)
+
+wait(us=100000)
+
+for i in range(1..2):
+  print('emit '+i)
+  emit e
+  wait(us=100000)
+
+print('done')

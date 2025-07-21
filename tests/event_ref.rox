@@ -1,0 +1,20 @@
+
+func f():
+  var e :event
+
+  on e:
+    print('e occured')
+
+  return e
+
+e = f()
+
+emit e
+
+// release e
+e = nil
+
+print(e)
+
+// should be no events or handlers leaking as e is no longer referenceable
+

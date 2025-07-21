@@ -1,0 +1,56 @@
+
+l = list(range(0..10))
+print("l = "+l)
+print("Half-open intervals:")
+print(""+range(0..<len(l))+" "+l[0..<len(l)]) // 0..<11 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+print(""+range(..<10)+" "+l[..<10]) // ..<10 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+// NB: the below accords with Python slice result (which are also half-open intervals)
+//     but may be more natural if result was [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+//     for symmetry with closed behaviour (and so that < excludes last)
+print(""+range(0..<)+" "+l[0..<]) // 0..< [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+print(""+range(..<0:-1)+" "+l[..<0:-1]) // ..<0 by -1 [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+
+// NB: as above, accords with Python slice resut, but may be more natural if was
+//     [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+print(""+range(10..<:-1)+" "+l[10..<:-1]) // 10..< by -1 [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+
+
+print()
+print("Closed intervals:")
+print(""+range(0..10)+" "+l[0..10]) // 0..10 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+print(""+range(..10)+" "+l[..10]) // ..10 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+print(""+range(0..)+" "+l[0..]) // 0.. [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+print(""+range(..0:-1)+" "+l[..0:-1]) // ..0 by -1 [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+
+print(""+range(10..:-1)+" "+l[10..:-1]) // 10.. by -1 [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+
+
+
+print()
+l = list(range(0..30))
+print("l="+l)
+print(""+range(:30:3)+" "+l[:30:3]+" =? [0, 3, 6, 9, 12, 15, 18, 21, 24, 27]")
+print(""+range(0::3)+" "+l[0::3]+" =? [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]")
+print(""+range(:0:-3)+" "+l[:0:-3]+" =? [30, 27, 24, 21, 18, 15, 12, 9, 6, 3]")
+print(""+range(30::-3)+" "+l[30::-3]+" =? [30, 27, 24, 21, 18, 15, 12, 9, 6, 3, 0]")
+
+proc checklen(r :range):
+  if len(r) <> len(list(r)):
+    print("wrong len for "+r+" - "+len(r)+" <> "+len(list(r)))
+
+checklen(range(..<10))
+checklen(range(0..<10))
+checklen(range(10..<0 by -1))
+checklen(range(10..< by -1))
+
+checklen(range(..10))
+checklen(range(0..10))
+checklen(range(10..0 by -1))
+checklen(range(10.. by -1))
+

@@ -1,0 +1,10 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cfunc(lib=mylib, cname='to_upper', args='char* s')
+proc to_uppercase(s: str):
+  _
+
+var s = 'abc'
+to_uppercase(s)
+print(s)

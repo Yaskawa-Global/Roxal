@@ -1,0 +1,24 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cstruct
+type IntHolder object:
+  var i:int
+
+@cstruct
+type MyStruct3 object:
+  @ctype(ctype='IntHolder*')
+  var p :IntHolder
+
+@cfunc(lib=mylib, args='MyStruct3* ms3')
+func mod_nested_ptr(ms3 :MyStruct3) -> bool:
+  _
+
+h = IntHolder()
+h.i = 7
+ms = MyStruct3()
+ms.p = h
+
+mod_nested_ptr(ms)
+
+print(h.i)

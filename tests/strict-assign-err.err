@@ -1,0 +1,1 @@
+.*strict-assign-err\.rox:7:2: error: unable to convert string to list in strict mode\n\s*7 \|   l = "hello".*\n\s*\|\s*\^\n?

@@ -1,0 +1,1 @@
+.*nonstrict-assign-err\.rox:5:0: error: unable to convert string to list\n\s*5 \| l = "hello".*\n\s*\|\s*\^\n?

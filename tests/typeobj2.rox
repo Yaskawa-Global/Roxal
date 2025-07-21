@@ -1,0 +1,15 @@
+type Toast object:
+  func method():
+    print(this.jam)
+
+func notmethod():
+  print('notamethod')
+
+var toast = Toast()
+print(toast.jam = "grape") // Prints "grape".
+toast.method()
+
+notmethod()
+
+
+

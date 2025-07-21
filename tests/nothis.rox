@@ -1,0 +1,10 @@
+type Obj object:
+
+  var prop: int = 1
+
+  func getProp():
+    return prop
+
+var o :Obj = Obj()
+
+print(o.getProp())

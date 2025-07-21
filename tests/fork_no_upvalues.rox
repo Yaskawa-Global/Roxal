@@ -1,0 +1,6 @@
+func simple_func():
+  print("Function with no captured variables")
+
+var thread_id = fork(simple_func)
+join(thread_id)
+print("Main thread done")

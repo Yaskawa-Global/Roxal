@@ -1,0 +1,9 @@
+var m1 = [1 2;3 4]
+var m2 = [1 2;3 4]
+print(m1 == m2)
+print(m1 == [[1,2],[3,4]])
+var v = [1 2 3]
+var m3 = [1 2 3]
+print(m3 == v)
+print(v == m3)
+print(m1 == [1 2])

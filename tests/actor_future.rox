@@ -1,0 +1,14 @@
+type A actor:
+
+  func compute() -> int:
+    wait(ms=200)
+    return 3
+
+a = A()
+
+futint = a.compute() // 'call' returns immediately with a future (for the int value)
+print('returned')
+i = int(futint)      // constructing an int from an int future blocks until it is ready (then i == 3), i.e. after ~200ms
+print('got i')       // prints immediately after above
+print('i='+i)        // prints immediately 'i=3'
+print('end')

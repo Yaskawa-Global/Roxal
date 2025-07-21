@@ -1,0 +1,10 @@
+type MyObj object:
+  func method(a: int, b: int=2, c: int, d = 4) -> int:
+    return a*b+c+d
+
+var o = MyObj()
+
+print(o.method(5,d=3,c=4)) // 17
+
+
+

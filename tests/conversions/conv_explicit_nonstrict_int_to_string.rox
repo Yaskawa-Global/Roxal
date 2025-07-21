@@ -1,0 +1,2 @@
+var v = string(5)
+print(v)

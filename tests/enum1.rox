@@ -1,0 +1,21 @@
+//type Obj object:
+//  var a = 1
+
+type Color enum:
+  Red
+  Blue = 5
+  Green
+
+print(Color.Red)
+
+var color = Color.Green
+print(color)
+
+print(Color.Blue)
+
+if color == Color.Green:
+  print('yes')
+
+print(int(Color.Blue))
+
+print(Color())

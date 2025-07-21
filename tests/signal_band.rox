@@ -1,0 +1,8 @@
+c = clock(10)
+a = c & 1
+c.tick()
+wait(ms=150)
+print(int(a))
+c.tick()
+wait(ms=150)
+print(int(a))

@@ -1,0 +1,36 @@
+
+type Node object:
+
+  proc init(o):
+    this.o = o
+    this.next = nil
+
+
+type List object:
+  
+  proc init():
+    this.head = nil
+
+  proc push_front(o):
+    var n = Node(o)
+    n.next = this.head
+
+    this.head = n
+
+  proc output():
+    var n = this.head
+    while (n <> nil):
+      print(n.o)
+      n = n.next
+
+
+var l = List()
+
+print('List contains:')
+l.push_front('last')
+l.push_front('there')
+l.push_front('hello')
+l.push_front('first')
+
+l.output()
+

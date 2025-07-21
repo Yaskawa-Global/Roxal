@@ -1,0 +1,3 @@
+var v:string
+v = true
+print(v)

@@ -1,0 +1,12 @@
+import math
+var m = [1 2;3 4]
+print(m.transpose())
+print(m.determinant())
+print(m.inverse())
+print(m.trace())
+print(m.norm())
+print(m.rows())
+print(m.cols())
+print(math.identity(2))
+print(math.zeros(2,3))
+print(math.ones(1,2))

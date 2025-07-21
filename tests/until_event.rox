@@ -1,0 +1,16 @@
+var e :event
+
+type A actor:
+  proc emitIt(ev):
+    wait(ms=100)
+    emit ev
+
+a = A()
+a.emitIt(e)
+
+c = clock(1)
+print('start')
+c.run()
+wait(s=10) until e
+c.stop()
+print('done c='+int(c)) // should still be 0 after ~100ms, not 9 or more

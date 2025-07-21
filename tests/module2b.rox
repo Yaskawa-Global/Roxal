@@ -1,0 +1,5 @@
+import module3
+print('module2b init')
+module3.mod3var = module3.mod3var+1
+print('module2b init done')
+

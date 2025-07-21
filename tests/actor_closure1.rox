@@ -1,0 +1,33 @@
+// This currently passes, but should fail in future becase we wish to disallow the exfiltration of
+//  reference types from actor theads without logcially copying them (either actual deep copy or a CoW implementation)
+//  so that there can be no shared state between actors
+
+type A actor:
+  private var secret = [1, 2]
+  func printSecret():
+    print(secret)
+  func makeGetter():
+    var local = secret
+    func getter():
+      return local
+    return getter
+
+print('creating actor instance')
+var a = A()
+a.printSecret()
+
+print('exfiltrating secret')
+var getter = a.makeGetter()
+var lst = getter()
+
+print('mutating secret')
+lst[0] = 55
+print(lst)
+
+print('asking actor to print secret')
+a.printSecret()
+
+wait(ms=100)
+
+print('done')
+

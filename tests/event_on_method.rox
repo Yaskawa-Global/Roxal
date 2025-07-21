@@ -1,0 +1,10 @@
+var e:event
+func handler():
+  print('hello')
+
+e.on(handler)
+
+emit e
+
+print('done')
+

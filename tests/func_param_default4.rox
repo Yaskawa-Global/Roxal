@@ -1,0 +1,6 @@
+func add(a :int=5, b :int = 2, c:int=3) -> int:
+  return a*b+c
+
+print(add()) // 13
+
+

@@ -1,0 +1,12 @@
+func add(x:int, y:int) -> int:
+  print("in add(x,y) x="+x+" y="+y+" returning "+(x+y))
+  return x + y
+
+c = clock(10)
+inc = add(c, 1)
+c.tick()
+wait(us=150000)
+c.tick()
+wait(us=150000)
+print("inc="+inc)
+

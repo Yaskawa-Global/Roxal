@@ -1,0 +1,3 @@
+var v = vector([1,2,3])
+print(v)
+print(len(v))

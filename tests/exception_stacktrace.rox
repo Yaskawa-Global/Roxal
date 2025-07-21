@@ -1,0 +1,8 @@
+func foo():
+  raise RuntimeException('fail')
+
+try:
+  foo()
+except e :RuntimeException:
+  print(e.stackTraceString)
+

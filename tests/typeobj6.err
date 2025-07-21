@@ -1,0 +1,1 @@
+.*typeobj6\.rox:6:0: error: object instances are not callable\.\n\s*6 \| a\(\).+\n\s*\|\s*\^\n?

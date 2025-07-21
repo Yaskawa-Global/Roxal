@@ -1,0 +1,22 @@
+@meta( fileattr='at file level',  
+   hello='there', 
+ )
+print('hello world')
+
+
+@someannot('at variale')
+var a = 1
+print(a)
+
+@mark( anobj= 'an object')
+type MyObj object:
+
+  @doit(true, amethod = 'a method')
+  proc myproc():
+    print(0)
+
+
+@pure(afunc='func attr')
+func f(x):
+  return x*x
+

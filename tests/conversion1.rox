@@ -1,0 +1,7 @@
+var s='11'
+var i = int(s)
+print(i)
+print(int('0x1F'))
+print(int('0b10000000'))
+print(int('0o77'))
+

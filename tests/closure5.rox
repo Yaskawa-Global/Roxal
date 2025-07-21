@@ -1,0 +1,12 @@
+func makeClosure(value):
+  func closure():
+    print(value)
+
+  return closure
+
+var doughnut = makeClosure("doughnut")
+var bagel = makeClosure("bagel")
+
+doughnut()
+bagel()
+

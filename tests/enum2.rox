@@ -1,0 +1,19 @@
+
+type Shape enum:
+  Square
+  Circle
+  Triangle
+  Rectangle
+  Hexagon
+
+
+var s = Shape()
+print(s)
+s = Shape.Circle
+print(s)
+
+s = Shape(3)
+print(s)
+
+s = 4 // s now int
+print(s)

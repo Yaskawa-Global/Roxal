@@ -1,0 +1,7 @@
+var v = vector([1,2,3])
+var v2 = [1 2 3]
+print(v == v2)
+var l = [1,2,3]
+print(v == l)
+print(l == v)
+print(v == [1 2])

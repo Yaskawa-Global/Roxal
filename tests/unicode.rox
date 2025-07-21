@@ -1,0 +1,6 @@
+var s = "\U0001F496\U0001F916\u203c"
+print(s)
+var s2 = "💖🤖‼"
+print(s2)
+
+

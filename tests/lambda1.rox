@@ -1,0 +1,30 @@
+
+var f = func(a,b): a+b
+
+print(f(1,2)) # 3
+
+var g = func(a,b): 
+    return a+b
+
+print(g(4,5)) # 9
+
+
+var h = func(a,b) -> int:
+    var l = a+b
+    func ident(i):
+      return i
+    return ident(l)
+
+print(h(10,2)) # 12
+ 
+func callit(f,a):
+  print(f(a))
+
+callit(func (a): a+1,5) # print 6
+
+
+func callandreturnit(f,a):
+  return f(a)
+
+print( callandreturnit(func (a): a+2,11) ) # 13
+

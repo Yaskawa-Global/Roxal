@@ -1,0 +1,9 @@
+
+c = clock(10)
+cm1 = c[-1]
+
+on c:
+  print("c="+int(c)+" c[-1]="+int(cm1))
+
+c.run()
+wait(ms=250)

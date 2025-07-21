@@ -1,0 +1,28 @@
+
+var e :event
+
+type MyActor actor:
+
+  proc setup():
+    on e:
+      print('e handled in MyActor')
+
+
+a = MyActor()
+
+emit e  // no handlers
+wait(us=10000)
+
+a.setup() // install hander
+wait(us=10000)
+
+emit e  // should trigger the hander in setup()
+wait(us=10000)
+
+a = nil   // destruct actor, it's thread and the handler along with it
+wait(us=20000)
+
+emit e  // nothing
+wait(us=200)
+
+print('done')

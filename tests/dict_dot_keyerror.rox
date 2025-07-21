@@ -1,0 +1,2 @@
+var d = {1:'one'}
+print(d.one)

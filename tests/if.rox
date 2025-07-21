@@ -1,0 +1,10 @@
+if true:
+  print('this1')
+else:
+  print('notthis1')
+
+if false:
+  print('notthis2')
+else:
+  print('this2')
+

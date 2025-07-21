@@ -1,0 +1,10 @@
+
+func f():
+  // strict
+  var l :list
+  l = [1,2,3]
+  print(typeof(l)) // list
+  l = "hello" // error, can't assign string to list local var
+
+f()
+

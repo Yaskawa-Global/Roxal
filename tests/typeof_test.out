@@ -1,0 +1,11 @@
+nil: <type nil>
+bool: <type bool>
+int: <type int>
+real: <type real>
+string: <type string>
+list: <type list>
+vector: <type vector>
+range: <type range>
+signal: <type signal>
+function result: <type int>
+dict: <type dict>
