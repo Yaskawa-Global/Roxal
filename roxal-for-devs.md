@@ -497,6 +497,8 @@ print('done')
 
 ## Builtin Modules & Functions
 
+The functions in the sys module are always globally available (- as if `import sys.*` were used).  See `sys.rox`.
+
 ### sys
 * `print(value='')` - print the string representation of `value` followed by a newline
 * `len(v)` - return the length of `v` if applicable
@@ -506,6 +508,17 @@ print('done')
 * `fork(fn)` - run `fn` in a new thread and return its id
 * `join(id)` - wait for thread `id` to finish and return true if joined
 * `stacktrace()` - return the current call stack as a list
+* `serialize(value, protocol='default')` - serialize `value` using protocol
+* `deserialize(bytes, protocol='default')` - deserialize bytes using protocol
+* `toJson(value, indent=true)` - convert value to a JSON string
+* `fromJson(json)` - parse JSON string into a value
+* `clock(freq)` - create a clock signal at `freq`
+* `signal(freq, initial)` - create a source signal
+* `typeof(value)` - return the type of `value`
+* `loadlib(path)` - load a native library from `path`
+
+#### Internal (likely to be removed or renamed)
+* `_clock()` - return process time in seconds
 * `_threadid()` - return the current thread id
 * `_stackdepth()` - depth of the current call stack
 * `_wait(futures)` - await one or more futures
@@ -513,20 +526,15 @@ print('done')
 * `_weakref(value)` - create a weak reference to `value`
 * `_weak_alive(value)` - true if weak reference is still valid
 * `_strongref(value)` - convert weak reference back to strong reference
-* `serialize(value, protocol='default')` - serialize `value` using protocol
-* `deserialize(bytes, protocol='default')` - deserialize bytes using protocol
-* `toJson(value, indent=true)` - convert value to a JSON string
-* `fromJson(json)` - parse JSON string into a value
-* `_clock()` - return process time in seconds
-* `clock(freq)` - create a clock signal at `freq`
-* `signal(freq, initial)` - create a source signal
 * `_engine_stop()` - stop the dataflow engine
-* `typeof(value)` - return the type of `value`
 * `_df_graph()` - textual representation of the dataflow graph
 * `_df_graphdot(title='')` - graphviz dot of the dataflow graph
-* `loadlib(path)` - load a native library from `path`
 
 ### math
+
+Additional mathematical operations.
+Use `import math` or `import math.*`.  See `math.rox`.
+
 * `sin(x)` - sine of `x`
 * `cos(x)` - cosine of `x`
 * `tan(x)` - tangent of `x`
@@ -578,6 +586,11 @@ print('done')
 * `cross(a, b)` - cross product of two 3-element vectors
 
 ### fileio
+
+Functions for read & writing files and managing files, directories & paths.
+Use `import fileio` or `import fileio.*`.  See `fileio.sys`.
+(only available when built with cmake option ROXAL_ENABLE_FILEIO is on)
+
 * `open(path, append=false, format='text')` - open a file and return handle
 * `close(file)` - close a file handle
 * `isOpen(file)` - true if handle is open
