@@ -2381,9 +2381,9 @@ std::string roxal::objToString(const Value& v)
             return std::string("<native method>");
         }
         case ObjType::Future: {
-            ObjFuture* fut = asFuture(v);
-            Value v = fut->future.get(); // will block if promise not fulfilled
-            return toString(v);
+            Value fv = v;
+            fv.resolveFuture();
+            return toString(fv);
         }
         default: ;
     }
