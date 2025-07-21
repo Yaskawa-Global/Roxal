@@ -173,7 +173,7 @@ Value ModuleMath::counter_init_builtin(VM& vm, ArgsView args)
             throw std::invalid_argument("Counter.init start must be int");
         start = args[1].asInt();
     }
-    inst->properties[toUnicodeString("value").hashCode()] = intVal(start);
+    inst->setProperty("value", intVal(start));
     return nilVal();
 }
 
@@ -190,10 +190,10 @@ Value ModuleMath::counter_inc_builtin(VM& vm, ArgsView args)
         n = args[1].asInt();
     }
     int cur = 0;
-    auto it = inst->properties.find(toUnicodeString("value").hashCode());
-    if (it != inst->properties.end() && it->second.isNumber())
-        cur = it->second.asInt();
+    Value curVal = inst->getProperty("value");
+    if (curVal.isNumber())
+        cur = curVal.asInt();
     cur += n;
-    inst->properties[toUnicodeString("value").hashCode()] = intVal(cur);
+    inst->setProperty("value", intVal(cur));
     return intVal(cur);
 }

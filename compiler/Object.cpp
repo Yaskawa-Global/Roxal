@@ -2516,6 +2516,19 @@ ObjectInstance::~ObjectInstance()
     instanceType->decRef();
 }
 
+Value ObjectInstance::getProperty(const icu::UnicodeString& name) const
+{
+    auto it = properties.find(name.hashCode());
+    if (it != properties.end())
+        return it->second;
+    return nilVal();
+}
+
+void ObjectInstance::setProperty(const icu::UnicodeString& name, Value value)
+{
+    properties[name.hashCode()] = value;
+}
+
 
 ObjectInstance* roxal::objectInstanceVal(ObjObjectType* objectType)
 {
