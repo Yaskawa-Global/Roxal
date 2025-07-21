@@ -21,6 +21,10 @@ public:
     Value math_dot_builtin(VM& vm, ArgsView args);
     Value math_cross_builtin(VM& vm, ArgsView args);
 
+    // builtin Counter methods
+    Value counter_init_builtin(VM& vm, ArgsView args);
+    Value counter_inc_builtin(VM& vm, ArgsView args);
+
 private:
     Value moduleTypeValue; // ObjModuleType*
 };

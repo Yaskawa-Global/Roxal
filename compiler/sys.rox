@@ -106,15 +106,4 @@ func _df_graphdot(title:string='') -> string:
 func loadlib(path:string):
   """load a native library at path"""
 
-@builtin
-type Counter object:
-  var value:int = 0
-
-  @builtin
-  proc init(start:int=0):
-    """initialize counter"""
-
-  @builtin
-  func inc(n:int=1) -> int:
-    """increment value by n and return new value"""
 

@@ -46,9 +46,6 @@ public:
     Value df_graphdot_native(VM& vm, ArgsView args);
     Value loadlib_native(VM& vm, ArgsView args);
 
-    // builtin Counter methods
-    Value counter_init_builtin(VM& vm, ArgsView args);
-    Value counter_inc_builtin(VM& vm, ArgsView args);
 
 private:
     Value moduleTypeValue; // ObjModuleType*

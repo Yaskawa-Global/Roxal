@@ -94,6 +94,10 @@ void ModuleMath::registerBuiltins(VM& vm)
     link("ones", [this](VM& vm, ArgsView a){ return math_ones_builtin(vm,a); });
     link("dot", [this](VM& vm, ArgsView a){ return math_dot_builtin(vm,a); });
     link("cross", [this](VM& vm, ArgsView a){ return math_cross_builtin(vm,a); });
+
+    // Link builtin Counter methods
+    linkMethod("Counter", "init", [this](VM& vm, ArgsView a){ return counter_init_builtin(vm,a); }, { intVal(0) });
+    linkMethod("Counter", "inc", [this](VM& vm, ArgsView a){ return counter_inc_builtin(vm,a); }, { intVal(1) });
 }
 
 Value ModuleMath::math_identity_builtin(VM& vm, ArgsView args)
@@ -155,4 +159,41 @@ Value ModuleMath::math_cross_builtin(VM& vm, ArgsView args)
     Eigen::Vector3d r = v1->vec.head<3>().cross(v2->vec.head<3>());
     Eigen::VectorXd res = r;
     return objVal(vectorVal(res));
+}
+
+Value ModuleMath::counter_init_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 2 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("Counter.init expects receiver and optional start int");
+
+    ObjectInstance* inst = asObjectInstance(args[0]);
+    int start = 0;
+    if (args.size() == 2) {
+        if (!args[1].isNumber())
+            throw std::invalid_argument("Counter.init start must be int");
+        start = args[1].asInt();
+    }
+    inst->properties[toUnicodeString("value").hashCode()] = intVal(start);
+    return nilVal();
+}
+
+Value ModuleMath::counter_inc_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() < 1 || args.size() > 2 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("Counter.inc expects receiver and optional int");
+
+    ObjectInstance* inst = asObjectInstance(args[0]);
+    int n = 1;
+    if (args.size() == 2) {
+        if (!args[1].isNumber())
+            throw std::invalid_argument("Counter.inc expects numeric increment");
+        n = args[1].asInt();
+    }
+    int cur = 0;
+    auto it = inst->properties.find(toUnicodeString("value").hashCode());
+    if (it != inst->properties.end() && it->second.isNumber())
+        cur = it->second.asInt();
+    cur += n;
+    inst->properties[toUnicodeString("value").hashCode()] = intVal(cur);
+    return intVal(cur);
 }
