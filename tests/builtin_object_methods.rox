@@ -1,0 +1,6 @@
+import math
+var c = math.Counter()
+print(c.value)
+print(c.inc())
+print(c.inc(2))
+print(c.value)

@@ -1058,6 +1058,12 @@ struct ObjectInstance : public Obj
     ObjObjectType* instanceType;
     std::unordered_map<int32_t, Value> properties;
 
+    // convenience methods for property access (e.g. for builtin method implementations)
+    Value getProperty(const icu::UnicodeString& name) const;
+    Value getProperty(const std::string& name) const { return getProperty(toUnicodeString(name)); }
+    void setProperty(const icu::UnicodeString& name, Value value);
+    void setProperty(const std::string& name, Value value) { setProperty(toUnicodeString(name), value); }
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };

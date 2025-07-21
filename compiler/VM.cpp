@@ -1455,10 +1455,23 @@ VM::BindResult VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
 
     Value method { methodInfo.closure };
 
-    ObjBoundMethod* boundMethod { boundMethodVal(peek(0), asClosure(method)) };
-
-    pop();
-    push(objVal(boundMethod));
+    if (isClosure(method) && asClosure(method)->function->nativeImpl) {
+        ObjClosure* cl = asClosure(method);
+        NativeFn fn = cl->function->nativeImpl;
+        ObjBoundNative* boundNative = boundNativeVal(peek(0), fn,
+                                                    cl->function->funcType.has_value() &&
+                                                        cl->function->funcType.value()->func.has_value() ?
+                                                        cl->function->funcType.value()->func->isProc : false,
+                                                    cl->function->funcType.has_value() ?
+                                                        cl->function->funcType.value() : nullptr,
+                                                    cl->function->nativeDefaults);
+        pop();
+        push(objVal(boundNative));
+    } else {
+        ObjBoundMethod* boundMethod { boundMethodVal(peek(0), asClosure(method)) };
+        pop();
+        push(objVal(boundMethod));
+    }
 
     return BindResult::Bound;
 }

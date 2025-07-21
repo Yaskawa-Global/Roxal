@@ -35,6 +35,12 @@ protected:
     // Attach C++ implementation to function declared in builtin .rox module
     void link(const std::string& name, NativeFn fn,
               std::vector<Value> defaults = {});
+
+    // Attach C++ implementation to object method declared in builtin .rox module
+    void linkMethod(const std::string& typeName,
+                    const std::string& methodName,
+                    NativeFn fn,
+                    std::vector<Value> defaults = {});
 };
 
 inline std::vector<type::Type::FuncType::ParamType>
@@ -81,6 +87,26 @@ inline void BuiltinModule::link(const std::string& name, NativeFn fn,
         ObjClosure* cl = asClosure(val.value());
         cl->function->nativeImpl = fn;
         cl->function->nativeDefaults = std::move(defaults);
+    }
+}
+
+inline void BuiltinModule::linkMethod(const std::string& typeName,
+                                      const std::string& methodName,
+                                      NativeFn fn,
+                                      std::vector<Value> defaults)
+{
+    auto typeVal = moduleType()->vars.load(toUnicodeString(typeName));
+    if (typeVal.has_value() && isObjectType(typeVal.value())) {
+        ObjObjectType* type = asObjectType(typeVal.value());
+        auto it = type->methods.find(toUnicodeString(methodName).hashCode());
+        if (it != type->methods.end()) {
+            Value val = it->second.closure;
+            if (isClosure(val)) {
+                ObjClosure* cl = asClosure(val);
+                cl->function->nativeImpl = fn;
+                cl->function->nativeDefaults = std::move(defaults);
+            }
+        }
     }
 }
 
