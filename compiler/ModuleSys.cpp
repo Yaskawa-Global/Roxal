@@ -90,6 +90,10 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("_df_graph", [this](VM& vm, ArgsView a){ return df_graph_native(vm,a); });
         addSys("_df_graphdot", [this](VM& vm, ArgsView a){ return df_graphdot_native(vm,a); });
         addSys("loadlib", [this](VM& vm, ArgsView a){ return loadlib_native(vm,a); });
+
+        // Link builtin Counter methods
+        linkMethod("Counter", "init", [this](VM& vm, ArgsView a){ return counter_init_builtin(vm,a); }, { intVal(0) });
+        linkMethod("Counter", "inc", [this](VM& vm, ArgsView a){ return counter_inc_builtin(vm,a); }, { intVal(1) });
     }
 }
 
@@ -713,6 +717,43 @@ Value ModuleSys::df_graphdot_native(VM& vm, ArgsView args)
 }
 
 Value ModuleSys::loadlib_native(VM& vm, ArgsView args)
-{ 
-    return roxal::loadlib_native(args); 
+{
+    return roxal::loadlib_native(args);
+}
+
+Value ModuleSys::counter_init_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 2 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("Counter.init expects receiver and optional start int");
+
+    ObjectInstance* inst = asObjectInstance(args[0]);
+    int start = 0;
+    if (args.size() == 2) {
+        if (!args[1].isNumber())
+            throw std::invalid_argument("Counter.init start must be int");
+        start = args[1].asInt();
+    }
+    inst->properties[toUnicodeString("value").hashCode()] = intVal(start);
+    return nilVal();
+}
+
+Value ModuleSys::counter_inc_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() < 1 || args.size() > 2 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("Counter.inc expects receiver and optional int");
+
+    ObjectInstance* inst = asObjectInstance(args[0]);
+    int n = 1;
+    if (args.size() == 2) {
+        if (!args[1].isNumber())
+            throw std::invalid_argument("Counter.inc expects numeric increment");
+        n = args[1].asInt();
+    }
+    int cur = 0;
+    auto it = inst->properties.find(toUnicodeString("value").hashCode());
+    if (it != inst->properties.end() && it->second.isNumber())
+        cur = it->second.asInt();
+    cur += n;
+    inst->properties[toUnicodeString("value").hashCode()] = intVal(cur);
+    return intVal(cur);
 }

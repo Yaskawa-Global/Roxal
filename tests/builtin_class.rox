@@ -1,0 +1,6 @@
+import sys
+var c = sys.Counter()
+print(c.value)
+print(c.inc())
+print(c.inc(2))
+print(c.value)
