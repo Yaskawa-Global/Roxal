@@ -70,7 +70,8 @@ static void repl()
         std::string line(cline);
         linenoiseFree(cline);
 
-        if ((line=="end")||(line=="END")) {
+        if (line=="quit") {
+            quit = true;
             break;
         }
 
