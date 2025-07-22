@@ -181,7 +181,9 @@ Value ModuleMath::counter_init_builtin(VM& vm, ArgsView args)
 
     // C++ instance
     Counter* counter = new Counter(start);
-    inst->setProperty("_this", objVal(foreignPtrVal(counter))); // store it in instance property
+    ObjForeignPtr* fp = foreignPtrVal(counter);
+    fp->registerCleanup([](void* p){ delete static_cast<Counter*>(p); });
+    inst->setProperty("_this", objVal(fp)); // store it in instance property
 
     return nilVal();
 }
