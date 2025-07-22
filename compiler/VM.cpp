@@ -177,6 +177,8 @@ VM::VM()
     assert(sizeof(Value) == sizeof(uint64_t)); // ensure Value is 64bit
 
     runtimeErrorFlag = false;
+    exitRequested = false;
+    exitCodeValue = 0;
 
     thread = nullptr;
     initString = stringVal(UnicodeString("init"));
@@ -291,6 +293,9 @@ VM::~VM()
     }
     dataflowEngineActor = nilVal();  // This will call decRef() via Value destructor
 
+    // join any remaining threads to prevent leak reports
+    joinAllThreads();
+
     globals.clearGlobals();
 
     initString->decRef();
@@ -310,6 +315,9 @@ VM::~VM()
 
     // Final cleanup pass for any objects that became unreferenced during destructor
     freeObjects();
+
+    // ensure all threads are gone before reporting
+    joinAllThreads();
 
     #ifdef DEBUG_TRACE_MEMORY
     // Try one more cleanup pass right before reporting
@@ -369,23 +377,15 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
     // go
     firstThread->spawn(closureValue);
 
-    // join all threads
-    //  (note: threads being waited on may create additional threads)
+    // join all threads (they may spawn additional threads while running)
+    InterpretResult joinResult = joinAllThreads();
     InterpretResult result = firstThread->result;
 
-    while (threads.size() > 0) {
-        for(auto thread : threads.get()) {
-            thread.second->join();
-            if (thread.second->result != InterpretResult::OK)
-                result = InterpretResult::RuntimeError;
-            threads.erase(thread.first);
-        }
-    }
-
-    threads.clear();
-
-    if (runtimeErrorFlag.load())
+    if (joinResult != InterpretResult::OK || runtimeErrorFlag.load())
         result = InterpretResult::RuntimeError;
+
+    if (exitRequested.load())
+        result = InterpretResult::OK;
 
     #if defined(DEBUG_TRACE_EXECUTION)
     if (globals.size() > 0) {
@@ -1783,6 +1783,8 @@ std::pair<InterpretResult,Value> VM::execute()
 
         if (runtimeErrorFlag.load())
             return errorReturn;
+        if (exitRequested.load())
+            return std::make_pair(InterpretResult::OK,nilVal());
 
         // if we're 'sleeping' don't execute any instructions
         //  (we may have been woken up by an event or a spurious wakeup, in which case we'll re-block below)
@@ -3546,6 +3548,8 @@ std::pair<InterpretResult,Value> VM::execute()
 bool VM::processPendingEvents()
 {
 
+    if (exitRequested.load()) return false;
+
     if (thread->eventHandlers.empty()) return true;
 
     Thread::PendingEvent tev;
@@ -4364,4 +4368,43 @@ void VM::executeBuiltinModuleScript(const std::string& path, ObjModuleType* modu
 void VM::registerBuiltinModule(ptr<BuiltinModule> module)
 {
     builtinModules.push_back(module);
+}
+
+InterpretResult VM::joinAllThreads(uint64_t skipId)
+{
+    InterpretResult combined = InterpretResult::OK;
+    for (;;) {
+        auto ids = threads.keys();
+        bool joinedAny = false;
+        for(uint64_t id : ids) {
+            if (skipId != 0 && id == skipId)
+                continue;
+            joinedAny = true;
+            threads.erase_and_apply(id, [&combined](ptr<Thread> t){
+                if (t) {
+                    t->join();
+                    if (t->result != InterpretResult::OK)
+                        combined = InterpretResult::RuntimeError;
+                }
+            });
+        }
+        if (!joinedAny)
+            break;
+    }
+    return combined;
+}
+
+void VM::requestExit(int code)
+{
+    exitCodeValue = code;
+    exitRequested = true;
+
+    // wake all threads so they can terminate promptly
+    threads.apply([](const std::pair<const uint64_t, ptr<Thread>>& entry){
+        if (entry.second)
+            entry.second->wake();
+    });
+
+    uint64_t currentId = thread ? thread->id() : 0;
+    joinAllThreads(currentId);
 }

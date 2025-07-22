@@ -23,6 +23,7 @@ public:
     Value wait_builtin(VM& vm, ArgsView args);
     Value fork_builtin(VM& vm, ArgsView args);
     Value join_builtin(VM& vm, ArgsView args);
+    Value exit_builtin(VM& vm, ArgsView args);
     Value stacktrace_builtin(VM& vm, ArgsView args);
     Value threadid_builtin(VM& vm, ArgsView args);
     Value stackdepth_builtin(VM& vm, ArgsView args);

@@ -27,6 +27,10 @@ func join(id:int) -> bool:
   """wait for thread id to finish and return true if joined"""
 
 @builtin
+proc exit(ret:int=0):
+  """Exit the program with specified exit code"""
+
+@builtin
 func stacktrace() -> list:
   """return the current call stack as a list"""
 
