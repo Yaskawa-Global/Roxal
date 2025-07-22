@@ -50,6 +50,16 @@ void ModuleSys::registerBuiltins(VM& vm)
         }
         addSys("fork", [this](VM& vm, ArgsView a){ return fork_builtin(vm,a); });
         addSys("join", [this](VM& vm, ArgsView a){ return join_builtin(vm,a); });
+        {
+            auto t = make_ptr<type::Type>(type::BuiltinType::Func);
+            t->func = type::Type::FuncType();
+            t->func->isProc = true;
+            std::vector<Value> defaults{ intVal(0) };
+            auto params = BuiltinModule::constructParams({{"ret", type::BuiltinType::Int}}, defaults);
+            t->func->params.resize(params.size());
+            for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
+            addSys("exit", [this](VM& vm, ArgsView a){ return exit_builtin(vm,a); }, t, defaults);
+        }
         addSys("stacktrace", [this](VM& vm, ArgsView a){ return stacktrace_builtin(vm,a); });
         addSys("_threadid", [this](VM& vm, ArgsView a){ return threadid_builtin(vm,a); });
         addSys("_stackdepth", [this](VM& vm, ArgsView a){ return stackdepth_builtin(vm,a); });
@@ -255,6 +265,20 @@ Value ModuleSys::join_builtin(VM& vm, ArgsView args)
     });
 
     return count > 0 ? trueVal() : falseVal();
+}
+
+Value ModuleSys::exit_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() > 1)
+        throw std::invalid_argument("exit expects zero or one numeric argument");
+    int32_t code = 0;
+    if (args.size() == 1) {
+        if (!args[0].isNumber())
+            throw std::invalid_argument("exit code must be numeric");
+        code = args[0].asInt();
+    }
+    vm.requestExit(code);
+    return nilVal();
 }
 
 Value ModuleSys::threadid_builtin(VM& vm, ArgsView args)
