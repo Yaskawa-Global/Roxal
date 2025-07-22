@@ -148,13 +148,22 @@ static InterpretResult runFile(const std::string& path,
     std::filesystem::path parentPath = absolutePath.parent_path();
     std::filesystem::path relativePath = std::filesystem::relative(parentPath, currentPath);
 
-    VM& vm { VM::instance() };
-    vm.setDisassemblyOutput(outputBytecodeDisassembly);
+    VM* vm { nullptr };
+    try {
+        vm = &VM::instance();
+    } catch (std::exception& e) {
+        throw std::runtime_error("Failed to initialize VM: " + std::string(e.what()));
+    }
 
-    // Add the folder containing the script to the search paths
-    vm.appendModulePaths({relativePath.string()});
-    vm.appendModulePaths(modulePaths);
-    return vm.interpret(sourcestream, filePath.string());
+    try {
+        vm->setDisassemblyOutput(outputBytecodeDisassembly);
+        // Add the folder containing the script to the search paths
+        vm->appendModulePaths({relativePath.string()});
+        vm->appendModulePaths(modulePaths);
+        return vm->interpret(sourcestream, filePath.string());
+    } catch (std::exception& e) {
+        throw std::runtime_error("Error interpreting file '" + filePath.string() + "': " + e.what());
+    }
 }
 
 static InterpretResult runString(const std::string& source,
