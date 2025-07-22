@@ -377,20 +377,9 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
     // go
     firstThread->spawn(closureValue);
 
-    // join all threads
-    //  (note: threads being waited on may create additional threads)
+    // join all threads (they may spawn additional threads while running)
+    joinAllThreads();
     InterpretResult result = firstThread->result;
-
-    while (threads.size() > 0) {
-        for(auto thread : threads.get()) {
-            thread.second->join();
-            if (thread.second->result != InterpretResult::OK)
-                result = InterpretResult::RuntimeError;
-            threads.erase(thread.first);
-        }
-    }
-
-    threads.clear();
 
     if (runtimeErrorFlag.load())
         result = InterpretResult::RuntimeError;
@@ -4349,14 +4338,20 @@ void VM::registerBuiltinModule(ptr<BuiltinModule> module)
 
 void VM::joinAllThreads(uint64_t skipId)
 {
-    auto ids = threads.keys();
-    for(uint64_t id : ids) {
-        if (skipId != 0 && id == skipId)
-            continue;
-        threads.erase_and_apply(id, [](ptr<Thread> t){
-            if (t)
-                t->join();
-        });
+    for (;;) {
+        auto ids = threads.keys();
+        bool joinedAny = false;
+        for(uint64_t id : ids) {
+            if (skipId != 0 && id == skipId)
+                continue;
+            joinedAny = true;
+            threads.erase_and_apply(id, [](ptr<Thread> t){
+                if (t)
+                    t->join();
+            });
+        }
+        if (!joinedAny)
+            break;
     }
 }
 
