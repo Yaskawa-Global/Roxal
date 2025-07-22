@@ -107,6 +107,14 @@ inline void BuiltinModule::linkMethod(const std::string& typeName,
                 cl->function->nativeDefaults = std::move(defaults);
             }
         }
+        else {
+            throw std::runtime_error("BuiltinModule::linkMethod: Method '" + methodName +
+                                     "' not found in type '" + typeName + "'.");
+        }
+    }
+    else {
+        throw std::runtime_error("BuiltinModule::linkMethod: Type '" + typeName +
+                                 "' not found or not an object type.");
     }
 }
 

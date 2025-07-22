@@ -1061,8 +1061,10 @@ struct ObjectInstance : public Obj
     // convenience methods for property access (e.g. for builtin method implementations)
     Value getProperty(const icu::UnicodeString& name) const;
     Value getProperty(const std::string& name) const { return getProperty(toUnicodeString(name)); }
+    Value getProperty(const char* name) const { return getProperty(toUnicodeString(name)); }
     void setProperty(const icu::UnicodeString& name, Value value);
     void setProperty(const std::string& name, Value value) { setProperty(toUnicodeString(name), value); }
+    void setProperty(const char* name, Value value) { setProperty(toUnicodeString(name), value); }
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
