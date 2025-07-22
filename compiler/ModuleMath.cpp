@@ -94,6 +94,11 @@ void ModuleMath::registerBuiltins(VM& vm)
     link("ones", [this](VM& vm, ArgsView a){ return math_ones_builtin(vm,a); });
     link("dot", [this](VM& vm, ArgsView a){ return math_dot_builtin(vm,a); });
     link("cross", [this](VM& vm, ArgsView a){ return math_cross_builtin(vm,a); });
+
+    // Link builtin Counter methods
+    linkMethod("_Counter", "init", [this](VM& vm, ArgsView a){ return counter_init_builtin(vm,a); }, { intVal(0) });
+    linkMethod("_Counter", "inc", [this](VM& vm, ArgsView a){ return counter_inc_builtin(vm,a); }, { intVal(1) });
+    linkMethod("_Counter", "value", [this](VM& vm, ArgsView a){ return counter_value_builtin(vm,a); }, {});
 }
 
 Value ModuleMath::math_identity_builtin(VM& vm, ArgsView args)
@@ -155,4 +160,68 @@ Value ModuleMath::math_cross_builtin(VM& vm, ArgsView args)
     Eigen::Vector3d r = v1->vec.head<3>().cross(v2->vec.head<3>());
     Eigen::VectorXd res = r;
     return objVal(vectorVal(res));
+}
+
+
+
+// Example
+
+Value ModuleMath::counter_init_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 2 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("Counter.init expects receiver and optional start int");
+
+    ObjectInstance* inst = asObjectInstance(args[0]);
+    int start = 0;
+    if (args.size() == 2) {
+        if (!args[1].isNumber())
+            throw std::invalid_argument("Counter.init start must be int");
+        start = args[1].asInt();
+    }
+
+    // C++ instance
+    Counter* counter = new Counter(start);
+    inst->setProperty("_this", objVal(foreignPtrVal(counter))); // store it in instance property
+
+    return nilVal();
+}
+
+Value ModuleMath::counter_inc_builtin(VM& vm, ArgsView args)
+{
+    // Check for safety, but can probably assume all this is true as Roxal already checked the callSpec against the func type
+    if (args.size() < 1 || args.size() > 2 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("Counter.inc expects receiver and optional int");
+
+    ObjectInstance* inst = asObjectInstance(args[0]);
+    int n = 1;
+    if (args.size() == 2) {
+        if (!args[1].isNumber())
+            throw std::invalid_argument("Counter.inc expects numeric increment");
+        n = args[1].asInt();
+    }
+
+    #ifdef DEBUG_BUILD
+    assert(!inst->getProperty("_this").isNil());
+    assert(isForeignPtr(inst->getProperty("_this")));
+    #endif
+    auto counter = static_cast<Counter*>(asForeignPtr(inst->getProperty("_this"))->ptr);
+
+    counter->inc(n);
+
+    return intVal(counter->value());
+}
+
+Value ModuleMath::counter_value_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 1 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("Counter.value expects receiver");
+
+    ObjectInstance* inst = asObjectInstance(args[0]);
+    #ifdef DEBUG_BUILD
+    assert(!inst->getProperty("_this").isNil());
+    assert(isForeignPtr(inst->getProperty("_this")));
+    #endif
+    auto counter = static_cast<Counter*>(asForeignPtr(inst->getProperty("_this"))->ptr);
+
+    return intVal(counter->value());
 }

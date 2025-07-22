@@ -194,3 +194,19 @@ func dot(a:vector, b:vector) -> real:
 func cross(a:vector, b:vector) -> vector:
   """cross product of two 3-element vectors"""
 
+
+// Example only
+@builtin
+type _Counter object:
+
+  @builtin
+  proc init(start:int=0):
+    """initialize counter"""
+
+  @builtin
+  func inc(n:int=1) -> int:
+    """increment value by n and return new value"""
+
+  @builtin
+  func value() -> int:
+    """the current value of the counter"""

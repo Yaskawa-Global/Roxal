@@ -90,6 +90,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("_df_graph", [this](VM& vm, ArgsView a){ return df_graph_native(vm,a); });
         addSys("_df_graphdot", [this](VM& vm, ArgsView a){ return df_graphdot_native(vm,a); });
         addSys("loadlib", [this](VM& vm, ArgsView a){ return loadlib_native(vm,a); });
+
     }
 }
 
@@ -713,6 +714,7 @@ Value ModuleSys::df_graphdot_native(VM& vm, ArgsView args)
 }
 
 Value ModuleSys::loadlib_native(VM& vm, ArgsView args)
-{ 
-    return roxal::loadlib_native(args); 
+{
+    return roxal::loadlib_native(args);
 }
+
