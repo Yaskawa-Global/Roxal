@@ -378,10 +378,10 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
     firstThread->spawn(closureValue);
 
     // join all threads (they may spawn additional threads while running)
-    joinAllThreads();
+    InterpretResult joinResult = joinAllThreads();
     InterpretResult result = firstThread->result;
 
-    if (runtimeErrorFlag.load())
+    if (joinResult != InterpretResult::OK || runtimeErrorFlag.load())
         result = InterpretResult::RuntimeError;
 
     if (exitRequested.load())
@@ -4336,8 +4336,9 @@ void VM::registerBuiltinModule(ptr<BuiltinModule> module)
     builtinModules.push_back(module);
 }
 
-void VM::joinAllThreads(uint64_t skipId)
+InterpretResult VM::joinAllThreads(uint64_t skipId)
 {
+    InterpretResult combined = InterpretResult::OK;
     for (;;) {
         auto ids = threads.keys();
         bool joinedAny = false;
@@ -4345,14 +4346,18 @@ void VM::joinAllThreads(uint64_t skipId)
             if (skipId != 0 && id == skipId)
                 continue;
             joinedAny = true;
-            threads.erase_and_apply(id, [](ptr<Thread> t){
-                if (t)
+            threads.erase_and_apply(id, [&combined](ptr<Thread> t){
+                if (t) {
                     t->join();
+                    if (t->result != InterpretResult::OK)
+                        combined = InterpretResult::RuntimeError;
+                }
             });
         }
         if (!joinedAny)
             break;
     }
+    return combined;
 }
 
 void VM::requestExit(int code)
