@@ -48,7 +48,7 @@ static std::string rstrip(const std::string& s)
     return s.substr(0,end+1);
 }
 
-static void repl()
+static int repl()
 {
     linenoiseHistorySetMaxLen(1000);
 
@@ -60,6 +60,7 @@ static void repl()
     bool waitingIndent = false;
     bool quit = false;
 
+    int exitCode = 0;
     while(!quit) {
         const char* prompt = (waitingIndent || indents.size()>1) ? "...> " : "rox> ";
         char* cline = linenoise(prompt);
@@ -106,7 +107,14 @@ static void repl()
             buffer.clear();
             indents.assign(1,0);
         }
+
+        if (vm.isExitRequested()) {
+            exitCode = vm.exitCode();
+            break;
+        }
     }
+
+    return exitCode;
 }
 
 
@@ -265,12 +273,16 @@ int main(int argc, const char* argv[])
         InterpretResult res =
             runString(vmap["execute"].as<std::string>(), modulePaths,
                       outputBytecodeDisassembly);
+        if (VM::instance().isExitRequested())
+            return VM::instance().exitCode();
         if (res != InterpretResult::OK)
             return 1;
     }
     else if (vmap.count("input-file") == 0) {
         VM::instance().appendModulePaths(modulePaths);
-        repl();
+        int rc = repl();
+        if (VM::instance().isExitRequested())
+            return rc;
     }
     else if (vmap.count("input-file")) {
 
@@ -285,6 +297,8 @@ int main(int argc, const char* argv[])
                 bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
                 InterpretResult res =
                     runFile(filename, modulePaths, outputBytecodeDisassembly);
+                if (VM::instance().isExitRequested())
+                    return VM::instance().exitCode();
                 if (res != InterpretResult::OK)
                     return 1;
             }
@@ -298,5 +312,7 @@ int main(int argc, const char* argv[])
         return 1;
     }
 
+    if (VM::instance().isExitRequested())
+        return VM::instance().exitCode();
     return 0;
 }

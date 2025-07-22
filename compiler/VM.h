@@ -137,6 +137,11 @@ public:
     // destroyed immediately after creation.
     inline void registerThread(ptr<Thread> t) { threads.store(t->id(), t); }
 
+    // Request termination of the VM with the given exit code
+    void requestExit(int code);
+    inline bool isExitRequested() const { return exitRequested.load(); }
+    inline int exitCode() const { return exitCodeValue.load(); }
+
 
     const int MaxStack = 1024;
     typedef std::vector<Value> ValueStack;
@@ -168,6 +173,10 @@ protected:
     // Set when any thread encounters a runtime error so that
     // all threads can terminate early.
     std::atomic_bool runtimeErrorFlag {false};
+
+    // Set when exit() builtin is called to terminate the VM.
+    std::atomic_bool exitRequested {false};
+    std::atomic_int exitCodeValue {0};
 
     // Persistent thread used for REPL execution so that state such as event
     // handlers persists across entered lines.

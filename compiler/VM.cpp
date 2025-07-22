@@ -177,6 +177,8 @@ VM::VM()
     assert(sizeof(Value) == sizeof(uint64_t)); // ensure Value is 64bit
 
     runtimeErrorFlag = false;
+    exitRequested = false;
+    exitCodeValue = 0;
 
     thread = nullptr;
     initString = stringVal(UnicodeString("init"));
@@ -386,6 +388,9 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
 
     if (runtimeErrorFlag.load())
         result = InterpretResult::RuntimeError;
+
+    if (exitRequested.load())
+        result = InterpretResult::OK;
 
     #if defined(DEBUG_TRACE_EXECUTION)
     if (globals.size() > 0) {
@@ -1749,6 +1754,8 @@ std::pair<InterpretResult,Value> VM::execute()
 
         if (runtimeErrorFlag.load())
             return errorReturn;
+        if (exitRequested.load())
+            return std::make_pair(InterpretResult::OK,nilVal());
 
         // if we're 'sleeping' don't execute any instructions
         //  (we may have been woken up by an event or a spurious wakeup, in which case we'll re-block below)
@@ -3512,6 +3519,8 @@ std::pair<InterpretResult,Value> VM::execute()
 bool VM::processPendingEvents()
 {
 
+    if (exitRequested.load()) return false;
+
     if (thread->eventHandlers.empty()) return true;
 
     Thread::PendingEvent tev;
@@ -4330,4 +4339,16 @@ void VM::executeBuiltinModuleScript(const std::string& path, ObjModuleType* modu
 void VM::registerBuiltinModule(ptr<BuiltinModule> module)
 {
     builtinModules.push_back(module);
+}
+
+void VM::requestExit(int code)
+{
+    exitCodeValue = code;
+    exitRequested = true;
+
+    // wake all threads so they can terminate promptly
+    threads.apply([](const std::pair<const uint64_t, ptr<Thread>>& entry){
+        if (entry.second)
+            entry.second->wake();
+    });
 }
