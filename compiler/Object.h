@@ -624,8 +624,12 @@ std::string objLibraryToString(const ObjLibrary* lib);
 
 struct ObjForeignPtr : public Obj {
     ObjForeignPtr(void* p) : ptr(p) { type = ObjType::ForeignPtr; }
-    virtual ~ObjForeignPtr() {}
+    virtual ~ObjForeignPtr() { if (cleanup) cleanup(ptr); }
+
+    void registerCleanup(std::function<void(void*)> fn) { cleanup = std::move(fn); }
+
     void* ptr;
+    std::function<void(void*)> cleanup;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
