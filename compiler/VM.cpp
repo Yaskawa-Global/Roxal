@@ -293,6 +293,9 @@ VM::~VM()
     }
     dataflowEngineActor = nilVal();  // This will call decRef() via Value destructor
 
+    // join any remaining threads to prevent leak reports
+    joinAllThreads();
+
     globals.clearGlobals();
 
     initString->decRef();
@@ -312,6 +315,9 @@ VM::~VM()
 
     // Final cleanup pass for any objects that became unreferenced during destructor
     freeObjects();
+
+    // ensure all threads are gone before reporting
+    joinAllThreads();
 
     #ifdef DEBUG_TRACE_MEMORY
     // Try one more cleanup pass right before reporting
@@ -4341,6 +4347,19 @@ void VM::registerBuiltinModule(ptr<BuiltinModule> module)
     builtinModules.push_back(module);
 }
 
+void VM::joinAllThreads(uint64_t skipId)
+{
+    auto ids = threads.keys();
+    for(uint64_t id : ids) {
+        if (skipId != 0 && id == skipId)
+            continue;
+        threads.erase_and_apply(id, [](ptr<Thread> t){
+            if (t)
+                t->join();
+        });
+    }
+}
+
 void VM::requestExit(int code)
 {
     exitCodeValue = code;
@@ -4351,4 +4370,7 @@ void VM::requestExit(int code)
         if (entry.second)
             entry.second->wake();
     });
+
+    uint64_t currentId = thread ? thread->id() : 0;
+    joinAllThreads(currentId);
 }

@@ -142,6 +142,9 @@ public:
     inline bool isExitRequested() const { return exitRequested.load(); }
     inline int exitCode() const { return exitCodeValue.load(); }
 
+    // Join all currently tracked threads, optionally skipping one by id
+    void joinAllThreads(uint64_t skipId = 0);
+
 
     const int MaxStack = 1024;
     typedef std::vector<Value> ValueStack;
