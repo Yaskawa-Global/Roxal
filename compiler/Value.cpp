@@ -1703,26 +1703,23 @@ void roxal::copyInto(Value& lhs, const Value& rhs)
             if (!isSignal(rhs))
                 throw std::invalid_argument("copy into signal requires signal RHS");
             {
-                auto lhsSig = asSignal(lhs)->signal;
-                auto rhsSig = asSignal(rhs)->signal;
+                auto lhsSig = asSignal(lhs);
+                auto rhsSig = asSignal(rhs);
 
-                df::FuncNode::ConstArgMap constArgs;
-                std::vector<ptr<df::Signal>> sigArgs{ rhsSig };
-                std::vector<std::string> paramNames{"in"};
-                std::vector<ptr<df::Signal>> outSignals{ lhsSig };
+                auto eng = df::DataflowEngine::instance();
 
-                auto name = df::DataflowEngine::uniqueFuncName("copyIntoSig");
-                auto node = roxal::make_ptr<df::FuncNode>(
-                    name,
-                    [](const df::Values& vals) -> df::Values { return df::Values{ vals[0] }; },
-                    paramNames,
-                    constArgs,
-                    sigArgs,
-                    df::Names{"result"},
-                    outSignals);
-                node->addToEngine();
-                df::DataflowEngine::instance()->markNetworkModified();
-                df::DataflowEngine::instance()->evaluate();
+                eng->copyInto(lhsSig->signal, rhsSig->signal);
+
+                auto oldSignal = lhsSig->signal;
+                if (oldSignal != rhsSig->signal) {
+                    if (oldSignal)
+                        eng->unregisterSignalWrapper(oldSignal);
+
+                    if (rhsSig->signal)
+                        eng->registerSignalWrapper(rhsSig->signal);
+
+                    lhsSig->signal = rhsSig->signal;
+                }
             }
             break;
         case ObjType::Instance:

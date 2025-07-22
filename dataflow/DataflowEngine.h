@@ -64,7 +64,11 @@ public:
     // last computed signal values
     std::map<std::string, Value> signalValues() const;
 
+    // return the list of consumers for a signal (and which input name they consume it on)
+    std::vector<std::pair<ptr<FuncNode>, std::string>> consumersOfSignal(ptr<Signal> signal) const;
 
+    // return the list of producers for a signal (and which output name they produce it on)
+    std::vector<std::pair<ptr<FuncNode>, std::string>> producersOfSignal(ptr<Signal> signal) const;
 
 
     // callback for each engine tick (who's period is the GCD of all clock signals). Called after all signal value for this tick have been computed.
@@ -78,6 +82,12 @@ public:
     // remove a signal or func from the engine
     void removeSignal(ptr<Signal> signal, bool force = false);
     void removeFunc(ptr<FuncNode> func);
+
+    // copy the attributes of the rhs signal into the lhs (lhs <- rhs)
+    //  * lhs must be a source signal (not listed as the output of any producing funcs)
+    //  * all funcs that have rhs as an input, will afterward have lhs as an input instead
+    //  * lhs & rhs must have the same frequency
+    void copyInto(ptr<Signal> lhs, ptr<Signal> rhs);
 
     // internal reference count for a signal held by the engine
     size_t signalRefCount(ptr<Signal> signal) const;

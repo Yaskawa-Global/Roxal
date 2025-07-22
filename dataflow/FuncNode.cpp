@@ -17,7 +17,7 @@ FuncNode::FuncNode(const std::string& name,
                    const std::vector<ptr<Signal>>& outputSignals)
   : m_name(name), m_operatorSignalsCalled(false), closure(closure_), constArgs(constArgs_), signalArgs(signalArgs_), m_overrideOutputSignals(outputSignals)
 {
-    m_outputNames = {"result"};
+    m_outputNames = {DataflowEngine::uniqueFuncName("result")};
     if (roxal::isClosure(closure) && roxal::asClosure(closure)->function->funcType.has_value()) {
         auto funcTypePtr = roxal::asClosure(closure)->function->funcType.value();
         if (funcTypePtr->func.has_value()) {
@@ -25,7 +25,7 @@ FuncNode::FuncNode(const std::string& name,
 
             if (!funcType.returnTypes.empty()) {
                 if (funcType.returnTypes.size() == 1)
-                    m_outputNames = {"result"};
+                    m_outputNames = {DataflowEngine::uniqueFuncName("result")};
                 else {
                     for (size_t i = 0; i < funcType.returnTypes.size(); ++i)
                         m_outputNames.push_back("result" + std::to_string(i));
@@ -80,6 +80,8 @@ FuncNode::FuncNode(const std::string& name,
     nativeFunc(nativeFunc_), constArgs(constArgs_), signalArgs(signalArgs_), m_overrideOutputSignals(outputSignals)
 {
     m_outputNames = outputNames_;
+    if (m_outputNames.empty())
+        m_outputNames = {DataflowEngine::uniqueFuncName("result")};
     paramNames = paramNames_;
     size_t sigIndex = 0;
     for(const auto& pname : paramNames) {
@@ -106,6 +108,10 @@ FuncNode::FuncNode(const std::string& name,
     m_operatorSignalsCalled = true;
 }
 
+FuncNode::~FuncNode()
+{
+}
+
 const std::string& FuncNode::name() const
 {
     return m_name;
@@ -119,6 +125,22 @@ void FuncNode::addInput(const std::string& name, ptr<Signal> signal, int index, 
     InputPort inputPort = {name, signal, index, defaultValue, TimePoint()};
     m_inputs.push_back(inputPort);
 }
+
+void FuncNode::reassignInput(const std::string& name, ptr<Signal> newSignal)
+{
+    for(auto& input : m_inputs) {
+        if (input.name == name) {
+            auto oldSignal = input.signal;
+            input.signal = newSignal;
+            for(auto& signalArg : signalArgs) {
+                if (signalArg == oldSignal) {
+                    signalArg = newSignal;
+                }
+            }
+        }
+    }
+}
+
 
 void FuncNode::addOutput(const std::string& name, ptr<Signal> signal)
 {
@@ -400,4 +422,3 @@ Values FuncNode::operator()(const Values& inputValues)
 
     return { result.second };
 }
-
