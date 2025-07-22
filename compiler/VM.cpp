@@ -3660,6 +3660,7 @@ void VM::raiseException(Value exc)
 
 void VM::resetStack()
 {
+    if (!thread) return;
     thread->stack.clear();
     thread->stack.resize(MaxStack);
     thread->stackTop = thread->stack.begin();
@@ -3849,8 +3850,15 @@ void VM::runtimeError(const std::string& format, ...)
 
 void VM::defineBuiltinFunctions()
 {
-    for (auto& mod : builtinModules)
-        mod->registerBuiltins(*this);
+    for (auto& mod : builtinModules) {
+        try {
+           mod->registerBuiltins(*this);
+        } catch (std::exception& e) {
+            runtimeError("Error registering builtins for module '%s': %s",
+                         toUTF8StdString(mod->moduleType()->name).c_str(), e.what());
+            return;
+        }
+    }
 }
 
 void VM::defineBuiltinMethods()
@@ -4345,8 +4353,10 @@ void VM::executeBuiltinModuleScript(const std::string& path, ObjModuleType* modu
     if (!in.is_open()) {
         std::string alt = "../" + path;
         in.open(alt);
-        if (!in.is_open())
+        if (!in.is_open()) {
+            runtimeError("Cannot open builtin module script: " + path + " or " + alt);
             return;
+        }
     }
 
     RoxalCompiler compiler;
