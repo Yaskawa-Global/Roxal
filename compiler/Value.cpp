@@ -1706,9 +1706,20 @@ void roxal::copyInto(Value& lhs, const Value& rhs)
                 auto lhsSig = asSignal(lhs);
                 auto rhsSig = asSignal(rhs);
 
-                df::DataflowEngine::instance()->copyInto(lhsSig->signal, rhsSig->signal);
+                auto eng = df::DataflowEngine::instance();
 
-                lhsSig->signal = rhsSig->signal;
+                eng->copyInto(lhsSig->signal, rhsSig->signal);
+
+                auto oldSignal = lhsSig->signal;
+                if (oldSignal != rhsSig->signal) {
+                    if (oldSignal)
+                        eng->unregisterSignalWrapper(oldSignal);
+
+                    if (rhsSig->signal)
+                        eng->registerSignalWrapper(rhsSig->signal);
+
+                    lhsSig->signal = rhsSig->signal;
+                }
             }
             break;
         case ObjType::Instance:
