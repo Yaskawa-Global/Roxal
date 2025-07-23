@@ -243,6 +243,50 @@ void DataflowEngine::removeFunc(ptr<FuncNode> func)
 }
 
 
+void DataflowEngine::copyInto(ptr<Signal> lhs, ptr<Signal> rhs)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
+    // Ensure both signals are valid and have the same frequency
+    if (!lhs || !rhs || lhs->frequency() != rhs->frequency())
+        throw std::runtime_error("Signals have the same frequency");
+
+    if (!lhs->isSourceSignal())
+        throw std::runtime_error("lhs must be a source signal");
+
+    // Copy attributes from rhs to lhs
+    lhs->isSource = rhs->isSource;
+    lhs->isClock = rhs->isClock;
+    lhs->clockCount = rhs->clockCount;
+    lhs->m_maxHistoryPeriods = rhs->m_maxHistoryPeriods;
+    lhs->running = rhs->running;
+    lhs->tickPending = rhs->tickPending;
+
+    lhs->values = rhs->values;
+    for(const auto& rhsCallback : rhs->valueChangedCallbacks)
+        lhs->valueChangedCallbacks.push_back(rhsCallback);
+
+    lhs->isDerived = rhs->isDerived;
+    lhs->baseSignal = rhs->baseSignal;
+    lhs->baseIndex = rhs->baseIndex;
+
+    // Update any functions that use rhs as an input to use lhs instead
+    for (const auto& kv : funcs) {
+        auto& func = kv.second;
+        for (auto& inputPort : func->m_inputs) {
+            if (inputPort.signal == rhs)
+                func->reassignInput(inputPort.name, lhs);
+        }
+    }
+
+    // Copy the values from rhs to lhs
+    for (const auto& kv : rhs->values) {
+        lhs->setValueAt(kv.first, kv.second);
+    }
+
+    m_networkModified = true;
+}
+
 void DataflowEngine::clear()
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -835,6 +879,42 @@ std::map<std::string, Value> DataflowEngine::signalValues() const
 }
 
 
+// return the list of consumers for a signal (and which input name they consume it on)
+std::vector<std::pair<ptr<FuncNode>, std::string>> DataflowEngine::consumersOfSignal(ptr<Signal> signal) const
+{
+    std::vector<std::pair<ptr<FuncNode>, std::string>> consumers;
+
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    for (const auto& kv : funcs) {
+        const auto& func = kv.second;
+        for (size_t i = 0; i < func->m_inputs.size(); ++i) {
+            const auto& in = func->m_inputs[i];
+            if (in.signal == signal)
+                consumers.emplace_back(func, in.name);
+        }
+    }
+    return consumers;
+}
+
+// return the list of producers for a signal (and which output name they produce it on)
+std::vector<std::pair<ptr<FuncNode>, std::string>> DataflowEngine::producersOfSignal(ptr<Signal> signal) const
+{
+    std::vector<std::pair<ptr<FuncNode>, std::string>> producers;
+
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    for (const auto& kv : funcs) {
+        const auto& func = kv.second;
+        for (size_t i = 0; i < func->m_outputs.size(); ++i) {
+            const auto& out = func->m_outputs[i];
+            if (out.signal == signal)
+                producers.emplace_back(func, out.name);
+        }
+    }
+    return producers;
+}
+
+
+
 void DataflowEngine::addTickCallback(std::function<void(ptr<DataflowEngine>, TimePoint)> callback)
 {
     m_tickCallbacks.push_back(callback);
@@ -902,13 +982,23 @@ std::string DataflowEngine::graph() const
     for (const auto& [funcName, func] : funcs) {
         ss << "  " << funcName << "\n";
         ss << "    Inputs:\n";
-        for (const auto& input : func->m_inputs) {
-            ss << "      " << input.signal->name() << "\n";
+        for(auto i=0; i<func->paramNames.size(); ++i) {
+            auto paramName = func->paramNames[i];
+            auto sigIndex = func->paramSignalIndex[i];
+            std::string inputExpr {};
+            if (sigIndex != -1) {
+                auto inputSignal = func->signalArgs[func->paramSignalIndex[i]];
+                inputExpr = inputSignal->name();
+            }
+            else {
+                inputExpr = toString(func->constArgs[paramName]);
+            }
+            ss << "      " << paramName << ": " << inputExpr << "\n";
         }
 
         ss << "    Outputs:\n";
         for (const auto& output : func->m_outputs) {
-            ss << "      " << output.signal->name() << "\n";
+            ss << "      " << output.name << ": " << output.signal->name() << "\n";
         }
     }
 

@@ -1,10 +1,12 @@
 c = clock(10)
 inc = c + 1
 var out :signal = signal(10, 0)
+
 out <- inc
+
 c.tick()
 wait(us=150000)
-print(int(out))
+print("out="+int(out)+" inc="+int(inc))
 c.tick()
 wait(us=150000)
-print(int(out))
+print("out="+int(out)+" inc="+int(inc))

@@ -717,8 +717,8 @@ Value ModuleSys::df_graph_native(VM& vm, ArgsView args)
         throw std::invalid_argument("_df_graph has no arguments");
 
     auto engine = df::DataflowEngine::instance();
-    auto dot = engine->graph();
-    return objVal(stringVal(toUnicodeString(dot)));
+    auto str = engine->graph();
+    return objVal(stringVal(toUnicodeString(str)));
 }
 
 Value ModuleSys::df_graphdot_native(VM& vm, ArgsView args)
@@ -741,4 +741,3 @@ Value ModuleSys::loadlib_native(VM& vm, ArgsView args)
 {
     return roxal::loadlib_native(args);
 }
-

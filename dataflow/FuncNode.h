@@ -33,17 +33,17 @@ public:
              const std::vector<std::string>& paramNames,
              const ConstArgMap& constArgs,
              const std::vector<ptr<Signal>>& signalArgs,
-             const Names& outputNames = {"result"},
+             const Names& outputNames = {},
              const std::vector<ptr<Signal>>& outputSignals = {});
 
-    virtual ~FuncNode() {}
+    virtual ~FuncNode();
 
     const std::string& name() const;
-    
+
     Names inputNames() const { return m_inputNames; }
     Names outputNames() const { return m_outputNames.empty() ? Names{"result"} : m_outputNames; }
     bool isPure() const { return true; }
-    
+
     // Core execution method
     virtual Values operator()(const Values& inputValues);
 
@@ -107,7 +107,10 @@ protected:
     // defaultValue -> value to use if the output signal connected to this input doesn't have any value yet (e.g. for index<0)
     void addInput(const std::string& name, ptr<Signal> signal, int index = 0, std::optional<roxal::Value> defaultValue = std::nullopt);
 
+    void reassignInput(const std::string& name, ptr<Signal> newSignal);
+
     void addOutput(const std::string& name, ptr<Signal> signal);
+
 
     // create default output signals based on output names
     void createOutputSignals(double freq);
