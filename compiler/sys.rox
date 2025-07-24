@@ -1,6 +1,6 @@
 @builtin
-proc print(value=''):
-  """print the string representation of value followed by a newline"""
+proc print(value='', end='\n', flush:bool=false):
+  """print the string representation of value followed by end and flush if requested"""
 
 @builtin
 func len(v) -> int:
