@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <sstream>
 #include <cstdlib>
+#include <csignal>
 
 #include <core/AST.h>
 #include "RoxalIndentationLexer.h"
@@ -24,6 +25,16 @@ extern "C" {
 using namespace antlr4;
 using namespace roxal;
 namespace po = boost::program_options;
+
+static void sigint_handler(int)
+{
+    try {
+        VM::instance().dumpStackTraces();
+    } catch (...) {
+    }
+    std::signal(SIGINT, SIG_DFL);
+    std::raise(SIGINT);
+}
 
 
 static int indentationLength(const std::string& line)
@@ -155,6 +166,8 @@ static InterpretResult runFile(const std::string& path,
         throw std::runtime_error("Failed to initialize VM: " + std::string(e.what()));
     }
 
+    std::signal(SIGINT, sigint_handler);
+
     try {
         vm->setDisassemblyOutput(outputBytecodeDisassembly);
         // Add the folder containing the script to the search paths
@@ -172,6 +185,7 @@ static InterpretResult runString(const std::string& source,
 {
     std::istringstream sourcestream(source);
     VM& vm { VM::instance() };
+    std::signal(SIGINT, sigint_handler);
     vm.setDisassemblyOutput(outputBytecodeDisassembly);
     vm.appendModulePaths(modulePaths);
     return vm.interpret(sourcestream, "cli");
@@ -247,6 +261,7 @@ int main(int argc, const char* argv[])
         std::cerr << desc << std::endl;
         return 1;
     }
+
 
     if (vmap.count("help")) {
         std::cout << desc << std::endl;

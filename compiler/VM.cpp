@@ -4380,6 +4380,33 @@ void VM::registerBuiltinModule(ptr<BuiltinModule> module)
     builtinModules.push_back(module);
 }
 
+void VM::dumpStackTraces()
+{
+    fprintf(stderr, "\n=== Stack traces ===\n");
+    threads.apply([this](const std::pair<const uint64_t, ptr<Thread>>& entry){
+        if (!entry.second)
+            return;
+
+        ptr<Thread> t = entry.second;
+
+        fprintf(stderr, "-- Thread %llu --\n", (unsigned long long)entry.first);
+
+        if (t->frames.empty()) {
+            fprintf(stderr, "<no frames>\n");
+            return;
+        }
+
+        auto current = thread;
+        thread = t;
+        Value framesVal = captureStacktrace();
+        thread = current;
+
+        std::string traceStr = stackTraceToString(framesVal);
+        fprintf(stderr, "%s", traceStr.c_str());
+    });
+    fflush(stderr);
+}
+
 InterpretResult VM::joinAllThreads(uint64_t skipId)
 {
     InterpretResult combined = InterpretResult::OK;

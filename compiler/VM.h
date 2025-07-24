@@ -310,6 +310,9 @@ public:
     Value event_on_builtin(ArgsView args);
     Value event_off_builtin(ArgsView args);
 
+    // Output stack traces for all running threads
+    void dumpStackTraces();
+
     Value captureStacktrace();
 
 
