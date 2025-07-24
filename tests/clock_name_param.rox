@@ -1,0 +1,3 @@
+var c = clock(10, "bar")
+print(typeof(c.name))
+print(c.name)
