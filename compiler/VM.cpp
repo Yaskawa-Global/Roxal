@@ -60,6 +60,29 @@ static ValueType builtinToValueType(type::BuiltinType bt)
     }
 }
 
+static ptr<type::Type> builtinConstructorType(ValueType t)
+{
+    using PT = type::Type::FuncType::ParamType;
+    switch (t) {
+        case ValueType::Signal: {
+            static ptr<type::Type> sigType;
+            if (!sigType) {
+                sigType = make_ptr<type::Type>(type::BuiltinType::Func);
+                sigType->func = type::Type::FuncType();
+                PT pFreq(toUnicodeString("freq"));
+                pFreq.type = make_ptr<type::Type>(type::BuiltinType::Real);
+                pFreq.hasDefault = false;
+                PT pInit(toUnicodeString("initial"));
+                pInit.hasDefault = true;
+                sigType->func->params = {pFreq, pInit};
+            }
+            return sigType;
+        }
+        default:
+            return nullptr;
+    }
+}
+
 
 static bool isExceptionType(ObjObjectType* type)
 {
@@ -615,12 +638,28 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
 
 bool VM::call(ValueType builtinType, const CallSpec& callSpec)
 {
-
-    if (!callSpec.allPositional)
-        throw std::runtime_error("Named parameters unsupported in constructor for "+to_string(builtinType));
     auto argBegin = thread->stackTop - callSpec.argCount;
     auto argEnd = thread->stackTop;
     try {
+        if (!callSpec.allPositional) {
+            auto ctorType = builtinConstructorType(builtinType);
+            if (!ctorType)
+                throw std::runtime_error("Named parameters unsupported in constructor for " + to_string(builtinType));
+            auto paramPositions = callSpec.paramPositions(ctorType, true);
+            std::vector<Value> ordered;
+            ordered.reserve(paramPositions.size());
+            for (size_t pi = 0; pi < paramPositions.size(); ++pi) {
+                int pos = paramPositions[pi];
+                if (pos >= 0)
+                    ordered.push_back(*(argBegin + pos));
+                else
+                    ordered.push_back(nilVal());
+            }
+            *(thread->stackTop - callSpec.argCount - 1) = construct(builtinType, ordered.begin(), ordered.end());
+            popN(callSpec.argCount);
+            return true;
+        }
+
         *(thread->stackTop - callSpec.argCount - 1) = construct(builtinType, argBegin, argEnd);
         popN(callSpec.argCount);
         return true;
