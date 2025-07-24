@@ -1,2 +1,0 @@
-s = signal(10, 0, "mysig")
-print(_df_graph())
