@@ -919,6 +919,9 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 else if (ts->typeValue == ValueType::Vector) {
                     return call(ValueType::Vector, callSpec);
                 }
+                else if (ts->typeValue == ValueType::Signal) {
+                    return call(ValueType::Signal, callSpec);
+                }
                 else {
                     throw std::runtime_error("unimplemented construction for type '"+to_string(ts->typeValue)+"'");
                 }

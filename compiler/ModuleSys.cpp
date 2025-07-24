@@ -89,17 +89,6 @@ void ModuleSys::registerBuiltins(VM& vm)
             for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
             addSys("clock", [this](VM& vm, ArgsView a){ return clock_signal_native(vm,a); }, t, {});
         }
-        {
-            auto t = make_ptr<type::Type>(type::BuiltinType::Func);
-            t->func = type::Type::FuncType();
-            type::Type::FuncType::ParamType p1(toUnicodeString("freq"));
-            p1.type = make_ptr<type::Type>(type::BuiltinType::Int);
-            type::Type::FuncType::ParamType p2(toUnicodeString("initial"));
-            t->func->params.resize(2);
-            t->func->params[0] = p1;
-            t->func->params[1] = p2;
-            addSys("signal", [this](VM& vm, ArgsView a){ return signal_source_native(vm,a); }, t, {});
-        }
         addSys("_engine_stop", [this](VM& vm, ArgsView a){ return engine_stop_native(vm,a); });
         addSys("typeof", [this](VM& vm, ArgsView a){ return typeof_native(vm,a); });
         addSys("_df_graph", [this](VM& vm, ArgsView a){ return df_graph_native(vm,a); });
@@ -649,19 +638,6 @@ Value ModuleSys::clock_signal_native(VM& vm, ArgsView args)
 
     double freq = args[0].asReal();
     auto sig = df::Signal::newClockSignal(freq,df::DataflowEngine::uniqueFuncName("clock("+ std::to_string(int(freq)) + ")"));
-    return objVal(signalVal(sig));
-}
-
-Value ModuleSys::signal_source_native(VM& vm, ArgsView args)
-{
-    if (args.size() < 1 || args.size() > 2 || !args[0].isNumber())
-        throw std::invalid_argument("signal expects frequency and optional initial value");
-
-    double freq = args[0].asReal();
-    Value initial;
-    if (args.size() >= 2)
-        initial = args[1];
-    auto sig = df::Signal::newSourceSignal(freq, initial);
     return objVal(signalVal(sig));
 }
 
