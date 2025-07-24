@@ -1,0 +1,6 @@
+var s = signal(freq=10, initial=1)
+print(s.freq())
+print(s.value)
+var s2 = signal(initial=2, freq=20)
+print(s2.freq())
+print(s2.value)
