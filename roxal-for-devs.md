@@ -6,7 +6,9 @@ A quick overview of the Roxal language for existing software developers.
 
 The superficial syntax is similar to Python: blocks are indicated using indentation.  A statement introducing a new block ends with a colon.
 
-```roxal
+<!-- markdown does not have syntax coloring for roxal, but php gives reasonable coloring and also uses // and # for comments -->
+
+```php
   if somehing:
     print('something is true')  // C++-style comment
 
@@ -32,8 +34,8 @@ Reference types:
   * `list` - [list, of, values] - heterogeneous
   * `dict` - {key:value,key2:value2} - heterogeneous (hash, map)
     * insertion order preserved
-  * `vector` - [number number number] - arbitrary 1-dim real elements
-  * `matrix` - [num num num; num num num] - arbitrary 2-dim real elements (can use newline between rows in literals)
+  * `vector` - [number number number] - arbitrary n dim real scalar elements
+  * `matrix` - [num num num; num num num] - arbitrary n x m dim real scalar elements (can use newline between rows in literals)
   * `object` - user-defined object type (aka class)
   * `actor` - user-defined actor type (similar to object type)
 
@@ -58,7 +60,7 @@ Function body scope is strict by default.  To convert types in strict context, c
 
 Variables are declared with `var`:
 
-```roxal
+```php
 var i :int  // variable i is an int (can't reassign to another type)
 var b :byte = 5 // b has initial value 5
 var s = "hello" // the type is optional, s can be reassigned to another type later
@@ -69,7 +71,7 @@ l = [1,2,3]     // var is optional in non-strict (e.g. file/module context)
 
 Functions are declared with the `func` keyword.  A procedure (`proc`) is a function that has no return value.
 
-```roxal
+```php
 func sq(x):
   return x*x
 
@@ -82,7 +84,7 @@ show('hello world') // output "hello world"
 
 Advanced: Functions are 'first class' values, hence can be assigned, passed as parameters to other functions etc.  (object methods can also be used as functions and automatically bind the receiver instance)
 
-```
+```php
 func f(x,y):
   return x+y
 
@@ -103,8 +105,8 @@ print(j()) // 8
 
 #### Lambdas (Lambda functions)
 
-A Lambda is just an anonymous (unnamed function), declared as a single expression (no `return` keyword):
-```
+A Lambda is just an anonymous (unnamed) function, declared as a single expression (no `return` keyword):
+```php
 var f = func(a): a+1
 
 func call_and_print(f,a):
@@ -120,7 +122,7 @@ call_and_print(func (a): a+1, 5) // print 6
 Like most programming languages, `=` is used for assignment (unlike in mathematics, where is means equality).
 This works as you'd expect for value types.  For reference types, the references are usually being assigned.
 
-```roxal
+```php
 i = 1 // int is a value type
 j = i // j now has value 1
 i = 2
@@ -134,7 +136,7 @@ print(l2)   // [11,2,3]
 
 It is possible to assign multiple variables at once with a *binding assignment*.  This is convenient for returning multiple values from a function.
 
-```roxal
+```php
 func f(): // return an int, a string and a dict
   return [1, 'a', {'a':'A'}]
 
@@ -146,7 +148,7 @@ print(d)  // {'a':'A'}
 
 Advanced: The _copy into_ operation (`←` or `<-`) makes a shallow copy of the RHS and copies it into the LHS (- hence, the LHS must be compatible - e.g. the same type)
 
-```roxal
+```php
 l = [1,2,3]
 l2 = []
 l2 <- l   // copy elements from l into l2
@@ -159,7 +161,7 @@ print(l2) // [1,2,3]  (still same, list l content was changed, not l2's)
 
 Function parameters can optionally have their type explicitly supplied.  Similarly for the return type. They can also have default values (like C++).  Calls can mix positional and named arguments (positional first)
 
-```
+```php
 func f(a :int, b :real = 3) -> string:
   return "a is {a} and b is {b}"
 
@@ -172,7 +174,7 @@ print( f(b=7, a=2) ) // // "a is 2 and b is 7"
 
 The operators +, -, \*, / and % work how you'd expect on builtin numeric types.  Vectors and Matrices also support +, - and \*, performing matrix multiplication, vector*matrix multiplication and dot products (two vectors).
 
-```roxal
+```php
 m = [1 2
      3 4]
 v = [1 2]
@@ -183,32 +185,32 @@ In addition, + can also be used for:
   * string concatenation (when the left-hand-side is a string) - "hello "+"world".  This also directly converts most types into strings: "hello "+5 → "hello 5"
   * list concatenation: [1,2,3]+[4,5,6] → [1,2,3,4,5,6]
 
-Boolean operators and, or and not work on the bool type.  (true and true and not false) → true
+Boolean operators `and`, `or` and `not` work on the bool type.  `(true and true and not false)` → `true`
 
-Bitwise operators | (or), & (and), ~ (not) and ^ (xor) work with bool, byte and int types.
-In addition, | for dict will merge two dicts into one (with precedence for the RHS keys) and & for dict will yield a dict with the intersection (common) keys (with values from the LHS in case of a common key in both)
+Bitwise operators `|` (or), `&` (and), `~` (not) and `^` (xor) work with bool, byte and int types.
+In addition, `|` for dict will merge two dicts into one (with precedence for the RHS keys) and `&` for dict will yield a dict with the intersection (common) keys (with values from the LHS in case of a common key in both)
 
-```roxal
+```php
 print({'a':1,'b':2} | {'b':3,'c':4}) // {"a": 1, "b": 3, "c": 4} - keys from LHS or RHS
 print({'a':1,'b':2} & {'b':3,'c':4}) /  {"b": 2} - keys in LHS and RHS
 ```
 
 The equality operators `≟` (is equal to), `≠` (not equal to), `<` / `>` (less / greater than), `≤` / `≥` (less / greater than or equal to) function as expected bool, byte, int, decimal, range, vector & matrix.  Note that the `==` and `!=` or `<>` familiar from C are also available.
 
-```
+```php
 if 5 ≥ 4:
   print('always')
 v = [1 2]         // vector
 print(v == [1 2]) // true
 ```
 
-However, for reference types, like user-defined objects & actors (more below), equality only compares the reference.
+However, for most reference types, like user-defined objects & actors (more below), equality only compares the reference.
 
 The `is` operator:
-  * Checks identity - when the operands are two (non-type) values, it compares the for being the same object (e.g. list, dict, vector, matrix, string)
+  * Checks identity - when the operands are two (non-type) values, it compares them for being the same object (e.g. list, dict, vector, matrix, string)
   * Checks type - when the LHS is a type
 
-```roxal
+```php
 l = [1,2,3]
 l2 = [1,2,3]
 print(l is l2)   // false, same content, different lists
@@ -233,7 +235,7 @@ In each case, the _start_ or _end_ can be omitted to indicate 'from 0' or 'to th
 
 To see what is included in a range, you can construct a list from it (when definite):
 
-```roxal
+```php
 print(list( range(1..5) ))   // [1, 2, 3, 4, 5]
 print(list( range(1..<5) )) // [1, 2, 3, 4]
 l = [1,2,3]
@@ -244,7 +246,7 @@ for i in range(1..10 by 2):
 ```
 
 Indexing with ranges:
-```roxal
+```php
 l = list(range(0..<10)) // make a list [0,1,2,...,9]
 print( l[0] )         // 0
 print( l[1..2] )      // [1,2] - notice don't need range() here
@@ -262,7 +264,7 @@ print( m[0..1,0..1] ) // [1 2; 4 5] submatrix
 
 Common control statements, `if`, `for`, `while`.  For can iterate over ranges, lists and dicts.
 
-```roxal
+```php
 if true:
   for i in range(..<10):
     print(i)
@@ -293,14 +295,14 @@ Similar to Python, a roxal file (`.rox`) is a module.  The variables declared at
 You can import one module into another via the `import` statement.
 
 `mymain.rox`:
-```roxal
+```php
 import mymodule
 
 mymodule.showVersion() // prints Version 1.0
 ```
 
 `mymodule.rox`: (same folder)
-```roxal
+```php
 func showVersion():
   print('Version 1.0')
 ```
@@ -308,14 +310,14 @@ func showVersion():
 Notice that accessing the symbol names from the imported module required prefixing them with the module name separated by period(s).
 If you want to import all of the module's names into the current module scope, you can use `import mymodule.*'
 
-```roxal
+```php
 import math.*
 print(cos(0.0)) // didn't need to write math.cos
 ```
 
 You can nest modules using folders in the filesystem: e.g. to import `mymodule/submodule/toplevel.rox`
 
-```roxal
+```php
 import mymodule.submodule.toplevel
 ```
 
@@ -340,7 +342,7 @@ While understanding Object-Oriented-Programming (OOP) may not be necessary for r
 
 An object type (aka class) can be declared and instantiated thus:
 
-```roxal
+```php
 type MyObjType object:
 
   var a :int  // member variable (sometimes called a property)
@@ -362,7 +364,7 @@ print( myobj.double_a_by_b() ) // method call - prints 12
 
 Inheritance uses the `extends` keyword:
 
-```roxal
+```php
 type ChildObjType object extends MyObjType:
 
   var c :real
@@ -387,7 +389,7 @@ The syntax for declaring an actor is similar to an object, except it cannot have
 
 Note that the caller is not blocked when calling an actor method - instead the call returns immediately with a 'future' for the return value (sometimes called a promise).  This behaves just like the actual return value, but won't be useable until the actor method completes and provides the value.  An attempt to use the return value future before it is ready will block the using thead (- though you can pass futures to other functions, store them etc.).  A future value is always implicitly convertible to the value it is promising.
 
-```roxal
+```php
 type Worker actor:
 
   private var amount :real = 1.0
@@ -415,7 +417,7 @@ print( real(amt) ) // 3
 
 ## Exceptions
 
-```roxal
+```php
 try:
   dostuff()
 except e :RuntimeException:
@@ -430,7 +432,7 @@ finally:
 Events are useful for constructing responsive programs.  For robotics, this may be to respond to I/O, sensor data or other internal states of the program.
 A variable of type `event` can be declared to refer to a type of event that can be 'triggered' to occur as desired.
 
-```roxal
+```php
 var e :event
 
 // declare an event 'handler' that will be triggered whenever e occurs
@@ -449,12 +451,12 @@ emit e   // triggered again
 
 Signals in roxal represent values that can (spontaneously) change.  For example, for robotics, they might represent an external input.  Signals can be transformed, using functions (func) into new signals.  There are also builtin functions to create signals who's value has to be explicitly updated by your roxal code (`signal()`) or that automatically count up (`clock()`).  A signal's value can be any of the usual roxal value types, but most usefully bool, byte, int, real, vector or matrix.
 
-Conceptually, you can think of signals as like wires in circuit, arious 'func' processing nodes that have input (parameter) and output (return) signals.
+Conceptually, you can think of signals as like wires in circuit, connected to various 'func' processing nodes that have input (parameter) and output (return) signals.
 
 ### Examples
 
 A single clock signal:
-```roxal
+```php
 
 c = clock(freq=10)  // an int signal that counts up from 0 at 10Hz (initially stopped)
 
@@ -469,7 +471,7 @@ wait(s=1)  // keep the script running so we can see ~10 prints
 ```
 
 Transforming a some signals:
-```roxal
+```php
 initial_v = [1.0 2.0 3.0]  // vector
 
 // source signals need to be explicitly updated with their set() method
