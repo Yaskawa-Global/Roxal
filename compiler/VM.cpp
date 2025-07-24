@@ -4380,6 +4380,33 @@ void VM::registerBuiltinModule(ptr<BuiltinModule> module)
     builtinModules.push_back(module);
 }
 
+void VM::dumpStackTraces()
+{
+    fprintf(stderr, "\n=== Stack traces ===\n");
+    threads.apply([this](const std::pair<const uint64_t, ptr<Thread>>& entry){
+        if (!entry.second)
+            return;
+
+        ptr<Thread> t = entry.second;
+
+        fprintf(stderr, "-- Thread %llu --\n", (unsigned long long)entry.first);
+
+        if (t->frames.empty()) {
+            fprintf(stderr, "<no frames>\n");
+            return;
+        }
+
+        auto current = thread;
+        thread = t;
+        Value framesVal = captureStacktrace();
+        thread = current;
+
+        std::string traceStr = stackTraceToString(framesVal);
+        fprintf(stderr, "%s", traceStr.c_str());
+    });
+    fflush(stderr);
+}
+
 InterpretResult VM::joinAllThreads(uint64_t skipId)
 {
     InterpretResult combined = InterpretResult::OK;
@@ -4390,13 +4417,20 @@ InterpretResult VM::joinAllThreads(uint64_t skipId)
             if (skipId != 0 && id == skipId)
                 continue;
             joinedAny = true;
-            threads.erase_and_apply(id, [&combined](ptr<Thread> t){
-                if (t) {
-                    t->join();
-                    if (t->result != InterpretResult::OK)
-                        combined = InterpretResult::RuntimeError;
-                }
-            });
+            ptr<Thread> t;
+            {
+                auto opt = threads.lookup(id);
+                if (opt)
+                    t = *opt;
+            }
+
+            if (t) {
+                t->join();
+                if (t->result != InterpretResult::OK)
+                    combined = InterpretResult::RuntimeError;
+            }
+
+            threads.erase(id);
         }
         if (!joinedAny)
             break;
