@@ -1135,15 +1135,22 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
 
     if (type == ValueType::Signal) {
         size_t count = end - begin;
-        if (count < 1 || count > 2 || !(*begin).isNumber())
-            throw std::runtime_error("signal constructor expects frequency and optional initial value");
+        if (count < 1 || count > 3 || !(*begin).isNumber())
+            throw std::runtime_error("signal constructor expects frequency, optional initial value and optional name");
 
         double freq = toType(ValueType::Real, *begin, false).asReal();
         Value initial = nilVal();
-        if (count == 2)
+        if (count >= 2)
             initial = *(begin + 1);
 
-        auto sig = df::Signal::newSourceSignal(freq, initial,df::DataflowEngine::uniqueFuncName("signal("+ std::to_string(int(freq)) + "," + toString(initial) + ")"));
+        std::string nameStr;
+        if (count >= 3)
+            nameStr = toString(*(begin + 2));
+
+        std::string autoName = df::DataflowEngine::uniqueFuncName("signal("+ std::to_string(int(freq)) + "," + toString(initial) + ")");
+        std::string finalName = nameStr.empty() ? autoName : nameStr;
+
+        auto sig = df::Signal::newSourceSignal(freq, initial, finalName);
         return objVal(signalVal(sig));
     }
 
