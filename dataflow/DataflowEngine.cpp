@@ -1099,6 +1099,17 @@ std::string DataflowEngine::graphDot(const std::string& title, std::map<std::str
         }
     }
 
+    // Show derived signal relationships
+    for (const auto& signal : signals) {
+        if (signal->isDerived) {
+            auto base = signal->baseSignal.lock();
+            if (base) {
+                dot << "  \"" << base->name() << "\" -> \"" << signal->name()
+                    << "\" [label=\"[" << signal->baseIndex << "]\"];\n";
+            }
+        }
+    }
+
     dot << "}\n";
     return dot.str();
 }
