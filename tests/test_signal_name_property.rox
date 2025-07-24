@@ -1,0 +1,4 @@
+var c = clock(10)
+print(typeof(c.name))
+c.name = "foo"
+print(c.name)

@@ -2312,8 +2312,32 @@ std::pair<InterpretResult,Value> VM::execute()
             case asByte(OpCode::SetProp2):
             case asByte(OpCode::SetProp): {
                 Value& inst { peek(1) };
-                inst.resolve();
                 ObjString* name = (instruction == asByte(OpCode::SetProp)) ? readString() : readString2();
+
+                if (isSignal(inst)) {
+                    auto vt = inst.type();
+                    auto pit = builtinProperties.find(vt);
+                    if (pit != builtinProperties.end()) {
+                        auto propIt = pit->second.find(name->hash);
+                        if (propIt != pit->second.end()) {
+                            const BuiltinPropertyInfo& propInfo = propIt->second;
+                            if (!propInfo.setter) {
+                                runtimeError("Cannot assign to read-only property '" + toUTF8StdString(name->s) + "'");
+                                return errorReturn;
+                            }
+                            Value value { peek(0) };
+                            (this->*(propInfo.setter))(inst, value);
+                            popN(2);
+                            push(value);
+                            break;
+                        }
+                    }
+
+                    runtimeError("Undefined property '"+toUTF8StdString(name->s)+"' for signal.");
+                    return errorReturn;
+                }
+
+                inst.resolve();
                 if (isDict(inst)) {
                     ObjDict* dict = asDict(inst);
                     Value value { peek(0) };
@@ -2411,10 +2435,33 @@ std::pair<InterpretResult,Value> VM::execute()
             case asByte(OpCode::SetPropCheck2):
             case asByte(OpCode::SetPropCheck): {
                 Value& inst { peek(1) };
+                ObjString* name = (instruction == asByte(OpCode::SetPropCheck)) ? readString() : readString2();
+                if (isSignal(inst)) {
+                    auto vt = inst.type();
+                    auto pit = builtinProperties.find(vt);
+                    if (pit != builtinProperties.end()) {
+                        auto propIt = pit->second.find(name->hash);
+                        if (propIt != pit->second.end()) {
+                            const BuiltinPropertyInfo& propInfo = propIt->second;
+                            if (!propInfo.setter) {
+                                runtimeError("Cannot assign to read-only property '" + toUTF8StdString(name->s) + "'");
+                                return errorReturn;
+                            }
+                            Value value { peek(0) };
+                            (this->*(propInfo.setter))(inst, value);
+                            popN(2);
+                            push(value);
+                            break;
+                        }
+                    }
+
+                    runtimeError("Undefined property '"+toUTF8StdString(name->s)+"' for signal.");
+                    return errorReturn;
+                }
+
                 inst.resolve();
                 if (isDict(inst)) {
                     ObjDict* dict = asDict(inst);
-                    ObjString* name = (instruction == asByte(OpCode::SetPropCheck)) ? readString() : readString2();
 
                     Value value { peek(0) };
 
@@ -2424,7 +2471,6 @@ std::pair<InterpretResult,Value> VM::execute()
                     break;
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
-                    ObjString* name = (instruction == asByte(OpCode::SetPropCheck)) ? readString() : readString2();
 
                     Value value { peek(0) };
 
@@ -2465,7 +2511,6 @@ std::pair<InterpretResult,Value> VM::execute()
                     break;
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
-                    ObjString* name = (instruction == asByte(OpCode::SetPropCheck)) ? readString() : readString2();
 
                     Value value { peek(0) };
 
@@ -2506,8 +2551,6 @@ std::pair<InterpretResult,Value> VM::execute()
                     break;
                 } else if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
-
-                    ObjString* name = readString();
 
                     auto& vars { moduleType->vars };
 
@@ -3955,6 +3998,8 @@ void VM::defineBuiltinProperties()
 
     // Signal properties
     defineBuiltinProperty(ValueType::Signal, "value", &VM::signal_value_getter);
+    defineBuiltinProperty(ValueType::Signal, "name", &VM::signal_name_getter,
+                         &VM::signal_name_setter);
     defineBuiltinProperty(ValueType::Object, "stackTrace", &VM::exception_stacktrace_getter);
     defineBuiltinProperty(ValueType::Object, "stackTraceString", &VM::exception_stacktrace_string_getter);
 }
@@ -3974,6 +4019,34 @@ Value VM::signal_value_getter(Value& receiver)
 
     ObjSignal* objSignal = asSignal(receiver);
     return objSignal->signal->lastValue();
+}
+
+Value VM::signal_name_getter(Value& receiver)
+{
+#ifdef DEBUG_BUILD
+    if (!isSignal(receiver))
+        throw std::invalid_argument("signal.name property called on non-signal value");
+#endif
+
+    ObjSignal* objSignal = asSignal(receiver);
+    return objVal(stringVal(toUnicodeString(objSignal->signal->name())));
+}
+
+void VM::signal_name_setter(Value& receiver, Value value)
+{
+#ifdef DEBUG_BUILD
+    if (!isSignal(receiver))
+        throw std::invalid_argument("signal.name property called on non-signal value");
+#endif
+
+    ObjSignal* objSignal = asSignal(receiver);
+    std::string newName;
+    if (isString(value))
+        newName = toUTF8StdString(asString(value)->s);
+    else
+        newName = toString(value);
+
+    objSignal->signal->rename(newName);
 }
 
 Value VM::exception_stacktrace_getter(Value& receiver)

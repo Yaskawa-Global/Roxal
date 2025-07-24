@@ -515,7 +515,7 @@ The functions in the sys module are always globally available (- as if `import s
 * `toJson(value, indent=true)` - convert value to a JSON string
 * `fromJson(json)` - parse JSON string into a value
 * `clock(freq)` - create a clock signal at `freq`
-* `signal(freq, initial)` - create a source signal (call the builtin type)
+* `signal(freq, initial)` - create a source signal
 * `typeof(value)` - return the type of `value`
 * `loadlib(path)` - load a native library from `path`
 

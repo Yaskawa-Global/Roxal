@@ -83,12 +83,8 @@ func _clock() -> real:
   """return process time in seconds"""
 
 @builtin
-func clock(freq:int):
+func clock(freq:int, name:string='') -> signal:
   """create a clock signal at frequency freq"""
-
-//@builtin
-//func signal(freq:int, initial):
-//  """create a source signal with frequency and optional initial value"""
 
 @builtin
 proc _engine_stop():

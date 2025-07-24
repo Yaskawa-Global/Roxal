@@ -334,6 +334,8 @@ public:
 
     // Builtin property getters
     Value signal_value_getter(Value& receiver);
+    Value signal_name_getter(Value& receiver);
+    void  signal_name_setter(Value& receiver, Value value);
     Value exception_stacktrace_getter(Value& receiver);
     Value exception_stacktrace_string_getter(Value& receiver);
 
