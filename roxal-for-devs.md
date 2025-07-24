@@ -449,7 +449,7 @@ emit e   // triggered again
 
 ## Signals
 
-Signals in roxal represent values that can (spontaneously) change.  For example, for robotics, they might represent an external input.  Signals can be transformed, using functions (func) into new signals.  There are also builtin functions to create signals who's value has to be explicitly updated by your roxal code (`signal()`) or that automatically count up (`clock()`).  A signal's value can be any of the usual roxal value types, but most usefully bool, byte, int, real, vector or matrix.
+Signals in roxal represent values that can (spontaneously) change.  For example, for robotics, they might represent an external input.  Signals can be transformed, using functions (func) into new signals.  To create your own source signals you "call" the builtin `signal` type (e.g. `signal(freq, initial)`), while `clock(freq)` provides a signal that counts up automatically.  A signal's value can be any of the usual roxal value types, but most usefully bool, byte, int, real, vector or matrix.
 
 Conceptually, you can think of signals as like wires in circuit, connected to various 'func' processing nodes that have input (parameter) and output (return) signals.
 
@@ -515,7 +515,7 @@ The functions in the sys module are always globally available (- as if `import s
 * `toJson(value, indent=true)` - convert value to a JSON string
 * `fromJson(json)` - parse JSON string into a value
 * `clock(freq)` - create a clock signal at `freq`
-* `signal(freq, initial)` - create a source signal
+* `signal(freq, initial)` - create a source signal (call the builtin type)
 * `typeof(value)` - return the type of `value`
 * `loadlib(path)` - load a native library from `path`
 
