@@ -92,13 +92,15 @@ void ModuleSys::registerBuiltins(VM& vm)
         {
             auto t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
-            type::Type::FuncType::ParamType p1(toUnicodeString("freq"));
-            p1.type = make_ptr<type::Type>(type::BuiltinType::Int);
-            type::Type::FuncType::ParamType p2(toUnicodeString("initial"));
-            t->func->params.resize(2);
-            t->func->params[0] = p1;
-            t->func->params[1] = p2;
-            addSys("signal", [this](VM& vm, ArgsView a){ return signal_source_native(vm,a); }, t, {});
+            std::vector<Value> defaults{ nilVal(), nilVal(), objVal(stringVal(toUnicodeString(""))) };
+            auto params = BuiltinModule::constructParams({
+                    {"freq", type::BuiltinType::Int},
+                    {"initial", std::nullopt},
+                    {"name", type::BuiltinType::String}},
+                    defaults);
+            t->func->params.resize(params.size());
+            for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
+            addSys("signal", [this](VM& vm, ArgsView a){ return signal_source_native(vm,a); }, t, defaults);
         }
         addSys("_engine_stop", [this](VM& vm, ArgsView a){ return engine_stop_native(vm,a); });
         addSys("typeof", [this](VM& vm, ArgsView a){ return typeof_native(vm,a); });
@@ -654,14 +656,22 @@ Value ModuleSys::clock_signal_native(VM& vm, ArgsView args)
 
 Value ModuleSys::signal_source_native(VM& vm, ArgsView args)
 {
-    if (args.size() < 1 || args.size() > 2 || !args[0].isNumber())
-        throw std::invalid_argument("signal expects frequency and optional initial value");
+    if (args.size() < 1 || args.size() > 3 || !args[0].isNumber())
+        throw std::invalid_argument("signal expects frequency, optional initial value and optional name");
 
     double freq = args[0].asReal();
     Value initial;
     if (args.size() >= 2)
         initial = args[1];
-    auto sig = df::Signal::newSourceSignal(freq, initial);
+
+    std::string nameStr;
+    if (args.size() >= 3)
+        nameStr = toString(args[2]);
+
+    std::string autoName = df::DataflowEngine::uniqueFuncName("signal(" + std::to_string(int(freq)) + "," + toString(initial) + ")");
+    std::string finalName = nameStr.empty() ? autoName : nameStr;
+
+    auto sig = df::Signal::newSourceSignal(freq, initial, finalName);
     return objVal(signalVal(sig));
 }
 
