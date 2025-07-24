@@ -1,0 +1,2 @@
+print('x', end='', flush=true)
+print('y')

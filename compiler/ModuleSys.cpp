@@ -30,7 +30,12 @@ void ModuleSys::registerBuiltins(VM& vm)
     };
 
     if (!vm.loadGlobal(toUnicodeString("print")).has_value()) {
-        addSys("print", [this](VM& vm, ArgsView a){ return print_builtin(vm,a); });
+        std::vector<Value> pdefaults{
+            objVal(stringVal(toUnicodeString(""))),
+            objVal(stringVal(toUnicodeString("\n"))),
+            falseVal()
+        };
+        addSys("print", [this](VM& vm, ArgsView a){ return print_builtin(vm,a); }, nullptr, pdefaults);
         addSys("len", [this](VM& vm, ArgsView a){ return len_builtin(vm,a); });
         addSys("help", [this](VM& vm, ArgsView a){ return help_builtin(vm,a); });
         addSys("clone", [this](VM& vm, ArgsView a){ return clone_builtin(vm,a); });
@@ -106,15 +111,28 @@ void ModuleSys::registerBuiltins(VM& vm)
 
 Value ModuleSys::print_builtin(VM& vm, ArgsView args)
 {
-    if (args.size() == 0) {
-        std::cout << std::endl;
-        return nilVal();
-    }
-    else if (args.size() != 1)
-        throw std::invalid_argument("print expects either no arguments (to output a newline) or single argument convertable to a string");
+    if(args.size() > 3)
+        throw std::invalid_argument("print expects at most 3 arguments");
 
-    auto str = toString(args[0]);
-    std::cout << str << std::endl;
+    std::string valueStr = "";
+    std::string endStr = "\n";
+    bool flush = false;
+
+    if(args.size() >= 1)
+        valueStr = toString(args[0]);
+
+    if(args.size() == 2 && args[1].isBool()) {
+        flush = args[1].asBool();
+    } else {
+        if(args.size() >= 2)
+            endStr = toString(args[1]);
+        if(args.size() >= 3)
+            flush = toType(ValueType::Bool, args[2], false).asBool();
+    }
+
+    std::cout << valueStr << endStr;
+    if(flush)
+        std::cout << std::flush;
     return nilVal();
 }
 
