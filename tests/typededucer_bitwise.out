@@ -28,13 +28,13 @@ File
     args:
      Num 10:int
  VarDecl e
-  UnaryOp ~ 
+  UnaryOp ~  → int
    Call
     Type byte
     args:
      Num 1:int
  VarDecl f
-  UnaryOp ~ 
+  UnaryOp ~  → int
    Num 4:int
  VarDecl g
   BinaryOp | 

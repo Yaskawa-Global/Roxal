@@ -429,6 +429,35 @@ std::any TypeDeducer::visit(ptr<ast::BinaryOp> ast)
         auto lhsType { ast->lhs->type.value()->builtin };
         auto rhsType { ast->rhs->type.value()->builtin };
 
+        bool signalArg = lhsType == BuiltinType::Signal || rhsType == BuiltinType::Signal;
+        bool supportsSignal = false;
+
+        switch(ast->op) {
+            case ast::BinaryOp::Add:
+            case ast::BinaryOp::Subtract:
+            case ast::BinaryOp::Multiply:
+            case ast::BinaryOp::Divide:
+            case ast::BinaryOp::Modulo:
+            case ast::BinaryOp::And:
+            case ast::BinaryOp::Or:
+            case ast::BinaryOp::BitAnd:
+            case ast::BinaryOp::BitOr:
+            case ast::BinaryOp::BitXor:
+            case ast::BinaryOp::Equal:
+            case ast::BinaryOp::NotEqual:
+            case ast::BinaryOp::LessThan:
+            case ast::BinaryOp::GreaterThan:
+                supportsSignal = true;
+                break;
+            default:
+                break;
+        }
+
+        if (supportsSignal && signalArg) {
+            ast->type = std::make_shared<Type>(BuiltinType::Signal);
+            return results;
+        }
+
         auto isNumericOrBool = [](BuiltinType t) {
             return t==BuiltinType::Bool || t==BuiltinType::Byte || t==BuiltinType::Int ||
                    t==BuiltinType::Real || t==BuiltinType::Decimal;
@@ -489,22 +518,46 @@ std::any TypeDeducer::visit(ptr<ast::UnaryOp> ast)
 
     if (ast->arg->type.has_value()) {
         auto argType { ast->arg->type.value()->builtin };
+
+        bool isSignalArg = argType == BuiltinType::Signal;
+        bool supportsSignal = false;
+
         switch(ast->op) {
-            case ast::UnaryOp::Not:
-                ast->type = std::make_shared<Type>(BuiltinType::Bool);
-                break;
             case ast::UnaryOp::Negate:
-                if (argType==BuiltinType::Int || argType==BuiltinType::Byte)
-                    ast->type = std::make_shared<Type>(BuiltinType::Int);
-                else if (argType==BuiltinType::Real)
-                    ast->type = std::make_shared<Type>(BuiltinType::Real);
-                else if (argType==BuiltinType::Bool)
-                    ast->type = std::make_shared<Type>(BuiltinType::Bool);
-                break;
-            case ast::UnaryOp::Accessor:
+            case ast::UnaryOp::Not:
+            case ast::UnaryOp::BitNot:
+                supportsSignal = true;
                 break;
             default:
                 break;
+        }
+
+        if (supportsSignal && isSignalArg) {
+            ast->type = std::make_shared<Type>(BuiltinType::Signal);
+        } else {
+            switch(ast->op) {
+                case ast::UnaryOp::Not:
+                    ast->type = std::make_shared<Type>(BuiltinType::Bool);
+                    break;
+                case ast::UnaryOp::Negate:
+                    if (argType==BuiltinType::Int || argType==BuiltinType::Byte)
+                        ast->type = std::make_shared<Type>(BuiltinType::Int);
+                    else if (argType==BuiltinType::Real)
+                        ast->type = std::make_shared<Type>(BuiltinType::Real);
+                    else if (argType==BuiltinType::Bool)
+                        ast->type = std::make_shared<Type>(BuiltinType::Bool);
+                    break;
+                case ast::UnaryOp::BitNot:
+                    if (argType==BuiltinType::Bool)
+                        ast->type = std::make_shared<Type>(BuiltinType::Bool);
+                    else if (argType==BuiltinType::Byte || argType==BuiltinType::Int)
+                        ast->type = std::make_shared<Type>(BuiltinType::Int);
+                    break;
+                case ast::UnaryOp::Accessor:
+                    break;
+                default:
+                    break;
+            }
         }
     }
 
