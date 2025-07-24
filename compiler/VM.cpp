@@ -4417,13 +4417,20 @@ InterpretResult VM::joinAllThreads(uint64_t skipId)
             if (skipId != 0 && id == skipId)
                 continue;
             joinedAny = true;
-            threads.erase_and_apply(id, [&combined](ptr<Thread> t){
-                if (t) {
-                    t->join();
-                    if (t->result != InterpretResult::OK)
-                        combined = InterpretResult::RuntimeError;
-                }
-            });
+            ptr<Thread> t;
+            {
+                auto opt = threads.lookup(id);
+                if (opt)
+                    t = *opt;
+            }
+
+            if (t) {
+                t->join();
+                if (t->result != InterpretResult::OK)
+                    combined = InterpretResult::RuntimeError;
+            }
+
+            threads.erase(id);
         }
         if (!joinedAny)
             break;
