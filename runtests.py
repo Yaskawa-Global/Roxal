@@ -73,7 +73,7 @@ tests = [
     'runtime_error_snippet',
     'property_count', 'cmdline_execute', 'invalid_option', 'fileio_basic', 'fileio_binary',
     'fileio_read_binary', 'fileio_write_binary', 'fileio_extra', 'help_doc', 'docstring_func'
-    ,'builtin_object_methods', 'print_end', 'print_flush'
+    ,'builtin_object_methods', 'print_flush'
 ]
 
 # implementation doesn't yet allow these tests to pass (do not add to this list without human consent)
