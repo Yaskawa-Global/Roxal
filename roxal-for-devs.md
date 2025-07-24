@@ -32,8 +32,8 @@ Reference types:
   * `list` - [list, of, values] - heterogeneous
   * `dict` - {key:value,key2:value2} - heterogeneous (hash, map)
     * insertion order preserved
-  * `vector` - [number number number] - arbitrary 1-dim real elements
-  * `matrix` - [num num num; num num num] - arbitrary 2-dim real elements (can use newline between rows in literals)
+  * `vector` - [number number number] - arbitrary n dim real scalar elements
+  * `matrix` - [num num num; num num num] - arbitrary n x m dim real scalar elements (can use newline between rows in literals)
   * `object` - user-defined object type (aka class)
   * `actor` - user-defined actor type (similar to object type)
 
@@ -103,7 +103,7 @@ print(j()) // 8
 
 #### Lambdas (Lambda functions)
 
-A Lambda is just an anonymous (unnamed function), declared as a single expression (no `return` keyword):
+A Lambda is just an anonymous (unnamed) function, declared as a single expression (no `return` keyword):
 ```
 var f = func(a): a+1
 
@@ -183,10 +183,10 @@ In addition, + can also be used for:
   * string concatenation (when the left-hand-side is a string) - "hello "+"world".  This also directly converts most types into strings: "hello "+5 → "hello 5"
   * list concatenation: [1,2,3]+[4,5,6] → [1,2,3,4,5,6]
 
-Boolean operators and, or and not work on the bool type.  (true and true and not false) → true
+Boolean operators `and`, `or` and `not` work on the bool type.  `(true and true and not false)` → `true`
 
-Bitwise operators | (or), & (and), ~ (not) and ^ (xor) work with bool, byte and int types.
-In addition, | for dict will merge two dicts into one (with precedence for the RHS keys) and & for dict will yield a dict with the intersection (common) keys (with values from the LHS in case of a common key in both)
+Bitwise operators `|` (or), `&` (and), `~` (not) and `^` (xor) work with bool, byte and int types.
+In addition, `|` for dict will merge two dicts into one (with precedence for the RHS keys) and `&` for dict will yield a dict with the intersection (common) keys (with values from the LHS in case of a common key in both)
 
 ```roxal
 print({'a':1,'b':2} | {'b':3,'c':4}) // {"a": 1, "b": 3, "c": 4} - keys from LHS or RHS
@@ -202,10 +202,10 @@ v = [1 2]         // vector
 print(v == [1 2]) // true
 ```
 
-However, for reference types, like user-defined objects & actors (more below), equality only compares the reference.
+However, for most reference types, like user-defined objects & actors (more below), equality only compares the reference.
 
 The `is` operator:
-  * Checks identity - when the operands are two (non-type) values, it compares the for being the same object (e.g. list, dict, vector, matrix, string)
+  * Checks identity - when the operands are two (non-type) values, it compares them for being the same object (e.g. list, dict, vector, matrix, string)
   * Checks type - when the LHS is a type
 
 ```roxal
@@ -449,7 +449,7 @@ emit e   // triggered again
 
 Signals in roxal represent values that can (spontaneously) change.  For example, for robotics, they might represent an external input.  Signals can be transformed, using functions (func) into new signals.  There are also builtin functions to create signals who's value has to be explicitly updated by your roxal code (`signal()`) or that automatically count up (`clock()`).  A signal's value can be any of the usual roxal value types, but most usefully bool, byte, int, real, vector or matrix.
 
-Conceptually, you can think of signals as like wires in circuit, arious 'func' processing nodes that have input (parameter) and output (return) signals.
+Conceptually, you can think of signals as like wires in circuit, connected to various 'func' processing nodes that have input (parameter) and output (return) signals.
 
 ### Examples
 
