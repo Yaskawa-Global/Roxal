@@ -83,7 +83,7 @@ func _clock() -> real:
   """return process time in seconds"""
 
 @builtin
-func clock(freq:int) -> signal:
+func clock(freq:int, name:string='') -> signal:
   """create a clock signal at frequency freq"""
 
 @builtin

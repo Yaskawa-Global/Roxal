@@ -84,10 +84,14 @@ void ModuleSys::registerBuiltins(VM& vm)
         {
             auto t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
-            auto params = BuiltinModule::constructParams({{"freq", type::BuiltinType::Int}}, {});
+            std::vector<Value> defaults{ nilVal(), objVal(stringVal(toUnicodeString(""))) };
+            auto params = BuiltinModule::constructParams({
+                    {"freq", type::BuiltinType::Int},
+                    {"name", type::BuiltinType::String}},
+                    defaults);
             t->func->params.resize(params.size());
             for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
-            addSys("clock", [this](VM& vm, ArgsView a){ return clock_signal_native(vm,a); }, t, {});
+            addSys("clock", [this](VM& vm, ArgsView a){ return clock_signal_native(vm,a); }, t, defaults);
         }
         {
             auto t = make_ptr<type::Type>(type::BuiltinType::Func);
@@ -646,11 +650,18 @@ Value ModuleSys::clock_native(VM& vm, ArgsView args)
 
 Value ModuleSys::clock_signal_native(VM& vm, ArgsView args)
 {
-    if ((args.size() != 1) || !args[0].isNumber())
-        throw std::invalid_argument("clock expects single numeric argument");
+    if (args.size() < 1 || args.size() > 2 || !args[0].isNumber())
+        throw std::invalid_argument("clock expects frequency and optional name");
 
     double freq = args[0].asReal();
-    auto sig = df::Signal::newClockSignal(freq,df::DataflowEngine::uniqueFuncName("clock("+ std::to_string(int(freq)) + ")"));
+    std::string nameStr;
+    if (args.size() >= 2)
+        nameStr = toString(args[1]);
+
+    std::string autoName = df::DataflowEngine::uniqueFuncName("clock("+ std::to_string(int(freq)) + ")");
+    std::string finalName = nameStr.empty() ? autoName : nameStr;
+
+    auto sig = df::Signal::newClockSignal(freq, finalName);
     return objVal(signalVal(sig));
 }
 
