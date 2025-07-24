@@ -13,7 +13,7 @@ sum = c + out[-1]
 out <- sum * 2.0
 
 on out:
-  print(real(out))
+  print(real(out), flush=true)
 
 // run the network for a while
 c.run()

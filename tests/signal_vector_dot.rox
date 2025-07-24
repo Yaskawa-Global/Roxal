@@ -7,7 +7,7 @@ s2 = signal(10,initial_v)  //  (these won't change value unless set() is called)
 dp = s*s2    // vector dot product (real scalar signal)
 
 on dp: // print if dp changes
-  print('dp='+real(dp))
+  print('dp='+real(dp), flush=true)
 
 // set the signals in motion
 s.run()
