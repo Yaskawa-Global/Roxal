@@ -322,7 +322,6 @@ public:
 
     Value clock_native(ArgsView args);
     Value clock_signal_native(ArgsView args);
-    Value signal_source_native(ArgsView args);
     Value engine_stop_native(ArgsView args);
     Value typeof_native(ArgsView args);
     Value df_graph_native(ArgsView args);

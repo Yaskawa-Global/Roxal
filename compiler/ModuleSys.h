@@ -40,7 +40,6 @@ public:
     // native implementations
     Value clock_native(VM& vm, ArgsView args);
     Value clock_signal_native(VM& vm, ArgsView args);
-    Value signal_source_native(VM& vm, ArgsView args);
     Value engine_stop_native(VM& vm, ArgsView args);
     Value typeof_native(VM& vm, ArgsView args);
     Value df_graph_native(VM& vm, ArgsView args);
