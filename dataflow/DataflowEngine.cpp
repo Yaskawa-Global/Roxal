@@ -493,7 +493,8 @@ void DataflowEngine::tick(bool waitForTickStart)
             auto src = signal->baseSignal.lock();
             if (src) {
                 try {
-                    Value val = src->valueAtIndex(signal->baseIndex);
+                    TimePoint srcTime = m_tickStart + src->period()*signal->baseIndex;
+                    Value val = src->valueAt(srcTime);
                     signal->setValueAt(m_tickStart, val);
                 } catch(...) {
                     signal->setValueAt(m_tickStart, Value());
