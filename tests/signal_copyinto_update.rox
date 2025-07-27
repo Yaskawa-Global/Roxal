@@ -1,0 +1,11 @@
+c = clock(10)
+r = c + 1
+var y :signal = signal(10, 0)
+e = r - y
+y <- r + 1
+c.tick()
+wait(us=150000)
+print(int(e))
+c.tick()
+wait(us=150000)
+print(int(e))

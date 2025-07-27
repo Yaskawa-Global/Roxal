@@ -279,14 +279,17 @@ void DataflowEngine::copyInto(ptr<Signal> lhs, ptr<Signal> rhs)
         }
     }
 
-    // Update any functions that use rhs as an input to use lhs instead
+    // Update any functions that use lhs as an input to use rhs instead
     for (const auto& kv : funcs) {
         auto& func = kv.second;
         for (auto& inputPort : func->m_inputs) {
-            if (inputPort.signal == rhs)
-                func->reassignInput(inputPort.name, lhs);
+            if (inputPort.signal == lhs)
+                func->reassignInput(inputPort.name, rhs);
         }
     }
+
+    // Rebuild signalConsumers cache to reflect the new connections
+    buildSignalConsumers();
 
     // Copy the values from rhs to lhs
     for (const auto& kv : rhs->values) {
