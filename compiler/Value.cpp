@@ -1383,7 +1383,7 @@ Value roxal::negate(Value v)
     // TODO: decimal
 
     if (isSignal(v)) {
-        return signalUnaryOp("negate",
+        return signalUnaryOp("-",
                              [](Value a) { return negate(a); },
                              v);
     }
@@ -1404,9 +1404,8 @@ static Value roxal::signalUnaryOp(const std::string& name,
     else
         constArgs["val"] = v;
 
-    auto uniqueName = df::DataflowEngine::uniqueFuncName(name);
     auto node = roxal::make_ptr<df::FuncNode>(
-        uniqueName,
+        name,
         [op](const df::Values& vals) -> df::Values {
             return df::Values{ op(vals[0]) };
         },
@@ -1424,23 +1423,28 @@ static Value signalBinaryOp(const std::string& name,
                             const std::function<Value(Value, Value)>& op,
                             Value l, Value r)
 {
+    auto finalName = name;
     df::FuncNode::ConstArgMap constArgs;
     std::vector<ptr<df::Signal>> sigArgs;
     std::vector<std::string> paramNames{"lhs", "rhs"};
 
     if (isSignal(l))
         sigArgs.push_back(asSignal(l)->signal);
-    else
+    else {
         constArgs["lhs"] = l;
+        finalName = toString(l)+name;
+    }
 
     if (isSignal(r))
         sigArgs.push_back(asSignal(r)->signal);
-    else
+    else {
         constArgs["rhs"] = r;
+        finalName = name+toString(r);
+    }
 
-    auto uniqueName = df::DataflowEngine::uniqueFuncName(name);
+    //auto uniqueName = df::DataflowEngine::uniqueFuncName(finalName);
     auto node = roxal::make_ptr<df::FuncNode>(
-        uniqueName,
+        finalName,
         [op](const df::Values& vals) -> df::Values {
             return df::Values{ op(vals[0], vals[1]) };
         },
@@ -1483,7 +1487,7 @@ Value roxal::add(Value l, Value r)
         return objVal(matrixVal(result));
     }
     else if (isSignal(l) || isSignal(r)) {
-        return signalBinaryOp("add",
+        return signalBinaryOp("+",
                               [](Value a, Value b) { return add(a, b); },
                               l, r);
     }
@@ -1529,7 +1533,7 @@ Value roxal::subtract(Value l, Value r)
         return objVal(matrixVal(result));
     }
     else if (isSignal(l) || isSignal(r)) {
-        return signalBinaryOp("subtract",
+        return signalBinaryOp("-",
                               [](Value a, Value b) { return subtract(a, b); },
                               l, r);
     }
@@ -1610,7 +1614,7 @@ Value roxal::multiply(Value l, Value r)
         return objVal(matrixVal(result));
     }
     if (isSignal(l) || isSignal(r)) {
-        return signalBinaryOp("multiply",
+        return signalBinaryOp("×",
                               [](Value a, Value b) { return multiply(a, b); },
                               l, r);
     }
@@ -1635,7 +1639,7 @@ Value roxal::multiply(Value l, Value r)
 Value roxal::divide(Value l, Value r)
 {
     if (isSignal(l) || isSignal(r)) {
-        return signalBinaryOp("divide",
+        return signalBinaryOp("/",
                               [](Value a, Value b) { return divide(a, b); },
                               l, r);
     }
@@ -1665,7 +1669,7 @@ Value roxal::mod(Value l, Value r)
     // TODO: support Decimal
 
     if (isSignal(l) || isSignal(r)) {
-        return signalBinaryOp("mod", [](Value a, Value b) { return mod(a, b); }, l, r);
+        return signalBinaryOp("%", [](Value a, Value b) { return mod(a, b); }, l, r);
     }
 
     if (!l.isNumber() && !l.isBool())
@@ -1751,7 +1755,7 @@ Value roxal::land(Value l, Value r)
         throw std::invalid_argument("RHS must be a bool");
 
     if (isSignal(l) || isSignal(r)) {
-        return signalBinaryOp("and",
+        return signalBinaryOp(" and ",
                               [](Value a, Value b) { return land(a, b); },
                               l, r);
     }
@@ -1771,7 +1775,7 @@ Value roxal::lor(Value l, Value r)
         throw std::invalid_argument("RHS must be a bool");
 
     if (isSignal(l) || isSignal(r)) {
-        return signalBinaryOp("or",
+        return signalBinaryOp(" or ",
                               [](Value a, Value b) { return lor(a, b); },
                               l, r);
     }
@@ -1783,7 +1787,7 @@ Value roxal::lor(Value l, Value r)
 Value roxal::band(Value l, Value r)
 {
     if (isSignal(l) || isSignal(r)) {
-        return signalBinaryOp("band",
+        return signalBinaryOp("&",
                               [](Value a, Value b) { return band(a, b); },
                               l, r);
     }
@@ -1823,7 +1827,7 @@ Value roxal::band(Value l, Value r)
 Value roxal::bor(Value l, Value r)
 {
     if (isSignal(l) || isSignal(r)) {
-        return signalBinaryOp("bor",
+        return signalBinaryOp("|",
                               [](Value a, Value b) { return bor(a, b); },
                               l, r);
     }
@@ -1864,7 +1868,7 @@ Value roxal::bor(Value l, Value r)
 Value roxal::bxor(Value l, Value r)
 {
     if (isSignal(l) || isSignal(r)) {
-        return signalBinaryOp("bxor",
+        return signalBinaryOp("^",
                               [](Value a, Value b) { return bxor(a, b); },
                               l, r);
     }
@@ -1888,7 +1892,7 @@ Value roxal::bxor(Value l, Value r)
 Value roxal::bnot(Value v)
 {
     if (isSignal(v)) {
-        return signalUnaryOp("bnot", [](Value a) { return bnot(a); }, v);
+        return signalUnaryOp("~", [](Value a) { return bnot(a); }, v);
     }
 
     if (v.isBool())
@@ -1908,7 +1912,7 @@ Value roxal::bnot(Value v)
 Value roxal::greater(Value l, Value r)
 {
     if (isSignal(l) || isSignal(r)) {
-        return signalBinaryOp("greater",
+        return signalBinaryOp(">",
                               [](Value a, Value b) { return greater(a, b); },
                               l, r);
     }
@@ -1942,7 +1946,7 @@ Value roxal::greater(Value l, Value r)
 Value roxal::less(Value l, Value r)
 {
     if (isSignal(l) || isSignal(r)) {
-        return signalBinaryOp("less",
+        return signalBinaryOp("<",
                               [](Value a, Value b) { return less(a, b); },
                               l, r);
     }
@@ -1976,7 +1980,7 @@ Value roxal::less(Value l, Value r)
 Value roxal::equal(Value l, Value r, bool strict)
 {
     if (isSignal(l) || isSignal(r)) {
-        return signalBinaryOp("equal",
+        return signalBinaryOp("≟",
                               [strict](Value a, Value b) { return equal(a, b, strict); },
                               l, r);
     }
