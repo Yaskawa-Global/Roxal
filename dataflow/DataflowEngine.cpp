@@ -270,7 +270,10 @@ void DataflowEngine::copyInto(ptr<Signal> lhs, ptr<Signal> rhs)
     lhs->baseSignal = rhs->baseSignal;
     lhs->baseIndex = rhs->baseIndex;
 
-    // Update any derived signals that reference lhs so they reference rhs
+    // Update any derived signals and function inputs that reference lhs so that
+    // they reference rhs instead.  This ensures that any existing network using
+    // the original lhs signal now consumes the rhs signal, which has just been
+    // copied into lhs.
     for (auto& sig : signals) {
         if (sig->isDerived) {
             auto base = sig->baseSignal.lock();
@@ -279,12 +282,11 @@ void DataflowEngine::copyInto(ptr<Signal> lhs, ptr<Signal> rhs)
         }
     }
 
-    // Update any functions that use rhs as an input to use lhs instead
     for (const auto& kv : funcs) {
         auto& func = kv.second;
         for (auto& inputPort : func->m_inputs) {
-            if (inputPort.signal == rhs)
-                func->reassignInput(inputPort.name, lhs);
+            if (inputPort.signal == lhs)
+                func->reassignInput(inputPort.name, rhs);
         }
     }
 
