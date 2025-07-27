@@ -6,6 +6,7 @@
 
 #include <stdexcept>
 #include <numeric>
+#include <algorithm>
 #include <thread>
 #include <iostream>
 #include <string.h>
@@ -98,13 +99,14 @@ void DataflowEngine::addFunc(ptr<FuncNode> func)
     m_networkModified = true;
 }
 
-void DataflowEngine::registerSignalWrapper(ptr<Signal> signal)
+void DataflowEngine::registerSignalWrapper(ptr<Signal> signal, roxal::ObjSignal* wrapper)
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     signalWrapperRefs[signal]++;
+    signalWrapperObjs[signal].push_back(wrapper);
 }
 
-size_t DataflowEngine::unregisterSignalWrapper(ptr<Signal> signal)
+size_t DataflowEngine::unregisterSignalWrapper(ptr<Signal> signal, roxal::ObjSignal* wrapper)
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     auto it = signalWrapperRefs.find(signal);
@@ -112,8 +114,11 @@ size_t DataflowEngine::unregisterSignalWrapper(ptr<Signal> signal)
         return 0;
     if (--it->second == 0) {
         signalWrapperRefs.erase(it);
+        signalWrapperObjs.erase(signal);
         return 0;
     }
+    auto& vec = signalWrapperObjs[signal];
+    vec.erase(std::remove(vec.begin(), vec.end(), wrapper), vec.end());
     return it->second;
 }
 
@@ -288,6 +293,22 @@ void DataflowEngine::copyInto(ptr<Signal> lhs, ptr<Signal> rhs)
         }
     }
 
+    // Move any ObjSignal wrappers referencing lhs so they reference rhs instead
+    auto wrappersIt = signalWrapperObjs.find(lhs);
+    if (wrappersIt != signalWrapperObjs.end()) {
+        auto wrappers = wrappersIt->second;
+        for (auto* wrapper : wrappers) {
+            wrapper->signal = rhs;
+            signalWrapperRefs[lhs]--;
+            signalWrapperRefs[rhs]++;
+            signalWrapperObjs[rhs].push_back(wrapper);
+        }
+        if (signalWrapperRefs[lhs] == 0) {
+            signalWrapperRefs.erase(lhs);
+        }
+        signalWrapperObjs.erase(wrappersIt);
+    }
+
     // Copy the values from rhs to lhs
     for (const auto& kv : rhs->values) {
         lhs->setValueAt(kv.first, kv.second);
@@ -302,6 +323,7 @@ void DataflowEngine::clear()
     signalConsumers.clear();
     precomputedExecutionOrders.clear();
     signalWrapperRefs.clear();
+    signalWrapperObjs.clear();
     signals.clear();
     funcs.clear();
     m_networkModified = false;

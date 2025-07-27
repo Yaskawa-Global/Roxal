@@ -2,6 +2,7 @@
 
 #include "Signal.h"
 #include "compiler/VM.h"
+#include "compiler/Object.h"
 
 #include <set>
 #include <memory>
@@ -93,8 +94,8 @@ public:
     size_t signalRefCount(ptr<Signal> signal) const;
 
     // track how many ObjSignal wrappers reference a signal
-    void registerSignalWrapper(ptr<Signal> signal);
-    size_t unregisterSignalWrapper(ptr<Signal> signal); // returns remaining count
+    void registerSignalWrapper(ptr<Signal> signal, roxal::ObjSignal* wrapper);
+    size_t unregisterSignalWrapper(ptr<Signal> signal, roxal::ObjSignal* wrapper); // returns remaining count
     size_t wrapperRefCount(ptr<Signal> signal) const;
 
     // how many functions consume this signal
@@ -144,6 +145,8 @@ private:
 
     // number of ObjSignal wrappers referencing each signal
     std::map<ptr<Signal>, size_t> signalWrapperRefs;
+    // actual weak references to ObjSignal wrappers for each signal
+    std::map<ptr<Signal>, std::vector<roxal::ObjSignal*>> signalWrapperObjs;
 
     // Mapping from signals to functions that consume them
     struct FuncInputInfo {

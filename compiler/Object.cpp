@@ -1866,14 +1866,14 @@ ObjSignal::ObjSignal(ptr<df::Signal> s)
 {
     type = ObjType::Signal;
     if (signal)
-        df::DataflowEngine::instance()->registerSignalWrapper(signal);
+        df::DataflowEngine::instance()->registerSignalWrapper(signal, this);
 }
 
 ObjSignal::~ObjSignal()
 {
     if (signal) {
         auto eng = df::DataflowEngine::instance();
-        size_t remaining = eng->unregisterSignalWrapper(signal);
+        size_t remaining = eng->unregisterSignalWrapper(signal, this);
         if (remaining == 0 && eng->consumerCount(signal) == 0)
             eng->removeSignal(signal, true);
     }
