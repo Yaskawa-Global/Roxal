@@ -1,0 +1,17 @@
+c = clock(10)
+
+r = c
+y = signal(10,0)
+
+e = r - y
+e.name = 'e'
+
+y <- r * 2
+y.name = 'y'
+
+c.tick()
+wait(ms=150)
+print(int(e))
+c.tick()
+wait(ms=150)
+print(int(e))
