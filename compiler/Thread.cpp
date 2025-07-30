@@ -86,7 +86,7 @@ void Thread::join(ActorInstance* actorInstOverride)
 
     osthread->join();
     osthread = nullptr;
-    actorInstance = nilVal();
+    actorInstance = Value::nilVal();
     actor = false;
 
     state = State::Completed;
@@ -177,15 +177,15 @@ void Thread::act(Value actorInstance)
                             callInfo.returnPromise->set_value(ret);
                             if (!callInfo.returnFuture.isNil()) {
                                 asFuture(callInfo.returnFuture)->wakeWaiters();
-                                callInfo.returnFuture = nilVal();
+                                callInfo.returnFuture = Value::nilVal();
                             }
                         }
                     } else {
                         if (callInfo.returnPromise != nullptr) {
-                            callInfo.returnPromise->set_value(nilVal());
+                            callInfo.returnPromise->set_value(Value::nilVal());
                             if (!callInfo.returnFuture.isNil()) {
                                 asFuture(callInfo.returnFuture)->wakeWaiters();
-                                callInfo.returnFuture = nilVal();
+                                callInfo.returnFuture = Value::nilVal();
                             }
                         }
                         quit = true;
@@ -229,10 +229,10 @@ void Thread::act(Value actorInstance)
         while(!actorInst->callQueue.empty()) {
             auto pending = actorInst->callQueue.pop();
             if (pending.returnPromise) {
-                pending.returnPromise->set_value(nilVal());
+                pending.returnPromise->set_value(Value::nilVal());
                 if (!pending.returnFuture.isNil()) {
                     asFuture(pending.returnFuture)->wakeWaiters();
-                    pending.returnFuture = nilVal();
+                    pending.returnFuture = Value::nilVal();
                 }
             }
         }

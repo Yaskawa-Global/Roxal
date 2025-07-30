@@ -420,7 +420,7 @@ struct ObjDict : public Obj
         auto it = entries.find(key);
         if (it != entries.end())
             return it->second;
-        return nilVal();
+        return Value::nilVal();
     }
 
     std::vector<Value> keys() const {
@@ -669,7 +669,7 @@ std::string objFileToString(const ObjFile* f);
 
 struct ObjException : public Obj {
     ObjException() { type = ObjType::Exception; }
-    ObjException(Value msg, Value exType = nilVal(), Value st = nilVal())
+    ObjException(Value msg, Value exType = Value::nilVal(), Value st = Value::nilVal())
         : message(msg), exType(exType), stackTrace(st) { type = ObjType::Exception; }
     virtual ~ObjException() {}
 
@@ -685,7 +685,7 @@ struct ObjException : public Obj {
 inline bool isException(const Value& v) { return isObjType(v, ObjType::Exception); }
 inline ObjException* asException(const Value& v) { return static_cast<ObjException*>(v.asObj()); }
 
-ObjException* exceptionVal(Value message = nilVal(), Value exType = nilVal(), Value stackTrace = nilVal());
+ObjException* exceptionVal(Value message = Value::nilVal(), Value exType = Value::nilVal(), Value stackTrace = Value::nilVal());
 std::string objExceptionToString(const ObjException* ex);
 std::string objExceptionStackTraceToString(const ObjException* ex);
 std::string stackTraceToString(Value frames);
@@ -729,7 +729,7 @@ struct ObjFunction : public Obj
     bool strict;        // true if function was compiled in strict mode
 
     FunctionType fnType { FunctionType::Function };
-    Value ownerType { nilVal() }; // weak ref owning type
+    Value ownerType { Value::nilVal() }; // weak ref owning type
     ast::Access access { ast::Access::Public };
 
     // for parameters with default values that must be re-evaluated on each call
@@ -861,7 +861,7 @@ struct ObjFuture : public Obj
     }
     virtual ~ObjFuture() {}
 
-    Value asValue() { return future.valid() ? future.get() : nilVal(); }
+    Value asValue() { return future.valid() ? future.get() : Value::nilVal(); }
 
     std::shared_future<Value> future;
 
@@ -966,7 +966,7 @@ struct ObjObjectType : public ObjTypeSpec
     bool isActor;
     bool isInterface;
     bool isEnumeration;
-    Value superType { nilVal() }; // parent type
+    Value superType { Value::nilVal() }; // parent type
     bool isCStruct { false };
     int cstructArch { hostArch };
     uint16_t enumTypeId;
@@ -977,7 +977,7 @@ struct ObjObjectType : public ObjTypeSpec
         Value type;
         Value initialValue;
         ast::Access access { ast::Access::Public };
-        Value ownerType { nilVal() }; // weak ref to owning type
+        Value ownerType { Value::nilVal() }; // weak ref to owning type
         std::optional<icu::UnicodeString> ctype;
     };
     std::unordered_map<int32_t, Property> properties;
@@ -987,7 +987,7 @@ struct ObjObjectType : public ObjTypeSpec
         icu::UnicodeString name;
         Value closure;
         ast::Access access { ast::Access::Public };
-        Value ownerType { nilVal() }; // weak ref to owning type
+        Value ownerType { Value::nilVal() }; // weak ref to owning type
     };
     std::unordered_map<int32_t, Method> methods;
 

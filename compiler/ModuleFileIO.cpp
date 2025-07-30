@@ -16,7 +16,7 @@ ModuleFileIO::ModuleFileIO()
 void ModuleFileIO::registerBuiltins(VM& vm)
 {
     {
-        std::vector<Value> d{ nilVal(), falseVal(), objVal(stringVal(toUnicodeString("text"))) };
+        std::vector<Value> d{ Value::nilVal(), Value::falseVal(), objVal(stringVal(toUnicodeString("text"))) };
         link("open", [this](VM& vm, ArgsView a){ return fileio_open_builtin(vm,a); }, d);
     }
     {
@@ -35,7 +35,7 @@ void ModuleFileIO::registerBuiltins(VM& vm)
         link("readLine", [this](VM& vm, ArgsView a){ return fileio_readline_builtin(vm,a); });
     }
     {
-        std::vector<Value> d{ nilVal(), objVal(stringVal(toUnicodeString("text"))) };
+        std::vector<Value> d{ Value::nilVal(), objVal(stringVal(toUnicodeString("text"))) };
         link("readFile", [this](VM& vm, ArgsView a){ return fileio_readfile_builtin(vm,a); }, d);
     }
     {
@@ -94,7 +94,7 @@ Value ModuleFileIO::fileio_open_builtin(VM& vm, ArgsView args)
     }
     f->open(path, mode);
     if (!f->is_open()) {
-        return falseVal();
+        return Value::falseVal();
     }
     return objVal(fileVal(f, binary));
 }
@@ -106,7 +106,7 @@ Value ModuleFileIO::fileio_close_builtin(VM& vm, ArgsView args)
     ObjFile* f = asFile(args[0]);
     if (f->file && f->file->is_open())
         f->file->close();
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value ModuleFileIO::fileio_isopen_builtin(VM& vm, ArgsView args)
@@ -114,7 +114,7 @@ Value ModuleFileIO::fileio_isopen_builtin(VM& vm, ArgsView args)
     if (args.size() != 1 || !isFile(args[0]))
         throw std::invalid_argument("fileio.isOpen expects file handle");
     ObjFile* f = asFile(args[0]);
-    return f->file && f->file->is_open() ? trueVal() : falseVal();
+    return f->file && f->file->is_open() ? Value::trueVal() : Value::falseVal();
 }
 
 Value ModuleFileIO::fileio_moredata_builtin(VM& vm, ArgsView args)
@@ -122,9 +122,9 @@ Value ModuleFileIO::fileio_moredata_builtin(VM& vm, ArgsView args)
     if (args.size() != 1 || !isFile(args[0]))
         throw std::invalid_argument("fileio.moreData expects file handle");
     ObjFile* f = asFile(args[0]);
-    if (!f->file || !f->file->is_open()) return falseVal();
+    if (!f->file || !f->file->is_open()) return Value::falseVal();
     int c = f->file->peek();
-    return (c == std::char_traits<char>::eof()) ? falseVal() : trueVal();
+    return (c == std::char_traits<char>::eof()) ? Value::falseVal() : Value::trueVal();
 }
 
 Value ModuleFileIO::fileio_read_builtin(VM& vm, ArgsView args)
@@ -132,7 +132,7 @@ Value ModuleFileIO::fileio_read_builtin(VM& vm, ArgsView args)
     if (args.size() != 1 || !isFile(args[0]))
         throw std::invalid_argument("fileio.read expects file handle");
     ObjFile* f = asFile(args[0]);
-    if (!f->file || !f->file->is_open()) return nilVal();
+    if (!f->file || !f->file->is_open()) return Value::nilVal();
     char buf[4096];
     f->file->read(buf, sizeof(buf));
     std::streamsize n = f->file->gcount();
@@ -140,7 +140,7 @@ Value ModuleFileIO::fileio_read_builtin(VM& vm, ArgsView args)
         ObjList* lst = listVal();
         lst->elts.reserve(static_cast<size_t>(n));
         for (std::streamsize i = 0; i < n; ++i)
-            lst->elts.push_back(byteVal(static_cast<uint8_t>(buf[i])));
+            lst->elts.push_back(Value::byteVal(static_cast<uint8_t>(buf[i])));
         return objVal(lst);
     }
     std::string s(buf, static_cast<size_t>(n));
@@ -152,17 +152,17 @@ Value ModuleFileIO::fileio_readline_builtin(VM& vm, ArgsView args)
     if (args.size() != 1 || !isFile(args[0]))
         throw std::invalid_argument("fileio.readLine expects file handle");
     ObjFile* f = asFile(args[0]);
-    if (!f->file || !f->file->is_open()) return nilVal();
+    if (!f->file || !f->file->is_open()) return Value::nilVal();
     if (f->binary) {
         Value exType = vm.loadGlobal(toUnicodeString("FileIOException")).value();
         Value msg = objVal(stringVal(toUnicodeString("readLine requires text mode")));
         Value exc = objVal(exceptionVal(msg, exType));
         vm.raiseException(exc);
-        return nilVal();
+        return Value::nilVal();
     }
     std::string line;
     if (!std::getline(*f->file, line))
-        return nilVal();
+        return Value::nilVal();
     return objVal(stringVal(toUnicodeString(line)));
 }
 
@@ -188,7 +188,7 @@ Value ModuleFileIO::fileio_readfile_builtin(VM& vm, ArgsView args)
         Value msg = objVal(stringVal(toUnicodeString("open failed")));
         Value exc = objVal(exceptionVal(msg, exType));
         vm.raiseException(exc);
-        return nilVal();
+        return Value::nilVal();
     }
     std::stringstream ss;
     ss << in.rdbuf();
@@ -197,7 +197,7 @@ Value ModuleFileIO::fileio_readfile_builtin(VM& vm, ArgsView args)
         ObjList* lst = listVal();
         lst->elts.reserve(data.size());
         for (char c : data)
-            lst->elts.push_back(byteVal(static_cast<uint8_t>(c)));
+            lst->elts.push_back(Value::byteVal(static_cast<uint8_t>(c)));
         return objVal(lst);
     }
     return objVal(stringVal(toUnicodeString(data)));
@@ -208,7 +208,7 @@ Value ModuleFileIO::fileio_write_builtin(VM& vm, ArgsView args)
     if (args.size() != 2 || !isFile(args[0]))
         throw std::invalid_argument("fileio.write expects file handle and data");
     ObjFile* f = asFile(args[0]);
-    if (!f->file || !f->file->is_open()) return nilVal();
+    if (!f->file || !f->file->is_open()) return Value::nilVal();
     if (f->binary) {
         if (!isList(args[1]))
             throw std::invalid_argument("fileio.write expects list of bytes in binary mode");
@@ -232,7 +232,7 @@ Value ModuleFileIO::fileio_write_builtin(VM& vm, ArgsView args)
         std::string s = toString(args[1]);
         (*f->file) << s;
     }
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value ModuleFileIO::fileio_fileexists_builtin(VM& vm, ArgsView args)
@@ -240,7 +240,7 @@ Value ModuleFileIO::fileio_fileexists_builtin(VM& vm, ArgsView args)
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.fileExists expects path string");
     std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
-    return std::filesystem::exists(p) && std::filesystem::is_regular_file(p) ? trueVal() : falseVal();
+    return std::filesystem::exists(p) && std::filesystem::is_regular_file(p) ? Value::trueVal() : Value::falseVal();
 }
 
 Value ModuleFileIO::fileio_direxists_builtin(VM& vm, ArgsView args)
@@ -248,7 +248,7 @@ Value ModuleFileIO::fileio_direxists_builtin(VM& vm, ArgsView args)
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.dirExists expects path string");
     std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
-    return std::filesystem::exists(p) && std::filesystem::is_directory(p) ? trueVal() : falseVal();
+    return std::filesystem::exists(p) && std::filesystem::is_directory(p) ? Value::trueVal() : Value::falseVal();
 }
 
 Value ModuleFileIO::fileio_filesize_builtin(VM& vm, ArgsView args)
@@ -257,8 +257,8 @@ Value ModuleFileIO::fileio_filesize_builtin(VM& vm, ArgsView args)
         throw std::invalid_argument("fileio.fileSize expects path string");
     std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
     if (!std::filesystem::exists(p) || !std::filesystem::is_regular_file(p))
-        return intVal(0);
-    return intVal(static_cast<int32_t>(std::filesystem::file_size(p)));
+        return Value::intVal(0);
+    return Value::intVal(static_cast<int32_t>(std::filesystem::file_size(p)));
 }
 
 Value ModuleFileIO::fileio_abspathfile_builtin(VM& vm, ArgsView args)
@@ -303,4 +303,3 @@ Value ModuleFileIO::fileio_filewoext_builtin(VM& vm, ArgsView args)
     std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
     return objVal(stringVal(toUnicodeString(p.replace_extension().string())));
 }
-

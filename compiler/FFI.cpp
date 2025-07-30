@@ -127,21 +127,21 @@ Value roxal::ffi_native(ArgsView args)
     ffi_call(&spec->cif, FFI_FN(spec->fn), &ret, argValues.data());
 
     if (spec->retType == &ffi_type_double)
-        return Value(ret.d);
+        return Value::realVal(ret.d);
     else if (spec->retType == &ffi_type_float)
-        return Value(double(ret.f));
+        return Value::realVal(double(ret.f));
     else if (spec->retType == &ffi_type_sint32)
-        return Value(intVal(ret.i));
+        return Value::intVal(ret.i);
     else if (spec->retType == &ffi_type_uint32)
-        return Value(intVal(int32_t(ret.ui32)));
+        return Value::intVal(int32_t(ret.ui32));
     else if (spec->retType == &ffi_type_sint16)
-        return Value(intVal(int32_t(ret.s16)));
+        return Value::intVal(int32_t(ret.s16));
     else if (spec->retType == &ffi_type_uint16)
-        return Value(intVal(int32_t(ret.u16)));
+        return Value::intVal(int32_t(ret.u16));
     else if (spec->retType == &ffi_type_sint8)
-        return Value(byteVal(uint8_t(ret.s8)));
+        return Value::byteVal(uint8_t(ret.s8));
     else if (spec->retType == &ffi_type_uint8)
-        return spec->retIsBool ? Value(boolVal(ret.u8 != 0)) : Value(byteVal(ret.u8));
+        return spec->retIsBool ? Value::boolVal(ret.u8 != 0) : Value::byteVal(ret.u8);
     else
         throw std::runtime_error("unsupported ffi return type");
 }
@@ -182,7 +182,7 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                 else
                     return Value(std::get<double>(n->num));
             } else if (auto b = std::dynamic_pointer_cast<ast::Bool>(expr)) {
-                return boolVal(b->value);
+                return Value::boolVal(b->value);
             } else if (auto v = std::dynamic_pointer_cast<ast::Variable>(expr)) {
                 auto name = v->name;
                 auto opt = mod->vars.load(name);
@@ -705,22 +705,22 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
             PrimitivePtrType pt = spec->argPrimPtrTypes[i];
             switch(pt) {
                 case PrimitivePtrType::Int32:
-                    argVector[i] = intVal(intPtrVals[i]);
+                    argVector[i] = Value::intVal(intPtrVals[i]);
                     break;
                 case PrimitivePtrType::UInt32:
-                    argVector[i] = intVal(int32_t(uint32PtrVals[i]));
+                    argVector[i] = Value::intVal(int32_t(uint32PtrVals[i]));
                     break;
                 case PrimitivePtrType::Int16:
-                    argVector[i] = intVal(int32_t(sint16PtrVals[i]));
+                    argVector[i] = Value::intVal(int32_t(sint16PtrVals[i]));
                     break;
                 case PrimitivePtrType::UInt16:
-                    argVector[i] = intVal(int32_t(uint16PtrVals[i]));
+                    argVector[i] = Value::intVal(int32_t(uint16PtrVals[i]));
                     break;
                 case PrimitivePtrType::Int8:
-                    argVector[i] = byteVal(uint8_t(sint8PtrVals[i]));
+                    argVector[i] = Value::byteVal(uint8_t(sint8PtrVals[i]));
                     break;
                 case PrimitivePtrType::UInt8:
-                    argVector[i] = byteVal(uint8PtrVals[i]);
+                    argVector[i] = Value::byteVal(uint8PtrVals[i]);
                     break;
                 default: break;
             }
@@ -736,19 +736,19 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
     else if (spec->retType == &ffi_type_float)
         return Value(double(ret.f));
     else if (spec->retType == &ffi_type_sint32)
-        return Value(intVal(ret.i));
+        return Value::intVal(ret.i);
     else if (spec->retType == &ffi_type_uint32)
-        return Value(intVal(int32_t(ret.ui32)));
+        return Value::intVal(int32_t(ret.ui32));
     else if (spec->retType == &ffi_type_sint16)
-        return Value(intVal(int32_t(ret.s16)));
+        return Value::intVal(int32_t(ret.s16));
     else if (spec->retType == &ffi_type_uint16)
-        return Value(intVal(int32_t(ret.u16)));
+        return Value::intVal(int32_t(ret.u16));
     else if (spec->retType == &ffi_type_sint8)
-        return Value(byteVal(uint8_t(ret.s8)));
+        return Value::byteVal(uint8_t(ret.s8));
     else if (spec->retType == &ffi_type_uint8)
-        return spec->retIsBool ? Value(boolVal(ret.u8 != 0)) : Value(byteVal(ret.u8));
+        return spec->retIsBool ? Value::boolVal(ret.u8 != 0) : Value::byteVal(ret.u8);
     else
-        return nilVal();
+        return Value::nilVal();
 }
 
 void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& prop,
@@ -985,7 +985,7 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
         void* p = nullptr;
         readPadded(&p, ptrSize, ptrSize);
         if (!p)
-            return nilVal();
+            return Value::nilVal();
         if (ctx) {
             for (size_t i = 0; i < ctx->buffers.size(); i++) {
                 if (ctx->buffers[i].data() == p && ctx->instances[i]) {
@@ -994,7 +994,7 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
                 }
             }
         }
-        return nilVal();
+        return Value::nilVal();
     }
 
 
@@ -1012,7 +1012,7 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
             void* p = nullptr;
             readPadded(&p, ptrSize, ptrSize);
             if (!p) {
-                val = (ppt==PrimitivePtrType::UInt8||ppt==PrimitivePtrType::Int8)?byteVal(0):intVal(0);
+                val = (ppt==PrimitivePtrType::UInt8||ppt==PrimitivePtrType::Int8)?Value::byteVal(0):Value::intVal(0);
                 return val;
             }
             if (ctx) {
@@ -1020,34 +1020,34 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
                     if (ctx->buffers[i].data()==p && ctx->primPtrTypes[i]==ppt) {
                         const uint8_t* buf = ctx->buffers[i].data();
                         switch(ppt) {
-                            case PrimitivePtrType::UInt8: val = byteVal(buf[0]); break;
-                            case PrimitivePtrType::Int8: val = byteVal(uint8_t(*(int8_t*)buf)); break;
-                            case PrimitivePtrType::UInt16: { uint16_t u; memcpy(&u,buf,2); val=intVal(int32_t(u)); break; }
-                            case PrimitivePtrType::Int16: { int16_t s; memcpy(&s,buf,2); val=intVal(int32_t(s)); break; }
-                            case PrimitivePtrType::UInt32: { uint32_t u; memcpy(&u,buf,4); val=intVal(int32_t(u)); break; }
-                            case PrimitivePtrType::Int32: { int32_t s; memcpy(&s,buf,4); val=intVal(s); break; }
+                            case PrimitivePtrType::UInt8: val = Value::byteVal(buf[0]); break;
+                            case PrimitivePtrType::Int8: val = Value::byteVal(uint8_t(*(int8_t*)buf)); break;
+                            case PrimitivePtrType::UInt16: { uint16_t u; memcpy(&u,buf,2); val=Value::intVal(int32_t(u)); break; }
+                            case PrimitivePtrType::Int16: { int16_t s; memcpy(&s,buf,2); val=Value::intVal(int32_t(s)); break; }
+                            case PrimitivePtrType::UInt32: { uint32_t u; memcpy(&u,buf,4); val=Value::intVal(int32_t(u)); break; }
+                            case PrimitivePtrType::Int32: { int32_t s; memcpy(&s,buf,4); val=Value::intVal(s); break; }
                             default: break;
                         }
                         return val;
                     }
                 }
             }
-            val = (ppt==PrimitivePtrType::UInt8||ppt==PrimitivePtrType::Int8)?byteVal(0):intVal(0);
+            val = (ppt==PrimitivePtrType::UInt8||ppt==PrimitivePtrType::Int8)?Value::byteVal(0):Value::intVal(0);
             return val;
         }
     }
     auto readByNameVal = [&](const std::string& ctype, Value& out) -> bool {
         if (ctype == "float") { float f; readPadded(&f, sizeof(f), 4); out = Value(double(f)); return true; }
-        if (ctype == "double" || ctype == "real") { double d; readPadded(&d, sizeof(d), 8); out = Value(d); return true; }
-        if (ctype == "int" || ctype == "int32_t") { int32_t i; readPadded(&i, sizeof(i), 4); out = intVal(i); return true; }
-        if (ctype == "uint32_t") { uint32_t u; readPadded(&u, sizeof(u), 4); out = intVal(int32_t(u)); return true; }
-        if (ctype == "int16_t") { int16_t s; readPadded(&s, sizeof(s), 2); out = intVal(int32_t(s)); return true; }
-        if (ctype == "uint16_t") { uint16_t u; readPadded(&u, sizeof(u), 2); out = intVal(int32_t(u)); return true; }
-        if (ctype == "int8_t") { int8_t s; readPadded(&s, sizeof(s),1); out = byteVal(uint8_t(s)); return true; }
-        if (ctype == "uint8_t") { uint8_t u; readPadded(&u, sizeof(u),1); out = byteVal(u); return true; }
-        if (ctype == "bool") { uint8_t b; readPadded(&b, sizeof(b),1); out = boolVal(b!=0); return true; }
+        if (ctype == "double" || ctype == "real") { double d; readPadded(&d, sizeof(d), 8); out = Value::realVal(d); return true; }
+        if (ctype == "int" || ctype == "int32_t") { int32_t i; readPadded(&i, sizeof(i), 4); out = Value::intVal(i); return true; }
+        if (ctype == "uint32_t") { uint32_t u; readPadded(&u, sizeof(u), 4); out = Value::intVal(int32_t(u)); return true; }
+        if (ctype == "int16_t") { int16_t s; readPadded(&s, sizeof(s), 2); out = Value::intVal(int32_t(s)); return true; }
+        if (ctype == "uint16_t") { uint16_t u; readPadded(&u, sizeof(u), 2); out = Value::intVal(int32_t(u)); return true; }
+        if (ctype == "int8_t") { int8_t s; readPadded(&s, sizeof(s),1); out = Value::byteVal(uint8_t(s)); return true; }
+        if (ctype == "uint8_t") { uint8_t u; readPadded(&u, sizeof(u),1); out = Value::byteVal(u); return true; }
+        if (ctype == "bool") { uint8_t b; readPadded(&b, sizeof(b),1); out = Value::boolVal(b!=0); return true; }
         if (ctype == "char*") { const char* p; readPadded(&p, ptrSize, ptrSize); out = objVal(stringVal(toUnicodeString(p?p:""))); return true; }
-        if (ctype == "void*" || (!ctype.empty() && ctype.back()=='*')) { void* p; readPadded(&p, ptrSize, ptrSize); out = p ? objVal(foreignPtrVal(p)) : nilVal(); return true; }
+        if (ctype == "void*" || (!ctype.empty() && ctype.back()=='*')) { void* p; readPadded(&p, ptrSize, ptrSize); out = p ? objVal(foreignPtrVal(p)) : Value::nilVal(); return true; }
         return false;
     };
 
@@ -1091,11 +1091,11 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
     } else if (isTypeSpec(prop.type)) {
         ObjTypeSpec* ts = asTypeSpec(prop.type);
         switch (ts->typeValue) {
-            case ValueType::Bool: { uint8_t b; readPadded(&b, sizeof(b), 1); val = boolVal(b != 0); break; }
-            case ValueType::Byte: { uint8_t v; readPadded(&v, sizeof(v), 1); val = byteVal(v); break; }
-            case ValueType::Int: { int32_t i; readPadded(&i, sizeof(i), 4); val = intVal(i); break; }
-            case ValueType::Real: { double d; readPadded(&d, sizeof(d), 8); val = Value(d); break; }
-            case ValueType::Enum: { int32_t e; readPadded(&e, sizeof(e), 4); val = intVal(e); break; }
+            case ValueType::Bool: { uint8_t b; readPadded(&b, sizeof(b), 1); val = Value::boolVal(b != 0); break; }
+            case ValueType::Byte: { uint8_t v; readPadded(&v, sizeof(v), 1); val = Value::byteVal(v); break; }
+            case ValueType::Int: { int32_t i; readPadded(&i, sizeof(i), 4); val = Value::intVal(i); break; }
+            case ValueType::Real: { double d; readPadded(&d, sizeof(d), 8); val = Value::realVal(d); break; }
+            case ValueType::Enum: { int32_t e; readPadded(&e, sizeof(e), 4); val = Value::intVal(e); break; }
             default:
                 throw std::runtime_error("unsupported struct property type");
         }

@@ -110,33 +110,47 @@ class Value {
 public:
     /// @brief Default constructor. Initializes the value to Nil.
     Value() : val(QNAN | TagNil) {}
+    static inline Value nilVal() { return Value(); }
 
     /// @brief Constructs a boolean value.
     /// @param b The boolean value.
     explicit Value(bool b) { val = b ? (QNAN | TagTrue) : (QNAN | TagFalse); }
-
+    static inline Value boolVal(bool b) { return Value(b); }
+    static inline Value trueVal() { return Value(true); }
+    static inline Value falseVal() { return Value(false); }
+    static Value boxedBoolVal(bool b);
 
     /// @brief Constructs a byte value.
     /// @param b The byte value.
     explicit Value(uint8_t b) { val = QNAN | TagByte | (0xff & *reinterpret_cast<uint8_t*>(&b)); }
-
-    /// @brief Constructs a real value.
-    /// @param r The real value.
-    explicit Value(double r) { val = (*reinterpret_cast<uint64_t*>(&r)); }
+    static inline Value byteVal(uint8_t b) { return Value(b); }
+    static Value boxedByteVal(uint8_t b);
 
     /// @brief Constructs an integer value.
     /// @param i The integer value.
     explicit Value(int32_t i) { val = QNAN | TagInt | (0xffffffff & *reinterpret_cast<uint64_t*>(&i)); }
+    static inline Value intVal(int32_t i) { return Value(i); }
+    static Value boxedIntVal(uint8_t b);
+
+    /// @brief Constructs a real value.
+    /// @param r The real value.
+    explicit Value(double r) { val = (*reinterpret_cast<uint64_t*>(&r)); }
+    static inline Value realVal(double r) { return Value(r); }
+    static Value boxedRealVal(double r);
 
     /// @brief Constructs a value of the specified builtin type.
     /// @param bt The builtin type.
     explicit Value(ValueType bt) { val = QNAN | TagType | uint64_t(bt); }
+    static inline Value typeVal(ValueType bt) { return Value(bt); }
+    static Value boxedTypeVal(ValueType bt);
 
     /// @brief Constructs a value from an object pointer.
     /// @param o The object pointer.
     explicit Value(Obj* o);
+
     explicit Value(int16_t enumLabelValue, uint16_t enumTypeId)
         { val = QNAN | TagEnum | (0xffffffff & (enumLabelValue | (uint64_t(enumTypeId) << 16))); }
+    static inline Value enumVal(int16_t labelVal, uint16_t enumTypeId) { return Value(labelVal, enumTypeId); }
 
 
     /// @brief Copy constructor.
@@ -370,21 +384,6 @@ protected:
 
 
 // value factories
-inline Value nilVal() { return Value(); }
-
-inline Value trueVal() { return Value(true); }
-inline Value falseVal() { return Value(false); }
-inline Value boolVal(bool b) { return Value(b); }
-
-inline Value byteVal(uint8_t b) { return Value(b); }
-
-inline Value intVal(int32_t i) { return Value(i); }
-
-inline Value realVal(double r) { return Value(r); }
-
-inline __attribute__((noinline)) Value enumVal(int16_t labelVal, uint16_t enumTypeId) { return Value(labelVal, enumTypeId); }
-
-inline Value typeVal(ValueType bt) { return Value(bt); }
 
 
 // create default value for given primitive or builtin

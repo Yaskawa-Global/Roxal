@@ -16,6 +16,7 @@ using namespace roxal;
 ModuleSys::ModuleSys()
 {
     moduleTypeValue = objVal(moduleTypeVal(toUnicodeString("sys")));
+    //ObjModuleType::allModules.push_back(moduleTypeValue);
 }
 
 
@@ -33,7 +34,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         std::vector<Value> pdefaults{
             objVal(stringVal(toUnicodeString(""))),
             objVal(stringVal(toUnicodeString("\n"))),
-            falseVal()
+            Value::falseVal()
         };
         addSys("print", [this](VM& vm, ArgsView a){ return print_builtin(vm,a); }, nullptr, pdefaults);
         addSys("len", [this](VM& vm, ArgsView a){ return len_builtin(vm,a); });
@@ -43,7 +44,7 @@ void ModuleSys::registerBuiltins(VM& vm)
             auto t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
             t->func->isProc = true;
-            std::vector<Value> defaults { intVal(0), intVal(0), intVal(0), intVal(0) };
+            std::vector<Value> defaults { Value::intVal(0), Value::intVal(0), Value::intVal(0), Value::intVal(0) };
             auto params = BuiltinModule::constructParams({ {"s", type::BuiltinType::Int},
                                            {"ms", type::BuiltinType::Int},
                                            {"us", type::BuiltinType::Int},
@@ -59,7 +60,7 @@ void ModuleSys::registerBuiltins(VM& vm)
             auto t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
             t->func->isProc = true;
-            std::vector<Value> defaults{ intVal(0) };
+            std::vector<Value> defaults{ Value::intVal(0) };
             auto params = BuiltinModule::constructParams({{"ret", type::BuiltinType::Int}}, defaults);
             t->func->params.resize(params.size());
             for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
@@ -84,7 +85,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         {
             auto t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
-            std::vector<Value> defaults{ nilVal(), objVal(stringVal(toUnicodeString(""))) };
+            std::vector<Value> defaults{ Value::nilVal(), objVal(stringVal(toUnicodeString(""))) };
             auto params = BuiltinModule::constructParams({
                     {"freq", type::BuiltinType::Int},
                     {"name", type::BuiltinType::String}},
@@ -126,7 +127,7 @@ Value ModuleSys::print_builtin(VM& vm, ArgsView args)
     std::cout << valueStr << endStr;
     if(flush)
         std::cout << std::flush;
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value ModuleSys::len_builtin(VM& vm, ArgsView args)
@@ -144,7 +145,7 @@ Value ModuleSys::len_builtin(VM& vm, ArgsView args)
         case ValueType::Vector: len = asVector(v)->length(); break;
         case ValueType::Range: {
             len = asRange(v)->length();
-            if (len<0) return nilVal(); // has no defined length
+            if (len<0) return Value::nilVal(); // has no defined length
         } break;
         default:
 #ifdef DEBUG_BUILD
@@ -153,7 +154,7 @@ Value ModuleSys::len_builtin(VM& vm, ArgsView args)
         ;
     }
 
-    return intVal(len);
+    return Value::intVal(len);
 }
 
 Value ModuleSys::help_builtin(VM& vm, ArgsView args)
@@ -240,7 +241,7 @@ Value ModuleSys::wait_builtin(VM& vm, ArgsView args)
     VM::thread->threadSleep = true;
     VM::thread->threadSleepUntil = TimePoint::currentTime() + microSecs;
 
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value ModuleSys::fork_builtin(VM& vm, ArgsView args)
@@ -261,7 +262,7 @@ Value ModuleSys::fork_builtin(VM& vm, ArgsView args)
     newThread->spawn(args[0]);
 
     int32_t id = int32_t(newThread->id());
-    return intVal(id);
+    return Value::intVal(id);
 }
 
 Value ModuleSys::join_builtin(VM& vm, ArgsView args)
@@ -275,7 +276,7 @@ Value ModuleSys::join_builtin(VM& vm, ArgsView args)
         t->join();
     });
 
-    return count > 0 ? trueVal() : falseVal();
+    return count > 0 ? Value::trueVal() : Value::falseVal();
 }
 
 Value ModuleSys::exit_builtin(VM& vm, ArgsView args)
@@ -289,7 +290,7 @@ Value ModuleSys::exit_builtin(VM& vm, ArgsView args)
         code = args[0].asInt();
     }
     vm.requestExit(code);
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value ModuleSys::threadid_builtin(VM& vm, ArgsView args)
@@ -298,7 +299,7 @@ Value ModuleSys::threadid_builtin(VM& vm, ArgsView args)
         throw std::invalid_argument("_threadid takes no arguments");
 
     int32_t id = int32_t(VM::thread->id()); // FIXME: id is uint64
-    return intVal(id);
+    return Value::intVal(id);
 }
 
 Value ModuleSys::stacktrace_builtin(VM& vm, ArgsView args)
@@ -315,7 +316,7 @@ Value ModuleSys::stackdepth_builtin(VM& vm, ArgsView args)
         throw std::invalid_argument("_stackdepth takes no arguments");
 
     int32_t depth = int32_t(VM::thread->stackTop - VM::thread->stack.begin());
-    return intVal(depth);
+    return Value::intVal(depth);
 }
 
 Value ModuleSys::await_builtin(VM& vm, ArgsView args)
@@ -347,7 +348,7 @@ Value ModuleSys::await_builtin(VM& vm, ArgsView args)
         }
     }
 
-    return intVal(numFuturesResolved);
+    return Value::intVal(numFuturesResolved);
 }
 
 Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
@@ -405,7 +406,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
         std::cout << "Passed " << passes << " failed " << fails << std::endl;
     }
 
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value ModuleSys::weakref_builtin(VM& vm, ArgsView args)
@@ -421,7 +422,7 @@ Value ModuleSys::weak_alive_builtin(VM& vm, ArgsView args)
     if (args.size() != 1)
         throw std::invalid_argument("weak_alive expects single argument");
 
-    return args[0].isAlive() ? trueVal() : falseVal();
+    return args[0].isAlive() ? Value::trueVal() : Value::falseVal();
 }
 
 Value ModuleSys::strongref_builtin(VM& vm, ArgsView args)
@@ -452,7 +453,7 @@ Value ModuleSys::serialize_builtin(VM& vm, ArgsView args)
     std::vector<Value> bytes;
     bytes.reserve(data.size());
     for(unsigned char ch : data)
-        bytes.push_back(byteVal(ch));
+        bytes.push_back(Value::byteVal(ch));
     return objVal(listVal(bytes));
 }
 
@@ -592,13 +593,13 @@ Value ModuleSys::toJson_builtin(VM& vm, ArgsView args)
 static Value jsonToValue(const json11::Json& j) {
     using json11::Json;
     switch(j.type()) {
-        case Json::NUL: return nilVal();
-        case Json::BOOL: return boolVal(j.bool_value());
+        case Json::NUL: return Value::nilVal();
+        case Json::BOOL: return Value::boolVal(j.bool_value());
         case Json::NUMBER: {
             double n = j.number_value();
             if(std::floor(n) == n && n >= std::numeric_limits<int32_t>::min() && n <= std::numeric_limits<int32_t>::max())
-                return intVal(static_cast<int32_t>(n));
-            return realVal(n);
+                return Value::intVal(static_cast<int32_t>(n));
+            return Value::realVal(n);
         }
         case Json::STRING: return objVal(stringVal(toUnicodeString(j.string_value())));
         case Json::ARRAY: {
@@ -614,7 +615,7 @@ static Value jsonToValue(const json11::Json& j) {
             return objVal(d);
         }
     }
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value ModuleSys::fromJson_builtin(VM& vm, ArgsView args)
@@ -632,7 +633,7 @@ Value ModuleSys::fromJson_builtin(VM& vm, ArgsView args)
 
 Value ModuleSys::clock_native(VM& vm, ArgsView args)
 {
-    return realVal(double(clock())/CLOCKS_PER_SEC);
+    return Value::realVal(double(clock())/CLOCKS_PER_SEC);
 }
 
 Value ModuleSys::clock_signal_native(VM& vm, ArgsView args)
@@ -655,7 +656,7 @@ Value ModuleSys::clock_signal_native(VM& vm, ArgsView args)
 Value ModuleSys::engine_stop_native(VM& vm, ArgsView args)
 {
     df::DataflowEngine::instance()->stop();
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value ModuleSys::typeof_native(VM& vm, ArgsView args)

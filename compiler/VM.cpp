@@ -119,7 +119,7 @@ size_t VM::marshalArgs(ptr<type::Type> funcType,
         else if (pi < defaults.size())
             arg = defaults[pi];
         else
-            arg = nilVal();
+            arg = Value::nilVal();
 
         if (params[pi].has_value() && params[pi]->type.has_value()) {
             ValueType vt = builtinToValueType(params[pi]->type.value()->builtin);
@@ -314,7 +314,7 @@ VM::~VM()
         dataflowEngineThread->join(); // This will set quit=true and wait for thread to finish
         dataflowEngineThread.reset(); // Release the thread
     }
-    dataflowEngineActor = nilVal();  // This will call decRef() via Value destructor
+    dataflowEngineActor = Value::nilVal();  // This will call decRef() via Value destructor
 
     // join any remaining threads to prevent leak reports
     joinAllThreads();
@@ -556,7 +556,7 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
 
                     // push a place-holder (nil) value onto the stack for the value
                     //  (since caller didn't push it before the call)
-                    push(nilVal());
+                    push(Value::nilVal());
 
                     // record ...
 
@@ -653,7 +653,7 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
                 if (pos >= 0)
                     ordered.push_back(*(argBegin + pos));
                 else
-                    ordered.push_back(nilVal());
+                    ordered.push_back(Value::nilVal());
             }
             *(thread->stackTop - callSpec.argCount - 1) = construct(builtinType, ordered.begin(), ordered.end());
             popN(callSpec.argCount);
@@ -712,7 +712,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
         if (outputs.size() == 1) {
             push(objVal(signalVal(outputs[0])));
         } else if (outputs.empty()) {
-            push(nilVal());
+            push(Value::nilVal());
         } else {
             std::vector<Value> outVals;
             outVals.reserve(outputs.size());
@@ -887,7 +887,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     assert(type->isEnumeration);
                     #endif
 
-                    Value value { nilVal() };
+                    Value value { Value::nilVal() };
 
                     if (callSpec.argCount == 0) {
 
@@ -1063,7 +1063,7 @@ std::pair<InterpretResult,Value> VM::callAndExec(ObjClosure* closure, const std:
         push(a);
     CallSpec spec(args.size());
     if(!call(closure, spec))
-        return { InterpretResult::RuntimeError, nilVal() };
+        return { InterpretResult::RuntimeError, Value::nilVal() };
 
     auto result = execute();
 
@@ -1732,7 +1732,7 @@ void VM::defineNative(const std::string& name, NativeFn function,
 std::pair<InterpretResult,Value> VM::execute()
 {
     if (thread->frames.empty() || thread->frames.back().closure->function->chunk->code.size()==0)
-        return std::make_pair(InterpretResult::OK,nilVal()); // nothing to execute
+        return std::make_pair(InterpretResult::OK, Value::nilVal()); // nothing to execute
 
     // Track execution depth for nested calls
     thread->execute_depth++;
@@ -1813,7 +1813,7 @@ std::pair<InterpretResult,Value> VM::execute()
     std::cout << std::endl << "== executing ==" << std::endl;
     #endif
 
-    auto errorReturn = std::make_pair(InterpretResult::RuntimeError,nilVal());
+    auto errorReturn = std::make_pair(InterpretResult::RuntimeError,Value::nilVal());
 
 
     //
@@ -1826,7 +1826,7 @@ std::pair<InterpretResult,Value> VM::execute()
         if (runtimeErrorFlag.load())
             return errorReturn;
         if (exitRequested.load())
-            return std::make_pair(InterpretResult::OK,nilVal());
+            return std::make_pair(InterpretResult::OK,Value::nilVal());
 
         // if we're 'sleeping' don't execute any instructions
         //  (we may have been woken up by an event or a spurious wakeup, in which case we'll re-block below)
@@ -1895,7 +1895,7 @@ std::pair<InterpretResult,Value> VM::execute()
                             *(frame->slots + 1 + pi) = toType(vt, *(frame->slots + 1 + pi), strictConv);
                         } catch(std::exception& e) {
                             runtimeError(e.what());
-                            return std::make_pair(InterpretResult::RuntimeError,nilVal());
+                            return std::make_pair(InterpretResult::RuntimeError,Value::nilVal());
                         }
                     }
                 }
@@ -1917,19 +1917,19 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::ConstTrue): {
-                push(trueVal());
+                push(Value::trueVal());
                 break;
             }
             case asByte(OpCode::ConstFalse): {
-                push(falseVal());
+                push(Value::falseVal());
                 break;
             }
             case asByte(OpCode::ConstInt0): {
-                push(intVal(0));
+                push(Value::intVal(0));
                 break;
             }
             case asByte(OpCode::ConstInt1): {
-                push(intVal(1));
+                push(Value::intVal(1));
                 break;
             }
             case asByte(OpCode::GetProp2):
@@ -2580,7 +2580,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 ObjObjectType* superType = asObjectType(pop());
                 auto br = bindMethod(superType,name);
                 if (br != BindResult::Bound)
-                    return std::make_pair(InterpretResult::RuntimeError,nilVal());
+                    return std::make_pair(InterpretResult::RuntimeError,Value::nilVal());
 
                 break;
             }
@@ -2601,7 +2601,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 Value a = pop();
                 a.resolve();
                 b.resolve();
-                push(boolVal(a.is(b, frame->strict)));
+                push(Value::boolVal(a.is(b, frame->strict)));
                 break;
             }
             case asByte(OpCode::Greater): {
@@ -2993,7 +2993,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::ConstNil): {
-                push(nilVal());
+                push(Value::nilVal());
                 break;
             }
             case asByte(OpCode::GetLocal): {
@@ -3597,7 +3597,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 #ifdef DEBUG_BUILD
                 runtimeError("Invalid instruction "+std::to_string(instruction));
                 #endif
-                return std::make_pair(InterpretResult::RuntimeError,nilVal());
+                return std::make_pair(InterpretResult::RuntimeError,Value::nilVal());
                 break;
         }
 
@@ -3625,7 +3625,7 @@ std::pair<InterpretResult,Value> VM::execute()
     } // for
 
     if (thread->execute_depth > 0) thread->execute_depth--;
-    return std::make_pair(InterpretResult::OK,nilVal());
+    return std::make_pair(InterpretResult::OK, Value::nilVal());
 
 }
 
@@ -3681,7 +3681,7 @@ bool VM::processPendingEvents()
                     }
                     if (raise) {
                         Value excType = globals.load(toUnicodeString("ConditionalInterrupt")).value();
-                        Value exc = objVal(exceptionVal(nilVal(), excType));
+                        Value exc = objVal(exceptionVal(Value::nilVal(), excType));
                         raiseException(exc);
                     }
                 } else {
@@ -4057,7 +4057,7 @@ Value VM::exception_stacktrace_getter(Value& receiver)
 #endif
     if (!isException(receiver)) {
         runtimeError("Undefined property 'stackTrace'");
-        return nilVal();
+        return Value::nilVal();
     }
     ObjException* ex = asException(receiver);
     return ex->stackTrace;
@@ -4071,7 +4071,7 @@ Value VM::exception_stacktrace_string_getter(Value& receiver)
 #endif
     if (!isException(receiver)) {
         runtimeError("Undefined property 'stackTraceString'");
-        return nilVal();
+        return Value::nilVal();
     }
     ObjException* ex = asException(receiver);
     std::string out = stackTraceToString(ex->stackTrace);
@@ -4100,8 +4100,8 @@ Value VM::captureStacktrace()
         int line = chunk->getLine(instruction);
         int col  = chunk->getColumn(instruction);
 
-        frameDict->store(objVal(stringVal(UnicodeString("line"))), intVal(line));
-        frameDict->store(objVal(stringVal(UnicodeString("col"))), intVal(col));
+        frameDict->store(objVal(stringVal(UnicodeString("line"))), Value::intVal(line));
+        frameDict->store(objVal(stringVal(UnicodeString("col"))), Value::intVal(col));
 
         frameDict->store(objVal(stringVal(UnicodeString("filename"))),
                          objVal(stringVal(chunk->sourceName)));
@@ -4127,11 +4127,11 @@ Value VM::event_emit_builtin(ArgsView args)
     Value eventWeak = args[0].weakRef();
     ObjEvent* ev = asEvent(args[0]);
     if (ev->subscribers.empty())
-        return nilVal();
+        return Value::nilVal();
 
     scheduleEventHandlers(eventWeak, ev, when);
 
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value VM::event_on_builtin(ArgsView args)
@@ -4150,7 +4150,7 @@ Value VM::event_on_builtin(ArgsView args)
     closure->handlerThread = thread;
     ev->subscribers.push_back(closureVal.weakRef());
 
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value VM::event_off_builtin(ArgsView args)
@@ -4192,7 +4192,7 @@ Value VM::event_off_builtin(ArgsView args)
             ++it;
     }
 
-    return nilVal();
+    return Value::nilVal();
 }
 
 
@@ -4204,7 +4204,7 @@ Value VM::vector_norm_builtin(ArgsView args)
 
     ObjVector* vec = asVector(args[0]);
     double n = vec->vec.norm();
-    return realVal(n);
+    return Value::realVal(n);
 }
 
 Value VM::vector_sum_builtin(ArgsView args)
@@ -4214,7 +4214,7 @@ Value VM::vector_sum_builtin(ArgsView args)
 
     ObjVector* vec = asVector(args[0]);
     double s = vec->vec.sum();
-    return realVal(s);
+    return Value::realVal(s);
 }
 
 Value VM::vector_normalized_builtin(ArgsView args)
@@ -4238,7 +4238,7 @@ Value VM::vector_dot_builtin(ArgsView args)
         throw std::invalid_argument("vector.dot requires vectors of same length");
 
     double d = v1->vec.dot(v2->vec);
-    return realVal(d);
+    return Value::realVal(d);
 }
 
 Value VM::matrix_rows_builtin(ArgsView args)
@@ -4247,7 +4247,7 @@ Value VM::matrix_rows_builtin(ArgsView args)
         throw std::invalid_argument("matrix.rows expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
-    return intVal(mat->rows());
+    return Value::intVal(mat->rows());
 }
 
 Value VM::matrix_cols_builtin(ArgsView args)
@@ -4256,7 +4256,7 @@ Value VM::matrix_cols_builtin(ArgsView args)
         throw std::invalid_argument("matrix.cols expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
-    return intVal(mat->cols());
+    return Value::intVal(mat->cols());
 }
 
 Value VM::matrix_transpose_builtin(ArgsView args)
@@ -4279,7 +4279,7 @@ Value VM::matrix_determinant_builtin(ArgsView args)
         throw std::invalid_argument("matrix.determinant requires a square matrix");
 
     double det = mat->mat.determinant();
-    return realVal(det);
+    return Value::realVal(det);
 }
 
 Value VM::matrix_inverse_builtin(ArgsView args)
@@ -4302,7 +4302,7 @@ Value VM::matrix_trace_builtin(ArgsView args)
 
     ObjMatrix* mat = asMatrix(args[0]);
     double tr = mat->mat.trace();
-    return realVal(tr);
+    return Value::realVal(tr);
 }
 
 Value VM::matrix_norm_builtin(ArgsView args)
@@ -4312,7 +4312,7 @@ Value VM::matrix_norm_builtin(ArgsView args)
 
     ObjMatrix* mat = asMatrix(args[0]);
     double n = mat->mat.norm();
-    return realVal(n);
+    return Value::realVal(n);
 }
 
 Value VM::matrix_sum_builtin(ArgsView args)
@@ -4322,7 +4322,7 @@ Value VM::matrix_sum_builtin(ArgsView args)
 
     ObjMatrix* mat = asMatrix(args[0]);
     double s = mat->mat.sum();
-    return realVal(s);
+    return Value::realVal(s);
 }
 
 Value VM::list_append_builtin(ArgsView args)
@@ -4334,7 +4334,7 @@ Value VM::list_append_builtin(ArgsView args)
     // Currently signals may not be resolved immediately, requiring workarounds like arithmetic (0 + signal)
     ObjList* list = asList(args[0]);
     list->elts.push_back(args[1]);
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value VM::signal_run_builtin(ArgsView args)
@@ -4348,7 +4348,7 @@ Value VM::signal_run_builtin(ArgsView args)
         throw std::runtime_error("signal.run not supported for non-source signal");
 
     sig->run();
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value VM::signal_stop_builtin(ArgsView args)
@@ -4362,7 +4362,7 @@ Value VM::signal_stop_builtin(ArgsView args)
         throw std::runtime_error("signal.stop not supported for non-source signal");
 
     sig->stop();
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value VM::signal_tick_builtin(ArgsView args)
@@ -4376,7 +4376,7 @@ Value VM::signal_tick_builtin(ArgsView args)
         throw std::runtime_error("signal.tick only supported for source signals");
 
     sig->tickOnce();
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value VM::signal_freq_builtin(ArgsView args)
@@ -4386,7 +4386,7 @@ Value VM::signal_freq_builtin(ArgsView args)
 
     ObjSignal* objSignal = asSignal(args[0]);
     auto sig = objSignal->signal;
-    return intVal(sig->frequency());
+    return Value::intVal(sig->frequency());
 }
 
 Value VM::signal_set_builtin(ArgsView args)
@@ -4400,7 +4400,7 @@ Value VM::signal_set_builtin(ArgsView args)
         throw std::runtime_error("signal.set not supported for non-source signal");
 
     sig->set(args[1]);
-    return nilVal();
+    return Value::nilVal();
 }
 
 
@@ -4418,13 +4418,13 @@ void VM::defineNativeFunctions()
 Value VM::dataflow_tick_native(ArgsView args)
 {
     df::DataflowEngine::instance()->tick(false);
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value VM::dataflow_run_native(ArgsView args)
 {
     df::DataflowEngine::instance()->run();
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value VM::dataflow_run_for_native(ArgsView args)
@@ -4436,7 +4436,7 @@ Value VM::dataflow_run_for_native(ArgsView args)
     // This should be fixed so runFor sends a message to the dataflow actor thread and returns immediately
     auto duration = df::TimeDuration::microSecs(args[1].asInt());
     df::DataflowEngine::instance()->runFor(duration);
-    return nilVal();
+    return Value::nilVal();
 }
 
 

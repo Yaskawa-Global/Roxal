@@ -825,20 +825,20 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
         }
     };
 
-    roundTrip("bool_true", boolVal(true));
-    roundTrip("byte_val", byteVal(123));
-    roundTrip("int_val", intVal(-42));
-    roundTrip("real_val", realVal(3.5));
+    roundTrip("bool_true", Value::boolVal(true));
+    roundTrip("byte_val", Value::byteVal(123));
+    roundTrip("int_val", Value::intVal(-42));
+    roundTrip("real_val", Value::realVal(3.5));
     roundTrip("string_val", objVal(stringVal(UnicodeString("hello"))));
-    roundTrip("range_val", objVal(rangeVal(intVal(1), intVal(3), intVal(1), false)));
+    roundTrip("range_val", objVal(rangeVal(Value::intVal(1), Value::intVal(3), Value::intVal(1), false)));
 
     ObjList* lst = listVal();
-    lst->append(intVal(1));
-    lst->append(intVal(2));
+    lst->append(Value::intVal(1));
+    lst->append(Value::intVal(2));
     roundTrip("list_val", objVal(lst));
 
     ObjDict* d = dictVal();
-    d->store(intVal(1), intVal(2));
+    d->store(Value::intVal(1), Value::intVal(2));
     roundTrip("dict_val", objVal(d));
 
     ObjVector* vec = vectorVal(2);
@@ -907,18 +907,17 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
             fn->chunk->write(OpCode::ConstNil,0,0);
             fn->chunk->write(OpCode::Return,0,0);
             ObjClosure* cl = closureVal(fn);
-            Value* local = new Value(intVal(3));
-            cl->upvalues[0] = upvalueVal(local);
+            Value local = Value::intVal(3);
+            cl->upvalues[0] = upvalueVal(&local);
             std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
             cl->write(ss);
             ss.seekg(0);
             auto cl2 = newObj<ObjClosure>(__func__, nullptr);
             cl2->read(ss);
-            bool pass = cl2->function->name == cl->function->name && cl2->upvalues.size()==cl->upvalues.size() && cl2->upvalues[0]->closed.equals(intVal(3), true);
+            bool pass = cl2->function->name == cl->function->name && cl2->upvalues.size()==cl->upvalues.size() && cl2->upvalues[0]->closed.equals(Value::intVal(3), true);
             results.push_back({"closure_round", pass, pass?"ok":"mismatch"});
             delObj(cl2);
             delObj(cl);
-            delete local;
         } catch(std::exception& e) {
             results.push_back({"closure_round", false, std::string("exception: ")+e.what()});
         }
@@ -976,14 +975,14 @@ void Value::resolve()
 Value roxal::defaultValue(ValueType t)
 {
     switch (t) {
-        case ValueType::Nil: return nilVal();
-        case ValueType::Bool: return falseVal();
-        case ValueType::Byte: return byteVal(0);
-        case ValueType::Int: return intVal(0);
-        case ValueType::Real: return realVal(0.0);
+        case ValueType::Nil: return Value::nilVal();
+        case ValueType::Bool: return Value::falseVal();
+        case ValueType::Byte: return Value::byteVal(0);
+        case ValueType::Int: return Value::intVal(0);
+        case ValueType::Real: return Value::realVal(0.0);
         case ValueType::Decimal: throw std::runtime_error("decimal unimplemented");
         case ValueType::Enum: throw std::runtime_error("Can't create default enum value without type"); // shouldn't be called for this t
-        case ValueType::Type: return typeVal(ValueType::Nil);
+        case ValueType::Type: return Value::typeVal(ValueType::Nil);
         case ValueType::String: return Value(stringVal(UnicodeString()));
         case ValueType::Range: return Value(rangeVal());
         case ValueType::List: return Value(listVal());
@@ -999,7 +998,7 @@ Value roxal::defaultValue(ValueType t)
         default:
             throw std::runtime_error("default value unimplemented for type "+to_string(t));
     }
-    return nilVal();
+    return Value::nilVal();
 }
 
 
@@ -1022,10 +1021,10 @@ Value roxal::toType(ValueType t, Value v, bool strict)
     }
 
     switch (t) {
-        case ValueType::Bool: return boolVal(v.asBool(strict));
-        case ValueType::Byte: return byteVal(v.asByte(strict));
-        case ValueType::Real: return realVal(v.asReal(strict));
-        case ValueType::Int: return intVal(v.asInt(strict));
+        case ValueType::Bool: return Value::boolVal(v.asBool(strict));
+        case ValueType::Byte: return Value::byteVal(v.asByte(strict));
+        case ValueType::Real: return Value::realVal(v.asReal(strict));
+        case ValueType::Int: return Value::intVal(v.asInt(strict));
         case ValueType::String: {
             // allow conversion of typed exceptions to just the message text
             if (isException(v)) {
@@ -1045,7 +1044,7 @@ Value roxal::toType(ValueType t, Value v, bool strict)
             if (v.type() == ValueType::Range)
                 return v;
             if (!strict)
-                return objVal(rangeVal(v,v,intVal(1),true));
+                return objVal(rangeVal(v,v,Value::intVal(1),true));
         } break;
         case ValueType::List: {
             if ((v.type() == ValueType::Range) && !strict)
@@ -1139,7 +1138,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
             throw std::runtime_error("signal constructor expects frequency, optional initial value and optional name");
 
         double freq = toType(ValueType::Real, *begin, false).asReal();
-        Value initial = nilVal();
+        Value initial = Value::nilVal();
         if (count >= 2)
             initial = *(begin + 1);
 
@@ -1179,7 +1178,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                     if (bit)
                         value |= uint8_t(1u << (7 - i));
                 }
-                return byteVal(value);
+                return Value::byteVal(value);
             }
         }
     }
@@ -1209,7 +1208,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                             value |= (1u << (31 - i));
                     }
                     int32_t result = *reinterpret_cast<int32_t*>(&value);
-                    return intVal(result);
+                    return Value::intVal(result);
                 } else if (parts.size() == 4) {
                     uint32_t value = 0;
                     for (size_t i = 0; i < 4; ++i) {
@@ -1217,7 +1216,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                         value |= uint32_t(b) << (8 * (3 - i));
                     }
                     int32_t result = *reinterpret_cast<int32_t*>(&value);
-                    return intVal(result);
+                    return Value::intVal(result);
                 } else {
                     throw std::runtime_error("int constructor expects list of 32 bits or 4 bytes");
                 }
@@ -1318,7 +1317,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
         // pass non-stict as this is an explicit construction/conversion
         return toType(type, *begin, /*strict=*/false);
     throw std::runtime_error("type constructors with >1 arg unimplemented");
-    return nilVal();
+    return Value::nilVal();
 }
 
 
@@ -1362,9 +1361,9 @@ bool roxal::isTruthy(const Value& v)
 Value roxal::negate(Value v)
 {
     if (v.isInt() || v.isByte())
-        return intVal(-v.asInt());
+        return Value::intVal(-v.asInt());
     else if (v.isReal())
-        return realVal(-v.asReal());
+        return Value::realVal(-v.asReal());
     else if (isVector(v)) {
         const ObjVector* vec = asVector(v);
         Eigen::VectorXd result = -vec->vec;
@@ -1376,9 +1375,9 @@ Value roxal::negate(Value v)
         return objVal(matrixVal(result));
     }
     else if (v.isBool())
-        return boolVal(!v.asBool());
+        return Value::boolVal(!v.asBool());
     else if (v.isNil())
-        return boolVal(true);
+        return Value::boolVal(true);
 
     // TODO: decimal
 
@@ -1459,9 +1458,9 @@ Value roxal::add(Value l, Value r)
     if (l.isNumber() && r.isNumber()) {
         ValueType resultType(binaryOpType(l,r));
         switch (resultType) {
-            case ValueType::Int: return intVal(l.asInt()+r.asInt());
-            case ValueType::Real: return realVal(l.asReal()+r.asReal());
-            case ValueType::Byte: return byteVal(l.asByte()+r.asByte());
+            case ValueType::Int: return Value::intVal(l.asInt()+r.asInt());
+            case ValueType::Real: return Value::realVal(l.asReal()+r.asReal());
+            case ValueType::Byte: return Value::byteVal(l.asByte()+r.asByte());
             //... decimal
             default: ;
         }
@@ -1541,9 +1540,9 @@ Value roxal::subtract(Value l, Value r)
 
     ValueType resultType(binaryOpType(l,r));
     switch (resultType) {
-        case ValueType::Int: return intVal(l.asInt()-r.asInt());
-        case ValueType::Real: return realVal(l.asReal()-r.asReal());
-        case ValueType::Byte: return byteVal(l.asByte()-r.asByte());
+        case ValueType::Int: return Value::intVal(l.asInt()-r.asInt());
+        case ValueType::Real: return Value::realVal(l.asReal()-r.asReal());
+        case ValueType::Byte: return Value::byteVal(l.asByte()-r.asByte());
         //... decimal
         default: ;
     }
@@ -1559,7 +1558,7 @@ Value roxal::multiply(Value l, Value r)
         if (lv->length() != rv->length())
             throw std::invalid_argument("Vector dot product requires vectors of same length");
         double dot = lv->vec.dot(rv->vec);
-        return realVal(dot);
+        return Value::realVal(dot);
     }
     if (isVector(l) && r.isNumber()) {
         const ObjVector* lv = asVector(l);
@@ -1622,9 +1621,9 @@ Value roxal::multiply(Value l, Value r)
 
     ValueType resultType(binaryOpType(l,r));
     switch (resultType) {
-        case ValueType::Int: return intVal(l.asInt()*r.asInt());
-        case ValueType::Real: return realVal(l.asReal()*r.asReal());
-        case ValueType::Byte: return byteVal(l.asByte()*r.asByte());
+        case ValueType::Int: return Value::intVal(l.asInt()*r.asInt());
+        case ValueType::Real: return Value::realVal(l.asReal()*r.asReal());
+        case ValueType::Byte: return Value::byteVal(l.asByte()*r.asByte());
         //... decimal
         default: ;
     }
@@ -1650,9 +1649,9 @@ Value roxal::divide(Value l, Value r)
 
     ValueType resultType(binaryOpType(l,r));
     switch (resultType) {
-        case ValueType::Int: return intVal(l.asInt()/r.asInt());
-        case ValueType::Real: return realVal(l.asReal()/r.asReal());
-        case ValueType::Byte: return byteVal(l.asByte()/r.asByte());
+        case ValueType::Int: return Value::intVal(l.asInt()/r.asInt());
+        case ValueType::Real: return Value::realVal(l.asReal()/r.asReal());
+        case ValueType::Byte: return Value::byteVal(l.asByte()/r.asByte());
         //... decimal
         default: ;
     }
@@ -1675,7 +1674,7 @@ Value roxal::mod(Value l, Value r)
 
     int32_t lhs = toType(ValueType::Int, l, false).asInt();
     int32_t rhs = toType(ValueType::Int, r, false).asInt();
-    return intVal(lhs % rhs);
+    return Value::intVal(lhs % rhs);
 }
 
 void roxal::copyInto(Value& lhs, const Value& rhs)
@@ -1743,7 +1742,7 @@ void roxal::copyInto(Value& lhs, const Value& rhs)
 Value roxal::land(Value l, Value r)
 {
     if (l.isBool() && r.isBool())
-        return boolVal(l.asBool() && r.asBool());
+        return Value::boolVal(l.asBool() && r.asBool());
 
     if (!l.isBool() && !isSignal(l))
         throw std::invalid_argument("LHS must be a bool");
@@ -1756,14 +1755,14 @@ Value roxal::land(Value l, Value r)
                               l, r);
     }
 
-    return boolVal(l.asBool() && r.asBool());
+    return Value::boolVal(l.asBool() && r.asBool());
 }
 
 
 Value roxal::lor(Value l, Value r)
 {
     if (l.isBool() && r.isBool())
-        return boolVal(l.asBool() || r.asBool());
+        return Value::boolVal(l.asBool() || r.asBool());
 
     if (!l.isBool() && !isSignal(l))
         throw std::invalid_argument("LHS must be a bool");
@@ -1776,7 +1775,7 @@ Value roxal::lor(Value l, Value r)
                               l, r);
     }
 
-    return boolVal(l.asBool() || r.asBool());
+    return Value::boolVal(l.asBool() || r.asBool());
 }
 
 
@@ -1807,14 +1806,14 @@ Value roxal::band(Value l, Value r)
     if ((l.isBool() || l.isByte() || l.isInt()) &&
         (r.isBool() || r.isByte() || r.isInt())) {
         if (l.isBool() && r.isBool())
-            return boolVal(l.asBool() & r.asBool());
+            return Value::boolVal(l.asBool() & r.asBool());
 
         if (l.isByte() && r.isByte())
-            return byteVal(l.asByte(false) & r.asByte(false));
+            return Value::byteVal(l.asByte(false) & r.asByte(false));
 
         uint32_t lhs = static_cast<uint32_t>(toType(ValueType::Int, l, false).asInt());
         uint32_t rhs = static_cast<uint32_t>(toType(ValueType::Int, r, false).asInt());
-        return intVal(static_cast<int32_t>(lhs & rhs));
+        return Value::intVal(static_cast<int32_t>(lhs & rhs));
     }
 
     throw std::invalid_argument("Operands must be bool, byte, int or dict");
@@ -1848,14 +1847,14 @@ Value roxal::bor(Value l, Value r)
     if ((l.isBool() || l.isByte() || l.isInt()) &&
         (r.isBool() || r.isByte() || r.isInt())) {
         if (l.isBool() && r.isBool())
-            return boolVal(l.asBool() | r.asBool());
+            return Value::boolVal(l.asBool() | r.asBool());
 
         if (l.isByte() && r.isByte())
-            return byteVal(l.asByte(false) | r.asByte(false));
+            return Value::byteVal(l.asByte(false) | r.asByte(false));
 
         uint32_t lhs = static_cast<uint32_t>(toType(ValueType::Int, l, false).asInt());
         uint32_t rhs = static_cast<uint32_t>(toType(ValueType::Int, r, false).asInt());
-        return intVal(static_cast<int32_t>(lhs | rhs));
+        return Value::intVal(static_cast<int32_t>(lhs | rhs));
     }
 
     throw std::invalid_argument("Operands must be bool, byte, int or dict");
@@ -1872,14 +1871,14 @@ Value roxal::bxor(Value l, Value r)
     if ((l.isBool() || l.isByte() || l.isInt()) &&
         (r.isBool() || r.isByte() || r.isInt())) {
         if (l.isBool() && r.isBool())
-            return boolVal(l.asBool() ^ r.asBool());
+            return Value::boolVal(l.asBool() ^ r.asBool());
 
         if (l.isByte() && r.isByte())
-            return byteVal(l.asByte(false) ^ r.asByte(false));
+            return Value::byteVal(l.asByte(false) ^ r.asByte(false));
 
         uint32_t lhs = static_cast<uint32_t>(toType(ValueType::Int, l, false).asInt());
         uint32_t rhs = static_cast<uint32_t>(toType(ValueType::Int, r, false).asInt());
-        return intVal(static_cast<int32_t>(lhs ^ rhs));
+        return Value::intVal(static_cast<int32_t>(lhs ^ rhs));
     }
 
     throw std::invalid_argument("Operands must be bool, byte or int");
@@ -1892,12 +1891,12 @@ Value roxal::bnot(Value v)
     }
 
     if (v.isBool())
-        return boolVal(!v.asBool());
+        return Value::boolVal(!v.asBool());
     if (v.isByte())
-        return byteVal(~v.asByte(false));
+        return Value::byteVal(~v.asByte(false));
     if (v.isInt()) {
         uint32_t val = static_cast<uint32_t>(v.asInt());
-        return intVal(static_cast<int32_t>(~val));
+        return Value::intVal(static_cast<int32_t>(~val));
     }
 
     throw std::invalid_argument("Operand must be bool, byte or int");
@@ -1916,11 +1915,11 @@ Value roxal::greater(Value l, Value r)
     if (l.isNumber() && r.isNumber()) {
         ValueType resultType(binaryOpType(l,r));
         switch (resultType) {
-            case ValueType::Int: return boolVal(l.asInt() > r.asInt());
-            case ValueType::Real: return boolVal(l.asReal() > r.asReal());
-            case ValueType::Byte: return boolVal(l.asByte() > r.asByte());
+            case ValueType::Int: return Value::boolVal(l.asInt() > r.asInt());
+            case ValueType::Real: return Value::boolVal(l.asReal() > r.asReal());
+            case ValueType::Byte: return Value::boolVal(l.asByte() > r.asByte());
             //... decimal
-            default: return falseVal();
+            default: return Value::falseVal();
         }
     }
     else if (l.isObj() && r.isObj()) {
@@ -1930,9 +1929,9 @@ Value roxal::greater(Value l, Value r)
 
             // if lhs & rhs are the same string, one is not greater than the other
             if (lstr->hash == rstr->hash)
-                return falseVal();
+                return Value::falseVal();
 
-            return boolVal(lstr->s.compareCodePointOrder(rstr->s) > 0);
+            return Value::boolVal(lstr->s.compareCodePointOrder(rstr->s) > 0);
         }
     }
     throw std::invalid_argument("Invalid arguments to greater operator - "+l.typeName()+" and "+r.typeName());
@@ -1950,11 +1949,11 @@ Value roxal::less(Value l, Value r)
     if (l.isNumber() && r.isNumber()) {
         ValueType resultType(binaryOpType(l,r));
         switch (resultType) {
-            case ValueType::Int: return boolVal(l.asInt() < r.asInt());
-            case ValueType::Real: return boolVal(l.asReal() < r.asReal());
-            case ValueType::Byte: return boolVal(l.asByte() < r.asByte());
+            case ValueType::Int: return Value::boolVal(l.asInt() < r.asInt());
+            case ValueType::Real: return Value::boolVal(l.asReal() < r.asReal());
+            case ValueType::Byte: return Value::boolVal(l.asByte() < r.asByte());
             //... decimal
-            default: return falseVal();
+            default: return Value::falseVal();
         }
     }
     else if (l.isObj() && r.isObj()) {
@@ -1964,9 +1963,9 @@ Value roxal::less(Value l, Value r)
 
             // if lhs & rhs are the same string, one is not less than the other
             if (lstr->hash == rstr->hash)
-                return falseVal();
+                return Value::falseVal();
 
-            return boolVal(lstr->s.compareCodePointOrder(rstr->s) < 0);
+            return Value::boolVal(lstr->s.compareCodePointOrder(rstr->s) < 0);
         }
     }
     throw std::invalid_argument("Invalid arguments to less operator - "+l.typeName()+" and "+r.typeName());
@@ -1981,7 +1980,7 @@ Value roxal::equal(Value l, Value r, bool strict)
                               l, r);
     }
 
-    return boolVal(l.equals(r, strict));
+    return Value::boolVal(l.equals(r, strict));
 }
 
 
@@ -2150,24 +2149,24 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
     switch(t) {
         case ValueType::Nil:
-            return nilVal();
+            return Value::nilVal();
         case ValueType::Bool: {
             uint8_t b; in.read(reinterpret_cast<char*>(&b),1);
-            return boolVal(b!=0); }
+            return Value::boolVal(b!=0); }
         case ValueType::Byte: {
             uint8_t b; in.read(reinterpret_cast<char*>(&b),1);
-            return byteVal(b); }
+            return Value::byteVal(b); }
         case ValueType::Int: {
             int32_t i; in.read(reinterpret_cast<char*>(&i),4);
-            return intVal(i); }
+            return Value::intVal(i); }
         case ValueType::Real: {
             double d; in.read(reinterpret_cast<char*>(&d),8);
-            return realVal(d); }
+            return Value::realVal(d); }
         case ValueType::Enum: {
             int16_t val; uint16_t id;
             in.read(reinterpret_cast<char*>(&val),2);
             in.read(reinterpret_cast<char*>(&id),2);
-            return enumVal(val, id); }
+            return Value::enumVal(val, id); }
         case ValueType::Type: {
             uint8_t subType;
             in.read(reinterpret_cast<char*>(&subType),1);
@@ -2184,7 +2183,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                     return objVal(obj);
                 }
             }
-            return typeVal(tv);
+            return Value::typeVal(tv);
         }
         case ValueType::String: {
             auto make = [&](){ return static_cast<Obj*>(newObj<ObjString>(__func__)); };

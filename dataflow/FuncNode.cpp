@@ -76,7 +76,7 @@ FuncNode::FuncNode(const std::string& name,
                    const std::vector<ptr<Signal>>& signalArgs_,
                    const Names& outputNames_,
                    const std::vector<ptr<Signal>>& outputSignals)
-  : m_name(name), m_operatorSignalsCalled(false), closure(roxal::nilVal()),
+  : m_name(name), m_operatorSignalsCalled(false), closure(Value::nilVal()),
     nativeFunc(nativeFunc_), constArgs(constArgs_), signalArgs(signalArgs_), m_overrideOutputSignals(outputSignals)
 {
     m_outputNames = outputNames_;
@@ -396,7 +396,7 @@ Values FuncNode::operator()(const Values& inputValues)
             if (sigIdx < inputValues.size())
                 args.push_back(inputValues[sigIdx++]);
             else
-                args.push_back(nilVal());
+                args.push_back(Value::nilVal());
         }
     }
 
@@ -414,7 +414,7 @@ Values FuncNode::operator()(const Values& inputValues)
                 if (i < list->elts.size())
                     outs.push_back(list->elts.at(i));
                 else
-                    outs.push_back(roxal::nilVal());
+                    outs.push_back(Value::nilVal());
             }
             return outs;
         }

@@ -423,7 +423,7 @@ void ObjString::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 // range
 
 ObjRange::ObjRange()
-    : start(intVal(0)), stop(intVal(0)), step(intVal(1)), closed(false)
+    : start(Value::intVal(0)), stop(Value::intVal(0)), step(Value::intVal(1)), closed(false)
 {
     type = ObjType::Range;
 }
@@ -472,7 +472,7 @@ Value ObjVector::index(const Value& i) const
         auto index = i.asInt();
         if (index < 0 || index >= length())
             throw std::invalid_argument("Vector index out-of-range.");
-        return realVal(vec[index]);
+        return Value::realVal(vec[index]);
     }
     else if (isRange(i)) {
         auto r = asRange(i);
@@ -492,7 +492,7 @@ Value ObjVector::index(const Value& i) const
     }
     else
         throw std::invalid_argument("Vector indexing subscript must be a number or a range.");
-    return nilVal();
+    return Value::nilVal();
 }
 
 void ObjVector::setIndex(const Value& i, const Value& v)
@@ -740,7 +740,7 @@ ObjList::ObjList(const ObjRange* r)
     type = ObjType::List;
     int32_t rangeLen = r->length();
     for(int32_t i=0; i<rangeLen; i++)
-        elts.push_back(intVal(r->targetIndex(i,-1)));
+        elts.push_back(Value::intVal(r->targetIndex(i,-1)));
 }
 
 
@@ -771,7 +771,7 @@ Value ObjList::index(const Value& i) const
     }
     else
         throw std::invalid_argument("List indexing subscript must be a number or a range.");
-    return nilVal();
+    return Value::nilVal();
 }
 
 
@@ -1231,7 +1231,7 @@ void ObjSignal::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) c
     out.write(n.data(), len);
     double freq = signal ? signal->frequency() : 0.0;
     out.write(reinterpret_cast<char*>(&freq),8);
-    Value val = signal ? signal->lastValue() : nilVal();
+    Value val = signal ? signal->lastValue() : Value::nilVal();
     writeValue(out, val, ctx);
 }
 
@@ -1245,7 +1245,7 @@ void ObjSignal::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     double freq; in.read(reinterpret_cast<char*>(&freq),8);
     Value v = readValue(in, ctx);
     signal = df::Signal::newSignal(freq, v, n);
-    changeEvent = nilVal();
+    changeEvent = Value::nilVal();
     type = ObjType::Signal;
 }
 
@@ -1493,7 +1493,7 @@ void ObjClosure::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 }
 void ObjFuture::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
-    Value resolved = future.valid() ? future.get() : nilVal();
+    Value resolved = future.valid() ? future.get() : Value::nilVal();
     writeValue(out, resolved, ctx);
 }
 
@@ -1655,7 +1655,7 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             ct = icu::UnicodeString::fromUTF8(cts);
         }
         int32_t hash = uname.hashCode();
-        Property prop{uname, ptype, init, static_cast<ast::Access>(acc), nilVal(), ct};
+        Property prop{uname, ptype, init, static_cast<ast::Access>(acc), Value::nilVal(), ct};
         properties[hash] = prop;
         propertyOrder.push_back(hash);
     }
@@ -1669,7 +1669,7 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         Value clos = readValue(in, ctx);
         uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
         int32_t hash = uname.hashCode();
-        Method m{uname, clos, static_cast<ast::Access>(acc), nilVal()};
+        Method m{uname, clos, static_cast<ast::Access>(acc), Value::nilVal()};
         methods[hash] = m;
     }
 
@@ -1862,7 +1862,7 @@ void ObjMatrix::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 }
 
 ObjSignal::ObjSignal(ptr<df::Signal> s)
-    : signal(s), changeEvent(nilVal())
+    : signal(s), changeEvent(Value::nilVal())
 {
     type = ObjType::Signal;
     if (signal)
@@ -2035,7 +2035,7 @@ Value ObjMatrix::index(const Value& row) const
         return objVal(matrixVal(m));
     }
     throw std::invalid_argument("Matrix indexing subscript must be a number or a range.");
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value ObjMatrix::index(const Value& row, const Value& col) const
@@ -2048,7 +2048,7 @@ Value ObjMatrix::index(const Value& row, const Value& col) const
         int c = col.asInt();
         if (r < 0 || r >= rows() || c < 0 || c >= cols())
             throw std::invalid_argument("Matrix index out-of-range.");
-        return realVal(mat(r,c));
+        return Value::realVal(mat(r,c));
     }
 
     std::vector<int> rowIdx;
@@ -2090,7 +2090,7 @@ Value ObjMatrix::index(const Value& row, const Value& col) const
     }
 
     if (rowIdx.size()==1 && colIdx.size()==1) {
-        return realVal(mat(rowIdx[0], colIdx[0]));
+        return Value::realVal(mat(rowIdx[0], colIdx[0]));
     } else if (rowIdx.size()==1 && colIdx.size()>1) {
         Eigen::VectorXd vals(colIdx.size());
         for(size_t j=0;j<colIdx.size();++j)
@@ -2108,7 +2108,7 @@ Value ObjMatrix::index(const Value& row, const Value& col) const
                 sub(i,j) = mat(rowIdx[i], colIdx[j]);
         return objVal(matrixVal(sub));
     }
-    return nilVal();
+    return Value::nilVal();
 }
 
 void ObjMatrix::setIndex(const Value& row, const Value& value)
@@ -2407,7 +2407,7 @@ std::string roxal::toString(FunctionType ft)
 
 ObjFunction::ObjFunction(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName,
                          const icu::UnicodeString& sourceName)
-    : arity(0), upvalueCount(0), name(), strict(false), ownerType(nilVal())
+    : arity(0), upvalueCount(0), name(), strict(false), ownerType(Value::nilVal())
 {
     type = ObjType::Function;
     chunk = std::make_shared<Chunk>(packageName, moduleName, sourceName);
@@ -2454,7 +2454,7 @@ ObjNative* roxal::nativeVal(NativeFn function, void* data,
 std::unordered_map<uint16_t, roxal::ObjObjectType*> ObjObjectType::enumTypes {};
 
 ObjObjectType::ObjObjectType(const icu::UnicodeString& typeName, bool isactor, bool isinterface, bool isenumeration)
-    : name(typeName), isActor(isactor), isInterface(isinterface), isEnumeration(isenumeration), superType(nilVal())
+    : name(typeName), isActor(isactor), isInterface(isinterface), isEnumeration(isenumeration), superType(Value::nilVal())
 {
     typeValue = ValueType::Object;
     if (isActor)
@@ -2521,7 +2521,7 @@ Value ObjectInstance::getProperty(const icu::UnicodeString& name) const
     auto it = properties.find(name.hashCode());
     if (it != properties.end())
         return it->second;
-    return nilVal();
+    return Value::nilVal();
 }
 
 void ObjectInstance::setProperty(const icu::UnicodeString& name, Value value)
@@ -2624,7 +2624,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
         callInfo.args.push_back(arg);
     }
     callInfo.returnPromise = nullptr;
-    callInfo.returnFuture = nilVal();
+    callInfo.returnFuture = Value::nilVal();
 
     if (isBoundMethod(callee)) {
         auto funcObj = asBoundMethod(callee)->method->function;

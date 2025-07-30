@@ -124,13 +124,13 @@ public:
                        const CallSpec& callSpec,
                        Value* out,
                        bool includeReceiver = false,
-                       const Value& receiver = nilVal());
+                       const Value& receiver = Value::nilVal());
 
     bool callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                       const std::vector<Value>& defaults,
                       const CallSpec& callSpec,
                       bool includeReceiver = false,
-                      const Value& receiver = nilVal());
+                      const Value& receiver = Value::nilVal());
 
     // Expose a simple helper to keep track of active threads.  Actor
     // deserialization needs this to prevent the thread object from being

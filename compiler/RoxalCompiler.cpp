@@ -333,7 +333,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     const auto& importingModuleType = asFuncScope(funcScope())->function->moduleType;
     auto& importingModuleVars = asModuleType(importingModuleType)->vars;
 
-    Value parentModuleVal { nilVal() };
+    Value parentModuleVal { Value::nilVal() };
     icu::UnicodeString packagePath;
     for(size_t i=0; i+1 < ast->packages.size(); ++i) {
         icu::UnicodeString pkgName { ast->packages[i] };
@@ -601,9 +601,9 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             if (literalExpr->literalType == ast::Literal::LiteralType::Num) {
                 ptr<ast::Num> numExpr { std::dynamic_pointer_cast<ast::Num>(literalExpr) };
                 if (valType->builtin == BuiltinType::Byte)
-                    value = byteVal(std::get<int>(numExpr->num));
+                    value = Value::byteVal(std::get<int>(numExpr->num));
                 else if (valType->builtin == BuiltinType::Int)
-                    value = intVal(std::get<int>(numExpr->num));
+                    value = Value::intVal(std::get<int>(numExpr->num));
                 else
                     error("Unsupported literal type for enum label.");
             }
@@ -991,7 +991,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
             else if (i==1)
                 emitByte(OpCode::ConstInt1);
             else
-                emitConstant(intVal(i));
+                emitConstant(Value::intVal(i));
             emitBytes(OpCode::Index, 1);
 
             // assign it to target
@@ -1531,7 +1531,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
         ast->rhs->accept(*this);
 
         emitBytes(op, propName);
-    } 
+    }
     else if (isa<Index>(ast->lhs)) {
 
         // evaluate rhs
@@ -1562,7 +1562,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
             // first index the RHS list to get the RHS element to assign
             emitByte(OpCode::Dup); // duplicate the RHS (as Index will pop it)
-            emitConstant(intVal(li));
+            emitConstant(Value::intVal(li));
             emitBytes(OpCode::Index, 1);
 
             if (isa<Variable>(lhsElt)) {
@@ -1926,7 +1926,7 @@ std::any RoxalCompiler::visit(ptr<ast::Type> ast)
     currentNode = ast;
     ValueType type { builtinToValueType(ast->t) };
 
-    emitConstant(typeVal(type));
+    emitConstant(Value::typeVal(type));
     return {};
 }
 
@@ -1936,10 +1936,10 @@ std::any RoxalCompiler::visit(ptr<ast::Num> ast)
     currentNode = ast;
 
     if (std::holds_alternative<double>(ast->num)) {
-        emitConstant(realVal(std::get<double>(ast->num)));
+        emitConstant(Value::realVal(std::get<double>(ast->num)));
     }
     else if (std::holds_alternative<int32_t>(ast->num)) {
-        emitConstant(intVal(std::get<int32_t>(ast->num)));
+        emitConstant(Value::intVal(std::get<int32_t>(ast->num)));
     }
     else
         throw std::runtime_error("unhandled Num type");

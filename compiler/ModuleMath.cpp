@@ -19,7 +19,7 @@ void ModuleMath::registerBuiltins(VM& vm)
             if (a.size() != 1)
                 throw std::invalid_argument("math." + name + " expects one argument");
             double x = toType(ValueType::Real, a[0], false).asReal();
-            return realVal(fn(x));
+            return Value::realVal(fn(x));
         });
     };
 
@@ -29,7 +29,7 @@ void ModuleMath::registerBuiltins(VM& vm)
                 throw std::invalid_argument("math." + name + " expects two arguments");
             double x = toType(ValueType::Real, a[0], false).asReal();
             double y = toType(ValueType::Real, a[1], false).asReal();
-            return realVal(fn(x,y));
+            return Value::realVal(fn(x,y));
         });
     };
 
@@ -40,7 +40,7 @@ void ModuleMath::registerBuiltins(VM& vm)
             double x = toType(ValueType::Real, a[0], false).asReal();
             double y = toType(ValueType::Real, a[1], false).asReal();
             double z = toType(ValueType::Real, a[2], false).asReal();
-            return realVal(fn(x,y,z));
+            return Value::realVal(fn(x,y,z));
         });
     };
 
@@ -96,8 +96,8 @@ void ModuleMath::registerBuiltins(VM& vm)
     link("cross", [this](VM& vm, ArgsView a){ return math_cross_builtin(vm,a); });
 
     // Link builtin Counter methods
-    linkMethod("_Counter", "init", [this](VM& vm, ArgsView a){ return counter_init_builtin(vm,a); }, { intVal(0) });
-    linkMethod("_Counter", "inc", [this](VM& vm, ArgsView a){ return counter_inc_builtin(vm,a); }, { intVal(1) });
+    linkMethod("_Counter", "init", [this](VM& vm, ArgsView a){ return counter_init_builtin(vm,a); }, { Value::intVal(0) });
+    linkMethod("_Counter", "inc", [this](VM& vm, ArgsView a){ return counter_inc_builtin(vm,a); }, { Value::intVal(1) });
     linkMethod("_Counter", "value", [this](VM& vm, ArgsView a){ return counter_value_builtin(vm,a); }, {});
 }
 
@@ -144,7 +144,7 @@ Value ModuleMath::math_dot_builtin(VM& vm, ArgsView args)
         throw std::invalid_argument("math.dot requires vectors of same length");
 
     double d = v1->vec.dot(v2->vec);
-    return realVal(d);
+    return Value::realVal(d);
 }
 
 Value ModuleMath::math_cross_builtin(VM& vm, ArgsView args)
@@ -185,7 +185,7 @@ Value ModuleMath::counter_init_builtin(VM& vm, ArgsView args)
     fp->registerCleanup([](void* p){ delete static_cast<Counter*>(p); });
     inst->setProperty("_this", objVal(fp)); // store it in instance property
 
-    return nilVal();
+    return Value::nilVal();
 }
 
 Value ModuleMath::counter_inc_builtin(VM& vm, ArgsView args)
@@ -210,7 +210,7 @@ Value ModuleMath::counter_inc_builtin(VM& vm, ArgsView args)
 
     counter->inc(n);
 
-    return intVal(counter->value());
+    return Value::intVal(counter->value());
 }
 
 Value ModuleMath::counter_value_builtin(VM& vm, ArgsView args)
@@ -225,5 +225,5 @@ Value ModuleMath::counter_value_builtin(VM& vm, ArgsView args)
     #endif
     auto counter = static_cast<Counter*>(asForeignPtr(inst->getProperty("_this"))->ptr);
 
-    return intVal(counter->value());
+    return Value::intVal(counter->value());
 }
