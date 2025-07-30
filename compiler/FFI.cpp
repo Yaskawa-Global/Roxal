@@ -175,7 +175,7 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
 
         auto evalExpr = [&](ptr<ast::Expression> expr) -> Value {
             if (auto s = std::dynamic_pointer_cast<ast::Str>(expr)) {
-                return objVal(stringVal(s->str));
+                return Value::stringVal(s->str);
             } else if (auto n = std::dynamic_pointer_cast<ast::Num>(expr)) {
                 if (std::holds_alternative<int32_t>(n->num))
                     return Value(std::get<int32_t>(n->num));
@@ -1046,7 +1046,7 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
         if (ctype == "int8_t") { int8_t s; readPadded(&s, sizeof(s),1); out = Value::byteVal(uint8_t(s)); return true; }
         if (ctype == "uint8_t") { uint8_t u; readPadded(&u, sizeof(u),1); out = Value::byteVal(u); return true; }
         if (ctype == "bool") { uint8_t b; readPadded(&b, sizeof(b),1); out = Value::boolVal(b!=0); return true; }
-        if (ctype == "char*") { const char* p; readPadded(&p, ptrSize, ptrSize); out = objVal(stringVal(toUnicodeString(p?p:""))); return true; }
+        if (ctype == "char*") { const char* p; readPadded(&p, ptrSize, ptrSize); out = Value::stringVal(toUnicodeString(p?p:"")); return true; }
         if (ctype == "void*" || (!ctype.empty() && ctype.back()=='*')) { void* p; readPadded(&p, ptrSize, ptrSize); out = p ? objVal(foreignPtrVal(p)) : Value::nilVal(); return true; }
         return false;
     };

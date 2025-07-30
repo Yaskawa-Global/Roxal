@@ -204,8 +204,7 @@ VM::VM()
     exitCodeValue = 0;
 
     thread = nullptr;
-    initString = stringVal(UnicodeString("init"));
-    initString->incRef();
+    initString = Value::stringVal(UnicodeString("init"));
 
     registerBuiltinModule(make_ptr<ModuleMath>());
     registerBuiltinModule(make_ptr<ModuleSys>());
@@ -321,7 +320,7 @@ VM::~VM()
 
     globals.clearGlobals();
 
-    initString->decRef();
+    initString = Value::nilVal();
 
     builtinModules.clear();
 
@@ -763,7 +762,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     ObjObjectType* tInit = type;
                     const ObjObjectType::Method* initMethod = nullptr;
                     while (tInit != nullptr && initMethod == nullptr) {
-                        auto it = tInit->methods.find(initString->hash);
+                        auto it = tInit->methods.find(asString(initString)->hash);
                         if (it != tInit->methods.end())
                             initMethod = &it->second;
                         else
@@ -3845,7 +3844,7 @@ void VM::concatenate()
     UnicodeString combined { lhsString + rhsString };
     pop();
     pop();
-    push( objVal(stringVal(combined)) );
+    push( Value::stringVal(combined) );
 }
 
 
@@ -4029,7 +4028,7 @@ Value VM::signal_name_getter(Value& receiver)
 #endif
 
     ObjSignal* objSignal = asSignal(receiver);
-    return objVal(stringVal(toUnicodeString(objSignal->signal->name())));
+    return Value::stringVal(toUnicodeString(objSignal->signal->name()));
 }
 
 void VM::signal_name_setter(Value& receiver, Value value)
@@ -4075,7 +4074,7 @@ Value VM::exception_stacktrace_string_getter(Value& receiver)
     }
     ObjException* ex = asException(receiver);
     std::string out = stackTraceToString(ex->stackTrace);
-    return objVal(stringVal(toUnicodeString(out)));
+    return Value::stringVal(toUnicodeString(out));
 }
 
 Value VM::captureStacktrace()
@@ -4090,8 +4089,8 @@ Value VM::captureStacktrace()
         if (funcName.isEmpty())
             funcName = UnicodeString("<script>");
 
-        frameDict->store(objVal(stringVal(UnicodeString("function"))),
-                         objVal(stringVal(funcName)));
+        frameDict->store(Value::stringVal(UnicodeString("function")),
+                         Value::stringVal(funcName));
 
         auto chunk = frame.closure->function->chunk;
         size_t instruction = 0;
@@ -4100,11 +4099,11 @@ Value VM::captureStacktrace()
         int line = chunk->getLine(instruction);
         int col  = chunk->getColumn(instruction);
 
-        frameDict->store(objVal(stringVal(UnicodeString("line"))), Value::intVal(line));
-        frameDict->store(objVal(stringVal(UnicodeString("col"))), Value::intVal(col));
+        frameDict->store(Value::stringVal(UnicodeString("line")), Value::intVal(line));
+        frameDict->store(Value::stringVal(UnicodeString("col")), Value::intVal(col));
 
-        frameDict->store(objVal(stringVal(UnicodeString("filename"))),
-                         objVal(stringVal(chunk->sourceName)));
+        frameDict->store(Value::stringVal(UnicodeString("filename")),
+                         Value::stringVal(chunk->sourceName));
 
         framesList->append(objVal(frameDict));
     }

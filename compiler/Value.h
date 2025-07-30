@@ -2,6 +2,7 @@
 #include <atomic>
 #include <optional>
 #include <unordered_map>
+#include <future>
 #include <functional>
 #include <vector>
 #include <tuple>
@@ -10,10 +11,26 @@
 #include <istream>
 
 #include <core/common.h>
+#include <core/types.h>
+#include <Eigen/Dense>
 #include "ObjControl.h"
+
+
+// forwards
+namespace df {
+    class DataflowEngine;
+    class Signal;
+}
+
 
 namespace roxal {
 
+class VM;
+class Value;
+struct Obj;
+struct ObjString;
+struct ArgsView;
+using NativeFn = std::function<Value(VM&, ArgsView)>;
 
 
 enum class ValueType {
@@ -52,8 +69,6 @@ enum class ValueType {
 std::string to_string(ValueType t);
 
 
-struct Obj;
-struct ObjString;
 
 struct SerializationContext {
     std::unordered_map<const Obj*, uint64_t> objToId;
@@ -151,6 +166,61 @@ public:
     explicit Value(int16_t enumLabelValue, uint16_t enumTypeId)
         { val = QNAN | TagEnum | (0xffffffff & (enumLabelValue | (uint64_t(enumTypeId) << 16))); }
     static inline Value enumVal(int16_t labelVal, uint16_t enumTypeId) { return Value(labelVal, enumTypeId); }
+
+
+    //
+    // Builtin reference type constructors
+    static Value stringVal(const icu::UnicodeString& s); // ObjString
+
+    static Value rangeVal();  // ObjRange
+    static Value rangeVal(const Value& start, const Value& stop, const Value& step, bool closed);
+
+    static Value listVal();   // ObjList
+    static Value listVal(const Value& r); // from range
+    static Value listVal(const std::vector<Value>& elts);
+
+    static Value dictVal();   // ObjDict
+    static Value dictVal(const std::vector<std::pair<Value,Value>>& entries);
+
+    static Value vectorVal(); // ObjVector
+    static Value vectorVal(int32_t size);
+    static Value vectorVal(const Eigen::VectorXd& values);
+
+    static Value matrixVal(); // ObjMatrix
+    static Value matrixVal(int32_t rows, int32_t cols);
+    static Value matrixVal(const Eigen::MatrixXd& values);
+
+    static Value signalVal(roxal::ptr<df::Signal> s); // ObjSignal
+
+    static Value eventVal(); // ObjEvent
+
+    static Value libraryVal(void* handle); // ObjLibrary
+
+    static Value foreignPtrVal(void* ptr); // ObjForeignPtr
+
+    static Value fileVal(roxal::ptr<std::fstream> f, bool binary = false); // ObjFile
+
+    static Value exceptionVal(Value message = Value::nilVal(), Value exType = Value::nilVal(), Value stackTrace = Value::nilVal()); // ObjException
+
+    static Value functionVal(const icu::UnicodeString& packageName,
+                             const icu::UnicodeString& moduleName,
+                             const icu::UnicodeString& sourceName); // ObjFunction
+
+    static Value upvalueVal(Value* v); // ObjUpvalue
+
+    static Value closureVal(const Value& function); // ObjClosure
+
+    static Value futureVal(const std::shared_future<Value>& fv); // ObjFuture
+
+    static Value nativeVal(NativeFn function, void* data=nullptr,
+                           ptr<roxal::type::Type> funcType=nullptr,
+                           std::vector<Value> defaults = {}); // ObjNative
+
+    static Value typeSpecVal(ValueType t); // primitive ObjTypeSpec
+
+    static Value objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface = false, bool isEnumeration = false); // ObjObjectType
+
+
 
 
     /// @brief Copy constructor.

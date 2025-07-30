@@ -77,6 +77,159 @@ Value::Value(Obj* o)
 }
 
 
+
+//
+// Reference type constructors
+Value Value::stringVal(const icu::UnicodeString& s)
+{
+    return objVal(newObjString(s));
+}
+
+Value Value::rangeVal()
+{
+    return objVal(::rangeVal());
+}
+Value Value::rangeVal(const Value& start, const Value& stop, const Value& step, bool closed)
+{
+    return objVal(::rangeVal(start, stop, step, closed));
+}
+
+Value Value::listVal()
+{
+    return objVal(::listVal());
+}
+
+Value Value::listVal(const Value& r)
+{
+    #ifdef DEBUG_BUILD
+    if (!isRange(r))
+        throw std::runtime_error("listVal called with non-range argument");
+    #endif
+    return objVal(::listVal(asRange(r)));
+}
+
+Value Value::listVal(const std::vector<Value>& elts)
+{
+    return objVal(::listVal(elts));
+}
+
+Value Value::dictVal()
+{
+    return objVal(::dictVal());
+}
+
+Value Value::dictVal(const std::vector<std::pair<Value,Value>>& entries)
+{
+    return objVal(::dictVal(entries));
+}
+
+Value Value::vectorVal()
+{
+    return objVal(::vectorVal());
+}
+
+Value Value::vectorVal(int32_t size)
+{
+    return objVal(::vectorVal(size));
+}
+
+Value Value::vectorVal(const Eigen::VectorXd& values)
+{
+    return objVal(::vectorVal(values));
+}
+
+Value Value::matrixVal()
+{
+    return objVal(::matrixVal());
+}
+
+Value Value::matrixVal(int32_t rows, int32_t cols)
+{
+    return objVal(::matrixVal(rows, cols));
+}
+
+Value Value::matrixVal(const Eigen::MatrixXd& values)
+{
+    return objVal(::matrixVal(values));
+}
+
+Value Value::signalVal(roxal::ptr<df::Signal> s)
+{
+    return objVal(::signalVal(s));
+}
+
+Value Value::eventVal()
+{
+    return objVal(::eventVal());
+}
+
+Value Value::libraryVal(void* handle)
+{
+    return objVal(::libraryVal(handle));
+}
+
+Value Value::foreignPtrVal(void* ptr)
+{
+    return objVal(::foreignPtrVal(ptr));
+}
+
+Value Value::fileVal(roxal::ptr<std::fstream> f, bool binary)
+{
+    return objVal(::fileVal(f, binary));
+}
+
+Value Value::exceptionVal(Value message, Value exType, Value stackTrace)
+{
+    return objVal(::exceptionVal(message, exType, stackTrace));
+}
+
+Value Value::functionVal(const icu::UnicodeString& packageName,
+                         const icu::UnicodeString& moduleName,
+                         const icu::UnicodeString& sourceName)
+{
+    return objVal(::functionVal(packageName, moduleName, sourceName));
+}
+
+Value Value::upvalueVal(Value* v)
+{
+    return objVal(::upvalueVal(v));
+}
+
+Value Value::closureVal(const Value& function)
+{
+    #ifdef DEBUG_BUILD
+    if (!isFunction(function))
+        throw std::runtime_error("Value is not an ObjFunction");
+    #endif
+    return objVal(::closureVal(asFunction(function)));
+}
+
+Value Value::futureVal(const std::shared_future<Value>& fv)
+{
+    return objVal(::futureVal(fv));
+}
+
+Value Value::nativeVal(NativeFn function, void* data,
+                           ptr<roxal::type::Type> funcType,
+                           std::vector<Value> defaults)
+{
+    return objVal(::nativeVal(function, data, funcType, defaults));
+}
+
+Value Value::typeSpecVal(ValueType t)
+{
+    return objVal(::typeSpecVal(t));
+}
+
+Value Value::objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface, bool isEnumeration)
+{
+    return objVal(::objectTypeVal(typeName, isActor, isInterface, isEnumeration));
+}
+
+
+
+
+
 void Value::box() {
     if (isBoxed() || !isBoxable()) return;
     // allocate value on heap
@@ -829,7 +982,7 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
     roundTrip("byte_val", Value::byteVal(123));
     roundTrip("int_val", Value::intVal(-42));
     roundTrip("real_val", Value::realVal(3.5));
-    roundTrip("string_val", objVal(stringVal(UnicodeString("hello"))));
+    roundTrip("string_val", Value::stringVal(UnicodeString("hello")));
     roundTrip("range_val", objVal(rangeVal(Value::intVal(1), Value::intVal(3), Value::intVal(1), false)));
 
     ObjList* lst = listVal();
@@ -983,7 +1136,7 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::Decimal: throw std::runtime_error("decimal unimplemented");
         case ValueType::Enum: throw std::runtime_error("Can't create default enum value without type"); // shouldn't be called for this t
         case ValueType::Type: return Value::typeVal(ValueType::Nil);
-        case ValueType::String: return Value(stringVal(UnicodeString()));
+        case ValueType::String: return Value::stringVal(UnicodeString());
         case ValueType::Range: return Value(rangeVal());
         case ValueType::List: return Value(listVal());
         case ValueType::Dict: return Value(dictVal());
@@ -1033,12 +1186,12 @@ Value roxal::toType(ValueType t, Value v, bool strict)
                 if (isString(msg))
                     return msg;
                 if (!msg.isNil())
-                    return Value(stringVal(toUnicodeString(toString(msg))));
-                return Value(stringVal(UnicodeString()));
+                    return Value::stringVal(toUnicodeString(toString(msg)));
+                return Value::stringVal(UnicodeString());
             }
 
             // TODO: use alternate 'non-debug' string conversion only utilizing UnicodeString
-            return Value(stringVal(toUnicodeString(toString(v))));
+            return Value::stringVal(toUnicodeString(toString(v)));
         } break;
         case ValueType::Range: {
             if (v.type() == ValueType::Range)
@@ -1067,12 +1220,13 @@ Value roxal::toType(ValueType t, Value v, bool strict)
                     const auto& prop { vObjType->properties.at(hash) };
                     if (prop.access != ast::Access::Public)
                         continue;
-                    auto propName { stringVal(prop.name) };
+                    auto propName { Value::stringVal(prop.name) };
+                    auto propHash = asString(propName)->hash;
                     #ifdef DEBUG_BUILD
-                    assert(vObj->properties.find(propName->hash) != vObj->properties.end());
+                    assert(vObj->properties.find(propHash) != vObj->properties.end());
                     #endif
-                    dictValue->store(Value(propName),
-                                     vObj->properties[propName->hash]);
+                    dictValue->store(propName,
+                                     vObj->properties[propHash]);
                 }
                 return Value(dictValue);
             }

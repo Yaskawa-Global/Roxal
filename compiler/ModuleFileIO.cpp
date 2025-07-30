@@ -16,7 +16,7 @@ ModuleFileIO::ModuleFileIO()
 void ModuleFileIO::registerBuiltins(VM& vm)
 {
     {
-        std::vector<Value> d{ Value::nilVal(), Value::falseVal(), objVal(stringVal(toUnicodeString("text"))) };
+        std::vector<Value> d{ Value::nilVal(), Value::falseVal(), Value::stringVal(toUnicodeString("text")) };
         link("open", [this](VM& vm, ArgsView a){ return fileio_open_builtin(vm,a); }, d);
     }
     {
@@ -35,7 +35,7 @@ void ModuleFileIO::registerBuiltins(VM& vm)
         link("readLine", [this](VM& vm, ArgsView a){ return fileio_readline_builtin(vm,a); });
     }
     {
-        std::vector<Value> d{ Value::nilVal(), objVal(stringVal(toUnicodeString("text"))) };
+        std::vector<Value> d{ Value::nilVal(), Value::stringVal(toUnicodeString("text")) };
         link("readFile", [this](VM& vm, ArgsView a){ return fileio_readfile_builtin(vm,a); }, d);
     }
     {
@@ -144,7 +144,7 @@ Value ModuleFileIO::fileio_read_builtin(VM& vm, ArgsView args)
         return objVal(lst);
     }
     std::string s(buf, static_cast<size_t>(n));
-    return objVal(stringVal(toUnicodeString(s)));
+    return Value::stringVal(toUnicodeString(s));
 }
 
 Value ModuleFileIO::fileio_readline_builtin(VM& vm, ArgsView args)
@@ -155,7 +155,7 @@ Value ModuleFileIO::fileio_readline_builtin(VM& vm, ArgsView args)
     if (!f->file || !f->file->is_open()) return Value::nilVal();
     if (f->binary) {
         Value exType = vm.loadGlobal(toUnicodeString("FileIOException")).value();
-        Value msg = objVal(stringVal(toUnicodeString("readLine requires text mode")));
+        Value msg = Value::stringVal(toUnicodeString("readLine requires text mode"));
         Value exc = objVal(exceptionVal(msg, exType));
         vm.raiseException(exc);
         return Value::nilVal();
@@ -163,7 +163,7 @@ Value ModuleFileIO::fileio_readline_builtin(VM& vm, ArgsView args)
     std::string line;
     if (!std::getline(*f->file, line))
         return Value::nilVal();
-    return objVal(stringVal(toUnicodeString(line)));
+    return Value::stringVal(toUnicodeString(line));
 }
 
 Value ModuleFileIO::fileio_readfile_builtin(VM& vm, ArgsView args)
@@ -185,7 +185,7 @@ Value ModuleFileIO::fileio_readfile_builtin(VM& vm, ArgsView args)
     std::ifstream in(path, mode);
     if (!in.is_open()) {
         Value exType = vm.loadGlobal(toUnicodeString("FileIOException")).value();
-        Value msg = objVal(stringVal(toUnicodeString("open failed")));
+        Value msg = Value::stringVal(toUnicodeString("open failed"));
         Value exc = objVal(exceptionVal(msg, exType));
         vm.raiseException(exc);
         return Value::nilVal();
@@ -200,7 +200,7 @@ Value ModuleFileIO::fileio_readfile_builtin(VM& vm, ArgsView args)
             lst->elts.push_back(Value::byteVal(static_cast<uint8_t>(c)));
         return objVal(lst);
     }
-    return objVal(stringVal(toUnicodeString(data)));
+    return Value::stringVal(toUnicodeString(data));
 }
 
 Value ModuleFileIO::fileio_write_builtin(VM& vm, ArgsView args)
@@ -267,7 +267,7 @@ Value ModuleFileIO::fileio_abspathfile_builtin(VM& vm, ArgsView args)
         throw std::invalid_argument("fileio.absoluteFilePath expects path string");
     std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
     auto abs = std::filesystem::absolute(p);
-    return objVal(stringVal(toUnicodeString(abs.string())));
+    return Value::stringVal(toUnicodeString(abs.string()));
 }
 
 Value ModuleFileIO::fileio_pathdir_builtin(VM& vm, ArgsView args)
@@ -275,7 +275,7 @@ Value ModuleFileIO::fileio_pathdir_builtin(VM& vm, ArgsView args)
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.pathDirectory expects path string");
     std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
-    return objVal(stringVal(toUnicodeString(p.parent_path().string())));
+    return Value::stringVal(toUnicodeString(p.parent_path().string()));
 }
 
 Value ModuleFileIO::fileio_pathfile_builtin(VM& vm, ArgsView args)
@@ -283,7 +283,7 @@ Value ModuleFileIO::fileio_pathfile_builtin(VM& vm, ArgsView args)
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.pathFile expects path string");
     std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
-    return objVal(stringVal(toUnicodeString(p.filename().string())));
+    return Value::stringVal(toUnicodeString(p.filename().string()));
 }
 
 Value ModuleFileIO::fileio_fileext_builtin(VM& vm, ArgsView args)
@@ -293,7 +293,7 @@ Value ModuleFileIO::fileio_fileext_builtin(VM& vm, ArgsView args)
     std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
     auto ext = p.extension().string();
     if (!ext.empty() && ext[0] == '.') ext.erase(0,1);
-    return objVal(stringVal(toUnicodeString(ext)));
+    return Value::stringVal(toUnicodeString(ext));
 }
 
 Value ModuleFileIO::fileio_filewoext_builtin(VM& vm, ArgsView args)
@@ -301,5 +301,5 @@ Value ModuleFileIO::fileio_filewoext_builtin(VM& vm, ArgsView args)
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.fileWithoutExtension expects path string");
     std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
-    return objVal(stringVal(toUnicodeString(p.replace_extension().string())));
+    return Value::stringVal(toUnicodeString(p.replace_extension().string()));
 }

@@ -301,7 +301,7 @@ inline ObjString* asString(const Value& v) { return static_cast<ObjString*>(v.as
 inline UnicodeString asUString(const Value& v) { return asString(v)->s; }
 
 // allocate new ObjString on heap and copy s (or return existing interned string)
-ObjString* stringVal(const UnicodeString& s);
+ObjString* newObjString(const UnicodeString& s);
 void updateInternedString(ObjString* obj, const UnicodeString& newVal);
 
 std::string objStringToString(const ObjString* os);
@@ -707,7 +707,7 @@ struct ObjModuleType; // forward
 
 class VM; // forward for native functions
 struct ArgsView; // forward for native functions
-using NativeFn = std::function<Value(VM&, ArgsView)>;
+//using NativeFn = std::function<Value(VM&, ArgsView)>;
 
 struct ObjFunction : public Obj
 {

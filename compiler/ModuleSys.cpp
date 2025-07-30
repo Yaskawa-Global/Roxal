@@ -32,8 +32,8 @@ void ModuleSys::registerBuiltins(VM& vm)
 
     if (!vm.loadGlobal(toUnicodeString("print")).has_value()) {
         std::vector<Value> pdefaults{
-            objVal(stringVal(toUnicodeString(""))),
-            objVal(stringVal(toUnicodeString("\n"))),
+            Value::stringVal(toUnicodeString("")),
+            Value::stringVal(toUnicodeString("\n")),
             Value::falseVal()
         };
         addSys("print", [this](VM& vm, ArgsView a){ return print_builtin(vm,a); }, nullptr, pdefaults);
@@ -85,7 +85,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         {
             auto t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
-            std::vector<Value> defaults{ Value::nilVal(), objVal(stringVal(toUnicodeString(""))) };
+            std::vector<Value> defaults{ Value::nilVal(), Value::stringVal(toUnicodeString("")) };
             auto params = BuiltinModule::constructParams({
                     {"freq", type::BuiltinType::Int},
                     {"name", type::BuiltinType::String}},
@@ -214,7 +214,7 @@ Value ModuleSys::help_builtin(VM& vm, ArgsView args)
         sig += doc;
     }
 
-    return objVal(stringVal(toUnicodeString(sig)));
+    return Value::stringVal(toUnicodeString(sig));
 }
 
 Value ModuleSys::clone_builtin(VM& vm, ArgsView args)
@@ -587,7 +587,7 @@ Value ModuleSys::toJson_builtin(VM& vm, ArgsView args)
     else
         out = j.dump();
 
-    return objVal(stringVal(toUnicodeString(out)));
+    return Value::stringVal(toUnicodeString(out));
 }
 
 static Value jsonToValue(const json11::Json& j) {
@@ -601,16 +601,16 @@ static Value jsonToValue(const json11::Json& j) {
                 return Value::intVal(static_cast<int32_t>(n));
             return Value::realVal(n);
         }
-        case Json::STRING: return objVal(stringVal(toUnicodeString(j.string_value())));
+        case Json::STRING: return Value::stringVal(toUnicodeString(j.string_value()));
         case Json::ARRAY: {
             std::vector<Value> elts; elts.reserve(j.array_items().size());
             for(const auto& it : j.array_items()) elts.push_back(jsonToValue(it));
-            return objVal(listVal(elts));
+            return Value::listVal(elts);
         }
         case Json::OBJECT: {
             ObjDict* d = dictVal();
             for(const auto& kv : j.object_items()) {
-                d->store(objVal(stringVal(toUnicodeString(kv.first))), jsonToValue(kv.second));
+                d->store(Value::stringVal(toUnicodeString(kv.first)), jsonToValue(kv.second));
             }
             return objVal(d);
         }
@@ -724,7 +724,7 @@ Value ModuleSys::df_graph_native(VM& vm, ArgsView args)
 
     auto engine = df::DataflowEngine::instance();
     auto str = engine->graph();
-    return objVal(stringVal(toUnicodeString(str)));
+    return Value::stringVal(toUnicodeString(str));
 }
 
 Value ModuleSys::df_graphdot_native(VM& vm, ArgsView args)
@@ -740,7 +740,7 @@ Value ModuleSys::df_graphdot_native(VM& vm, ArgsView args)
 
     auto engine = df::DataflowEngine::instance();
     auto dot = engine->graphDot(title, engine->signalValues());
-    return objVal(stringVal(toUnicodeString(dot)));
+    return Value::stringVal(toUnicodeString(dot));
 }
 
 Value ModuleSys::loadlib_native(VM& vm, ArgsView args)

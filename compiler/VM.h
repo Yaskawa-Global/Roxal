@@ -220,7 +220,7 @@ public:
     ObjClosure* getConditionalInterruptClosure() const { return conditionalInterruptClosure; }
 
 
-    ObjString* initString;
+    Value initString; // ObjString "init"
 
     // TODO: perhaps implement inheritance first, then pre-define
     //  object type as root of class heirarchy and add clone() and other

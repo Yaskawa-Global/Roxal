@@ -8,13 +8,13 @@
 #include <future>
 
 #include <core/types.h>
-#include "Object.h"
 #include "VM.h"
 #include "FFI.h"
 #include "Value.h"
 #include "Thread.h"
 #include "dataflow/Signal.h"
 #include "dataflow/DataflowEngine.h"
+#include "Object.h"
 
 using namespace roxal;
 
@@ -336,7 +336,7 @@ Value ObjString::index(const Value& i) const
             throw std::invalid_argument("String index out-of-range.");
 
         s.extract(int32_t(unit),1,substr);
-        return objVal(stringVal(substr));
+        return Value::stringVal(substr);
     }
     else if (isRange(i)) {
         auto r = asRange(i);
@@ -352,7 +352,7 @@ Value ObjString::index(const Value& i) const
         if (substr.isBogus())
             throw std::invalid_argument("Resulting sub-string from index is not valid");
 
-        return objVal(stringVal(substr));
+        return Value::stringVal(substr);
     }
     throw std::runtime_error("String indexing subscript must be a number or a range.");
 }
@@ -376,7 +376,7 @@ static uint32_t fnv1a32(const UnicodeString& s)
 }
 
 
-ObjString* roxal::stringVal(const UnicodeString& s)
+ObjString* roxal::newObjString(const UnicodeString& s)
 {
     int32_t hash = s.hashCode();
     auto objStr = strings.lookup(hash);
@@ -1990,10 +1990,10 @@ std::string roxal::stackTraceToString(Value frames)
     for(const auto& v : list) {
         if (!isDict(v)) continue;
         ObjDict* d = asDict(v);
-        Value funcVal = d->at(objVal(stringVal(UnicodeString("function"))));
-        Value lineVal = d->at(objVal(stringVal(UnicodeString("line"))));
-        Value colVal  = d->at(objVal(stringVal(UnicodeString("col"))));
-        Value fileVal = d->at(objVal(stringVal(UnicodeString("filename"))));
+        Value funcVal = d->at(Value::stringVal(UnicodeString("function")));
+        Value lineVal = d->at(Value::stringVal(UnicodeString("line")));
+        Value colVal  = d->at(Value::stringVal(UnicodeString("col")));
+        Value fileVal = d->at(Value::stringVal(UnicodeString("filename")));
 
         UnicodeString funcName = isString(funcVal) ? asString(funcVal)->s : UnicodeString("<script>");
         int line = lineVal.isNumber() ? lineVal.asInt() : -1;

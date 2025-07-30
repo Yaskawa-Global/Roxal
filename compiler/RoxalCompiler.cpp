@@ -380,7 +380,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         // convert AST symbols to a List of Values
         std::vector<Value> symbolsList {};
         for(const auto& symbol : ast->symbols)
-            symbolsList.push_back(objVal(stringVal(symbol)));
+            symbolsList.push_back(Value::stringVal(symbol));
 
         Value symbolsListVal { listVal() };
         asList(symbolsListVal)->elts = symbolsList;
@@ -1915,8 +1915,7 @@ std::any RoxalCompiler::visit(ptr<ast::Str> ast)
     currentNode = ast;
 
     // new ObjString or existing one if exists in strings intern map
-    auto objStr = stringVal(ast->str);
-    emitConstant(objVal(objStr));
+    emitConstant(Value::stringVal(ast->str));
     return {};
 }
 
@@ -2597,7 +2596,7 @@ int16_t RoxalCompiler::identifierConstant(const icu::UnicodeString& ident)
     if (!found) {
         // not found, create new string constant
         //  (globals are late bound, so it may only be declared afterward)
-        constant = makeConstant(objVal(stringVal(ident)));
+        constant = makeConstant(Value::stringVal(ident));
         asFuncScope(funcScope())->identConsts.push_back(constant);
     }
     return constant;
