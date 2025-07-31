@@ -552,9 +552,9 @@ struct ObjMatrix : public Obj
 inline bool isMatrix(const Value& v) { return isObjType(v, ObjType::Matrix); }
 inline ObjMatrix* asMatrix(const Value& v) { return static_cast<ObjMatrix*>(v.asObj()); }
 
-ObjMatrix* matrixVal();
-ObjMatrix* matrixVal(int32_t rows, int32_t cols);
-ObjMatrix* matrixVal(const Eigen::MatrixXd& values);
+ObjMatrix* newMatrixObj();
+ObjMatrix* newMatrixObj(int32_t rows, int32_t cols);
+ObjMatrix* newMatrixObj(const Eigen::MatrixXd& values);
 ObjMatrix* cloneMatrix(const ObjMatrix* m);
 
 std::string objMatrixToString(const ObjMatrix* om);
@@ -576,7 +576,7 @@ struct ObjSignal : public Obj {
 inline bool isSignal(const Value& v) { return isObjType(v, ObjType::Signal); }
 inline ObjSignal* asSignal(const Value& v) { return static_cast<ObjSignal*>(v.asObj()); }
 
-ObjSignal* signalVal(ptr<df::Signal> s);
+ObjSignal* newSignalObj(ptr<df::Signal> s);
 std::string objSignalToString(const ObjSignal* os);
 
 
@@ -597,7 +597,7 @@ struct ObjEvent : public Obj {
 inline bool isEvent(const Value& v) { return isObjType(v, ObjType::Event); }
 inline ObjEvent* asEvent(const Value& v) { return static_cast<ObjEvent*>(v.asObj()); }
 
-ObjEvent* eventVal();
+ObjEvent* newEventObj();
 std::string objEventToString(const ObjEvent* ev);
 
 
@@ -616,7 +616,7 @@ struct ObjLibrary : public Obj {
 inline bool isLibrary(const Value& v) { return isObjType(v, ObjType::Library); }
 inline ObjLibrary* asLibrary(const Value& v) { return static_cast<ObjLibrary*>(v.asObj()); }
 
-ObjLibrary* libraryVal(void* handle);
+ObjLibrary* newLibraryObj(void* handle);
 std::string objLibraryToString(const ObjLibrary* lib);
 
 //
@@ -638,7 +638,7 @@ struct ObjForeignPtr : public Obj {
 inline bool isForeignPtr(const Value& v) { return isObjType(v, ObjType::ForeignPtr); }
 inline ObjForeignPtr* asForeignPtr(const Value& v) { return static_cast<ObjForeignPtr*>(v.asObj()); }
 
-ObjForeignPtr* foreignPtrVal(void* ptr);
+ObjForeignPtr* newForeignPtrObj(void* ptr);
 std::string objForeignPtrToString(const ObjForeignPtr* fp);
 
 
@@ -659,7 +659,7 @@ struct ObjFile : public Obj {
 inline bool isFile(const Value& v) { return isObjType(v, ObjType::File); }
 inline ObjFile* asFile(const Value& v) { return static_cast<ObjFile*>(v.asObj()); }
 
-ObjFile* fileVal(roxal::ptr<std::fstream> f, bool binary = false);
+ObjFile* newFileObj(roxal::ptr<std::fstream> f, bool binary = false);
 std::string objFileToString(const ObjFile* f);
 
 

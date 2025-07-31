@@ -41,7 +41,7 @@ Value roxal::loadlib_native(ArgsView args)
     if (!h)
         throw std::runtime_error(std::string("dlopen failed: ") + dlerror());
 
-    return objVal(libraryVal(h));
+    return Value::libraryVal(h);
 }
 
 Value roxal::ffi_native(ArgsView args)
@@ -1047,7 +1047,7 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
         if (ctype == "uint8_t") { uint8_t u; readPadded(&u, sizeof(u),1); out = Value::byteVal(u); return true; }
         if (ctype == "bool") { uint8_t b; readPadded(&b, sizeof(b),1); out = Value::boolVal(b!=0); return true; }
         if (ctype == "char*") { const char* p; readPadded(&p, ptrSize, ptrSize); out = Value::stringVal(toUnicodeString(p?p:"")); return true; }
-        if (ctype == "void*" || (!ctype.empty() && ctype.back()=='*')) { void* p; readPadded(&p, ptrSize, ptrSize); out = p ? objVal(foreignPtrVal(p)) : Value::nilVal(); return true; }
+        if (ctype == "void*" || (!ctype.empty() && ctype.back()=='*')) { void* p; readPadded(&p, ptrSize, ptrSize); out = p ? Value::foreignPtrVal(p) : Value::nilVal(); return true; }
         return false;
     };
 

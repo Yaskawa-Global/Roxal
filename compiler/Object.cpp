@@ -1116,18 +1116,18 @@ ObjMatrix::ObjMatrix(int32_t rows, int32_t cols)
     mat.setZero();
 }
 
-ObjMatrix* roxal::matrixVal()
+ObjMatrix* roxal::newMatrixObj()
 {
     return newObj<ObjMatrix>(__func__);
 }
 
-ObjMatrix* roxal::matrixVal(int32_t rows, int32_t cols)
+ObjMatrix* roxal::newMatrixObj(int32_t rows, int32_t cols)
 {
     auto m = newObj<ObjMatrix>(__func__, rows, cols);
     return m;
 }
 
-ObjMatrix* roxal::matrixVal(const Eigen::MatrixXd& values)
+ObjMatrix* roxal::newMatrixObj(const Eigen::MatrixXd& values)
 {
     auto m = newObj<ObjMatrix>(__func__, values);
     return m;
@@ -1884,7 +1884,7 @@ ObjEvent* ObjSignal::ensureChangeEvent()
     if (!changeEvent.isNil())
         return asEvent(changeEvent);
 
-    changeEvent = objVal(eventVal());
+    changeEvent = Value::eventVal();
     Value eventWeak = changeEvent.weakRef();
     signal->addValueChangedCallback([eventWeak](TimePoint t, ptr<df::Signal>, const Value&){
         if (!eventWeak.isAlive())
@@ -1895,7 +1895,7 @@ ObjEvent* ObjSignal::ensureChangeEvent()
     return asEvent(changeEvent);
 }
 
-ObjSignal* roxal::signalVal(ptr<df::Signal> s)
+ObjSignal* roxal::newSignalObj(ptr<df::Signal> s)
 {
     return newObj<ObjSignal>(__func__, s);
 }
@@ -1911,7 +1911,7 @@ std::string roxal::objSignalToString(const ObjSignal* os)
     }
 }
 
-ObjEvent* roxal::eventVal()
+ObjEvent* roxal::newEventObj()
 {
     return newObj<ObjEvent>(__func__);
 }
@@ -1930,7 +1930,7 @@ ObjLibrary::~ObjLibrary()
         dlclose(handle);
 }
 
-ObjLibrary* roxal::libraryVal(void* handle)
+ObjLibrary* roxal::newLibraryObj(void* handle)
 {
     return newObj<ObjLibrary>(__func__, handle);
 }
@@ -1942,7 +1942,7 @@ std::string roxal::objLibraryToString(const ObjLibrary* lib)
     return oss.str();
 }
 
-ObjForeignPtr* roxal::foreignPtrVal(void* ptr)
+ObjForeignPtr* roxal::newForeignPtrObj(void* ptr)
 {
     return newObj<ObjForeignPtr>(__func__, ptr);
 }
@@ -1954,7 +1954,7 @@ std::string roxal::objForeignPtrToString(const ObjForeignPtr* fp)
     return oss.str();
 }
 
-ObjFile* roxal::fileVal(roxal::ptr<std::fstream> f, bool binary)
+ObjFile* roxal::newFileObj(roxal::ptr<std::fstream> f, bool binary)
 {
     return newObj<ObjFile>(__func__, std::move(f), binary);
 }
@@ -2032,7 +2032,7 @@ Value ObjMatrix::index(const Value& row) const
             if (target >=0 && target < rows())
                 m.row(i) = mat.row(target);
         }
-        return objVal(matrixVal(m));
+        return Value::matrixVal(m);
     }
     throw std::invalid_argument("Matrix indexing subscript must be a number or a range.");
     return Value::nilVal();
@@ -2106,7 +2106,7 @@ Value ObjMatrix::index(const Value& row, const Value& col) const
         for(size_t i=0;i<rowIdx.size();++i)
             for(size_t j=0;j<colIdx.size();++j)
                 sub(i,j) = mat(rowIdx[i], colIdx[j]);
-        return objVal(matrixVal(sub));
+        return Value::matrixVal(sub);
     }
     return Value::nilVal();
 }

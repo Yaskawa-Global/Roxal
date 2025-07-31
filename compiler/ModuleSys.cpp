@@ -650,7 +650,7 @@ Value ModuleSys::clock_signal_native(VM& vm, ArgsView args)
     std::string finalName = nameStr.empty() ? autoName : nameStr;
 
     auto sig = df::Signal::newClockSignal(freq, finalName);
-    return objVal(signalVal(sig));
+    return Value::signalVal(sig);
 }
 
 Value ModuleSys::engine_stop_native(VM& vm, ArgsView args)

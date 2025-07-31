@@ -709,14 +709,14 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
         dataflowEngine->evaluate(); // Initialize signal values for new node
         popN(callSpec.argCount + 1);
         if (outputs.size() == 1) {
-            push(objVal(signalVal(outputs[0])));
+            push(Value::signalVal(outputs[0]));
         } else if (outputs.empty()) {
             push(Value::nilVal());
         } else {
             std::vector<Value> outVals;
             outVals.reserve(outputs.size());
             for(const auto& s : outputs)
-                outVals.push_back(objVal(signalVal(s)));
+                outVals.push_back(Value::signalVal(s));
             push(Value::listVal(outVals));
         }
         return true;
@@ -1361,7 +1361,7 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                     } else if (idx < 0) {
                         auto newSig = sig->signal->indexedSignal(idx);
                         pop();
-                        push(objVal(signalVal(newSig)));
+                        push(Value::signalVal(newSig));
                     } else {
                         runtimeError("Signal index must be 0 or negative.");
                         return false;
@@ -3187,7 +3187,7 @@ std::pair<InterpretResult,Value> VM::execute()
             case asByte(OpCode::NewMatrix): {
                 int rowCount = readByte();
                 if (rowCount == 0) {
-                    push(objVal(matrixVal()));
+                    push(Value::matrixVal());
                     break;
                 }
                 if (!isVector(peek(rowCount-1))) {
@@ -3211,7 +3211,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         mat(r,c) = vec->vec[c];
                 }
                 for(int i=0; i<rowCount; ++i) pop();
-                push(objVal(matrixVal(mat)));
+                push(Value::matrixVal(mat));
                 break;
             }
             case asByte(OpCode::IfDictToKeys): {
@@ -4265,7 +4265,7 @@ Value VM::matrix_transpose_builtin(ArgsView args)
 
     ObjMatrix* mat = asMatrix(args[0]);
     Eigen::MatrixXd tr = mat->mat.transpose();
-    return objVal(matrixVal(tr));
+    return Value::matrixVal(tr);
 }
 
 Value VM::matrix_determinant_builtin(ArgsView args)
@@ -4291,7 +4291,7 @@ Value VM::matrix_inverse_builtin(ArgsView args)
         throw std::invalid_argument("matrix.inverse requires a square matrix");
 
     Eigen::MatrixXd inv = mat->mat.inverse();
-    return objVal(matrixVal(inv));
+    return Value::matrixVal(inv);
 }
 
 Value VM::matrix_trace_builtin(ArgsView args)

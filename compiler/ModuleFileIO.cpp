@@ -96,7 +96,7 @@ Value ModuleFileIO::fileio_open_builtin(VM& vm, ArgsView args)
     if (!f->is_open()) {
         return Value::falseVal();
     }
-    return objVal(fileVal(f, binary));
+    return Value::fileVal(f, binary);
 }
 
 Value ModuleFileIO::fileio_close_builtin(VM& vm, ArgsView args)

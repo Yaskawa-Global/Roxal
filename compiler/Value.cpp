@@ -140,42 +140,42 @@ Value Value::vectorVal(const Eigen::VectorXd& values)
 
 Value Value::matrixVal()
 {
-    return objVal(::matrixVal());
+    return objVal(newMatrixObj());
 }
 
 Value Value::matrixVal(int32_t rows, int32_t cols)
 {
-    return objVal(::matrixVal(rows, cols));
+    return objVal(newMatrixObj(rows, cols));
 }
 
 Value Value::matrixVal(const Eigen::MatrixXd& values)
 {
-    return objVal(::matrixVal(values));
+    return objVal(newMatrixObj(values));
 }
 
 Value Value::signalVal(roxal::ptr<df::Signal> s)
 {
-    return objVal(::signalVal(s));
+    return objVal(newSignalObj(s));
 }
 
 Value Value::eventVal()
 {
-    return objVal(::eventVal());
+    return objVal(newEventObj());
 }
 
 Value Value::libraryVal(void* handle)
 {
-    return objVal(::libraryVal(handle));
+    return objVal(newLibraryObj(handle));
 }
 
 Value Value::foreignPtrVal(void* ptr)
 {
-    return objVal(::foreignPtrVal(ptr));
+    return objVal(newForeignPtrObj(ptr));
 }
 
 Value Value::fileVal(roxal::ptr<std::fstream> f, bool binary)
 {
-    return objVal(::fileVal(f, binary));
+    return objVal(newFileObj(f, binary));
 }
 
 Value Value::exceptionVal(Value message, Value exType, Value stackTrace)
@@ -1001,7 +1001,7 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
 
     Eigen::MatrixXd mat(1,2);
     mat(0,0) = 1.0; mat(0,1) = 2.0;
-    roundTrip("matrix_val", objVal(matrixVal(mat)));
+    roundTrip("matrix_val", Value::matrixVal(mat));
 
     roundTrip("boxed_bool", objVal(newObj<ObjPrimitive>(__func__, true)));
     roundTrip("boxed_int", objVal(newObj<ObjPrimitive>(__func__, int32_t(-7))));
@@ -1141,9 +1141,9 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::List: return Value::listVal();
         case ValueType::Dict: return Value::dictVal();
         case ValueType::Vector: return Value::vectorVal();
-        case ValueType::Matrix: return Value(matrixVal());
+        case ValueType::Matrix: return Value::matrixVal();
         case ValueType::Signal: throw std::runtime_error("Can't default-construct signal");
-        case ValueType::Event: return Value(eventVal());
+        case ValueType::Event: return Value::eventVal();
         case ValueType::Tensor:
         case ValueType::Orient:
         case ValueType::Object:
@@ -1304,7 +1304,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
         std::string finalName = nameStr.empty() ? autoName : nameStr;
 
         auto sig = df::Signal::newSourceSignal(freq, initial, finalName);
-        return objVal(signalVal(sig));
+        return Value::signalVal(sig);
     }
 
     if (type == ValueType::Byte) {
@@ -1411,14 +1411,14 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
             if (isList(arg)) {
                 auto rowsVals = asList(arg)->elts.get();
                 if (rowsVals.size() == 0)
-                    return objVal(matrixVal());
+                    return Value::matrixVal();
 
                 if (!isList(rowsVals[0]) && !isVector(rowsVals[0])) {
                     int colCount = rowsVals.size();
                     Eigen::MatrixXd vals(1, colCount);
                     for(int c=0; c<colCount; ++c)
                         vals(0,c) = toType(ValueType::Real, rowsVals[c], false).asReal();
-                    return objVal(matrixVal(vals));
+                    return Value::matrixVal(vals);
                 }
 
                 size_t rowCount = rowsVals.size();
@@ -1449,14 +1449,14 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                         throw std::runtime_error("matrix constructor expects list of lists or vectors");
                     }
                 }
-                return objVal(matrixVal(vals));
+                return Value::matrixVal(vals);
             }
             if (isVector(arg)) {
                 auto vec = asVector(arg);
                 Eigen::MatrixXd vals(1, vec->length());
                 for(int c=0; c<vec->length(); ++c)
                     vals(0,c) = vec->vec[c];
-                return objVal(matrixVal(vals));
+                return Value::matrixVal(vals);
             }
             if (isMatrix(arg)) {
                 return objVal(cloneMatrix(asMatrix(arg)));
@@ -1526,7 +1526,7 @@ Value roxal::negate(Value v)
     else if (isMatrix(v)) {
         const ObjMatrix* mat = asMatrix(v);
         Eigen::MatrixXd result = -mat->mat;
-        return objVal(matrixVal(result));
+        return Value::matrixVal(result);
     }
     else if (v.isBool())
         return Value::boolVal(!v.asBool());
@@ -1570,7 +1570,7 @@ static Value roxal::signalUnaryOp(const std::string& name,
     node->addToEngine();
     auto outputs = node->outputs();
     df::DataflowEngine::instance()->evaluate();
-    return objVal(signalVal(outputs[0]));
+    return Value::signalVal(outputs[0]);
 }
 
 static Value signalBinaryOp(const std::string& name,
@@ -1604,7 +1604,7 @@ static Value signalBinaryOp(const std::string& name,
     node->addToEngine();
     auto outputs = node->outputs();
     df::DataflowEngine::instance()->evaluate();
-    return objVal(signalVal(outputs[0]));
+    return Value::signalVal(outputs[0]);
 }
 
 Value roxal::add(Value l, Value r)
@@ -1633,7 +1633,7 @@ Value roxal::add(Value l, Value r)
         if (lm->rows() != rm->rows() || lm->cols() != rm->cols())
             throw std::invalid_argument("Matrix addition requires matrices of same size");
         Eigen::MatrixXd result = lm->mat + rm->mat;
-        return objVal(matrixVal(result));
+        return Value::matrixVal(result);
     }
     else if (isSignal(l) || isSignal(r)) {
         return signalBinaryOp("add",
@@ -1679,7 +1679,7 @@ Value roxal::subtract(Value l, Value r)
         if (lm->rows() != rm->rows() || lm->cols() != rm->cols())
             throw std::invalid_argument("Matrix subtraction requires matrices of same size");
         Eigen::MatrixXd result = lm->mat - rm->mat;
-        return objVal(matrixVal(result));
+        return Value::matrixVal(result);
     }
     else if (isSignal(l) || isSignal(r)) {
         return signalBinaryOp("subtract",
@@ -1732,7 +1732,7 @@ Value roxal::multiply(Value l, Value r)
         if (lm->cols() != rm->rows())
             throw std::invalid_argument("Matrix multiplication dimension mismatch");
         Eigen::MatrixXd result = lm->mat * rm->mat;
-        return objVal(matrixVal(result));
+        return Value::matrixVal(result);
     }
     if (isMatrix(l) && isVector(r)) {
         const ObjMatrix* lm = asMatrix(l);
@@ -1754,13 +1754,13 @@ Value roxal::multiply(Value l, Value r)
         const ObjMatrix* lm = asMatrix(l);
         double scalar = toType(ValueType::Real, r, false).asReal();
         Eigen::MatrixXd result = lm->mat * scalar;
-        return objVal(matrixVal(result));
+        return Value::matrixVal(result);
     }
     if (l.isNumber() && isMatrix(r)) {
         const ObjMatrix* rm = asMatrix(r);
         double scalar = toType(ValueType::Real, l, false).asReal();
         Eigen::MatrixXd result = scalar * rm->mat;
-        return objVal(matrixVal(result));
+        return Value::matrixVal(result);
     }
     if (isSignal(l) || isSignal(r)) {
         return signalBinaryOp("multiply",

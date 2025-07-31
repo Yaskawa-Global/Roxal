@@ -108,7 +108,7 @@ Value ModuleMath::math_identity_builtin(VM& vm, ArgsView args)
 
     int n = toType(ValueType::Int, args[0], false).asInt();
     Eigen::MatrixXd m = Eigen::MatrixXd::Identity(n, n);
-    return objVal(matrixVal(m));
+    return Value::matrixVal(m);
 }
 
 Value ModuleMath::math_zeros_builtin(VM& vm, ArgsView args)
@@ -119,7 +119,7 @@ Value ModuleMath::math_zeros_builtin(VM& vm, ArgsView args)
     int r = toType(ValueType::Int, args[0], false).asInt();
     int c = toType(ValueType::Int, args[1], false).asInt();
     Eigen::MatrixXd m = Eigen::MatrixXd::Zero(r, c);
-    return objVal(matrixVal(m));
+    return Value::matrixVal(m);
 }
 
 Value ModuleMath::math_ones_builtin(VM& vm, ArgsView args)
@@ -130,7 +130,7 @@ Value ModuleMath::math_ones_builtin(VM& vm, ArgsView args)
     int r = toType(ValueType::Int, args[0], false).asInt();
     int c = toType(ValueType::Int, args[1], false).asInt();
     Eigen::MatrixXd m = Eigen::MatrixXd::Ones(r, c);
-    return objVal(matrixVal(m));
+    return Value::matrixVal(m);
 }
 
 Value ModuleMath::math_dot_builtin(VM& vm, ArgsView args)
@@ -181,9 +181,9 @@ Value ModuleMath::counter_init_builtin(VM& vm, ArgsView args)
 
     // C++ instance
     Counter* counter = new Counter(start);
-    ObjForeignPtr* fp = foreignPtrVal(counter);
-    fp->registerCleanup([](void* p){ delete static_cast<Counter*>(p); });
-    inst->setProperty("_this", objVal(fp)); // store it in instance property
+    Value fp { Value::foreignPtrVal(counter) };
+    asForeignPtr(fp)->registerCleanup([](void* p){ delete static_cast<Counter*>(p); });
+    inst->setProperty("_this", fp); // store it in instance property
 
     return Value::nilVal();
 }
