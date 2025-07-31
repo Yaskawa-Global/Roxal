@@ -180,14 +180,14 @@ Value Value::fileVal(roxal::ptr<std::fstream> f, bool binary)
 
 Value Value::exceptionVal(Value message, Value exType, Value stackTrace)
 {
-    return objVal(::exceptionVal(message, exType, stackTrace));
+    return objVal(newExceptionObj(message, exType, stackTrace));
 }
 
 Value Value::functionVal(const icu::UnicodeString& packageName,
                          const icu::UnicodeString& moduleName,
                          const icu::UnicodeString& sourceName)
 {
-    return objVal(::functionVal(packageName, moduleName, sourceName));
+    return objVal(newFunctionObj(packageName, moduleName, sourceName));
 }
 
 Value Value::upvalueVal(Value* v)
@@ -197,11 +197,8 @@ Value Value::upvalueVal(Value* v)
 
 Value Value::closureVal(const Value& function)
 {
-    #ifdef DEBUG_BUILD
-    if (!isFunction(function))
-        throw std::runtime_error("Value is not an ObjFunction");
-    #endif
-    return objVal(::closureVal(asFunction(function)));
+    debug_assert_msg(isFunction(function), "Value is an ObjFunction");
+    return objVal(newClosureObj(function));
 }
 
 Value Value::futureVal(const std::shared_future<Value>& fv)
@@ -1032,20 +1029,24 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
     // function round trip
     {
         try {
-            ObjFunction* fn = functionVal(toUnicodeString("pkg"), toUnicodeString("mod"), toUnicodeString("src"));
-            fn->name = toUnicodeString("fn");
-            fn->arity = 0; fn->upvalueCount = 0; fn->strict=false; fn->fnType=FunctionType::Function;
-            fn->chunk->write(OpCode::ConstNil,0,0);
-            fn->chunk->write(OpCode::Return,0,0);
+            Value fn { Value::functionVal(toUnicodeString("pkg"), toUnicodeString("mod"), toUnicodeString("src"))};
+            asFunction(fn)->name = toUnicodeString("fn");
+            asFunction(fn)->arity = 0;
+            asFunction(fn)->upvalueCount = 0;
+            asFunction(fn)->strict=false;
+            asFunction(fn)->fnType=FunctionType::Function;
+            asFunction(fn)->chunk->write(OpCode::ConstNil,0,0);
+            asFunction(fn)->chunk->write(OpCode::Return,0,0);
             std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
-            fn->write(ss);
+            asFunction(fn)->write(ss);
             ss.seekg(0);
-            auto fn2 = newObj<ObjFunction>(__func__, toUnicodeString(""), toUnicodeString(""), toUnicodeString(""));
-            fn2->read(ss);
-            bool pass = fn->name == fn2->name && fn->arity==fn2->arity && fn->upvalueCount==fn2->upvalueCount && fn->chunk->code==fn2->chunk->code;
+            Value fn2 { Value::functionVal(toUnicodeString(""), toUnicodeString(""), toUnicodeString(""))};
+            asFunction(fn2)->read(ss);
+            bool pass =    asFunction(fn)->name == asFunction(fn2)->name
+                        && asFunction(fn)->arity== asFunction(fn2)->arity
+                        && asFunction(fn)->upvalueCount==asFunction(fn2)->upvalueCount
+                        && asFunction(fn)->chunk->code==asFunction(fn2)->chunk->code;
             results.push_back({"function_round", pass, pass?"ok":"mismatch"});
-            delObj(fn2);
-            delObj(fn);
         } catch(std::exception& e) {
             results.push_back({"function_round", false, std::string("exception: ")+e.what()});
         }
@@ -1054,23 +1055,25 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
     // closure round trip
     {
         try {
-            ObjFunction* fn = functionVal(toUnicodeString("pkg"), toUnicodeString("mod"), toUnicodeString("src"));
-            fn->name = toUnicodeString("cl");
-            fn->arity = 0; fn->upvalueCount = 1;
-            fn->chunk->write(OpCode::ConstNil,0,0);
-            fn->chunk->write(OpCode::Return,0,0);
-            ObjClosure* cl = closureVal(fn);
+            Value fn { Value::functionVal(toUnicodeString("pkg"), toUnicodeString("mod"), toUnicodeString("src")) };
+            ObjFunction* fnObj = asFunction(fn);
+            fnObj->name = toUnicodeString("cl");
+            fnObj->arity = 0; fnObj->upvalueCount = 1;
+            fnObj->chunk->write(OpCode::ConstNil,0,0);
+            fnObj->chunk->write(OpCode::Return,0,0);
+            Value cl { Value::closureVal(fn) };
+            ObjClosure* clObj = asClosure(cl);
             Value local = Value::intVal(3);
-            cl->upvalues[0] = upvalueVal(&local);
+            clObj->upvalues[0] = upvalueVal(&local);
             std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
-            cl->write(ss);
+            clObj->write(ss);
             ss.seekg(0);
-            auto cl2 = newObj<ObjClosure>(__func__, nullptr);
-            cl2->read(ss);
-            bool pass = cl2->function->name == cl->function->name && cl2->upvalues.size()==cl->upvalues.size() && cl2->upvalues[0]->closed.equals(Value::intVal(3), true);
+            Value cl2 { Value::closureVal(fn) };
+            ObjClosure* clObj2 = asClosure(cl2);
+            clObj2->function = nullptr;
+            clObj2->read(ss);
+            bool pass = clObj2->function->name == clObj->function->name && clObj2->upvalues.size()==clObj->upvalues.size() && clObj2->upvalues[0]->closed.equals(Value::intVal(3), true);
             results.push_back({"closure_round", pass, pass?"ok":"mismatch"});
-            delObj(cl2);
-            delObj(cl);
         } catch(std::exception& e) {
             results.push_back({"closure_round", false, std::string("exception: ")+e.what()});
         }

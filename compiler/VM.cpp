@@ -271,25 +271,25 @@ VM::VM()
 
     // Create builtin __conditional_interrupt closure
     {
-        ObjFunction* fn = functionVal(toUnicodeString("sys"), toUnicodeString("__internal"), toUnicodeString("internal"));
-        fn->name = toUnicodeString("__conditional_interrupt");
-        fn->arity = 0;
-        fn->upvalueCount = 0;
+        Value fn { Value::functionVal(toUnicodeString("sys"), toUnicodeString("__internal"), toUnicodeString("internal")) };
+        ObjFunction* fnObj = asFunction(fn);
+        fnObj->name = toUnicodeString("__conditional_interrupt");
+        fnObj->arity = 0;
+        fnObj->upvalueCount = 0;
 
         Value condIntType = globals.load(toUnicodeString("ConditionalInterrupt")).value();
-        fn->chunk->writeConsant(condIntType, 0, 0);
-        fn->chunk->write(OpCode::ConstNil, 0, 0);
+        fnObj->chunk->writeConsant(condIntType, 0, 0);
+        fnObj->chunk->write(OpCode::ConstNil, 0, 0);
         CallSpec cs{1};
         auto bytes = cs.toBytes();
-        fn->chunk->write(OpCode::Call, 0, 0);
-        fn->chunk->write(bytes[0], 0, 0);
-        fn->chunk->write(OpCode::Throw, 0, 0);
-        fn->chunk->write(OpCode::ConstNil, 0, 0);
-        fn->chunk->write(OpCode::Return, 0, 0);
+        fnObj->chunk->write(OpCode::Call, 0, 0);
+        fnObj->chunk->write(bytes[0], 0, 0);
+        fnObj->chunk->write(OpCode::Throw, 0, 0);
+        fnObj->chunk->write(OpCode::ConstNil, 0, 0);
+        fnObj->chunk->write(OpCode::Return, 0, 0);
 
-        conditionalInterruptClosure = closureVal(fn);
-        conditionalInterruptClosure->incRef();
-        globals.storeGlobal(toUnicodeString("__conditional_interrupt"), objVal(conditionalInterruptClosure));
+        conditionalInterruptClosure = Value::closureVal(fn);
+        globals.storeGlobal(toUnicodeString("__conditional_interrupt"), conditionalInterruptClosure);
     }
 
     //CallSpec::testParamPositions();
@@ -301,8 +301,9 @@ VM::VM()
 
 VM::~VM()
 {
-    for(auto moduleType : ObjModuleType::allModules.get())
+    for(auto moduleType : ObjModuleType::allModules.get()) {
         moduleType->vars.clear();
+    }
 
     // Clean up dataflow engine resources before globals cleanup
     // First stop the dataflow engine and its actor thread properly
@@ -318,14 +319,29 @@ VM::~VM()
     // join any remaining threads to prevent leak reports
     joinAllThreads();
 
+
+    globals.forEach([](const VariablesMap::NameValue& nv) {
+        auto value = nv.second;
+        if (isClosure(value)) {
+            auto closure = asClosure(value);
+            closure->upvalues.clear();
+            closure->function->moduleType = Value::nilVal();
+            closure->function->paramDefaultFunc.clear();
+        }
+        if (isFunction(value)) {
+            auto fn = asFunction(value);
+            fn->moduleType = Value::nilVal();
+            fn->paramDefaultFunc.clear();
+        }
+    });
+
     globals.clearGlobals();
 
     initString = Value::nilVal();
 
     builtinModules.clear();
 
-    if (conditionalInterruptClosure)
-        conditionalInterruptClosure->decRef();
+    conditionalInterruptClosure = Value::nilVal();
 
     df::DataflowEngine::instance()->clear();
 
@@ -372,7 +388,7 @@ void VM::appendModulePaths(const std::vector<std::string>& modulePaths)
 
 InterpretResult VM::interpret(std::istream& source, const std::string& name)
 {
-    ObjFunction* function { nullptr };
+    Value function { Value::nilVal() }; // ObjFunction
 
     runtimeErrorFlag = false;
 
@@ -387,11 +403,10 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
         return InterpretResult::CompileError;
     }
 
-    if (function == nullptr)
+    if (function.isNil())
         return InterpretResult::CompileError;
 
-    ObjClosure* closure = closureVal(function);
-    Value closureValue { objVal(closure) };
+    Value closureValue { Value::closureVal(function) };
 
     auto firstThread = std::make_shared<Thread>();
     threads.store(firstThread->id(), firstThread);
@@ -425,7 +440,7 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
 
 InterpretResult VM::interpretLine(std::istream& linestream)
 {
-    ObjFunction* function { nullptr };
+    Value function { Value::nilVal() }; // ObjFunction
 
     runtimeErrorFlag = false;
 
@@ -442,17 +457,17 @@ InterpretResult VM::interpretLine(std::istream& linestream)
         return InterpretResult::CompileError;
     }
 
-    if (function == nullptr)
+    if (function.isNil())
         return InterpretResult::CompileError;
 
     if (replModule == nullptr)
-        replModule = asModuleType(function->moduleType);
+        replModule = asModuleType(asFunction(function)->moduleType);
 
     lineMode = true;
     lineStream = &linestream;
     compiler.setReplMode(false);
 
-    ObjClosure* closure = closureVal(function);
+    Value closure = Value::closureVal(function); // ObjClosure
 
     if (!replThread) {
         replThread = std::make_shared<Thread>();
@@ -461,7 +476,7 @@ InterpretResult VM::interpretLine(std::istream& linestream)
     thread = replThread;
     resetStack();
 
-    auto resultPair = callAndExec(closure, {});
+    auto resultPair = callAndExec(asClosure(closure), {});
     InterpretResult result = resultPair.first;
     if (runtimeErrorFlag.load())
         result = InterpretResult::RuntimeError;
@@ -518,10 +533,10 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
                     assert(funcIt != closure->function->paramDefaultFunc.cend());
                     #endif
 
-                    ObjFunction* defValFunc = funcIt->second;
+                    Value defValFunc = funcIt->second; // ObjFunction
 
                     // call it, which will leave the returned default val on the stack as an arg for this call
-                    ObjClosure* defValClosure = closureVal(defValFunc);
+                    Value defValClosure = Value::closureVal(defValFunc); //  ObjClosure
 
                     // normal after emit Op Closure in compiler
                     // for (int i = 0; i < function->upvalueCount; i++) {
@@ -542,15 +557,15 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
                     //     closure->upvalues[i] = upvalue;
                     // }
 
-                    if (defValClosure->upvalues.size() > 0) {
+                    if (asClosure(defValClosure)->upvalues.size() > 0) {
                         auto paramName = param.value().name;
                         runtimeError("Captured variables in default parameter '"+toUTF8StdString(paramName)+"' value expressions are not allowed"
                                     +" in declaration of function '"+toUTF8StdString(closure->function->name)+"'.");
                         return false;
                     }
 
-                    call(defValClosure,CallSpec(0));
-                    defValFrames.push_back(std::make_pair(objVal(defValClosure) ,*(thread->frames.end()-1)) );
+                    call(asClosure(defValClosure),CallSpec(0));
+                    defValFrames.push_back(std::make_pair(defValClosure ,*(thread->frames.end()-1)) );
                     thread->popFrame();
 
                     // push a place-holder (nil) value onto the stack for the value
@@ -771,7 +786,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
                     if (initMethod == nullptr && isExceptionType(type) && callSpec.argCount == 1) {
                         Value msg = peek(0);
-                        *(thread->stackTop - callSpec.argCount - 1) = objVal(exceptionVal(msg, objVal(type)));
+                        *(thread->stackTop - callSpec.argCount - 1) = Value::exceptionVal(msg, objVal(type));
                         pop();
                         return true;
                     }
@@ -2873,12 +2888,14 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case asByte(OpCode::Closure): {
-                ObjFunction* function = asFunction(readConstant());
-                ObjClosure* closure = closureVal(function);
-                if (function->ownerType.isNil() && !frame->closure->function->ownerType.isNil())
-                    function->ownerType = frame->closure->function->ownerType;
-                push(objVal(closure));
-                for (int i = 0; i < closure->upvalues.size(); i++) {
+                Value function = readConstant();
+                debug_assert_msg(isFunction(function), "Expected a function value for OpCode::Closure");
+                Value closure { Value::closureVal(function) };
+                ObjFunction* funcObj = asFunction(function);
+                if (funcObj->ownerType.isNil() && !frame->closure->function->ownerType.isNil())
+                    funcObj->ownerType = frame->closure->function->ownerType;
+                push(closure);
+                for (int i = 0; i < asClosure(closure)->upvalues.size(); i++) {
                     uint8_t isLocal = readByte();
                     uint8_t index = readByte();
                     ObjUpvalue* upvalue;
@@ -2887,17 +2904,19 @@ std::pair<InterpretResult,Value> VM::execute()
                     else
                         upvalue = frame->closure->upvalues[index];
                     upvalue->incRef();
-                    closure->upvalues[i] = upvalue;
+                    asClosure(closure)->upvalues[i] = upvalue;
                 }
                 break;
             }
             case asByte(OpCode::Closure2): {
-                ObjFunction* function = asFunction(readConstant2());
-                ObjClosure* closure = closureVal(function);
-                if (function->ownerType.isNil() && !frame->closure->function->ownerType.isNil())
-                    function->ownerType = frame->closure->function->ownerType;
-                push(objVal(closure));
-                for (int i = 0; i < closure->upvalues.size(); i++) {
+                Value function = readConstant2(); // ObjFunction
+                debug_assert_msg(isFunction(function), "Expected a function value for OpCode::Closure2");
+                Value closure = Value::closureVal(function);
+                ObjFunction* funcObj = asFunction(function);
+                if (funcObj->ownerType.isNil() && !frame->closure->function->ownerType.isNil())
+                    funcObj->ownerType = frame->closure->function->ownerType;
+                push(closure);
+                for (int i = 0; i < asClosure(closure)->upvalues.size(); i++) {
                     uint8_t isLocal = readByte();
                     uint8_t index = readByte();
                     ObjUpvalue* upvalue;
@@ -2906,7 +2925,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     else
                         upvalue = frame->closure->upvalues[index];
                     upvalue->incRef();
-                    closure->upvalues[i] = upvalue;
+                    asClosure(closure)->upvalues[i] = upvalue;
                 }
                 break;
             }
@@ -3371,7 +3390,7 @@ std::pair<InterpretResult,Value> VM::execute()
             case asByte(OpCode::Throw): {
                 Value exc = pop();
                 if (!isException(exc))
-                    exc = objVal(exceptionVal(exc));
+                    exc = Value::exceptionVal(exc);
                 ObjException* exObj = asException(exc);
                 if (exObj->stackTrace.isNil())
                     exObj->stackTrace = captureStacktrace();
@@ -3656,14 +3675,14 @@ bool VM::processPendingEvents()
         auto handlersIt = thread->eventHandlers.find(tev.event);
         if (handlersIt != thread->eventHandlers.end()) {
             for(const auto& handler : handlersIt->second) {
-                auto closure = asClosure(handler);
+                auto closureObj = asClosure(handler);
 
                 auto prevThreadSleep = thread->threadSleep.load();
                 auto prevThreadSleepUntil = thread->threadSleepUntil.load();
 
                 thread->threadSleep = false;
 
-                if (closure == conditionalInterruptClosure) {
+                if (handler == conditionalInterruptClosure) {
                     bool raise = true;
                     auto sigIt = thread->eventToSignal.find(tev.event);
                     if (sigIt != thread->eventToSignal.end()) {
@@ -3680,11 +3699,11 @@ bool VM::processPendingEvents()
                     }
                     if (raise) {
                         Value excType = globals.load(toUnicodeString("ConditionalInterrupt")).value();
-                        Value exc = objVal(exceptionVal(Value::nilVal(), excType));
+                        Value exc = Value::exceptionVal(Value::nilVal(), excType);
                         raiseException(exc);
                     }
                 } else {
-                    auto result = callAndExec(closure, {});
+                    auto result = callAndExec(closureObj, {});
                     assert(!thread->threadSleep);
 
                     if (result.first != InterpretResult::OK)
@@ -3711,7 +3730,7 @@ void VM::unwindFrame()
 void VM::raiseException(Value exc)
 {
     if (!isException(exc))
-        exc = objVal(exceptionVal(exc));
+        exc = Value::exceptionVal(exc);
 
     ObjException* exObj = asException(exc);
     if (exObj->stackTrace.isNil())
@@ -4477,15 +4496,15 @@ void VM::executeBuiltinModuleScript(const std::string& path, ObjModuleType* modu
     compiler.setOutputBytecodeDisassembly(false);
     compiler.setModulePaths(modulePaths);
 
-    ObjFunction* fn = compiler.compile(in, path, moduleType);
-    if (!fn)
+    Value fn = compiler.compile(in, path, moduleType);
+    if (fn.isNil())
         return;
 
-    ObjClosure* closure = closureVal(fn);
+    Value closure { Value::closureVal(fn) };
     ptr<Thread> t = std::make_shared<Thread>();
     thread = t;
     resetStack();
-    callAndExec(closure, {});
+    callAndExec(asClosure(closure), {});
     thread = nullptr;
 }
 

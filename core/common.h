@@ -8,6 +8,7 @@
 #include <vector>
 #include <queue>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <limits>
 
@@ -118,7 +119,42 @@ std::string trim(const std::string& s);
 icu::UnicodeString trim(const icu::UnicodeString& s);
 
 
+
+inline void assert_msg_impl(bool        expr,
+                            const char* expr_str,
+                            const char* user_msg,
+                            const char* file,
+                            int         line,
+                            const char* func) {
+    if (!expr) {
+        std::ostringstream oss;
+        oss << "Assertion failed!\n"
+            << "  Condition : (" << expr_str << ")\n"
+            << "  Message   : " << user_msg  << "\n"
+            << "  Location  : " << file << ":" << line
+            << " in " << func << "()\n";
+        std::cerr << oss.str();
+        std::abort();
+    }
 }
+
+
+// DEBUG_BUILD-only assertions
+#ifndef DEBUG_BUILD
+  #define debug_assert_msg(expr, msg) \
+    roxal::assert_msg_impl((expr), #expr, (msg), __FILE__, __LINE__, __func__)
+#else
+  #define debug_assert_msg(expr, msg) ((void)0)
+#endif
+
+// always assert, even in release builds
+#define assert_msg(expr, msg) \
+    roxal::assert_msg_impl((expr), #expr, (msg), __FILE__, __LINE__, __func__)
+
+
+
+
+} // namespace
 
 namespace std {
     template<>

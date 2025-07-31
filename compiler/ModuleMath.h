@@ -9,6 +9,7 @@ namespace roxal {
 class ModuleMath : public BuiltinModule {
 public:
     ModuleMath();
+    virtual ~ModuleMath() { moduleTypeValue = Value::nilVal(); }
 
     void registerBuiltins(VM& vm) override;
 

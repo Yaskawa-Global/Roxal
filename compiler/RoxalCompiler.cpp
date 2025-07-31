@@ -55,10 +55,10 @@ RoxalCompiler::RoxalCompiler()
 
 
 
-ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& name,
-                                    ObjModuleType* existingModule)
+Value RoxalCompiler::compile(std::istream& source, const std::string& name,
+                             ObjModuleType* existingModule)
 {
-    ObjFunction* function { nullptr };
+    Value function { Value::nilVal() };
 
     ptr<ast::AST> ast {};
     try {
@@ -107,7 +107,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
         }
 
         module->strict = strictContext;
-        module->function->strict = strictContext;
+        asFunction(module->function)->strict = strictContext;
 
         try {
             auto file = as<File>(ast);
@@ -116,10 +116,10 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 
             function = module->function;
 
-            assert(function != nullptr);
+            debug_assert_msg(!function.isNil() && isFunction(function),"Value holds function");
 
             if (outputBytecodeDisassembly)
-                module->function->chunk->disassemble(module->function->name);
+                asFunction(module->function)->chunk->disassemble(asFunction(module->function)->name);
 
             //std::cout << "value:" << value->repr() << std::endl;
         } catch (std::logic_error& e) {
@@ -127,7 +127,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
 
             while (!lexicalScopes.empty() && (*scope())->isFunc() && !(*scope())->isModule()) {
                 auto fs = asFuncScope(funcScope());
-                ObjFunction* f = fs->function;
+                ObjFunction* f = asFunction(fs->function);
                 exitFuncScope();
                 if (f != nullptr)
                     delObj(f);
@@ -136,19 +136,19 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
             while (inTypeScope())
                 exitTypeScope();
 
-            ObjFunction* modFunc = asModuleScope(moduleScope())->function;
+            ObjFunction* modFunc = asFunction(asModuleScope(moduleScope())->function);
             exitModuleScope();
             delObj(modFunc);
 
             clearCompileContext();
 
-            return nullptr;
+            return Value::nilVal();
         } catch (std::exception& e) {
             compileError(e.what());
 
             while (!lexicalScopes.empty() && (*scope())->isFunc() && !(*scope())->isModule()) {
                 auto fs = asFuncScope(funcScope());
-                ObjFunction* f = fs->function;
+                ObjFunction* f = asFunction(fs->function);
                 exitFuncScope();
                 if (f != nullptr)
                     delObj(f);
@@ -157,7 +157,7 @@ ObjFunction* RoxalCompiler::compile(std::istream& source, const std::string& nam
             while (inTypeScope())
                 exitTypeScope();
 
-            ObjFunction* modFunc = asModuleScope(moduleScope())->function;
+            ObjFunction* modFunc = asFunction(asModuleScope(moduleScope())->function);
             exitModuleScope();
             delObj(modFunc);
 
@@ -289,7 +289,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
             // compile it, emit code to execute it
             std::ifstream sourcestream(absoluteModuleFilePath);
 
-            ObjFunction* function { nullptr };
+            Value function { Value::nilVal() }; // ObjFunction
             bool prevRepl = replModeFlag;
 
             try {
@@ -297,12 +297,12 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
                 function = compile(sourcestream, toUTF8StdString(module.name));
                 replModeFlag = prevRepl;
 
-                importedModuleType = function->moduleType;
+                importedModuleType = asFunction(function)->moduleType;
 
                 // emit code to place module's main chunk on stack as closure
-                assert(function->upvalueCount == 0);
+                assert(asFunction(function)->upvalueCount == 0);
                 {
-                    uint16_t constIdx = makeConstant(objVal(function));
+                    uint16_t constIdx = makeConstant(function);
                     if (constIdx <= 255)
                         emitBytes(OpCode::Closure, uint8_t(constIdx));
                     else
@@ -330,7 +330,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     }
 
     // create or retrieve package modules and build module hierarchy
-    const auto& importingModuleType = asFuncScope(funcScope())->function->moduleType;
+    const auto& importingModuleType = asFunction(asFuncScope(funcScope())->function)->moduleType;
     auto& importingModuleVars = asModuleType(importingModuleType)->vars;
 
     Value parentModuleVal { Value::nilVal() };
@@ -1053,11 +1053,11 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
 
     enterFuncScope(enclosingModuleScope->moduleType, funcName, FunctionType::Function, funcType);
     enterLocalScope();
-    asFuncScope(funcScope())->function->arity = 0;
+    asFunction(asFuncScope(funcScope())->function)->arity = 0;
     ast->body->accept(*this);
     emitReturn();
 
-    ObjFunction* function = asFuncScope(funcScope())->function;
+    ObjFunction* function = asFunction(asFuncScope(funcScope())->function);
     auto fs = *asFuncScope(funcScope());
     exitFuncScope();
 
@@ -1280,17 +1280,19 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
             strictContext = false;
     }
 
-    asFuncScope(funcScope())->strict = strictContext;
-    asFuncScope(funcScope())->function->strict = strictContext;
-    asFuncScope(funcScope())->function->access = ast->access;
+    ptr<FunctionScope> funcScopePtr { asFuncScope(this->funcScope()) };
+    funcScopePtr->strict = strictContext;
+    ObjFunction* funcObj = asFunction(funcScopePtr->function);
+    funcObj->strict = strictContext;
+    funcObj->access = ast->access;
 
     #ifdef DEBUG_BUILD
     emitByte(OpCode::Nop, "func "+toUTF8StdString(funcName));
     #endif
     enterLocalScope();
 
-    asFuncScope(funcScope())->function->arity = ast->params.size();
-    if (asFuncScope(funcScope())->function->arity > 255)
+    asFunction(asFuncScope(funcScope())->function)->arity = ast->params.size();
+    if (asFunction(asFuncScope(funcScope())->function)->arity > 255)
         error("Maximum of function or procedure 255 parameters exceeded.");
 
     Anys results {};
@@ -1306,9 +1308,9 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
         emitReturn();
 
     if (outputBytecodeDisassembly)
-        asFuncScope(funcScope())->function->chunk->disassemble(asFuncScope(funcScope())->function->name);
+        asFunction(asFuncScope(funcScope())->function)->chunk->disassemble(asFunction(asFuncScope(funcScope())->function)->name);
 
-    ObjFunction* function = asFuncScope(funcScope())->function;
+    ObjFunction* function = asFunction(asFuncScope(funcScope())->function);
 
     auto functionScope { *asFuncScope(funcScope()) };
 
@@ -1365,7 +1367,7 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
         #endif
         enterLocalScope();
 
-        asFuncScope(funcScope())->function->arity = 0;
+        asFunction(asFuncScope(funcScope())->function)->arity = 0;
 
         Anys results;
         ast->acceptChildren(*this, results);
@@ -1378,17 +1380,17 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
         //  rather than leaving it on the stack
         emitByte(OpCode::ReturnStore);
 
-        if (outputBytecodeDisassembly)
-            asFuncScope(funcScope())->function->chunk->disassemble(asFuncScope(funcScope())->function->name);
+        ptr<FunctionScope> funcScopePtr { asFuncScope(funcScope()) };
+        Value function = funcScopePtr->function;
+        if (outputBytecodeDisassembly) {
+            asFunction(function)->chunk->disassemble(asFunction(function)->name);
+        }
 
-        ObjFunction* function = asFuncScope(funcScope())->function;
-
-        exitFuncScope(); // back to surrpounding scope
+        exitFuncScope(); // back to surrounding scope
 
         // store the func that evaluates the default param value in the function
         //  for which it is a param
-        function->incRef();
-        asFuncScope(funcScope())->function->paramDefaultFunc[ast->name.hashCode()] = function;
+        asFunction(function)->paramDefaultFunc[ast->name.hashCode()] = function;
     }
     return {};
 }
@@ -2173,7 +2175,7 @@ void RoxalCompiler::exitModuleScope()
     assert(!modScope->moduleType.isNil() && modScope->moduleType.isObj());
     assert(modScope->function != nullptr);
     #endif
-    modScope->function->moduleType = modScope->moduleType;
+    asFunction(modScope->function)->moduleType = modScope->moduleType;
 
     lexicalScopes.pop_back();
 
@@ -2223,7 +2225,7 @@ void RoxalCompiler::enterFuncScope(Value moduleType, const icu::UnicodeString& f
                                                     modScope->sourceName,
                                                     funcName,funcType,type)};
 
-    funcScope->function->moduleType = moduleType;
+    asFunction(funcScope->function)->moduleType = moduleType;
 
     lexicalScopes.push_back(funcScope);
 
@@ -2661,7 +2663,7 @@ int16_t RoxalCompiler::resolveLocal(Scope scopeState, const icu::UnicodeString& 
 int RoxalCompiler::addUpvalue(Scope scopeState, uint8_t index, bool isLocal)
 {
     //std::cout << (&(*scopeState) - &(*states.begin())) << " addUpvalue(" << index << " " << (isLocal ? "local" : "notlocal") << ")" << std::endl;
-    int upvalueCount = asFuncScope(scopeState)->function->upvalueCount;
+    int upvalueCount = asFunction(asFuncScope(scopeState)->function)->upvalueCount;
     auto& upvalues { asFuncScope(scopeState)->upvalues };
 
     for (int i=0; i<upvalueCount; i++) {
@@ -2683,7 +2685,7 @@ int RoxalCompiler::addUpvalue(Scope scopeState, uint8_t index, bool isLocal)
     // }
     // std::cout << std::endl;
     // std::cout << "  function.upvalueCount="+std::to_string(upvalueCount) << std::endl;
-    return asFuncScope(scopeState)->function->upvalueCount++;
+    return asFunction(asFuncScope(scopeState)->function)->upvalueCount++;
 }
 
 

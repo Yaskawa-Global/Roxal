@@ -1356,7 +1356,7 @@ void ObjFunction::write(std::ostream& out, roxal::ptr<SerializationContext> ctx)
         for(const auto& kv : paramDefaultFunc) {
             int32_t key = kv.first;
             out.write(reinterpret_cast<char*>(&key),4);
-            kv.second->write(out, ctx);
+            asFunction(kv.second)->write(out, ctx);
         }
     }
 
@@ -1415,8 +1415,8 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     paramDefaultFunc.clear();
     for(uint32_t i=0;i<defCount;i++) {
         int32_t key; in.read(reinterpret_cast<char*>(&key),4);
-        auto func = newObj<ObjFunction>(__func__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
-        func->read(in, ctx);
+        Value func = Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+        asFunction(func)->read(in, ctx);
         paramDefaultFunc[key] = func;
     }
 
@@ -1968,7 +1968,7 @@ std::string roxal::objFileToString(const ObjFile* f)
     return oss.str();
 }
 
-ObjException* roxal::exceptionVal(Value message, Value exType, Value stackTrace)
+ObjException* roxal::newExceptionObj(Value message, Value exType, Value stackTrace)
 {
     return newObj<ObjException>(__func__, message, exType, stackTrace);
 }
@@ -2416,10 +2416,6 @@ ObjFunction::ObjFunction(const icu::UnicodeString& packageName, const icu::Unico
 
 ObjFunction::~ObjFunction()
 {
-    for (auto& entry : paramDefaultFunc) {
-        if (entry.second != nullptr)
-            entry.second->decRef();
-    }
     paramDefaultFunc.clear();
     if (nativeSpec) {
         delete static_cast<FFIWrapper*>(nativeSpec);

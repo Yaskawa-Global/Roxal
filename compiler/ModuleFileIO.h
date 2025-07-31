@@ -9,6 +9,7 @@ namespace roxal {
 class ModuleFileIO : public BuiltinModule {
 public:
     ModuleFileIO();
+    virtual ~ModuleFileIO() { moduleTypeValue = Value::nilVal(); }
 
     void registerBuiltins(VM& vm) override;
 

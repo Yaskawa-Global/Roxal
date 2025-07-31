@@ -685,7 +685,7 @@ struct ObjException : public Obj {
 inline bool isException(const Value& v) { return isObjType(v, ObjType::Exception); }
 inline ObjException* asException(const Value& v) { return static_cast<ObjException*>(v.asObj()); }
 
-ObjException* exceptionVal(Value message = Value::nilVal(), Value exType = Value::nilVal(), Value stackTrace = Value::nilVal());
+ObjException* newExceptionObj(Value message = Value::nilVal(), Value exType = Value::nilVal(), Value stackTrace = Value::nilVal());
 std::string objExceptionToString(const ObjException* ex);
 std::string objExceptionStackTraceToString(const ObjException* ex);
 std::string stackTraceToString(Value frames);
@@ -733,9 +733,9 @@ struct ObjFunction : public Obj
     ast::Access access { ast::Access::Public };
 
     // for parameters with default values that must be re-evaluated on each call
-    //  this is map from param name UnicodeString::hashCode() -> ObjFunction
+    //  this is map from param name UnicodeString::hashCode() -> Value ObjFunction
     //  (where ObjFunction is a function that takes no params and returns the default value)
-    std::map<int32_t, ObjFunction*> paramDefaultFunc;
+    std::map<int32_t, Value> paramDefaultFunc;
 
     Value moduleType; // ObjModuleType
 
@@ -753,9 +753,9 @@ inline ObjFunction* asFunction(const Value& v) {
 }
 
 
-inline ObjFunction* functionVal(const icu::UnicodeString& packageName,
-                                const icu::UnicodeString& moduleName,
-                                const icu::UnicodeString& sourceName) {
+inline ObjFunction* newFunctionObj(const icu::UnicodeString& packageName,
+                                   const icu::UnicodeString& moduleName,
+                                   const icu::UnicodeString& sourceName) {
     return newObj<ObjFunction>(__func__, packageName, moduleName, sourceName);
 }
 
@@ -829,15 +829,13 @@ struct ObjClosure : public Obj
 
 inline bool isClosure(const Value& v) { return isObjType(v, ObjType::Closure); }
 inline ObjClosure* asClosure(const Value& v) {
-    #ifdef DEBUG_BUILD
-    if (!isClosure(v))
-        throw std::runtime_error("Value is not an ObjClosure");
-    #endif
+    debug_assert_msg(isClosure(v), "Value is an ObjClosure");
     return static_cast<ObjClosure*>(v.asObj());
 }
 
-inline ObjClosure* closureVal(ObjFunction* function) {
-    return newObj<ObjClosure>(__func__,function);
+inline ObjClosure* newClosureObj(Value function) { // ObjFunction
+    debug_assert_msg(isFunction(function), "Value is an ObjFunction");
+    return newObj<ObjClosure>(__func__,asFunction(function));
 }
 
 inline ObjClosure* cloneClosure(const ObjClosure* c) {

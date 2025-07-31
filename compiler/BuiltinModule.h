@@ -13,7 +13,7 @@ struct ObjModuleType;
 
 class BuiltinModule {
 public:
-    virtual ~BuiltinModule() = default;
+    virtual ~BuiltinModule() {};
     virtual void registerBuiltins(VM& vm) = 0;
     virtual ObjModuleType* moduleType() const = 0;
 

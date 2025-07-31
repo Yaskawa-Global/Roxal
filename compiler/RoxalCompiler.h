@@ -20,8 +20,9 @@ class RoxalCompiler : public ast::ASTVisitor
 public:
     RoxalCompiler();
 
-    ObjFunction* compile(std::istream& source, const std::string& name,
-                         ObjModuleType* existingModule = nullptr);
+    // Compile the specified source code and return a Value ObjFunction reference
+    Value compile(std::istream& source, const std::string& name,
+                  ObjModuleType* existingModule = nullptr);
 
     void setOutputBytecodeDisassembly(bool outputBytecodeDisassembly);
     void setModulePaths(const std::vector<std::string>& modulePaths);
@@ -206,11 +207,12 @@ protected:
             : LexicalScope(ScopeType::Func, funcName), scopeDepth(0), functionType(funcType), type(t)
         {
             strict = true;
-            function = functionVal(packageName, moduleName, sourceName);
-            function->name = funcName;
-            function->funcType = type; // store type for runtime
-            function->strict = strict;
-            function->fnType = funcType;
+            function = Value::functionVal(packageName, moduleName, sourceName);
+            ObjFunction* funcObj = asFunction(this->function);
+            funcObj->name = funcName;
+            funcObj->funcType = type; // store type for runtime
+            funcObj->strict = strict;
+            funcObj->fnType = funcType;
             UnicodeString localName { (funcType==FunctionType::Method || funcType==FunctionType::Initializer) ?
                                         "this" : "" };
             locals.push_back(Local(localName,0));
@@ -220,7 +222,7 @@ protected:
         std::vector<Upvalue> upvalues;
         int scopeDepth;
 
-        ObjFunction*    function;
+        Value           function; // ObjFunction
         FunctionType    functionType;
         ptr<type::Type> type;
 
@@ -276,7 +278,7 @@ protected:
 
             // since this scope only persists during compilation, store the moduleType
             //  in the function for runtime access
-            function->moduleType = moduleType;
+            asFunction(function)->moduleType = moduleType;
         }
         virtual ~ModuleScope() {}
 
@@ -307,7 +309,7 @@ protected:
         if (!inFuncScope())
             throw std::runtime_error("currentChunk() - not in func scope");
         #endif
-        return asFuncScope(funcScope())->function->chunk;
+        return asFunction(asFuncScope(funcScope())->function)->chunk;
     }
 
     ptr<ast::AST> currentNode;

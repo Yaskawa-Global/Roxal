@@ -214,10 +214,10 @@ protected:
     Value dataflowEngineActor;
     std::shared_ptr<Thread> dataflowEngineThread;
 
-    ObjClosure* conditionalInterruptClosure { nullptr };
+    Value conditionalInterruptClosure {}; // ObjClosure
 
 public:
-    ObjClosure* getConditionalInterruptClosure() const { return conditionalInterruptClosure; }
+    Value getConditionalInterruptClosure() const { return conditionalInterruptClosure; } // ObjClosure
 
 
     Value initString; // ObjString "init"

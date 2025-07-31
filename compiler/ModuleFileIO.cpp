@@ -156,7 +156,7 @@ Value ModuleFileIO::fileio_readline_builtin(VM& vm, ArgsView args)
     if (f->binary) {
         Value exType = vm.loadGlobal(toUnicodeString("FileIOException")).value();
         Value msg = Value::stringVal(toUnicodeString("readLine requires text mode"));
-        Value exc = objVal(exceptionVal(msg, exType));
+        Value exc = Value::exceptionVal(msg, exType);
         vm.raiseException(exc);
         return Value::nilVal();
     }
@@ -186,7 +186,7 @@ Value ModuleFileIO::fileio_readfile_builtin(VM& vm, ArgsView args)
     if (!in.is_open()) {
         Value exType = vm.loadGlobal(toUnicodeString("FileIOException")).value();
         Value msg = Value::stringVal(toUnicodeString("open failed"));
-        Value exc = objVal(exceptionVal(msg, exType));
+        Value exc = Value::exceptionVal(msg, exType);
         vm.raiseException(exc);
         return Value::nilVal();
     }
