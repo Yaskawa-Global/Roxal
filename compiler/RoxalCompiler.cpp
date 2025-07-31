@@ -382,7 +382,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         for(const auto& symbol : ast->symbols)
             symbolsList.push_back(Value::stringVal(symbol));
 
-        Value symbolsListVal { listVal() };
+        Value symbolsListVal { Value::listVal() };
         asList(symbolsListVal)->elts = symbolsList;
 
         // Opcode::ImportModuleVars expects a list (of symbols) and the source module & target module
@@ -2586,7 +2586,7 @@ int16_t RoxalCompiler::identifierConstant(const icu::UnicodeString& ident)
     bool found { false };
     int16_t constant {};
     for(auto identConst : asFuncScope(funcScope())->identConsts) {
-        if (asString(currentChunk()->constants.at(identConst))->s == ident) {
+        if (asStringObj(currentChunk()->constants.at(identConst))->s == ident) {
             constant = identConst;
             found = true;
             break;

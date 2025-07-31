@@ -78,10 +78,10 @@ Value ModuleFileIO::fileio_open_builtin(VM& vm, ArgsView args)
     if (args.size() == 3) {
         if (!isString(args[2]))
             throw std::invalid_argument("fileio.open format must be 'text' or 'binary'");
-        format = toUTF8StdString(asString(args[2])->s);
+        format = toUTF8StdString(asStringObj(args[2])->s);
     }
     bool binary = false;
-    std::filesystem::path path = std::filesystem::path(toUTF8StdString(asString(args[0])->s));
+    std::filesystem::path path = std::filesystem::path(toUTF8StdString(asStringObj(args[0])->s));
     auto f = roxal::make_ptr<std::fstream>();
     std::ios_base::openmode mode = std::ios::in | std::ios::out;
     if (append)
@@ -137,11 +137,11 @@ Value ModuleFileIO::fileio_read_builtin(VM& vm, ArgsView args)
     f->file->read(buf, sizeof(buf));
     std::streamsize n = f->file->gcount();
     if (f->binary) {
-        ObjList* lst = listVal();
-        lst->elts.reserve(static_cast<size_t>(n));
+        Value lst { Value::listVal() };
+        asList(lst)->elts.reserve(static_cast<size_t>(n));
         for (std::streamsize i = 0; i < n; ++i)
-            lst->elts.push_back(Value::byteVal(static_cast<uint8_t>(buf[i])));
-        return objVal(lst);
+            asList(lst)->elts.push_back(Value::byteVal(static_cast<uint8_t>(buf[i])));
+        return lst;
     }
     std::string s(buf, static_cast<size_t>(n));
     return Value::stringVal(toUnicodeString(s));
@@ -174,14 +174,14 @@ Value ModuleFileIO::fileio_readfile_builtin(VM& vm, ArgsView args)
     if (args.size() == 2) {
         if (!isString(args[1]))
             throw std::invalid_argument("fileio.readFile format must be 'text' or 'binary'");
-        format = toUTF8StdString(asString(args[1])->s);
+        format = toUTF8StdString(asStringObj(args[1])->s);
     }
     std::ios_base::openmode mode = std::ios::in;
     if (format == "binary")
         mode |= std::ios::binary;
     else if (format != "text")
         throw std::invalid_argument("fileio.readFile format must be 'text' or 'binary'");
-    std::filesystem::path path = std::filesystem::path(toUTF8StdString(asString(args[0])->s));
+    std::filesystem::path path = std::filesystem::path(toUTF8StdString(asStringObj(args[0])->s));
     std::ifstream in(path, mode);
     if (!in.is_open()) {
         Value exType = vm.loadGlobal(toUnicodeString("FileIOException")).value();
@@ -194,11 +194,11 @@ Value ModuleFileIO::fileio_readfile_builtin(VM& vm, ArgsView args)
     ss << in.rdbuf();
     std::string data = ss.str();
     if (format == "binary") {
-        ObjList* lst = listVal();
-        lst->elts.reserve(data.size());
+        Value lst { Value::listVal() };
+        asList(lst)->elts.reserve(data.size());
         for (char c : data)
-            lst->elts.push_back(Value::byteVal(static_cast<uint8_t>(c)));
-        return objVal(lst);
+            asList(lst)->elts.push_back(Value::byteVal(static_cast<uint8_t>(c)));
+        return lst;
     }
     return Value::stringVal(toUnicodeString(data));
 }
@@ -239,7 +239,7 @@ Value ModuleFileIO::fileio_fileexists_builtin(VM& vm, ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.fileExists expects path string");
-    std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
+    std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     return std::filesystem::exists(p) && std::filesystem::is_regular_file(p) ? Value::trueVal() : Value::falseVal();
 }
 
@@ -247,7 +247,7 @@ Value ModuleFileIO::fileio_direxists_builtin(VM& vm, ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.dirExists expects path string");
-    std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
+    std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     return std::filesystem::exists(p) && std::filesystem::is_directory(p) ? Value::trueVal() : Value::falseVal();
 }
 
@@ -255,7 +255,7 @@ Value ModuleFileIO::fileio_filesize_builtin(VM& vm, ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.fileSize expects path string");
-    std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
+    std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     if (!std::filesystem::exists(p) || !std::filesystem::is_regular_file(p))
         return Value::intVal(0);
     return Value::intVal(static_cast<int32_t>(std::filesystem::file_size(p)));
@@ -265,7 +265,7 @@ Value ModuleFileIO::fileio_abspathfile_builtin(VM& vm, ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.absoluteFilePath expects path string");
-    std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
+    std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     auto abs = std::filesystem::absolute(p);
     return Value::stringVal(toUnicodeString(abs.string()));
 }
@@ -274,7 +274,7 @@ Value ModuleFileIO::fileio_pathdir_builtin(VM& vm, ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.pathDirectory expects path string");
-    std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
+    std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     return Value::stringVal(toUnicodeString(p.parent_path().string()));
 }
 
@@ -282,7 +282,7 @@ Value ModuleFileIO::fileio_pathfile_builtin(VM& vm, ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.pathFile expects path string");
-    std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
+    std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     return Value::stringVal(toUnicodeString(p.filename().string()));
 }
 
@@ -290,7 +290,7 @@ Value ModuleFileIO::fileio_fileext_builtin(VM& vm, ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.fileExtension expects path string");
-    std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
+    std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     auto ext = p.extension().string();
     if (!ext.empty() && ext[0] == '.') ext.erase(0,1);
     return Value::stringVal(toUnicodeString(ext));
@@ -300,6 +300,6 @@ Value ModuleFileIO::fileio_filewoext_builtin(VM& vm, ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.fileWithoutExtension expects path string");
-    std::filesystem::path p(toUTF8StdString(asString(args[0])->s));
+    std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     return Value::stringVal(toUnicodeString(p.replace_extension().string()));
 }

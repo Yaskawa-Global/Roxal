@@ -659,13 +659,13 @@ int32_t ObjRange::targetIndex(int32_t index, int32_t targetLen) const
 }
 
 
-ObjRange* roxal::rangeVal()
+ObjRange* roxal::newRangeObj()
 {
     return newObj<ObjRange>(__func__);
 }
 
 
-ObjRange* roxal::rangeVal(const Value& start, const Value& stop, const Value& step, bool closed)
+ObjRange* roxal::newRangeObj(const Value& start, const Value& stop, const Value& step, bool closed)
 {
     return newObj<ObjRange>(__func__,start,stop,step,closed);
 }
@@ -756,7 +756,7 @@ Value ObjList::index(const Value& i) const
         return elts.at(index);
     }
     else if (isRange(i)) {
-        auto sublist = listVal();
+        auto sublist = newListObj();
         auto r = asRange(i);
         auto listLen = length();
         auto rangeLen = r->length(listLen);
@@ -849,18 +849,18 @@ void ObjList::set(const ObjList* other)
 }
 
 
-ObjList* roxal::listVal()
+ObjList* roxal::newListObj()
 {
     return newObj<ObjList>(__func__);
 }
 
 
-ObjList* roxal::listVal(const ObjRange* r)
+ObjList* roxal::newListObj(const ObjRange* r)
 {
     return newObj<ObjList>(__func__,r);
 }
 
-ObjList* roxal::listVal(const std::vector<Value>& elts)
+ObjList* roxal::newListObj(const std::vector<Value>& elts)
 {
     auto l = newObj<ObjList>(__func__);
     for(const auto& elt : elts)
@@ -1995,10 +1995,10 @@ std::string roxal::stackTraceToString(Value frames)
         Value colVal  = d->at(Value::stringVal(UnicodeString("col")));
         Value fileVal = d->at(Value::stringVal(UnicodeString("filename")));
 
-        UnicodeString funcName = isString(funcVal) ? asString(funcVal)->s : UnicodeString("<script>");
+        UnicodeString funcName = isString(funcVal) ? asStringObj(funcVal)->s : UnicodeString("<script>");
         int line = lineVal.isNumber() ? lineVal.asInt() : -1;
         int col  = colVal.isNumber() ? colVal.asInt() : -1;
-        std::string fname = isString(fileVal) ? toUTF8StdString(asString(fileVal)->s) : "";
+        std::string fname = isString(fileVal) ? toUTF8StdString(asStringObj(fileVal)->s) : "";
 
         if (!fname.empty())
             oss << fname << ":" << line << ":" << col << ": in " << toUTF8StdString(funcName) << "\n";
@@ -2696,15 +2696,15 @@ bool roxal::objsEqual(const Value& l, const Value& r)
 
     switch (objType(l)) {
         case ObjType::String: {
-            auto ls = asString(l);
-            auto rs = asString(r);
+            auto ls = asStringObj(l);
+            auto rs = asStringObj(r);
             if (ls == rs) // identical object
                 return true;
 
             // Trust hash.  Possible different strings with has collision will
             //  compare as equal (low probability)
             // TODO: consider doing full char comparison for equality if hashes match
-            return asString(l)->hash == asString(l)->hash;
+            return asStringObj(l)->hash == asStringObj(l)->hash;
             // if (ls->s.length() != rs->s.length())
             //     return false;
             // return ls->s == rs->s;

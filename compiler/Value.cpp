@@ -87,16 +87,16 @@ Value Value::stringVal(const icu::UnicodeString& s)
 
 Value Value::rangeVal()
 {
-    return objVal(::rangeVal());
+    return objVal(newRangeObj());
 }
 Value Value::rangeVal(const Value& start, const Value& stop, const Value& step, bool closed)
 {
-    return objVal(::rangeVal(start, stop, step, closed));
+    return objVal(newRangeObj(start, stop, step, closed));
 }
 
 Value Value::listVal()
 {
-    return objVal(::listVal());
+    return objVal(newListObj());
 }
 
 Value Value::listVal(const Value& r)
@@ -105,12 +105,12 @@ Value Value::listVal(const Value& r)
     if (!isRange(r))
         throw std::runtime_error("listVal called with non-range argument");
     #endif
-    return objVal(::listVal(asRange(r)));
+    return objVal(newListObj(asRange(r)));
 }
 
 Value Value::listVal(const std::vector<Value>& elts)
 {
-    return objVal(::listVal(elts));
+    return objVal(newListObj(elts));
 }
 
 Value Value::dictVal()
@@ -346,7 +346,7 @@ bool Value::asBool(bool strict) const
     }
     else {
         if (isString(*v) && !strict) {
-            auto str { toUTF8StdString(asString(*v)->s) };
+            auto str { toUTF8StdString(asStringObj(*v)->s) };
             // TODO: warn if the string contains "false", since it'll evaluate to true but that may not be the intent
             //  (make such warnings suppressable per-instance)
             return !str.empty();
@@ -403,7 +403,7 @@ uint8_t Value::asByte(bool strict) const
     } else {
         if (isString(*v) && !strict) {
             try {
-                auto str { toUTF8StdString(asString(*v)->s) };
+                auto str { toUTF8StdString(asStringObj(*v)->s) };
                 if ((str.size() > 2) && (str[0] == '0')) {
                     if (str[1] == 'x' || str[1]=='X')
                         return std::stoi(str.substr(2),nullptr,16);
@@ -455,7 +455,7 @@ int32_t Value::asInt(bool strict) const
     } else {
         if (isString(*v) && !strict) {
             try {
-                auto str { toUTF8StdString(asString(*v)->s) };
+                auto str { toUTF8StdString(asStringObj(*v)->s) };
                 if ((str.size() > 2) && (str[0] == '0')) {
                     if (str[1] == 'x' || str[1]=='X')
                         return std::stol(str.substr(2),nullptr,16);
@@ -517,7 +517,7 @@ double Value::asReal(bool strict) const
     else {
         if (isString(*v) && !strict) {
             try {
-                auto str { toUTF8StdString(asString(*v)->s) };
+                auto str { toUTF8StdString(asStringObj(*v)->s) };
                 return std::stod(str);
             } catch(...) { return 0.0; }
         }
@@ -983,12 +983,12 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
     roundTrip("int_val", Value::intVal(-42));
     roundTrip("real_val", Value::realVal(3.5));
     roundTrip("string_val", Value::stringVal(UnicodeString("hello")));
-    roundTrip("range_val", objVal(rangeVal(Value::intVal(1), Value::intVal(3), Value::intVal(1), false)));
+    roundTrip("range_val", Value::rangeVal(Value::intVal(1), Value::intVal(3), Value::intVal(1), false));
 
-    ObjList* lst = listVal();
-    lst->append(Value::intVal(1));
-    lst->append(Value::intVal(2));
-    roundTrip("list_val", objVal(lst));
+    Value lst { Value::listVal() };
+    asList(lst)->append(Value::intVal(1));
+    asList(lst)->append(Value::intVal(2));
+    roundTrip("list_val", lst);
 
     ObjDict* d = dictVal();
     d->store(Value::intVal(1), Value::intVal(2));
@@ -1137,8 +1137,8 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::Enum: throw std::runtime_error("Can't create default enum value without type"); // shouldn't be called for this t
         case ValueType::Type: return Value::typeVal(ValueType::Nil);
         case ValueType::String: return Value::stringVal(UnicodeString());
-        case ValueType::Range: return Value(rangeVal());
-        case ValueType::List: return Value(listVal());
+        case ValueType::Range: return Value::rangeVal();
+        case ValueType::List: return Value::listVal();
         case ValueType::Dict: return Value(dictVal());
         case ValueType::Vector: return Value(vectorVal());
         case ValueType::Matrix: return Value(matrixVal());
@@ -1197,11 +1197,11 @@ Value roxal::toType(ValueType t, Value v, bool strict)
             if (v.type() == ValueType::Range)
                 return v;
             if (!strict)
-                return objVal(rangeVal(v,v,Value::intVal(1),true));
+                return Value::rangeVal(v,v,Value::intVal(1),true);
         } break;
         case ValueType::List: {
             if ((v.type() == ValueType::Range) && !strict)
-                return objVal(listVal(asRange(v)));
+                return Value::listVal(v);
         } break;
         case ValueType::Dict: {
             // can convert objects to dict of property, value pairs (non-strict only)
@@ -1221,7 +1221,7 @@ Value roxal::toType(ValueType t, Value v, bool strict)
                     if (prop.access != ast::Access::Public)
                         continue;
                     auto propName { Value::stringVal(prop.name) };
-                    auto propHash = asString(propName)->hash;
+                    auto propHash = asStringObj(propName)->hash;
                     #ifdef DEBUG_BUILD
                     assert(vObj->properties.find(propHash) != vObj->properties.end());
                     #endif
@@ -2078,8 +2078,8 @@ Value roxal::greater(Value l, Value r)
     }
     else if (l.isObj() && r.isObj()) {
         if (isString(l) && isString(r)) {
-            auto lstr = asString(l);
-            auto rstr = asString(r);
+            auto lstr = asStringObj(l);
+            auto rstr = asStringObj(r);
 
             // if lhs & rhs are the same string, one is not greater than the other
             if (lstr->hash == rstr->hash)
@@ -2112,8 +2112,8 @@ Value roxal::less(Value l, Value r)
     }
     else if (l.isObj() && r.isObj()) {
         if (isString(l) && isString(r)) {
-            auto lstr = asString(l);
-            auto rstr = asString(r);
+            auto lstr = asStringObj(l);
+            auto rstr = asStringObj(r);
 
             // if lhs & rhs are the same string, one is not less than the other
             if (lstr->hash == rstr->hash)

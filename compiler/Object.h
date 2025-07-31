@@ -297,8 +297,8 @@ struct ObjString : public Obj
 
 
 inline bool isString(const Value& v) { return isObjType(v, ObjType::String); }
-inline ObjString* asString(const Value& v) { return static_cast<ObjString*>(v.asObj()); }
-inline UnicodeString asUString(const Value& v) { return asString(v)->s; }
+inline ObjString* asStringObj(const Value& v) { return static_cast<ObjString*>(v.asObj()); }
+inline UnicodeString asUString(const Value& v) { return asStringObj(v)->s; }
 
 // allocate new ObjString on heap and copy s (or return existing interned string)
 ObjString* newObjString(const UnicodeString& s);
@@ -347,8 +347,8 @@ struct ObjRange : public Obj
 inline bool isRange(const Value& v) { return isObjType(v, ObjType::Range); }
 inline ObjRange* asRange(const Value& v) { return static_cast<ObjRange*>(v.asObj()); }
 
-ObjRange* rangeVal(); // empty range
-ObjRange* rangeVal(const Value& start, const Value& stop, const Value& step, bool closed);
+ObjRange* newRangeObj(); // empty range
+ObjRange* newRangeObj(const Value& start, const Value& stop, const Value& step, bool closed);
 
 std::string objRangeToString(const ObjRange* r);
 ObjRange* cloneRange(const ObjRange* r); // deep copy
@@ -388,9 +388,9 @@ struct ObjList : public Obj
 inline bool isList(const Value& v) { return isObjType(v, ObjType::List); }
 inline ObjList* asList(const Value& v) { return static_cast<ObjList*>(v.asObj()); }
 
-ObjList* listVal();
-ObjList* listVal(const ObjRange* r);
-ObjList* listVal(const std::vector<Value>& elts);
+ObjList* newListObj();
+ObjList* newListObj(const ObjRange* r);
+ObjList* newListObj(const std::vector<Value>& elts);
 ObjList* cloneList(const ObjList* l); // deep copy
 
 std::string objListToString(const ObjList* ol);

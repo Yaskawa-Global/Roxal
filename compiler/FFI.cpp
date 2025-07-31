@@ -662,7 +662,7 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                     mutableBuffers[i].push_back('\0');
                     mutablePtrs[i] = mutableBuffers[i].data();
                     argValues[i] = &mutablePtrs[i];
-                    mutableStringObjs[i] = asString(argVector[i]);
+                    mutableStringObjs[i] = asStringObj(argVector[i]);
                 }
             } else {
                 if (!isObjectInstance(argVector[i])) {
@@ -1081,7 +1081,7 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
                 throw std::runtime_error("unsupported ctype annotation: " + ctypeStr);
             elements.push_back(elem);
         }
-        val = objVal(listVal(elements));
+        val = Value::listVal(elements);
         return val;
     }
 

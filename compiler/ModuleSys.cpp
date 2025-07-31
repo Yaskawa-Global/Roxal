@@ -139,7 +139,7 @@ Value ModuleSys::len_builtin(VM& vm, ArgsView args)
     int32_t len {1};
 
     switch (v.type()) {
-        case ValueType::String: len = asString(v)->length(); break;
+        case ValueType::String: len = asStringObj(v)->length(); break;
         case ValueType::List: len = asList(v)->length(); break;
         case ValueType::Dict: len = asDict(v)->length(); break;
         case ValueType::Vector: len = asVector(v)->length(); break;
@@ -356,7 +356,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("_runtests expects single string argument");
 
-    auto suite = toUTF8StdString(asString(args[0])->s);
+    auto suite = toUTF8StdString(asStringObj(args[0])->s);
 
     if (suite == "dataflow") {
         // TODO: Dataflow tests have been moved out - need to implement new roxal-based tests
@@ -441,7 +441,7 @@ Value ModuleSys::serialize_builtin(VM& vm, ArgsView args)
     if(args.size() == 2) {
         if(!isString(args[1]))
             throw std::invalid_argument("serialize protocol must be string");
-        protocol = toUTF8StdString(asString(args[1])->s);
+        protocol = toUTF8StdString(asStringObj(args[1])->s);
     }
     if(protocol != "default")
         throw std::invalid_argument("unknown serialization protocol");
@@ -454,7 +454,7 @@ Value ModuleSys::serialize_builtin(VM& vm, ArgsView args)
     bytes.reserve(data.size());
     for(unsigned char ch : data)
         bytes.push_back(Value::byteVal(ch));
-    return objVal(listVal(bytes));
+    return Value::listVal(bytes);
 }
 
 Value ModuleSys::deserialize_builtin(VM& vm, ArgsView args)
@@ -466,7 +466,7 @@ Value ModuleSys::deserialize_builtin(VM& vm, ArgsView args)
     if(args.size() == 2) {
         if(!isString(args[1]))
             throw std::invalid_argument("deserialize protocol must be string");
-        protocol = toUTF8StdString(asString(args[1])->s);
+        protocol = toUTF8StdString(asStringObj(args[1])->s);
     }
     if(protocol != "default")
         throw std::invalid_argument("unknown serialization protocol");
@@ -505,7 +505,7 @@ static json11::Json valueToJson(const Value& v) {
         case ValueType::Byte:  return Json(int(v.asByte()));
         case ValueType::Int:   return Json(v.asInt());
         case ValueType::Real:  return Json(v.asReal());
-        case ValueType::String: return Json(toUTF8StdString(asString(v)->s));
+        case ValueType::String: return Json(toUTF8StdString(asStringObj(v)->s));
         case ValueType::List: {
             Json::array arr; arr.reserve(asList(v)->length());
             for(int i=0;i<asList(v)->length();++i)
@@ -517,7 +517,7 @@ static json11::Json valueToJson(const Value& v) {
             for(const auto& kv : asDict(v)->items()) {
                 if(!isString(kv.first))
                     throw std::runtime_error("dict key not string");
-                obj[toUTF8StdString(asString(kv.first)->s)] = valueToJson(kv.second);
+                obj[toUTF8StdString(asStringObj(kv.first)->s)] = valueToJson(kv.second);
             }
             return Json(obj);
         }
@@ -623,7 +623,7 @@ Value ModuleSys::fromJson_builtin(VM& vm, ArgsView args)
     if(args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fromJson expects json string");
 
-    std::string s = toUTF8StdString(asString(args[0])->s);
+    std::string s = toUTF8StdString(asStringObj(args[0])->s);
     std::string err;
     json11::Json j = json11::Json::parse(s, err);
     if(!err.empty())
@@ -735,7 +735,7 @@ Value ModuleSys::df_graphdot_native(VM& vm, ArgsView args)
     if (args.size() == 1) {
         if (!isString(args[0]))
             throw std::invalid_argument("_df_graphdot expects string argument");
-        title = toUTF8StdString(asString(args[0])->s);
+        title = toUTF8StdString(asStringObj(args[0])->s);
     }
 
     auto engine = df::DataflowEngine::instance();

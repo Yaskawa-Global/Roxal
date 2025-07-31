@@ -31,7 +31,7 @@ struct ArgsView {
         if (!has(i)) return def;
         if (!isString(data[i]))
             throw std::invalid_argument("argument is not a string");
-        return toUTF8StdString(asString(data[i])->s);
+        return toUTF8StdString(asStringObj(data[i])->s);
     }
 };
 

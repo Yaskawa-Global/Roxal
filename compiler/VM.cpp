@@ -717,7 +717,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             outVals.reserve(outputs.size());
             for(const auto& s : outputs)
                 outVals.push_back(objVal(signalVal(s)));
-            push(objVal(listVal(outVals)));
+            push(Value::listVal(outVals));
         }
         return true;
     }
@@ -762,7 +762,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     ObjObjectType* tInit = type;
                     const ObjObjectType::Method* initMethod = nullptr;
                     while (tInit != nullptr && initMethod == nullptr) {
-                        auto it = tInit->methods.find(asString(initString)->hash);
+                        auto it = tInit->methods.find(asStringObj(initString)->hash);
                         if (it != tInit->methods.end())
                             initMethod = &it->second;
                         else
@@ -848,7 +848,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             for(const auto& kv : argDict->items()) {
                                 if (!isString(kv.first))
                                     continue;
-                                int32_t hash = asString(kv.first)->hash;
+                                int32_t hash = asStringObj(kv.first)->hash;
                                 auto pit = type->properties.find(hash);
                                 if (pit == type->properties.end())
                                     continue;
@@ -924,10 +924,10 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             value = arg; // fall through to storing return & poping arg below
                         }
                         else if (isString(arg)) {
-                            auto hash = asString(arg)->hash;
+                            auto hash = asStringObj(arg)->hash;
                             auto it = type->enumLabelValues.find(hash);
-                            if (it == type->enumLabelValues.end() || it->second.first != asString(arg)->s) {
-                                runtimeError("enum type '"+toUTF8StdString(type->name)+"' has no label '"+toUTF8StdString(asString(arg)->s)+"'");
+                            if (it == type->enumLabelValues.end() || it->second.first != asStringObj(arg)->s) {
+                                runtimeError("enum type '"+toUTF8StdString(type->name)+"' has no label '"+toUTF8StdString(asStringObj(arg)->s)+"'");
                                 return false;
                             }
                             value = it->second.second;
@@ -1243,7 +1243,7 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                     runtimeError("String indexing requires a single index.");
                     return false;
                 }
-                ObjString* str = asString(indexable);
+                ObjString* str = asStringObj(indexable);
                 Value index = pop();
                 //std::cout << "VM::indexValue indexable="+toString(indexable)+" index="+toString(index) << std::endl << std::flush;
                 try {
@@ -1785,12 +1785,12 @@ std::pair<InterpretResult,Value> VM::execute()
             throw std::runtime_error("Chunk instruction read string expected a string constant, got "+constant.typeName());
         return asString(constant);
         #else
-          return asString(readConstant());
+          return asStringObj(readConstant());
         #endif
     };
 
     auto readString2 = [&]() -> ObjString* {
-        return asString(readConstant2());
+        return asStringObj(readConstant2());
     };
 
     auto binaryOp = [&](std::function<Value(Value, Value)> op) {
@@ -3146,9 +3146,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError("The stop bound of a range must be a number");
                 if (!peek(0).isNil() && !peek(0).isNumber())
                     runtimeError("The step of a range must be a number");
-                auto rangeObj = rangeVal(peek(2),peek(1),peek(0),closed);
+                auto rangeVal = Value::rangeVal(peek(2),peek(1),peek(0),closed);
                 popN(3);
-                push(objVal(rangeObj));
+                push(rangeVal);
                 break;
             }
             case asByte(OpCode::NewList): {
@@ -3159,7 +3159,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 for(int i=0; i<eltCount;i++)
                     elts.push_back(peek(eltCount-i-1));
                 for(int i=0; i<eltCount;i++) pop();
-                push(objVal(listVal(elts)));
+                push(Value::listVal(elts));
                 break;
             }
             case asByte(OpCode::NewDict): {
@@ -3222,7 +3222,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     Value d { maybeDict };
                     pop();
                     auto keys { asDict(d)->keys() };
-                    push(objVal(listVal(keys)));
+                    push(Value::listVal(keys));
                 }
                 break;
             }
@@ -3234,14 +3234,14 @@ std::pair<InterpretResult,Value> VM::execute()
                     Value d { maybeDict };
                     pop();
                     auto vecItemPairs { asDict(d)->items() };
-                    ObjList* listItems { listVal() };
+                    Value listItems { Value::listVal() };
                     for(const auto& item : vecItemPairs) {
-                        ObjList* itemList = listVal();
-                        itemList->elts.push_back(item.first);
-                        itemList->elts.push_back(item.second);
-                        listItems->elts.push_back(objVal(itemList));
+                        Value itemList { Value::listVal() };
+                        asList(itemList)->elts.push_back(item.first);
+                        asList(itemList)->elts.push_back(item.second);
+                        asList(listItems)->elts.push_back(itemList);
                     }
-                    push(objVal(listItems));
+                    push(listItems);
                 }
                 break;
             }
@@ -3562,7 +3562,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     // special case, if list is just [*], then import all symbols
                     const auto& firstElement { symbolsListObj->elts.at(0) };
-                    if (isString(firstElement) && asString(firstElement)->s == "*") {
+                    if (isString(firstElement) && asStringObj(firstElement)->s == "*") {
                         fromModuleType->vars.forEach(
                             [&](const VariablesMap::NameValue& nameValue) {
                                 //const icu::UnicodeString& name { nameValue.first };
@@ -3572,7 +3572,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                     else { // import the symbols explicitly listed
                         for(const auto& symbol : symbolsListObj->elts.get()) {
-                            const auto& symbolString { asString(symbol) };
+                            const auto& symbolString { asStringObj(symbol) };
                             auto optValue { fromModuleType->vars.load(symbolString->hash) };
                             const auto& name { symbolString->s };
 
@@ -4041,7 +4041,7 @@ void VM::signal_name_setter(Value& receiver, Value value)
     ObjSignal* objSignal = asSignal(receiver);
     std::string newName;
     if (isString(value))
-        newName = toUTF8StdString(asString(value)->s);
+        newName = toUTF8StdString(asStringObj(value)->s);
     else
         newName = toString(value);
 
@@ -4079,7 +4079,7 @@ Value VM::exception_stacktrace_string_getter(Value& receiver)
 
 Value VM::captureStacktrace()
 {
-    ObjList* framesList = listVal();
+    Value framesList { Value::listVal() };
 
     for(auto it = thread->frames.begin(); it != thread->frames.end(); ++it) {
         const CallFrame& frame { *it };
@@ -4105,10 +4105,10 @@ Value VM::captureStacktrace()
         frameDict->store(Value::stringVal(UnicodeString("filename")),
                          Value::stringVal(chunk->sourceName));
 
-        framesList->append(objVal(frameDict));
+        asList(framesList)->append(objVal(frameDict));
     }
 
-    return objVal(framesList);
+    return framesList;
 }
 
 Value VM::event_emit_builtin(ArgsView args)
