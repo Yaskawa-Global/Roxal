@@ -471,8 +471,8 @@ public:
 inline bool isDict(const Value& v) { return isObjType(v, ObjType::Dict); }
 inline ObjDict* asDict(const Value& v) { return static_cast<ObjDict*>(v.asObj()); }
 
-ObjDict* dictVal();
-ObjDict* dictVal(const std::vector<std::pair<Value,Value>>& entries);
+ObjDict* newDictObj();
+ObjDict* newDictObj(const std::vector<std::pair<Value,Value>>& entries);
 ObjDict* cloneDict(const ObjDict* d);
 
 std::string objDictToString(const ObjDict* od);
@@ -507,9 +507,9 @@ struct ObjVector : public Obj
 inline bool isVector(const Value& v) { return isObjType(v, ObjType::Vector); }
 inline ObjVector* asVector(const Value& v) { return static_cast<ObjVector*>(v.asObj()); }
 
-ObjVector* vectorVal();
-ObjVector* vectorVal(int32_t size);
-ObjVector* vectorVal(const Eigen::VectorXd& values);
+ObjVector* newVectorObj();
+ObjVector* newVectorObj(int32_t size);
+ObjVector* newVectorObj(const Eigen::VectorXd& values);
 ObjVector* cloneVector(const ObjVector* v);
 
 std::string objVectorToString(const ObjVector* ov);

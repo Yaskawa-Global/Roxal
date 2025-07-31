@@ -488,7 +488,7 @@ Value ObjVector::index(const Value& i) const
         Eigen::VectorXd vals(elts.size());
         for(size_t k=0; k<elts.size(); ++k)
             vals[k] = elts[k];
-        return objVal(vectorVal(vals));
+        return Value::vectorVal(vals);
     }
     else
         throw std::invalid_argument("Vector indexing subscript must be a number or a range.");
@@ -920,12 +920,12 @@ std::string roxal::objListToString(const ObjList* ol)
 
 
 
-ObjDict* roxal::dictVal()
+ObjDict* roxal::newDictObj()
 {
     return newObj<ObjDict>(__func__);
 }
 
-ObjDict* roxal::dictVal(const std::vector<std::pair<Value,Value>>& entries)
+ObjDict* roxal::newDictObj(const std::vector<std::pair<Value,Value>>& entries)
 {
     auto d = newObj<ObjDict>(__func__);
     for(const auto& entry : entries)
@@ -1025,18 +1025,18 @@ void ObjDict::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 }
 
 
-ObjVector* roxal::vectorVal()
+ObjVector* roxal::newVectorObj()
 {
     return newObj<ObjVector>(__func__);
 }
 
-ObjVector* roxal::vectorVal(int32_t size)
+ObjVector* roxal::newVectorObj(int32_t size)
 {
     auto v = newObj<ObjVector>(__func__, size);
     return v;
 }
 
-ObjVector* roxal::vectorVal(const Eigen::VectorXd& values)
+ObjVector* roxal::newVectorObj(const Eigen::VectorXd& values)
 {
     auto v = newObj<ObjVector>(__func__, values);
     return v;
@@ -2022,7 +2022,7 @@ Value ObjMatrix::index(const Value& row) const
         if (r < 0 || r >= rows())
             throw std::invalid_argument("Matrix row index out-of-range.");
         Eigen::VectorXd vals = mat.row(r);
-        return objVal(vectorVal(vals));
+        return Value::vectorVal(vals);
     } else if (isRange(row)) {
         ObjRange* rr = asRange(row);
         int rowCount = rr->length(rows());
@@ -2095,12 +2095,12 @@ Value ObjMatrix::index(const Value& row, const Value& col) const
         Eigen::VectorXd vals(colIdx.size());
         for(size_t j=0;j<colIdx.size();++j)
             vals[j] = mat(rowIdx[0], colIdx[j]);
-        return objVal(vectorVal(vals));
+        return Value::vectorVal(vals);
     } else if (rowIdx.size()>1 && colIdx.size()==1) {
         Eigen::VectorXd vals(rowIdx.size());
         for(size_t i=0;i<rowIdx.size();++i)
             vals[i] = mat(rowIdx[i], colIdx[0]);
-        return objVal(vectorVal(vals));
+        return Value::vectorVal(vals);
     } else {
         Eigen::MatrixXd sub(rowIdx.size(), colIdx.size());
         for(size_t i=0;i<rowIdx.size();++i)

@@ -159,7 +159,7 @@ Value ModuleMath::math_cross_builtin(VM& vm, ArgsView args)
 
     Eigen::Vector3d r = v1->vec.head<3>().cross(v2->vec.head<3>());
     Eigen::VectorXd res = r;
-    return objVal(vectorVal(res));
+    return Value::vectorVal(res);
 }
 
 

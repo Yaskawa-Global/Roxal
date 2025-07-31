@@ -17,7 +17,7 @@ inline Value doubleVector(const std::vector<double>& elts) {
     Eigen::VectorXd vec(elts.size());
     for (size_t i = 0; i < elts.size(); ++i)
         vec(i) = elts[i];
-    return Value(roxal::vectorVal(vec));
+    return Value::vectorVal(vec);
 }
 
 inline size_t vectorSize(const Value& v) {
@@ -46,25 +46,25 @@ inline bool equals(const Value& a, const Value& b, double eps = 1e-15) {
 inline Value vecMult(double s, const Value& v) {
     assert(roxal::isVector(v));
     auto result = roxal::asVector(v)->vec * s;
-    return Value(roxal::vectorVal(result));
+    return Value::vectorVal(result);
 }
 
 inline Value vecMult(int32_t s, const Value& v) {
     assert(roxal::isVector(v));
     auto result = roxal::asVector(v)->vec * static_cast<double>(s);
-    return Value(roxal::vectorVal(result));
+    return Value::vectorVal(result);
 }
 
 inline Value vecAdd(const Value& v1, const Value& v2) {
     assert(roxal::isVector(v1) && roxal::isVector(v2));
     auto result = roxal::asVector(v1)->vec + roxal::asVector(v2)->vec;
-    return Value(roxal::vectorVal(result));
+    return Value::vectorVal(result);
 }
 
 inline Value vecSub(const Value& v1, const Value& v2) {
     assert(roxal::isVector(v1) && roxal::isVector(v2));
     auto result = roxal::asVector(v1)->vec - roxal::asVector(v2)->vec;
-    return Value(roxal::vectorVal(result));
+    return Value::vectorVal(result);
 }
 
 inline std::ostream& operator<<(std::ostream& os, const Value& v) {

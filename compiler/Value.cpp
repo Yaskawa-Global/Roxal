@@ -115,27 +115,27 @@ Value Value::listVal(const std::vector<Value>& elts)
 
 Value Value::dictVal()
 {
-    return objVal(::dictVal());
+    return objVal(newDictObj());
 }
 
 Value Value::dictVal(const std::vector<std::pair<Value,Value>>& entries)
 {
-    return objVal(::dictVal(entries));
+    return objVal(newDictObj(entries));
 }
 
 Value Value::vectorVal()
 {
-    return objVal(::vectorVal());
+    return objVal(newVectorObj());
 }
 
 Value Value::vectorVal(int32_t size)
 {
-    return objVal(::vectorVal(size));
+    return objVal(newVectorObj(size));
 }
 
 Value Value::vectorVal(const Eigen::VectorXd& values)
 {
-    return objVal(::vectorVal(values));
+    return objVal(newVectorObj(values));
 }
 
 Value Value::matrixVal()
@@ -990,14 +990,14 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
     asList(lst)->append(Value::intVal(2));
     roundTrip("list_val", lst);
 
-    ObjDict* d = dictVal();
-    d->store(Value::intVal(1), Value::intVal(2));
-    roundTrip("dict_val", objVal(d));
+    Value d = { Value::dictVal() };
+    asDict(d)->store(Value::intVal(1), Value::intVal(2));
+    roundTrip("dict_val", d);
 
-    ObjVector* vec = vectorVal(2);
-    vec->vec[0] = 1.0;
-    vec->vec[1] = 2.0;
-    roundTrip("vector_val", objVal(vec));
+    Value vec { Value::vectorVal(2) };
+    asVector(vec)->vec[0] = 1.0;
+    asVector(vec)->vec[1] = 2.0;
+    roundTrip("vector_val", vec);
 
     Eigen::MatrixXd mat(1,2);
     mat(0,0) = 1.0; mat(0,1) = 2.0;
@@ -1139,8 +1139,8 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::String: return Value::stringVal(UnicodeString());
         case ValueType::Range: return Value::rangeVal();
         case ValueType::List: return Value::listVal();
-        case ValueType::Dict: return Value(dictVal());
-        case ValueType::Vector: return Value(vectorVal());
+        case ValueType::Dict: return Value::dictVal();
+        case ValueType::Vector: return Value::vectorVal();
         case ValueType::Matrix: return Value(matrixVal());
         case ValueType::Signal: throw std::runtime_error("Can't default-construct signal");
         case ValueType::Event: return Value(eventVal());
@@ -1212,7 +1212,7 @@ Value roxal::toType(ValueType t, Value v, bool strict)
             //  included in the dict!
 
             if (isObjectInstance(v) && !strict) {
-                ObjDict* dictValue = dictVal({});
+                Value dictValue { Value::dictVal({}) };
 
                 ObjectInstance* vObj = asObjectInstance(v);
                 ObjObjectType* vObjType = vObj->instanceType;
@@ -1225,10 +1225,10 @@ Value roxal::toType(ValueType t, Value v, bool strict)
                     #ifdef DEBUG_BUILD
                     assert(vObj->properties.find(propHash) != vObj->properties.end());
                     #endif
-                    dictValue->store(propName,
-                                     vObj->properties[propHash]);
+                    asDict(dictValue)->store(propName,
+                                             vObj->properties[propHash]);
                 }
-                return Value(dictValue);
+                return dictValue;
             }
         } break;
         //TODO: add more conversions
@@ -1380,11 +1380,11 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
     if (type == ValueType::Vector) {
         size_t count = end - begin;
         if (count == 0) {
-            return objVal(vectorVal());
+            return Value::vectorVal();
         } else if (count == 1) {
             Value arg = *begin;
             if (arg.isInt())
-                return objVal(vectorVal(arg.asInt()));
+                return Value::vectorVal(arg.asInt());
             if (isList(arg)) {
                 auto listVals = asList(arg)->elts.get();
                 Eigen::VectorXd vals(listVals.size());
@@ -1393,7 +1393,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                         throw std::runtime_error("vector constructor expects list of numeric elements");
                     vals[i] = toType(ValueType::Real, listVals[i], false).asReal();
                 }
-                return objVal(vectorVal(vals));
+                return Value::vectorVal(vals);
             }
             if (isVector(arg)) {
                 return objVal(cloneVector(asVector(arg)));
@@ -1521,7 +1521,7 @@ Value roxal::negate(Value v)
     else if (isVector(v)) {
         const ObjVector* vec = asVector(v);
         Eigen::VectorXd result = -vec->vec;
-        return objVal(vectorVal(result));
+        return Value::vectorVal(result);
     }
     else if (isMatrix(v)) {
         const ObjMatrix* mat = asMatrix(v);
@@ -1625,7 +1625,7 @@ Value roxal::add(Value l, Value r)
         if (lv->length() != rv->length())
             throw std::invalid_argument("Vector addition requires vectors of same length");
         Eigen::VectorXd result = lv->vec + rv->vec;
-        return objVal(vectorVal(result));
+        return Value::vectorVal(result);
     }
     else if (isMatrix(l) && isMatrix(r)) {
         const ObjMatrix* lm = asMatrix(l);
@@ -1671,7 +1671,7 @@ Value roxal::subtract(Value l, Value r)
         if (lv->length() != rv->length())
             throw std::invalid_argument("Vector subtraction requires vectors of same length");
         Eigen::VectorXd result = lv->vec - rv->vec;
-        return objVal(vectorVal(result));
+        return Value::vectorVal(result);
     }
     else if (isMatrix(l) && isMatrix(r)) {
         const ObjMatrix* lm = asMatrix(l);
@@ -1718,13 +1718,13 @@ Value roxal::multiply(Value l, Value r)
         const ObjVector* lv = asVector(l);
         double scalar = toType(ValueType::Real, r, false).asReal();
         Eigen::VectorXd result = lv->vec * scalar;
-        return objVal(vectorVal(result));
+        return Value::vectorVal(result);
     }
     if (l.isNumber() && isVector(r)) {
         const ObjVector* rv = asVector(r);
         double scalar = toType(ValueType::Real, l, false).asReal();
         Eigen::VectorXd result = rv->vec * scalar;
-        return objVal(vectorVal(result));
+        return Value::vectorVal(result);
     }
     if (isMatrix(l) && isMatrix(r)) {
         const ObjMatrix* lm = asMatrix(l);
@@ -1740,7 +1740,7 @@ Value roxal::multiply(Value l, Value r)
         if (lm->cols() != rv->length())
             throw std::invalid_argument("Matrix and vector dimension mismatch");
         Eigen::VectorXd result = lm->mat * rv->vec;
-        return objVal(vectorVal(result));
+        return Value::vectorVal(result);
     }
     if (isVector(l) && isMatrix(r)) {
         const ObjVector* lv = asVector(l);
@@ -1748,7 +1748,7 @@ Value roxal::multiply(Value l, Value r)
         if (lv->length() != rm->rows())
             throw std::invalid_argument("Vector and matrix dimension mismatch");
         Eigen::VectorXd result = lv->vec.transpose() * rm->mat;
-        return objVal(vectorVal(result));
+        return Value::vectorVal(result);
     }
     if (isMatrix(l) && r.isNumber()) {
         const ObjMatrix* lm = asMatrix(l);
@@ -1944,16 +1944,16 @@ Value roxal::band(Value l, Value r)
     if (isDict(l) && isDict(r)) {
         const ObjDict* ld = asDict(l);
         const ObjDict* rd = asDict(r);
-        ObjDict* result = dictVal();
+        Value result { Value::dictVal() };
 
         auto lkeys = ld->keys();
         for (const auto& k : lkeys) {
             if (rd->contains(k)) {
-                result->store(k, ld->at(k));
+                asDict(result)->store(k, ld->at(k));
             }
         }
 
-        return objVal(result);
+        return result;
     }
 
 
@@ -1984,18 +1984,18 @@ Value roxal::bor(Value l, Value r)
     if (isDict(l) && isDict(r)) {
         const ObjDict* ld = asDict(l);
         const ObjDict* rd = asDict(r);
-        ObjDict* result = dictVal();
+        Value result { Value::dictVal() };
 
         auto lkeys = ld->keys();
         for (const auto& k : lkeys) {
-            result->store(k, ld->at(k));
+            asDict(result)->store(k, ld->at(k));
         }
 
         auto rkeys = rd->keys();
         for (const auto& k : rkeys) {
-            result->store(k, rd->at(k));
+            asDict(result)->store(k, rd->at(k));
         }
-        return objVal(result);
+        return result;
     }
 
     if ((l.isBool() || l.isByte() || l.isInt()) &&

@@ -608,11 +608,11 @@ static Value jsonToValue(const json11::Json& j) {
             return Value::listVal(elts);
         }
         case Json::OBJECT: {
-            ObjDict* d = dictVal();
+            Value d { Value::dictVal() };
             for(const auto& kv : j.object_items()) {
-                d->store(Value::stringVal(toUnicodeString(kv.first)), jsonToValue(kv.second));
+                asDict(d)->store(Value::stringVal(toUnicodeString(kv.first)), jsonToValue(kv.second));
             }
-            return objVal(d);
+            return d;
         }
     }
     return Value::nilVal();

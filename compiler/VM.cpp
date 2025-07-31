@@ -3172,7 +3172,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                                      peek(2*(entryCount-1-i))));
                 }
                 for(int i=0; i<entryCount*2;i++) pop();
-                push(objVal(dictVal(entries)));
+                push(Value::dictVal(entries));
                 break;
             }
             case asByte(OpCode::NewVector): {
@@ -3181,7 +3181,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 for(int i=0; i<eltCount; i++)
                     vals[i] = toType(ValueType::Real, peek(eltCount-i-1), false).asReal();
                 for(int i=0; i<eltCount; i++) pop();
-                push(objVal(vectorVal(vals)));
+                push(Value::vectorVal(vals));
                 break;
             }
             case asByte(OpCode::NewMatrix): {
@@ -4083,14 +4083,14 @@ Value VM::captureStacktrace()
 
     for(auto it = thread->frames.begin(); it != thread->frames.end(); ++it) {
         const CallFrame& frame { *it };
-        ObjDict* frameDict = dictVal();
+        Value frameDict { Value::dictVal() };
 
         UnicodeString funcName = frame.closure->function->name;
         if (funcName.isEmpty())
             funcName = UnicodeString("<script>");
 
-        frameDict->store(Value::stringVal(UnicodeString("function")),
-                         Value::stringVal(funcName));
+        asDict(frameDict)->store(Value::stringVal(UnicodeString("function")),
+                                 Value::stringVal(funcName));
 
         auto chunk = frame.closure->function->chunk;
         size_t instruction = 0;
@@ -4099,13 +4099,13 @@ Value VM::captureStacktrace()
         int line = chunk->getLine(instruction);
         int col  = chunk->getColumn(instruction);
 
-        frameDict->store(Value::stringVal(UnicodeString("line")), Value::intVal(line));
-        frameDict->store(Value::stringVal(UnicodeString("col")), Value::intVal(col));
+        asDict(frameDict)->store(Value::stringVal(UnicodeString("line")), Value::intVal(line));
+        asDict(frameDict)->store(Value::stringVal(UnicodeString("col")), Value::intVal(col));
 
-        frameDict->store(Value::stringVal(UnicodeString("filename")),
-                         Value::stringVal(chunk->sourceName));
+        asDict(frameDict)->store(Value::stringVal(UnicodeString("filename")),
+                                 Value::stringVal(chunk->sourceName));
 
-        asList(framesList)->append(objVal(frameDict));
+        asList(framesList)->append(frameDict);
     }
 
     return framesList;
@@ -4223,7 +4223,7 @@ Value VM::vector_normalized_builtin(ArgsView args)
 
     ObjVector* vec = asVector(args[0]);
     Eigen::VectorXd nvec = vec->vec.normalized();
-    return objVal(vectorVal(nvec));
+    return Value::vectorVal(nvec);
 }
 
 Value VM::vector_dot_builtin(ArgsView args)
