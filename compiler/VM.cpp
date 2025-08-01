@@ -329,9 +329,7 @@ VM::~VM()
             closure->function->paramDefaultFunc.clear();
         }
         if (isFunction(value)) {
-            auto fn = asFunction(value);
-            fn->moduleType = Value::nilVal();
-            fn->paramDefaultFunc.clear();
+            asFunction(value)->clear();
         }
     });
 
@@ -530,6 +528,8 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
 
                     auto funcIt = closure->function->paramDefaultFunc.find(param.value().nameHashCode);
                     #ifdef DEBUG_BUILD
+                    if (funcIt == closure->function->paramDefaultFunc.cend())
+                        runtimeError("No default value function found for parameter '"+toUTF8StdString(param.value().name)+"' in function '"+toUTF8StdString(closure->function->name)+"'.");
                     assert(funcIt != closure->function->paramDefaultFunc.cend());
                     #endif
 
@@ -1796,9 +1796,8 @@ std::pair<InterpretResult,Value> VM::execute()
     auto readString = [&]() -> ObjString* {
         #ifdef DEBUG_BUILD
         auto constant { readConstant() };
-        if (!isString(constant))
-            throw std::runtime_error("Chunk instruction read string expected a string constant, got "+constant.typeName());
-        return asString(constant);
+        debug_assert_msg(constant.isString(), "Chunk instruction read string expected a string constant, got "+constant.typeName());
+        return asStringObj(constant);
         #else
           return asStringObj(readConstant());
         #endif

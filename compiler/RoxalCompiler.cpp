@@ -1390,7 +1390,8 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
 
         // store the func that evaluates the default param value in the function
         //  for which it is a param
-        asFunction(function)->paramDefaultFunc[ast->name.hashCode()] = function;
+        auto surroundingFunction = asFuncScope(funcScope())->function;
+        asFunction(surroundingFunction)->paramDefaultFunc[ast->name.hashCode()] = function;
     }
     return {};
 }
@@ -2173,7 +2174,7 @@ void RoxalCompiler::exitModuleScope()
     auto modScope { asModuleScope(scope()) };
     #ifdef DEBUG_BUILD
     assert(!modScope->moduleType.isNil() && modScope->moduleType.isObj());
-    assert(modScope->function != nullptr);
+    assert(!modScope->function.isNil());
     #endif
     asFunction(modScope->function)->moduleType = modScope->moduleType;
 

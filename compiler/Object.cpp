@@ -186,7 +186,7 @@ ptr<ast::Annotation> readAnnotation(std::istream& in){
 }
 
 #ifdef DEBUG_TRACE_MEMORY
-atomic_map<Obj*, const char*> Obj::allocatedObjs {};
+atomic_map<Obj*, std::string> Obj::allocatedObjs {};
 #endif
 
 atomic_vector<ObjModuleType*> ObjModuleType::allModules {};
@@ -383,7 +383,11 @@ ObjString* roxal::newObjString(const UnicodeString& s)
     if (!objStr.has_value()) { // not found
 
         // create new
-        return newObj<ObjString>(__func__,s);
+        #ifdef DEBUG_BUILD
+        return newObj<ObjString>(std::string(__func__)+" '" + toUTF8StdString(s) + "'",__FILE__,__LINE__,s);
+        #else
+        return newObj<ObjString>(s);
+        #endif
     }
     else { // found existing string
         return objStr.value();
@@ -661,13 +665,21 @@ int32_t ObjRange::targetIndex(int32_t index, int32_t targetLen) const
 
 ObjRange* roxal::newRangeObj()
 {
-    return newObj<ObjRange>(__func__);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjRange>(__func__,__FILE__,__LINE__);
+    #else
+    return newObj<ObjRange>();
+    #endif
 }
 
 
 ObjRange* roxal::newRangeObj(const Value& start, const Value& stop, const Value& step, bool closed)
 {
-    return newObj<ObjRange>(__func__,start,stop,step,closed);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjRange>(__func__,__FILE__,__LINE__,start,stop,step,closed);
+    #else
+    return newObj<ObjRange>(start,stop,step,closed);
+    #endif
 }
 
 
@@ -689,11 +701,15 @@ std::string roxal::objRangeToString(const ObjRange* r)
 
 ObjRange* roxal::cloneRange(const ObjRange* r)
 {
-    return newObj<ObjRange>(__func__,
+    #ifdef DEBUG_BUILD
+    return newObj<ObjRange>(__func__,__FILE__,__LINE__,
                            r->start.clone(),
                            r->stop.clone(),
                            r->step.clone(),
                            r->closed);
+    #else
+    return newObj<ObjRange>(r->start.clone(), r->stop.clone(), r->step.clone(), r->closed);
+    #endif
 }
 
 
@@ -705,8 +721,10 @@ ObjTypeSpec* roxal::typeSpecVal(ValueType t)
 {
     #ifdef DEBUG_BUILD
     assert(t != ValueType::Object && t != ValueType::Actor);
+    auto ts = newObj<ObjTypeSpec>(__func__, __FILE__, __LINE__);
+    #else
+    auto ts = newObj<ObjTypeSpec>();
     #endif
-    auto ts = newObj<ObjTypeSpec>(__func__);
     ts->typeValue = t;
     return ts;
 }
@@ -851,18 +869,30 @@ void ObjList::set(const ObjList* other)
 
 ObjList* roxal::newListObj()
 {
-    return newObj<ObjList>(__func__);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjList>(__func__,__FILE__,__LINE__);
+    #else
+    return newObj<ObjList>();
+    #endif
 }
 
 
 ObjList* roxal::newListObj(const ObjRange* r)
 {
-    return newObj<ObjList>(__func__,r);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjList>(__func__,__FILE__,__LINE__,r);
+    #else
+    return newObj<ObjList>(r);
+    #endif
 }
 
 ObjList* roxal::newListObj(const std::vector<Value>& elts)
 {
-    auto l = newObj<ObjList>(__func__);
+    #ifdef DEBUG_BUILD
+    auto l = newObj<ObjList>(__func__, __FILE__, __LINE__);
+    #else
+    auto l = newObj<ObjList>();
+    #endif
     for(const auto& elt : elts)
         l->elts.push_back(elt);
     return l;
@@ -872,7 +902,11 @@ ObjList* roxal::newListObj(const std::vector<Value>& elts)
 ObjList* roxal::cloneList(const ObjList* l)
 {
     // TODO: optimize
-    auto newl = newObj<ObjList>(__func__);
+    #ifdef DEBUG_BUILD
+    auto newl = newObj<ObjList>(__func__, __FILE__, __LINE__);
+    #else
+    auto newl = newObj<ObjList>();
+    #endif
     auto lsize = l->elts.size();
     for(auto i=0; i<lsize; i++)
         newl->elts.push_back(l->elts.at(i).clone());
@@ -922,12 +956,20 @@ std::string roxal::objListToString(const ObjList* ol)
 
 ObjDict* roxal::newDictObj()
 {
-    return newObj<ObjDict>(__func__);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjDict>(__func__, __FILE__, __LINE__);
+    #else
+    return newObj<ObjDict>();
+    #endif
 }
 
 ObjDict* roxal::newDictObj(const std::vector<std::pair<Value,Value>>& entries)
 {
-    auto d = newObj<ObjDict>(__func__);
+    #ifdef DEBUG_BUILD
+    auto d = newObj<ObjDict>(__func__, __FILE__, __LINE__);
+    #else
+    auto d = newObj<ObjDict>();
+    #endif
     for(const auto& entry : entries)
         d->store(entry.first, entry.second);
     return d;
@@ -935,7 +977,11 @@ ObjDict* roxal::newDictObj(const std::vector<std::pair<Value,Value>>& entries)
 
 ObjDict* roxal::cloneDict(const ObjDict* d)
 {
-    auto newd = newObj<ObjDict>(__func__);
+    #ifdef DEBUG_BUILD
+    auto newd = newObj<ObjDict>(__func__,__FILE__,__LINE__);
+    #else
+    auto newd = newObj<ObjDict>();
+    #endif
     const auto dkeys = d->keys();
     for(const auto& dkey : dkeys)
         newd->store(dkey.clone(), d->at(dkey).clone());
@@ -1027,24 +1073,40 @@ void ObjDict::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
 ObjVector* roxal::newVectorObj()
 {
-    return newObj<ObjVector>(__func__);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjVector>(__func__, __FILE__, __LINE__);
+    #else
+    return newObj<ObjVector>();
+    #endif
 }
 
 ObjVector* roxal::newVectorObj(int32_t size)
 {
-    auto v = newObj<ObjVector>(__func__, size);
+    #ifdef DEBUG_BUILD
+    auto v = newObj<ObjVector>(__func__, __FILE__, __LINE__, size);
+    #else
+    auto v = newObj<ObjVector>(size);
+    #endif
     return v;
 }
 
 ObjVector* roxal::newVectorObj(const Eigen::VectorXd& values)
 {
-    auto v = newObj<ObjVector>(__func__, values);
+    #ifdef DEBUG_BUILD
+    auto v = newObj<ObjVector>(__func__, __FILE__, __LINE__, values);
+    #else
+    auto v = newObj<ObjVector>(values);
+    #endif
     return v;
 }
 
 ObjVector* roxal::cloneVector(const ObjVector* v)
 {
-    auto newv = newObj<ObjVector>(__func__, v->vec.size());
+    #ifdef DEBUG_BUILD
+    auto newv = newObj<ObjVector>(__func__, __FILE__, __LINE__, v->vec.size());
+    #else
+    auto newv = newObj<ObjVector>(v->vec.size());
+    #endif
     newv->vec = v->vec;
     return newv;
 }
@@ -1118,18 +1180,30 @@ ObjMatrix::ObjMatrix(int32_t rows, int32_t cols)
 
 ObjMatrix* roxal::newMatrixObj()
 {
-    return newObj<ObjMatrix>(__func__);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjMatrix>(__func__, __FILE__, __LINE__);
+    #else
+    return newObj<ObjMatrix>();
+    #endif
 }
 
 ObjMatrix* roxal::newMatrixObj(int32_t rows, int32_t cols)
 {
-    auto m = newObj<ObjMatrix>(__func__, rows, cols);
+    #ifdef DEBUG_BUILD
+    auto m = newObj<ObjMatrix>(__func__, __FILE__, __LINE__, rows, cols);
+    #else
+    auto m = newObj<ObjMatrix>(rows, cols);
+    #endif
     return m;
 }
 
 ObjMatrix* roxal::newMatrixObj(const Eigen::MatrixXd& values)
 {
-    auto m = newObj<ObjMatrix>(__func__, values);
+    #ifdef DEBUG_BUILD
+    auto m = newObj<ObjMatrix>(__func__, __FILE__, __LINE__, values);
+    #else
+    auto m = newObj<ObjMatrix>(values);
+    #endif
     return m;
 }
 
@@ -1153,7 +1227,11 @@ static ObjMatrix* valueToMatrix(const Value& v)
 
 ObjMatrix* roxal::cloneMatrix(const ObjMatrix* m)
 {
-    auto newm = newObj<ObjMatrix>(__func__, m->mat.rows(), m->mat.cols());
+    #ifdef DEBUG_BUILD
+    auto newm = newObj<ObjMatrix>(__func__, __FILE__, __LINE__, m->mat.rows(), m->mat.cols());
+    #else
+    auto newm = newObj<ObjMatrix>(m->mat);
+    #endif
     newm->mat = m->mat;
     return newm;
 }
@@ -1472,7 +1550,11 @@ void ObjClosure::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         throw std::runtime_error("ObjClosure::read mismatched tag");
     type = ObjType::Closure;
 
-    auto fn = newObj<ObjFunction>(__func__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+    #ifdef DEBUG_BUILD
+    auto fn = newObj<ObjFunction>(__func__, __FILE__, __LINE__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+    #else
+    auto fn = newObj<ObjFunction>(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+    #endif
     // Use the same serialization context so that references from the function
     // back to this closure's owning structures are properly resolved.
     fn->read(in, ctx);
@@ -1484,7 +1566,11 @@ void ObjClosure::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     for(uint32_t i=0;i<count;i++) {
         uint8_t present; in.read(reinterpret_cast<char*>(&present),1);
         if(present) {
-            auto uv = newObj<ObjUpvalue>(__func__, nullptr);
+            #ifdef DEBUG_BUILD
+            auto uv = newObj<ObjUpvalue>(__func__, __FILE__, __LINE__, nullptr);
+            #else
+            auto uv = newObj<ObjUpvalue>(nullptr);
+            #endif
             uv->read(in, ctx);
             upvalues[i] = uv;
             uv->incRef();
@@ -1559,7 +1645,7 @@ void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
     std::string n; name.toUTF8String(n);
     uint32_t len = n.size();
     out.write(reinterpret_cast<char*>(&len), 4);
-    out.write(n.data(), len);
+    if (len>0) out.write(n.data(), len);
 
     uint8_t b = isActor ? 1 : 0; out.write(reinterpret_cast<char*>(&b),1);
     b = isInterface ? 1 : 0; out.write(reinterpret_cast<char*>(&b),1);
@@ -1897,7 +1983,11 @@ ObjEvent* ObjSignal::ensureChangeEvent()
 
 ObjSignal* roxal::newSignalObj(ptr<df::Signal> s)
 {
-    return newObj<ObjSignal>(__func__, s);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjSignal>(__func__, __FILE__, __LINE__, s);
+    #else
+    return newObj<ObjSignal>(s);
+    #endif
 }
 
 std::string roxal::objSignalToString(const ObjSignal* os)
@@ -1913,7 +2003,11 @@ std::string roxal::objSignalToString(const ObjSignal* os)
 
 ObjEvent* roxal::newEventObj()
 {
-    return newObj<ObjEvent>(__func__);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjEvent>(__func__, __FILE__, __LINE__);
+    #else
+    return newObj<ObjEvent>();
+    #endif
 }
 
 std::string roxal::objEventToString(const ObjEvent* ev)
@@ -1932,7 +2026,11 @@ ObjLibrary::~ObjLibrary()
 
 ObjLibrary* roxal::newLibraryObj(void* handle)
 {
-    return newObj<ObjLibrary>(__func__, handle);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjLibrary>(__func__, __FILE__, __LINE__, handle);
+    #else
+    return newObj<ObjLibrary>(handle);
+    #endif
 }
 
 std::string roxal::objLibraryToString(const ObjLibrary* lib)
@@ -1944,7 +2042,11 @@ std::string roxal::objLibraryToString(const ObjLibrary* lib)
 
 ObjForeignPtr* roxal::newForeignPtrObj(void* ptr)
 {
-    return newObj<ObjForeignPtr>(__func__, ptr);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjForeignPtr>(__func__, __FILE__, __LINE__, ptr);
+    #else
+    return newObj<ObjForeignPtr>(ptr);
+    #endif
 }
 
 std::string roxal::objForeignPtrToString(const ObjForeignPtr* fp)
@@ -1956,7 +2058,11 @@ std::string roxal::objForeignPtrToString(const ObjForeignPtr* fp)
 
 ObjFile* roxal::newFileObj(roxal::ptr<std::fstream> f, bool binary)
 {
-    return newObj<ObjFile>(__func__, std::move(f), binary);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjFile>(__func__, __FILE__, __LINE__, std::move(f), binary);
+    #else
+    return newObj<ObjFile>(std::move(f), binary);
+    #endif
 }
 
 std::string roxal::objFileToString(const ObjFile* f)
@@ -1970,7 +2076,11 @@ std::string roxal::objFileToString(const ObjFile* f)
 
 ObjException* roxal::newExceptionObj(Value message, Value exType, Value stackTrace)
 {
-    return newObj<ObjException>(__func__, message, exType, stackTrace);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjException>(__func__, __FILE__, __LINE__, message, exType, stackTrace);
+    #else
+    return newObj<ObjException>(message, exType, stackTrace);
+    #endif
 }
 
 std::string roxal::objExceptionToString(const ObjException* ex)
@@ -2413,14 +2523,26 @@ ObjFunction::ObjFunction(const icu::UnicodeString& packageName, const icu::Unico
     chunk = std::make_shared<Chunk>(packageName, moduleName, sourceName);
 }
 
-
-ObjFunction::~ObjFunction()
+void ObjFunction::clear()
 {
+    arity = 0;
+    upvalueCount = 0;
+    name = icu::UnicodeString();
+    strict = false;
+    ownerType = Value::nilVal();
+    moduleType = Value::nilVal();
+    chunk.reset();
     paramDefaultFunc.clear();
     if (nativeSpec) {
         delete static_cast<FFIWrapper*>(nativeSpec);
         nativeSpec = nullptr;
     }
+    nativeDefaults.clear();
+}
+
+ObjFunction::~ObjFunction()
+{
+    clear();
 }
 
 
@@ -2441,7 +2563,11 @@ ObjNative* roxal::nativeVal(NativeFn function, void* data,
                            ptr<roxal::type::Type> funcType,
                            std::vector<Value> defaults)
 {
-    return newObj<ObjNative>(__func__,function,data,funcType,std::move(defaults));
+    #ifdef DEBUG_BUILD
+    return newObj<ObjNative>(std::string(__func__)+" "+(funcType!=nullptr?funcType->toString():""), __FILE__, __LINE__, function, data, funcType, std::move(defaults));
+    #else
+    return newObj<ObjNative>(function, data, funcType, std::move(defaults));
+    #endif
 }
 
 
@@ -2457,7 +2583,7 @@ ObjObjectType::ObjObjectType(const icu::UnicodeString& typeName, bool isactor, b
         typeValue = ValueType::Actor;
     else if (isEnumeration) {
         typeValue = ValueType::Enum;
-
+if (isActor && name!="_DataflowEngine") std::cout << "Actor ObjObjectType created" << std::endl;//!!!
         // register ourselves in the global map of enum types, referenced in the enum values
         enumTypeId = randomUint16(1); // generate unique random id (1..max)
         while (ObjObjectType::enumTypes.find(enumTypeId) != ObjObjectType::enumTypes.end())
@@ -2469,7 +2595,11 @@ ObjObjectType::ObjObjectType(const icu::UnicodeString& typeName, bool isactor, b
 
 ObjObjectType* roxal::objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface, bool isEnumeration)
 {
-    return newObj<ObjObjectType>(__func__, typeName, isActor, isInterface, isEnumeration);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjObjectType>((std::string(__func__)+" "+toUTF8StdString(typeName)), __FILE__, __LINE__, typeName, isActor, isInterface, isEnumeration);
+    #else
+    return newObj<ObjObjectType>(typeName, isActor, isInterface, isEnumeration);
+    #endif
 }
 
 
@@ -2483,7 +2613,11 @@ ObjModuleType::ObjModuleType(const icu::UnicodeString& typeName)
 
 ObjModuleType* roxal::moduleTypeVal(const icu::UnicodeString& typeName)
 {
-    return newObj<ObjModuleType>(__func__, typeName);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjModuleType>(std::string(__func__)+" "+toUTF8StdString(typeName), __FILE__, __LINE__, typeName);
+    #else
+    return newObj<ObjModuleType>(typeName);
+    #endif
 }
 
 ObjModuleType::~ObjModuleType()
@@ -2499,6 +2633,8 @@ ObjectInstance::ObjectInstance(ObjObjectType* objectType)
     type = ObjType::Instance;
     instanceType = objectType;
     instanceType->incRef();
+    debug_assert_msg(objectType->typeValue == ValueType::Object,
+                     "ObjectInstance created with object type");
 
     for(const auto& property : objectType->properties) {
         const auto& prop { property.second };
@@ -2528,7 +2664,13 @@ void ObjectInstance::setProperty(const icu::UnicodeString& name, Value value)
 
 ObjectInstance* roxal::objectInstanceVal(ObjObjectType* objectType)
 {
-    return newObj<ObjectInstance>(__func__, objectType);
+    #ifdef DEBUG_BUILD
+    debug_assert_msg(objectType != nullptr && objectType->typeValue == ValueType::Object,
+                     "objectInstanceVal called with object type");
+    return newObj<ObjectInstance>(__func__, __FILE__, __LINE__, objectType);
+    #else
+    return newObj<ObjectInstance>(objectType);
+    #endif
 }
 
 
@@ -2555,7 +2697,7 @@ ObjectInstance* roxal::cloneObjectInstance(const ObjectInstance* obj)
             throw std::runtime_error("clone of type actor unsuported");
         }
         else if (isList(value)) {
-
+            assert(false); // unimplemented
         }
         // TODO: add explicit handling of internal types like closure, future, function etc (just shallow copy)
         //       add explicit deep copying of builtin ref types like list and dict
@@ -2580,6 +2722,7 @@ ActorInstance::ActorInstance(ObjObjectType* objectType)
     type = ObjType::Actor;
     instanceType = objectType;
     instanceType->incRef();
+    debug_assert_msg(objectType->isActor, "ActorInstance created with actor type");
 
     // initialize instance properties from actor type definition
     for(const auto& property : objectType->properties) {
@@ -2660,10 +2803,14 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
 
 ActorInstance* roxal::actorInstanceVal(ObjObjectType* objectType)
 {
-    return newObj<ActorInstance>(__func__, objectType);
+    #ifdef DEBUG_BUILD
+    debug_assert_msg(objectType != nullptr && objectType->typeValue == ValueType::Actor,
+                     "actorInstanceVal called with actor type");
+    return newObj<ActorInstance>(std::string(__func__)+(objectType!=nullptr?toUTF8StdString(objectType->name):""), __FILE__, __LINE__, objectType);
+    #else
+    return newObj<ActorInstance>(objectType);
+    #endif
 }
-
-
 
 ObjBoundMethod::ObjBoundMethod(const Value& instance, ObjClosure* closure)
     : receiver(instance), method(closure)
@@ -2756,7 +2903,7 @@ void roxal::testObjectValues()
     Value i1 { 6 };
     Value i2 { 8 };
 
-    Value l1 { listVal(std::vector<Value>{i0,i1,i2}) };
+    Value l1 { Value::listVal(std::vector<Value>{i0,i1,i2}) };
 
     assert(isList(l1));
     assert(!l1.isNil());
@@ -2768,6 +2915,6 @@ void roxal::testObjectValues()
     assert(!l2.isNil());
 
     assert(l1 == l2);
-    assert(!(l2 == nilVal()));
+    assert(!(l2 == Value::nilVal()));
 }
 #endif

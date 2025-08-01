@@ -231,16 +231,29 @@ void Value::box() {
     if (isBoxed() || !isBoxable()) return;
     // allocate value on heap
     Obj* obj;
+    #ifdef DEBUG_BUILD
     if (isBool())
-        obj = newObj<ObjPrimitive>(__func__,asBool());
+        obj = newObj<ObjPrimitive>(__func__,__FILE__,__LINE__,asBool());
     else if (isInt())
-        obj = newObj<ObjPrimitive>(__func__,asInt());
+        obj = newObj<ObjPrimitive>(__func__,__FILE__,__LINE__,asInt());
     else if (isReal())
-        obj = newObj<ObjPrimitive>(__func__,asReal());
+        obj = newObj<ObjPrimitive>(__func__,__FILE__,__LINE__,asReal());
     else if (isType())
-        obj = newObj<ObjPrimitive>(__func__,asType());
+        obj = newObj<ObjPrimitive>(__func__,__FILE__,__LINE__,asType());
     else
         throw std::runtime_error("Unsupported type for auto-boxing "+typeName());
+    #else
+    if (isBool())
+        obj = newObj<ObjPrimitive>(asBool());
+    else if (isInt())
+        obj = newObj<ObjPrimitive>(asInt());
+    else if (isReal())
+        obj = newObj<ObjPrimitive>(asReal());
+    else if (isType())
+        obj = newObj<ObjPrimitive>(asType());
+    else
+        throw std::runtime_error("Unsupported type for auto-boxing "+typeName());
+    #endif
 
     obj->incRef();
     val = SignBit | QNAN | uint64_t(uintptr_t(obj));
@@ -1000,9 +1013,15 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
     mat(0,0) = 1.0; mat(0,1) = 2.0;
     roundTrip("matrix_val", Value::matrixVal(mat));
 
-    roundTrip("boxed_bool", objVal(newObj<ObjPrimitive>(__func__, true)));
-    roundTrip("boxed_int", objVal(newObj<ObjPrimitive>(__func__, int32_t(-7))));
-    roundTrip("boxed_real", objVal(newObj<ObjPrimitive>(__func__, 1.25)));
+    Value boxedBool { Value::boolVal(true) };
+    boxedBool.box();
+    roundTrip("boxed_bool", boxedBool);
+    Value boxedInt { Value::intVal(-7) };
+    boxedInt.box();
+    roundTrip("boxed_int", boxedInt);
+    Value boxedReal { Value::realVal(1.25) };
+    boxedReal.box();
+    roundTrip("boxed_real", boxedReal);
 
     // simple chunk round trip
     {
@@ -2222,7 +2241,8 @@ void roxal::writeValue(std::ostream& out, const Value& v, roxal::ptr<Serializati
 
     uint8_t type = static_cast<uint8_t>(v.type());
     out.write(reinterpret_cast<char*>(&type), 1);
-
+// if (v.type() == ValueType::Actor) std::cout << "writing actor" << std::endl;//!!!!
+// assert(type != static_cast<uint8_t>(ValueType::Actor));//!!!!
     switch(v.type()) {
         case ValueType::Nil:
             break;
@@ -2283,7 +2303,8 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
     if(!in.read(reinterpret_cast<char*>(&typeByte),1))
         throw std::runtime_error("readValue: unable to read type");
     ValueType t = static_cast<ValueType>(typeByte);
-
+// if (t == ValueType::Actor) std::cout << "reading actor" << std::endl;//!!!
+// assert(t != ValueType::Actor);//!!!
     auto readObjWithRef = [&](auto objMaker){
         uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
         uint64_t id;  in.read(reinterpret_cast<char*>(&id),8);
@@ -2300,8 +2321,9 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
     };
 
     if (t == ValueType::Boxed) {
-        auto make = [&](){ return static_cast<Obj*>(newObj<ObjPrimitive>(__func__, false)); };
-        return readObjWithRef(make);
+        Value boxedVal { Value::boolVal(false) };
+        boxedVal.box(); // now a reference to ObjPrimitive
+        return readObjWithRef([=]{ return static_cast<Obj*>(asObjPrimitive(boxedVal)); });
     }
 
     switch(t) {
@@ -2331,35 +2353,41 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             if (tv == ValueType::Object || tv == ValueType::Actor || tv == ValueType::Enum || tv == ValueType::Module) {
                 in.putback(static_cast<char>(subType));
                 if (tv == ValueType::Object || tv == ValueType::Actor || tv == ValueType::Enum) {
-                    auto obj = newObj<ObjObjectType>(__func__, icu::UnicodeString(), false, false, false);
-                    obj->read(in, ctx);
-                    return objVal(obj);
+                    Value obj { Value::objectTypeVal(icu::UnicodeString(), false, false, false) };
+                    asObjectType(obj)->read(in, ctx);
+                    return obj;
                 } else { // Module
-                    auto obj = newObj<ObjModuleType>(__func__, icu::UnicodeString());
-                    obj->read(in, ctx);
-                    return objVal(obj);
+                    Value module { objVal(::moduleTypeVal(icu::UnicodeString())) };
+                    asModuleType(module)->read(in, ctx);
+                    return module;
                 }
             }
             return Value::typeVal(tv);
         }
         case ValueType::String: {
-            auto make = [&](){ return static_cast<Obj*>(newObj<ObjString>(__func__)); };
-            return readObjWithRef(make); }
+            Value strVal { Value::stringVal(icu::UnicodeString()) };
+            return readObjWithRef([=](){ return static_cast<Obj*>(asStringObj(strVal)); });
+        }
         case ValueType::Range: {
-            auto make = [&](){ return static_cast<Obj*>(newObj<ObjRange>(__func__)); };
-            return readObjWithRef(make); }
+            Value rangeVal { Value::rangeVal(Value::intVal(0), Value::intVal(0), Value::intVal(1), false) };
+            return readObjWithRef([=](){ return static_cast<Obj*>(asRange(rangeVal)); });
+        }
         case ValueType::List: {
-            auto make = [&](){ return static_cast<Obj*>(newObj<ObjList>(__func__)); };
-            return readObjWithRef(make); }
+            Value listVal { Value::listVal() };
+            return readObjWithRef([=](){ return static_cast<Obj*>(asList(listVal)); });
+        }
         case ValueType::Dict: {
-            auto make = [&](){ return static_cast<Obj*>(newObj<ObjDict>(__func__)); };
-            return readObjWithRef(make); }
+            Value dictVal { Value::dictVal() };
+            return readObjWithRef([=](){ return static_cast<Obj*>(asDict(dictVal)); });
+        }
         case ValueType::Vector: {
-            auto make = [&](){ return static_cast<Obj*>(newObj<ObjVector>(__func__)); };
-            return readObjWithRef(make); }
+            Value vecVal { Value::vectorVal() };
+            return readObjWithRef([=](){ return static_cast<Obj*>(asVector(vecVal)); });
+        }
         case ValueType::Matrix: {
-            auto make = [&](){ return static_cast<Obj*>(newObj<ObjMatrix>(__func__)); };
-            return readObjWithRef(make); }
+            Value matVal { Value::matrixVal() };
+            return readObjWithRef([=](){ return static_cast<Obj*>(asMatrix(matVal)); });
+        }
         case ValueType::Object: {
             uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
             uint64_t id;  in.read(reinterpret_cast<char*>(&id),8);
@@ -2370,6 +2398,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             }
             Value typeVal = readValue(in, ctx);
             ObjObjectType* t = asObjectType(typeVal);
+            debug_assert_msg(t->type() == ValueType::Object, "Expected object type for deserialization");
             ObjectInstance* obj = objectInstanceVal(t);
             if(useCtx) ctx->idToObj[id] = obj;
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
@@ -2378,7 +2407,8 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                 int32_t h; in.read(reinterpret_cast<char*>(&h),4);
                 obj->properties[h] = readValue(in, ctx);
             }
-            return objVal(obj); }
+            return objVal(obj);
+        }
         case ValueType::Actor: {
             uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
             uint64_t id;  in.read(reinterpret_cast<char*>(&id),8);
@@ -2389,6 +2419,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             }
             Value typeVal = readValue(in, ctx);
             ObjObjectType* t = asObjectType(typeVal);
+            debug_assert_msg(t->type() == ValueType::Actor, "Expected actor type for deserialization");
             ActorInstance* obj = actorInstanceVal(t);
             if(useCtx) ctx->idToObj[id] = obj;
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
@@ -2406,16 +2437,21 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             VM::instance().registerThread(newThread);
             obj->thread = newThread;
             newThread->act(objValue);
-            return objValue; }
+            return objValue;
+        }
         case ValueType::Function: {
-            auto make = [&](){ return static_cast<Obj*>(newObj<ObjFunction>(__func__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString())); };
-            return readObjWithRef(make); }
+            Value func { Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString()) };
+            return readObjWithRef([=](){ return static_cast<Obj*>(asFunction(func)); });
+        }
         case ValueType::Closure: {
-            auto make = [&](){ return static_cast<Obj*>(newObj<ObjClosure>(__func__, nullptr)); };
-            return readObjWithRef(make); }
+            Value func { Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString()) };
+            Value closure { Value::closureVal(func) };
+            return readObjWithRef([=](){ return static_cast<Obj*>(asClosure(closure)); });
+        }
         case ValueType::Upvalue: {
-            auto make = [&](){ return static_cast<Obj*>(newObj<ObjUpvalue>(__func__, nullptr)); };
-            return readObjWithRef(make); }
+            Value upvalue { Value::upvalueVal(nullptr) };
+            return readObjWithRef([=](){ return static_cast<Obj*>(asUpvalue(upvalue)); });
+        }
         default:
             throw std::runtime_error("readValue: unsupported type " + std::to_string(static_cast<int>(t)));
     }

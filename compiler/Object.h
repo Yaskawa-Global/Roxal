@@ -126,13 +126,15 @@ struct Obj {
     static atomic_vector<Obj*> unrefedObjs;
 
     #ifdef DEBUG_TRACE_MEMORY
-    static atomic_map<Obj*, const char*> allocatedObjs;
+    static atomic_map<Obj*, std::string> allocatedObjs;
     #endif
 };
 
 
+// For debug builds, we include the function name, file & line number
+#ifdef DEBUG_BUILD
 template<typename T, typename... Args>
-inline T* newObj(const char* comment, Args&&... args) {
+inline T* newObj(const std::string& name, const std::string& filename, int lineNumber, Args&&... args) {
     // allocate one contiguous block for control and object
     char* mem = new char[sizeof(ObjControl) + sizeof(T)];
     ObjControl* ctrl = new (mem) ObjControl();
@@ -146,11 +148,33 @@ inline T* newObj(const char* comment, Args&&... args) {
     #ifdef DEBUG_TRACE_MEMORY
     if (Obj::allocatedObjs.containsKey(o))
         throw std::runtime_error("new Obj* yielded address already allocated: " + toString(o));
-    Obj::allocatedObjs.store(o, comment);
+    Obj::allocatedObjs.store(o, name + " @ " + filename + ":" + std::to_string(lineNumber));
     #endif
 
     return o;
 }
+#else
+template<typename T, typename... Args>
+inline T* newObj(Args&&... args) {
+    // allocate one contiguous block for control and object
+    char* mem = new char[sizeof(ObjControl) + sizeof(T)];
+    ObjControl* ctrl = new (mem) ObjControl();
+    T* o = new (mem + sizeof(ObjControl)) T(std::forward<Args>(args)...);
+
+    ctrl->strong = 0;
+    ctrl->weak   = 1;   // implicit weak ref representing strong refs
+    ctrl->obj    = o;
+    o->control   = ctrl;
+
+    #ifdef DEBUG_TRACE_MEMORY
+    if (Obj::allocatedObjs.containsKey(o))
+        throw std::runtime_error("new Obj* yielded address already allocated: " + toString(o));
+    Obj::allocatedObjs.store(o, "");
+    #endif
+
+    return o;
+}
+#endif
 
 template<typename T>
 inline void delObj(T* o) {
@@ -253,18 +277,27 @@ inline bool isObjPrimitive(const Value& v)
 inline ObjPrimitive* asObjPrimitive(const Value& v) { return static_cast<ObjPrimitive*>(v.asObj()); }
 
 inline ObjPrimitive* cloneObjPrimitive(const ObjPrimitive* op) {
-    if (op->type == ObjType::Bool)
-        return newObj<ObjPrimitive>(__func__,op->as.boolean);
-    else if (op->type == ObjType::Int)
-        return newObj<ObjPrimitive>(__func__,op->as.integer);
-    else if (op->type == ObjType::Real)
-        return newObj<ObjPrimitive>(__func__,op->as.real);
-    else if (op->type == ObjType::Type)
-        return newObj<ObjPrimitive>(__func__,op->as.btype);
     #ifdef DEBUG_BUILD
+    if (op->type == ObjType::Bool)
+        return newObj<ObjPrimitive>(__func__,__FILE__,__LINE__,op->as.boolean);
+    else if (op->type == ObjType::Int)
+        return newObj<ObjPrimitive>(__func__,__FILE__,__LINE__,op->as.integer);
+    else if (op->type == ObjType::Real)
+        return newObj<ObjPrimitive>(__func__,__FILE__,__LINE__,op->as.real);
+    else if (op->type == ObjType::Type)
+        return newObj<ObjPrimitive>(__func__,__FILE__,__LINE__,op->as.btype);
     throw std::runtime_error("Unsupported ObjPrimitive Type "+std::to_string(int(op->type)));
+    #else
+    if (op->type == ObjType::Bool)
+        return newObj<ObjPrimitive>(op->as.boolean);
+    else if (op->type == ObjType::Int)
+        return newObj<ObjPrimitive>(op->as.integer);
+    else if (op->type == ObjType::Real)
+        return newObj<ObjPrimitive>(op->as.real);
+    else if (op->type == ObjType::Type)
+        return newObj<ObjPrimitive>(op->as.btype);
+    return newObj<ObjPrimitive>(false);
     #endif
-    return newObj<ObjPrimitive>(__func__,false);
 }
 
 
@@ -739,16 +772,15 @@ struct ObjFunction : public Obj
 
     Value moduleType; // ObjModuleType
 
+    void clear(); // reset to blank without other reference values
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
 
 inline bool isFunction(const Value& v) { return isObjType(v, ObjType::Function); }
 inline ObjFunction* asFunction(const Value& v) {
-    #ifdef DEBUG_BUILD
-    if (!isFunction(v))
-        throw std::runtime_error("Value is not an ObjFunction");
-    #endif
+    debug_assert_msg(isFunction(v), "Value is an ObjFunction");
     return static_cast<ObjFunction*>(v.asObj());
 }
 
@@ -756,7 +788,11 @@ inline ObjFunction* asFunction(const Value& v) {
 inline ObjFunction* newFunctionObj(const icu::UnicodeString& packageName,
                                    const icu::UnicodeString& moduleName,
                                    const icu::UnicodeString& sourceName) {
-    return newObj<ObjFunction>(__func__, packageName, moduleName, sourceName);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjFunction>(toUTF8StdString(sourceName), __FILE__, __LINE__, packageName, moduleName, sourceName);
+    #else
+    return newObj<ObjFunction>(packageName, moduleName, sourceName);
+    #endif
 }
 
 std::string objFunctionToString(const ObjFunction* of);
@@ -784,11 +820,19 @@ inline bool isUpvalue(const Value& v) { return isObjType(v, ObjType::Upvalue); }
 inline ObjUpvalue* asUpvalue(const Value& v) { return static_cast<ObjUpvalue*>(v.asObj()); }
 
 inline ObjUpvalue* upvalueVal(Value* v) {
-    return newObj<ObjUpvalue>(__func__,v);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjUpvalue>(__func__,__FILE__,__LINE__,v);
+    #else
+    return newObj<ObjUpvalue>(v);
+    #endif
 }
 
 inline ObjUpvalue* cloneUpvalue(const ObjUpvalue* u) {
-    ObjUpvalue* newup = newObj<ObjUpvalue>(__func__,u->location);
+    #ifdef DEBUG_BUILD
+    ObjUpvalue* newup = newObj<ObjUpvalue>(__func__,__FILE__, __LINE__,u->location);
+    #else
+    ObjUpvalue* newup = newObj<ObjUpvalue>(u->location);
+    #endif
     // clone value (this Upvalue is now closed)
     newup->closed = newup->location->clone();
     newup->location = &newup->closed;
@@ -835,11 +879,19 @@ inline ObjClosure* asClosure(const Value& v) {
 
 inline ObjClosure* newClosureObj(Value function) { // ObjFunction
     debug_assert_msg(isFunction(function), "Value is an ObjFunction");
-    return newObj<ObjClosure>(__func__,asFunction(function));
+    #ifdef DEBUG_BUILD
+    return newObj<ObjClosure>(toUTF8StdString(asFunction(function)->name),__FILE__,__LINE__,asFunction(function));
+    #else
+    return newObj<ObjClosure>(asFunction(function));
+    #endif
 }
 
 inline ObjClosure* cloneClosure(const ObjClosure* c) {
-    ObjClosure* newc = newObj<ObjClosure>(__func__,c->function);
+    #ifdef DEBUG_BUILD
+    ObjClosure* newc = newObj<ObjClosure>(__func__,__FILE__,__LINE__,c->function);
+    #else
+    ObjClosure* newc = newObj<ObjClosure>(c->function);
+    #endif
     newc->upvalues.resize(c->upvalues.size());
     for(auto i=0; i<c->upvalues.size();i++)
         newc->upvalues[i] = cloneUpvalue(c->upvalues.at(i));
@@ -875,15 +927,16 @@ struct ObjFuture : public Obj
 
 inline bool isFuture(const Value& v) { return isObjType(v, ObjType::Future); }
 inline ObjFuture* asFuture(const Value& v) {
-    #ifdef DEBUG_BUILD
-    if (!isFuture(v))
-        throw std::runtime_error("Value is not an ObjFuture");
-    #endif
+    debug_assert_msg(isFuture(v), "Value is an ObjFuture");
     return static_cast<ObjFuture*>(v.asObj());
 }
 
 inline ObjFuture* futureVal(const std::shared_future<Value>& fv) {
-    return newObj<ObjFuture>(__func__, fv);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjFuture>(__func__, __FILE__,__LINE__,fv);
+    #else
+    return newObj<ObjFuture>(fv);
+    #endif
 }
 
 
@@ -1144,11 +1197,20 @@ inline bool isBoundMethod(const Value& v) { return isObjType(v, ObjType::BoundMe
 inline ObjBoundMethod* asBoundMethod(const Value& v) { return static_cast<ObjBoundMethod*>(v.asObj()); }
 
 inline ObjBoundMethod* boundMethodVal(const Value& instance, ObjClosure* closure) {
-    return newObj<ObjBoundMethod>(__func__,instance, closure);
+    #ifdef DEBUG_BUILD
+    return newObj<ObjBoundMethod>(__func__, __FILE__, __LINE__, instance, closure);
+    #else
+    return newObj<ObjBoundMethod>(instance, closure);
+    #endif
 }
 
 inline ObjBoundMethod* cloneBoundMethod(const ObjBoundMethod* bm) {
-    auto newmb = newObj<ObjBoundMethod>(__func__,bm->receiver, bm->method);
+    #ifdef DEBUG_BUILD
+    auto newmb = newObj<ObjBoundMethod>(toUTF8StdString(bm->method->function->name),__FILE__,__LINE__,bm->receiver, bm->method);
+    #else
+    auto newmb = newObj<ObjBoundMethod>(bm->receiver, bm->method);
+    #endif
+
     newmb->receiver = newmb->receiver.clone();
     return newmb;
 }
@@ -1179,9 +1241,20 @@ inline bool isBoundNative(const Value& v) { return isObjType(v, ObjType::BoundNa
 inline ObjBoundNative* asBoundNative(const Value& v) { return static_cast<ObjBoundNative*>(v.asObj()); }
 inline ObjBoundNative* boundNativeVal(const Value& instance, NativeFn fn, bool isProc = false,
                                       ptr<roxal::type::Type> funcType=nullptr,
-                                      std::vector<Value> defaults = {}) { return newObj<ObjBoundNative>(__func__, instance, fn, isProc, funcType, std::move(defaults)); }
+                                      std::vector<Value> defaults = {}) {
+    #ifdef DEBUG_BUILD
+    return newObj<ObjBoundNative>(__func__, __FILE__, __LINE__, instance, fn, isProc, funcType, std::move(defaults));
+    #else
+    return newObj<ObjBoundNative>(instance, fn, isProc, funcType, std::move(defaults));
+    #endif
+}
+
 inline ObjBoundNative* cloneBoundNative(const ObjBoundNative* bm) {
-    auto newbm = newObj<ObjBoundNative>(__func__, bm->receiver, bm->function, bm->isProc, bm->funcType, bm->defaultValues);
+    #ifdef DEBUG_BUILD
+    auto newbm = newObj<ObjBoundNative>(__func__, __FILE__, __LINE__, bm->receiver, bm->function, bm->isProc, bm->funcType, bm->defaultValues);
+    #else
+    auto newbm = newObj<ObjBoundNative>(bm->receiver, bm->function, bm->isProc, bm->funcType, bm->defaultValues);
+    #endif
     newbm->receiver = newbm->receiver.clone();
     return newbm;
 }
