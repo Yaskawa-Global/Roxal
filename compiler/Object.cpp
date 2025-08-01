@@ -1505,6 +1505,8 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     }
 
     moduleType = readValue(in, ctx);
+    if(!moduleType.isNil())
+        moduleType = moduleType.weakRef();
 }
 void ObjUpvalue::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {

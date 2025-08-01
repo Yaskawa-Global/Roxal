@@ -404,6 +404,8 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
     if (function.isNil())
         return InterpretResult::CompileError;
 
+    // Hold a strong reference to the module type while the module executes
+    Value moduleTypeStrong { asFunction(function)->moduleType.strongRef() };
     Value closureValue { Value::closureVal(function) };
 
     auto firstThread = std::make_shared<Thread>();
@@ -430,6 +432,7 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
     }
     #endif
 
+    moduleTypeStrong = Value::nilVal();
     freeObjects();
 
     return result;
@@ -461,6 +464,8 @@ InterpretResult VM::interpretLine(std::istream& linestream)
     if (replModule == nullptr)
         replModule = asModuleType(asFunction(function)->moduleType);
 
+    Value moduleTypeStrong { asFunction(function)->moduleType.strongRef() };
+
     lineMode = true;
     lineStream = &linestream;
     compiler.setReplMode(false);
@@ -486,7 +491,7 @@ InterpretResult VM::interpretLine(std::istream& linestream)
             std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second) << std::endl;
     }
     #endif
-
+    moduleTypeStrong = Value::nilVal();
     return result;
 }
 

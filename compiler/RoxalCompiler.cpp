@@ -297,7 +297,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
                 function = compile(sourcestream, toUTF8StdString(module.name));
                 replModeFlag = prevRepl;
 
-                importedModuleType = asFunction(function)->moduleType;
+                importedModuleType = asFunction(function)->moduleType.strongRef();
 
                 // emit code to place module's main chunk on stack as closure
                 assert(asFunction(function)->upvalueCount == 0);
@@ -2226,7 +2226,7 @@ void RoxalCompiler::enterFuncScope(Value moduleType, const icu::UnicodeString& f
                                                     modScope->sourceName,
                                                     funcName,funcType,type)};
 
-    asFunction(funcScope->function)->moduleType = moduleType;
+    asFunction(funcScope->function)->moduleType = moduleType.weakRef();
 
     lexicalScopes.push_back(funcScope);
 
