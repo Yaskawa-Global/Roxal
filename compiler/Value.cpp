@@ -183,11 +183,12 @@ Value Value::exceptionVal(Value message, Value exType, Value stackTrace)
     return objVal(newExceptionObj(message, exType, stackTrace));
 }
 
-Value Value::functionVal(const icu::UnicodeString& packageName,
+Value Value::functionVal(const icu::UnicodeString& name,
+                         const icu::UnicodeString& packageName,
                          const icu::UnicodeString& moduleName,
                          const icu::UnicodeString& sourceName)
 {
-    return objVal(newFunctionObj(packageName, moduleName, sourceName));
+    return objVal(newFunctionObj(name, packageName, moduleName, sourceName));
 }
 
 Value Value::upvalueVal(Value* v)
@@ -1048,8 +1049,7 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
     // function round trip
     {
         try {
-            Value fn { Value::functionVal(toUnicodeString("pkg"), toUnicodeString("mod"), toUnicodeString("src"))};
-            asFunction(fn)->name = toUnicodeString("fn");
+            Value fn { Value::functionVal(toUnicodeString("fn"), toUnicodeString("pkg"), toUnicodeString("mod"), toUnicodeString("src"))};
             asFunction(fn)->arity = 0;
             asFunction(fn)->upvalueCount = 0;
             asFunction(fn)->strict=false;
@@ -1059,7 +1059,7 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
             std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
             asFunction(fn)->write(ss);
             ss.seekg(0);
-            Value fn2 { Value::functionVal(toUnicodeString(""), toUnicodeString(""), toUnicodeString(""))};
+            Value fn2 { Value::functionVal(toUnicodeString(""), toUnicodeString(""), toUnicodeString(""), toUnicodeString(""))};
             asFunction(fn2)->read(ss);
             bool pass =    asFunction(fn)->name == asFunction(fn2)->name
                         && asFunction(fn)->arity== asFunction(fn2)->arity
@@ -1074,9 +1074,8 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
     // closure round trip
     {
         try {
-            Value fn { Value::functionVal(toUnicodeString("pkg"), toUnicodeString("mod"), toUnicodeString("src")) };
+            Value fn { Value::functionVal(toUnicodeString("cl"), toUnicodeString("pkg"), toUnicodeString("mod"), toUnicodeString("src")) };
             ObjFunction* fnObj = asFunction(fn);
-            fnObj->name = toUnicodeString("cl");
             fnObj->arity = 0; fnObj->upvalueCount = 1;
             fnObj->chunk->write(OpCode::ConstNil,0,0);
             fnObj->chunk->write(OpCode::Return,0,0);
@@ -2440,11 +2439,11 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             return objValue;
         }
         case ValueType::Function: {
-            Value func { Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString()) };
+            Value func { Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString()) };
             return readObjWithRef([=](){ return static_cast<Obj*>(asFunction(func)); });
         }
         case ValueType::Closure: {
-            Value func { Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString()) };
+            Value func { Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString()) };
             Value closure { Value::closureVal(func) };
             return readObjWithRef([=](){ return static_cast<Obj*>(asClosure(closure)); });
         }

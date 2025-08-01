@@ -1499,7 +1499,7 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     paramDefaultFunc.clear();
     for(uint32_t i=0;i<defCount;i++) {
         int32_t key; in.read(reinterpret_cast<char*>(&key),4);
-        Value func = Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+        Value func = Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
         asFunction(func)->read(in, ctx);
         paramDefaultFunc[key] = func;
     }
@@ -1557,9 +1557,9 @@ void ObjClosure::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     type = ObjType::Closure;
 
     #ifdef DEBUG_BUILD
-    auto fn = newObj<ObjFunction>(__func__, __FILE__, __LINE__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+    auto fn = newObj<ObjFunction>(__func__, __FILE__, __LINE__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
     #else
-    auto fn = newObj<ObjFunction>(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+    auto fn = newObj<ObjFunction>(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
     #endif
     // Use the same serialization context so that references from the function
     // back to this closure's owning structures are properly resolved.
@@ -2521,9 +2521,11 @@ std::string roxal::toString(FunctionType ft)
 
 
 
-ObjFunction::ObjFunction(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName,
+ObjFunction::ObjFunction(const icu::UnicodeString& name,
+                         const icu::UnicodeString& packageName,
+                         const icu::UnicodeString& moduleName,
                          const icu::UnicodeString& sourceName)
-    : arity(0), upvalueCount(0), name(), strict(false), ownerType(Value::nilVal())
+    : arity(0), upvalueCount(0), name(name), strict(false), ownerType(Value::nilVal())
 {
     type = ObjType::Function;
     chunk = std::make_shared<Chunk>(packageName, moduleName, sourceName);

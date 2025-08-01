@@ -207,9 +207,8 @@ protected:
             : LexicalScope(ScopeType::Func, funcName), scopeDepth(0), functionType(funcType), type(t)
         {
             strict = true;
-            function = Value::functionVal(packageName, moduleName, sourceName);
+            function = Value::functionVal(funcName, packageName, moduleName, sourceName);
             ObjFunction* funcObj = asFunction(this->function);
-            funcObj->name = funcName;
             funcObj->funcType = type; // store type for runtime
             funcObj->strict = strict;
             funcObj->fnType = funcType;

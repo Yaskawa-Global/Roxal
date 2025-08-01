@@ -271,9 +271,9 @@ VM::VM()
 
     // Create builtin __conditional_interrupt closure
     {
-        Value fn { Value::functionVal(toUnicodeString("sys"), toUnicodeString("__internal"), toUnicodeString("internal")) };
+        Value fn { Value::functionVal(toUnicodeString("__conditional_interrupt"),
+                                      toUnicodeString("sys"), toUnicodeString("__internal"), toUnicodeString("internal")) };
         ObjFunction* fnObj = asFunction(fn);
-        fnObj->name = toUnicodeString("__conditional_interrupt");
         fnObj->arity = 0;
         fnObj->upvalueCount = 0;
 

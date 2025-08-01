@@ -744,7 +744,9 @@ struct ArgsView; // forward for native functions
 
 struct ObjFunction : public Obj
 {
-    ObjFunction(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName,
+    ObjFunction(const icu::UnicodeString& name,
+                const icu::UnicodeString& packageName,
+                const icu::UnicodeString& moduleName,
                 const icu::UnicodeString& sourceName);
     virtual ~ObjFunction();
 
@@ -785,13 +787,14 @@ inline ObjFunction* asFunction(const Value& v) {
 }
 
 
-inline ObjFunction* newFunctionObj(const icu::UnicodeString& packageName,
+inline ObjFunction* newFunctionObj(const icu::UnicodeString& name,
+                                   const icu::UnicodeString& packageName,
                                    const icu::UnicodeString& moduleName,
                                    const icu::UnicodeString& sourceName) {
     #ifdef DEBUG_BUILD
-    return newObj<ObjFunction>(toUTF8StdString(sourceName), __FILE__, __LINE__, packageName, moduleName, sourceName);
+    return newObj<ObjFunction>(toUTF8StdString(name), __FILE__, __LINE__, name, packageName, moduleName, sourceName);
     #else
-    return newObj<ObjFunction>(packageName, moduleName, sourceName);
+    return newObj<ObjFunction>(name, packageName, moduleName, sourceName);
     #endif
 }
 

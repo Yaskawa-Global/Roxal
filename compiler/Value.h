@@ -202,7 +202,8 @@ public:
 
     static Value exceptionVal(Value message = Value::nilVal(), Value exType = Value::nilVal(), Value stackTrace = Value::nilVal()); // ObjException
 
-    static Value functionVal(const icu::UnicodeString& packageName,
+    static Value functionVal(const icu::UnicodeString& name,
+                             const icu::UnicodeString& packageName,
                              const icu::UnicodeString& moduleName,
                              const icu::UnicodeString& sourceName); // ObjFunction
 
