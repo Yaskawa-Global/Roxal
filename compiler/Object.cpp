@@ -216,7 +216,13 @@ ValueType Obj::valueType() const
         case ObjType::Closure: return ValueType::Closure;
         case ObjType::Upvalue: return ValueType::Upvalue;
         case ObjType::Exception: return ValueType::Object;
-        case ObjType::Instance: return static_cast<const ObjObjectType*>(this)->isActor ? ValueType::Actor : ValueType::Object;
+        case ObjType::Instance: {
+            debug_assert_msg(dynamic_cast<const ObjectInstance*>(this) != nullptr || dynamic_cast<const ActorInstance*>(this) != nullptr,
+                             "Obj::valueType() Instance called on non-instance object");
+            auto actorInst = dynamic_cast<const ActorInstance*>(this);
+            if (actorInst) return ValueType::Actor;
+            return ValueType::Object;
+        }
         case ObjType::Actor: return ValueType::Actor;
         default: return ValueType::Nil;
     }
