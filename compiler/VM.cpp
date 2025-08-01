@@ -1796,7 +1796,7 @@ std::pair<InterpretResult,Value> VM::execute()
     auto readString = [&]() -> ObjString* {
         #ifdef DEBUG_BUILD
         auto constant { readConstant() };
-        debug_assert_msg(constant.isString(), "Chunk instruction read string expected a string constant, got "+constant.typeName());
+        debug_assert_msg(isString(constant), (std::string("Chunk instruction read string expected a string constant, got ")+constant.typeName()).c_str());
         return asStringObj(constant);
         #else
           return asStringObj(readConstant());

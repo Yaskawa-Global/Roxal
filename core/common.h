@@ -140,7 +140,7 @@ inline void assert_msg_impl(bool        expr,
 
 
 // DEBUG_BUILD-only assertions
-#ifndef DEBUG_BUILD
+#ifdef DEBUG_BUILD
   #define debug_assert_msg(expr, msg) \
     roxal::assert_msg_impl((expr), #expr, (msg), __FILE__, __LINE__, __func__)
 #else

@@ -2398,7 +2398,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             }
             Value typeVal = readValue(in, ctx);
             ObjObjectType* t = asObjectType(typeVal);
-            debug_assert_msg(t->type() == ValueType::Object, "Expected object type for deserialization");
+            debug_assert_msg(!t->isActor, "Expected object type for deserialization");
             ObjectInstance* obj = objectInstanceVal(t);
             if(useCtx) ctx->idToObj[id] = obj;
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
@@ -2419,7 +2419,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             }
             Value typeVal = readValue(in, ctx);
             ObjObjectType* t = asObjectType(typeVal);
-            debug_assert_msg(t->type() == ValueType::Actor, "Expected actor type for deserialization");
+            debug_assert_msg(t->isActor, "Expected actor type for deserialization");
             ActorInstance* obj = actorInstanceVal(t);
             if(useCtx) ctx->idToObj[id] = obj;
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
