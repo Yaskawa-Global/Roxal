@@ -9,7 +9,11 @@ namespace roxal {
 class ModuleSys : public BuiltinModule {
 public:
     ModuleSys();
-    virtual ~ModuleSys() { moduleTypeValue = Value::nilVal(); }
+    virtual ~ModuleSys() {
+        if (!moduleTypeValue.isNil())
+            moduleType()->vars.clear();
+        moduleTypeValue = Value::nilVal();
+    }
 
     // Register builtin sys functions and natives
     void registerBuiltins(VM& vm) override;
