@@ -189,7 +189,7 @@ ptr<ast::Annotation> readAnnotation(std::istream& in){
 atomic_map<Obj*, std::string> Obj::allocatedObjs {};
 #endif
 
-atomic_vector<ObjModuleType*> ObjModuleType::allModules {};
+atomic_vector<Value> ObjModuleType::allModules {};
 
 
 ValueType Obj::valueType() const
@@ -1505,6 +1505,8 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     }
 
     moduleType = readValue(in, ctx);
+    if(!moduleType.isNil())
+        moduleType = moduleType.weakRef();
 }
 void ObjUpvalue::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
@@ -1564,6 +1566,8 @@ void ObjClosure::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     // Use the same serialization context so that references from the function
     // back to this closure's owning structures are properly resolved.
     fn->read(in, ctx);
+    if(function)
+        function->decRef();
     function = fn;
     function->incRef();
 
@@ -1812,7 +1816,7 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     if(len>0) in.read(ns.data(), len);
     name = icu::UnicodeString::fromUTF8(ns);
 
-    allModules.push_back(this);
+    allModules.push_back(Value(this));
 }
 void ObjectInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
@@ -2616,22 +2620,20 @@ ObjModuleType::ObjModuleType(const icu::UnicodeString& typeName)
     : name(typeName)
 {
     typeValue = ValueType::Module;
-    allModules.push_back(this);
 }
 
 ObjModuleType* roxal::moduleTypeVal(const icu::UnicodeString& typeName)
 {
     #ifdef DEBUG_BUILD
-    return newObj<ObjModuleType>(std::string(__func__)+" "+toUTF8StdString(typeName), __FILE__, __LINE__, typeName);
+    auto mt = newObj<ObjModuleType>(std::string(__func__)+" "+toUTF8StdString(typeName), __FILE__, __LINE__, typeName);
     #else
-    return newObj<ObjModuleType>(typeName);
+    auto mt = newObj<ObjModuleType>(typeName);
     #endif
+    ObjModuleType::allModules.push_back(Value(mt));
+    return mt;
 }
 
-ObjModuleType::~ObjModuleType()
-{
-    allModules.erase(this);
-}
+ObjModuleType::~ObjModuleType() {}
 
 
 

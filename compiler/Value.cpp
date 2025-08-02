@@ -1088,6 +1088,8 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
             ss.seekg(0);
             Value cl2 { Value::closureVal(fn) };
             ObjClosure* clObj2 = asClosure(cl2);
+            if(clObj2->function)
+                clObj2->function->decRef();
             clObj2->function = nullptr;
             clObj2->read(ss);
             bool pass = clObj2->function->name == clObj->function->name && clObj2->upvalues.size()==clObj->upvalues.size() && clObj2->upvalues[0]->closed.equals(Value::intVal(3), true);

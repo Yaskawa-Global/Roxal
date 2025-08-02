@@ -2176,7 +2176,7 @@ void RoxalCompiler::exitModuleScope()
     assert(!modScope->moduleType.isNil() && modScope->moduleType.isObj());
     assert(!modScope->function.isNil());
     #endif
-    asFunction(modScope->function)->moduleType = modScope->moduleType;
+    asFunction(modScope->function)->moduleType = modScope->moduleType.weakRef();
 
     lexicalScopes.pop_back();
 
@@ -2226,7 +2226,7 @@ void RoxalCompiler::enterFuncScope(Value moduleType, const icu::UnicodeString& f
                                                     modScope->sourceName,
                                                     funcName,funcType,type)};
 
-    asFunction(funcScope->function)->moduleType = moduleType;
+    asFunction(funcScope->function)->moduleType = moduleType.weakRef();
 
     lexicalScopes.push_back(funcScope);
 
