@@ -9,6 +9,7 @@ using namespace roxal;
 ModuleMath::ModuleMath()
 {
     moduleTypeValue = objVal(moduleTypeVal(toUnicodeString("math")));
+    ObjModuleType::allModules.push_back(moduleTypeValue);
 }
 
 void ModuleMath::registerBuiltins(VM& vm)

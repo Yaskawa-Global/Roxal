@@ -272,8 +272,10 @@ protected:
             // create a new ObjModuleType in which module vars are held
             if (existing)
                 moduleType = Value(existing);
-            else
+            else {
                 moduleType = Value(moduleTypeVal(moduleName_));
+                ObjModuleType::allModules.push_back(moduleType);
+            }
 
             // since this scope only persists during compilation, store the moduleType
             //  in the function for runtime access

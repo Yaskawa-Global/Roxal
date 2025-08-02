@@ -16,7 +16,7 @@ using namespace roxal;
 ModuleSys::ModuleSys()
 {
     moduleTypeValue = objVal(moduleTypeVal(toUnicodeString("sys")));
-    //ObjModuleType::allModules.push_back(moduleTypeValue);
+    ObjModuleType::allModules.push_back(moduleTypeValue);
 }
 
 
