@@ -173,7 +173,7 @@ Value ModuleSys::help_builtin(VM& vm, ArgsView args)
     } else if (isFunction(target)) {
         fn = asFunction(target);
     } else if (isBoundMethod(target)) {
-        fn = asBoundMethod(target)->method->function;
+        fn = asClosure(asBoundMethod(target)->method)->function;
     } else if (isBoundNative(target)) {
         fnType = asBoundNative(target)->funcType;
     } else if (isNative(target)) {
