@@ -11,6 +11,7 @@ using namespace roxal;
 ModuleFileIO::ModuleFileIO()
 {
     moduleTypeValue = objVal(moduleTypeVal(toUnicodeString("fileio")));
+    ObjModuleType::allModules.push_back(moduleTypeValue);
 }
 
 void ModuleFileIO::registerBuiltins(VM& vm)

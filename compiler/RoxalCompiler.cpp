@@ -347,6 +347,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         auto pkgEntry = importedModules.find(pkgInfo);
         if (pkgEntry == importedModules.end()) {
             pkgModuleVal = objVal(moduleTypeVal(pkgName));
+            ObjModuleType::allModules.push_back(pkgModuleVal);
             importedModules[pkgInfo] = pkgModuleVal;
         } else {
             pkgModuleVal = pkgEntry->second;

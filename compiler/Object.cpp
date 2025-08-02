@@ -2629,7 +2629,6 @@ ObjModuleType* roxal::moduleTypeVal(const icu::UnicodeString& typeName)
     #else
     auto mt = newObj<ObjModuleType>(typeName);
     #endif
-    ObjModuleType::allModules.push_back(Value(mt));
     return mt;
 }
 
