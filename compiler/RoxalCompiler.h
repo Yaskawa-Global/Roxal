@@ -277,7 +277,7 @@ protected:
 
             // since this scope only persists during compilation, store the moduleType
             //  in the function for runtime access
-            asFunction(function)->moduleType = moduleType;
+            asFunction(function)->moduleType = moduleType.weakRef();
         }
         virtual ~ModuleScope() {}
 

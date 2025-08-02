@@ -1090,7 +1090,7 @@ struct ObjModuleType : public ObjTypeSpec
     // property ctype annotations: type name hash -> (prop name hash -> ctype)
     std::unordered_map<int32_t, std::unordered_map<int32_t, icu::UnicodeString>> propertyCTypes;
 
-    static atomic_vector<ObjModuleType*> allModules;
+    static atomic_vector<Value> allModules;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;

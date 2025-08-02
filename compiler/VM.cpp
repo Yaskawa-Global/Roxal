@@ -301,9 +301,10 @@ VM::VM()
 
 VM::~VM()
 {
-    for(auto moduleType : ObjModuleType::allModules.get()) {
-        moduleType->vars.clear();
+    for(auto moduleTypeVal : ObjModuleType::allModules.get()) {
+        asModuleType(moduleTypeVal)->vars.clear();
     }
+    ObjModuleType::allModules.clear();
 
     // Clean up dataflow engine resources before globals cleanup
     // First stop the dataflow engine and its actor thread properly
