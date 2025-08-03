@@ -2816,7 +2816,7 @@ ActorInstance* roxal::newActorInstance(ObjObjectType* objectType)
                      "newActorInstance called with actor type");
     return newObj<ActorInstance>(std::string(__func__)+(objectType != nullptr?toUTF8StdString(objectType->name):""), __FILE__, __LINE__, objectType);
     #else
-    return newObj<ActorInstance>(asObjectType(objectType));
+    return newObj<ActorInstance>(objectType);
     #endif
 }
 
