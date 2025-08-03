@@ -37,7 +37,7 @@ struct FFIWrapper {
     ffi_type* retType;
     bool retIsCharPtr{false};
     bool retIsBool{false};
-    ObjObjectType* retObjType{nullptr};
+    Value retObjType{}; // ObjObjectType
     std::vector<ffi_type*> retStructElems;
     ffi_type retStructType;
 };
@@ -69,7 +69,7 @@ Value unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSize,
 std::vector<uint8_t> objectToCStruct(ObjectInstance* instance,
                                      std::vector<std::string>* stringStore=nullptr,
                                      CStructContext* ctx = nullptr);
-ObjectInstance* objectFromCStruct(ObjObjectType* type, const void* data, size_t len);
+Value objectFromCStruct(const Value& type, const void* data, size_t len); // ObjectInstance
 void updateObjectFromCStruct(ObjectInstance* instance, const void* data, size_t len,
                              CStructContext* ctx = nullptr);
 

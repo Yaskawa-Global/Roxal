@@ -225,6 +225,11 @@ Value Value::objectTypeVal(const icu::UnicodeString& typeName, bool isActor, boo
 }
 
 
+Value Value::objectInstanceVal(const Value& objectType)
+{
+    debug_assert_msg(isObjectType(objectType), "Value is an ObjObjectType");
+    return objVal(newObjectInstance(asObjectType(objectType)));
+}
 
 
 
@@ -2400,7 +2405,8 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             Value typeVal = readValue(in, ctx);
             ObjObjectType* t = asObjectType(typeVal);
             debug_assert_msg(!t->isActor, "Expected object type for deserialization");
-            ObjectInstance* obj = objectInstanceVal(t);
+            Value objVal = Value::objectInstanceVal(typeVal);
+            ObjectInstance* obj = asObjectInstance(objVal);
             if(useCtx) ctx->idToObj[id] = obj;
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
             obj->properties.clear();
@@ -2408,7 +2414,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                 int32_t h; in.read(reinterpret_cast<char*>(&h),4);
                 obj->properties[h] = readValue(in, ctx);
             }
-            return objVal(obj);
+            return objVal;
         }
         case ValueType::Actor: {
             uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);

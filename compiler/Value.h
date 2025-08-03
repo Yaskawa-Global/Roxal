@@ -221,6 +221,7 @@ public:
 
     static Value objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface = false, bool isEnumeration = false); // ObjObjectType
 
+    static Value objectInstanceVal(const Value& objectType); // ObjObjectInstance
 
 
 

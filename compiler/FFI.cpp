@@ -374,7 +374,7 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         ffi_type* retType = &ffi_type_void;
         bool retIsCharPtr = false;
         bool retIsBool = false;
-        ObjObjectType* retObjType = nullptr;
+        Value retObjType {}; // ObjObjectType
         std::vector<ffi_type*> retElems;
         ffi_type retStruct;
         if (retExpr) {
@@ -411,7 +411,7 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                     ObjObjectType* t = asObjectType(opt.value());
                     if (!t->isCStruct)
                         throw std::runtime_error("return type not cstruct: "+r);
-                    retObjType = t;
+                    retObjType = opt.value();
                     std::function<void(ObjObjectType*)> appendStruct;
                     appendStruct = [&](ObjObjectType* st) {
                         for (int32_t h : st->propertyOrder) {
@@ -509,7 +509,7 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         spec->retIsCharPtr = retIsCharPtr;
         spec->retIsBool = retIsBool;
         spec->retObjType = retObjType;
-        if (retObjType) {
+        if (!retObjType.isNil()) {
             spec->retStructElems = retElems;
             spec->retStructType = retStruct;
             spec->retStructType.elements = spec->retStructElems.data();
@@ -685,7 +685,7 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
     union { double d; float f; int32_t i; uint32_t ui32; int16_t s16; uint16_t u16; int8_t s8; uint8_t u8; void* p; } ret;
     void* retPtr = &ret;
     std::vector<uint8_t> retBuf;
-    if (spec->retObjType) {
+    if (!spec->retObjType.isNil()) {
         retBuf.resize(spec->cif.rtype->size);
         retPtr = retBuf.data();
     }
@@ -728,9 +728,8 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         }
     }
 
-    if (spec->retObjType) {
-        ObjectInstance* inst = objectFromCStruct(spec->retObjType, retBuf.data(), retBuf.size());
-        return Value(inst);
+    if (!spec->retObjType.isNil()) {
+        return objectFromCStruct(spec->retObjType, retBuf.data(), retBuf.size());
     } else if (spec->retType == &ffi_type_double)
         return Value(ret.d);
     else if (spec->retType == &ffi_type_float)
@@ -1053,7 +1052,7 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
 
     if (isObjectType(prop.type) && !ctypeStr.empty() && ctypeStr.back() != '*') {
         ObjObjectType* t = asObjectType(prop.type);
-        ObjectInstance* inst = objectInstanceVal(t);
+        ObjectInstance* inst = newObjectInstance(t);
         size_t startOffset = offset;
         size_t nestedAlign = 1;
         for (int32_t h : t->propertyOrder) {
@@ -1141,23 +1140,26 @@ std::vector<uint8_t> roxal::objectToCStruct(ObjectInstance* instance, std::vecto
     return buffer;
 }
 
-ObjectInstance* roxal::objectFromCStruct(ObjObjectType* type, const void* data, size_t len)
+Value roxal::objectFromCStruct(const Value& type, const void* data, size_t len)
 {
-    if (!type || !data)
-        throw std::invalid_argument("objectFromCStruct null type or data");
+    if (!isObjectType(type) || !data)
+        throw std::invalid_argument("objectFromCStruct non-object type or null data");
 
-    if (!type->isCStruct)
+    if (!asObjectType(type)->isCStruct)
         throw std::runtime_error("objectFromCStruct called on non-cstruct type");
 
     const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
     size_t offset = 0;
     size_t structAlign = 1;
-    size_t ptrSize = (type->cstructArch==64)?8:4;
+    size_t ptrSize = (asObjectType(type)->cstructArch==64)?8:4;
 
-    ObjectInstance* inst = objectInstanceVal(type);
+    Value instVal = Value::objectInstanceVal(type);
+    ObjectInstance* inst = asObjectInstance(instVal);
 
-    for (int32_t hash : type->propertyOrder) {
-        const auto& prop = type->properties.at(hash);
+    ObjObjectType* objType = asObjectType(type);
+
+    for (int32_t hash : objType->propertyOrder) {
+        const auto& prop = objType->properties.at(hash);
         Value val = unmarshalProperty(prop, ptrSize, bytes, len, offset, structAlign, nullptr);
         inst->properties[prop.name.hashCode()] = val;
     }
@@ -1166,7 +1168,7 @@ ObjectInstance* roxal::objectFromCStruct(ObjObjectType* type, const void* data, 
     if (offset + finalPad > len)
         throw std::runtime_error("buffer too small for objectFromCStruct");
 
-    return inst;
+    return instVal;
 }
 
 void roxal::updateObjectFromCStruct(ObjectInstance* instance, const void* data, size_t len,

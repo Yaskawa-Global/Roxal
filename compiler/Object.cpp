@@ -2670,7 +2670,7 @@ void ObjectInstance::setProperty(const icu::UnicodeString& name, Value value)
 }
 
 
-ObjectInstance* roxal::objectInstanceVal(ObjObjectType* objectType)
+ObjectInstance* roxal::newObjectInstance(ObjObjectType* objectType)
 {
     #ifdef DEBUG_BUILD
     debug_assert_msg(objectType != nullptr && objectType->typeValue == ValueType::Object,
@@ -2685,7 +2685,7 @@ ObjectInstance* roxal::objectInstanceVal(ObjObjectType* objectType)
 ObjectInstance* roxal::cloneObjectInstance(const ObjectInstance* obj)
 {
     // clone (deep copy) object instance
-    auto newobj = objectInstanceVal(obj->instanceType);
+    auto newobj = newObjectInstance(obj->instanceType);
 
     for(const auto& index_value : obj->properties) {
         const auto index { index_value.first };

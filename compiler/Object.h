@@ -1131,7 +1131,7 @@ struct ObjectInstance : public Obj
 inline bool isObjectInstance(const Value& v) { return isObjType(v, ObjType::Instance); }
 inline ObjectInstance* asObjectInstance(const Value& v) { return static_cast<ObjectInstance*>(v.asObj()); }
 
-ObjectInstance* objectInstanceVal(ObjObjectType* objectType);
+ObjectInstance* newObjectInstance(ObjObjectType* objectType);
 ObjectInstance* cloneObjectInstance(const ObjectInstance* obj); // deep copy
 
 

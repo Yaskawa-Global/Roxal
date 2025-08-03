@@ -794,7 +794,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
                     Value inst {};
                     if (!type->isActor) {
-                        inst = Value(objectInstanceVal(type));
+                        inst = Value::objectInstanceVal(callee);
                         *(thread->stackTop - callSpec.argCount - 1) = inst;
                     }
                     else {
