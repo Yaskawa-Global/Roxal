@@ -228,7 +228,8 @@ VM::VM()
     // Initialize dataflow engine as builtin actor
     dataflowEngine = df::DataflowEngine::instance();
     ObjObjectType* dataflowType = objectTypeVal(toUnicodeString("_DataflowEngine"), true);
-    dataflowEngineActor = objVal(actorInstanceVal(dataflowType));
+    Value dataflowTypeVal { objVal(dataflowType) };
+    dataflowEngineActor = Value::actorInstanceVal(dataflowTypeVal);
     dataflowEngineThread = std::make_shared<Thread>();
     dataflowEngineThread->act(dataflowEngineActor);
 
@@ -798,7 +799,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         *(thread->stackTop - callSpec.argCount - 1) = inst;
                     }
                     else {
-                        inst = Value(actorInstanceVal(type));
+                        inst = Value::actorInstanceVal(callee);
 
                         // spawn Thread to handle actor method calls
                         auto newThread = std::make_shared<Thread>();

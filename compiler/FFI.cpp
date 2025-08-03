@@ -1052,7 +1052,8 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
 
     if (isObjectType(prop.type) && !ctypeStr.empty() && ctypeStr.back() != '*') {
         ObjObjectType* t = asObjectType(prop.type);
-        ObjectInstance* inst = newObjectInstance(t);
+        Value instVal { Value::objectInstanceVal(prop.type) };
+        ObjectInstance* inst = asObjectInstance(instVal);
         size_t startOffset = offset;
         size_t nestedAlign = 1;
         for (int32_t h : t->propertyOrder) {
@@ -1065,8 +1066,7 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
             throw std::runtime_error("buffer too small for cstruct unmarshalling");
         offset += finalPad;
         structAlign = std::max(structAlign, nestedAlign);
-        val = Value(inst);
-        return val;
+        return instVal;
     }
 
     auto readByName = [&](const std::string& ctype) -> bool { return readByNameVal(ctype, val); };

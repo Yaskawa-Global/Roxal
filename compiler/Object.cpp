@@ -2809,14 +2809,14 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
 }
 
 
-ActorInstance* roxal::actorInstanceVal(ObjObjectType* objectType)
+ActorInstance* roxal::newActorInstance(ObjObjectType* objectType)
 {
     #ifdef DEBUG_BUILD
     debug_assert_msg(objectType != nullptr && objectType->typeValue == ValueType::Actor,
-                     "actorInstanceVal called with actor type");
-    return newObj<ActorInstance>(std::string(__func__)+(objectType!=nullptr?toUTF8StdString(objectType->name):""), __FILE__, __LINE__, objectType);
+                     "newActorInstance called with actor type");
+    return newObj<ActorInstance>(std::string(__func__)+(objectType != nullptr?toUTF8StdString(objectType->name):""), __FILE__, __LINE__, objectType);
     #else
-    return newObj<ActorInstance>(objectType);
+    return newObj<ActorInstance>(asObjectType(objectType));
     #endif
 }
 

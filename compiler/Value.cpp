@@ -231,6 +231,12 @@ Value Value::objectInstanceVal(const Value& objectType)
     return objVal(newObjectInstance(asObjectType(objectType)));
 }
 
+Value Value::actorInstanceVal(const Value& objectType)
+{
+    debug_assert_msg(isObjectType(objectType), "Value is an ObjObjectType");
+    return objVal(newActorInstance(asObjectType(objectType)));
+}
+
 
 
 void Value::box() {
@@ -2427,7 +2433,8 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             Value typeVal = readValue(in, ctx);
             ObjObjectType* t = asObjectType(typeVal);
             debug_assert_msg(t->isActor, "Expected actor type for deserialization");
-            ActorInstance* obj = actorInstanceVal(t);
+            Value objVal = Value::actorInstanceVal(typeVal);
+            ActorInstance* obj = asActorInstance(objVal);
             if(useCtx) ctx->idToObj[id] = obj;
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
             obj->properties.clear();
@@ -2435,7 +2442,6 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                 int32_t h; in.read(reinterpret_cast<char*>(&h),4);
                 obj->properties[h] = readValue(in, ctx);
             }
-            Value objValue = objVal(obj); // keep strong ref while starting thread
             auto newThread = std::make_shared<Thread>();
             // Keep the thread alive by registering it with the VM.  Without
             // this the Thread object would be destroyed immediately after
@@ -2443,8 +2449,8 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             // std::thread is still joinable.
             VM::instance().registerThread(newThread);
             obj->thread = newThread;
-            newThread->act(objValue);
-            return objValue;
+            newThread->act(objVal);
+            return objVal;
         }
         case ValueType::Function: {
             Value func { Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString()) };

@@ -1177,7 +1177,7 @@ struct ActorInstance : public Obj
 inline bool isActorInstance(const Value& v) { return isObjType(v, ObjType::Actor); }
 inline ActorInstance* asActorInstance(const Value& v) { return static_cast<ActorInstance*>(v.asObj()); }
 
-ActorInstance* actorInstanceVal(ObjObjectType* objectType);
+ActorInstance* newActorInstance(ObjObjectType* objectType);
 
 
 
