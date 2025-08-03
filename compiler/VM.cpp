@@ -745,7 +745,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
                 if (!isActorInstance(boundMethod->receiver)) {
                     *(thread->stackTop - callSpec.argCount - 1) = boundMethod->receiver;
-                    return call(boundMethod->method, callSpec);
+                    return call(asClosure(boundMethod->method), callSpec);
                 }
                 else {
                     // call to actor method.
@@ -758,7 +758,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     if (std::this_thread::get_id() == inst->thread_id) {
                         // actor to this/self method call
                         *(thread->stackTop - callSpec.argCount - 1) = boundMethod->receiver; // FIXME: or inst??
-                        return call(boundMethod->method, callSpec);
+                        return call(asClosure(boundMethod->method), callSpec);
                     } else {
                         // call to other actor
                         Value future = inst->queueCall(callee, callSpec, &(*thread->stackTop) );
@@ -839,7 +839,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                                                            cl->function->nativeDefaults);
                                 calleeVal = objVal(boundInit);
                             } else {
-                                ObjBoundMethod* boundInit = boundMethodVal(inst, asClosure(initializer));
+                                ObjBoundMethod* boundInit = boundMethodVal(inst, initializer);
                                 calleeVal = objVal(boundInit);
                             }
                             *(thread->stackTop - callSpec.argCount - 1) = calleeVal;
@@ -848,7 +848,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 *(thread->stackTop - 1) = inst; // native init returns instance
                             return ok;
                         } else {
-                            ObjBoundMethod* boundInit = boundMethodVal(inst, asClosure(initializer));
+                            ObjBoundMethod* boundInit = boundMethodVal(inst, initializer);
                             Value calleeVal = objVal(boundInit);
                             ActorInstance* actorInst = asActorInstance(inst);
                             actorInst->queueCall(calleeVal, callSpec, &(*thread->stackTop));
@@ -1546,7 +1546,7 @@ VM::BindResult VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
         pop();
         push(objVal(boundNative));
     } else {
-        ObjBoundMethod* boundMethod { boundMethodVal(peek(0), asClosure(method)) };
+        ObjBoundMethod* boundMethod { boundMethodVal(peek(0), method) };
         pop();
         push(objVal(boundMethod));
     }

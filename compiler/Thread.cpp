@@ -159,7 +159,7 @@ void Thread::act(Value actorInstance)
                 this->stack[0] = strongActor;
 
                 if (isBoundMethod(callInfo.callee)) {
-                    auto closure = asBoundMethod(callInfo.callee)->method;
+                    auto closure = asClosure(asBoundMethod(callInfo.callee)->method);
 
                     for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
                         push(*it);

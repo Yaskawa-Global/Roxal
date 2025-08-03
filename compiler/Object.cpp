@@ -1852,7 +1852,7 @@ void ObjBoundMethod::write(std::ostream& out, roxal::ptr<SerializationContext> c
     uint8_t tag = static_cast<uint8_t>(ObjType::BoundMethod);
     out.write(reinterpret_cast<char*>(&tag),1);
     writeValue(out, receiver, ctx);
-    writeValue(out, objVal(method));
+    writeValue(out, method, ctx);
 }
 
 void ObjBoundMethod::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
@@ -1862,8 +1862,7 @@ void ObjBoundMethod::read(std::istream& in, roxal::ptr<SerializationContext> ctx
         throw std::runtime_error("ObjBoundMethod::read mismatched tag");
     receiver = readValue(in, ctx);
     Value mval = readValue(in, ctx);
-    method = asClosure(mval);
-    method->incRef();
+    method = mval.weakRef();
     type = ObjType::BoundMethod;
 }
 
@@ -2495,7 +2494,7 @@ std::string roxal::objToString(const Value& v)
             return std::string("actor "+toUTF8StdString(inst->instanceType->name));
         }
         case ObjType::BoundMethod: {
-            return objFunctionToString(asBoundMethod(v)->method->function);
+            return objFunctionToString(asClosure(asBoundMethod(v)->method)->function);
         }
         case ObjType::BoundNative: {
             return std::string("<native method>");
@@ -2775,7 +2774,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
     callInfo.returnFuture = Value::nilVal();
 
     if (isBoundMethod(callee)) {
-        auto funcObj = asBoundMethod(callee)->method->function;
+        auto funcObj = asClosure(asBoundMethod(callee)->method)->function;
         if (funcObj->funcType.has_value()) {
             ptr<roxal::type::Type> funcType { funcObj->funcType.value() };
             assert(funcType->func.has_value());
@@ -2821,17 +2820,14 @@ ActorInstance* roxal::actorInstanceVal(ObjObjectType* objectType)
     #endif
 }
 
-ObjBoundMethod::ObjBoundMethod(const Value& instance, ObjClosure* closure)
-    : receiver(instance), method(closure)
+ObjBoundMethod::ObjBoundMethod(const Value& instance, const Value& closure)
+    : receiver(instance), method(closure.weakRef())
 {
+    debug_assert_msg(isClosure(closure), "ObjBoundMethod constructed with non-closure");
     type = ObjType::BoundMethod;
-    method->incRef();
 }
 
-ObjBoundMethod::~ObjBoundMethod()
-{
-    method->decRef();
-}
+ObjBoundMethod::~ObjBoundMethod() {}
 
 
 

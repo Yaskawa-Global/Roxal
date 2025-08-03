@@ -1186,11 +1186,11 @@ ActorInstance* actorInstanceVal(ObjObjectType* objectType);
 
 struct ObjBoundMethod : public Obj
 {
-    ObjBoundMethod(const Value& instance, ObjClosure* closure);
+    ObjBoundMethod(const Value& instance, const Value& closure);
     virtual ~ObjBoundMethod();
 
     Value receiver;
-    ObjClosure* method;
+    Value method;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1199,7 +1199,7 @@ struct ObjBoundMethod : public Obj
 inline bool isBoundMethod(const Value& v) { return isObjType(v, ObjType::BoundMethod); }
 inline ObjBoundMethod* asBoundMethod(const Value& v) { return static_cast<ObjBoundMethod*>(v.asObj()); }
 
-inline ObjBoundMethod* boundMethodVal(const Value& instance, ObjClosure* closure) {
+inline ObjBoundMethod* boundMethodVal(const Value& instance, const Value& closure) {
     #ifdef DEBUG_BUILD
     return newObj<ObjBoundMethod>(__func__, __FILE__, __LINE__, instance, closure);
     #else
@@ -1209,7 +1209,7 @@ inline ObjBoundMethod* boundMethodVal(const Value& instance, ObjClosure* closure
 
 inline ObjBoundMethod* cloneBoundMethod(const ObjBoundMethod* bm) {
     #ifdef DEBUG_BUILD
-    auto newmb = newObj<ObjBoundMethod>(toUTF8StdString(bm->method->function->name),__FILE__,__LINE__,bm->receiver, bm->method);
+    auto newmb = newObj<ObjBoundMethod>(toUTF8StdString(asClosure(bm->method)->function->name),__FILE__,__LINE__,bm->receiver, bm->method);
     #else
     auto newmb = newObj<ObjBoundMethod>(bm->receiver, bm->method);
     #endif
