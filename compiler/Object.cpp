@@ -2823,7 +2823,7 @@ ActorInstance* roxal::actorInstanceVal(ObjObjectType* objectType)
 ObjBoundMethod::ObjBoundMethod(const Value& instance, const Value& closure)
     : receiver(instance), method(closure.weakRef())
 {
-    debug_assert_msg(closure.isClosure(), "ObjBoundMethod constructed with non-closure");
+    debug_assert_msg(isClosure(closure), "ObjBoundMethod constructed with non-closure");
     type = ObjType::BoundMethod;
 }
 
