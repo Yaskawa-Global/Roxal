@@ -220,6 +220,7 @@ VM::VM()
 #endif
     executeBuiltinModuleScript("compiler/sys.rox", getBuiltinModule(toUnicodeString("sys")));
     executeBuiltinModuleScript("compiler/math.rox", getBuiltinModule(toUnicodeString("math")));
+
     thread = nullptr;
 
     // Reset thread ids so the first real VM thread starts at 2

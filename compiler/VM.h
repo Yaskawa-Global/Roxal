@@ -160,6 +160,8 @@ public:
     // the current thread
     static thread_local ptr<Thread> thread;
 
+    void executeBuiltinModuleScript(const std::string& path, ObjModuleType* moduleType);
+
 protected:
     VM();
     ~VM();
@@ -206,8 +208,6 @@ protected:
 
     // builtin modules
     std::vector<ptr<BuiltinModule>> builtinModules;
-
-    void executeBuiltinModuleScript(const std::string& path, ObjModuleType* moduleType);
 
     // builtin dataflow engine actor
     std::shared_ptr<df::DataflowEngine> dataflowEngine;
