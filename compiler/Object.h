@@ -848,21 +848,18 @@ inline ObjUpvalue* cloneUpvalue(const ObjUpvalue* u) {
 
 struct ObjClosure : public Obj
 {
-    ObjClosure(ObjFunction* f=nullptr) : function(f) {
+    ObjClosure(const Value& f = Value::nilVal()) : function(f) {
         type = ObjType::Closure;
-        if (function) {
-            function->incRef();
-            upvalues.resize(function->upvalueCount);
+        if (function.isNonNil()) {
+            debug_assert_msg(isFunction(function), "Value is an ObjFunction");
+            upvalues.resize(asFunction(function)->upvalueCount);
         }
     }
     virtual ~ObjClosure() {
         upvalues.clear();
-
-        if (function)
-            function->decRef();
     }
 
-    ObjFunction* function;
+    Value function; // ObjFunction
     std::vector<Value> upvalues; // ObjUpvalue
 
     // thread expected to execute this closure when used as an event handler
@@ -881,9 +878,9 @@ inline ObjClosure* asClosure(const Value& v) {
 inline ObjClosure* newClosureObj(Value function) { // ObjFunction
     debug_assert_msg(isFunction(function), "Value is an ObjFunction");
     #ifdef DEBUG_BUILD
-    return newObj<ObjClosure>(toUTF8StdString(asFunction(function)->name),__FILE__,__LINE__,asFunction(function));
+    return newObj<ObjClosure>(toUTF8StdString(asFunction(function)->name),__FILE__,__LINE__,function);
     #else
-    return newObj<ObjClosure>(asFunction(function));
+    return newObj<ObjClosure>(function);
     #endif
 }
 
@@ -1207,7 +1204,7 @@ inline ObjBoundMethod* boundMethodVal(const Value& instance, const Value& closur
 
 inline ObjBoundMethod* cloneBoundMethod(const ObjBoundMethod* bm) {
     #ifdef DEBUG_BUILD
-    auto newmb = newObj<ObjBoundMethod>(toUTF8StdString(asClosure(bm->method)->function->name),__FILE__,__LINE__,bm->receiver, bm->method);
+    auto newmb = newObj<ObjBoundMethod>(toUTF8StdString(asFunction(asClosure(bm->method)->function)->name),__FILE__,__LINE__,bm->receiver, bm->method);
     #else
     auto newmb = newObj<ObjBoundMethod>(bm->receiver, bm->method);
     #endif

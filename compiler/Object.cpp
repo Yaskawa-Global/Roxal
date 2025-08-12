@@ -1540,7 +1540,7 @@ void ObjClosure::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) 
     // SerializationContext inside ObjFunction::write which breaks reference
     // tracking and can lead to infinite recursion when a closure references its
     // owning type.
-    function->write(out, ctx);
+    writeValue(out, function, ctx);
     uint32_t count = upvalues.size();
     out.write(reinterpret_cast<char*>(&count),4);
     for(auto uv : upvalues) {
@@ -1558,18 +1558,9 @@ void ObjClosure::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         throw std::runtime_error("ObjClosure::read mismatched tag");
     type = ObjType::Closure;
 
-    #ifdef DEBUG_BUILD
-    auto fn = newObj<ObjFunction>(__func__, __FILE__, __LINE__, icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
-    #else
-    auto fn = newObj<ObjFunction>(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
-    #endif
     // Use the same serialization context so that references from the function
     // back to this closure's owning structures are properly resolved.
-    fn->read(in, ctx);
-    if(function)
-        function->decRef();
-    function = fn;
-    function->incRef();
+    function = readValue(in, ctx);
 
     uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
     upvalues.resize(count);
@@ -2422,7 +2413,7 @@ std::string roxal::objToString(const Value& v)
 {
     switch(objType(v)) {
         case ObjType::Closure: {
-            return objFunctionToString(asClosure(v)->function);
+            return objFunctionToString(asFunction(asClosure(v)->function));
         }
         case ObjType::Upvalue: {
             return "upvalue";
@@ -2488,7 +2479,7 @@ std::string roxal::objToString(const Value& v)
             return std::string("actor "+toUTF8StdString(inst->instanceType->name));
         }
         case ObjType::BoundMethod: {
-            return objFunctionToString(asClosure(asBoundMethod(v)->method)->function);
+            return objFunctionToString(asFunction(asClosure(asBoundMethod(v)->method)->function));
         }
         case ObjType::BoundNative: {
             return std::string("<native method>");
@@ -2768,7 +2759,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
     callInfo.returnFuture = Value::nilVal();
 
     if (isBoundMethod(callee)) {
-        auto funcObj = asClosure(asBoundMethod(callee)->method)->function;
+        auto funcObj = asFunction(asClosure(asBoundMethod(callee)->method)->function);
         if (funcObj->funcType.has_value()) {
             ptr<roxal::type::Type> funcType { funcObj->funcType.value() };
             assert(funcType->func.has_value());

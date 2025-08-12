@@ -18,8 +18,8 @@ FuncNode::FuncNode(const std::string& name,
   : m_name(name), m_operatorSignalsCalled(false), closure(closure_), constArgs(constArgs_), signalArgs(signalArgs_), m_overrideOutputSignals(outputSignals)
 {
     m_outputNames = {DataflowEngine::uniqueFuncName("result")};
-    if (roxal::isClosure(closure) && roxal::asClosure(closure)->function->funcType.has_value()) {
-        auto funcTypePtr = roxal::asClosure(closure)->function->funcType.value();
+    if (roxal::isClosure(closure) && asFunction(asClosure(closure)->function)->funcType.has_value()) {
+        auto funcTypePtr = asFunction(asClosure(closure)->function)->funcType.value();
         if (funcTypePtr->func.has_value()) {
             const auto& funcType = funcTypePtr->func.value();
 

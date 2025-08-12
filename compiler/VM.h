@@ -194,12 +194,13 @@ protected:
         assert(thread != nullptr);
         assert(!thread->frames.empty());
         assert(thread->frames.back().closure != nullptr);
-        assert(thread->frames.back().closure->function != nullptr);
-        assert(isModuleType(thread->frames.back().closure->function->moduleType));
+        assert(thread->frames.back().closure->function.isNonNil());
+        assert(isFunction(thread->frames.back().closure->function));
+        assert(isModuleType(asFunction(thread->frames.back().closure->function)->moduleType));
         #endif
         auto currentFrame { thread->frames.back() };
 
-        return asModuleType(currentFrame.closure->function->moduleType);
+        return asModuleType(asFunction(currentFrame.closure->function)->moduleType);
     }
     inline VariablesMap& moduleVars() { return moduleType()->vars; }
 

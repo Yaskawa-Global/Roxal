@@ -148,7 +148,7 @@ Value roxal::ffi_native(ArgsView args)
 
 Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* args)
 {
-    ObjFunction* function = closure->function;
+    ObjFunction* function = asFunction(closure->function);
     FFIWrapper* spec = static_cast<FFIWrapper*>(function->nativeSpec);
 
     if (!spec) {

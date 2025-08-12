@@ -328,8 +328,8 @@ VM::~VM()
         if (isClosure(value)) {
             auto closure = asClosure(value);
             closure->upvalues.clear();
-            closure->function->moduleType = Value::nilVal();
-            closure->function->paramDefaultFunc.clear();
+            asFunction(closure->function)->moduleType = Value::nilVal();
+            asFunction(closure->function)->paramDefaultFunc.clear();
         }
         if (isFunction(value)) {
             asFunction(value)->clear();
@@ -503,20 +503,20 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
 
     // fast-path: if callee supplied all all arguments by position and none are missing,
     //  nothing special to do
-    bool paramDefaultAndArgsReorderNeeded = !(callSpec.allPositional && callSpec.argCount == closure->function->arity);
+    bool paramDefaultAndArgsReorderNeeded = !(callSpec.allPositional && callSpec.argCount == asFunction(closure->function)->arity);
 
     CallFrame callframe {};
     auto argCount = callSpec.argCount;
 
     if (paramDefaultAndArgsReorderNeeded) {
 
-        assert(closure->function->funcType.has_value());
-        ptr<type::Type> calleeType { closure->function->funcType.value() };
+        assert(asFunction(closure->function)->funcType.has_value());
+        ptr<type::Type> calleeType { asFunction(closure->function)->funcType.value() };
 
         callframe.reorderArgs = callSpec.paramPositions(calleeType, true);
 
         // handle execution of default param expression 'func' for params not supplied
-        if (argCount < closure->function->arity) {
+        if (argCount < asFunction(closure->function)->arity) {
             auto paramTypes { calleeType->func.value().params };
             // for each missing arg
             for(int16_t paramIndex = 0; paramIndex < callframe.reorderArgs.size(); paramIndex++) {
@@ -529,11 +529,11 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
                     #endif
                     //auto paramName = param.value().name;
 
-                    auto funcIt = closure->function->paramDefaultFunc.find(param.value().nameHashCode);
+                    auto funcIt = asFunction(closure->function)->paramDefaultFunc.find(param.value().nameHashCode);
                     #ifdef DEBUG_BUILD
-                    if (funcIt == closure->function->paramDefaultFunc.cend())
-                        runtimeError("No default value function found for parameter '"+toUTF8StdString(param.value().name)+"' in function '"+toUTF8StdString(closure->function->name)+"'.");
-                    assert(funcIt != closure->function->paramDefaultFunc.cend());
+                    if (funcIt == asFunction(closure->function)->paramDefaultFunc.cend())
+                        runtimeError("No default value function found for parameter '"+toUTF8StdString(param.value().name)+"' in function '"+toUTF8StdString(asFunction(closure->function)->name)+"'.");
+                    assert(funcIt != asFunction(closure->function)->paramDefaultFunc.cend());
                     #endif
 
                     Value defValFunc = funcIt->second; // ObjFunction
@@ -563,7 +563,7 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
                     if (asClosure(defValClosure)->upvalues.size() > 0) {
                         auto paramName = param.value().name;
                         runtimeError("Captured variables in default parameter '"+toUTF8StdString(paramName)+"' value expressions are not allowed"
-                                    +" in declaration of function '"+toUTF8StdString(closure->function->name)+"'.");
+                                    +" in declaration of function '"+toUTF8StdString(asFunction(closure->function)->name)+"'.");
                         return false;
                     }
 
@@ -597,13 +597,13 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
             if (argsInOrder)
                 callframe.reorderArgs.clear();
         }
-        else if (argCount > closure->function->arity) {
+        else if (argCount > asFunction(closure->function)->arity) {
             runtimeError("Passed "+std::to_string(argCount)+" arguments for function "
-                        +toUTF8StdString(closure->function->name)+" which has "
-                        +std::to_string(closure->function->arity)+" parameters.");
+                        +toUTF8StdString(asFunction(closure->function)->name)+" which has "
+                        +std::to_string(asFunction(closure->function)->arity)+" parameters.");
             return false;
         }
-        assert(argCount == closure->function->arity);
+        assert(argCount == asFunction(closure->function)->arity);
     }
 
     if (thread->frames.size() > 128) {
@@ -613,9 +613,9 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
 
 
     callframe.closure = closure;
-    callframe.startIp = callframe.ip = closure->function->chunk->code.begin();
+    callframe.startIp = callframe.ip = asFunction(closure->function)->chunk->code.begin();
     callframe.slots = &(*(thread->stackTop - argCount - 1));
-    callframe.strict = closure->function->strict;
+    callframe.strict = asFunction(closure->function)->strict;
     thread->pushFrame(callframe);
     thread->frameStart = true;
 
@@ -699,8 +699,9 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
         std::vector<ptr<df::Signal>> sigArgs;
         df::FuncNode::ConstArgMap constArgs;
 
-        if (roxal::asClosure(closureVal)->function->funcType.has_value()) {
-            auto calleeType = roxal::asClosure(closureVal)->function->funcType.value();
+        auto functionObj = asFunction(asClosure(closureVal)->function);
+        if (functionObj->funcType.has_value()) {
+            auto calleeType = functionObj->funcType.value();
             auto paramPositions = callSpec.paramPositions(calleeType, true);
             const auto& funcType = calleeType->func.value();
             for (size_t pi = 0; pi < paramPositions.size(); ++pi) {
@@ -719,7 +720,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             }
         }
 
-        auto baseName = toUTF8StdString(roxal::asClosure(closureVal)->function->name);
+        auto baseName = toUTF8StdString(functionObj->name);
         auto name = df::DataflowEngine::uniqueFuncName(baseName);
         auto node = roxal::make_ptr<df::FuncNode>(name, closureVal, constArgs, sigArgs);
         node->addToEngine();
@@ -811,8 +812,12 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     }
                     bool dictArg = (!type->isActor && callSpec.argCount == 1 && isDict(peek(0)));
                     bool initAcceptsDict = false;
-                    if (initMethod != nullptr && asClosure(initMethod->closure)->function->funcType.has_value()) {
-                        auto ftype = asClosure(initMethod->closure)->function->funcType.value();
+
+                    auto initClosureObj {initMethod != nullptr ? asClosure(initMethod->closure) : nullptr };
+                    auto initFuncObj { initClosureObj != nullptr ? asFunction(initClosureObj->function) : nullptr };
+
+                    if (initFuncObj != nullptr && initFuncObj->funcType.has_value()) {
+                        auto ftype = initFuncObj->funcType.value();
                         if (ftype->builtin == type::BuiltinType::Func) {
                             const auto& params = ftype->func.value().params;
                             if (params.size() == 1) {
@@ -824,24 +829,22 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         }
                     }
 
-                    if (initMethod != nullptr && !(dictArg && !initAcceptsDict)) {
-                        Value initializer { initMethod->closure };
+                    if (initClosureObj != nullptr && !(dictArg && !initAcceptsDict)) {
                         if (!type->isActor) {
-                            bool isNative = isClosure(initializer) && asClosure(initializer)->function->nativeImpl;
+                            bool isNative = initFuncObj != nullptr && initFuncObj->nativeImpl;
                             Value calleeVal;
                             if (isNative) {
-                                ObjClosure* cl = asClosure(initializer);
-                                NativeFn fn = cl->function->nativeImpl;
+                                NativeFn fn = initFuncObj->nativeImpl;
                                 ObjBoundNative* boundInit = boundNativeVal(inst, fn,
-                                                                           cl->function->funcType.has_value() &&
-                                                                               cl->function->funcType.value()->func.has_value() ?
-                                                                               cl->function->funcType.value()->func->isProc : false,
-                                                                           cl->function->funcType.has_value() ?
-                                                                               cl->function->funcType.value() : nullptr,
-                                                                           cl->function->nativeDefaults);
+                                                                           initFuncObj->funcType.has_value() &&
+                                                                               initFuncObj->funcType.value()->func.has_value() ?
+                                                                               initFuncObj->funcType.value()->func->isProc : false,
+                                                                           initFuncObj->funcType.has_value() ?
+                                                                               initFuncObj->funcType.value() : nullptr,
+                                                                           initFuncObj->nativeDefaults);
                                 calleeVal = objVal(boundInit);
                             } else {
-                                ObjBoundMethod* boundInit = boundMethodVal(inst, initializer);
+                                ObjBoundMethod* boundInit = boundMethodVal(inst, initMethod->closure);
                                 calleeVal = objVal(boundInit);
                             }
                             *(thread->stackTop - callSpec.argCount - 1) = calleeVal;
@@ -850,7 +853,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 *(thread->stackTop - 1) = inst; // native init returns instance
                             return ok;
                         } else {
-                            ObjBoundMethod* boundInit = boundMethodVal(inst, initializer);
+                            ObjBoundMethod* boundInit = boundMethodVal(inst, initMethod->closure);
                             Value calleeVal = objVal(boundInit);
                             ActorInstance* actorInst = asActorInstance(inst);
                             actorInst->queueCall(calleeVal, callSpec, &(*thread->stackTop));
@@ -984,15 +987,16 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             }
             case ObjType::Closure: {
                 ObjClosure* closure = asClosure(callee);
-                if (closure->function->nativeImpl) {
-                    NativeFn native = closure->function->nativeImpl;
-                    ptr<type::Type> funcType = closure->function->funcType.has_value()
-                        ? closure->function->funcType.value() : nullptr;
+                ObjFunction* function = asFunction(closure->function);
+                if (function->nativeImpl) {
+                    NativeFn native = function->nativeImpl;
+                    ptr<type::Type> funcType = function->funcType.has_value()
+                        ? function->funcType.value() : nullptr;
                     return callNativeFn(native, funcType,
-                                        closure->function->nativeDefaults, callSpec);
+                                        function->nativeDefaults, callSpec);
                 } else {
                     bool cfunc = false;
-                    for(const auto& annot : closure->function->annotations) {
+                    for(const auto& annot : function->annotations) {
                         if (annot->name == "cfunc") { cfunc = true; break; }
                     }
                     if (cfunc) {
@@ -1535,16 +1539,17 @@ VM::BindResult VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
 
     Value method { methodInfo.closure };
 
-    if (isClosure(method) && asClosure(method)->function->nativeImpl) {
+    if (isClosure(method) && asFunction(asClosure(method)->function)->nativeImpl) {
         ObjClosure* cl = asClosure(method);
-        NativeFn fn = cl->function->nativeImpl;
+        ObjFunction* func = asFunction(cl->function);
+        NativeFn fn = func->nativeImpl;
         ObjBoundNative* boundNative = boundNativeVal(peek(0), fn,
-                                                    cl->function->funcType.has_value() &&
-                                                        cl->function->funcType.value()->func.has_value() ?
-                                                        cl->function->funcType.value()->func->isProc : false,
-                                                    cl->function->funcType.has_value() ?
-                                                        cl->function->funcType.value() : nullptr,
-                                                    cl->function->nativeDefaults);
+                                                    func->funcType.has_value() &&
+                                                        func->funcType.value()->func.has_value() ?
+                                                        func->funcType.value()->func->isProc : false,
+                                                    func->funcType.has_value() ?
+                                                        func->funcType.value() : nullptr,
+                                                    func->nativeDefaults);
         pop();
         push(objVal(boundNative));
     } else {
@@ -1625,7 +1630,7 @@ bool VM::isAccessAllowed(const Value& ownerType, ast::Access access)
         return true;
 
     for(auto it = thread->frames.rbegin(); it != thread->frames.rend(); ++it) {
-        ObjFunction* fn = it->closure->function;
+        ObjFunction* fn = asFunction(it->closure->function);
         if (!fn->ownerType.isNil() && fn->ownerType.isAlive()) {
             if (fn->ownerType == ownerType)
                 return true;
@@ -1673,7 +1678,7 @@ void VM::defineProperty(ObjString* name)
     // check module annotations for ctype
     if (!thread->frames.empty()) {
         auto frame = thread->frames.end()-1;
-        ObjModuleType* mod = asModuleType(frame->closure->function->moduleType);
+        ObjModuleType* mod = asModuleType(asFunction(frame->closure->function)->moduleType);
         auto itType = mod->propertyCTypes.find(objType->name.hashCode());
         if (itType != mod->propertyCTypes.end()) {
             auto itProp = itType->second.find(name->hash);
@@ -1700,9 +1705,10 @@ void VM::defineMethod(ObjString* name)
         throw std::runtime_error("Duplicate method '"+name->toStdString()+"' declared in type "+(type->isActor?"actor":"object")+" '"+toUTF8StdString(type->name)+"'");
 
     ObjClosure* closure = asClosure(method);
-    closure->function->ownerType = objVal(type).weakRef();
+    ObjFunction* function = asFunction(closure->function);
+    function->ownerType = objVal(type).weakRef();
 
-    type->methods[name->hash] = {name->s, method, closure->function->access,
+    type->methods[name->hash] = {name->s, method, function->access,
                                  objVal(type).weakRef()};
     pop();
 }
@@ -1747,7 +1753,7 @@ void VM::defineNative(const std::string& name, NativeFn function,
 
 std::pair<InterpretResult,Value> VM::execute()
 {
-    if (thread->frames.empty() || thread->frames.back().closure->function->chunk->code.size()==0)
+    if (thread->frames.empty() || asFunction(thread->frames.back().closure->function)->chunk->code.size()==0)
         return std::make_pair(InterpretResult::OK, Value::nilVal()); // nothing to execute
 
     // Track execution depth for nested calls
@@ -1758,7 +1764,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
     auto readByte = [&]() -> uint8_t {
         #ifdef DEBUG_BUILD
-            if (frame->ip == frame->closure->function->chunk->code.end())
+            if (frame->ip == asFunction(frame->closure->function)->chunk->code.end())
                 throw std::runtime_error("Invalid IP");
         #endif
         return *frame->ip++;
@@ -1766,7 +1772,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
     auto readShort = [&]() -> uint16_t {
         #ifdef DEBUG_BUILD
-            if (frame->ip == frame->closure->function->chunk->code.end())
+            if (frame->ip == asFunction(frame->closure->function)->chunk->code.end())
                 throw std::runtime_error("Invalid IP");
         #endif
         frame->ip += 2;
@@ -1776,22 +1782,22 @@ std::pair<InterpretResult,Value> VM::execute()
     auto readConstant = [&]() -> Value {
         #ifdef DEBUG_BUILD
             auto index { Chunk::size_type(readByte()) };
-            if (index >= frame->closure->function->chunk->constants.size())
+            if (index >= asFunction(frame->closure->function)->chunk->constants.size())
                 throw std::runtime_error("Chunk instruction read constant invalid index into constants table");
-            return frame->closure->function->chunk->constants.at(index);
+            return asFunction(frame->closure->function)->chunk->constants.at(index);
         #else
-            return frame->closure->function->chunk->constants[Chunk::size_type(readByte())];
+            return asFunction(frame->closure->function)->chunk->constants[Chunk::size_type(readByte())];
         #endif
     };
 
     auto readConstant2 = [&]() -> Value {
         #ifdef DEBUG_BUILD
             auto index { Chunk::size_type((readByte() << 8) + readByte()) };
-            if (index >= frame->closure->function->chunk->constants.size())
+            if (index >= asFunction(frame->closure->function)->chunk->constants.size())
                 throw std::runtime_error("Chunk instruction read constant invalid index into constants table");
-            return frame->closure->function->chunk->constants.at(index);
+            return asFunction(frame->closure->function)->chunk->constants.at(index);
         #else
-            return frame->closure->function->chunk->constants[Chunk::size_type((readByte() << 8) + readByte())];
+            return asFunction(frame->closure->function)->chunk->constants[Chunk::size_type((readByte() << 8) + readByte())];
         #endif
     };
 
@@ -1867,7 +1873,7 @@ std::pair<InterpretResult,Value> VM::execute()
             // handle assignment of default param values to tail of args slots
             //  (hence, this must happen before reordering below)
             if (!frame->tailArgValues.empty()) {
-                int16_t argIndex = frame->closure->function->arity - frame->tailArgValues.size();
+                int16_t argIndex = asFunction(frame->closure->function)->arity - frame->tailArgValues.size();
                 for(const auto& argValue : frame->tailArgValues) {
                     *(frame->slots + 1 + argIndex) = argValue;
                     argIndex++;
@@ -1897,8 +1903,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
 
             // convert arguments to parameter types if specified
-            if (frame->closure->function->funcType.has_value()) {
-                const auto& params = frame->closure->function->funcType.value()->func.value().params;
+            if (asFunction(frame->closure->function)->funcType.has_value()) {
+                const auto& params = asFunction(frame->closure->function)->funcType.value()->func.value().params;
                 bool strictConv = false;
                 if (thread->frames.size() >= 2)
                     strictConv = (thread->frames.end()-2)->strict;
@@ -2368,7 +2374,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
-                        bool strictConv = frame->closure->function->strict;
+                        bool strictConv = asFunction(frame->closure->function)->strict;
                         // if type object specified the property type in the declaration,
                         //  convert the value to that type (if possible)
                         const auto& properties { objInst->instanceType->properties };
@@ -2400,7 +2406,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
-                        bool strictConv = frame->closure->function->strict;
+                        bool strictConv = asFunction(frame->closure->function)->strict;
                         const auto& properties { actorInst->instanceType->properties };
                         const auto& property = properties.find(name->hash);
                         if (property != properties.end()) {
@@ -2490,7 +2496,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
-                        bool strictConv = frame->closure->function->strict;
+                        bool strictConv = asFunction(frame->closure->function)->strict;
                         const auto& properties { objInst->instanceType->properties };
                         const auto& property = properties.find(name->hash);
                         if (property != properties.end()) {
@@ -2530,7 +2536,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
-                        bool strictConv = frame->closure->function->strict;
+                        bool strictConv = asFunction(frame->closure->function)->strict;
                         const auto& properties { actorInst->instanceType->properties };
                         const auto& property = properties.find(name->hash);
                         if (property != properties.end()) {
@@ -2893,8 +2899,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 debug_assert_msg(isFunction(function), "Expected a function value for OpCode::Closure");
                 Value closure { Value::closureVal(function) };
                 ObjFunction* funcObj = asFunction(function);
-                if (funcObj->ownerType.isNil() && !frame->closure->function->ownerType.isNil())
-                    funcObj->ownerType = frame->closure->function->ownerType;
+                if (funcObj->ownerType.isNil() && !asFunction(frame->closure->function)->ownerType.isNil())
+                    funcObj->ownerType = asFunction(frame->closure->function)->ownerType;
                 push(closure);
                 for (int i = 0; i < asClosure(closure)->upvalues.size(); i++) {
                     uint8_t isLocal = readByte();
@@ -2914,8 +2920,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 debug_assert_msg(isFunction(function), "Expected a function value for OpCode::Closure2");
                 Value closure = Value::closureVal(function);
                 ObjFunction* funcObj = asFunction(function);
-                if (funcObj->ownerType.isNil() && !frame->closure->function->ownerType.isNil())
-                    funcObj->ownerType = frame->closure->function->ownerType;
+                if (funcObj->ownerType.isNil() && !asFunction(frame->closure->function)->ownerType.isNil())
+                    funcObj->ownerType = asFunction(frame->closure->function)->ownerType;
                 push(closure);
                 for (int i = 0; i < asClosure(closure)->upvalues.size(); i++) {
                     uint8_t isLocal = readByte();
@@ -3423,7 +3429,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 ObjObjectType* t = objectTypeVal(name->s, false);
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
-                    ObjModuleType* mod = asModuleType(frame->closure->function->moduleType);
+                    ObjModuleType* mod = asModuleType(asFunction(frame->closure->function)->moduleType);
                     auto it = mod->cstructArch.find(name->hash);
                     if (it != mod->cstructArch.end()) {
                         t->isCStruct = true;
@@ -3438,7 +3444,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 ObjObjectType* t = objectTypeVal(name->s, true);
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
-                    ObjModuleType* mod = asModuleType(frame->closure->function->moduleType);
+                    ObjModuleType* mod = asModuleType(asFunction(frame->closure->function)->moduleType);
                     auto it = mod->cstructArch.find(name->hash);
                     if (it != mod->cstructArch.end()) {
                         t->isCStruct = true;
@@ -3454,7 +3460,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 ObjObjectType* t = objectTypeVal(name->s, false, true);
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
-                    ObjModuleType* mod = asModuleType(frame->closure->function->moduleType);
+                    ObjModuleType* mod = asModuleType(asFunction(frame->closure->function)->moduleType);
                     auto it = mod->cstructArch.find(name->hash);
                     if (it != mod->cstructArch.end()) {
                         t->isCStruct = true;
@@ -3469,7 +3475,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 ObjObjectType* t = objectTypeVal(name->s, false, false, true);
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
-                    ObjModuleType* mod = asModuleType(frame->closure->function->moduleType);
+                    ObjModuleType* mod = asModuleType(asFunction(frame->closure->function)->moduleType);
                     auto it = mod->cstructArch.find(name->hash);
                     if (it != mod->cstructArch.end()) {
                         t->isCStruct = true;
@@ -3886,8 +3892,8 @@ void VM::runtimeError(const std::string& format, ...)
 
     auto frame { thread->frames.end()-1 };
 
-    size_t instruction = frame->ip - frame->closure->function->chunk->code.begin() - 1;
-    auto chunk = frame->closure->function->chunk;
+    size_t instruction = frame->ip - asFunction(frame->closure->function)->chunk->code.begin() - 1;
+    auto chunk = asFunction(frame->closure->function)->chunk;
     int line = chunk->getLine(instruction);
     int col  = chunk->getColumn(instruction);
     std::string fname = toUTF8StdString(chunk->sourceName);
@@ -3895,14 +3901,14 @@ void VM::runtimeError(const std::string& format, ...)
     // output stacktrace
     for(auto it = thread->frames.begin(); it != thread->frames.end(); ++it) {
         const CallFrame& f { *it };
-        auto c = f.closure->function->chunk;
+        auto c = asFunction(f.closure->function)->chunk;
         size_t instr = 0;
         if (f.ip > c->code.begin())
             instr = f.ip - c->code.begin() - 1;
         int ln = c->getLine(instr);
         int cl = c->getColumn(instr);
         std::string fn = toUTF8StdString(c->sourceName);
-        UnicodeString funcName = f.closure->function->name;
+        UnicodeString funcName = asFunction(f.closure->function)->name;
         if (funcName.isEmpty())
             funcName = UnicodeString("<script>");
         if (!fn.empty())
@@ -4100,14 +4106,14 @@ Value VM::captureStacktrace()
         const CallFrame& frame { *it };
         Value frameDict { Value::dictVal() };
 
-        UnicodeString funcName = frame.closure->function->name;
+        UnicodeString funcName = asFunction(frame.closure->function)->name;
         if (funcName.isEmpty())
             funcName = UnicodeString("<script>");
 
         asDict(frameDict)->store(Value::stringVal(UnicodeString("function")),
                                  Value::stringVal(funcName));
 
-        auto chunk = frame.closure->function->chunk;
+        auto chunk = asFunction(frame.closure->function)->chunk;
         size_t instruction = 0;
         if (frame.ip > chunk->code.begin())
             instruction = frame.ip - chunk->code.begin() - 1;

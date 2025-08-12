@@ -169,11 +169,11 @@ Value ModuleSys::help_builtin(VM& vm, ArgsView args)
 
     if (isClosure(target)) {
         ObjClosure* c = asClosure(target);
-        fn = c->function;
+        fn = asFunction(c->function);
     } else if (isFunction(target)) {
         fn = asFunction(target);
     } else if (isBoundMethod(target)) {
-        fn = asClosure(asBoundMethod(target)->method)->function;
+        fn = asFunction(asClosure(asBoundMethod(target)->method)->function);
     } else if (isBoundNative(target)) {
         fnType = asBoundNative(target)->funcType;
     } else if (isNative(target)) {

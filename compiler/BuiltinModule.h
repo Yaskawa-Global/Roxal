@@ -85,8 +85,8 @@ inline void BuiltinModule::link(const std::string& name, NativeFn fn,
     auto val = moduleType()->vars.load(toUnicodeString(name));
     if (val.has_value() && isClosure(val.value())) {
         ObjClosure* cl = asClosure(val.value());
-        cl->function->nativeImpl = fn;
-        cl->function->nativeDefaults = std::move(defaults);
+        asFunction(cl->function)->nativeImpl = fn;
+        asFunction(cl->function)->nativeDefaults = std::move(defaults);
     }
 }
 
@@ -103,8 +103,8 @@ inline void BuiltinModule::linkMethod(const std::string& typeName,
             Value val = it->second.closure;
             if (isClosure(val)) {
                 ObjClosure* cl = asClosure(val);
-                cl->function->nativeImpl = fn;
-                cl->function->nativeDefaults = std::move(defaults);
+                asFunction(cl->function)->nativeImpl = fn;
+                asFunction(cl->function)->nativeDefaults = std::move(defaults);
             }
         }
         else {
