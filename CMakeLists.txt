@@ -27,7 +27,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 # (install at same level as project folder)
 
 # Set the relative path to vcpkg (assumed to be at same level as project folder)
-set(VCPKG_ROOT "${CMAKE_SOURCE_DIR}/../vcpkg")
+if(DEFINED ENV{VCPKG_ROOT})
+    set(VCPKG_ROOT $ENV{VCPKG_ROOT})
+else()
+#if VCPKG_ROOT isn't set for the environment then it is assumed to be at same level as project folder
+    set(VCPKG_ROOT "${CMAKE_SOURCE_DIR}/../vcpkg")
+endif()
 
 # Point CMake to the vcpkg toolchain file
 set(CMAKE_TOOLCHAIN_FILE "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
