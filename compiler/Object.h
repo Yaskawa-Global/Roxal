@@ -961,9 +961,9 @@ struct ObjNative : public Obj
 inline bool isNative(const Value& v) { return isObjType(v, ObjType::Native); }
 inline ObjNative* asNative(const Value& v) { return static_cast<ObjNative*>(v.asObj()); }
 
-ObjNative* nativeVal(NativeFn function, void* data=nullptr,
-                     ptr<roxal::type::Type> funcType=nullptr,
-                     std::vector<Value> defaults = {});
+ObjNative* newNativeObj(NativeFn function, void* data=nullptr,
+                        ptr<roxal::type::Type> funcType=nullptr,
+                        std::vector<Value> defaults = {});
 
 
 
@@ -990,7 +990,7 @@ struct ObjTypeSpec : public Obj
 inline bool isTypeSpec(const Value& v) { return isObjType(v,ObjType::Type); }
 inline ObjTypeSpec* asTypeSpec(const Value& v) { return static_cast<ObjTypeSpec*>(v.asObj()); }
 
-ObjTypeSpec* typeSpecVal(ValueType t); // primitive
+ObjTypeSpec* newTypeSpecObj(ValueType t); // primitive
 
 std::string objTypeSpecToString(const ObjTypeSpec* ots);
 
@@ -1058,7 +1058,7 @@ inline ObjObjectType* asObjectType(const Value& v) { return static_cast<ObjObjec
 
 inline bool isEnumType(const Value& v) { return isObjType(v, ObjType::Type) && asTypeSpec(v)->typeValue == ValueType::Enum; }
 
-ObjObjectType* objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface = false, bool isEnumeration = false);
+ObjObjectType* newObjectTypeObj(const icu::UnicodeString& typeName, bool isActor, bool isInterface = false, bool isEnumeration = false);
 
 
 struct ObjPackageType : public ObjTypeSpec
@@ -1094,7 +1094,7 @@ struct ObjModuleType : public ObjTypeSpec
 inline bool isModuleType(const Value& v) { return isObjType(v, ObjType::Type) && (asTypeSpec(v)->typeValue == ValueType::Module); }
 inline ObjModuleType* asModuleType(const Value& v) { return static_cast<ObjModuleType*>(v.asObj()); }
 
-ObjModuleType* moduleTypeVal(const icu::UnicodeString& typeName);
+ObjModuleType* newModuleTypeObj(const icu::UnicodeString& typeName);
 
 
 
@@ -1194,7 +1194,7 @@ struct ObjBoundMethod : public Obj
 inline bool isBoundMethod(const Value& v) { return isObjType(v, ObjType::BoundMethod); }
 inline ObjBoundMethod* asBoundMethod(const Value& v) { return static_cast<ObjBoundMethod*>(v.asObj()); }
 
-inline ObjBoundMethod* boundMethodVal(const Value& instance, const Value& closure) {
+inline ObjBoundMethod* newBoundMethodObj(const Value& instance, const Value& closure) {
     #ifdef DEBUG_BUILD
     return newObj<ObjBoundMethod>(__func__, __FILE__, __LINE__, instance, closure);
     #else
@@ -1237,9 +1237,9 @@ struct ObjBoundNative : public Obj
 
 inline bool isBoundNative(const Value& v) { return isObjType(v, ObjType::BoundNative); }
 inline ObjBoundNative* asBoundNative(const Value& v) { return static_cast<ObjBoundNative*>(v.asObj()); }
-inline ObjBoundNative* boundNativeVal(const Value& instance, NativeFn fn, bool isProc = false,
-                                      ptr<roxal::type::Type> funcType=nullptr,
-                                      std::vector<Value> defaults = {}) {
+inline ObjBoundNative* newBoundNativeObj(const Value& instance, NativeFn fn, bool isProc = false,
+                                         ptr<roxal::type::Type> funcType=nullptr,
+                                         std::vector<Value> defaults = {}) {
     #ifdef DEBUG_BUILD
     return newObj<ObjBoundNative>(__func__, __FILE__, __LINE__, instance, fn, isProc, funcType, std::move(defaults));
     #else

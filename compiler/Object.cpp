@@ -723,7 +723,7 @@ ObjRange* roxal::cloneRange(const ObjRange* r)
 
 // runtime types
 
-ObjTypeSpec* roxal::typeSpecVal(ValueType t)
+ObjTypeSpec* roxal::newTypeSpecObj(ValueType t)
 {
     #ifdef DEBUG_BUILD
     assert(t != ValueType::Object && t != ValueType::Actor);
@@ -2555,7 +2555,7 @@ ObjNative::ObjNative(NativeFn _function, void* _data,
 }
 
 
-ObjNative* roxal::nativeVal(NativeFn function, void* data,
+ObjNative* roxal::newNativeObj(NativeFn function, void* data,
                            ptr<roxal::type::Type> funcType,
                            std::vector<Value> defaults)
 {
@@ -2589,7 +2589,7 @@ if (isActor && name!="_DataflowEngine") std::cout << "Actor ObjObjectType create
     }
 }
 
-ObjObjectType* roxal::objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface, bool isEnumeration)
+ObjObjectType* roxal::newObjectTypeObj(const icu::UnicodeString& typeName, bool isActor, bool isInterface, bool isEnumeration)
 {
     #ifdef DEBUG_BUILD
     return newObj<ObjObjectType>((std::string(__func__)+" "+toUTF8StdString(typeName)), __FILE__, __LINE__, typeName, isActor, isInterface, isEnumeration);
@@ -2606,7 +2606,7 @@ ObjModuleType::ObjModuleType(const icu::UnicodeString& typeName)
     typeValue = ValueType::Module;
 }
 
-ObjModuleType* roxal::moduleTypeVal(const icu::UnicodeString& typeName)
+ObjModuleType* roxal::newModuleTypeObj(const icu::UnicodeString& typeName)
 {
     #ifdef DEBUG_BUILD
     auto mt = newObj<ObjModuleType>(std::string(__func__)+" "+toUTF8StdString(typeName), __FILE__, __LINE__, typeName);

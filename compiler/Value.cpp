@@ -211,19 +211,23 @@ Value Value::nativeVal(NativeFn function, void* data,
                            ptr<roxal::type::Type> funcType,
                            std::vector<Value> defaults)
 {
-    return objVal(::nativeVal(function, data, funcType, defaults));
+    return objVal(newNativeObj(function, data, funcType, defaults));
 }
 
 Value Value::typeSpecVal(ValueType t)
 {
-    return objVal(::typeSpecVal(t));
+    return objVal(newTypeSpecObj(t));
 }
 
 Value Value::objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface, bool isEnumeration)
 {
-    return objVal(::objectTypeVal(typeName, isActor, isInterface, isEnumeration));
+    return objVal(newObjectTypeObj(typeName, isActor, isInterface, isEnumeration));
 }
 
+Value Value::moduleTypeVal(const icu::UnicodeString& typeName)
+{
+    return objVal(newModuleTypeObj(typeName));
+}
 
 Value Value::objectInstanceVal(const Value& objectType)
 {
@@ -236,6 +240,22 @@ Value Value::actorInstanceVal(const Value& objectType)
     debug_assert_msg(isObjectType(objectType), "Value is an ObjObjectType");
     return objVal(newActorInstance(asObjectType(objectType)));
 }
+
+Value Value::boundMethodVal(const Value& instance, const Value& closure)
+{
+    debug_assert_msg(isObjectInstance(instance) || isActorInstance(instance), "Value is an ObjObject");
+    debug_assert_msg(isClosure(closure), "Value is an ObjClosure");
+    return objVal(newBoundMethodObj(instance, closure));
+}
+
+Value Value::boundNativeVal(const Value& instance, NativeFn fn, bool isProc, // ObjBoundNative
+                             ptr<roxal::type::Type> funcType,
+                             std::vector<Value> defaults)
+{
+    return objVal(newBoundNativeObj(instance, fn, isProc, funcType, defaults));
+}
+
+
 
 
 
@@ -2367,7 +2387,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                     asObjectType(obj)->read(in, ctx);
                     return obj;
                 } else { // Module
-                    Value module { objVal(::moduleTypeVal(icu::UnicodeString())) };
+                    Value module { objVal(::newModuleTypeObj(icu::UnicodeString())) };
                     asModuleType(module)->read(in, ctx);
                     return module;
                 }

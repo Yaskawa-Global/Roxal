@@ -346,7 +346,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         Value pkgModuleVal {};
         auto pkgEntry = importedModules.find(pkgInfo);
         if (pkgEntry == importedModules.end()) {
-            pkgModuleVal = objVal(moduleTypeVal(pkgName));
+            pkgModuleVal = Value::moduleTypeVal(pkgName);
             ObjModuleType::allModules.push_back(pkgModuleVal);
             importedModules[pkgInfo] = pkgModuleVal;
         } else {
@@ -518,7 +518,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
             if (std::holds_alternative<BuiltinType>(varType)) {
                 auto builtinType { std::get<BuiltinType>(varType) };
-                Value typeValue { typeSpecVal(builtinToValueType(builtinType)) };
+                Value typeValue { Value::typeSpecVal(builtinToValueType(builtinType)) };
 
                 emitConstant(typeValue, "prop "+toUTF8StdString(propName)+" type");
             }

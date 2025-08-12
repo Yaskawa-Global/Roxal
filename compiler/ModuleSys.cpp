@@ -15,7 +15,7 @@ using namespace roxal;
 
 ModuleSys::ModuleSys()
 {
-    moduleTypeValue = objVal(moduleTypeVal(toUnicodeString("sys")));
+    moduleTypeValue = objVal(newModuleTypeObj(toUnicodeString("sys")));
     ObjModuleType::allModules.push_back(moduleTypeValue);
 }
 
@@ -701,20 +701,19 @@ Value ModuleSys::typeof_native(VM& vm, ArgsView args)
             auto maybe = vm.globals.load(toUnicodeString("exception"));
             if (maybe.has_value())
                 return maybe.value();
-            return objVal(typeSpecVal(ValueType::Object));
+            return Value::typeSpecVal(ValueType::Object);
         }
 
         // For primitive object wrappers like strings
         valueType = obj->valueType();
-        ObjTypeSpec* typeObj = typeSpecVal(valueType);
+        ObjTypeSpec* typeObj = newTypeSpecObj(valueType);
         return objVal(typeObj);
     } else {
         // Fallback
         valueType = ValueType::Nil;
     }
 
-    ObjTypeSpec* typeObj = typeSpecVal(valueType);
-    return objVal(typeObj);
+    return Value::typeSpecVal(valueType);
 }
 
 Value ModuleSys::df_graph_native(VM& vm, ArgsView args)

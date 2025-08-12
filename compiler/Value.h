@@ -221,9 +221,17 @@ public:
 
     static Value objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface = false, bool isEnumeration = false); // ObjObjectType
 
+    static Value moduleTypeVal(const icu::UnicodeString& typeName); // ObjModuleType
+
     static Value objectInstanceVal(const Value& objectType); // ObjectInstance
 
     static Value actorInstanceVal(const Value& objectType);  // ActorInstance
+
+    static Value boundMethodVal(const Value& instance, const Value& closure); // ObjBoundMethod
+
+    static Value boundNativeVal(const Value& instance, NativeFn fn, bool isProc = false, // ObjBoundNative
+                                ptr<roxal::type::Type> funcType=nullptr,
+                                std::vector<Value> defaults = {});
 
 
     /// @brief Copy constructor.

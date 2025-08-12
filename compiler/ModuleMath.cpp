@@ -8,7 +8,7 @@ using namespace roxal;
 
 ModuleMath::ModuleMath()
 {
-    moduleTypeValue = objVal(moduleTypeVal(toUnicodeString("math")));
+    moduleTypeValue = objVal(newModuleTypeObj(toUnicodeString("math")));
     ObjModuleType::allModules.push_back(moduleTypeValue);
 }
 

@@ -228,7 +228,7 @@ VM::VM()
 
     // Initialize dataflow engine as builtin actor
     dataflowEngine = df::DataflowEngine::instance();
-    ObjObjectType* dataflowType = objectTypeVal(toUnicodeString("_DataflowEngine"), true);
+    ObjObjectType* dataflowType = newObjectTypeObj(toUnicodeString("_DataflowEngine"), true);
     Value dataflowTypeVal { objVal(dataflowType) };
     dataflowEngineActor = Value::actorInstanceVal(dataflowTypeVal);
     dataflowEngineThread = std::make_shared<Thread>();
@@ -238,7 +238,7 @@ VM::VM()
     {
         ActorInstance* inst = asActorInstance(dataflowEngineActor);
         CallSpec cs{}; cs.argCount = 0; cs.allPositional = true;
-        Value callee = objVal(boundNativeVal(dataflowEngineActor, std::mem_fn(&VM::dataflow_run_native), true, nullptr, {}));
+        Value callee { Value::boundNativeVal(dataflowEngineActor, std::mem_fn(&VM::dataflow_run_native), true, nullptr, {}) };
         inst->queueCall(callee, cs, nullptr);
     }
 
@@ -246,15 +246,15 @@ VM::VM()
     globals.storeGlobal(toUnicodeString("_dataflow"), dataflowEngineActor);
 
     // built-in exception hierarchy
-    Value exType = objVal(objectTypeVal(toUnicodeString("exception"), false));
-    Value runtimeExType = objVal(objectTypeVal(toUnicodeString("RuntimeException"), false));
+    Value exType = objVal(newObjectTypeObj(toUnicodeString("exception"), false));
+    Value runtimeExType = objVal(newObjectTypeObj(toUnicodeString("RuntimeException"), false));
     asObjectType(runtimeExType)->superType = exType;
-    Value programExType = objVal(objectTypeVal(toUnicodeString("ProgramException"), false));
+    Value programExType = objVal(newObjectTypeObj(toUnicodeString("ProgramException"), false));
     asObjectType(programExType)->superType = exType;
-    Value condIntType = objVal(objectTypeVal(toUnicodeString("ConditionalInterrupt"), false));
+    Value condIntType = objVal(newObjectTypeObj(toUnicodeString("ConditionalInterrupt"), false));
     asObjectType(condIntType)->superType = exType;
 #ifdef ROXAL_ENABLE_FILEIO
-    Value fileIOExceptionTypeVal = objVal(objectTypeVal(toUnicodeString("FileIOException"), false));
+    Value fileIOExceptionTypeVal = Value::objectTypeVal(toUnicodeString("FileIOException"), false);
     asObjectType(fileIOExceptionTypeVal)->superType = runtimeExType;
 #endif
 
@@ -835,17 +835,15 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             Value calleeVal;
                             if (isNative) {
                                 NativeFn fn = initFuncObj->nativeImpl;
-                                ObjBoundNative* boundInit = boundNativeVal(inst, fn,
-                                                                           initFuncObj->funcType.has_value() &&
-                                                                               initFuncObj->funcType.value()->func.has_value() ?
-                                                                               initFuncObj->funcType.value()->func->isProc : false,
-                                                                           initFuncObj->funcType.has_value() ?
-                                                                               initFuncObj->funcType.value() : nullptr,
-                                                                           initFuncObj->nativeDefaults);
-                                calleeVal = objVal(boundInit);
+                                calleeVal = Value::boundNativeVal(inst, fn,
+                                                                  initFuncObj->funcType.has_value() &&
+                                                                     initFuncObj->funcType.value()->func.has_value() ?
+                                                                     initFuncObj->funcType.value()->func->isProc : false,
+                                                                  initFuncObj->funcType.has_value() ?
+                                                                     initFuncObj->funcType.value() : nullptr,
+                                                                  initFuncObj->nativeDefaults);
                             } else {
-                                ObjBoundMethod* boundInit = boundMethodVal(inst, initMethod->closure);
-                                calleeVal = objVal(boundInit);
+                                calleeVal = Value::boundMethodVal(inst, initMethod->closure);
                             }
                             *(thread->stackTop - callSpec.argCount - 1) = calleeVal;
                             bool ok = callValue(calleeVal, callSpec);
@@ -853,7 +851,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 *(thread->stackTop - 1) = inst; // native init returns instance
                             return ok;
                         } else {
-                            ObjBoundMethod* boundInit = boundMethodVal(inst, initMethod->closure);
+                            ObjBoundMethod* boundInit = newBoundMethodObj(inst, initMethod->closure);
                             Value calleeVal = objVal(boundInit);
                             ActorInstance* actorInst = asActorInstance(inst);
                             actorInst->queueCall(calleeVal, callSpec, &(*thread->stackTop));
@@ -1186,9 +1184,8 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                     }
                 } else {
                     // Different thread - queue the call
-                    ObjBoundNative* boundNative = boundNativeVal(receiver, fn, methodInfo.isProc,
-                                                                  methodInfo.funcType, methodInfo.defaultValues);
-                    Value callee = objVal(boundNative);
+                    Value callee = Value::boundNativeVal(receiver, fn, methodInfo.isProc,
+                                                         methodInfo.funcType, methodInfo.defaultValues);
                     Value future = instance->queueCall(callee, callSpec, &(*thread->stackTop));
 
                     popN(callSpec.argCount + 1); // args & receiver
@@ -1543,19 +1540,19 @@ VM::BindResult VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
         ObjClosure* cl = asClosure(method);
         ObjFunction* func = asFunction(cl->function);
         NativeFn fn = func->nativeImpl;
-        ObjBoundNative* boundNative = boundNativeVal(peek(0), fn,
-                                                    func->funcType.has_value() &&
-                                                        func->funcType.value()->func.has_value() ?
-                                                        func->funcType.value()->func->isProc : false,
-                                                    func->funcType.has_value() ?
-                                                        func->funcType.value() : nullptr,
-                                                    func->nativeDefaults);
+        Value boundNative { Value::boundNativeVal(peek(0), fn,
+                                                  func->funcType.has_value() &&
+                                                      func->funcType.value()->func.has_value() ?
+                                                      func->funcType.value()->func->isProc : false,
+                                                  func->funcType.has_value() ?
+                                                      func->funcType.value() : nullptr,
+                                                  func->nativeDefaults) };
         pop();
-        push(objVal(boundNative));
+        push(boundNative);
     } else {
-        ObjBoundMethod* boundMethod { boundMethodVal(peek(0), method) };
+        Value boundMethod { Value::boundMethodVal(peek(0), method) };
         pop();
-        push(objVal(boundMethod));
+        push(boundMethod);
     }
 
     return BindResult::Bound;
@@ -1746,7 +1743,7 @@ void VM::defineNative(const std::string& name, NativeFn function,
                       std::vector<Value> defaults)
 {
     UnicodeString uname { toUnicodeString(name) };
-    Value funcVal { objVal(nativeVal(function, nullptr, funcType, defaults)) };
+    Value funcVal { Value::nativeVal(function, nullptr, funcType, defaults) };
     globals.storeGlobal(uname,funcVal);
 }
 
@@ -1980,10 +1977,10 @@ std::pair<InterpretResult,Value> VM::execute()
                         auto methodIt = mit->second.find(name->hash);
                         if (methodIt != mit->second.end()) {
                             const BuiltinMethodInfo& methodInfo = methodIt->second;
-                            ObjBoundNative* bm = boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
-                                                               methodInfo.funcType, methodInfo.defaultValues);
+                            Value bm { Value::boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
+                                                             methodInfo.funcType, methodInfo.defaultValues) };
                             pop();
-                            push(objVal(bm));
+                            push(bm);
                             break;
                         }
                     }
@@ -2059,10 +2056,10 @@ std::pair<InterpretResult,Value> VM::execute()
                             if (methodIt != mit->second.end()) {
                                 const BuiltinMethodInfo& methodInfo = methodIt->second;
                                 NativeFn fn = methodInfo.function;
-                                ObjBoundNative* boundNative = boundNativeVal(inst, fn, methodInfo.isProc,
-                                                                              methodInfo.funcType, methodInfo.defaultValues);
+                                Value boundNative { Value::boundNativeVal(inst, fn, methodInfo.isProc,
+                                                                          methodInfo.funcType, methodInfo.defaultValues) };
                                 pop();
-                                push(objVal(boundNative));
+                                push(boundNative);
                                 break;
                             }
                         }
@@ -2109,10 +2106,10 @@ std::pair<InterpretResult,Value> VM::execute()
                         auto it2 = mit->second.find(name->hash);
                         if (it2 != mit->second.end()) {
                             const BuiltinMethodInfo& methodInfo = it2->second;
-                            ObjBoundNative* bm = boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
-                                                               methodInfo.funcType, methodInfo.defaultValues);
+                            Value bm { Value::boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
+                                                             methodInfo.funcType, methodInfo.defaultValues) };
                             pop();
-                            push(objVal(bm));
+                            push(bm);
                             break;
                         }
                     }
@@ -2161,10 +2158,10 @@ std::pair<InterpretResult,Value> VM::execute()
                         auto methodIt = mit->second.find(name->hash);
                         if (methodIt != mit->second.end()) {
                             const BuiltinMethodInfo& methodInfo = methodIt->second;
-                            ObjBoundNative* bm = boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
-                                                               methodInfo.funcType, methodInfo.defaultValues);
+                            Value bm { Value::boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
+                                                               methodInfo.funcType, methodInfo.defaultValues) };
                             pop();
-                            push(objVal(bm));
+                            push(bm);
                             break;
                         }
                     }
@@ -2259,10 +2256,10 @@ std::pair<InterpretResult,Value> VM::execute()
                             if (methodIt != mit->second.end()) {
                                 const BuiltinMethodInfo& methodInfo = methodIt->second;
                                 NativeFn fn = methodInfo.function;
-                                ObjBoundNative* boundNative = boundNativeVal(inst, fn, methodInfo.isProc,
-                                                                              methodInfo.funcType, methodInfo.defaultValues);
+                                Value boundNative { Value::boundNativeVal(inst, fn, methodInfo.isProc,
+                                                                              methodInfo.funcType, methodInfo.defaultValues) };
                                 pop();
-                                push(objVal(boundNative));
+                                push(boundNative);
                                 break;
                             }
                         }
@@ -2305,10 +2302,10 @@ std::pair<InterpretResult,Value> VM::execute()
                         auto it2 = mit->second.find(name->hash);
                         if (it2 != mit->second.end()) {
                             const BuiltinMethodInfo& methodInfo = it2->second;
-                            ObjBoundNative* bm = boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
-                                                               methodInfo.funcType, methodInfo.defaultValues);
+                            Value bm { Value::boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
+                                                               methodInfo.funcType, methodInfo.defaultValues) };
                             pop();
-                            push(objVal(bm));
+                            push(bm);
                             break;
                         }
                     }
@@ -3426,63 +3423,67 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::ObjectType): {
                 ObjString* name = readString();
-                ObjObjectType* t = objectTypeVal(name->s, false);
+                Value tv { Value::objectTypeVal(name->s, false) }; // ObjObjectType
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
                     ObjModuleType* mod = asModuleType(asFunction(frame->closure->function)->moduleType);
                     auto it = mod->cstructArch.find(name->hash);
                     if (it != mod->cstructArch.end()) {
+                        auto t { asObjectType(tv) };
                         t->isCStruct = true;
                         t->cstructArch = it->second;
                     }
                 }
-                push(objVal(t));
+                push(tv);
                 break;
             }
             case asByte(OpCode::ActorType): {
                 ObjString* name = readString();
-                ObjObjectType* t = objectTypeVal(name->s, true);
+                Value tv { Value::objectTypeVal(name->s, true) }; // ObjObjectType
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
                     ObjModuleType* mod = asModuleType(asFunction(frame->closure->function)->moduleType);
                     auto it = mod->cstructArch.find(name->hash);
                     if (it != mod->cstructArch.end()) {
+                        auto t { asObjectType(tv) };
                         t->isCStruct = true;
                         t->cstructArch = it->second;
                     }
                 }
-                push(objVal(t));
+                push(tv);
                 break;
             }
             case asByte(OpCode::InterfaceType): {
                 // interface types are represented as object types (but are abstract - all abstract methods)
                 ObjString* name = readString();
-                ObjObjectType* t = objectTypeVal(name->s, false, true);
+                Value tv { Value::objectTypeVal(name->s, false, true) };
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
                     ObjModuleType* mod = asModuleType(asFunction(frame->closure->function)->moduleType);
                     auto it = mod->cstructArch.find(name->hash);
                     if (it != mod->cstructArch.end()) {
+                        auto t { asObjectType(tv) };
                         t->isCStruct = true;
                         t->cstructArch = it->second;
                     }
                 }
-                push(objVal(t));
+                push(tv);
                 break;
             }
             case asByte(OpCode::EnumerationType): {
                 ObjString* name = readString();
-                ObjObjectType* t = objectTypeVal(name->s, false, false, true);
+                Value tv { Value::objectTypeVal(name->s, false, false, true) };
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
                     ObjModuleType* mod = asModuleType(asFunction(frame->closure->function)->moduleType);
                     auto it = mod->cstructArch.find(name->hash);
                     if (it != mod->cstructArch.end()) {
+                        auto t { asObjectType(tv) };
                         t->isCStruct = true;
                         t->cstructArch = it->second;
                     }
                 }
-                push(objVal(t));
+                push(tv);
                 break;
             }
             case asByte(OpCode::Property): {
