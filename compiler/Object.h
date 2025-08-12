@@ -822,7 +822,7 @@ struct ObjUpvalue : public Obj {
 inline bool isUpvalue(const Value& v) { return isObjType(v, ObjType::Upvalue); }
 inline ObjUpvalue* asUpvalue(const Value& v) { return static_cast<ObjUpvalue*>(v.asObj()); }
 
-inline ObjUpvalue* upvalueVal(Value* v) {
+inline ObjUpvalue* newUpvalueObj(Value* v) {
     #ifdef DEBUG_BUILD
     return newObj<ObjUpvalue>(__func__,__FILE__,__LINE__,v);
     #else
@@ -852,20 +852,18 @@ struct ObjClosure : public Obj
         type = ObjType::Closure;
         if (function) {
             function->incRef();
-            upvalues.resize(function->upvalueCount, nullptr);
+            upvalues.resize(function->upvalueCount);
         }
     }
     virtual ~ObjClosure() {
-        for(size_t i=0; i<upvalues.size(); i++)
-            if (upvalues[i] != nullptr)
-                upvalues[i]->decRef();
+        upvalues.clear();
 
         if (function)
             function->decRef();
     }
 
     ObjFunction* function;
-    std::vector<ObjUpvalue*> upvalues;
+    std::vector<Value> upvalues; // ObjUpvalue
 
     // thread expected to execute this closure when used as an event handler
     std::weak_ptr<Thread> handlerThread;
@@ -897,7 +895,7 @@ inline ObjClosure* cloneClosure(const ObjClosure* c) {
     #endif
     newc->upvalues.resize(c->upvalues.size());
     for(auto i=0; i<c->upvalues.size();i++)
-        newc->upvalues[i] = cloneUpvalue(c->upvalues.at(i));
+        newc->upvalues[i] = c->upvalues.at(i).clone();
     return newc;
 }
 
@@ -934,7 +932,7 @@ inline ObjFuture* asFuture(const Value& v) {
     return static_cast<ObjFuture*>(v.asObj());
 }
 
-inline ObjFuture* futureVal(const std::shared_future<Value>& fv) {
+inline ObjFuture* newFutureObj(const std::shared_future<Value>& fv) {
     #ifdef DEBUG_BUILD
     return newObj<ObjFuture>(__func__, __FILE__,__LINE__,fv);
     #else

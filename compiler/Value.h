@@ -303,6 +303,8 @@ public:
     /// @return True if the value is Nil, false otherwise.
     inline bool isNil() const { return val == (QNAN | TagNil); }
 
+    inline bool isNonNil() const { return val != (QNAN | TagNil); }
+
     /// @brief Checks if the value is a boolean.
     /// @return True if the value is a boolean, false otherwise.
     inline bool isBool() const {

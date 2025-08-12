@@ -193,7 +193,7 @@ Value Value::functionVal(const icu::UnicodeString& name,
 
 Value Value::upvalueVal(Value* v)
 {
-    return objVal(::upvalueVal(v));
+    return objVal(newUpvalueObj(v));
 }
 
 Value Value::closureVal(const Value& function)
@@ -204,7 +204,7 @@ Value Value::closureVal(const Value& function)
 
 Value Value::futureVal(const std::shared_future<Value>& fv)
 {
-    return objVal(::futureVal(fv));
+    return objVal(newFutureObj(fv));
 }
 
 Value Value::nativeVal(NativeFn function, void* data,
@@ -1093,7 +1093,7 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
             Value cl { Value::closureVal(fn) };
             ObjClosure* clObj = asClosure(cl);
             Value local = Value::intVal(3);
-            clObj->upvalues[0] = upvalueVal(&local);
+            clObj->upvalues[0] = Value::upvalueVal(&local);
             std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
             clObj->write(ss);
             ss.seekg(0);
@@ -1103,7 +1103,7 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
                 clObj2->function->decRef();
             clObj2->function = nullptr;
             clObj2->read(ss);
-            bool pass = clObj2->function->name == clObj->function->name && clObj2->upvalues.size()==clObj->upvalues.size() && clObj2->upvalues[0]->closed.equals(Value::intVal(3), true);
+            bool pass = clObj2->function->name == clObj->function->name && clObj2->upvalues.size()==clObj->upvalues.size() && asUpvalue(clObj2->upvalues[0])->closed.equals(Value::intVal(3), true);
             results.push_back({"closure_round", pass, pass?"ok":"mismatch"});
         } catch(std::exception& e) {
             results.push_back({"closure_round", false, std::string("exception: ")+e.what()});

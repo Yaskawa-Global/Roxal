@@ -75,13 +75,16 @@ public:
 
     InterpretResult result;
 
-    std::list<ObjUpvalue*> openUpvalues;
+    // list of open UpValue (Value* pointers into the stack) in stack address order
+    std::list<Value> openUpvalues; // ObjUpvalue
+
     struct ValueHasher {
         size_t operator()(const Value& v) const noexcept { return v.hash(); }
     };
     struct ValueEqual {
         bool operator()(const Value& a, const Value& b) const noexcept { return a == b; }
     };
+
     // Per-thread mapping of event to subscribed handler closures. The key is a
     // weak reference to the event object and each value is the list of handler
     // closures registered by this thread.

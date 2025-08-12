@@ -239,6 +239,10 @@ Obj* Obj::clone() const
         // FIXME!!!: collision for ObjType::Type - used by ObjTypeSpec and ObjPrimitive for builtin type!
     else if (type == ObjType::Bool || type == ObjType::Real || type == ObjType::Int /*|| type == ObjType::Type*/)
         return cloneObjPrimitive(static_cast<const ObjPrimitive*>(this));
+    else if (type == ObjType::Upvalue)
+        return cloneUpvalue(static_cast<const ObjUpvalue*>(this));
+    else if (type == ObjType::Closure)
+        return cloneClosure(static_cast<const ObjClosure*>(this));
     else if (type == ObjType::Range)
         return cloneRange(static_cast<const ObjRange*>(this));
     else if (type == ObjType::List)
@@ -251,10 +255,6 @@ Obj* Obj::clone() const
         return cloneMatrix(static_cast<const ObjMatrix*>(this));
     else if (type == ObjType::Function) // code is immutable, can copy reference
         return mutableThis;
-    else if (type == ObjType::Upvalue)
-        return cloneUpvalue(static_cast<const ObjUpvalue*>(this));
-    else if (type == ObjType::Closure)
-        return cloneClosure(static_cast<const ObjClosure*>(this));
     else if (type == ObjType::Future) {
         // wait for result, then turn it into an ObjPrimitive copy of the value
         Value value = static_cast<ObjFuture*>(mutableThis)->asValue();
@@ -1543,11 +1543,11 @@ void ObjClosure::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) 
     function->write(out, ctx);
     uint32_t count = upvalues.size();
     out.write(reinterpret_cast<char*>(&count),4);
-    for(auto* uv : upvalues) {
-        uint8_t present = uv ? 1 : 0;
+    for(auto uv : upvalues) {
+        uint8_t present = uv.isNil() ? 0 : 1;
         out.write(reinterpret_cast<char*>(&present),1);
         if(present)
-            uv->write(out, ctx);
+            writeValue(out, uv, ctx);
     }
 }
 
@@ -1572,18 +1572,12 @@ void ObjClosure::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     function->incRef();
 
     uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
-    upvalues.resize(count,nullptr);
+    upvalues.resize(count);
     for(uint32_t i=0;i<count;i++) {
         uint8_t present; in.read(reinterpret_cast<char*>(&present),1);
         if(present) {
-            #ifdef DEBUG_BUILD
-            auto uv = newObj<ObjUpvalue>(__func__, __FILE__, __LINE__, nullptr);
-            #else
-            auto uv = newObj<ObjUpvalue>(nullptr);
-            #endif
-            uv->read(in, ctx);
+            Value uv = readValue(in, ctx);
             upvalues[i] = uv;
-            uv->incRef();
         }
     }
 }
@@ -2781,7 +2775,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
             if (!funcType->func.value().isProc) {
                 callInfo.returnPromise = std::make_shared<std::promise<Value>>();
                 std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
-                callInfo.returnFuture = objVal(futureVal(sf));
+                callInfo.returnFuture = objVal(newFutureObj(sf));
             }
         }
     }
@@ -2793,7 +2787,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
         if (!bound->isProc) {
             callInfo.returnPromise = std::make_shared<std::promise<Value>>();
             std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
-            callInfo.returnFuture = objVal(futureVal(sf));
+            callInfo.returnFuture = objVal(newFutureObj(sf));
         }
     }
 

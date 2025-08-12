@@ -1558,22 +1558,21 @@ VM::BindResult VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
 
 
 
-ObjUpvalue* VM::captureUpvalue(Value& local)
+Value VM::captureUpvalue(Value& local)
 {
     auto& openUpvalues = thread->openUpvalues;
     auto begin = openUpvalues.begin();
     auto end = openUpvalues.end();
     auto it { begin };
-    while ((it != end) && ((*it)->location > &local)) {
+    while ((it != end) && (asUpvalue(*it)->location > &local)) {
         ++it;
     }
 
-    if (it != end && (*it)->location == &local)
+    if (it != end && asUpvalue(*it)->location == &local)
         return *it;
 
-    ObjUpvalue* createdUpvalue = upvalueVal(&local);
+    Value createdUpvalue { Value::upvalueVal(&local) };
 
-    createdUpvalue->incRef();
     openUpvalues.insert(it, createdUpvalue);
 
     // TODO: add debug/test code to ensure openUpvalues are decreasing stack order
@@ -1585,12 +1584,12 @@ ObjUpvalue* VM::captureUpvalue(Value& local)
 void VM::closeUpvalues(Value* last)
 {
     auto& openUpvalues = thread->openUpvalues;
-    while (!openUpvalues.empty() && (openUpvalues.front()->location >= last)) {
-        ObjUpvalue* upvalue = openUpvalues.front();
-        upvalue->closed = *upvalue->location;
-        upvalue->location = &upvalue->closed;
+    while (!openUpvalues.empty() && (asUpvalue(openUpvalues.front())->location >= last)) {
+        Value upvalue = openUpvalues.front();
+        ObjUpvalue* upvalueObj = asUpvalue(upvalue);
+        upvalueObj->closed = *upvalueObj->location;
+        upvalueObj->location = &upvalueObj->closed;
         openUpvalues.pop_front();
-        upvalue->decRef();
     }
 }
 
@@ -2900,12 +2899,12 @@ std::pair<InterpretResult,Value> VM::execute()
                 for (int i = 0; i < asClosure(closure)->upvalues.size(); i++) {
                     uint8_t isLocal = readByte();
                     uint8_t index = readByte();
-                    ObjUpvalue* upvalue;
+                    Value upvalue; // ObjUpvalue
                     if (isLocal)
                         upvalue = captureUpvalue(*(frame->slots + index));
                     else
                         upvalue = frame->closure->upvalues[index];
-                    upvalue->incRef();
+
                     asClosure(closure)->upvalues[i] = upvalue;
                 }
                 break;
@@ -2921,12 +2920,11 @@ std::pair<InterpretResult,Value> VM::execute()
                 for (int i = 0; i < asClosure(closure)->upvalues.size(); i++) {
                     uint8_t isLocal = readByte();
                     uint8_t index = readByte();
-                    ObjUpvalue* upvalue;
+                    Value upvalue; // ObjUpvalue
                     if (isLocal)
                         upvalue = captureUpvalue(*(frame->slots + index));
                     else
                         upvalue = frame->closure->upvalues[index];
-                    upvalue->incRef();
                     asClosure(closure)->upvalues[i] = upvalue;
                 }
                 break;
@@ -3146,12 +3144,12 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::GetUpvalue): {
                 uint8_t slot = readByte();
-                push(*frame->closure->upvalues[slot]->location);
+                push(*asUpvalue(frame->closure->upvalues[slot])->location);
                 break;
             }
             case asByte(OpCode::SetUpvalue): {
                 uint8_t slot = readByte();
-                *(frame->closure->upvalues[slot]->location) = peek(0);
+                *(asUpvalue(frame->closure->upvalues[slot])->location) = peek(0);
                 break;
             }
             case asByte(OpCode::Constant2): {
@@ -3773,10 +3771,6 @@ void VM::resetStack()
     thread->frames.clear();
     thread->frames.reserve(128);
     thread->frameStart = false;
-
-    for (auto* upvalue : thread->openUpvalues) {
-        upvalue->decRef();
-    }
     thread->openUpvalues.clear();
 }
 
