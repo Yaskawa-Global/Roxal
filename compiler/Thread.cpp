@@ -6,9 +6,8 @@ using namespace roxal;
 
 Thread::~Thread()
 {
-    for (auto* upvalue : openUpvalues) {
-        upvalue->decRef();
-    }
+    openUpvalues.clear();
+
     // remove any event subscriptions for this thread
     for (auto& entry : eventHandlers) {
         if (!entry.first.isAlive()) continue;

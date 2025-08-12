@@ -106,7 +106,7 @@ public:
         Private
     };
     BindResult bindMethod(ObjObjectType* instanceType, ObjString* name);
-    ObjUpvalue* captureUpvalue(Value& local);
+    Value captureUpvalue(Value& local); // returns ObjUpvalue
     void closeUpvalues(Value* last);
     Value opReturn();
     bool isAccessAllowed(const Value& ownerType, ast::Access access);
