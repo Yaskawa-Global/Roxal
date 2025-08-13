@@ -216,6 +216,7 @@ if(ROXAL_BUILD_MAIN)
     target_compile_definitions(roxal PRIVATE
         $<$<CONFIG:DEBUG>:DEBUG_BUILD>
         $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
+        $<$<BOOL:${USE_GC_SGCL}>:USE_GC_SGCL>
     )
 
     add_test(NAME RoxalSourceTests

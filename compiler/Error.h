@@ -9,7 +9,7 @@
 
 namespace roxal {
 
-inline ptr<std::string> compileSource;
+inline ptr<std::string> compileSource = nullptr;
 inline std::string compileSourceName;
 
 inline void setCompileContext(ptr<std::string> source,
