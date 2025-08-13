@@ -953,7 +953,7 @@ std::any ASTGenerator::visitFunc_sig(RoxalParser::Func_sigContext *context)
 std::any ASTGenerator::visitParameters(RoxalParser::ParametersContext *context)
 {
     visitStart();
-    auto params = std::make_shared<std::vector<ptr<Parameter>>>();
+    auto params = make_ptr<std::vector<ptr<Parameter>>>();
     for(size_t i=0; i<context->parameter().size(); i++) {
 
         auto param = visitParameter(context->parameter().at(i));

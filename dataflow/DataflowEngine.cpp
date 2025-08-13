@@ -274,9 +274,15 @@ void DataflowEngine::copyInto(ptr<Signal> lhs, ptr<Signal> rhs)
     // Update any derived signals that reference lhs so they reference rhs
     for (auto& sig : signals) {
         if (sig->isDerived) {
+            #if !USE_GC_SGCL
             auto base = sig->baseSignal.lock();
             if (base == lhs)
                 sig->baseSignal = rhs;
+            #else
+            auto base = sig->baseSignal;
+            if (base == lhs)
+                sig->baseSignal = rhs;
+            #endif
         }
     }
 
@@ -491,7 +497,11 @@ void DataflowEngine::tick(bool waitForTickStart)
 
     for(const auto& signal : signals) {
         if (signal->isDerived) {
+            #if !USE_GC_SGCL
             auto src = signal->baseSignal.lock();
+            #else
+            auto src = signal->baseSignal;
+            #endif
             if (src) {
                 try {
                     Value val = src->valueAtIndex(signal->baseIndex);
@@ -1103,7 +1113,11 @@ std::string DataflowEngine::graphDot(const std::string& title, std::map<std::str
     // Show derived signal relationships
     for (const auto& signal : signals) {
         if (signal->isDerived) {
+            #if !USE_GC_SGCL
             auto base = signal->baseSignal.lock();
+            #else
+            auto base = signal->baseSignal;
+            #endif
             if (base) {
                 dot << "  \"" << base->name() << "\" -> \"" << signal->name()
                     << "\" [label=\"[" << signal->baseIndex << "]\"];\n";

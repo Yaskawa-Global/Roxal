@@ -8,6 +8,10 @@ enable_testing()
 option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
 
 
+option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
+option(USE_GC_SGCL "Use the SGCL garbage collector" ON)
+
+
 add_compile_definitions(
 #    DEBUG_OUTPUT_LEXER_TOKENS
 #    DEBUG_OUTPUT_PARSE_TREE
@@ -21,6 +25,7 @@ add_compile_definitions(
 # Set the C++ standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
+
 
 #
 # vcpkg
@@ -76,10 +81,9 @@ pkg_check_modules(LIBFFI REQUIRED libffi)
 # Build the dataflow engine library
 add_subdirectory(dataflow)
 
-
-option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
-
-option(USE_GC_SGCL "Use the SGCL garbage collector" ON)
+target_compile_definitions(dataflow PRIVATE
+    $<$<BOOL:${USE_GC_SGCL}>:USE_GC_SGCL>
+)
 
 
 # Add the source files

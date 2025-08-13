@@ -70,13 +70,13 @@ void Signal::invokeValueChangedCallbacks(TimePoint t, const Value& v)
     for (auto& callback : valueChangedCallbacks) {
         #ifdef DEBUG_BUILD
         try {
-            callback(t, shared_from_this(), v);
+            callback(t, ptr_from_this(), v);
         } catch(const std::exception& e) {
             std::cerr << "Exception in signal "+name()+" callback " << e.what() << std::endl;
         }
         #else
         try {
-            callback(t, shared_from_this(), v);
+            callback(t, ptr_from_this(), v);
         } catch(...) {}
         #endif
     }
@@ -184,7 +184,7 @@ void Signal::set(const Value& v)
     TimePoint nextTick = t + m_period;
 
     setValueAt(nextTick, v);
-    DataflowEngine::instance()->updateSignalConsumerInputAvailability(shared_from_this(), nextTick);
+    DataflowEngine::instance()->updateSignalConsumerInputAvailability(ptr_from_this(), nextTick);
 }
 
 
@@ -249,7 +249,7 @@ ptr<Signal> Signal::indexedSignal(int index)
         throw std::invalid_argument("Signal index must be 0 or negative");
 
     if (index == 0)
-        return shared_from_this();
+        return ptr_from_this();
 
     Value initial;
     try {
@@ -266,7 +266,7 @@ ptr<Signal> Signal::indexedSignal(int index)
     newSig->isClock = false;
     newSig->isSource = false;
     newSig->isDerived = true;
-    newSig->baseSignal = shared_from_this();
+    newSig->baseSignal = ptr_from_this();
     newSig->baseIndex = index;
     newSig->setMaxHistoryPeriods(std::max(m_maxHistoryPeriods, -index + 1));
     DataflowEngine::instance()->addSignal(newSig);

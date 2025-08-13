@@ -121,7 +121,11 @@ private:
     int m_maxHistoryPeriods;
 
     bool isDerived = false; // true if this signal represents another signal delayed
+    #if !USE_GC_SGCL
     std::weak_ptr<Signal> baseSignal;  // base signal for derived signals
+    #else
+    ptr<Signal> baseSignal;
+    #endif
     int baseIndex = 0;       // index relative to base signal (negative)
 
 };
