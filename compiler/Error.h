@@ -5,23 +5,29 @@
 #include <memory>
 #include <sstream>
 
+
 #include <core/common.h>
 
 namespace roxal {
 
-inline ptr<std::string> compileSource = nullptr;
+// Avoid global ptr static initialization
+inline ptr<std::string>& compileSource()
+{
+    static ptr<std::string> src = nullptr;
+    return src;
+}
 inline std::string compileSourceName;
 
 inline void setCompileContext(ptr<std::string> source,
                               const std::string& name)
 {
-    compileSource = std::move(source);
+    compileSource() = std::move(source);
     compileSourceName = name;
 }
 
 inline void clearCompileContext()
 {
-    compileSource.reset();
+    compileSource().reset();
     compileSourceName.clear();
 }
 
@@ -45,8 +51,8 @@ inline void compileError(const std::string& message)
         else
             fprintf(stderr, "[line %d:%d]: error: %s\n", line, col, msg.c_str());
 
-        if (compileSource && !compileSourceName.empty()) {
-            std::istringstream src(*compileSource);
+        if (compileSource() && !compileSourceName.empty()) {
+            std::istringstream src(*compileSource());
             std::string srcLine;
             for (int i = 1; i <= line && std::getline(src, srcLine); ++i) {
                 if (i == line) {
