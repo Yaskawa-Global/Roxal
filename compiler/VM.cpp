@@ -34,6 +34,13 @@
 #include <fstream>
 #include <cstdio>
 
+#if USE_GC_SGCL
+#include "core/sgcl/detail/thread.h"
+// Force initialization of the SGCL thread-local context before the VM starts
+// so that it outlives the VM during shutdown.
+static auto& sgclThreadContext = sgcl::detail::current_thread();
+#endif
+
 
 using namespace roxal;
 
@@ -308,6 +315,10 @@ VM::VM()
 
 VM::~VM()
 {
+    #if USE_GC_SGCL
+    sgcl::collector::force_collect(true);
+    #endif
+
     for(auto moduleTypeVal : ObjModuleType::allModules.get()) {
         asModuleType(moduleTypeVal)->vars.clear();
     }
@@ -349,15 +360,24 @@ VM::~VM()
 
     conditionalInterruptClosure = Value::nilVal();
 
-    df::DataflowEngine::instance()->clear();
+    if (dataflowEngine)
+        dataflowEngine->clear();
 
 
     // Release REPL thread resources before reporting potential leaks
     replThread.reset();
 
+    #if USE_GC_SGCL
+    sgcl::collector::force_collect(true);
+    #endif
+
     freeObjects();
 
+
     // Final cleanup pass for any objects that became unreferenced during destructor
+    #if USE_GC_SGCL
+    sgcl::collector::force_collect(true);
+    #endif
     freeObjects();
 
     // ensure all threads are gone before reporting
@@ -3835,8 +3855,8 @@ void VM::outputAllocatedObjs()
 {
     #ifdef DEBUG_TRACE_MEMORY
     if (Obj::allocatedObjs.size()>0) {
+        std::cout << "== allocated Objs (" << Obj::allocatedObjs.size() << ") ==" << std::endl;
         std::cout << std::hex;
-        std::cout << "== allocated Objs (" << Obj::allocatedObjs.size() << ")==" << std::endl;
         for(const auto& p : Obj::allocatedObjs.get()) {
             std::cout << "  " << uint64_t(p.first) << " " << p.second << std::endl;
         }

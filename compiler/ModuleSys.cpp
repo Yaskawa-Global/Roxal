@@ -361,7 +361,8 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
     if (suite == "dataflow") {
         // TODO: Dataflow tests have been moved out - need to implement new roxal-based tests
         std::cout << "Dataflow tests temporarily disabled during Func class elimination" << std::endl;
-        df::DataflowEngine::instance()->clear();
+        if (auto engine = df::DataflowEngine::instance(false))
+            engine->clear();
     }
     else if (suite == "conversions") {
         auto results = testConversions();
@@ -655,7 +656,8 @@ Value ModuleSys::clock_signal_native(VM& vm, ArgsView args)
 
 Value ModuleSys::engine_stop_native(VM& vm, ArgsView args)
 {
-    df::DataflowEngine::instance()->stop();
+    if (auto engine = df::DataflowEngine::instance(false))
+        engine->stop();
     return Value::nilVal();
 }
 

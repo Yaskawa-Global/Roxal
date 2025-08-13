@@ -23,10 +23,15 @@ public:
         BestEffort  // warn, but continue executing if FuncNode execution falls behind (may catch up if caused by transient longer func execution times)
     };
 
-    static ptr<DataflowEngine> instance()
+    // Access the singleton instance. If \p create is false and the engine has
+    // not yet been instantiated, a null pointer is returned instead of
+    // creating a new instance. This is useful during shutdown where creating a
+    // new tracked pointer could access SGCL resources after they have been
+    // destroyed.
+    static ptr<DataflowEngine> instance(bool create = true)
     {
         static ptr<DataflowEngine> engine = nullptr;
-        if (engine == nullptr) {
+        if (engine == nullptr && create) {
             #if USE_GC_SGCL
             engine = roxal::make_ptr<DataflowEngine>();
             #else
