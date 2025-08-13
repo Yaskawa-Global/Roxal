@@ -141,7 +141,8 @@ typedef std::vector<std::any> Anys;
 
 
 
-struct AST : public std::enable_shared_from_this<AST>
+struct AST
+  : public enable_ptr_from_this<AST>
 {
     AST() {}
     virtual ~AST() {}
@@ -188,7 +189,7 @@ struct AST : public std::enable_shared_from_this<AST>
 
 
 // output tree to stream using indentation to show depth
-std::ostream& operator<<(std::ostream& os, std::shared_ptr<AST> ast);
+std::ostream& operator<<(std::ostream& os, ptr<AST> ast);
 std::ostream& operator<<(std::ostream& os, const AST& ast);
 
 

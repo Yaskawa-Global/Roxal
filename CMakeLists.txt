@@ -79,6 +79,7 @@ add_subdirectory(dataflow)
 
 option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
 
+option(USE_GC_SGCL "Use the SGCL garbage collector" ON)
 
 
 # Add the source files
@@ -154,6 +155,7 @@ include_directories(${CMAKE_HOME_DIRECTORY})
 include_directories(
     ${ANTLR4_ROOT}/include/antlr4-runtime
     compiler/cpp-gen
+    $<$<BOOL:${USE_GC_SGCL}>:${CMAKE_SOURCE_DIR}/core/sgcl>
 )
 
 link_directories(
@@ -196,6 +198,7 @@ target_compile_options(roxalcore PRIVATE
 target_compile_definitions(roxalcore PRIVATE
     $<$<CONFIG:DEBUG>:DEBUG_BUILD>
     $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
+    $<$<BOOL:${USE_GC_SGCL}>:USE_GC_SGCL>
 )
 
 

@@ -174,16 +174,16 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
             throw std::runtime_error("cfunc annotation requires lib");
 
         auto evalExpr = [&](ptr<ast::Expression> expr) -> Value {
-            if (auto s = std::dynamic_pointer_cast<ast::Str>(expr)) {
+            if (auto s = dynamic_ptr_cast<ast::Str>(expr)) {
                 return Value::stringVal(s->str);
-            } else if (auto n = std::dynamic_pointer_cast<ast::Num>(expr)) {
+            } else if (auto n = dynamic_ptr_cast<ast::Num>(expr)) {
                 if (std::holds_alternative<int32_t>(n->num))
                     return Value(std::get<int32_t>(n->num));
                 else
                     return Value(std::get<double>(n->num));
-            } else if (auto b = std::dynamic_pointer_cast<ast::Bool>(expr)) {
+            } else if (auto b = dynamic_ptr_cast<ast::Bool>(expr)) {
                 return Value::boolVal(b->value);
-            } else if (auto v = std::dynamic_pointer_cast<ast::Variable>(expr)) {
+            } else if (auto v = dynamic_ptr_cast<ast::Variable>(expr)) {
                 auto name = v->name;
                 auto opt = mod->vars.load(name);
                 if (!opt.has_value())

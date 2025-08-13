@@ -863,7 +863,11 @@ struct ObjClosure : public Obj
     std::vector<Value> upvalues; // ObjUpvalue
 
     // thread expected to execute this closure when used as an event handler
+    #if !USE_GC_SGCL
     std::weak_ptr<Thread> handlerThread;
+    #else
+    ptr<Thread> handlerThread;
+    #endif
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -914,9 +918,13 @@ struct ObjFuture : public Obj
     std::shared_future<Value> future;
 
     mutable std::mutex waitMutex;
+    #if !USE_GC_SGCL
     std::vector<std::weak_ptr<Thread>> waiters;
+    #else
+    std::vector<ptr<Thread>> waiters;
+    #endif
 
-    void addWaiter(const std::shared_ptr<Thread>& t);
+    void addWaiter(const ptr<Thread>& t);
     void wakeWaiters();
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
@@ -1163,7 +1171,11 @@ struct ActorInstance : public Obj
     std::condition_variable queueConditionVar;
 
     std::thread::id thread_id;
+    #if !USE_GC_SGCL
     std::weak_ptr<Thread> thread;
+    #else
+    ptr<Thread> thread;
+    #endif
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;

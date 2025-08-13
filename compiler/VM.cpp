@@ -180,7 +180,12 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when)
             continue;
         }
         auto closure = asClosure(handlerVal);
+        #if !USE_GC_SGCL
         auto handlerThread = closure->handlerThread.lock();
+        #else
+        auto handlerThread = closure->handlerThread;
+        #endif
+
         if (!handlerThread) {
             it = ev->subscribers.erase(it);
             continue;
@@ -213,7 +218,7 @@ VM::VM()
 #endif
 
     // Execute builtin module scripts to attach declarations and docs
-    std::shared_ptr<Thread> initThread = std::make_shared<Thread>();
+    ptr<Thread> initThread = make_ptr<Thread>();
     thread = initThread;
 #ifdef ROXAL_ENABLE_FILEIO
     executeBuiltinModuleScript("compiler/fileio.rox", getBuiltinModule(toUnicodeString("fileio")));
@@ -231,7 +236,7 @@ VM::VM()
     ObjObjectType* dataflowType = newObjectTypeObj(toUnicodeString("_DataflowEngine"), true);
     Value dataflowTypeVal { objVal(dataflowType) };
     dataflowEngineActor = Value::actorInstanceVal(dataflowTypeVal);
-    dataflowEngineThread = std::make_shared<Thread>();
+    dataflowEngineThread = make_ptr<Thread>();
     dataflowEngineThread->act(dataflowEngineActor);
 
     // Start the dataflow engine run loop on its actor thread
@@ -409,7 +414,7 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
 
     Value closureValue { Value::closureVal(function) };
 
-    auto firstThread = std::make_shared<Thread>();
+    auto firstThread = make_ptr<Thread>();
     threads.store(firstThread->id(), firstThread);
 
     // go
@@ -471,7 +476,7 @@ InterpretResult VM::interpretLine(std::istream& linestream)
     Value closure = Value::closureVal(function); // ObjClosure
 
     if (!replThread) {
-        replThread = std::make_shared<Thread>();
+        replThread = make_ptr<Thread>();
     }
 
     thread = replThread;
@@ -804,7 +809,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         inst = Value::actorInstanceVal(callee);
 
                         // spawn Thread to handle actor method calls
-                        auto newThread = std::make_shared<Thread>();
+                        auto newThread = make_ptr<Thread>();
                         threads.store(newThread->id(), newThread);
                         newThread->act(inst);
 
@@ -4504,7 +4509,7 @@ void VM::executeBuiltinModuleScript(const std::string& path, ObjModuleType* modu
         return;
 
     Value closure { Value::closureVal(fn) };
-    ptr<Thread> t = std::make_shared<Thread>();
+    ptr<Thread> t = make_ptr<Thread>();
     thread = t;
     resetStack();
     callAndExec(asClosure(closure), {});

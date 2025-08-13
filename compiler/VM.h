@@ -211,9 +211,9 @@ protected:
     std::vector<ptr<BuiltinModule>> builtinModules;
 
     // builtin dataflow engine actor
-    std::shared_ptr<df::DataflowEngine> dataflowEngine;
+    ptr<df::DataflowEngine> dataflowEngine;
     Value dataflowEngineActor;
-    std::shared_ptr<Thread> dataflowEngineThread;
+    ptr<Thread> dataflowEngineThread;
 
     Value conditionalInterruptClosure {}; // ObjClosure
 

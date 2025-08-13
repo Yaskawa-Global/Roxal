@@ -24,14 +24,18 @@
 //#define DEBUG_TRACE_MEMORY
 //#define DEBUG_TRACE_EXECUTION
 
-
 #define NAN_TAGGING
+
+#if USE_GC_SGCL
+#include <core/sgcl/sgcl.h>
+#endif
 
 
 namespace roxal {
 
 constexpr int hostArch = sizeof(void*) == 8 ? 64 : 32;
 
+#if !USE_GC_SGCL
 
 template<class T>
 using ptr = std::shared_ptr<T>;
@@ -40,6 +44,54 @@ template<class T, class... Args>
 inline ptr<T> make_ptr(Args&&... args) {
     return std::make_shared<T>(std::forward<Args>(args)...);
 }
+
+// template<class T>
+// ptr<T> ptr_from_this(T* t) { return t->shared_from_this(); }
+
+#else // USE_GC_SGCL
+
+template<class T>
+using ptr = sgcl::tracked_ptr<T>;
+
+template<class T, class... Args>
+inline ptr<T> make_ptr(Args&&... args) {
+    return sgcl::make_tracked<T>(std::forward<Args>(args)...);
+}
+
+// template<class T>
+// ptr<T> ptr_from_this(T* t) { return make_ptr<T>(t); }
+
+
+#endif
+
+
+template<class T, class U>
+inline ptr<T> dynamic_ptr_cast(const ptr<U>& p) {
+#if USE_GC_SGCL
+    return sgcl::dynamic_pointer_cast<T>(p);
+#else
+    return std::dynamic_pointer_cast<T>(p);
+#endif
+}
+
+
+// inherit from this class instead of std::enable_shared_from_this<T> directly
+template<class T>
+struct enable_ptr_from_this
+#if !USE_GC_SGCL
+    : std::enable_shared_from_this<T>
+#endif
+{
+    ptr<T> ptr_from_this() {
+    #if USE_GC_SGCL
+        return ptr<T>(static_cast<T*>(this));      // construct sgcl::tracked_ptr
+    #else
+        return this->shared_from_this();           // std::shared_ptr path
+    #endif
+    }
+};
+
+
 
 template<class Map>
 inline auto mapValues(const Map& m) {

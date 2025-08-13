@@ -24,13 +24,13 @@ using ast::Access;
 template<typename P, typename C>
 bool isa(ptr<P> p) {
     if (p==nullptr) return false;
-    return std::dynamic_pointer_cast<C>(p)!=nullptr;
+    return dynamic_ptr_cast<C>(p)!=nullptr;
 }
 
 template<typename C>
 bool isa(ptr<AST> p) {
     if (p==nullptr) return false;
-    return std::dynamic_pointer_cast<C>(p)!=nullptr;
+    return dynamic_ptr_cast<C>(p)!=nullptr;
 }
 
 // down-cast ptr<P> p to ptr<C> where C is a subclass of P (or the same class)
@@ -38,14 +38,14 @@ template<typename P, typename C>
 ptr<C> as(ptr<P> p) {
     if (!isa<P,C>(p))
         throw std::runtime_error("Can't cast ptr<"+demangle(typeid(*p).name())+"> to ptr<"+demangle(typeid(C).name())+">");
-    return std::dynamic_pointer_cast<C>(p);
+    return dynamic_ptr_cast<C>(p);
 }
 
 template<typename C>
 ptr<C> as(ptr<AST> p) {
     if (!isa<AST,C>(p))
         throw std::runtime_error("Can't cast ptr<"+demangle(typeid(*p).name())+"> to ptr<"+demangle(typeid(C).name())+">");
-    return std::dynamic_pointer_cast<C>(p);
+    return dynamic_ptr_cast<C>(p);
 }
 
 
@@ -97,7 +97,7 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
         auto module { asModuleScope(moduleScope()) };
 
         bool strictContext = false;
-        if (auto file = std::dynamic_pointer_cast<ast::File>(ast)) {
+        if (auto file = dynamic_ptr_cast<ast::File>(ast)) {
             for (const auto& annot : file->annotations) {
                 if (annot->name == "strict")
                     strictContext = true;
@@ -415,7 +415,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             int arch = hostArch;
             for(const auto& arg : annot->args) {
                 if (toUTF8StdString(arg.first) == "arch") {
-                    if (auto n = std::dynamic_pointer_cast<ast::Num>(arg.second)) {
+                    if (auto n = dynamic_ptr_cast<ast::Num>(arg.second)) {
                         arch = std::get<int32_t>(n->num);
                     }
                 }
@@ -503,7 +503,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             if (a->name == "ctype") {
                 for(const auto& arg : a->args) {
                     if (toUTF8StdString(arg.first) == "ctype") {
-                        if (auto s = std::dynamic_pointer_cast<ast::Str>(arg.second)) {
+                        if (auto s = dynamic_ptr_cast<ast::Str>(arg.second)) {
                             ObjModuleType* mod = asModuleType(asModuleScope(moduleScope())->moduleType);
                             mod->propertyCTypes[ast->name.hashCode()][propName.hashCode()] = s->str;
                         }
@@ -596,11 +596,11 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             assert(enumLabel.second->type.has_value());
             auto valType { enumLabel.second->type.value() };
 
-            ptr<ast::Literal> literalExpr { std::dynamic_pointer_cast<ast::Literal>(enumLabel.second) };
+            ptr<ast::Literal> literalExpr { dynamic_ptr_cast<ast::Literal>(enumLabel.second) };
             assert(literalExpr != nullptr); // currently expected to be a literal
             Value value {};
             if (literalExpr->literalType == ast::Literal::LiteralType::Num) {
-                ptr<ast::Num> numExpr { std::dynamic_pointer_cast<ast::Num>(literalExpr) };
+                ptr<ast::Num> numExpr { dynamic_ptr_cast<ast::Num>(literalExpr) };
                 if (valType->builtin == BuiltinType::Byte)
                     value = Value::byteVal(std::get<int>(numExpr->num));
                 else if (valType->builtin == BuiltinType::Int)
@@ -670,7 +670,7 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
             std::string d;
             for(size_t i=0;i<annot->args.size();++i) {
                 auto expr = annot->args[i].second;
-                if (auto s = std::dynamic_pointer_cast<ast::Str>(expr)) {
+                if (auto s = dynamic_ptr_cast<ast::Str>(expr)) {
                     if (!d.empty()) d += "\n";
                     std::string t; s->str.toUTF8String(t);
                     d += t;
@@ -1045,7 +1045,7 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
     ast->trigger->accept(*this);
 
     // compile handler body as closure proc
-    auto funcType = std::make_shared<type::Type>(BuiltinType::Func);
+    auto funcType = make_ptr<type::Type>(BuiltinType::Func);
     funcType->func = type::Type::FuncType();
     funcType->func->isProc = true;
 
@@ -1355,7 +1355,7 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
     if (ast->defaultValue.has_value()) {
 
         // treat like another func decl
-        auto defFuncType { std::make_shared<type::Type>(BuiltinType::Func) };
+        auto defFuncType { make_ptr<type::Type>(BuiltinType::Func) };
         defFuncType->func = type::Type::FuncType();
         // TODO: specify return type? (necessary?)
 
@@ -2144,9 +2144,9 @@ void RoxalCompiler::enterModuleScope(const icu::UnicodeString& packageName,
                                     const icu::UnicodeString& sourceName,
                                     ObjModuleType* existingModule)
 {
-    auto moduleScope { std::make_shared<ModuleScope>(packageName, moduleName,
-                                                     sourceName,
-                                                     existingModule) };
+    auto moduleScope { make_ptr<ModuleScope>(packageName, moduleName,
+                                             sourceName,
+                                             existingModule) };
 
     lexicalScopes.push_back(moduleScope);
     #ifdef DEBUG_TRACE_SCOPES
@@ -2189,7 +2189,7 @@ void RoxalCompiler::exitModuleScope()
 
 void RoxalCompiler::enterTypeScope(const icu::UnicodeString& typeName)
 {
-    lexicalScopes.push_back(std::make_shared<TypeScope>(typeName));
+    lexicalScopes.push_back(make_ptr<TypeScope>(typeName));
 
     #ifdef DEBUG_TRACE_SCOPES
     std::cout << "enterTypeScope(" << toUTF8StdString(typeName) << ")" << std::endl;
@@ -2222,10 +2222,10 @@ void RoxalCompiler::enterFuncScope(Value moduleType, const icu::UnicodeString& f
     // function scopes only valid in a module
     auto modScope { asModuleScope(moduleScope()) };
 
-    auto funcScope {std::make_shared<FunctionScope>(modScope->packageName,
-                                                    modScope->moduleName,
-                                                    modScope->sourceName,
-                                                    funcName,funcType,type)};
+    auto funcScope {make_ptr<FunctionScope>(modScope->packageName,
+                                            modScope->moduleName,
+                                            modScope->sourceName,
+                                            funcName,funcType,type)};
 
     asFunction(funcScope->function)->moduleType = moduleType.weakRef();
 

@@ -18,7 +18,7 @@ using roxal::TimeDuration;
 
 
 class Signal
-   : public std::enable_shared_from_this<Signal>
+   : public roxal::enable_ptr_from_this<Signal>
 {
 public:
     static ptr<Signal> newClockSignal(double freq, std::optional<std::string> name = {});
@@ -28,7 +28,7 @@ public:
 
     const std::string& name() const { return m_name; }
 
-    ptr<Signal> rename(const std::string& newName) { m_name = newName; return shared_from_this(); }
+    ptr<Signal> rename(const std::string& newName) { m_name = newName; return ptr_from_this(); }
 
     void addValueChangedCallback(std::function<void(TimePoint, ptr<Signal>,const Value&)> callback);
 
@@ -52,7 +52,7 @@ public:
     // Start/stop running of source signals
     void run() { running = true; }
     void stop() { running = false; }
-    
+
     // set initial value without advancing clock state (for evaluation)
     void evaluate(TimePoint t);
 

@@ -14,7 +14,7 @@ using namespace df;
 
 ptr<Signal> Signal::newClockSignal(double freq, std::optional<std::string> name)
 {
-    auto s = std::shared_ptr<Signal>(new Signal(freq, Value(0), name)); // direct new needed
+    auto s = ptr<Signal>(new Signal(freq, Value(0), name)); // direct new needed
     s->isClock = true;
     s->isSource = true;
     s->clockCount = 0;
@@ -25,7 +25,7 @@ ptr<Signal> Signal::newClockSignal(double freq, std::optional<std::string> name)
 
 ptr<Signal> Signal::newSignal(double freq, Value initial, std::optional<std::string> name)
 {
-    auto s = std::shared_ptr<Signal>(new Signal(freq, initial, name));
+    auto s = ptr<Signal>(new Signal(freq, initial, name));
     s->isClock = false;
     s->isSource = false;
     DataflowEngine::instance()->addSignal(s);
@@ -34,7 +34,7 @@ ptr<Signal> Signal::newSignal(double freq, Value initial, std::optional<std::str
 
 ptr<Signal> Signal::newSourceSignal(double freq, Value initial, std::optional<std::string> name)
 {
-    auto s = std::shared_ptr<Signal>(new Signal(freq, initial, name));
+    auto s = ptr<Signal>(new Signal(freq, initial, name));
     s->isClock = false;
     s->isSource = true;
     DataflowEngine::instance()->addSignal(s);
@@ -262,7 +262,7 @@ ptr<Signal> Signal::indexedSignal(int index)
     // The old standalone DataflowEngine supported latency by storing the
     // desired index on FuncInputInfo.  Here we emulate that behaviour by
     // generating a separate Signal updated whenever the source updates.
-    auto newSig = std::shared_ptr<Signal>(new Signal(m_frequency, initial, m_name + "[" + std::to_string(index) + "]"));
+    auto newSig = ptr<Signal>(new Signal(m_frequency, initial, m_name + "[" + std::to_string(index) + "]"));
     newSig->isClock = false;
     newSig->isSource = false;
     newSig->isDerived = true;

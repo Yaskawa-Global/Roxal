@@ -74,7 +74,7 @@ void writeTypeInfo(std::ostream& out, const type::Type& t) {
 
 ptr<type::Type> readTypeInfo(std::istream& in) {
     uint8_t b; in.read(reinterpret_cast<char*>(&b),1);
-    auto t = std::make_shared<type::Type>(static_cast<type::BuiltinType>(b));
+    auto t = make_ptr<type::Type>(static_cast<type::BuiltinType>(b));
     if (t->builtin == type::BuiltinType::Func) {
         uint8_t hasFunc; in.read(reinterpret_cast<char*>(&hasFunc),1);
         if(hasFunc){
@@ -104,10 +104,10 @@ ptr<type::Type> readTypeInfo(std::istream& in) {
 
 void writeExpr(std::ostream& out, const ptr<ast::Expression>& expr){
     using namespace ast;
-    if(auto s = std::dynamic_pointer_cast<Str>(expr)){
+    if(auto s = dynamic_ptr_cast<Str>(expr)){
         uint8_t tag=0; out.write(reinterpret_cast<char*>(&tag),1);
         writeString(out, s->str);
-    } else if(auto n = std::dynamic_pointer_cast<Num>(expr)){
+    } else if(auto n = dynamic_ptr_cast<Num>(expr)){
         uint8_t tag=1; out.write(reinterpret_cast<char*>(&tag),1);
         if(std::holds_alternative<int32_t>(n->num)){
             uint8_t ty=0; out.write(reinterpret_cast<char*>(&ty),1);
@@ -116,10 +116,10 @@ void writeExpr(std::ostream& out, const ptr<ast::Expression>& expr){
             uint8_t ty=1; out.write(reinterpret_cast<char*>(&ty),1);
             double v=std::get<double>(n->num); out.write(reinterpret_cast<char*>(&v),8);
         }
-    } else if(auto b = std::dynamic_pointer_cast<Bool>(expr)){
+    } else if(auto b = dynamic_ptr_cast<Bool>(expr)){
         uint8_t tag=2; out.write(reinterpret_cast<char*>(&tag),1);
         uint8_t v=b->value?1:0; out.write(reinterpret_cast<char*>(&v),1);
-    } else if(auto v = std::dynamic_pointer_cast<Variable>(expr)){
+    } else if(auto v = dynamic_ptr_cast<Variable>(expr)){
         uint8_t tag=3; out.write(reinterpret_cast<char*>(&tag),1);
         writeString(out, v->name);
     } else {
@@ -132,12 +132,12 @@ ptr<ast::Expression> readExpr(std::istream& in){
     uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
     switch(tag){
         case 0: {
-            auto s = std::make_shared<Str>();
+            auto s = make_ptr<Str>();
             s->str = readString(in);
             return s;
         }
         case 1: {
-            auto n = std::make_shared<Num>();
+            auto n = make_ptr<Num>();
             uint8_t ty; in.read(reinterpret_cast<char*>(&ty),1);
             if(ty==0){
                 int32_t v; in.read(reinterpret_cast<char*>(&v),4);
@@ -149,12 +149,12 @@ ptr<ast::Expression> readExpr(std::istream& in){
             return n;
         }
         case 2: {
-            auto b = std::make_shared<Bool>();
+            auto b = make_ptr<Bool>();
             uint8_t v; in.read(reinterpret_cast<char*>(&v),1);
             b->value = v!=0; return b;
         }
         case 3: {
-            auto v = std::make_shared<Variable>();
+            auto v = make_ptr<Variable>();
             v->name = readString(in);
             return v;
         }
@@ -172,7 +172,7 @@ void writeAnnotation(std::ostream& out, const ast::Annotation& a){
 }
 
 ptr<ast::Annotation> readAnnotation(std::istream& in){
-    auto a = std::make_shared<ast::Annotation>();
+    auto a = make_ptr<ast::Annotation>();
     a->name = readString(in);
     uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
     for(uint32_t i=0;i<count;i++){
@@ -1467,7 +1467,7 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     in.read(reinterpret_cast<char*>(&arity),4);
     in.read(reinterpret_cast<char*>(&upvalueCount),4);
 
-    chunk = std::make_shared<Chunk>(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+    chunk = make_ptr<Chunk>(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
     chunk->deserialize(in, ctx);
 
     uint32_t annCount; in.read(reinterpret_cast<char*>(&annCount),4);
@@ -1587,10 +1587,11 @@ void ObjFuture::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     future = p.get_future().share();
 }
 
-void ObjFuture::addWaiter(const std::shared_ptr<Thread>& t)
+void ObjFuture::addWaiter(const ptr<Thread>& t)
 {
     std::lock_guard<std::mutex> lk(waitMutex);
     for (auto it = waiters.begin(); it != waiters.end(); ++it) {
+        #if !USE_GC_SGCL
         if (auto sp = it->lock()) {
             if (sp == t)
                 return;
@@ -1598,22 +1599,31 @@ void ObjFuture::addWaiter(const std::shared_ptr<Thread>& t)
             it = waiters.erase(it);
             if (it == waiters.end()) break;
         }
+        #else
+        if (*it == t)
+            return;
+        #endif
     }
     waiters.push_back(t);
 }
 
 void ObjFuture::wakeWaiters()
 {
-    std::vector<std::shared_ptr<Thread>> toWake;
+    std::vector<ptr<Thread>> toWake;
     {
         std::lock_guard<std::mutex> lk(waitMutex);
         for (auto it = waiters.begin(); it != waiters.end(); ) {
+            #if !USE_GC_SGCL
             if (auto sp = it->lock()) {
                 toWake.push_back(sp);
                 ++it;
             } else {
                 it = waiters.erase(it);
             }
+            #else
+            toWake.push_back(*it);
+            ++it;
+            #endif
         }
         waiters.clear();
     }
@@ -1905,7 +1915,7 @@ void ActorInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         Value v = readValue(in, ctx);
         properties[h] = v;
     }
-    auto newThread = std::make_shared<Thread>();
+    auto newThread = make_ptr<Thread>();
     // Keep the thread alive by registering it with the VM. Without this the
     // Thread object would be destroyed immediately after deserialization,
     // causing std::terminate since the underlying std::thread is still
@@ -2516,7 +2526,7 @@ ObjFunction::ObjFunction(const icu::UnicodeString& name,
     : arity(0), upvalueCount(0), name(name), strict(false), ownerType(Value::nilVal())
 {
     type = ObjType::Function;
-    chunk = std::make_shared<Chunk>(packageName, moduleName, sourceName);
+    chunk = make_ptr<Chunk>(packageName, moduleName, sourceName);
 }
 
 void ObjFunction::clear()
@@ -2728,9 +2738,14 @@ ActorInstance::ActorInstance(ObjObjectType* objectType)
 ActorInstance::~ActorInstance()
 {
     instanceType->decRef();
+    #if !USE_GC_SGCL
     if (auto t = thread.lock()) {
         t->join(this);
     }
+    #else
+    thread->join(this);
+    #endif
+    thread.reset();
 }
 
 
@@ -2764,7 +2779,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
             ptr<roxal::type::Type> funcType { funcObj->funcType.value() };
             assert(funcType->func.has_value());
             if (!funcType->func.value().isProc) {
-                callInfo.returnPromise = std::make_shared<std::promise<Value>>();
+                callInfo.returnPromise = make_ptr<std::promise<Value>>();
                 std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
                 callInfo.returnFuture = objVal(newFutureObj(sf));
             }
@@ -2776,7 +2791,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
 
         // Only create a return promise if it's NOT a proc (i.e., it's a func)
         if (!bound->isProc) {
-            callInfo.returnPromise = std::make_shared<std::promise<Value>>();
+            callInfo.returnPromise = make_ptr<std::promise<Value>>();
             std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
             callInfo.returnFuture = objVal(newFutureObj(sf));
         }

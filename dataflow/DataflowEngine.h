@@ -15,7 +15,7 @@ class FuncNode; // forward declaration
 // Singleton DataflowEngine keeps references to all active signals
 //  and manages queue of events for updating them
 class DataflowEngine
-   : public std::enable_shared_from_this<DataflowEngine>
+   : public roxal::enable_ptr_from_this<DataflowEngine>
 {
 public:
     enum class ExecutionScheme {
@@ -26,8 +26,9 @@ public:
     static ptr<DataflowEngine> instance()
     {
         static ptr<DataflowEngine> engine = nullptr;
-        if (engine == nullptr)
-            engine = std::shared_ptr<DataflowEngine>(new DataflowEngine()); // Direct call to new
+        if (engine == nullptr) {
+            engine = ptr<DataflowEngine>(new DataflowEngine()); // Direct call to new (constructor is private)
+        }
 
         return engine;
     }

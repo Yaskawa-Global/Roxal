@@ -14,7 +14,8 @@ namespace df {
 
 typedef std::vector<std::string> Names;
 
-class FuncNode : public std::enable_shared_from_this<FuncNode>
+class FuncNode
+  : public roxal::enable_ptr_from_this<FuncNode>
 {
 public:
     using ConstArgMap = std::map<std::string, roxal::Value>;

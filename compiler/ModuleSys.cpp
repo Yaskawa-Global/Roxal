@@ -200,7 +200,7 @@ Value ModuleSys::help_builtin(VM& vm, ArgsView args)
             if (toUTF8StdString(a->name) == "doc") {
                 for (size_t i=0; i<a->args.size(); ++i) {
                     auto expr = a->args[i].second;
-                    if (auto s = std::dynamic_pointer_cast<ast::Str>(expr)) {
+                    if (auto s = dynamic_ptr_cast<ast::Str>(expr)) {
                         if (!doc.empty()) doc += "\n";
                         std::string t; s->str.toUTF8String(t);
                         doc += t;
@@ -257,7 +257,7 @@ Value ModuleSys::fork_builtin(VM& vm, ArgsView args)
                                 "The function must only use its parameters and global variables.");
     }
 
-    auto newThread = std::make_shared<Thread>();
+    auto newThread = make_ptr<Thread>();
     vm.threads.store(newThread->id(), newThread);
     newThread->spawn(args[0]);
 

@@ -9,10 +9,10 @@
 
 namespace roxal {
 
-inline std::shared_ptr<std::string> compileSource;
+inline ptr<std::string> compileSource;
 inline std::string compileSourceName;
 
-inline void setCompileContext(std::shared_ptr<std::string> source,
+inline void setCompileContext(ptr<std::string> source,
                               const std::string& name)
 {
     compileSource = std::move(source);

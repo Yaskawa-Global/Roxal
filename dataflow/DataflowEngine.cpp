@@ -12,6 +12,7 @@
 
 using namespace df;
 
+
 #include <atomic>
 
 static std::atomic<uint64_t> gFuncCounter{0};
@@ -969,12 +970,12 @@ void DataflowEngine::invokeTickCallbacks()
     for (const auto& callback : m_tickCallbacks) {
         #ifdef DEBUG_BUILD
         try {
-            callback(shared_from_this(), m_tickStart);
+            callback(ptr_from_this(), m_tickStart);
         } catch(const std::exception& e) {
             std::cerr << "Exception in tick callback " << e.what() << std::endl;
         }
         #else
-        try { callback(shared_from_this(), m_tickStart); } catch(...) {}
+        try { callback(ptr_from_this(), m_tickStart); } catch(...) {}
         #endif
     }
 
