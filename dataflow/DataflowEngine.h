@@ -27,7 +27,11 @@ public:
     {
         static ptr<DataflowEngine> engine = nullptr;
         if (engine == nullptr) {
+            #if USE_GC_SGCL
+            engine = roxal::make_ptr<DataflowEngine>();
+            #else
             engine = ptr<DataflowEngine>(new DataflowEngine()); // Direct call to new (constructor is private)
+            #endif
         }
 
         return engine;
@@ -194,6 +198,11 @@ private:
 
     friend class Signal;
     friend class FuncNode;
+    #if USE_GC_SGCL
+    friend class sgcl::detail::MakerBase;
+    #else
+    // FIXME:!!!
+    #endif
 };
 
 
