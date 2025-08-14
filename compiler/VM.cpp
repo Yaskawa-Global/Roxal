@@ -187,11 +187,7 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when)
             continue;
         }
         auto closure = asClosure(handlerVal);
-        #if !USE_GC_SGCL
         auto handlerThread = closure->handlerThread.lock();
-        #else
-        auto handlerThread = closure->handlerThread;
-        #endif
 
         if (!handlerThread) {
             it = ev->subscribers.erase(it);

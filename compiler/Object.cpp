@@ -1591,7 +1591,6 @@ void ObjFuture::addWaiter(const ptr<Thread>& t)
 {
     std::lock_guard<std::mutex> lk(waitMutex);
     for (auto it = waiters.begin(); it != waiters.end(); ++it) {
-        #if !USE_GC_SGCL
         if (auto sp = it->lock()) {
             if (sp == t)
                 return;
@@ -1599,10 +1598,6 @@ void ObjFuture::addWaiter(const ptr<Thread>& t)
             it = waiters.erase(it);
             if (it == waiters.end()) break;
         }
-        #else
-        if (*it == t)
-            return;
-        #endif
     }
     waiters.push_back(t);
 }
@@ -1613,17 +1608,12 @@ void ObjFuture::wakeWaiters()
     {
         std::lock_guard<std::mutex> lk(waitMutex);
         for (auto it = waiters.begin(); it != waiters.end(); ) {
-            #if !USE_GC_SGCL
             if (auto sp = it->lock()) {
                 toWake.push_back(sp);
                 ++it;
             } else {
                 it = waiters.erase(it);
             }
-            #else
-            toWake.push_back(*it);
-            ++it;
-            #endif
         }
         waiters.clear();
     }
@@ -2738,13 +2728,9 @@ ActorInstance::ActorInstance(ObjObjectType* objectType)
 ActorInstance::~ActorInstance()
 {
     instanceType->decRef();
-    #if !USE_GC_SGCL
     if (auto t = thread.lock()) {
         t->join(this);
     }
-    #else
-    thread->join(this);
-    #endif
     thread.reset();
 }
 

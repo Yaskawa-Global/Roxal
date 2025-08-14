@@ -11,6 +11,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <limits>
+#include <atomic>
+#include <typeinfo>
 
 
 // ICU
@@ -28,6 +30,7 @@
 
 #if USE_GC_SGCL
 #include <core/sgcl/sgcl.h>
+#include <core/sgcl/detail/page.h>
 #endif
 
 
@@ -39,6 +42,9 @@ constexpr int hostArch = sizeof(void*) == 8 ? 64 : 32;
 
 template<class T>
 using ptr = std::shared_ptr<T>;
+
+template<class T>
+using weak_ptr = std::weak_ptr<T>;
 
 template<class T, class... Args>
 inline ptr<T> make_ptr(Args&&... args) {
@@ -52,6 +58,46 @@ inline ptr<T> make_ptr(Args&&... args) {
 
 template<class T>
 using ptr = sgcl::tracked_ptr<T>;
+
+template<class T>
+class weak_ptr {
+    T* _ptr = nullptr;
+
+public:
+    using element_type = T;
+
+    weak_ptr() noexcept = default;
+    weak_ptr(std::nullptr_t) noexcept {}
+    weak_ptr(const ptr<T>& p) noexcept : _ptr(p.get()) {}
+
+    weak_ptr(const weak_ptr&) noexcept = default;
+    weak_ptr& operator=(const weak_ptr&) noexcept = default;
+
+    weak_ptr& operator=(const ptr<T>& p) noexcept {
+        _ptr = p.get();
+        return *this;
+    }
+
+    void reset() noexcept { _ptr = nullptr; }
+
+    bool expired() const noexcept {
+        if (!_ptr) return true;
+        using namespace sgcl::detail;
+        auto page = Page::page_of(_ptr);
+        auto index = page->index_of(_ptr);
+        auto state = page->states()[index].load(std::memory_order_acquire);
+        if (state == State::Destroyed || state == State::Reserved || state == State::Unused) {
+            return true;
+        }
+        const std::type_info& ti = Page::metadata_of(_ptr).type_info;
+        return ti != typeid(T);
+    }
+
+    ptr<T> lock() const noexcept {
+        if (expired()) return nullptr;
+        return ptr<T>(_ptr);
+    }
+};
 
 template<class T, class... Args>
 inline ptr<T> make_ptr(Args&&... args) {
