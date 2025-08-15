@@ -18,7 +18,8 @@ namespace roxal {
 struct CallFrame;
 using CallFrames = std::vector<CallFrame>;
 
-class Thread : public std::enable_shared_from_this<Thread> {
+class Thread
+  : public enable_ptr_from_this<Thread> {
 public:
     Thread()
       : threadSleep(false), osthread(nullptr), state(State::Constructed), execute_depth(0) {

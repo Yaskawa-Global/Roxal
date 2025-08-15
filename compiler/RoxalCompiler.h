@@ -229,7 +229,7 @@ protected:
     };
 
 
-    ptr<FunctionScope> asFuncScope(Scope s) const { return std::dynamic_pointer_cast<FunctionScope>(*s); }
+    ptr<FunctionScope> asFuncScope(Scope s) const { return dynamic_ptr_cast<FunctionScope>(*s); }
 
     struct TypeScope : public LexicalScope
     {
@@ -246,7 +246,7 @@ protected:
         std::unordered_map<icu::UnicodeString, MemberInfo> propertyNames;
     };
 
-    ptr<TypeScope> asTypeScope(Scope s) const { return std::dynamic_pointer_cast<TypeScope>(*s); }
+    ptr<TypeScope> asTypeScope(Scope s) const { return dynamic_ptr_cast<TypeScope>(*s); }
 
     // map type name -> registered member names (properties and methods)
     std::unordered_map<icu::UnicodeString,
@@ -261,7 +261,7 @@ protected:
                     ObjModuleType* existing = nullptr)
             : FunctionScope(packageName_, moduleName_, sourceName_, moduleName_,
                             FunctionType::Module,
-                            std::make_shared<type::Type>(type::BuiltinType::Func)),
+                            make_ptr<type::Type>(type::BuiltinType::Func)),
               packageName(packageName_), moduleName(moduleName_), sourceName(sourceName_)
         {
             //this->functionType = FunctionType::Module;
@@ -290,7 +290,7 @@ protected:
         std::unordered_map<icu::UnicodeString, VarTypeSpec> moduleVarTypes;
     };
 
-    ptr<ModuleScope> asModuleScope(Scope s) const { return std::dynamic_pointer_cast<ModuleScope>(*s); }
+    ptr<ModuleScope> asModuleScope(Scope s) const { return dynamic_ptr_cast<ModuleScope>(*s); }
 
 
     //

@@ -114,14 +114,14 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
         if (ast->extends.has_value()) {
             auto extendsStr = toUTF8StdString(ast->extends.value());
             if (extendsStr == to_string(BuiltinType::Byte))
-                ast->type = std::make_shared<type::Type>(BuiltinType::Byte);
+                ast->type = make_ptr<type::Type>(BuiltinType::Byte);
             else if (extendsStr == to_string(BuiltinType::Int))
-                ast->type = std::make_shared<type::Type>(BuiltinType::Int);
+                ast->type = make_ptr<type::Type>(BuiltinType::Int);
             else // TODO: consider allowing enums to extens other enums
                 throw std::runtime_error("Enum(eration) "+toUTF8StdString(ast->name)+" cannot extend type " + extendsStr);
         }
         else // default to int
-            ast->type = std::make_shared<type::Type>(BuiltinType::Int);
+            ast->type = make_ptr<type::Type>(BuiltinType::Int);
 
         // iterate over each enum label and
         //   * look at the type of it's expression (check it matches (or can match) the enum type)
@@ -145,7 +145,7 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
                     if (labelExpr->exprType != ast::Expression::ExprType::Literal)
                         throw std::runtime_error("Enum(eration)"+toUTF8StdString(ast->name)
                                 +" label "+toUTF8StdString(enumLabel.first)+" must be a literal (byte, int)");
-                    auto literalTtype = std::dynamic_pointer_cast<ast::Literal>(labelExpr)->literalType;
+                    auto literalTtype = dynamic_ptr_cast<ast::Literal>(labelExpr)->literalType;
                     if (literalTtype != ast::Literal::LiteralType::Num) // TODO: check it isn't a real/double
                         throw std::runtime_error("Enum(eration)"+toUTF8StdString(ast->name)
                                 +" label "+toUTF8StdString(enumLabel.first)+" must be a literal (byte, int)");
@@ -154,7 +154,7 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
                     //std::cout << "type: " << labeltype->toString() << std::endl;
 
                     // set nextValue to the expression literal value
-                    ptr<ast::Num> numExpr = std::dynamic_pointer_cast<ast::Num>(enumLabel.second);
+                    ptr<ast::Num> numExpr = dynamic_ptr_cast<ast::Num>(enumLabel.second);
                     nextValue = std::get<int>(numExpr->num); // incremented below
                 }
 
@@ -166,9 +166,9 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
                         throw std::runtime_error("Enum(eration)"+toUTF8StdString(ast->name)
                                 +" value for "+toUTF8StdString(enumLabel.first)+" is out of range (>255 for byte enum)");
                 }
-                auto numExpr = std::make_shared<ast::Num>();
+                auto numExpr = make_ptr<ast::Num>();
                 numExpr->num = nextValue;
-                numExpr->type = std::make_shared<type::Type>(BuiltinType::Int);
+                numExpr->type = make_ptr<type::Type>(BuiltinType::Int);
                 enumLabel.second = numExpr;
             }
             nextValue++;
@@ -204,7 +204,7 @@ std::any TypeDeducer::visit(ptr<ast::VarDecl> ast)
     ast->acceptChildren(*this, results);
     if (ast->varType.has_value()) {
         if (std::holds_alternative<BuiltinType>(ast->varType.value())) {
-            ast->type = std::make_shared<Type>(std::get<BuiltinType>(ast->varType.value()));
+            ast->type = make_ptr<type::Type>(std::get<BuiltinType>(ast->varType.value()));
         }
     } else if (ast->initializer.has_value() && ast->initializer.value()->type.has_value()) {
         ast->type = ast->initializer.value()->type.value();
@@ -319,14 +319,14 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
     // pre-register parameter types so body and defaults can reference them
     for (auto& param : ast->params) {
         if (param->type.has_value() && std::holds_alternative<BuiltinType>(param->type.value())) {
-            auto ptype = std::make_shared<Type>(std::get<BuiltinType>(param->type.value()));
+            auto ptype = make_ptr<Type>(std::get<BuiltinType>(param->type.value()));
             declareVar(param->name, ptype, /*explicit*/true);
         }
     }
 
     ast->acceptChildren(*this, results);
 
-    auto type = std::make_shared<Type>();
+    auto type = make_ptr<Type>();
     type->builtin = BuiltinType::Func;
     type->func = Type::FuncType();
     type->func->isProc = ast->isProc;
@@ -334,16 +334,16 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
         auto& returnTypes = ast->returnTypes.value();
         for (const auto& returnType : returnTypes) {
             if (std::holds_alternative<BuiltinType>(returnType)) {
-                type->func->returnTypes.push_back(std::make_shared<Type>(std::get<BuiltinType>(returnType)));
+                type->func->returnTypes.push_back(make_ptr<Type>(std::get<BuiltinType>(returnType)));
             }
             else if (std::holds_alternative<icu::UnicodeString>(returnType)) {
                 // lookup name - for now create a placeholder
                 // TODO: implement proper name lookup
-                auto placeholderType = std::make_shared<Type>(BuiltinType::Object);
+                auto placeholderType = make_ptr<Type>(BuiltinType::Object);
                 type->func->returnTypes.push_back(placeholderType);
             }
         }
-        
+
         if (returnTypes.size() > 1) {
             // Multiple return types - not yet fully supported in call type deduction
             // But we can still record them in the function type
@@ -359,7 +359,7 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
                 Type::FuncType::ParamType paramType {};
                 paramType.name = param->name;
                 paramType.nameHashCode = param->name.hashCode();
-                paramType.type = std::make_shared<Type>(std::get<BuiltinType>(param->type.value()));
+                paramType.type = make_ptr<Type>(std::get<BuiltinType>(param->type.value()));
                 paramType.hasDefault = param->defaultValue.has_value();
                 type->func.value().params[i] = paramType;
             }
@@ -388,7 +388,7 @@ std::any TypeDeducer::visit(ptr<ast::Parameter> ast)
     ast::Anys results {};
     ast->acceptChildren(*this, results);
     if (ast->type.has_value() && std::holds_alternative<BuiltinType>(ast->type.value())) {
-        static_cast<ast::AST*>(ast.get())->type = std::make_shared<Type>(std::get<BuiltinType>(ast->type.value()));
+        static_cast<ast::AST*>(ast.get())->type = make_ptr<Type>(std::get<BuiltinType>(ast->type.value()));
     }
     return results;
 }
@@ -404,8 +404,8 @@ std::any TypeDeducer::visit(ptr<ast::Assignment> ast)
         ast->type = ast->rhs->type.value();
 
     // static type check when lhs is a variable with known explicit type
-    if (std::dynamic_pointer_cast<ast::Variable>(ast->lhs) != nullptr) {
-        auto vname = std::dynamic_pointer_cast<ast::Variable>(ast->lhs)->name;
+    if (dynamic_ptr_cast<ast::Variable>(ast->lhs) != nullptr) {
+        auto vname = dynamic_ptr_cast<ast::Variable>(ast->lhs)->name;
         auto info = lookupVar(vname);
         if (info.has_value() && info->explicitType && info->type != nullptr && ast->rhs->type.has_value()) {
             auto lhsType = info->type->builtin;
@@ -454,7 +454,7 @@ std::any TypeDeducer::visit(ptr<ast::BinaryOp> ast)
         }
 
         if (supportsSignal && signalArg) {
-            ast->type = std::make_shared<Type>(BuiltinType::Signal);
+            ast->type = make_ptr<Type>(BuiltinType::Signal);
             return results;
         }
 
@@ -480,20 +480,20 @@ std::any TypeDeducer::visit(ptr<ast::BinaryOp> ast)
             case ast::BinaryOp::Divide:
                 if (ast->op == ast::BinaryOp::Add &&
                         (lhsType == BuiltinType::String || rhsType == BuiltinType::String)) {
-                    ast->type = std::make_shared<Type>(BuiltinType::String);
+                    ast->type = make_ptr<Type>(BuiltinType::String);
                 }
                 else if (isNumericOrBool(lhsType) && isNumericOrBool(rhsType)) {
-                    ast->type = std::make_shared<Type>(numericResultType(lhsType, rhsType));
+                    ast->type = make_ptr<Type>(numericResultType(lhsType, rhsType));
                 }
                 break;
             case ast::BinaryOp::Modulo:
                 if (isNumericOrBool(lhsType) && isNumericOrBool(rhsType))
-                    ast->type = std::make_shared<Type>(BuiltinType::Int);
+                    ast->type = make_ptr<Type>(BuiltinType::Int);
                 break;
             case ast::BinaryOp::And:
             case ast::BinaryOp::Or:
                 if (lhsType==BuiltinType::Bool && rhsType==BuiltinType::Bool)
-                    ast->type = std::make_shared<Type>(BuiltinType::Bool);
+                    ast->type = make_ptr<Type>(BuiltinType::Bool);
                 break;
             case ast::BinaryOp::Equal:
             case ast::BinaryOp::NotEqual:
@@ -501,7 +501,7 @@ std::any TypeDeducer::visit(ptr<ast::BinaryOp> ast)
             case ast::BinaryOp::GreaterThan:
             case ast::BinaryOp::LessOrEqual:
             case ast::BinaryOp::GreaterOrEqual:
-                ast->type = std::make_shared<Type>(BuiltinType::Bool);
+                ast->type = make_ptr<Type>(BuiltinType::Bool);
                 break;
             default: break;
         }
@@ -533,25 +533,25 @@ std::any TypeDeducer::visit(ptr<ast::UnaryOp> ast)
         }
 
         if (supportsSignal && isSignalArg) {
-            ast->type = std::make_shared<Type>(BuiltinType::Signal);
+            ast->type = make_ptr<Type>(BuiltinType::Signal);
         } else {
             switch(ast->op) {
                 case ast::UnaryOp::Not:
-                    ast->type = std::make_shared<Type>(BuiltinType::Bool);
+                    ast->type = make_ptr<Type>(BuiltinType::Bool);
                     break;
                 case ast::UnaryOp::Negate:
                     if (argType==BuiltinType::Int || argType==BuiltinType::Byte)
-                        ast->type = std::make_shared<Type>(BuiltinType::Int);
+                        ast->type = make_ptr<Type>(BuiltinType::Int);
                     else if (argType==BuiltinType::Real)
-                        ast->type = std::make_shared<Type>(BuiltinType::Real);
+                        ast->type = make_ptr<Type>(BuiltinType::Real);
                     else if (argType==BuiltinType::Bool)
-                        ast->type = std::make_shared<Type>(BuiltinType::Bool);
+                        ast->type = make_ptr<Type>(BuiltinType::Bool);
                     break;
                 case ast::UnaryOp::BitNot:
                     if (argType==BuiltinType::Bool)
-                        ast->type = std::make_shared<Type>(BuiltinType::Bool);
+                        ast->type = make_ptr<Type>(BuiltinType::Bool);
                     else if (argType==BuiltinType::Byte || argType==BuiltinType::Int)
-                        ast->type = std::make_shared<Type>(BuiltinType::Int);
+                        ast->type = make_ptr<Type>(BuiltinType::Int);
                     break;
                 case ast::UnaryOp::Accessor:
                     break;
@@ -594,9 +594,9 @@ std::any TypeDeducer::visit(ptr<ast::Call> ast)
             }
         }
         else if (ctype->builtin == BuiltinType::Type) {
-            auto typeLit = std::dynamic_pointer_cast<ast::Type>(ast->callable);
+            auto typeLit = dynamic_ptr_cast<ast::Type>(ast->callable);
             if (typeLit != nullptr)
-                ast->type = std::make_shared<Type>(typeLit->t);
+                ast->type = make_ptr<Type>(typeLit->t);
         }
     }
 
@@ -609,7 +609,7 @@ std::any TypeDeducer::visit(ptr<ast::Range> ast)
     ast::Anys results {};
     ast->acceptChildren(*this, results);
 
-    ast->type = std::make_shared<Type>(BuiltinType::Range);
+    ast->type = make_ptr<Type>(BuiltinType::Range);
 
     return results;
 }
@@ -623,7 +623,7 @@ std::any TypeDeducer::visit(ptr<ast::Index> ast)
     // if the indexable is a string, indexing yields a string also
     if (ast->indexable->type.has_value()) {
         if (ast->indexable->type.value()->builtin == BuiltinType::String)
-            ast->type = std::make_shared<Type>(BuiltinType::String);
+            ast->type = make_ptr<Type>(BuiltinType::String);
     }
     return results;
 }
@@ -645,28 +645,28 @@ std::any TypeDeducer::visit(ptr<ast::Literal> ast)
 {
     // non-Nil typed literals handled by specialized visit methods
     if (ast->literalType == ast::Literal::Nil)
-        ast->type = std::make_shared<Type>(BuiltinType::Nil);
+        ast->type = make_ptr<Type>(BuiltinType::Nil);
     return {};
 }
 
 
 std::any TypeDeducer::visit(ptr<ast::Bool> ast)
 {
-    ast->type = std::make_shared<Type>(BuiltinType::Bool);
+    ast->type = make_ptr<Type>(BuiltinType::Bool);
     return {};
 }
 
 
 std::any TypeDeducer::visit(ptr<ast::Str> ast)
 {
-    ast->type = std::make_shared<Type>(BuiltinType::String);
+    ast->type = make_ptr<Type>(BuiltinType::String);
     return {};
 }
 
 
 std::any TypeDeducer::visit(ptr<ast::Type> ast)
 {
-    ast->type = std::make_shared<Type>(BuiltinType::Type);
+    ast->type = make_ptr<Type>(BuiltinType::Type);
     return {};
 }
 
@@ -674,9 +674,9 @@ std::any TypeDeducer::visit(ptr<ast::Type> ast)
 std::any TypeDeducer::visit(ptr<ast::Num> ast)
 {
     if (std::holds_alternative<int32_t>(ast->num))
-        ast->type = std::make_shared<Type>(BuiltinType::Int);
+        ast->type = make_ptr<Type>(BuiltinType::Int);
     else if (std::holds_alternative<double>(ast->num))
-        ast->type = std::make_shared<Type>(BuiltinType::Real);
+        ast->type = make_ptr<Type>(BuiltinType::Real);
     else
         throw std::runtime_error("Unhandled Num literal type");
     return {};
@@ -687,7 +687,7 @@ std::any TypeDeducer::visit(ptr<ast::List> ast)
 {
     ast::Anys results {};
     ast->acceptChildren(*this, results);
-    ast->type = std::make_shared<Type>(BuiltinType::List);
+    ast->type = make_ptr<Type>(BuiltinType::List);
     return results;
 }
 
@@ -696,7 +696,7 @@ std::any TypeDeducer::visit(ptr<ast::Vector> ast)
 {
     ast::Anys results {};
     ast->acceptChildren(*this, results);
-    ast->type = std::make_shared<Type>(BuiltinType::Vector);
+    ast->type = make_ptr<Type>(BuiltinType::Vector);
     return results;
 }
 
@@ -705,7 +705,7 @@ std::any TypeDeducer::visit(ptr<ast::Matrix> ast)
 {
     ast::Anys results {};
     ast->acceptChildren(*this, results);
-    ast->type = std::make_shared<Type>(BuiltinType::Matrix);
+    ast->type = make_ptr<Type>(BuiltinType::Matrix);
     return results;
 }
 
@@ -714,6 +714,6 @@ std::any TypeDeducer::visit(ptr<ast::Dict> ast)
 {
     ast::Anys results {};
     ast->acceptChildren(*this, results);
-    ast->type = std::make_shared<Type>(BuiltinType::Dict);
+    ast->type = make_ptr<Type>(BuiltinType::Dict);
     return results;
 }

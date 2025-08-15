@@ -2460,7 +2460,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                 int32_t h; in.read(reinterpret_cast<char*>(&h),4);
                 obj->properties[h] = readValue(in, ctx);
             }
-            auto newThread = std::make_shared<Thread>();
+            auto newThread = make_ptr<Thread>();
             // Keep the thread alive by registering it with the VM.  Without
             // this the Thread object would be destroyed immediately after
             // deserialization, causing std::terminate since the underlying

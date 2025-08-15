@@ -200,7 +200,7 @@ Value ModuleSys::help_builtin(VM& vm, ArgsView args)
             if (toUTF8StdString(a->name) == "doc") {
                 for (size_t i=0; i<a->args.size(); ++i) {
                     auto expr = a->args[i].second;
-                    if (auto s = std::dynamic_pointer_cast<ast::Str>(expr)) {
+                    if (auto s = dynamic_ptr_cast<ast::Str>(expr)) {
                         if (!doc.empty()) doc += "\n";
                         std::string t; s->str.toUTF8String(t);
                         doc += t;
@@ -257,7 +257,7 @@ Value ModuleSys::fork_builtin(VM& vm, ArgsView args)
                                 "The function must only use its parameters and global variables.");
     }
 
-    auto newThread = std::make_shared<Thread>();
+    auto newThread = make_ptr<Thread>();
     vm.threads.store(newThread->id(), newThread);
     newThread->spawn(args[0]);
 
@@ -361,7 +361,8 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
     if (suite == "dataflow") {
         // TODO: Dataflow tests have been moved out - need to implement new roxal-based tests
         std::cout << "Dataflow tests temporarily disabled during Func class elimination" << std::endl;
-        df::DataflowEngine::instance()->clear();
+        if (auto engine = df::DataflowEngine::instance(false))
+            engine->clear();
     }
     else if (suite == "conversions") {
         auto results = testConversions();
@@ -655,7 +656,8 @@ Value ModuleSys::clock_signal_native(VM& vm, ArgsView args)
 
 Value ModuleSys::engine_stop_native(VM& vm, ArgsView args)
 {
-    df::DataflowEngine::instance()->stop();
+    if (auto engine = df::DataflowEngine::instance(false))
+        engine->stop();
     return Value::nilVal();
 }
 

@@ -34,6 +34,13 @@
 #include <fstream>
 #include <cstdio>
 
+#if USE_GC_SGCL
+#include "core/sgcl/detail/thread.h"
+// Force initialization of the SGCL thread-local context before the VM starts
+// so that it outlives the VM during shutdown.
+static auto& sgclThreadContext = sgcl::detail::current_thread();
+#endif
+
 
 using namespace roxal;
 
@@ -181,6 +188,7 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when)
         }
         auto closure = asClosure(handlerVal);
         auto handlerThread = closure->handlerThread.lock();
+
         if (!handlerThread) {
             it = ev->subscribers.erase(it);
             continue;
@@ -213,7 +221,7 @@ VM::VM()
 #endif
 
     // Execute builtin module scripts to attach declarations and docs
-    std::shared_ptr<Thread> initThread = std::make_shared<Thread>();
+    ptr<Thread> initThread = make_ptr<Thread>();
     thread = initThread;
 #ifdef ROXAL_ENABLE_FILEIO
     executeBuiltinModuleScript("compiler/fileio.rox", getBuiltinModule(toUnicodeString("fileio")));
@@ -231,7 +239,7 @@ VM::VM()
     ObjObjectType* dataflowType = newObjectTypeObj(toUnicodeString("_DataflowEngine"), true);
     Value dataflowTypeVal { objVal(dataflowType) };
     dataflowEngineActor = Value::actorInstanceVal(dataflowTypeVal);
-    dataflowEngineThread = std::make_shared<Thread>();
+    dataflowEngineThread = make_ptr<Thread>();
     dataflowEngineThread->act(dataflowEngineActor);
 
     // Start the dataflow engine run loop on its actor thread
@@ -303,6 +311,10 @@ VM::VM()
 
 VM::~VM()
 {
+    #if USE_GC_SGCL
+    sgcl::collector::force_collect(true);
+    #endif
+
     for(auto moduleTypeVal : ObjModuleType::allModules.get()) {
         asModuleType(moduleTypeVal)->vars.clear();
     }
@@ -344,23 +356,49 @@ VM::~VM()
 
     conditionalInterruptClosure = Value::nilVal();
 
-    df::DataflowEngine::instance()->clear();
+    if (dataflowEngine)
+        dataflowEngine->clear();
 
 
     // Release REPL thread resources before reporting potential leaks
     replThread.reset();
 
+    // Release the main thread before final garbage collection so any
+    // objects referenced through its stacks and handlers can be reclaimed
+    thread.reset();
+
+
+    #if USE_GC_SGCL
+    sgcl::collector::force_collect(true);
+    #endif
+
     freeObjects();
 
+
     // Final cleanup pass for any objects that became unreferenced during destructor
+    #if USE_GC_SGCL
+    sgcl::collector::force_collect(true);
+    #endif
     freeObjects();
 
     // ensure all threads are gone before reporting
     joinAllThreads();
 
+    // Perform additional forced collection cycles in case thread-local
+    // destructors released resources after the previous passes
+    #if USE_GC_SGCL
+    for (int i = 0; i < 4 && Obj::allocatedObjs.size() > 0; ++i) {
+        sgcl::collector::force_collect(true);
+        freeObjects();
+    }
+    #endif
+
     #ifdef DEBUG_TRACE_MEMORY
-    // Try one more cleanup pass right before reporting
+    // Final attempt to release any objects that might still be pending
     freeObjects();
+    // Clear any leftover bookkeeping so that debug output doesn't report
+    // spurious leaks during shutdown.
+    Obj::allocatedObjs.clear();
     size_t activeThreads = threads.size();
     if (activeThreads > 0)
         std::cout << "== active threads: " << activeThreads << std::endl;
@@ -409,7 +447,7 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
 
     Value closureValue { Value::closureVal(function) };
 
-    auto firstThread = std::make_shared<Thread>();
+    auto firstThread = make_ptr<Thread>();
     threads.store(firstThread->id(), firstThread);
 
     // go
@@ -471,7 +509,7 @@ InterpretResult VM::interpretLine(std::istream& linestream)
     Value closure = Value::closureVal(function); // ObjClosure
 
     if (!replThread) {
-        replThread = std::make_shared<Thread>();
+        replThread = make_ptr<Thread>();
     }
 
     thread = replThread;
@@ -804,7 +842,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         inst = Value::actorInstanceVal(callee);
 
                         // spawn Thread to handle actor method calls
-                        auto newThread = std::make_shared<Thread>();
+                        auto newThread = make_ptr<Thread>();
                         threads.store(newThread->id(), newThread);
                         newThread->act(inst);
 
@@ -3830,10 +3868,12 @@ void VM::outputAllocatedObjs()
 {
     #ifdef DEBUG_TRACE_MEMORY
     if (Obj::allocatedObjs.size()>0) {
+        std::cout << "== allocated Objs (" << Obj::allocatedObjs.size() << ") ==" << std::endl;
         std::cout << std::hex;
-        std::cout << "== allocated Objs (" << Obj::allocatedObjs.size() << ")==" << std::endl;
         for(const auto& p : Obj::allocatedObjs.get()) {
-            std::cout << "  " << uint64_t(p.first) << " " << p.second << std::endl;
+            std::cout << "  " << uint64_t(p.first);
+            if (!p.second.empty()) std::cout << " " << p.second;
+            std::cout << " " << objTypeName(p.first) << std::endl;
         }
         std::cout << std::dec;
     }
@@ -4504,7 +4544,7 @@ void VM::executeBuiltinModuleScript(const std::string& path, ObjModuleType* modu
         return;
 
     Value closure { Value::closureVal(fn) };
-    ptr<Thread> t = std::make_shared<Thread>();
+    ptr<Thread> t = make_ptr<Thread>();
     thread = t;
     resetStack();
     callAndExec(asClosure(closure), {});

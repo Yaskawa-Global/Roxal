@@ -14,7 +14,11 @@ using namespace df;
 
 ptr<Signal> Signal::newClockSignal(double freq, std::optional<std::string> name)
 {
-    auto s = std::shared_ptr<Signal>(new Signal(freq, Value(0), name)); // direct new needed
+    #if USE_GC_SGCL
+    auto s = roxal::make_ptr<Signal>(freq, Value(0), name);
+    #else
+    auto s = ptr<Signal>(new Signal(freq, Value(0), name)); // direct new needed
+    #endif
     s->isClock = true;
     s->isSource = true;
     s->clockCount = 0;
@@ -25,7 +29,11 @@ ptr<Signal> Signal::newClockSignal(double freq, std::optional<std::string> name)
 
 ptr<Signal> Signal::newSignal(double freq, Value initial, std::optional<std::string> name)
 {
-    auto s = std::shared_ptr<Signal>(new Signal(freq, initial, name));
+    #if USE_GC_SGCL
+    auto s = roxal::make_ptr<Signal>(freq, initial, name);
+    #else
+    auto s = ptr<Signal>(new Signal(freq, initial, name));
+    #endif
     s->isClock = false;
     s->isSource = false;
     DataflowEngine::instance()->addSignal(s);
@@ -34,7 +42,11 @@ ptr<Signal> Signal::newSignal(double freq, Value initial, std::optional<std::str
 
 ptr<Signal> Signal::newSourceSignal(double freq, Value initial, std::optional<std::string> name)
 {
-    auto s = std::shared_ptr<Signal>(new Signal(freq, initial, name));
+    #if USE_GC_SGCL
+    auto s = roxal::make_ptr<Signal>(freq, initial, name);
+    #else
+    auto s = ptr<Signal>(new Signal(freq, initial, name));
+    #endif
     s->isClock = false;
     s->isSource = true;
     DataflowEngine::instance()->addSignal(s);
@@ -70,13 +82,13 @@ void Signal::invokeValueChangedCallbacks(TimePoint t, const Value& v)
     for (auto& callback : valueChangedCallbacks) {
         #ifdef DEBUG_BUILD
         try {
-            callback(t, shared_from_this(), v);
+            callback(t, ptr_from_this(), v);
         } catch(const std::exception& e) {
             std::cerr << "Exception in signal "+name()+" callback " << e.what() << std::endl;
         }
         #else
         try {
-            callback(t, shared_from_this(), v);
+            callback(t, ptr_from_this(), v);
         } catch(...) {}
         #endif
     }
@@ -184,7 +196,7 @@ void Signal::set(const Value& v)
     TimePoint nextTick = t + m_period;
 
     setValueAt(nextTick, v);
-    DataflowEngine::instance()->updateSignalConsumerInputAvailability(shared_from_this(), nextTick);
+    DataflowEngine::instance()->updateSignalConsumerInputAvailability(ptr_from_this(), nextTick);
 }
 
 
@@ -249,7 +261,7 @@ ptr<Signal> Signal::indexedSignal(int index)
         throw std::invalid_argument("Signal index must be 0 or negative");
 
     if (index == 0)
-        return shared_from_this();
+        return ptr_from_this();
 
     Value initial;
     try {
@@ -262,11 +274,15 @@ ptr<Signal> Signal::indexedSignal(int index)
     // The old standalone DataflowEngine supported latency by storing the
     // desired index on FuncInputInfo.  Here we emulate that behaviour by
     // generating a separate Signal updated whenever the source updates.
-    auto newSig = std::shared_ptr<Signal>(new Signal(m_frequency, initial, m_name + "[" + std::to_string(index) + "]"));
+    #if USE_GC_SGCL
+    auto newSig = roxal::make_ptr<Signal>(m_frequency, initial, m_name + "[" + std::to_string(index) + "]");
+    #else
+    auto newSig = ptr<Signal>(new Signal(m_frequency, initial, m_name + "[" + std::to_string(index) + "]"));
+    #endif
     newSig->isClock = false;
     newSig->isSource = false;
     newSig->isDerived = true;
-    newSig->baseSignal = shared_from_this();
+    newSig->baseSignal = ptr_from_this();
     newSig->baseIndex = index;
     newSig->setMaxHistoryPeriods(std::max(m_maxHistoryPeriods, -index + 1));
     DataflowEngine::instance()->addSignal(newSig);

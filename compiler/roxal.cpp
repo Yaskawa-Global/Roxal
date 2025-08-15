@@ -199,7 +199,7 @@ static void generateAST(const std::string& inputPath, bool graph, const std::str
     std::filesystem::path fileAndPath(inputPath);
     std::string name { fileAndPath.stem().filename().string() };
 
-    ptr<ast::AST> ast {};
+    roxal::ptr<ast::AST> ast {};
     try {
         ASTGenerator astGenerator {};
         ast = astGenerator.ast(sourcestream, name);
@@ -213,7 +213,7 @@ static void generateAST(const std::string& inputPath, bool graph, const std::str
 
     try {
         TypeDeducer typeDeducer {};
-        typeDeducer.visit(std::dynamic_pointer_cast<ast::File>(ast));
+        typeDeducer.visit(roxal::dynamic_ptr_cast<ast::File>(ast));
     } catch (std::exception& e) {
         compileError(e.what());
         clearCompileContext();

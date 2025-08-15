@@ -294,7 +294,7 @@ void FuncNode::updateOutputSignals(double freq)
 
 void FuncNode::addToEngine()
 {
-    DataflowEngine::instance()->addFunc(shared_from_this());
+    DataflowEngine::instance()->addFunc(ptr_from_this());
 }
 
 bool FuncNode::inputsAvailableAt(TimePoint time) const
@@ -370,12 +370,12 @@ void FuncNode::invokeExecutionCallbacks(TimePoint time, const Values& inputValue
     for (const auto& callback : executionCallbacks) {
         #ifdef DEBUG_BUILD
         try {
-            callback(time, shared_from_this(), inputValues, outputValues);
+            callback(time, ptr_from_this(), inputValues, outputValues);
         } catch(const std::exception& e) {
             std::cerr << "Exception in funcnode "+name()+" callback " << e.what() << std::endl;
         }
         #else
-        try { callback(time, shared_from_this(), inputValues, outputValues); } catch(...) {}
+        try { callback(time, ptr_from_this(), inputValues, outputValues); } catch(...) {}
         #endif
     }
 }

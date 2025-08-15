@@ -17,14 +17,14 @@ bool ASTEditor::isChildA()
     bool childIsAT = false;
     if(m_removed != nullptr)
     {
-        if(std::dynamic_pointer_cast<T>(m_removed) != nullptr)
+        if(dynamic_ptr_cast<T>(m_removed) != nullptr)
         {
             childIsAT = true;
         }
     }
     else if(m_inserted != nullptr)
     {
-        if(std::dynamic_pointer_cast<T>(m_inserted) != nullptr)
+        if(dynamic_ptr_cast<T>(m_inserted) != nullptr)
         {
             childIsAT = true;
         }
@@ -42,12 +42,12 @@ int ASTEditor::findChildInSuite(std::vector<std::variant<ptr<Declaration>, ptr<S
         return -1;
 
 
-    if (std::dynamic_pointer_cast<Declaration>(toFind))
+    if (dynamic_ptr_cast<Declaration>(toFind))
     {
         for(const auto& child:vec)
         {
             if((std::holds_alternative<ptr<Declaration>>(child)) &&
-            (std::get<ptr<Declaration>>(child) == std::dynamic_pointer_cast<Declaration>(toFind)))
+            (std::get<ptr<Declaration>>(child) == dynamic_ptr_cast<Declaration>(toFind)))
             {
                 found = true;
                 break;
@@ -55,12 +55,12 @@ int ASTEditor::findChildInSuite(std::vector<std::variant<ptr<Declaration>, ptr<S
             position++;
         }
     }
-    else if(std::dynamic_pointer_cast<Statement>(toFind))
+    else if(dynamic_ptr_cast<Statement>(toFind))
     {
         for(const auto& child:vec)
         {
             if((std::holds_alternative<ptr<Statement>>(child)) &&
-            (std::get<ptr<Statement>>(child) == std::dynamic_pointer_cast<Statement>(toFind)))
+            (std::get<ptr<Statement>>(child) == dynamic_ptr_cast<Statement>(toFind)))
             {
                 found = true;
                 break;
@@ -140,13 +140,13 @@ void ASTEditor::insertBeforeOrAfterIntoSuite(std::vector<std::variant<ptr<Declar
         }
 
         //insert the node into the main tree
-        if (std::dynamic_pointer_cast<Declaration>(m_inserted))
+        if (dynamic_ptr_cast<Declaration>(m_inserted))
         {
-            vec.insert(vec.begin() + position, std::dynamic_pointer_cast<Declaration>(m_inserted));
+            vec.insert(vec.begin() + position, dynamic_ptr_cast<Declaration>(m_inserted));
         }
-        else if (std::dynamic_pointer_cast<Statement>(m_inserted))
+        else if (dynamic_ptr_cast<Statement>(m_inserted))
         {
-            vec.insert(vec.begin() + position, std::dynamic_pointer_cast<Statement>(m_inserted));
+            vec.insert(vec.begin() + position, dynamic_ptr_cast<Statement>(m_inserted));
         }
 
         //insert new text code into the main tree's source

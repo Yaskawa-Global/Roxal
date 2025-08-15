@@ -13,12 +13,13 @@ namespace df {
 class DataflowEngine;
 
 using roxal::ptr;
+using roxal::weak_ptr;
 using roxal::TimePoint;
 using roxal::TimeDuration;
 
 
 class Signal
-   : public std::enable_shared_from_this<Signal>
+   : public roxal::enable_ptr_from_this<Signal>
 {
 public:
     static ptr<Signal> newClockSignal(double freq, std::optional<std::string> name = {});
@@ -28,7 +29,7 @@ public:
 
     const std::string& name() const { return m_name; }
 
-    ptr<Signal> rename(const std::string& newName) { m_name = newName; return shared_from_this(); }
+    ptr<Signal> rename(const std::string& newName) { m_name = newName; return ptr_from_this(); }
 
     void addValueChangedCallback(std::function<void(TimePoint, ptr<Signal>,const Value&)> callback);
 
@@ -52,7 +53,7 @@ public:
     // Start/stop running of source signals
     void run() { running = true; }
     void stop() { running = false; }
-    
+
     // set initial value without advancing clock state (for evaluation)
     void evaluate(TimePoint t);
 
@@ -121,8 +122,14 @@ private:
     int m_maxHistoryPeriods;
 
     bool isDerived = false; // true if this signal represents another signal delayed
-    std::weak_ptr<Signal> baseSignal;  // base signal for derived signals
+    weak_ptr<Signal> baseSignal;  // base signal for derived signals
     int baseIndex = 0;       // index relative to base signal (negative)
+
+    #if USE_GC_SGCL
+    friend class sgcl::detail::MakerBase;
+    #else
+    // FIXME:!!!
+    #endif
 
 };
 

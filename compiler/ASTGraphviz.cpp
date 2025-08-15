@@ -86,8 +86,8 @@ std::string ASTGraphviz::generateGraphText(ptr<ast::AST> ast)
     stack = std::stack<std::string>();
 
 
-    if (std::dynamic_pointer_cast<ast::File>(ast)!=nullptr) {
-        auto file = std::dynamic_pointer_cast<ast::File>(ast);
+    if (dynamic_ptr_cast<ast::File>(ast)!=nullptr) {
+        auto file = dynamic_ptr_cast<ast::File>(ast);
         file->accept(*this);
     }
     else

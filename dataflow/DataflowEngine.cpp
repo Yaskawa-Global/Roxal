@@ -12,6 +12,7 @@
 
 using namespace df;
 
+
 #include <atomic>
 
 static std::atomic<uint64_t> gFuncCounter{0};
@@ -98,13 +99,13 @@ void DataflowEngine::addFunc(ptr<FuncNode> func)
     m_networkModified = true;
 }
 
-void DataflowEngine::registerSignalWrapper(ptr<Signal> signal)
+void DataflowEngine::registerSignalWrapper(const ptr<Signal>& signal)
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     signalWrapperRefs[signal]++;
 }
 
-size_t DataflowEngine::unregisterSignalWrapper(ptr<Signal> signal)
+size_t DataflowEngine::unregisterSignalWrapper(const ptr<Signal>& signal)
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     auto it = signalWrapperRefs.find(signal);
@@ -117,7 +118,7 @@ size_t DataflowEngine::unregisterSignalWrapper(ptr<Signal> signal)
     return it->second;
 }
 
-size_t DataflowEngine::wrapperRefCount(ptr<Signal> signal) const
+size_t DataflowEngine::wrapperRefCount(const ptr<Signal>& signal) const
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     auto it = signalWrapperRefs.find(signal);
@@ -126,7 +127,7 @@ size_t DataflowEngine::wrapperRefCount(ptr<Signal> signal) const
     return it->second;
 }
 
-size_t DataflowEngine::consumerCount(ptr<Signal> signal) const
+size_t DataflowEngine::consumerCount(const ptr<Signal>& signal) const
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     auto it = signalConsumers.find(signal);
@@ -135,7 +136,7 @@ size_t DataflowEngine::consumerCount(ptr<Signal> signal) const
     return it->second.size();
 }
 
-size_t DataflowEngine::signalRefCount(ptr<Signal> signal) const
+size_t DataflowEngine::signalRefCount(const ptr<Signal>& signal) const
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     size_t count = 0;
@@ -154,7 +155,7 @@ size_t DataflowEngine::signalRefCount(ptr<Signal> signal) const
     return count;
 }
 
-void DataflowEngine::removeSignal(ptr<Signal> signal, bool force)
+void DataflowEngine::removeSignal(const ptr<Signal>& signal, bool force)
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
@@ -243,7 +244,7 @@ void DataflowEngine::removeFunc(ptr<FuncNode> func)
 }
 
 
-void DataflowEngine::copyInto(ptr<Signal> lhs, ptr<Signal> rhs)
+void DataflowEngine::copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs)
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
@@ -969,12 +970,12 @@ void DataflowEngine::invokeTickCallbacks()
     for (const auto& callback : m_tickCallbacks) {
         #ifdef DEBUG_BUILD
         try {
-            callback(shared_from_this(), m_tickStart);
+            callback(ptr_from_this(), m_tickStart);
         } catch(const std::exception& e) {
             std::cerr << "Exception in tick callback " << e.what() << std::endl;
         }
         #else
-        try { callback(shared_from_this(), m_tickStart); } catch(...) {}
+        try { callback(ptr_from_this(), m_tickStart); } catch(...) {}
         #endif
     }
 

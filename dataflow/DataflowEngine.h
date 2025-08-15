@@ -15,7 +15,7 @@ class FuncNode; // forward declaration
 // Singleton DataflowEngine keeps references to all active signals
 //  and manages queue of events for updating them
 class DataflowEngine
-   : public std::enable_shared_from_this<DataflowEngine>
+   : public roxal::enable_ptr_from_this<DataflowEngine>
 {
 public:
     enum class ExecutionScheme {
@@ -23,11 +23,21 @@ public:
         BestEffort  // warn, but continue executing if FuncNode execution falls behind (may catch up if caused by transient longer func execution times)
     };
 
-    static ptr<DataflowEngine> instance()
+    // Access the singleton instance. If \p create is false and the engine has
+    // not yet been instantiated, a null pointer is returned instead of
+    // creating a new instance. This is useful during shutdown where creating a
+    // new tracked pointer could access SGCL resources after they have been
+    // destroyed.
+    static ptr<DataflowEngine> instance(bool create = true)
     {
         static ptr<DataflowEngine> engine = nullptr;
-        if (engine == nullptr)
-            engine = std::shared_ptr<DataflowEngine>(new DataflowEngine()); // Direct call to new
+        if (engine == nullptr && create) {
+            #if USE_GC_SGCL
+            engine = roxal::make_ptr<DataflowEngine>();
+            #else
+            engine = ptr<DataflowEngine>(new DataflowEngine()); // Direct call to new (constructor is private)
+            #endif
+        }
 
         return engine;
     }
@@ -80,25 +90,25 @@ public:
     std::string graphDot(const std::string& title, std::map<std::string,Value> signalValues = {}) const;
 
     // remove a signal or func from the engine
-    void removeSignal(ptr<Signal> signal, bool force = false);
+    void removeSignal(const ptr<Signal>& signal, bool force = false);
     void removeFunc(ptr<FuncNode> func);
 
     // copy the attributes of the rhs signal into the lhs (lhs <- rhs)
     //  * lhs must be a source signal (not listed as the output of any producing funcs)
     //  * all funcs that have rhs as an input, will afterward have lhs as an input instead
     //  * lhs & rhs must have the same frequency
-    void copyInto(ptr<Signal> lhs, ptr<Signal> rhs);
+    void copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs);
 
     // internal reference count for a signal held by the engine
-    size_t signalRefCount(ptr<Signal> signal) const;
+    size_t signalRefCount(const ptr<Signal>& signal) const;
 
     // track how many ObjSignal wrappers reference a signal
-    void registerSignalWrapper(ptr<Signal> signal);
-    size_t unregisterSignalWrapper(ptr<Signal> signal); // returns remaining count
-    size_t wrapperRefCount(ptr<Signal> signal) const;
+    void registerSignalWrapper(const ptr<Signal>& signal);
+    size_t unregisterSignalWrapper(const ptr<Signal>& signal); // returns remaining count
+    size_t wrapperRefCount(const ptr<Signal>& signal) const;
 
     // how many functions consume this signal
-    size_t consumerCount(ptr<Signal> signal) const;
+    size_t consumerCount(const ptr<Signal>& signal) const;
 
     // Generate a unique function name based on the supplied base name
     static std::string uniqueFuncName(const std::string& base);
@@ -193,6 +203,11 @@ private:
 
     friend class Signal;
     friend class FuncNode;
+    #if USE_GC_SGCL
+    friend class sgcl::detail::MakerBase;
+    #else
+    // FIXME:!!!
+    #endif
 };
 
 

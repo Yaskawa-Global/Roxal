@@ -25,7 +25,7 @@ void AST::outputType(std::ostream& os, int indent) const
 
 
 
-std::ostream& roxal::ast::operator<<(std::ostream& os, std::shared_ptr<AST> ast)
+std::ostream& roxal::ast::operator<<(std::ostream& os, ptr<AST> ast)
 { ast->output(os,0); return os; }
 
 std::ostream& roxal::ast::operator<<(std::ostream& os, const AST& ast)
@@ -36,13 +36,13 @@ std::any File::accept(ASTVisitor& v)
 {
     std::vector<std::any> results {};
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<File>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<File>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<File>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<File>(ptr_from_this())) );
 
     return results;
 }
@@ -103,13 +103,13 @@ std::any SingleInput::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<SingleInput>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<SingleInput>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<SingleInput>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<SingleInput>(ptr_from_this())) );
 
     return results;
 }
@@ -142,13 +142,13 @@ std::any Annotation::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Annotation>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Annotation>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Annotation>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Annotation>(ptr_from_this())) );
 
     return results;
 }
@@ -179,13 +179,13 @@ std::any Import::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Import>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Import>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Import>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Import>(ptr_from_this())) );
 
     return results;
 }
@@ -228,9 +228,9 @@ std::any Declaration::accept(ASTVisitor& v)
 {
     // downcast and pass-through (Declaration is abstract base)
     switch (declType) {
-        case Type: { return std::dynamic_pointer_cast<ast::TypeDecl>(shared_from_this())->accept(v); break; }
-        case Func: { return std::dynamic_pointer_cast<ast::FuncDecl>(shared_from_this())->accept(v); break; }
-        case Var: { return std::dynamic_pointer_cast<ast::VarDecl>(shared_from_this())->accept(v); break; }
+        case Type: { return dynamic_ptr_cast<ast::TypeDecl>(ptr_from_this())->accept(v); break; }
+        case Func: { return dynamic_ptr_cast<ast::FuncDecl>(ptr_from_this())->accept(v); break; }
+        case Var:  { return dynamic_ptr_cast<ast::VarDecl>(ptr_from_this())->accept(v); break; }
         default: throw std::runtime_error("unimplemented Declaration::accept() alternative");
     }
     return {};
@@ -243,11 +243,11 @@ std::any Statement::accept(ASTVisitor& v)
 {
     // downcast and pass-through (Statement is abstract base)
     switch (stmtType) {
-        case Suite: { return std::dynamic_pointer_cast<ast::Suite>(shared_from_this())->accept(v); break; }
-        case Expression: { return std::dynamic_pointer_cast<ast::Expression>(shared_from_this())->accept(v); break; }
-        case Return: { return std::dynamic_pointer_cast<ast::Literal>(shared_from_this())->accept(v); break; }
-        case If: { return std::dynamic_pointer_cast<ast::IfStatement>(shared_from_this())->accept(v); break; }
-        case While: { return std::dynamic_pointer_cast<ast::WhileStatement>(shared_from_this())->accept(v); break; }
+        case Suite: { return dynamic_ptr_cast<ast::Suite>(ptr_from_this())->accept(v); break; }
+        case Expression: { return dynamic_ptr_cast<ast::Expression>(ptr_from_this())->accept(v); break; }
+        case Return: { return dynamic_ptr_cast<ast::Literal>(ptr_from_this())->accept(v); break; }
+        case If: { return dynamic_ptr_cast<ast::IfStatement>(ptr_from_this())->accept(v); break; }
+        case While: { return dynamic_ptr_cast<ast::WhileStatement>(ptr_from_this())->accept(v); break; }
         default: throw std::runtime_error("unimplemented Statement::accept() alternative");
     }
     return {};
@@ -262,13 +262,13 @@ std::any Suite::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Suite>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Suite>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Suite>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Suite>(ptr_from_this())) );
 
     return results;
 }
@@ -311,13 +311,13 @@ std::any ExpressionStatement::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<ExpressionStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<ExpressionStatement>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<ExpressionStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<ExpressionStatement>(ptr_from_this())) );
 
     return results;
 }
@@ -343,13 +343,13 @@ std::any ReturnStatement::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<ReturnStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<ReturnStatement>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<ReturnStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<ReturnStatement>(ptr_from_this())) );
 
     return results;
 }
@@ -377,13 +377,13 @@ std::any IfStatement::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<IfStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<IfStatement>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<IfStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<IfStatement>(ptr_from_this())) );
 
     return results;
 }
@@ -423,13 +423,13 @@ std::any WhileStatement::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<WhileStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<WhileStatement>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<WhileStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<WhileStatement>(ptr_from_this())) );
 
     return results;
 }
@@ -459,13 +459,13 @@ std::any ForStatement::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<ForStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<ForStatement>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<ForStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<ForStatement>(ptr_from_this())) );
 
     return results;
 }
@@ -496,13 +496,13 @@ std::any OnStatement::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<OnStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<OnStatement>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<OnStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<OnStatement>(ptr_from_this())) );
 
     return results;
 }
@@ -528,13 +528,13 @@ std::any UntilStatement::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<UntilStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<UntilStatement>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<UntilStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<UntilStatement>(ptr_from_this())) );
 
     return results;
 }
@@ -560,13 +560,13 @@ std::any RaiseStatement::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<RaiseStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<RaiseStatement>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<RaiseStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<RaiseStatement>(ptr_from_this())) );
 
     return results;
 }
@@ -590,13 +590,13 @@ std::any TryStatement::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<TryStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<TryStatement>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<TryStatement>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<TryStatement>(ptr_from_this())) );
 
     return results;
 }
@@ -643,13 +643,13 @@ std::any VarDecl::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<VarDecl>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<VarDecl>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<VarDecl>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<VarDecl>(ptr_from_this())) );
 
     return results;
 }
@@ -685,13 +685,13 @@ std::any FuncDecl::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<FuncDecl>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<FuncDecl>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<FuncDecl>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<FuncDecl>(ptr_from_this())) );
 
     return {};
 }
@@ -718,13 +718,13 @@ std::any Function::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Function>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Function>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Function>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Function>(ptr_from_this())) );
 
     return results;
 }
@@ -802,13 +802,13 @@ std::any Parameter::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Parameter>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Parameter>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Parameter>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Parameter>(ptr_from_this())) );
 
     return results;
 }
@@ -847,13 +847,13 @@ std::any TypeDecl::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<TypeDecl>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<TypeDecl>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<TypeDecl>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<TypeDecl>(ptr_from_this())) );
 
     return results;
 }
@@ -908,14 +908,14 @@ std::any Expression::accept(ASTVisitor& v)
 {
     // downcast and pass-through (Expression is abstract base)
     switch (exprType) {
-        case Assignment: { return std::dynamic_pointer_cast<ast::Assignment>(shared_from_this())->accept(v); break; }
-        case BinaryOp: { return std::dynamic_pointer_cast<ast::BinaryOp>(shared_from_this())->accept(v); break; }
-        case UnaryOp: { return std::dynamic_pointer_cast<ast::UnaryOp>(shared_from_this())->accept(v); break; }
-        case Literal: { return std::dynamic_pointer_cast<ast::Literal>(shared_from_this())->accept(v); break; }
-        case Variable: { return std::dynamic_pointer_cast<ast::Variable>(shared_from_this())->accept(v); break; }
-        case Call: { return std::dynamic_pointer_cast<ast::Call>(shared_from_this())->accept(v); break; }
-        case Range: { return std::dynamic_pointer_cast<ast::Range>(shared_from_this())->accept(v); break; }
-        case Index: { return std::dynamic_pointer_cast<ast::Index>(shared_from_this())->accept(v); break; }
+        case Assignment: { return dynamic_ptr_cast<ast::Assignment>(ptr_from_this())->accept(v); break; }
+        case BinaryOp: { return dynamic_ptr_cast<ast::BinaryOp>(ptr_from_this())->accept(v); break; }
+        case UnaryOp: { return dynamic_ptr_cast<ast::UnaryOp>(ptr_from_this())->accept(v); break; }
+        case Literal: { return dynamic_ptr_cast<ast::Literal>(ptr_from_this())->accept(v); break; }
+        case Variable: { return dynamic_ptr_cast<ast::Variable>(ptr_from_this())->accept(v); break; }
+        case Call: { return dynamic_ptr_cast<ast::Call>(ptr_from_this())->accept(v); break; }
+        case Range: { return dynamic_ptr_cast<ast::Range>(ptr_from_this())->accept(v); break; }
+        case Index: { return dynamic_ptr_cast<ast::Index>(ptr_from_this())->accept(v); break; }
         default: throw std::runtime_error("unimplemented Expression::accept() alternative");
     }
     return {};
@@ -961,13 +961,13 @@ std::any BinaryOp::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<BinaryOp>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<BinaryOp>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<BinaryOp>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<BinaryOp>(ptr_from_this())) );
 
     return results;
 }
@@ -1018,13 +1018,13 @@ std::any UnaryOp::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<UnaryOp>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<UnaryOp>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<UnaryOp>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<UnaryOp>(ptr_from_this())) );
 
     return results;
 }
@@ -1062,13 +1062,13 @@ std::any Assignment::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Assignment>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Assignment>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Assignment>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Assignment>(ptr_from_this())) );
 
     return results;
 }
@@ -1092,7 +1092,7 @@ void Assignment::output(std::ostream& os, int indent) const
 std::any Variable::accept(ASTVisitor& v)
 {
     if (v.visitFirst() || v.visitLast())
-        return v.visit(std::dynamic_pointer_cast<Variable>(shared_from_this()));
+        return v.visit(dynamic_ptr_cast<Variable>(ptr_from_this()));
     return {};
 }
 
@@ -1119,13 +1119,13 @@ std::any Call::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Call>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Call>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Call>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Call>(ptr_from_this())) );
 
     return results;
 }
@@ -1159,13 +1159,13 @@ std::any Range::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Range>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Range>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Range>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Range>(ptr_from_this())) );
 
     return results;
 }
@@ -1231,13 +1231,13 @@ std::any Index::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Index>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Index>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Index>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Index>(ptr_from_this())) );
 
     return results;
 }
@@ -1266,13 +1266,13 @@ std::any LambdaFunc::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<LambdaFunc>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<LambdaFunc>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<LambdaFunc>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<LambdaFunc>(ptr_from_this())) );
 
     return results;
 }
@@ -1294,10 +1294,10 @@ void LambdaFunc::acceptChildren(ASTVisitor& v, Anys& results)
 std::any Literal::accept(ASTVisitor& v)
 {
     switch (literalType) {
-        case Nil: { return v.visit(std::dynamic_pointer_cast<Literal>(shared_from_this())); break; }
-        case Bool: { return std::dynamic_pointer_cast<ast::Bool>(shared_from_this())->accept(v); break; }
-        case Num: { return std::dynamic_pointer_cast<ast::Num>(shared_from_this())->accept(v); break; }
-        case Str: { return std::dynamic_pointer_cast<ast::Str>(shared_from_this())->accept(v); break; }
+        case Nil: { return v.visit(dynamic_ptr_cast<Literal>(ptr_from_this())); break; }
+        case Bool: { return dynamic_ptr_cast<ast::Bool>(ptr_from_this())->accept(v); break; }
+        case Num: { return dynamic_ptr_cast<ast::Num>(ptr_from_this())->accept(v); break; }
+        case Str: { return dynamic_ptr_cast<ast::Str>(ptr_from_this())->accept(v); break; }
         default: throw std::runtime_error("unimplemented Literal::accept() alternative");
     }
     return {};
@@ -1313,7 +1313,7 @@ void Literal::output(std::ostream& os, int indent) const
 std::any Bool::accept(ASTVisitor& v)
 {
     if (v.visitFirst() || v.visitLast())
-        return v.visit(std::dynamic_pointer_cast<Bool>(shared_from_this()));
+        return v.visit(dynamic_ptr_cast<Bool>(ptr_from_this()));
     return {};
 }
 
@@ -1328,7 +1328,7 @@ void Bool::output(std::ostream& os, int indent) const
 std::any Num::accept(ASTVisitor& v)
 {
     if (v.visitFirst() || v.visitLast())
-        return v.visit(std::dynamic_pointer_cast<Num>(shared_from_this()));
+        return v.visit(dynamic_ptr_cast<Num>(ptr_from_this()));
     return {};
 }
 
@@ -1350,7 +1350,7 @@ void Num::output(std::ostream& os, int indent) const
 std::any Str::accept(ASTVisitor& v)
 {
     if (v.visitFirst() || v.visitLast())
-        return v.visit(std::dynamic_pointer_cast<Str>(shared_from_this()));
+        return v.visit(dynamic_ptr_cast<Str>(ptr_from_this()));
     return {};
 }
 
@@ -1363,7 +1363,7 @@ void Str::output(std::ostream& os, int indent) const
 std::any Type::accept(ASTVisitor& v)
 {
     if (v.visitFirst() || v.visitLast())
-        return v.visit(std::dynamic_pointer_cast<Type>(shared_from_this()));
+        return v.visit(dynamic_ptr_cast<Type>(ptr_from_this()));
     return {};
 }
 
@@ -1379,13 +1379,13 @@ std::any List::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<List>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<List>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<List>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<List>(ptr_from_this())) );
 
     return {};
 }
@@ -1411,13 +1411,13 @@ std::any Dict::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Dict>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Dict>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Dict>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Dict>(ptr_from_this())) );
 
     return results;
 }
@@ -1447,13 +1447,13 @@ std::any Vector::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Vector>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Vector>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Vector>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Vector>(ptr_from_this())) );
 
     return {};
 }
@@ -1477,13 +1477,13 @@ std::any Matrix::accept(ASTVisitor& v)
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Matrix>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Matrix>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(std::dynamic_pointer_cast<Matrix>(shared_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<Matrix>(ptr_from_this())) );
 
     return {};
 }

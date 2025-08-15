@@ -29,11 +29,11 @@ void Thread::spawn(Value closure)
     assert(isClosure(closure));
 
     state = State::Spawned;
-    osthread = std::make_shared<std::thread>([this,closure]() {
+    osthread = make_ptr<std::thread>([this,closure]() {
         try {
             auto& vm { VM::instance() };
 
-            vm.thread = shared_from_this(); // set thread local storage member
+            vm.thread = ptr_from_this(); // set thread local storage member
 
             vm.resetStack();
             push(closure);
@@ -85,6 +85,8 @@ void Thread::join(ActorInstance* actorInstOverride)
 
     osthread->join();
     osthread = nullptr;
+    if (inst)
+        inst->thread.reset();
     actorInstance = Value::nilVal();
     actor = false;
 
@@ -100,143 +102,143 @@ void Thread::act(Value actorInstance)
     actor = true;
     state = State::Spawned;
 
-    osthread = std::make_shared<std::thread>([this]() {
+    osthread = make_ptr<std::thread>([this]() {
         try {
             auto& vm { VM::instance() };
 
-            vm.thread = shared_from_this(); // set thread local storage member
+            vm.thread = ptr_from_this(); // set thread local storage member
 
-        Value actorVal = this->actorInstance;
-        if (!actorVal.isAlive()) {
-            state = State::Completed;
-            return;
-        }
-        ActorInstance* actorInst = asActorInstance(actorVal);
-        actorInst->thread_id = std::this_thread::get_id(); // store actor's thread in instance
-        actorInst->thread = shared_from_this();
+            Value actorVal = this->actorInstance;
+            if (!actorVal.isAlive()) {
+                state = State::Completed;
+                return;
+            }
+            ActorInstance* actorInst = asActorInstance(actorVal);
+            actorInst->thread_id = std::this_thread::get_id(); // store actor's thread in instance
+            actorInst->thread = ptr_from_this();
 
-        vm.resetStack();
-        // frame local 0 is actor 'this' instance for actor method (as for object methods)
-        push(actorVal);
+            vm.resetStack();
+            // frame local 0 is actor 'this' instance for actor method (as for object methods)
+            push(actorVal);
 
-        do {
+            do {
 
-            ActorInstance::MethodCallInfo callInfo {};
-            {
-                std::unique_lock<std::mutex> lock { actorInst->queueMutex };
-                actorInst->queueConditionVar.wait(lock,[&]()
+                ActorInstance::MethodCallInfo callInfo {};
                 {
-                    // wake when quitting, when a method is queued, or when events are pending
-                    return quit || !actorInst->callQueue.empty() || !pendingEvents.empty();
-                });
-                if (!actorInst->callQueue.empty()) {
-                    callInfo = actorInst->callQueue.pop();
+                    std::unique_lock<std::mutex> lock { actorInst->queueMutex };
+                    actorInst->queueConditionVar.wait(lock,[&]()
+                    {
+                        // wake when quitting, when a method is queued, or when events are pending
+                        return quit || !actorInst->callQueue.empty() || !pendingEvents.empty();
+                    });
+                    if (!actorInst->callQueue.empty()) {
+                        callInfo = actorInst->callQueue.pop();
+                    }
+                    if (quit)
+                        break;
                 }
-                if (quit)
-                    break;
-            }
 
-            if (!this->actorInstance.isAlive()) {
-                quit = true;
-                break;
-            }
-
-            // handle events even when no method was queued
-            if (!vm.processPendingEvents()) {
-                quit = true;
-                break;
-            }
-
-            if (callInfo.valid()) {
-
-                Value strongActor = this->actorInstance.strongRef();
-                if (strongActor.isNil()) {
+                if (!this->actorInstance.isAlive()) {
                     quit = true;
                     break;
                 }
-                // Ensure actor instance stays alive during call
-                this->stack[0] = strongActor;
 
-                if (isBoundMethod(callInfo.callee)) {
-                    auto closure = asClosure(asBoundMethod(callInfo.callee)->method);
+                // handle events even when no method was queued
+                if (!vm.processPendingEvents()) {
+                    quit = true;
+                    break;
+                }
 
-                    for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
-                        push(*it);
+                if (callInfo.valid()) {
 
-                    vm.call(closure, callInfo.callSpec);
-
-                    auto resultPair = vm.execute();
-                    result = resultPair.first;
-
-                    if (resultPair.first == InterpretResult::OK) {
-                        if (callInfo.returnPromise != nullptr) {
-                            Value ret = resultPair.second;
-                            if (!ret.isPrimitive())
-                                ret = ret.clone();
-                            callInfo.returnPromise->set_value(ret);
-                            if (!callInfo.returnFuture.isNil()) {
-                                asFuture(callInfo.returnFuture)->wakeWaiters();
-                                callInfo.returnFuture = Value::nilVal();
-                            }
-                        }
-                    } else {
-                        if (callInfo.returnPromise != nullptr) {
-                            callInfo.returnPromise->set_value(Value::nilVal());
-                            if (!callInfo.returnFuture.isNil()) {
-                                asFuture(callInfo.returnFuture)->wakeWaiters();
-                                callInfo.returnFuture = Value::nilVal();
-                            }
-                        }
+                    Value strongActor = this->actorInstance.strongRef();
+                    if (strongActor.isNil()) {
                         quit = true;
-                        // reset stack before breaking
+                        break;
+                    }
+                    // Ensure actor instance stays alive during call
+                    this->stack[0] = strongActor;
+
+                    if (isBoundMethod(callInfo.callee)) {
+                        auto closure = asClosure(asBoundMethod(callInfo.callee)->method);
+
+                        for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
+                            push(*it);
+
+                        vm.call(closure, callInfo.callSpec);
+
+                        auto resultPair = vm.execute();
+                        result = resultPair.first;
+
+                        if (resultPair.first == InterpretResult::OK) {
+                            if (callInfo.returnPromise != nullptr) {
+                                Value ret = resultPair.second;
+                                if (!ret.isPrimitive())
+                                    ret = ret.clone();
+                                callInfo.returnPromise->set_value(ret);
+                                if (!callInfo.returnFuture.isNil()) {
+                                    asFuture(callInfo.returnFuture)->wakeWaiters();
+                                    callInfo.returnFuture = Value::nilVal();
+                                }
+                            }
+                        } else {
+                            if (callInfo.returnPromise != nullptr) {
+                                callInfo.returnPromise->set_value(Value::nilVal());
+                                if (!callInfo.returnFuture.isNil()) {
+                                    asFuture(callInfo.returnFuture)->wakeWaiters();
+                                    callInfo.returnFuture = Value::nilVal();
+                                }
+                            }
+                            quit = true;
+                            // reset stack before breaking
+                            {
+                                auto diff = this->stackTop - (this->stack.begin()+1);
+                                if (diff > 0) popN(size_t(diff));
+                                this->stack[0] = this->actorInstance;
+                            }
+                            break;
+                        }
+
                         {
                             auto diff = this->stackTop - (this->stack.begin()+1);
                             if (diff > 0) popN(size_t(diff));
                             this->stack[0] = this->actorInstance;
                         }
-                        break;
+
+                    } else if (isBoundNative(callInfo.callee)) {
+                        ObjBoundNative* bn = asBoundNative(callInfo.callee);
+
+                        for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
+                            push(*it);
+
+                        NativeFn native = bn->function;
+                        ArgsView view{&(*vm.thread->stackTop) - callInfo.callSpec.argCount - 1,
+                                    static_cast<size_t>(callInfo.callSpec.argCount + 1)};
+                        native(vm, view);
+
+                        popN(callInfo.callSpec.argCount);
                     }
 
-                    {
-                        auto diff = this->stackTop - (this->stack.begin()+1);
-                        if (diff > 0) popN(size_t(diff));
-                        this->stack[0] = this->actorInstance;
+                    // restore weak actor reference for next iteration
+                    this->stack[0] = this->actorInstance;
+
+                }
+
+            } while (true);
+
+            // resolve any queued calls with nil so waiting futures complete
+            while(!actorInst->callQueue.empty()) {
+                auto pending = actorInst->callQueue.pop();
+                if (pending.returnPromise) {
+                    pending.returnPromise->set_value(Value::nilVal());
+                    if (!pending.returnFuture.isNil()) {
+                        asFuture(pending.returnFuture)->wakeWaiters();
+                        pending.returnFuture = Value::nilVal();
                     }
-
-                } else if (isBoundNative(callInfo.callee)) {
-                    ObjBoundNative* bn = asBoundNative(callInfo.callee);
-
-                    for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
-                        push(*it);
-
-                    NativeFn native = bn->function;
-                    ArgsView view{&(*vm.thread->stackTop) - callInfo.callSpec.argCount - 1,
-                                   static_cast<size_t>(callInfo.callSpec.argCount + 1)};
-                    native(vm, view);
-
-                    popN(callInfo.callSpec.argCount);
-                }
-
-                // restore weak actor reference for next iteration
-                this->stack[0] = this->actorInstance;
-
-            }
-
-        } while (true);
-
-        // resolve any queued calls with nil so waiting futures complete
-        while(!actorInst->callQueue.empty()) {
-            auto pending = actorInst->callQueue.pop();
-            if (pending.returnPromise) {
-                pending.returnPromise->set_value(Value::nilVal());
-                if (!pending.returnFuture.isNil()) {
-                    asFuture(pending.returnFuture)->wakeWaiters();
-                    pending.returnFuture = Value::nilVal();
                 }
             }
-        }
 
-        stack.clear();
+            stack.clear();
 
             state = State::Completed;
         }

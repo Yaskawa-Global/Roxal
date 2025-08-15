@@ -30,7 +30,7 @@ namespace roxal::ast {
     struct Annotation;
 }
 
-namespace df { class Signal; }
+namespace df { class Signal; class DataflowEngine; }
 
 
 namespace roxal {
@@ -600,6 +600,7 @@ struct ObjSignal : public Obj {
     virtual ~ObjSignal();
     ObjEvent* ensureChangeEvent();
     ptr<df::Signal> signal;
+    df::DataflowEngine* engine;
     Value changeEvent;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
@@ -863,7 +864,7 @@ struct ObjClosure : public Obj
     std::vector<Value> upvalues; // ObjUpvalue
 
     // thread expected to execute this closure when used as an event handler
-    std::weak_ptr<Thread> handlerThread;
+    weak_ptr<Thread> handlerThread;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -914,9 +915,9 @@ struct ObjFuture : public Obj
     std::shared_future<Value> future;
 
     mutable std::mutex waitMutex;
-    std::vector<std::weak_ptr<Thread>> waiters;
+    std::vector<weak_ptr<Thread>> waiters;
 
-    void addWaiter(const std::shared_ptr<Thread>& t);
+    void addWaiter(const ptr<Thread>& t);
     void wakeWaiters();
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
@@ -1163,7 +1164,7 @@ struct ActorInstance : public Obj
     std::condition_variable queueConditionVar;
 
     std::thread::id thread_id;
-    std::weak_ptr<Thread> thread;
+    weak_ptr<Thread> thread;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
