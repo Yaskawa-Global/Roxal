@@ -78,6 +78,8 @@ public:
         return *this;
     }
 
+    T* get() const noexcept { return _ptr; }
+
     void reset() noexcept { _ptr = nullptr; }
 
     bool expired() const noexcept {

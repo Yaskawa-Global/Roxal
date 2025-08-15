@@ -2728,9 +2728,17 @@ ActorInstance::ActorInstance(ObjObjectType* objectType)
 ActorInstance::~ActorInstance()
 {
     instanceType->decRef();
+    #if USE_GC_SGCL
+    if (!thread.expired()) {
+        if (auto t = thread.get()) {
+            t->join(this);
+        }
+    }
+    #else
     if (auto t = thread.lock()) {
         t->join(this);
     }
+    #endif
     thread.reset();
 }
 
