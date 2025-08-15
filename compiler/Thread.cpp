@@ -85,6 +85,8 @@ void Thread::join(ActorInstance* actorInstOverride)
 
     osthread->join();
     osthread = nullptr;
+    if (inst)
+        inst->thread.reset();
     actorInstance = Value::nilVal();
     actor = false;
 

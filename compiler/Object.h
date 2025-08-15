@@ -30,7 +30,7 @@ namespace roxal::ast {
     struct Annotation;
 }
 
-namespace df { class Signal; }
+namespace df { class Signal; class DataflowEngine; }
 
 
 namespace roxal {
@@ -600,6 +600,7 @@ struct ObjSignal : public Obj {
     virtual ~ObjSignal();
     ObjEvent* ensureChangeEvent();
     ptr<df::Signal> signal;
+    df::DataflowEngine* engine;
     Value changeEvent;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;

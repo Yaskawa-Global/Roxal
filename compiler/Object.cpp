@@ -1942,20 +1942,22 @@ void ObjMatrix::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 }
 
 ObjSignal::ObjSignal(ptr<df::Signal> s)
-    : signal(s), changeEvent(Value::nilVal())
+    : signal(s), engine(nullptr), changeEvent(Value::nilVal())
 {
     type = ObjType::Signal;
-    if (signal)
-        df::DataflowEngine::instance()->registerSignalWrapper(signal);
+    if (signal) {
+        auto eng = df::DataflowEngine::instance();
+        engine = eng.get();
+        engine->registerSignalWrapper(signal);
+    }
 }
 
 ObjSignal::~ObjSignal()
 {
-    if (signal) {
-        auto eng = df::DataflowEngine::instance();
-        size_t remaining = eng->unregisterSignalWrapper(signal);
-        if (remaining == 0 && eng->consumerCount(signal) == 0)
-            eng->removeSignal(signal, true);
+    if (signal && engine) {
+        size_t remaining = engine->unregisterSignalWrapper(signal);
+        if (remaining == 0 && engine->consumerCount(signal) == 0)
+            engine->removeSignal(signal, true);
     }
 }
 
