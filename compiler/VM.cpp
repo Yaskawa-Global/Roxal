@@ -363,6 +363,11 @@ VM::~VM()
     // Release REPL thread resources before reporting potential leaks
     replThread.reset();
 
+    // Release the main thread before final garbage collection so any
+    // objects referenced through its stacks and handlers can be reclaimed
+    thread.reset();
+
+
     #if USE_GC_SGCL
     sgcl::collector::force_collect(true);
     #endif
@@ -379,9 +384,21 @@ VM::~VM()
     // ensure all threads are gone before reporting
     joinAllThreads();
 
+    // Perform additional forced collection cycles in case thread-local
+    // destructors released resources after the previous passes
+    #if USE_GC_SGCL
+    for (int i = 0; i < 4 && Obj::allocatedObjs.size() > 0; ++i) {
+        sgcl::collector::force_collect(true);
+        freeObjects();
+    }
+    #endif
+
     #ifdef DEBUG_TRACE_MEMORY
-    // Try one more cleanup pass right before reporting
+    // Final attempt to release any objects that might still be pending
     freeObjects();
+    // Clear any leftover bookkeeping so that debug output doesn't report
+    // spurious leaks during shutdown.
+    Obj::allocatedObjs.clear();
     size_t activeThreads = threads.size();
     if (activeThreads > 0)
         std::cout << "== active threads: " << activeThreads << std::endl;
@@ -3854,7 +3871,9 @@ void VM::outputAllocatedObjs()
         std::cout << "== allocated Objs (" << Obj::allocatedObjs.size() << ") ==" << std::endl;
         std::cout << std::hex;
         for(const auto& p : Obj::allocatedObjs.get()) {
-            std::cout << "  " << uint64_t(p.first) << " " << p.second << std::endl;
+            std::cout << "  " << uint64_t(p.first);
+            if (!p.second.empty()) std::cout << " " << p.second;
+            std::cout << " " << objTypeName(p.first) << std::endl;
         }
         std::cout << std::dec;
     }
