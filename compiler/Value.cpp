@@ -263,29 +263,16 @@ void Value::box() {
     if (isBoxed() || !isBoxable()) return;
     // allocate value on heap
     Obj* obj;
-    #ifdef DEBUG_BUILD
     if (isBool())
-        obj = newObj<ObjPrimitive>(__func__,__FILE__,__LINE__,asBool());
+        obj = newBoolObj(asBool());
     else if (isInt())
-        obj = newObj<ObjPrimitive>(__func__,__FILE__,__LINE__,asInt());
+        obj = newIntObj(asInt());
     else if (isReal())
-        obj = newObj<ObjPrimitive>(__func__,__FILE__,__LINE__,asReal());
+        obj = newRealObj(asReal());
     else if (isType())
-        obj = newObj<ObjPrimitive>(__func__,__FILE__,__LINE__,asType());
+        obj = newTypeObj(asType());
     else
         throw std::runtime_error("Unsupported type for auto-boxing "+typeName());
-    #else
-    if (isBool())
-        obj = newObj<ObjPrimitive>(asBool());
-    else if (isInt())
-        obj = newObj<ObjPrimitive>(asInt());
-    else if (isReal())
-        obj = newObj<ObjPrimitive>(asReal());
-    else if (isType())
-        obj = newObj<ObjPrimitive>(asType());
-    else
-        throw std::runtime_error("Unsupported type for auto-boxing "+typeName());
-    #endif
 
     obj->incRef();
     val = SignBit | QNAN | uint64_t(uintptr_t(obj));
@@ -1448,7 +1435,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 return Value::vectorVal(vals);
             }
             if (isVector(arg)) {
-                return objVal(cloneVector(asVector(arg)));
+                return objVal(asVector(arg)->clone());
             }
             throw std::runtime_error("vector constructor expects int length, list of reals, or vector");
         } else {
@@ -1511,7 +1498,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 return Value::matrixVal(vals);
             }
             if (isMatrix(arg)) {
-                return objVal(cloneMatrix(asMatrix(arg)));
+                return objVal(asMatrix(arg)->clone());
             }
             throw std::runtime_error("matrix constructor expects list, vector, or matrix");
         } else {
@@ -1697,7 +1684,7 @@ Value roxal::add(Value l, Value r)
         ObjList* lv = asList(l);
         const ObjList* rv = asList(r);
 
-        ObjList* result = cloneList(lv);  // Clone LHS for by-value semantics
+        ObjList* result = lv->clone();  // Clone LHS for by-value semantics
         result->concatenate(rv);          // Concatenate RHS in-place
 
         return objVal(result);
@@ -1706,7 +1693,7 @@ Value roxal::add(Value l, Value r)
         // List + anything → append (clone LHS, then append RHS)
         ObjList* lv = asList(l);
 
-        ObjList* result = cloneList(lv);  // Clone LHS for by-value semantics
+        ObjList* result = lv->clone();  // Clone LHS for by-value semantics
         result->append(r);                // Append RHS in-place
 
         return objVal(result);
