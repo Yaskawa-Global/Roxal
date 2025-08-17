@@ -229,65 +229,6 @@ ValueType Obj::valueType() const
 }
 
 
-// deep copy
-Obj* Obj::clone() const
-{
-    Obj* mutableThis = const_cast<Obj*>(this);
-
-    if (type == ObjType::String)
-        return mutableThis; // strings are immutable, safe to copy reference
-        // FIXME!!!: collision for ObjType::Type - used by ObjTypeSpec and ObjPrimitive for builtin type!
-    else if (type == ObjType::Bool || type == ObjType::Real || type == ObjType::Int /*|| type == ObjType::Type*/)
-        return cloneObjPrimitive(static_cast<const ObjPrimitive*>(this));
-    else if (type == ObjType::Upvalue)
-        return cloneUpvalue(static_cast<const ObjUpvalue*>(this));
-    else if (type == ObjType::Closure)
-        return cloneClosure(static_cast<const ObjClosure*>(this));
-    else if (type == ObjType::Range)
-        return cloneRange(static_cast<const ObjRange*>(this));
-    else if (type == ObjType::List)
-        return cloneList(static_cast<const ObjList*>(this));
-    else if (type == ObjType::Dict)
-        return cloneDict(static_cast<const ObjDict*>(this));
-    else if (type == ObjType::Vector)
-        return cloneVector(static_cast<const ObjVector*>(this));
-    else if (type == ObjType::Matrix)
-        return cloneMatrix(static_cast<const ObjMatrix*>(this));
-    else if (type == ObjType::Function) // code is immutable, can copy reference
-        return mutableThis;
-    else if (type == ObjType::Future) {
-        // wait for result, then turn it into an ObjPrimitive copy of the value
-        Value value = static_cast<ObjFuture*>(mutableThis)->asValue();
-        value.box();
-        assert(value.isBoxed() && value.isObj() && isObjPrimitive(value));
-        return asObjPrimitive(value);
-    }
-    else if (type == ObjType::Native)
-        return mutableThis; // native functions are immutable
-    else if (type == ObjType::Type) // complex types are immutable once declared
-        return mutableThis;
-    else if (type == ObjType::Instance)
-        return cloneObjectInstance(static_cast<const ObjectInstance*>(this));
-    else if (type == ObjType::Actor)
-        throw std::runtime_error("cannot clone() type actor instances");
-    else if (type == ObjType::BoundMethod)
-        // NB: this clones the receiver object
-        return cloneBoundMethod(static_cast<const ObjBoundMethod*>(this));
-    else if (type == ObjType::BoundNative)
-        return cloneBoundNative(static_cast<const ObjBoundNative*>(this));
-    else if (type == ObjType::Library)
-        return mutableThis;
-    else if (type == ObjType::ForeignPtr)
-        return mutableThis;
-    else if (type == ObjType::File)
-        return mutableThis;
-    else if (type == ObjType::Event)
-        // Note: currently ObjEvents have no user-mutable state, so we can just share the reference
-        return mutableThis;
-
-    throw std::runtime_error("clone() unimplemented for type "+std::to_string(int(this->type)));
-}
-
 
 
 
@@ -704,18 +645,9 @@ std::string roxal::objRangeToString(const ObjRange* r)
     return oss.str();
 }
 
-
-ObjRange* roxal::cloneRange(const ObjRange* r)
+ObjRange* ObjRange::clone() const
 {
-    #ifdef DEBUG_BUILD
-    return newObj<ObjRange>(__func__,__FILE__,__LINE__,
-                           r->start.clone(),
-                           r->stop.clone(),
-                           r->step.clone(),
-                           r->closed);
-    #else
-    return newObj<ObjRange>(r->start.clone(), r->stop.clone(), r->step.clone(), r->closed);
-    #endif
+    return newRangeObj(start.clone(), stop.clone(), step.clone(), closed);
 }
 
 
@@ -904,18 +836,12 @@ ObjList* roxal::newListObj(const std::vector<Value>& elts)
     return l;
 }
 
-
-ObjList* roxal::cloneList(const ObjList* l)
+ObjList* ObjList::clone() const
 {
-    // TODO: optimize
-    #ifdef DEBUG_BUILD
-    auto newl = newObj<ObjList>(__func__, __FILE__, __LINE__);
-    #else
-    auto newl = newObj<ObjList>();
-    #endif
-    auto lsize = l->elts.size();
+    auto newl = newListObj();
+    auto lsize = elts.size();
     for(auto i=0; i<lsize; i++)
-        newl->elts.push_back(l->elts.at(i).clone());
+        newl->elts.push_back(elts.at(i).clone());
     return newl;
 }
 
@@ -981,16 +907,12 @@ ObjDict* roxal::newDictObj(const std::vector<std::pair<Value,Value>>& entries)
     return d;
 }
 
-ObjDict* roxal::cloneDict(const ObjDict* d)
+ObjDict* ObjDict::clone() const
 {
-    #ifdef DEBUG_BUILD
-    auto newd = newObj<ObjDict>(__func__,__FILE__,__LINE__);
-    #else
-    auto newd = newObj<ObjDict>();
-    #endif
-    const auto dkeys = d->keys();
+    auto newd = newDictObj();
+    const auto dkeys = keys();
     for(const auto& dkey : dkeys)
-        newd->store(dkey.clone(), d->at(dkey).clone());
+        newd->store(dkey.clone(), at(dkey).clone());
     return newd;
 }
 
@@ -1106,14 +1028,10 @@ ObjVector* roxal::newVectorObj(const Eigen::VectorXd& values)
     return v;
 }
 
-ObjVector* roxal::cloneVector(const ObjVector* v)
+ObjVector* ObjVector::clone() const
 {
-    #ifdef DEBUG_BUILD
-    auto newv = newObj<ObjVector>(__func__, __FILE__, __LINE__, v->vec.size());
-    #else
-    auto newv = newObj<ObjVector>(v->vec.size());
-    #endif
-    newv->vec = v->vec;
+    auto newv = newVectorObj(vec.size());
+    newv->vec = vec;
     return newv;
 }
 
@@ -1231,14 +1149,9 @@ static ObjMatrix* valueToMatrix(const Value& v)
     return asMatrix(conv);
 }
 
-ObjMatrix* roxal::cloneMatrix(const ObjMatrix* m)
+ObjMatrix* ObjMatrix::clone() const
 {
-    #ifdef DEBUG_BUILD
-    auto newm = newObj<ObjMatrix>(__func__, __FILE__, __LINE__, m->mat.rows(), m->mat.cols());
-    #else
-    auto newm = newObj<ObjMatrix>(m->mat);
-    #endif
-    newm->mat = m->mat;
+    auto newm = newMatrixObj(mat);
     return newm;
 }
 
@@ -1246,6 +1159,24 @@ void ObjMatrix::set(const ObjMatrix* other)
 {
     mat = other->mat;
 }
+
+ObjPrimitive* ObjPrimitive::clone() const
+{
+    if (type == ObjType::Bool)
+        return newBoolObj(as.boolean);
+    else if (type == ObjType::Int)
+        return newIntObj(as.integer);
+    else if (type == ObjType::Real)
+        return newRealObj(as.real);
+    else if (type == ObjType::Type)
+        return newTypeObj(as.btype);
+#ifdef DEBUG_BUILD
+    throw std::runtime_error("Unsupported ObjPrimitive Type "+std::to_string(int(type)));
+#else
+    return newBoolObj(false);
+#endif
+}
+
 void ObjPrimitive::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     ValueType vt = valueType();
@@ -1305,6 +1236,7 @@ void ObjPrimitive::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 }
 
 // Default serialization stubs for unsupported object types
+ObjSignal* ObjSignal::clone() const { throw std::runtime_error("cannot clone signals"); }
 void ObjSignal::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Signal);
@@ -1333,6 +1265,10 @@ void ObjSignal::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     type = ObjType::Signal;
 }
 
+ObjEvent* ObjEvent::clone() const {
+    // events currently have no user-mutable state; share reference
+    return const_cast<ObjEvent*>(this);
+}
 void ObjEvent::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Event);
@@ -1355,6 +1291,10 @@ void ObjEvent::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     type = ObjType::Event;
 }
 
+ObjLibrary* ObjLibrary::clone() const {
+    // dynamic libraries are represented by handles; share the handle
+    return const_cast<ObjLibrary*>(this);
+}
 void ObjLibrary::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Library);
@@ -1371,10 +1311,19 @@ void ObjLibrary::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     handle = nullptr;
     type = ObjType::Library;
 }
+ObjForeignPtr* ObjForeignPtr::clone() const {
+    // foreign pointers are opaque handles; cloning would be unsafe
+    return const_cast<ObjForeignPtr*>(this);
+}
 void ObjForeignPtr::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("Cannot serialize foreign pointers"); }
 void ObjForeignPtr::read(std::istream&, roxal::ptr<SerializationContext>) { throw std::runtime_error("Cannot deserialize foreign pointers"); }
+ObjFile* ObjFile::clone() const {
+    // files cannot be duplicated; share the underlying handle
+    return const_cast<ObjFile*>(this);
+}
 void ObjFile::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("Cannot serialize file handles"); }
 void ObjFile::read(std::istream&, roxal::ptr<SerializationContext>) { throw std::runtime_error("Cannot deserialize file handles"); }
+ObjException* ObjException::clone() const { throw std::runtime_error("cannot clone exceptions"); }
 void ObjException::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Exception);
@@ -1393,6 +1342,10 @@ void ObjException::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     exType = readValue(in, ctx);
     stackTrace = readValue(in, ctx);
     type = ObjType::Exception;
+}
+ObjFunction* ObjFunction::clone() const {
+    // function objects are immutable; share the reference
+    return const_cast<ObjFunction*>(this);
 }
 void ObjFunction::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
@@ -1508,6 +1461,14 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     if(!moduleType.isNil())
         moduleType = moduleType.weakRef();
 }
+
+ObjUpvalue* ObjUpvalue::clone() const
+{
+    ObjUpvalue* newup = newUpvalueObj(location);
+    newup->closed = newup->location->clone();
+    newup->location = &newup->closed;
+    return newup;
+}
 void ObjUpvalue::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     ObjUpvalue* self = const_cast<ObjUpvalue*>(this);
@@ -1529,6 +1490,15 @@ void ObjUpvalue::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     type = ObjType::Upvalue;
     closed = readValue(in, ctx);
     location = &closed;
+}
+
+ObjClosure* ObjClosure::clone() const
+{
+    ObjClosure* newc = newClosureObj(function);
+    newc->upvalues.resize(upvalues.size());
+    for(size_t i=0; i<upvalues.size(); i++)
+        newc->upvalues[i] = upvalues.at(i).clone();
+    return newc;
 }
 
 void ObjClosure::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -1571,6 +1541,14 @@ void ObjClosure::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             upvalues[i] = uv;
         }
     }
+}
+
+Obj* ObjFuture::clone() const
+{
+    Value value = const_cast<ObjFuture*>(this)->asValue();
+    value.box();
+    assert(value.isBoxed() && value.isObj() && isObjPrimitive(value));
+    return asObjPrimitive(value);
 }
 void ObjFuture::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
@@ -1619,8 +1597,16 @@ void ObjFuture::wakeWaiters()
     }
     for (auto& t : toWake) t->wake();
 }
+ObjNative* ObjNative::clone() const {
+    // native functions are immutable; share the reference
+    return const_cast<ObjNative*>(this);
+}
 void ObjNative::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("ObjNative serialization not implemented"); }
 void ObjNative::read(std::istream&, roxal::ptr<SerializationContext>) { throw std::runtime_error("ObjNative deserialization not implemented"); }
+ObjTypeSpec* ObjTypeSpec::clone() const {
+    // type metadata is immutable; share the reference
+    return const_cast<ObjTypeSpec*>(this);
+}
 void ObjTypeSpec::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tv = static_cast<uint8_t>(typeValue);
@@ -1632,6 +1618,10 @@ void ObjTypeSpec::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     uint8_t tv;
     in.read(reinterpret_cast<char*>(&tv), 1);
     typeValue = static_cast<ValueType>(tv);
+}
+ObjObjectType* ObjObjectType::clone() const {
+    // object type definitions are immutable once created; share reference
+    return const_cast<ObjObjectType*>(this);
 }
 void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
@@ -1769,6 +1759,10 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         enumTypes[enumTypeId] = this;
     }
 }
+ObjPackageType* ObjPackageType::clone() const {
+    // package types contain no mutable state; share the reference
+    return const_cast<ObjPackageType*>(this);
+}
 void ObjPackageType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Type);
@@ -1781,6 +1775,10 @@ void ObjPackageType::read(std::istream& in, roxal::ptr<SerializationContext> ctx
     if(tag != static_cast<uint8_t>(ObjType::Type))
         throw std::runtime_error("ObjPackageType::read mismatched tag");
     typeValue = ValueType::Type;
+}
+ObjModuleType* ObjModuleType::clone() const {
+    // module types are immutable; share the reference
+    return const_cast<ObjModuleType*>(this);
 }
 void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
@@ -1832,6 +1830,13 @@ void ObjectInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx
         properties[h] = v;
     }
 }
+
+ObjBoundMethod* ObjBoundMethod::clone() const
+{
+    auto newmb = newBoundMethodObj(receiver, method);
+    newmb->receiver = newmb->receiver.clone();
+    return newmb;
+}
 void ObjBoundMethod::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::BoundMethod);
@@ -1851,6 +1856,12 @@ void ObjBoundMethod::read(std::istream& in, roxal::ptr<SerializationContext> ctx
     type = ObjType::BoundMethod;
 }
 
+ObjBoundNative* ObjBoundNative::clone() const
+{
+    auto newbm = newBoundNativeObj(receiver, function, isProc, funcType, defaultValues);
+    newbm->receiver = newbm->receiver.clone();
+    return newbm;
+}
 void ObjBoundNative::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::BoundNative);
@@ -2669,23 +2680,21 @@ ObjectInstance* roxal::newObjectInstance(ObjObjectType* objectType)
 }
 
 
-ObjectInstance* roxal::cloneObjectInstance(const ObjectInstance* obj)
+ObjectInstance* ObjectInstance::clone() const
 {
-    // clone (deep copy) object instance
-    auto newobj = newObjectInstance(obj->instanceType);
+    auto newobj = newObjectInstance(instanceType);
 
-    for(const auto& index_value : obj->properties) {
+    for(const auto& index_value : properties) {
         const auto index { index_value.first };
         const auto& value { index_value.second };
 
         if (value.isPrimitive())
             newobj->properties[index] = value;
         else if (isString(value)) {
-            // strings are reference types, but immutable, so can copy reference
             newobj->properties[index] = value;
         }
         else if (isObjectInstance(value)) {
-            auto propcopy = cloneObjectInstance(asObjectInstance(value));  // recurse
+            auto propcopy = asObjectInstance(value)->clone();
             newobj->properties[index] = Value(propcopy);
         }
         else if (isActorInstance(value)) {
@@ -2697,12 +2706,7 @@ ObjectInstance* roxal::cloneObjectInstance(const ObjectInstance* obj)
         // TODO: add explicit handling of internal types like closure, future, function etc (just shallow copy)
         //       add explicit deep copying of builtin ref types like list and dict
         else {
-            #ifdef DEBUG_BUILD
-            const auto& prop { obj->instanceType->properties.at(index) };
-            std::cerr << "shallow copying property " << toUTF8StdString(prop.name) << " :" << value.typeName() <<  " from " << Value(obj->instanceType) << std::endl;
-            std::cerr << " isPrimitive?" << (value.isPrimitive() ? "yes":"no") << std::endl;
-            #endif
-            newobj->properties[index] = value;
+            newobj->properties[index] = value; // shallow copy
         }
 
     }

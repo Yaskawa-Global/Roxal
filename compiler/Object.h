@@ -92,7 +92,7 @@ struct Obj {
 
     ValueType valueType() const;
 
-    Obj* clone() const; // deep copy
+    virtual Obj* clone() const = 0; // deep copy
 
     virtual void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const = 0;
     virtual void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) = 0;
@@ -259,6 +259,8 @@ struct ObjPrimitive : public Obj
         ValueType btype;
     } as;
 
+    ObjPrimitive* clone() const override;
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -276,28 +278,36 @@ inline bool isObjPrimitive(const Value& v)
 }
 inline ObjPrimitive* asObjPrimitive(const Value& v) { return static_cast<ObjPrimitive*>(v.asObj()); }
 
-inline ObjPrimitive* cloneObjPrimitive(const ObjPrimitive* op) {
-    #ifdef DEBUG_BUILD
-    if (op->type == ObjType::Bool)
-        return newObj<ObjPrimitive>(__func__,__FILE__,__LINE__,op->as.boolean);
-    else if (op->type == ObjType::Int)
-        return newObj<ObjPrimitive>(__func__,__FILE__,__LINE__,op->as.integer);
-    else if (op->type == ObjType::Real)
-        return newObj<ObjPrimitive>(__func__,__FILE__,__LINE__,op->as.real);
-    else if (op->type == ObjType::Type)
-        return newObj<ObjPrimitive>(__func__,__FILE__,__LINE__,op->as.btype);
-    throw std::runtime_error("Unsupported ObjPrimitive Type "+std::to_string(int(op->type)));
-    #else
-    if (op->type == ObjType::Bool)
-        return newObj<ObjPrimitive>(op->as.boolean);
-    else if (op->type == ObjType::Int)
-        return newObj<ObjPrimitive>(op->as.integer);
-    else if (op->type == ObjType::Real)
-        return newObj<ObjPrimitive>(op->as.real);
-    else if (op->type == ObjType::Type)
-        return newObj<ObjPrimitive>(op->as.btype);
-    return newObj<ObjPrimitive>(false);
-    #endif
+inline ObjPrimitive* newBoolObj(bool b) {
+#ifdef DEBUG_BUILD
+    return newObj<ObjPrimitive>(__func__, __FILE__, __LINE__, b);
+#else
+    return newObj<ObjPrimitive>(b);
+#endif
+}
+
+inline ObjPrimitive* newIntObj(int32_t i) {
+#ifdef DEBUG_BUILD
+    return newObj<ObjPrimitive>(__func__, __FILE__, __LINE__, i);
+#else
+    return newObj<ObjPrimitive>(i);
+#endif
+}
+
+inline ObjPrimitive* newRealObj(double r) {
+#ifdef DEBUG_BUILD
+    return newObj<ObjPrimitive>(__func__, __FILE__, __LINE__, r);
+#else
+    return newObj<ObjPrimitive>(r);
+#endif
+}
+
+inline ObjPrimitive* newTypeObj(ValueType t) {
+#ifdef DEBUG_BUILD
+    return newObj<ObjPrimitive>(__func__, __FILE__, __LINE__, t);
+#else
+    return newObj<ObjPrimitive>(t);
+#endif
 }
 
 
@@ -317,6 +327,8 @@ struct ObjString : public Obj
 
     // number of 16bit Unicode code units
     int32_t length() const { return s.length(); }
+
+    ObjString* clone() const override { return const_cast<ObjString*>(this); } // strings are interned/immutable
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -356,6 +368,8 @@ struct ObjRange : public Obj
     Value step;
     bool closed;
 
+    ObjRange* clone() const override;
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
@@ -384,7 +398,6 @@ ObjRange* newRangeObj(); // empty range
 ObjRange* newRangeObj(const Value& start, const Value& stop, const Value& step, bool closed);
 
 std::string objRangeToString(const ObjRange* r);
-ObjRange* cloneRange(const ObjRange* r); // deep copy
 
 
 
@@ -413,6 +426,8 @@ struct ObjList : public Obj
 
     atomic_vector<Value> elts;
 
+    ObjList* clone() const override;
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -424,7 +439,6 @@ inline ObjList* asList(const Value& v) { return static_cast<ObjList*>(v.asObj())
 ObjList* newListObj();
 ObjList* newListObj(const ObjRange* r);
 ObjList* newListObj(const std::vector<Value>& elts);
-ObjList* cloneList(const ObjList* l); // deep copy
 
 std::string objListToString(const ObjList* ol);
 
@@ -496,6 +510,8 @@ private:
     std::map<Value,Value,ValueComparitor> entries;
 
 public:
+    ObjDict* clone() const override;
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -506,7 +522,6 @@ inline ObjDict* asDict(const Value& v) { return static_cast<ObjDict*>(v.asObj())
 
 ObjDict* newDictObj();
 ObjDict* newDictObj(const std::vector<std::pair<Value,Value>>& entries);
-ObjDict* cloneDict(const ObjDict* d);
 
 std::string objDictToString(const ObjDict* od);
 
@@ -533,6 +548,8 @@ struct ObjVector : public Obj
 
     Eigen::VectorXd vec;
 
+    ObjVector* clone() const override;
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -543,7 +560,6 @@ inline ObjVector* asVector(const Value& v) { return static_cast<ObjVector*>(v.as
 ObjVector* newVectorObj();
 ObjVector* newVectorObj(int32_t size);
 ObjVector* newVectorObj(const Eigen::VectorXd& values);
-ObjVector* cloneVector(const ObjVector* v);
 
 std::string objVectorToString(const ObjVector* ov);
 
@@ -578,6 +594,8 @@ struct ObjMatrix : public Obj
 
     Eigen::MatrixXd mat;
 
+    ObjMatrix* clone() const override;
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -588,7 +606,6 @@ inline ObjMatrix* asMatrix(const Value& v) { return static_cast<ObjMatrix*>(v.as
 ObjMatrix* newMatrixObj();
 ObjMatrix* newMatrixObj(int32_t rows, int32_t cols);
 ObjMatrix* newMatrixObj(const Eigen::MatrixXd& values);
-ObjMatrix* cloneMatrix(const ObjMatrix* m);
 
 std::string objMatrixToString(const ObjMatrix* om);
 
@@ -602,6 +619,8 @@ struct ObjSignal : public Obj {
     ptr<df::Signal> signal;
     df::DataflowEngine* engine;
     Value changeEvent;
+
+    ObjSignal* clone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -624,6 +643,8 @@ struct ObjEvent : public Obj {
     // list of subscribed handler closures (weak references)
     std::vector<Value> subscribers;
 
+    ObjEvent* clone() const override;
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -642,6 +663,8 @@ struct ObjLibrary : public Obj {
     ObjLibrary(void* h) : handle(h) { type = ObjType::Library; }
     virtual ~ObjLibrary();
     void* handle;
+
+    ObjLibrary* clone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -665,6 +688,8 @@ struct ObjForeignPtr : public Obj {
     void* ptr;
     std::function<void(void*)> cleanup;
 
+    ObjForeignPtr* clone() const override;
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -685,6 +710,8 @@ struct ObjFile : public Obj {
     virtual ~ObjFile() { if (file && file->is_open()) file->close(); }
     roxal::ptr<std::fstream> file;
     bool binary;
+
+    ObjFile* clone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -711,6 +738,8 @@ struct ObjException : public Obj {
     Value exType; // object type of the exception
 
     Value stackTrace; // list of stack frames when raised
+
+    ObjException* clone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -777,6 +806,8 @@ struct ObjFunction : public Obj
 
     void clear(); // reset to blank without other reference values
 
+    ObjFunction* clone() const override;
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -816,6 +847,8 @@ struct ObjUpvalue : public Obj {
     Value* location;
     Value closed;
 
+    ObjUpvalue* clone() const override;
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -829,18 +862,6 @@ inline ObjUpvalue* newUpvalueObj(Value* v) {
     #else
     return newObj<ObjUpvalue>(v);
     #endif
-}
-
-inline ObjUpvalue* cloneUpvalue(const ObjUpvalue* u) {
-    #ifdef DEBUG_BUILD
-    ObjUpvalue* newup = newObj<ObjUpvalue>(__func__,__FILE__, __LINE__,u->location);
-    #else
-    ObjUpvalue* newup = newObj<ObjUpvalue>(u->location);
-    #endif
-    // clone value (this Upvalue is now closed)
-    newup->closed = newup->location->clone();
-    newup->location = &newup->closed;
-    return newup;
 }
 
 
@@ -866,6 +887,8 @@ struct ObjClosure : public Obj
     // thread expected to execute this closure when used as an event handler
     weak_ptr<Thread> handlerThread;
 
+    ObjClosure* clone() const override;
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -883,18 +906,6 @@ inline ObjClosure* newClosureObj(Value function) { // ObjFunction
     #else
     return newObj<ObjClosure>(function);
     #endif
-}
-
-inline ObjClosure* cloneClosure(const ObjClosure* c) {
-    #ifdef DEBUG_BUILD
-    ObjClosure* newc = newObj<ObjClosure>(__func__,__FILE__,__LINE__,c->function);
-    #else
-    ObjClosure* newc = newObj<ObjClosure>(c->function);
-    #endif
-    newc->upvalues.resize(c->upvalues.size());
-    for(auto i=0; i<c->upvalues.size();i++)
-        newc->upvalues[i] = c->upvalues.at(i).clone();
-    return newc;
 }
 
 
@@ -919,6 +930,8 @@ struct ObjFuture : public Obj
 
     void addWaiter(const ptr<Thread>& t);
     void wakeWaiters();
+
+    Obj* clone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -955,6 +968,8 @@ struct ObjNative : public Obj
     ptr<roxal::type::Type> funcType;
     std::vector<Value> defaultValues;
 
+    ObjNative* clone() const override;
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -983,6 +998,8 @@ struct ObjTypeSpec : public Obj
     virtual ~ObjTypeSpec() {}
 
     ValueType typeValue;
+
+    ObjTypeSpec* clone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1049,6 +1066,8 @@ struct ObjObjectType : public ObjTypeSpec
     //  TODO: make thread safe?
     static std::unordered_map<uint16_t, ObjObjectType*> enumTypes;
 
+    ObjObjectType* clone() const override;
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -1065,6 +1084,8 @@ ObjObjectType* newObjectTypeObj(const icu::UnicodeString& typeName, bool isActor
 struct ObjPackageType : public ObjTypeSpec
 {
     // TODO
+
+    ObjPackageType* clone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1087,6 +1108,8 @@ struct ObjModuleType : public ObjTypeSpec
     std::unordered_map<int32_t, std::unordered_map<int32_t, icu::UnicodeString>> propertyCTypes;
 
     static atomic_vector<Value> allModules;
+
+    ObjModuleType* clone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1120,6 +1143,8 @@ struct ObjectInstance : public Obj
     void setProperty(const std::string& name, Value value) { setProperty(toUnicodeString(name), value); }
     void setProperty(const char* name, Value value) { setProperty(toUnicodeString(name), value); }
 
+    ObjectInstance* clone() const override;
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -1128,7 +1153,6 @@ inline bool isObjectInstance(const Value& v) { return isObjType(v, ObjType::Inst
 inline ObjectInstance* asObjectInstance(const Value& v) { return static_cast<ObjectInstance*>(v.asObj()); }
 
 ObjectInstance* newObjectInstance(ObjObjectType* objectType);
-ObjectInstance* cloneObjectInstance(const ObjectInstance* obj); // deep copy
 
 
 //
@@ -1166,6 +1190,8 @@ struct ActorInstance : public Obj
     std::thread::id thread_id;
     weak_ptr<Thread> thread;
 
+    ActorInstance* clone() const override { throw std::runtime_error("cannot clone actor instances"); }
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -1188,6 +1214,8 @@ struct ObjBoundMethod : public Obj
     Value receiver;
     Value method;
 
+    ObjBoundMethod* clone() const override;
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -1201,17 +1229,6 @@ inline ObjBoundMethod* newBoundMethodObj(const Value& instance, const Value& clo
     #else
     return newObj<ObjBoundMethod>(instance, closure);
     #endif
-}
-
-inline ObjBoundMethod* cloneBoundMethod(const ObjBoundMethod* bm) {
-    #ifdef DEBUG_BUILD
-    auto newmb = newObj<ObjBoundMethod>(toUTF8StdString(asFunction(asClosure(bm->method)->function)->name),__FILE__,__LINE__,bm->receiver, bm->method);
-    #else
-    auto newmb = newObj<ObjBoundMethod>(bm->receiver, bm->method);
-    #endif
-
-    newmb->receiver = newmb->receiver.clone();
-    return newmb;
 }
 
 //
@@ -1232,6 +1249,8 @@ struct ObjBoundNative : public Obj
     ptr<roxal::type::Type> funcType;
     std::vector<Value> defaultValues;
 
+    ObjBoundNative* clone() const override;
+
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 };
@@ -1246,16 +1265,6 @@ inline ObjBoundNative* newBoundNativeObj(const Value& instance, NativeFn fn, boo
     #else
     return newObj<ObjBoundNative>(instance, fn, isProc, funcType, std::move(defaults));
     #endif
-}
-
-inline ObjBoundNative* cloneBoundNative(const ObjBoundNative* bm) {
-    #ifdef DEBUG_BUILD
-    auto newbm = newObj<ObjBoundNative>(__func__, __FILE__, __LINE__, bm->receiver, bm->function, bm->isProc, bm->funcType, bm->defaultValues);
-    #else
-    auto newbm = newObj<ObjBoundNative>(bm->receiver, bm->function, bm->isProc, bm->funcType, bm->defaultValues);
-    #endif
-    newbm->receiver = newbm->receiver.clone();
-    return newbm;
 }
 
 
