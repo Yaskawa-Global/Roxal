@@ -35,7 +35,7 @@ public:
             #if USE_GC_SGCL
             engine = roxal::make_ptr<DataflowEngine>();
             #else
-            engine = ptr<DataflowEngine>(new DataflowEngine()); // Direct call to new (constructor is private)
+            engine = ptr<DataflowEngine>::from_raw(new DataflowEngine()); // Direct call to new (constructor is private)
             #endif
         }
 

@@ -17,7 +17,7 @@ ptr<Signal> Signal::newClockSignal(double freq, std::optional<std::string> name)
     #if USE_GC_SGCL
     auto s = roxal::make_ptr<Signal>(freq, Value(0), name);
     #else
-    auto s = ptr<Signal>(new Signal(freq, Value(0), name)); // direct new needed
+    auto s = ptr<Signal>::from_raw(new Signal(freq, Value(0), name)); // direct new needed
     #endif
     s->isClock = true;
     s->isSource = true;
@@ -32,7 +32,7 @@ ptr<Signal> Signal::newSignal(double freq, Value initial, std::optional<std::str
     #if USE_GC_SGCL
     auto s = roxal::make_ptr<Signal>(freq, initial, name);
     #else
-    auto s = ptr<Signal>(new Signal(freq, initial, name));
+    auto s = ptr<Signal>::from_raw(new Signal(freq, initial, name));
     #endif
     s->isClock = false;
     s->isSource = false;
@@ -45,7 +45,7 @@ ptr<Signal> Signal::newSourceSignal(double freq, Value initial, std::optional<st
     #if USE_GC_SGCL
     auto s = roxal::make_ptr<Signal>(freq, initial, name);
     #else
-    auto s = ptr<Signal>(new Signal(freq, initial, name));
+    auto s = ptr<Signal>::from_raw(new Signal(freq, initial, name));
     #endif
     s->isClock = false;
     s->isSource = true;
@@ -277,7 +277,7 @@ ptr<Signal> Signal::indexedSignal(int index)
     #if USE_GC_SGCL
     auto newSig = roxal::make_ptr<Signal>(m_frequency, initial, m_name + "[" + std::to_string(index) + "]");
     #else
-    auto newSig = ptr<Signal>(new Signal(m_frequency, initial, m_name + "[" + std::to_string(index) + "]"));
+    auto newSig = ptr<Signal>::from_raw(new Signal(m_frequency, initial, m_name + "[" + std::to_string(index) + "]"));
     #endif
     newSig->isClock = false;
     newSig->isSource = false;

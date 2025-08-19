@@ -4,12 +4,15 @@ project(roxal VERSION 1.0 LANGUAGES CXX C)
 
 enable_testing()
 
+if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-fmax-errors=1)
+endif()
 
 option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
 
 
 option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
-option(USE_GC_SGCL "Use the SGCL garbage collector" ON)
+option(USE_GC_SGCL "Use the SGCL garbage collector" OFF)
 
 
 add_compile_definitions(
