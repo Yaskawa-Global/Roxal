@@ -496,6 +496,40 @@ wait(ms=500)  // don't exit until after next tick & handler runs
 print('done')
 ```
 
+## Until
+
+The `until` modifier can be used as a suffix for statements to specify a condition for when the statement execution should be stopped (interrupted).
+
+The until condition can be an event or a boolean valued signal.
+
+```php
+
+var e :event
+
+func take_a_while():
+  wait(s=10)  // do nothing for 10s
+
+type MyWorker actor:
+  proc triggerEventAfterDelay(e :event, aftersecs :int):
+    wait(s=aftersecs)
+    emit e
+
+worker = MyWorker()
+worker.triggerEventAfterDelay(e,5) // async (immediate return)
+
+// this will execute take_a_while for ~5s until interrupted by e triggered by worker
+take_a_while() until e
+
+
+c = clock(freq=10)  # 10Hz clock signal
+c.run()
+
+// this will execute take_a_while for ~2s
+//   (20 10Hz ticks until signal 'c > 20' is true)
+take_a_while() until c > 20
+
+```
+
 
 ## Builtin Modules & Functions
 
