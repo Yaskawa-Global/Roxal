@@ -1,0 +1,33 @@
+var e :event
+
+print('start')
+
+proc take_a_while():
+  print('take_a_while()')
+  wait(s=10)  // do nothing for 10s
+  print('take_a_while() exiting after 10')
+
+type MyWorker actor:
+  proc triggerEventAfterDelay(e :event, aftersecs :int):
+    wait(s=aftersecs)
+    emit e
+
+worker = MyWorker()
+print('calling triggerEventAfterDelay')
+worker.triggerEventAfterDelay(e,5) // async (immediate return)
+print(' returned')
+
+// this will execute take_a_while for ~5s until interrupted by e triggered by worker
+take_a_while() until e
+
+print('e occured')
+
+c = clock(freq=10)  # 10Hz clock signal
+c.run()
+
+// this will execute take_a_while for ~2s (20 10Hz ticks until signal 'c > 20' is true
+take_a_while() until c > 20
+print(int(c))
+
+wait(s=2)
+print('done')
