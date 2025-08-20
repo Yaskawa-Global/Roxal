@@ -88,6 +88,14 @@ public:
     return ptr(std::shared_ptr<T>(raw));
   }
 
+  template<class U, class D,
+         class = std::enable_if_t<std::is_convertible_v<U*, T*>>>
+  ptr& operator=(std::unique_ptr<U, D>&& up) {
+        U* raw = up.release();
+        sp_.reset(static_cast<T*>(raw));
+        return *this;
+    }
+
   // minimal shared_ptr surface
   T*  get()  const noexcept { return sp_.get(); }
   T&  operator*()   const noexcept { return *sp_; }
@@ -145,8 +153,8 @@ public:
 };
 
 template<class T, class... Args>
-inline ptr<T> make_ptr(Args&&... args) {
-    return std::make_shared<T>(std::forward<Args>(args)...);
+inline unique_ptr<T> make_ptr(Args&&... args) {
+    return std::make_unique<T>(std::forward<Args>(args)...);
 }
 
 // template<class T>

@@ -166,7 +166,7 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
                         throw std::runtime_error("Enum(eration)"+toUTF8StdString(ast->name)
                                 +" value for "+toUTF8StdString(enumLabel.first)+" is out of range (>255 for byte enum)");
                 }
-                auto numExpr = make_ptr<ast::Num>();
+                ptr<ast::Num> numExpr = make_ptr<ast::Num>();
                 numExpr->num = nextValue;
                 numExpr->type = make_ptr<type::Type>(BuiltinType::Int);
                 enumLabel.second = numExpr;
@@ -319,14 +319,14 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
     // pre-register parameter types so body and defaults can reference them
     for (auto& param : ast->params) {
         if (param->type.has_value() && std::holds_alternative<BuiltinType>(param->type.value())) {
-            auto ptype = make_ptr<Type>(std::get<BuiltinType>(param->type.value()));
+            ptr<Type> ptype = make_ptr<Type>(std::get<BuiltinType>(param->type.value()));
             declareVar(param->name, ptype, /*explicit*/true);
         }
     }
 
     ast->acceptChildren(*this, results);
 
-    auto type = make_ptr<Type>();
+    ptr<Type> type = make_ptr<Type>();
     type->builtin = BuiltinType::Func;
     type->func = Type::FuncType();
     type->func->isProc = ast->isProc;
@@ -339,7 +339,7 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
             else if (std::holds_alternative<icu::UnicodeString>(returnType)) {
                 // lookup name - for now create a placeholder
                 // TODO: implement proper name lookup
-                auto placeholderType = make_ptr<Type>(BuiltinType::Object);
+                ptr<Type> placeholderType = make_ptr<Type>(BuiltinType::Object);
                 type->func->returnTypes.push_back(placeholderType);
             }
         }

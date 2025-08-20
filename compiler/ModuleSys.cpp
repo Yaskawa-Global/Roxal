@@ -41,7 +41,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("help", [this](VM& vm, ArgsView a){ return help_builtin(vm,a); });
         addSys("clone", [this](VM& vm, ArgsView a){ return clone_builtin(vm,a); });
         {
-            auto t = make_ptr<type::Type>(type::BuiltinType::Func);
+            ptr<type::Type> t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
             t->func->isProc = true;
             std::vector<Value> defaults { Value::intVal(0), Value::intVal(0), Value::intVal(0), Value::intVal(0) };
@@ -57,7 +57,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("fork", [this](VM& vm, ArgsView a){ return fork_builtin(vm,a); });
         addSys("join", [this](VM& vm, ArgsView a){ return join_builtin(vm,a); });
         {
-            auto t = make_ptr<type::Type>(type::BuiltinType::Func);
+            ptr<type::Type> t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
             t->func->isProc = true;
             std::vector<Value> defaults{ Value::intVal(0) };
@@ -83,7 +83,7 @@ void ModuleSys::registerBuiltins(VM& vm)
     if (!vm.loadGlobal(toUnicodeString("_clock")).has_value()) {
         addSys("_clock", [this](VM& vm, ArgsView a){ return clock_native(vm,a); });
         {
-            auto t = make_ptr<type::Type>(type::BuiltinType::Func);
+            ptr<type::Type> t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
             std::vector<Value> defaults{ Value::nilVal(), Value::stringVal(toUnicodeString("")) };
             auto params = BuiltinModule::constructParams({
@@ -257,7 +257,7 @@ Value ModuleSys::fork_builtin(VM& vm, ArgsView args)
                                 "The function must only use its parameters and global variables.");
     }
 
-    auto newThread = make_ptr<Thread>();
+    ptr<Thread> newThread = make_ptr<Thread>();
     vm.threads.store(newThread->id(), newThread);
     newThread->spawn(args[0]);
 
@@ -448,7 +448,7 @@ Value ModuleSys::serialize_builtin(VM& vm, ArgsView args)
         throw std::invalid_argument("unknown serialization protocol");
 
     std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
-    auto ctx = make_ptr<SerializationContext>();
+    ptr<SerializationContext> ctx = make_ptr<SerializationContext>();
     writeValue(ss, args[0], ctx);
     std::string data = ss.str();
     std::vector<Value> bytes;
@@ -494,7 +494,7 @@ Value ModuleSys::deserialize_builtin(VM& vm, ArgsView args)
     std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
     ss.write(data.data(), data.size());
     ss.seekg(0);
-    auto ctx = make_ptr<SerializationContext>();
+    ptr<SerializationContext> ctx = make_ptr<SerializationContext>();
     return readValue(ss, ctx);
 }
 

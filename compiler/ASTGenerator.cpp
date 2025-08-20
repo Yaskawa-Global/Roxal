@@ -326,7 +326,7 @@ std::any ASTGenerator::visitFile_input(RoxalParser::File_inputContext *context)
 {
     visitStart();
 
-    auto file = make_ptr<File>();
+    ptr<File> file = make_ptr<File>();
     setSourceInfo(file, context);
 
     if (context->annotation().size() > 0) {
@@ -335,7 +335,7 @@ std::any ASTGenerator::visitFile_input(RoxalParser::File_inputContext *context)
 
             auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
 
-            auto annotation = make_ptr<Annotation>();
+            ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
 
@@ -384,7 +384,7 @@ std::any ASTGenerator::visitSingle_input(RoxalParser::Single_inputContext *conte
 {
     visitStart();
 
-    return typeValue(make_ptr<AST>());
+    return typeValue(ptr<AST>(make_ptr<AST>()));
 
     visitEnd();
 }
@@ -395,7 +395,7 @@ std::any ASTGenerator::visitImport_stmt(RoxalParser::Import_stmtContext *context
 {
     visitStart();
 
-    auto import = make_ptr<Import>();
+    ptr<Import> import = make_ptr<Import>();
     setSourceInfo(import, context);
 
     for(auto i=0; i<context->IDENTIFIER().size(); i++) {
@@ -471,7 +471,7 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
         assertType<Expression>(expr);
         auto exprStmt = make_ptr<ExpressionStatement>();
         exprStmt->expr = as<Expression>(expr);
-        stmt = exprStmt;
+        stmt = std::move(exprStmt);
     }
     else if (context->compound_stmt()) {
         auto compound = visitCompound_stmt(context->compound_stmt());
@@ -510,7 +510,7 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
 
     if (context->until_clause()) {
         auto ucExpr = as<Expression>(visitExpression(context->until_clause()->expression()));
-        auto untilStmt = make_ptr<UntilStatement>();
+        ptr<UntilStatement> untilStmt = make_ptr<UntilStatement>();
         setSourceInfo(untilStmt, context->until_clause());
         untilStmt->stmt = stmt;
         untilStmt->condition = ucExpr;
@@ -593,7 +593,7 @@ std::any ASTGenerator::visitReturn_stmt(RoxalParser::Return_stmtContext *context
 {
     visitStart();
 
-    auto returnStmt = make_ptr<ReturnStatement>();
+    ptr<ReturnStatement> returnStmt = make_ptr<ReturnStatement>();
     setSourceInfo(returnStmt, context);
     if (context->expression())
         returnStmt->expr = as<Expression>(visitExpression(context->expression()));
@@ -608,7 +608,7 @@ std::any ASTGenerator::visitIf_stmt(RoxalParser::If_stmtContext *context)
 {
     visitStart();
 
-    auto ifStmt = make_ptr<IfStatement>();
+    ptr<IfStatement> ifStmt = make_ptr<IfStatement>();
     setSourceInfo(ifStmt,context);
 
     // at least one condition & body required
@@ -643,7 +643,7 @@ std::any ASTGenerator::visitWhile_stmt(RoxalParser::While_stmtContext *context)
     auto condition = visitExpression(context->expression());
     auto body = visitSuite(context->suite());
 
-    auto whileStmt = make_ptr<WhileStatement>();
+    ptr<WhileStatement> whileStmt = make_ptr<WhileStatement>();
     setSourceInfo(whileStmt, context);
     whileStmt->condition = as<Expression>(condition);
     whileStmt->body = as<Suite>(body);
@@ -657,7 +657,7 @@ std::any ASTGenerator::visitFor_stmt(RoxalParser::For_stmtContext *context)
 {
     visitStart();
 
-    auto forStmt = make_ptr<ForStatement>();
+    ptr<ForStatement> forStmt = make_ptr<ForStatement>();
     setSourceInfo(forStmt, context);
 
     for(int i=0; i<context->ident_opt_type().size();i++) {
@@ -690,7 +690,7 @@ std::any ASTGenerator::visitOn_stmt(RoxalParser::On_stmtContext *context)
 {
     visitStart();
 
-    auto onStmt = make_ptr<OnStatement>();
+    ptr<OnStatement> onStmt = make_ptr<OnStatement>();
     setSourceInfo(onStmt, context);
 
     onStmt->trigger = as<Expression>(visitExpression(context->expression()));
@@ -707,17 +707,17 @@ std::any ASTGenerator::visitEmit_stmt(RoxalParser::Emit_stmtContext *context)
 
     auto expr = as<Expression>(visitExpression(context->expression()));
 
-    auto access = make_ptr<UnaryOp>(UnaryOp::Accessor);
+    ptr<UnaryOp> access = make_ptr<UnaryOp>(UnaryOp::Accessor);
     setSourceInfo(access, context->EMIT());
     access->arg = expr;
     access->member = toUnicodeString("emit");
 
-    auto call = make_ptr<Call>();
+    ptr<Call> call = make_ptr<Call>();
     setSourceInfo(call, context);
     call->callable = access;
     call->args = {};
 
-    auto exprStmt = make_ptr<ExpressionStatement>();
+    ptr<ExpressionStatement> exprStmt = make_ptr<ExpressionStatement>();
     setSourceInfo(exprStmt, context);
     exprStmt->expr = call;
 
@@ -729,7 +729,7 @@ std::any ASTGenerator::visitTry_stmt(RoxalParser::Try_stmtContext *context)
 {
     visitStart();
 
-    auto tryStmt = make_ptr<TryStatement>();
+    ptr<TryStatement> tryStmt = make_ptr<TryStatement>();
     setSourceInfo(tryStmt, context);
 
     tryStmt->body = as<Suite>(visitSuite(context->suite()));
@@ -755,7 +755,7 @@ std::any ASTGenerator::visitTry_stmt(RoxalParser::Try_stmtContext *context)
 std::any ASTGenerator::visitRaise_stmt(RoxalParser::Raise_stmtContext *context)
 {
     visitStart();
-    auto rs = make_ptr<RaiseStatement>();
+    ptr<RaiseStatement> rs = make_ptr<RaiseStatement>();
     setSourceInfo(rs, context);
     if (context->expression())
         rs->exception = as<Expression>(visitExpression(context->expression()));
@@ -796,7 +796,7 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
 
     UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText()) };
 
-    auto vardecl = make_ptr<VarDecl>();
+    ptr<VarDecl> vardecl = make_ptr<VarDecl>();
     setSourceInfo(vardecl,context);
     vardecl->name = ident;
 
@@ -806,7 +806,7 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
 
             auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
 
-            auto annotation = make_ptr<Annotation>();
+            ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
 
@@ -860,7 +860,7 @@ std::any ASTGenerator::visitFunc_decl(RoxalParser::Func_declContext *context)
 {
     visitStart();
 
-    auto funcdecl = make_ptr<FuncDecl>();
+    ptr<FuncDecl> funcdecl = make_ptr<FuncDecl>();
     setSourceInfo(funcdecl,context);
 
     if (context->annotation().size() > 0) {
@@ -869,7 +869,7 @@ std::any ASTGenerator::visitFunc_decl(RoxalParser::Func_declContext *context)
 
             auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
 
-            auto annotation = make_ptr<Annotation>();
+            ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
 
@@ -902,7 +902,7 @@ std::any ASTGenerator::visitFunction(RoxalParser::FunctionContext *context)
             if (auto exprStmt = dynamic_ptr_cast<ExpressionStatement>(stmt)) {
                 if (auto str = dynamic_ptr_cast<Str>(exprStmt->expr)) {
                     str->str = trim(str->str);
-                    auto annot = make_ptr<Annotation>();
+                    ptr<Annotation> annot = make_ptr<Annotation>();
                     annot->name = UnicodeString::fromUTF8("doc");
                     annot->args.emplace_back(UnicodeString(), str);
                     func->annotations.push_back(annot);
@@ -925,7 +925,7 @@ std::any ASTGenerator::visitFunc_sig(RoxalParser::Func_sigContext *context)
 
     auto ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
 
-    auto func = make_ptr<Function>();
+    ptr<Function> func = make_ptr<Function>();
     setSourceInfo(func,context);
     func->isProc = (context->PROC() != nullptr);
     func->name = ident;
@@ -953,7 +953,7 @@ std::any ASTGenerator::visitFunc_sig(RoxalParser::Func_sigContext *context)
 std::any ASTGenerator::visitParameters(RoxalParser::ParametersContext *context)
 {
     visitStart();
-    auto params = make_ptr<std::vector<ptr<Parameter>>>();
+    ptr<std::vector<ptr<Parameter>>> params = make_ptr<std::vector<ptr<Parameter>>>();
     for(size_t i=0; i<context->parameter().size(); i++) {
 
         auto param = visitParameter(context->parameter().at(i));
@@ -970,7 +970,7 @@ std::any ASTGenerator::visitParameter(RoxalParser::ParameterContext *context)
     visitStart();
     auto ident { UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText()) };
 
-    auto param = make_ptr<Parameter>();
+    ptr<Parameter> param = make_ptr<Parameter>();
     setSourceInfo(param,context->IDENTIFIER().at(0));
     param->name = ident;
 
@@ -980,7 +980,7 @@ std::any ASTGenerator::visitParameter(RoxalParser::ParameterContext *context)
 
             auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
 
-            auto annotation = make_ptr<Annotation>();
+            ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
 
@@ -1013,7 +1013,7 @@ std::any ASTGenerator::visitSuite(RoxalParser::SuiteContext *context)
 {
     visitStart();
 
-    auto suite = make_ptr<Suite>();
+    ptr<Suite> suite = make_ptr<Suite>();
     setSourceInfo(suite,context);
     for(int i=0; i<context->declaration().size();i++) {
         auto declOrStmt = visitDeclaration(context->declaration().at(i));
@@ -1035,8 +1035,8 @@ std::any ASTGenerator::visitType_decl(RoxalParser::Type_declContext *context)
 {
     visitStart();
 
-    auto typedecl = make_ptr<TypeDecl>();
-    setSourceInfo(typedecl,context);
+    ptr<TypeDecl> typedecl = make_ptr<TypeDecl>();
+    setSourceInfo(typedecl, context);
 
     bool isInterface = (context->INTERFACE() != nullptr);
     bool isActor = (context->ACTOR() != nullptr);
@@ -1066,7 +1066,7 @@ std::any ASTGenerator::visitType_decl(RoxalParser::Type_declContext *context)
 
             auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
 
-            auto annotation = make_ptr<Annotation>();
+            ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
 
@@ -1077,7 +1077,7 @@ std::any ASTGenerator::visitType_decl(RoxalParser::Type_declContext *context)
     if (context->str()) {
         auto strVal = as<Str>(visitStr(context->str()));
         strVal->str = trim(strVal->str);
-        auto annotation = make_ptr<Annotation>();
+        ptr<Annotation> annotation = make_ptr<Annotation>();
         annotation->name = UnicodeString::fromUTF8("doc");
         annotation->args.emplace_back(UnicodeString(), strVal);
         typedecl->annotations.push_back(annotation);
@@ -1156,7 +1156,7 @@ std::any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
 
             auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
 
-            auto annotation = make_ptr<Annotation>();
+            ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
 
@@ -1175,7 +1175,7 @@ std::any ASTGenerator::visitProperty(RoxalParser::PropertyContext *context)
     visitStart();
 
     // a property looks like a variable declaration
-    auto varDecl = make_ptr<VarDecl>();
+    ptr<VarDecl> varDecl = make_ptr<VarDecl>();
 
     varDecl->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
 
@@ -1183,7 +1183,7 @@ std::any ASTGenerator::visitProperty(RoxalParser::PropertyContext *context)
     if (context->annotation().size() > 0) {
         for(size_t i=0; i<context->annotation().size(); i++) {
             auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
-            auto annotation = make_ptr<Annotation>();
+            ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
             varDecl->annotations.push_back(annotation);
@@ -1236,12 +1236,12 @@ std::any ASTGenerator::visitAnnotation(RoxalParser::AnnotationContext *context)
 
     UnicodeString annotName { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
 
-    auto info = make_ptr<ArgsOrAccessorInfo>();
+    ptr<ArgsOrAccessorInfo> info = make_ptr<ArgsOrAccessorInfo>();
     info->accessor = info->indexer = false;
     info->call = true;
     info->accessed = annotName;
 
-    auto argexprs = make_ptr<ArgsOrAccessorInfo::ArgNameExprVec>();
+    ptr<ArgsOrAccessorInfo::ArgNameExprVec> argexprs = make_ptr<ArgsOrAccessorInfo::ArgNameExprVec>();
     for(int i=0; i<context->annot_argument().size(); i++) {
         auto argNameExpr = anyas<ArgNameExpr>(visitAnnot_argument(context->annot_argument().at(i)));
         argexprs->push_back(argNameExpr);
@@ -1271,8 +1271,8 @@ std::any ASTGenerator::visitLambda_func(RoxalParser::Lambda_funcContext *context
 {
     visitStart();
 
-    auto func = make_ptr<Function>();
-    setSourceInfo(func,context);
+    ptr<Function> func = make_ptr<Function>();
+    setSourceInfo(func, context);
     func->isProc = false;
     func->name.reset();
 
@@ -1300,7 +1300,7 @@ std::any ASTGenerator::visitLambda_func(RoxalParser::Lambda_funcContext *context
         func->body = std::monostate();
     }
 
-    auto lambdaFunc = make_ptr<LambdaFunc>();
+    ptr<LambdaFunc> lambdaFunc = make_ptr<LambdaFunc>();
     lambdaFunc->func = func;
 
     return typeValue(lambdaFunc);
@@ -1314,7 +1314,7 @@ std::any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *context)
     visitStart();
 
     if (context->EQUALS() || context->COPYINTO()) { // assignment or copy-into
-        auto assign = make_ptr<Assignment>();
+        ptr<Assignment> assign = make_ptr<Assignment>();
         setSourceInfo(assign, context);
         assign->op = context->COPYINTO() ? Assignment::CopyInto : Assignment::Assign;
 
@@ -1326,8 +1326,8 @@ std::any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *context)
 
                 auto callable = visitCall(context->call());
 
-                auto access = make_ptr<UnaryOp>(UnaryOp::Accessor);
-                setSourceInfo(access,context->DOT());
+                ptr<UnaryOp> access = make_ptr<UnaryOp>(UnaryOp::Accessor);
+                setSourceInfo(access, context->DOT());
                 access->arg = as<Expression>(callable);
                 access->member = ident;
 
@@ -1526,8 +1526,8 @@ std::any ASTGenerator::visitEqualnotequal(RoxalParser::EqualnotequalContext *con
     if (context->ISEQUAL()) op = BinaryOp::Equal;
     else if (context->ISNOTEQUALS()) op = BinaryOp::NotEqual;
     else op = BinaryOp::Is;
-    auto compOp = make_ptr<BinaryOp>(op);
-    setSourceInfo(compOp,context);
+    ptr<BinaryOp> compOp = make_ptr<BinaryOp>(op);
+    setSourceInfo(compOp, context);
 
     auto comparison = visitComparison(context->comparison());
     compOp->rhs = as<Expression>(comparison);
@@ -1553,7 +1553,7 @@ std::any ASTGenerator::visitComparison(RoxalParser::ComparisonContext *context)
               : BinaryOp::None
               ))));
 
-    auto compOp = make_ptr<BinaryOp>(op);
+    ptr<BinaryOp> compOp = make_ptr<BinaryOp>(op);
     setSourceInfo(compOp, context);
     compOp->lhs = as<Expression>(term);
     compOp->rhs = as<Expression>(visitTerm(context->term().at(1)));
@@ -1595,8 +1595,8 @@ std::any ASTGenerator::visitTerm(RoxalParser::TermContext *context)
 std::any ASTGenerator::visitPlusminus(RoxalParser::PlusminusContext *context)
 {
     visitStart();
-    auto op = make_ptr<BinaryOp>();
-    setSourceInfo(op,context);
+    ptr<BinaryOp> op = make_ptr<BinaryOp>();
+    setSourceInfo(op, context);
     if (context->PLUS())
         op->op = BinaryOp::Add;
     else if (context->MINUS())
@@ -1645,8 +1645,8 @@ std::any ASTGenerator::visitFactor(RoxalParser::FactorContext *context)
 std::any ASTGenerator::visitMultdiv(RoxalParser::MultdivContext *context)
 {
     visitStart();
-    auto op = make_ptr<BinaryOp>();
-    setSourceInfo(op,context);
+    ptr<BinaryOp> op = make_ptr<BinaryOp>();
+    setSourceInfo(op, context);
     if (context->MULT() || context->STAR())
         op->op = BinaryOp::Multiply;
     else if (context->DIV())
@@ -1696,7 +1696,7 @@ std::any ASTGenerator::visitUnary(RoxalParser::UnaryContext *context)
         else if (context->MINUS()) uop = UnaryOp::Negate;
         else if (context->BIT_NOT()) uop = UnaryOp::BitNot;
 
-        auto op = make_ptr<UnaryOp>(uop);
+        ptr<UnaryOp> op = make_ptr<UnaryOp>(uop);
 
         setSourceInfo(op, context);
         op->arg = as<Expression>(arg);
@@ -1727,22 +1727,22 @@ std::any ASTGenerator::visitCall(RoxalParser::CallContext *context)
     for(int i=0; i<context->args_or_index_or_accessor().size();i++) {
         auto argsOrAccessorInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitArgs_or_index_or_accessor(context->args_or_index_or_accessor().at(i)));
         if (argsOrAccessorInfo->accessor) {
-            auto accessOp = make_ptr<UnaryOp>(UnaryOp::Accessor);
-            setSourceInfo(accessOp,context->args_or_index_or_accessor().at(i));
+            ptr<UnaryOp> accessOp = make_ptr<UnaryOp>(UnaryOp::Accessor);
+            setSourceInfo(accessOp, context->args_or_index_or_accessor().at(i));
             accessOp->arg = callable_or_indexable;
             accessOp->member = argsOrAccessorInfo->accessed;
             callable_or_indexable = accessOp;
         }
         if (argsOrAccessorInfo->call) {
-            auto call = make_ptr<Call>();
-            setSourceInfo(call,context->args_or_index_or_accessor().at(i));
+            ptr<Call> call = make_ptr<Call>();
+            setSourceInfo(call, context->args_or_index_or_accessor().at(i));
             call->callable = callable_or_indexable;
             call->args = *argsOrAccessorInfo->args;
             callable_or_indexable = call;
         }
         if (argsOrAccessorInfo->indexer) {
-            auto index = make_ptr<Index>();
-            setSourceInfo(index,context->args_or_index_or_accessor().at(i));
+            ptr<Index> index = make_ptr<Index>();
+            setSourceInfo(index, context->args_or_index_or_accessor().at(i));
             index->indexable = callable_or_indexable;
 
             std::vector<ptr<Expression>> args {};
@@ -1766,7 +1766,7 @@ std::any ASTGenerator::visitArgs_or_index_or_accessor(RoxalParser::Args_or_index
 {
     visitStart();
 
-    auto info = make_ptr<ArgsOrAccessorInfo>();
+    ptr<ArgsOrAccessorInfo> info = make_ptr<ArgsOrAccessorInfo>();
     info->accessor = info->indexer = info->call = false;
 
     if (context->DOT()) { // accessor, possibly call
@@ -1832,7 +1832,7 @@ std::any ASTGenerator::visitRanges(RoxalParser::RangesContext *context)
 {
     visitStart();
 
-    auto indices = make_ptr<std::vector<ptr<Expression>>>();
+    ptr<std::vector<ptr<Expression>>> indices = make_ptr<std::vector<ptr<Expression>>>();
 
     for(int i=0; i<context->range().size(); i++)
         indices->push_back(as<Expression>(visitRange(context->range().at(i))));
@@ -1846,7 +1846,7 @@ std::any ASTGenerator::visitRange(RoxalParser::RangeContext *context)
 {
     visitStart();
 
-    auto range = make_ptr<ast::Range>();
+    ptr<ast::Range> range = make_ptr<ast::Range>();
 
     bool hasDots = (context->DOTDOT()!=nullptr);
     bool hasLess = (context->LESS_THAN()!=nullptr);
@@ -1912,7 +1912,7 @@ std::any ASTGenerator::visitArguments(RoxalParser::ArgumentsContext *context)
 {
     visitStart();
 
-    auto argexprs = make_ptr<ArgsOrAccessorInfo::ArgNameExprVec>();
+    ptr<ArgsOrAccessorInfo::ArgNameExprVec> argexprs = make_ptr<ArgsOrAccessorInfo::ArgNameExprVec>();
     for(int i=0; i<context->argument().size(); i++) {
         auto argNameExpr = anyas<ArgNameExpr>(visitArgument(context->argument().at(i)));
         argexprs->push_back(argNameExpr);
@@ -1943,23 +1943,23 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
     visitStart();
 
     if (context->LTRUE())
-        return typeValue(make_ptr<Bool>(true));
+        return typeValue(ptr<Bool>(make_ptr<Bool>(true)));
     else if (context->LFALSE())
-        return typeValue(make_ptr<Bool>(false));
+        return typeValue(ptr<Bool>(make_ptr<Bool>(false)));
     else if (context->LNIL())
-        return typeValue(make_ptr<Literal>());
+        return typeValue(ptr<Literal>(make_ptr<Literal>()));
     else if (context->THIS()) {
-        auto var = make_ptr<Variable>("this");
-        setSourceInfo(var,context);
+        ptr<Variable> var = make_ptr<Variable>("this");
+        setSourceInfo(var, context);
         return typeValue(var);
     }
     else if (context->SUPER()) {
-        auto supervar = make_ptr<Variable>("super");
-        setSourceInfo(supervar,context);
+        ptr<Variable> supervar = make_ptr<Variable>("super");
+        setSourceInfo(supervar, context);
 
         UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
 
-        auto access = make_ptr<UnaryOp>(UnaryOp::Accessor);
+        ptr<UnaryOp> access = make_ptr<UnaryOp>(UnaryOp::Accessor);
         setSourceInfo(access, context->DOT());
         access->arg = supervar;
         access->member = ident;
@@ -1968,8 +1968,8 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
     }
     else if (context->IDENTIFIER()) {
         UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
-        auto var = make_ptr<Variable>(ident);
-        setSourceInfo(var,context);
+        ptr<Variable> var = make_ptr<Variable>(ident);
+        setSourceInfo(var, context);
         return typeValue(var);
     }
     else if (context->num())
@@ -1978,8 +1978,8 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
         return visitStr(context->str());
     else if (context->RANGE()) {
         // create constructor call to range type
-        auto call = make_ptr<ast::Call>();
-        auto rangeType = make_ptr<ast::Type>();
+        ptr<ast::Call> call = make_ptr<ast::Call>();
+        ptr<ast::Type> rangeType = make_ptr<ast::Type>();
         rangeType->t = BuiltinType::Range;
         call->callable = rangeType;
 
@@ -2003,7 +2003,7 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
         return visitDict(context->dict());
     else if (context->builtin_type()) {
         auto builtinType = anyas<ast::BuiltinType>(visitBuiltin_type(context->builtin_type()));
-        auto type = make_ptr<ast::Type>();
+        ptr<ast::Type> type = make_ptr<ast::Type>();
         setSourceInfo(type,context);
         type->t = builtinType;
         return typeValue(type);
@@ -2108,7 +2108,7 @@ std::any ASTGenerator::visitList(RoxalParser::ListContext *context)
 {
     visitStart();
 
-    auto list = make_ptr<List>();
+    ptr<List> list = make_ptr<List>();
     setSourceInfo(list,context);
     for(int i=0; i<context->expression().size();i++)
         list->elements.push_back(as<Expression>(visitExpression(context->expression().at(i))));
@@ -2122,7 +2122,7 @@ std::any ASTGenerator::visitVector(RoxalParser::VectorContext *context)
 {
     visitStart();
 
-    auto vec = make_ptr<Vector>();
+    ptr<Vector> vec = make_ptr<Vector>();
     setSourceInfo(vec,context);
     for(int i=0; i<context->signed_num().size(); ++i)
         vec->elements.push_back(as<Num>(visitSigned_num(context->signed_num().at(i))));
@@ -2135,7 +2135,7 @@ std::any ASTGenerator::visitMatrix(RoxalParser::MatrixContext *context)
 {
     visitStart();
 
-    auto mat = make_ptr<Matrix>();
+    ptr<Matrix> mat = make_ptr<Matrix>();
     setSourceInfo(mat,context);
     for(int i=0; i<context->row().size(); ++i)
         mat->rows.push_back(as<Vector>(visitRow(context->row().at(i))));
@@ -2148,7 +2148,7 @@ std::any ASTGenerator::visitRow(RoxalParser::RowContext *context)
 {
     visitStart();
 
-    auto vec = make_ptr<Vector>();
+    ptr<Vector> vec = make_ptr<Vector>();
     setSourceInfo(vec,context);
     for(int i=0; i<context->signed_num().size(); ++i)
         vec->elements.push_back(as<Num>(visitSigned_num(context->signed_num().at(i))));
@@ -2178,7 +2178,7 @@ std::any ASTGenerator::visitDict(RoxalParser::DictContext *context)
 {
     visitStart();
 
-    auto dict = make_ptr<Dict>();
+    ptr<Dict> dict = make_ptr<Dict>();
     setSourceInfo(dict,context);
     for(int i=0; i<context->expression().size();i+=2) {
         auto keyVal = std::make_pair<ptr<Expression>,ptr<Expression>>(
@@ -2225,32 +2225,32 @@ std::any ASTGenerator::visitStr(RoxalParser::StrContext *context)
             size_t close = text.find('}', open + 1);
             if (close == std::string::npos) break;
             if (open > pos) {
-                auto s = make_ptr<Str>();
+                ptr<Str> s = make_ptr<Str>();
                 setSourceInfo(s, context);
                 s->str = toUnicodeString(text.substr(pos, open - pos)).unescape();
                 parts.push_back(s);
             }
             auto ident = text.substr(open + 1, close - open - 1);
-            auto var = make_ptr<Variable>(toUnicodeString(ident));
+            ptr<Variable> var = make_ptr<Variable>(toUnicodeString(ident));
             setSourceInfo(var, context);
             parts.push_back(var);
             pos = close + 1;
         }
         if (pos < text.size()) {
-            auto s = make_ptr<Str>();
+            ptr<Str> s = make_ptr<Str>();
             setSourceInfo(s, context);
             s->str = toUnicodeString(text.substr(pos)).unescape();
             parts.push_back(s);
         }
         if (parts.empty()) {
-            auto str = make_ptr<Str>();
+            ptr<Str> str = make_ptr<Str>();
             setSourceInfo(str, context);
             str->str = toUnicodeString(text).unescape();
             return typeValue(str);
         }
         ptr<Expression> expr = parts[0];
         for (size_t i = 1; i < parts.size(); ++i) {
-            auto add = make_ptr<BinaryOp>(BinaryOp::Add);
+            ptr<BinaryOp> add = make_ptr<BinaryOp>(BinaryOp::Add);
             setSourceInfo(add, context);
             add->lhs = expr;
             add->rhs = parts[i];
@@ -2258,7 +2258,7 @@ std::any ASTGenerator::visitStr(RoxalParser::StrContext *context)
         }
         return typeValue(expr);
     } else {
-            auto str = make_ptr<Str>();
+            ptr<Str> str = make_ptr<Str>();
             setSourceInfo(str, context);
             str->str = toUnicodeString(text).unescape();
             return typeValue(str);
@@ -2284,8 +2284,8 @@ std::any ASTGenerator::visitNum(RoxalParser::NumContext *context)
     } catch (std::invalid_argument&) {
         throw std::runtime_error("invalid number \""+realStr+"\"");
     }
-    auto num = make_ptr<Num>();
-    setSourceInfo(num,context->FLOAT_NUMBER());
+    ptr<Num> num = make_ptr<Num>();
+    setSourceInfo(num, context->FLOAT_NUMBER());
     num->num = real;
     return typeValue(num);
     visitEnd();
@@ -2297,7 +2297,7 @@ std::any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
 {
     visitStart();
 
-    auto num = make_ptr<Num>();
+    ptr<Num> num = make_ptr<Num>();
 
     long long integer {0};
     if (context->DECIMAL_INTEGER()) {

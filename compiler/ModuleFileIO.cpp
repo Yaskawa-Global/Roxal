@@ -83,7 +83,7 @@ Value ModuleFileIO::fileio_open_builtin(VM& vm, ArgsView args)
     }
     bool binary = false;
     std::filesystem::path path = std::filesystem::path(toUTF8StdString(asStringObj(args[0])->s));
-    auto f = roxal::make_ptr<std::fstream>();
+    ptr<std::fstream> f = roxal::make_ptr<std::fstream>();
     std::ios_base::openmode mode = std::ios::in | std::ios::out;
     if (append)
         mode |= std::ios::app;

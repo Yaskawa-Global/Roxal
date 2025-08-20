@@ -1045,7 +1045,7 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
     ast->trigger->accept(*this);
 
     // compile handler body as closure proc
-    auto funcType = make_ptr<type::Type>(BuiltinType::Func);
+    ptr<type::Type> funcType = make_ptr<type::Type>(BuiltinType::Func);
     funcType->func = type::Type::FuncType();
     funcType->func->isProc = true;
 
@@ -1355,7 +1355,7 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
     if (ast->defaultValue.has_value()) {
 
         // treat like another func decl
-        auto defFuncType { make_ptr<type::Type>(BuiltinType::Func) };
+        ptr<type::Type> defFuncType = make_ptr<type::Type>(BuiltinType::Func);
         defFuncType->func = type::Type::FuncType();
         // TODO: specify return type? (necessary?)
 
@@ -2144,9 +2144,9 @@ void RoxalCompiler::enterModuleScope(const icu::UnicodeString& packageName,
                                     const icu::UnicodeString& sourceName,
                                     ObjModuleType* existingModule)
 {
-    auto moduleScope { make_ptr<ModuleScope>(packageName, moduleName,
-                                             sourceName,
-                                             existingModule) };
+    ptr<ModuleScope> moduleScope { make_ptr<ModuleScope>(packageName, moduleName,
+                                                         sourceName,
+                                                         existingModule) };
 
     lexicalScopes.push_back(moduleScope);
     #ifdef DEBUG_TRACE_SCOPES
@@ -2222,10 +2222,10 @@ void RoxalCompiler::enterFuncScope(Value moduleType, const icu::UnicodeString& f
     // function scopes only valid in a module
     auto modScope { asModuleScope(moduleScope()) };
 
-    auto funcScope {make_ptr<FunctionScope>(modScope->packageName,
-                                            modScope->moduleName,
-                                            modScope->sourceName,
-                                            funcName,funcType,type)};
+    ptr<FunctionScope> funcScope {make_ptr<FunctionScope>(modScope->packageName,
+                                                          modScope->moduleName,
+                                                          modScope->sourceName,
+                                                          funcName,funcType,type)};
 
     asFunction(funcScope->function)->moduleType = moduleType.weakRef();
 

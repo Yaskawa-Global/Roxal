@@ -447,7 +447,7 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
 
     Value closureValue { Value::closureVal(function) };
 
-    auto firstThread = make_ptr<Thread>();
+    ptr<Thread> firstThread = make_ptr<Thread>();
     threads.store(firstThread->id(), firstThread);
 
     // go
@@ -760,7 +760,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
         auto baseName = toUTF8StdString(functionObj->name);
         auto name = df::DataflowEngine::uniqueFuncName(baseName);
-        auto node = roxal::make_ptr<df::FuncNode>(name, closureVal, constArgs, sigArgs);
+        ptr<df::FuncNode> node = roxal::make_ptr<df::FuncNode>(name, closureVal, constArgs, sigArgs);
         node->addToEngine();
         auto outputs = node->outputs(); // creates output signals if they don't exist
         dataflowEngine->evaluate(); // Initialize signal values for new node
@@ -842,7 +842,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         inst = Value::actorInstanceVal(callee);
 
                         // spawn Thread to handle actor method calls
-                        auto newThread = make_ptr<Thread>();
+                        ptr<Thread> newThread = make_ptr<Thread>();
                         threads.store(newThread->id(), newThread);
                         newThread->act(inst);
 

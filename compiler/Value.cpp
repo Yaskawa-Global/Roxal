@@ -951,7 +951,7 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
     {
         try {
             std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
-            auto ctx = make_ptr<SerializationContext>();
+            ptr<SerializationContext> ctx = make_ptr<SerializationContext>();
             writeValue(ss, v, ctx);
             ss.seekg(0);
             Value read = readValue(ss, ctx);
@@ -1597,7 +1597,7 @@ static Value roxal::signalUnaryOp(const std::string& name,
         constArgs["val"] = v;
 
     auto uniqueName = df::DataflowEngine::uniqueFuncName(name);
-    auto node = roxal::make_ptr<df::FuncNode>(
+    ptr<df::FuncNode> node = roxal::make_ptr<df::FuncNode>(
         uniqueName,
         [op](const df::Values& vals) -> df::Values {
             return df::Values{ op(vals[0]) };
@@ -1631,7 +1631,7 @@ static Value signalBinaryOp(const std::string& name,
         constArgs["rhs"] = r;
 
     auto uniqueName = df::DataflowEngine::uniqueFuncName(name);
-    auto node = roxal::make_ptr<df::FuncNode>(
+    ptr<df::FuncNode> node = roxal::make_ptr<df::FuncNode>(
         uniqueName,
         [op](const df::Values& vals) -> df::Values {
             return df::Values{ op(vals[0], vals[1]) };
@@ -2220,7 +2220,7 @@ std::ostream& roxal::operator<<(std::ostream& out, const Value& v)
 void roxal::writeValue(std::ostream& out, const Value& v, roxal::ptr<SerializationContext> ctx)
 {
     bool useCtx = ctx != nullptr;
-    auto localCtx = make_ptr<SerializationContext>();
+    ptr<SerializationContext> localCtx = make_ptr<SerializationContext>();
     if(!ctx) ctx = localCtx;
     if (isForeignPtr(v))
         throw std::runtime_error("Cannot serialize foreign pointers");
@@ -2314,14 +2314,12 @@ void roxal::writeValue(std::ostream& out, const Value& v, roxal::ptr<Serializati
 Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     bool useCtx = ctx != nullptr;
-    auto localCtx = make_ptr<SerializationContext>();
+    ptr<SerializationContext> localCtx = make_ptr<SerializationContext>();
     if(!ctx) ctx = localCtx;
     uint8_t typeByte;
     if(!in.read(reinterpret_cast<char*>(&typeByte),1))
         throw std::runtime_error("readValue: unable to read type");
     ValueType t = static_cast<ValueType>(typeByte);
-// if (t == ValueType::Actor) std::cout << "reading actor" << std::endl;//!!!
-// assert(t != ValueType::Actor);//!!!
     auto readObjWithRef = [&](auto objMaker){
         uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
         uint64_t id;  in.read(reinterpret_cast<char*>(&id),8);
@@ -2447,7 +2445,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                 int32_t h; in.read(reinterpret_cast<char*>(&h),4);
                 obj->properties[h] = readValue(in, ctx);
             }
-            auto newThread = make_ptr<Thread>();
+            ptr<Thread> newThread = make_ptr<Thread>();
             // Keep the thread alive by registering it with the VM.  Without
             // this the Thread object would be destroyed immediately after
             // deserialization, causing std::terminate since the underlying
