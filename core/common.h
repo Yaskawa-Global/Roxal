@@ -40,8 +40,8 @@ constexpr int hostArch = sizeof(void*) == 8 ? 64 : 32;
 
 #if !USE_GC_SGCL
 
-template<class T>
-using unique_ptr = std::unique_ptr<T>;
+template<class T, class D = std::default_delete<T>>
+using unique_ptr = std::unique_ptr<T, D>;
 
 template<class T> class weak_ptr;   // fwd
 
@@ -161,6 +161,9 @@ inline unique_ptr<T> make_ptr(Args&&... args) {
 // ptr<T> ptr_from_this(T* t) { return t->shared_from_this(); }
 
 #else // USE_GC_SGCL
+
+template<class T, class D = void>
+using unique_ptr = sgcl::unique_ptr<T>;
 
 template<class T>
 using ptr = sgcl::tracked_ptr<T>;

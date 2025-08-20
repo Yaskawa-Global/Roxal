@@ -10,7 +10,7 @@ using namespace roxal;
 
 ModuleFileIO::ModuleFileIO()
 {
-    moduleTypeValue = objVal(newModuleTypeObj(toUnicodeString("fileio")));
+    moduleTypeValue = Value::objVal(newModuleTypeObj(toUnicodeString("fileio")));
     ObjModuleType::allModules.push_back(moduleTypeValue);
 }
 

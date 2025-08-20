@@ -273,7 +273,7 @@ protected:
             if (existing)
                 moduleType = Value(existing);
             else {
-                moduleType = Value(newModuleTypeObj(moduleName_));
+                moduleType = Value::objVal(newModuleTypeObj(moduleName_));
                 ObjModuleType::allModules.push_back(moduleType);
             }
 

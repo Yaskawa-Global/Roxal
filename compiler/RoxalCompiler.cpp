@@ -283,7 +283,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 
     if (!imported) {  // import it
         if (builtinModule) {
-            importedModuleType = objVal(VM::instance().getBuiltinModule(module.name));
+            importedModuleType = Value(VM::instance().getBuiltinModule(module.name));
             importedModules[module] = importedModuleType;
         } else {
             // compile it, emit code to execute it
@@ -1063,7 +1063,7 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
     exitFuncScope();
 
     {
-        uint16_t constIdx = makeConstant(objVal(function));
+        uint16_t constIdx = makeConstant(Value(function));
         if (constIdx <= 255)
             emitBytes(OpCode::Closure, uint8_t(constIdx));
         else
@@ -1320,7 +1320,7 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     // std::cout << "Closure " << toUTF8StdString(function->name) << ": #" << function->upvalueCount << std::endl;
     // std::cout << "   #" << functionState.upvalues.size() << std::endl;
     {
-        uint16_t constIdx = makeConstant(objVal(function));
+        uint16_t constIdx = makeConstant(Value(function));
         if (constIdx <= 255)
             emitBytes(OpCode::Closure, uint8_t(constIdx));
         else

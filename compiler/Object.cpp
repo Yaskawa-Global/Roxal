@@ -323,7 +323,7 @@ static uint32_t fnv1a32(const UnicodeString& s)
 }
 
 
-ObjString* roxal::newObjString(const UnicodeString& s)
+unique_ptr<ObjString> roxal::newObjString(const UnicodeString& s)
 {
     int32_t hash = s.hashCode();
     auto objStr = strings.lookup(hash);
@@ -337,7 +337,7 @@ ObjString* roxal::newObjString(const UnicodeString& s)
         #endif
     }
     else { // found existing string
-        return objStr.value();
+        return unique_ptr<ObjString>(objStr.value());
     }
 }
 
@@ -610,7 +610,7 @@ int32_t ObjRange::targetIndex(int32_t index, int32_t targetLen) const
 }
 
 
-ObjRange* roxal::newRangeObj()
+unique_ptr<ObjRange> roxal::newRangeObj()
 {
     #ifdef DEBUG_BUILD
     return newObj<ObjRange>(__func__,__FILE__,__LINE__);
@@ -620,7 +620,7 @@ ObjRange* roxal::newRangeObj()
 }
 
 
-ObjRange* roxal::newRangeObj(const Value& start, const Value& stop, const Value& step, bool closed)
+unique_ptr<ObjRange> roxal::newRangeObj(const Value& start, const Value& stop, const Value& step, bool closed)
 {
     #ifdef DEBUG_BUILD
     return newObj<ObjRange>(__func__,__FILE__,__LINE__,start,stop,step,closed);
@@ -645,7 +645,7 @@ std::string roxal::objRangeToString(const ObjRange* r)
     return oss.str();
 }
 
-ObjRange* ObjRange::clone() const
+unique_ptr<Obj> ObjRange::clone() const
 {
     return newRangeObj(start.clone(), stop.clone(), step.clone(), closed);
 }
@@ -655,7 +655,7 @@ ObjRange* ObjRange::clone() const
 
 // runtime types
 
-ObjTypeSpec* roxal::newTypeSpecObj(ValueType t)
+unique_ptr<ObjTypeSpec> roxal::newTypeSpecObj(ValueType t)
 {
     #ifdef DEBUG_BUILD
     assert(t != ValueType::Object && t != ValueType::Actor);
@@ -723,7 +723,7 @@ Value ObjList::index(const Value& i) const
                 sublist->elts.push_back(elts.at(targetIndex));
         }
 
-        return objVal(sublist);
+        return Value::objVal(std::move(sublist));
     }
     else
         throw std::invalid_argument("List indexing subscript must be a number or a range.");
@@ -805,7 +805,7 @@ void ObjList::set(const ObjList* other)
 }
 
 
-ObjList* roxal::newListObj()
+unique_ptr<ObjList> roxal::newListObj()
 {
     #ifdef DEBUG_BUILD
     return newObj<ObjList>(__func__,__FILE__,__LINE__);
@@ -815,7 +815,7 @@ ObjList* roxal::newListObj()
 }
 
 
-ObjList* roxal::newListObj(const ObjRange* r)
+unique_ptr<ObjList> roxal::newListObj(const ObjRange* r)
 {
     #ifdef DEBUG_BUILD
     return newObj<ObjList>(__func__,__FILE__,__LINE__,r);
@@ -824,7 +824,7 @@ ObjList* roxal::newListObj(const ObjRange* r)
     #endif
 }
 
-ObjList* roxal::newListObj(const std::vector<Value>& elts)
+unique_ptr<ObjList> roxal::newListObj(const std::vector<Value>& elts)
 {
     #ifdef DEBUG_BUILD
     auto l = newObj<ObjList>(__func__, __FILE__, __LINE__);
@@ -836,7 +836,7 @@ ObjList* roxal::newListObj(const std::vector<Value>& elts)
     return l;
 }
 
-ObjList* ObjList::clone() const
+unique_ptr<Obj> ObjList::clone() const
 {
     auto newl = newListObj();
     auto lsize = elts.size();
@@ -886,7 +886,7 @@ std::string roxal::objListToString(const ObjList* ol)
 
 
 
-ObjDict* roxal::newDictObj()
+unique_ptr<ObjDict> roxal::newDictObj()
 {
     #ifdef DEBUG_BUILD
     return newObj<ObjDict>(__func__, __FILE__, __LINE__);
@@ -895,7 +895,7 @@ ObjDict* roxal::newDictObj()
     #endif
 }
 
-ObjDict* roxal::newDictObj(const std::vector<std::pair<Value,Value>>& entries)
+unique_ptr<ObjDict> roxal::newDictObj(const std::vector<std::pair<Value,Value>>& entries)
 {
     #ifdef DEBUG_BUILD
     auto d = newObj<ObjDict>(__func__, __FILE__, __LINE__);
@@ -907,7 +907,7 @@ ObjDict* roxal::newDictObj(const std::vector<std::pair<Value,Value>>& entries)
     return d;
 }
 
-ObjDict* ObjDict::clone() const
+unique_ptr<Obj> ObjDict::clone() const
 {
     auto newd = newDictObj();
     const auto dkeys = keys();
@@ -999,7 +999,7 @@ void ObjDict::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 }
 
 
-ObjVector* roxal::newVectorObj()
+unique_ptr<ObjVector> roxal::newVectorObj()
 {
     #ifdef DEBUG_BUILD
     return newObj<ObjVector>(__func__, __FILE__, __LINE__);
@@ -1008,7 +1008,7 @@ ObjVector* roxal::newVectorObj()
     #endif
 }
 
-ObjVector* roxal::newVectorObj(int32_t size)
+unique_ptr<ObjVector> roxal::newVectorObj(int32_t size)
 {
     #ifdef DEBUG_BUILD
     auto v = newObj<ObjVector>(__func__, __FILE__, __LINE__, size);
@@ -1018,7 +1018,7 @@ ObjVector* roxal::newVectorObj(int32_t size)
     return v;
 }
 
-ObjVector* roxal::newVectorObj(const Eigen::VectorXd& values)
+unique_ptr<ObjVector> roxal::newVectorObj(const Eigen::VectorXd& values)
 {
     #ifdef DEBUG_BUILD
     auto v = newObj<ObjVector>(__func__, __FILE__, __LINE__, values);
@@ -1028,7 +1028,7 @@ ObjVector* roxal::newVectorObj(const Eigen::VectorXd& values)
     return v;
 }
 
-ObjVector* ObjVector::clone() const
+unique_ptr<Obj> ObjVector::clone() const
 {
     auto newv = newVectorObj(vec.size());
     newv->vec = vec;
@@ -1102,7 +1102,7 @@ ObjMatrix::ObjMatrix(int32_t rows, int32_t cols)
     mat.setZero();
 }
 
-ObjMatrix* roxal::newMatrixObj()
+unique_ptr<ObjMatrix> roxal::newMatrixObj()
 {
     #ifdef DEBUG_BUILD
     return newObj<ObjMatrix>(__func__, __FILE__, __LINE__);
@@ -1111,7 +1111,7 @@ ObjMatrix* roxal::newMatrixObj()
     #endif
 }
 
-ObjMatrix* roxal::newMatrixObj(int32_t rows, int32_t cols)
+unique_ptr<ObjMatrix> roxal::newMatrixObj(int32_t rows, int32_t cols)
 {
     #ifdef DEBUG_BUILD
     auto m = newObj<ObjMatrix>(__func__, __FILE__, __LINE__, rows, cols);
@@ -1121,7 +1121,7 @@ ObjMatrix* roxal::newMatrixObj(int32_t rows, int32_t cols)
     return m;
 }
 
-ObjMatrix* roxal::newMatrixObj(const Eigen::MatrixXd& values)
+unique_ptr<ObjMatrix> roxal::newMatrixObj(const Eigen::MatrixXd& values)
 {
     #ifdef DEBUG_BUILD
     auto m = newObj<ObjMatrix>(__func__, __FILE__, __LINE__, values);
@@ -1149,7 +1149,7 @@ static ObjMatrix* valueToMatrix(const Value& v)
     return asMatrix(conv);
 }
 
-ObjMatrix* ObjMatrix::clone() const
+unique_ptr<Obj> ObjMatrix::clone() const
 {
     auto newm = newMatrixObj(mat);
     return newm;
@@ -1160,7 +1160,7 @@ void ObjMatrix::set(const ObjMatrix* other)
     mat = other->mat;
 }
 
-ObjPrimitive* ObjPrimitive::clone() const
+unique_ptr<Obj> ObjPrimitive::clone() const
 {
     if (type == ObjType::Bool)
         return newBoolObj(as.boolean);
@@ -1236,7 +1236,7 @@ void ObjPrimitive::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 }
 
 // Default serialization stubs for unsupported object types
-ObjSignal* ObjSignal::clone() const { throw std::runtime_error("cannot clone signals"); }
+unique_ptr<Obj> ObjSignal::clone() const { throw std::runtime_error("cannot clone signals"); }
 void ObjSignal::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Signal);
@@ -1265,9 +1265,9 @@ void ObjSignal::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     type = ObjType::Signal;
 }
 
-ObjEvent* ObjEvent::clone() const {
+unique_ptr<Obj> ObjEvent::clone() const {
     // events currently have no user-mutable state; share reference
-    return const_cast<ObjEvent*>(this);
+    return unique_ptr<Obj>(const_cast<ObjEvent*>(this));
 }
 void ObjEvent::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
@@ -1291,9 +1291,9 @@ void ObjEvent::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     type = ObjType::Event;
 }
 
-ObjLibrary* ObjLibrary::clone() const {
+unique_ptr<Obj> ObjLibrary::clone() const {
     // dynamic libraries are represented by handles; share the handle
-    return const_cast<ObjLibrary*>(this);
+    return unique_ptr<Obj>(const_cast<ObjLibrary*>(this));
 }
 void ObjLibrary::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
@@ -1311,19 +1311,19 @@ void ObjLibrary::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     handle = nullptr;
     type = ObjType::Library;
 }
-ObjForeignPtr* ObjForeignPtr::clone() const {
+unique_ptr<Obj> ObjForeignPtr::clone() const {
     // foreign pointers are opaque handles; cloning would be unsafe
-    return const_cast<ObjForeignPtr*>(this);
+    return unique_ptr<Obj>(const_cast<ObjForeignPtr*>(this));
 }
 void ObjForeignPtr::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("Cannot serialize foreign pointers"); }
 void ObjForeignPtr::read(std::istream&, roxal::ptr<SerializationContext>) { throw std::runtime_error("Cannot deserialize foreign pointers"); }
-ObjFile* ObjFile::clone() const {
+unique_ptr<Obj> ObjFile::clone() const {
     // files cannot be duplicated; share the underlying handle
-    return const_cast<ObjFile*>(this);
+    return unique_ptr<Obj>(const_cast<ObjFile*>(this));
 }
 void ObjFile::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("Cannot serialize file handles"); }
 void ObjFile::read(std::istream&, roxal::ptr<SerializationContext>) { throw std::runtime_error("Cannot deserialize file handles"); }
-ObjException* ObjException::clone() const { throw std::runtime_error("cannot clone exceptions"); }
+unique_ptr<Obj> ObjException::clone() const { throw std::runtime_error("cannot clone exceptions"); }
 void ObjException::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Exception);
@@ -1343,9 +1343,9 @@ void ObjException::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     stackTrace = readValue(in, ctx);
     type = ObjType::Exception;
 }
-ObjFunction* ObjFunction::clone() const {
+unique_ptr<Obj> ObjFunction::clone() const {
     // function objects are immutable; share the reference
-    return const_cast<ObjFunction*>(this);
+    return unique_ptr<Obj>(const_cast<ObjFunction*>(this));
 }
 void ObjFunction::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
@@ -1462,9 +1462,9 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         moduleType = moduleType.weakRef();
 }
 
-ObjUpvalue* ObjUpvalue::clone() const
+unique_ptr<Obj> ObjUpvalue::clone() const
 {
-    ObjUpvalue* newup = newUpvalueObj(location);
+    auto newup = newUpvalueObj(location);
     newup->closed = newup->location->clone();
     newup->location = &newup->closed;
     return newup;
@@ -1492,9 +1492,9 @@ void ObjUpvalue::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     location = &closed;
 }
 
-ObjClosure* ObjClosure::clone() const
+unique_ptr<Obj> ObjClosure::clone() const
 {
-    ObjClosure* newc = newClosureObj(function);
+    auto newc = newClosureObj(function);
     newc->upvalues.resize(upvalues.size());
     for(size_t i=0; i<upvalues.size(); i++)
         newc->upvalues[i] = upvalues.at(i).clone();
@@ -1543,12 +1543,14 @@ void ObjClosure::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     }
 }
 
-Obj* ObjFuture::clone() const
+unique_ptr<Obj> ObjFuture::clone() const
 {
     Value value = const_cast<ObjFuture*>(this)->asValue();
     value.box();
     assert(value.isBoxed() && value.isObj() && isObjPrimitive(value));
-    return asObjPrimitive(value);
+    Obj* obj = value.asObj();
+    obj->incRef();
+    return unique_ptr<Obj>(obj);
 }
 void ObjFuture::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
@@ -1597,15 +1599,15 @@ void ObjFuture::wakeWaiters()
     }
     for (auto& t : toWake) t->wake();
 }
-ObjNative* ObjNative::clone() const {
+unique_ptr<Obj> ObjNative::clone() const {
     // native functions are immutable; share the reference
-    return const_cast<ObjNative*>(this);
+    return unique_ptr<Obj>(const_cast<ObjNative*>(this));
 }
 void ObjNative::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("ObjNative serialization not implemented"); }
 void ObjNative::read(std::istream&, roxal::ptr<SerializationContext>) { throw std::runtime_error("ObjNative deserialization not implemented"); }
-ObjTypeSpec* ObjTypeSpec::clone() const {
+unique_ptr<Obj> ObjTypeSpec::clone() const {
     // type metadata is immutable; share the reference
-    return const_cast<ObjTypeSpec*>(this);
+    return unique_ptr<Obj>(const_cast<ObjTypeSpec*>(this));
 }
 void ObjTypeSpec::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
@@ -1619,9 +1621,9 @@ void ObjTypeSpec::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     in.read(reinterpret_cast<char*>(&tv), 1);
     typeValue = static_cast<ValueType>(tv);
 }
-ObjObjectType* ObjObjectType::clone() const {
+unique_ptr<Obj> ObjObjectType::clone() const {
     // object type definitions are immutable once created; share reference
-    return const_cast<ObjObjectType*>(this);
+    return unique_ptr<Obj>(const_cast<ObjObjectType*>(this));
 }
 void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
@@ -1759,9 +1761,9 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         enumTypes[enumTypeId] = this;
     }
 }
-ObjPackageType* ObjPackageType::clone() const {
+unique_ptr<Obj> ObjPackageType::clone() const {
     // package types contain no mutable state; share the reference
-    return const_cast<ObjPackageType*>(this);
+    return unique_ptr<Obj>(const_cast<ObjPackageType*>(this));
 }
 void ObjPackageType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
@@ -1776,9 +1778,9 @@ void ObjPackageType::read(std::istream& in, roxal::ptr<SerializationContext> ctx
         throw std::runtime_error("ObjPackageType::read mismatched tag");
     typeValue = ValueType::Type;
 }
-ObjModuleType* ObjModuleType::clone() const {
+unique_ptr<Obj> ObjModuleType::clone() const {
     // module types are immutable; share the reference
-    return const_cast<ObjModuleType*>(this);
+    return unique_ptr<Obj>(const_cast<ObjModuleType*>(this));
 }
 void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
@@ -1831,7 +1833,7 @@ void ObjectInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx
     }
 }
 
-ObjBoundMethod* ObjBoundMethod::clone() const
+unique_ptr<Obj> ObjBoundMethod::clone() const
 {
     auto newmb = newBoundMethodObj(receiver, method);
     newmb->receiver = newmb->receiver.clone();
@@ -1856,7 +1858,7 @@ void ObjBoundMethod::read(std::istream& in, roxal::ptr<SerializationContext> ctx
     type = ObjType::BoundMethod;
 }
 
-ObjBoundNative* ObjBoundNative::clone() const
+unique_ptr<Obj> ObjBoundNative::clone() const
 {
     auto newbm = newBoundNativeObj(receiver, function, isProc, funcType, defaultValues);
     newbm->receiver = newbm->receiver.clone();
@@ -1923,7 +1925,7 @@ void ActorInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     // joinable.
     VM::instance().registerThread(newThread);
     thread = newThread;
-    newThread->act(objVal(this));
+    newThread->act(Value(this));
 }
 
 void ObjMatrix::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -1988,7 +1990,7 @@ ObjEvent* ObjSignal::ensureChangeEvent()
     return asEvent(changeEvent);
 }
 
-ObjSignal* roxal::newSignalObj(ptr<df::Signal> s)
+unique_ptr<ObjSignal> roxal::newSignalObj(ptr<df::Signal> s)
 {
     #ifdef DEBUG_BUILD
     return newObj<ObjSignal>(__func__, __FILE__, __LINE__, s);
@@ -2008,7 +2010,7 @@ std::string roxal::objSignalToString(const ObjSignal* os)
     }
 }
 
-ObjEvent* roxal::newEventObj()
+unique_ptr<ObjEvent> roxal::newEventObj()
 {
     #ifdef DEBUG_BUILD
     return newObj<ObjEvent>(__func__, __FILE__, __LINE__);
@@ -2031,7 +2033,7 @@ ObjLibrary::~ObjLibrary()
         dlclose(handle);
 }
 
-ObjLibrary* roxal::newLibraryObj(void* handle)
+unique_ptr<ObjLibrary> roxal::newLibraryObj(void* handle)
 {
     #ifdef DEBUG_BUILD
     return newObj<ObjLibrary>(__func__, __FILE__, __LINE__, handle);
@@ -2047,7 +2049,7 @@ std::string roxal::objLibraryToString(const ObjLibrary* lib)
     return oss.str();
 }
 
-ObjForeignPtr* roxal::newForeignPtrObj(void* ptr)
+unique_ptr<ObjForeignPtr> roxal::newForeignPtrObj(void* ptr)
 {
     #ifdef DEBUG_BUILD
     return newObj<ObjForeignPtr>(__func__, __FILE__, __LINE__, ptr);
@@ -2063,7 +2065,7 @@ std::string roxal::objForeignPtrToString(const ObjForeignPtr* fp)
     return oss.str();
 }
 
-ObjFile* roxal::newFileObj(roxal::ptr<std::fstream> f, bool binary)
+unique_ptr<ObjFile> roxal::newFileObj(roxal::ptr<std::fstream> f, bool binary)
 {
     #ifdef DEBUG_BUILD
     return newObj<ObjFile>(__func__, __FILE__, __LINE__, std::move(f), binary);
@@ -2081,7 +2083,7 @@ std::string roxal::objFileToString(const ObjFile* f)
     return oss.str();
 }
 
-ObjException* roxal::newExceptionObj(Value message, Value exType, Value stackTrace)
+unique_ptr<ObjException> roxal::newExceptionObj(Value message, Value exType, Value stackTrace)
 {
     #ifdef DEBUG_BUILD
     return newObj<ObjException>(__func__, __FILE__, __LINE__, message, exType, stackTrace);
@@ -2568,7 +2570,7 @@ ObjNative::ObjNative(NativeFn _function, void* _data,
 }
 
 
-ObjNative* roxal::newNativeObj(NativeFn function, void* data,
+unique_ptr<ObjNative> roxal::newNativeObj(NativeFn function, void* data,
                            ptr<roxal::type::Type> funcType,
                            std::vector<Value> defaults)
 {
@@ -2602,7 +2604,7 @@ if (isActor && name!="_DataflowEngine") std::cout << "Actor ObjObjectType create
     }
 }
 
-ObjObjectType* roxal::newObjectTypeObj(const icu::UnicodeString& typeName, bool isActor, bool isInterface, bool isEnumeration)
+unique_ptr<ObjObjectType> roxal::newObjectTypeObj(const icu::UnicodeString& typeName, bool isActor, bool isInterface, bool isEnumeration)
 {
     #ifdef DEBUG_BUILD
     return newObj<ObjObjectType>((std::string(__func__)+" "+toUTF8StdString(typeName)), __FILE__, __LINE__, typeName, isActor, isInterface, isEnumeration);
@@ -2619,7 +2621,7 @@ ObjModuleType::ObjModuleType(const icu::UnicodeString& typeName)
     typeValue = ValueType::Module;
 }
 
-ObjModuleType* roxal::newModuleTypeObj(const icu::UnicodeString& typeName)
+unique_ptr<ObjModuleType> roxal::newModuleTypeObj(const icu::UnicodeString& typeName)
 {
     #ifdef DEBUG_BUILD
     auto mt = newObj<ObjModuleType>(std::string(__func__)+" "+toUTF8StdString(typeName), __FILE__, __LINE__, typeName);
@@ -2668,7 +2670,7 @@ void ObjectInstance::setProperty(const icu::UnicodeString& name, Value value)
 }
 
 
-ObjectInstance* roxal::newObjectInstance(ObjObjectType* objectType)
+unique_ptr<ObjectInstance> roxal::newObjectInstance(ObjObjectType* objectType)
 {
     #ifdef DEBUG_BUILD
     debug_assert_msg(objectType != nullptr && objectType->typeValue == ValueType::Object,
@@ -2680,7 +2682,7 @@ ObjectInstance* roxal::newObjectInstance(ObjObjectType* objectType)
 }
 
 
-ObjectInstance* ObjectInstance::clone() const
+unique_ptr<Obj> ObjectInstance::clone() const
 {
     auto newobj = newObjectInstance(instanceType);
 
@@ -2695,7 +2697,7 @@ ObjectInstance* ObjectInstance::clone() const
         }
         else if (isObjectInstance(value)) {
             auto propcopy = asObjectInstance(value)->clone();
-            newobj->properties[index] = Value(propcopy);
+            newobj->properties[index] = Value::objVal(std::move(propcopy));
         }
         else if (isActorInstance(value)) {
             throw std::runtime_error("clone of type actor unsuported");
@@ -2781,7 +2783,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
             if (!funcType->func.value().isProc) {
                 callInfo.returnPromise = make_ptr<std::promise<Value>>();
                 std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
-                callInfo.returnFuture = objVal(newFutureObj(sf));
+                callInfo.returnFuture = Value::objVal(newFutureObj(sf));
             }
         }
     }
@@ -2793,7 +2795,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
         if (!bound->isProc) {
             callInfo.returnPromise = make_ptr<std::promise<Value>>();
             std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
-            callInfo.returnFuture = objVal(newFutureObj(sf));
+            callInfo.returnFuture = Value::objVal(newFutureObj(sf));
         }
     }
 
@@ -2809,7 +2811,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
 }
 
 
-ActorInstance* roxal::newActorInstance(ObjObjectType* objectType)
+unique_ptr<ActorInstance> roxal::newActorInstance(ObjObjectType* objectType)
 {
     #ifdef DEBUG_BUILD
     debug_assert_msg(objectType != nullptr && objectType->typeValue == ValueType::Actor,

@@ -36,6 +36,13 @@ namespace roxal {
 using namespace roxal;
 
 
+Value::Value(unique_ptr<Obj> o)
+{
+    Obj* raw = o.release();
+    raw->incRef();
+    val = SignBit | QNAN | uint64_t(uintptr_t(raw));
+}
+
 std::string roxal::to_string(ValueType t)
 {
     switch (t) {
@@ -70,33 +77,26 @@ std::string roxal::to_string(ValueType t)
 
 
 
-Value::Value(Obj* o)
-{
-    o->incRef();
-    val = SignBit | QNAN | uint64_t(uintptr_t(o));
-}
-
-
 
 //
 // Reference type constructors
 Value Value::stringVal(const icu::UnicodeString& s)
 {
-    return objVal(newObjString(s));
+    return Value::objVal(newObjString(s));
 }
 
 Value Value::rangeVal()
 {
-    return objVal(newRangeObj());
+    return Value::objVal(newRangeObj());
 }
 Value Value::rangeVal(const Value& start, const Value& stop, const Value& step, bool closed)
 {
-    return objVal(newRangeObj(start, stop, step, closed));
+    return Value::objVal(newRangeObj(start, stop, step, closed));
 }
 
 Value Value::listVal()
 {
-    return objVal(newListObj());
+    return Value::objVal(newListObj());
 }
 
 Value Value::listVal(const Value& r)
@@ -105,82 +105,82 @@ Value Value::listVal(const Value& r)
     if (!isRange(r))
         throw std::runtime_error("listVal called with non-range argument");
     #endif
-    return objVal(newListObj(asRange(r)));
+    return Value::objVal(newListObj(asRange(r)));
 }
 
 Value Value::listVal(const std::vector<Value>& elts)
 {
-    return objVal(newListObj(elts));
+    return Value::objVal(newListObj(elts));
 }
 
 Value Value::dictVal()
 {
-    return objVal(newDictObj());
+    return Value::objVal(newDictObj());
 }
 
 Value Value::dictVal(const std::vector<std::pair<Value,Value>>& entries)
 {
-    return objVal(newDictObj(entries));
+    return Value::objVal(newDictObj(entries));
 }
 
 Value Value::vectorVal()
 {
-    return objVal(newVectorObj());
+    return Value::objVal(newVectorObj());
 }
 
 Value Value::vectorVal(int32_t size)
 {
-    return objVal(newVectorObj(size));
+    return Value::objVal(newVectorObj(size));
 }
 
 Value Value::vectorVal(const Eigen::VectorXd& values)
 {
-    return objVal(newVectorObj(values));
+    return Value::objVal(newVectorObj(values));
 }
 
 Value Value::matrixVal()
 {
-    return objVal(newMatrixObj());
+    return Value::objVal(newMatrixObj());
 }
 
 Value Value::matrixVal(int32_t rows, int32_t cols)
 {
-    return objVal(newMatrixObj(rows, cols));
+    return Value::objVal(newMatrixObj(rows, cols));
 }
 
 Value Value::matrixVal(const Eigen::MatrixXd& values)
 {
-    return objVal(newMatrixObj(values));
+    return Value::objVal(newMatrixObj(values));
 }
 
 Value Value::signalVal(roxal::ptr<df::Signal> s)
 {
-    return objVal(newSignalObj(s));
+    return Value::objVal(newSignalObj(s));
 }
 
 Value Value::eventVal()
 {
-    return objVal(newEventObj());
+    return Value::objVal(newEventObj());
 }
 
 Value Value::libraryVal(void* handle)
 {
-    return objVal(newLibraryObj(handle));
+    return Value::objVal(newLibraryObj(handle));
 }
 
 Value Value::foreignPtrVal(void* ptr)
 {
-    return objVal(newForeignPtrObj(ptr));
+    return Value::objVal(newForeignPtrObj(ptr));
 }
 
 Value Value::fileVal(roxal::ptr<std::fstream> f, bool binary)
 {
-    return objVal(newFileObj(f, binary));
+    return Value::objVal(newFileObj(f, binary));
 }
 
 Value Value::exceptionVal(Value message, Value exType, Value stackTrace)
 {
-    return objVal(newExceptionObj(message, exType, stackTrace));
+    return Value::objVal(newExceptionObj(message, exType, stackTrace));
 }
 
 Value Value::functionVal(const icu::UnicodeString& name,
@@ -188,71 +188,71 @@ Value Value::functionVal(const icu::UnicodeString& name,
                          const icu::UnicodeString& moduleName,
                          const icu::UnicodeString& sourceName)
 {
-    return objVal(newFunctionObj(name, packageName, moduleName, sourceName));
+    return Value::objVal(newFunctionObj(name, packageName, moduleName, sourceName));
 }
 
 Value Value::upvalueVal(Value* v)
 {
-    return objVal(newUpvalueObj(v));
+    return Value::objVal(newUpvalueObj(v));
 }
 
 Value Value::closureVal(const Value& function)
 {
     debug_assert_msg(isFunction(function), "Value is an ObjFunction");
-    return objVal(newClosureObj(function));
+    return Value::objVal(newClosureObj(function));
 }
 
 Value Value::futureVal(const std::shared_future<Value>& fv)
 {
-    return objVal(newFutureObj(fv));
+    return Value::objVal(newFutureObj(fv));
 }
 
 Value Value::nativeVal(NativeFn function, void* data,
                            ptr<roxal::type::Type> funcType,
                            std::vector<Value> defaults)
 {
-    return objVal(newNativeObj(function, data, funcType, defaults));
+    return Value::objVal(newNativeObj(function, data, funcType, defaults));
 }
 
 Value Value::typeSpecVal(ValueType t)
 {
-    return objVal(newTypeSpecObj(t));
+    return Value::objVal(newTypeSpecObj(t));
 }
 
 Value Value::objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface, bool isEnumeration)
 {
-    return objVal(newObjectTypeObj(typeName, isActor, isInterface, isEnumeration));
+    return Value::objVal(newObjectTypeObj(typeName, isActor, isInterface, isEnumeration));
 }
 
 Value Value::moduleTypeVal(const icu::UnicodeString& typeName)
 {
-    return objVal(newModuleTypeObj(typeName));
+    return Value::objVal(newModuleTypeObj(typeName));
 }
 
 Value Value::objectInstanceVal(const Value& objectType)
 {
     debug_assert_msg(isObjectType(objectType), "Value is an ObjObjectType");
-    return objVal(newObjectInstance(asObjectType(objectType)));
+    return Value::objVal(newObjectInstance(asObjectType(objectType)));
 }
 
 Value Value::actorInstanceVal(const Value& objectType)
 {
     debug_assert_msg(isObjectType(objectType), "Value is an ObjObjectType");
-    return objVal(newActorInstance(asObjectType(objectType)));
+    return Value::objVal(newActorInstance(asObjectType(objectType)));
 }
 
 Value Value::boundMethodVal(const Value& instance, const Value& closure)
 {
     debug_assert_msg(isObjectInstance(instance) || isActorInstance(instance), "Value is an ObjObject");
     debug_assert_msg(isClosure(closure), "Value is an ObjClosure");
-    return objVal(newBoundMethodObj(instance, closure));
+    return Value::objVal(newBoundMethodObj(instance, closure));
 }
 
 Value Value::boundNativeVal(const Value& instance, NativeFn fn, bool isProc, // ObjBoundNative
                              ptr<roxal::type::Type> funcType,
                              std::vector<Value> defaults)
 {
-    return objVal(newBoundNativeObj(instance, fn, isProc, funcType, defaults));
+    return Value::objVal(newBoundNativeObj(instance, fn, isProc, funcType, defaults));
 }
 
 
@@ -264,13 +264,13 @@ void Value::box() {
     // allocate value on heap
     Obj* obj;
     if (isBool())
-        obj = newBoolObj(asBool());
+        obj = newBoolObj(asBool()).release();
     else if (isInt())
-        obj = newIntObj(asInt());
+        obj = newIntObj(asInt()).release();
     else if (isReal())
-        obj = newRealObj(asReal());
+        obj = newRealObj(asReal()).release();
     else if (isType())
-        obj = newTypeObj(asType());
+        obj = newTypeObj(asType()).release();
     else
         throw std::runtime_error("Unsupported type for auto-boxing "+typeName());
 
@@ -1435,7 +1435,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 return Value::vectorVal(vals);
             }
             if (isVector(arg)) {
-                return objVal(asVector(arg)->clone());
+                return Value(asVector(arg)->clone());
             }
             throw std::runtime_error("vector constructor expects int length, list of reals, or vector");
         } else {
@@ -1498,7 +1498,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 return Value::matrixVal(vals);
             }
             if (isMatrix(arg)) {
-                return objVal(asMatrix(arg)->clone());
+                return Value(asMatrix(arg)->clone());
             }
             throw std::runtime_error("matrix constructor expects list, vector, or matrix");
         } else {
@@ -1684,19 +1684,19 @@ Value roxal::add(Value l, Value r)
         ObjList* lv = asList(l);
         const ObjList* rv = asList(r);
 
-        ObjList* result = lv->clone();  // Clone LHS for by-value semantics
-        result->concatenate(rv);          // Concatenate RHS in-place
+        auto result = lv->clone();  // Clone LHS for by-value semantics
+        static_cast<ObjList*>(result.get())->concatenate(rv);          // Concatenate RHS in-place
 
-        return objVal(result);
+        return Value::objVal(std::move(result));
     }
     else if (isList(l)) {
         // List + anything → append (clone LHS, then append RHS)
         ObjList* lv = asList(l);
 
-        ObjList* result = lv->clone();  // Clone LHS for by-value semantics
-        result->append(r);                // Append RHS in-place
+        auto result = lv->clone();  // Clone LHS for by-value semantics
+        static_cast<ObjList*>(result.get())->append(r);                // Append RHS in-place
 
-        return objVal(result);
+        return Value::objVal(std::move(result));
     }
     throw std::invalid_argument("unsupported operand types to add() - "+l.typeName()+" and "+r.typeName());
 }
@@ -2327,12 +2327,12 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
         if(useCtx && flag==0){
             auto it = ctx->idToObj.find(id);
             if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown object ref id");
-            return Value(objVal(it->second));
+            return Value(it->second);
         }
         obj = objMaker();
         if(useCtx) ctx->idToObj[id] = obj;
         obj->read(in, ctx);
-        return Value(objVal(obj));
+        return Value(obj);
     };
 
     if (t == ValueType::Boxed) {
@@ -2372,7 +2372,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                     asObjectType(obj)->read(in, ctx);
                     return obj;
                 } else { // Module
-                    Value module { objVal(::newModuleTypeObj(icu::UnicodeString())) };
+                    Value module { Value::objVal(::newModuleTypeObj(icu::UnicodeString())) };
                     asModuleType(module)->read(in, ctx);
                     return module;
                 }
@@ -2409,7 +2409,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             if(useCtx && flag==0) {
                 auto it = ctx->idToObj.find(id);
                 if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown object ref id");
-                return objVal(it->second);
+                return Value(it->second);
             }
             Value typeVal = readValue(in, ctx);
             ObjObjectType* t = asObjectType(typeVal);
@@ -2431,7 +2431,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             if(useCtx && flag==0) {
                 auto it = ctx->idToObj.find(id);
                 if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown actor ref id");
-                return objVal(it->second);
+                return Value(it->second);
             }
             Value typeVal = readValue(in, ctx);
             ObjObjectType* t = asObjectType(typeVal);

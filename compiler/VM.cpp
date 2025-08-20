@@ -236,8 +236,8 @@ VM::VM()
 
     // Initialize dataflow engine as builtin actor
     dataflowEngine = df::DataflowEngine::instance();
-    ObjObjectType* dataflowType = newObjectTypeObj(toUnicodeString("_DataflowEngine"), true);
-    Value dataflowTypeVal { objVal(dataflowType) };
+    auto dataflowType = newObjectTypeObj(toUnicodeString("_DataflowEngine"), true);
+    Value dataflowTypeVal { Value::objVal(std::move(dataflowType)) };
     dataflowEngineActor = Value::actorInstanceVal(dataflowTypeVal);
     dataflowEngineThread = make_ptr<Thread>();
     dataflowEngineThread->act(dataflowEngineActor);
@@ -254,12 +254,12 @@ VM::VM()
     globals.storeGlobal(toUnicodeString("_dataflow"), dataflowEngineActor);
 
     // built-in exception hierarchy
-    Value exType = objVal(newObjectTypeObj(toUnicodeString("exception"), false));
-    Value runtimeExType = objVal(newObjectTypeObj(toUnicodeString("RuntimeException"), false));
+    Value exType = Value::objVal(newObjectTypeObj(toUnicodeString("exception"), false));
+    Value runtimeExType = Value::objVal(newObjectTypeObj(toUnicodeString("RuntimeException"), false));
     asObjectType(runtimeExType)->superType = exType;
-    Value programExType = objVal(newObjectTypeObj(toUnicodeString("ProgramException"), false));
+    Value programExType = Value::objVal(newObjectTypeObj(toUnicodeString("ProgramException"), false));
     asObjectType(programExType)->superType = exType;
-    Value condIntType = objVal(newObjectTypeObj(toUnicodeString("ConditionalInterrupt"), false));
+    Value condIntType = Value::objVal(newObjectTypeObj(toUnicodeString("ConditionalInterrupt"), false));
     asObjectType(condIntType)->superType = exType;
 #ifdef ROXAL_ENABLE_FILEIO
     Value fileIOExceptionTypeVal = Value::objectTypeVal(toUnicodeString("FileIOException"), false);
@@ -828,7 +828,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
                     if (initMethod == nullptr && isExceptionType(type) && callSpec.argCount == 1) {
                         Value msg = peek(0);
-                        *(thread->stackTop - callSpec.argCount - 1) = Value::exceptionVal(msg, objVal(type));
+                        *(thread->stackTop - callSpec.argCount - 1) = Value::exceptionVal(msg, Value(type));
                         pop();
                         return true;
                     }
@@ -889,8 +889,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 *(thread->stackTop - 1) = inst; // native init returns instance
                             return ok;
                         } else {
-                            ObjBoundMethod* boundInit = newBoundMethodObj(inst, initMethod->closure);
-                            Value calleeVal = objVal(boundInit);
+                            auto boundInit = newBoundMethodObj(inst, initMethod->closure);
+                            Value calleeVal = Value::objVal(std::move(boundInit));
                             ActorInstance* actorInst = asActorInstance(inst);
                             actorInst->queueCall(calleeVal, callSpec, &(*thread->stackTop));
                             popN(callSpec.argCount); // remove init args
@@ -1115,7 +1115,7 @@ std::pair<InterpretResult,Value> VM::callAndExec(ObjClosure* closure, const std:
 {
 
     // Push closure first, then arguments (to match OpCode::Call stack layout)
-    push(objVal(closure));
+    push(Value(closure));
     for(const auto& a : args)
         push(a);
     CallSpec spec(args.size());
@@ -1707,7 +1707,7 @@ void VM::defineProperty(ObjString* name)
 
     ast::Access access = (!accessVal.isNil() && accessVal.isBool() && accessVal.asBool()) ? ast::Access::Private : ast::Access::Public;
     objType->properties[name->hash] = {name->s, propertyType, propertyInitial,
-                                      access, objVal(objType).weakRef()};
+                                      access, Value(objType).weakRef()};
     objType->propertyOrder.push_back(name->hash);
 
     // check module annotations for ctype
@@ -1741,10 +1741,10 @@ void VM::defineMethod(ObjString* name)
 
     ObjClosure* closure = asClosure(method);
     ObjFunction* function = asFunction(closure->function);
-    function->ownerType = objVal(type).weakRef();
+    function->ownerType = Value(type).weakRef();
 
     type->methods[name->hash] = {name->s, method, function->access,
-                                 objVal(type).weakRef()};
+                                 Value(type).weakRef()};
     pop();
 }
 
@@ -2030,7 +2030,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 inst.resolve();
                 if (isDict(inst)) {
                     ObjDict* dict = asDict(inst);
-                    Value key { objVal(name) };
+                    Value key { Value(name) };
                     bool hasKey = false;
                     try {
                         hasKey = dict->contains(key);
@@ -2211,7 +2211,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 inst.resolve();
                 if (isDict(inst)) {
                     ObjDict* dict = asDict(inst);
-                    Value key { objVal(name) };
+                    Value key { Value(name) };
                     bool hasKey = false;
                     try {
                         hasKey = dict->contains(key);
@@ -2239,7 +2239,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     if (it != objInst->properties.end()) {
                         auto pit = objInst->instanceType->properties.find(name->hash);
                         ast::Access propAccess = ast::Access::Public;
-                        Value ownerT = objVal(objInst->instanceType).weakRef();
+                        Value ownerT = Value(objInst->instanceType).weakRef();
                         if (pit != objInst->instanceType->properties.end()) {
                             propAccess = pit->second.access;
                             ownerT = pit->second.ownerType;
@@ -2267,7 +2267,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     auto it = actorInst->properties.find(name->hash);
                     if (it != actorInst->properties.end()) {
                         ast::Access propAccess = ast::Access::Public;
-                        Value ownerT = objVal(actorInst->instanceType).weakRef();
+                        Value ownerT = Value(actorInst->instanceType).weakRef();
                         if (pit != actorInst->instanceType->properties.end()) {
                             propAccess = pit->second.access;
                             ownerT = pit->second.ownerType;
@@ -2397,7 +2397,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 if (isDict(inst)) {
                     ObjDict* dict = asDict(inst);
                     Value value { peek(0) };
-                    Value key { objVal(name) };
+                    Value key { Value(name) };
                     dict->store(key, value);
                     popN(2);
                     push(value);
@@ -2521,7 +2521,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     Value value { peek(0) };
 
-                    dict->store(objVal(name), value);
+                    dict->store(Value(name), value);
                     popN(2);
                     push(value);
                     break;
@@ -2551,7 +2551,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     auto pit = objInst->instanceType->properties.find(name->hash);
                     ast::Access propAccess = ast::Access::Public;
-                    Value ownerT = objVal(objInst->instanceType).weakRef();
+                    Value ownerT = Value(objInst->instanceType).weakRef();
                     if (pit != objInst->instanceType->properties.end()) {
                         propAccess = pit->second.access;
                         ownerT = pit->second.ownerType;
@@ -2591,7 +2591,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     auto pit = actorInst->instanceType->properties.find(name->hash);
                     ast::Access propAccess = ast::Access::Public;
-                    Value ownerT = objVal(actorInst->instanceType).weakRef();
+                    Value ownerT = Value(actorInst->instanceType).weakRef();
                     if (pit != actorInst->instanceType->properties.end()) {
                         propAccess = pit->second.access;
                         ownerT = pit->second.ownerType;
@@ -3360,7 +3360,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     ObjSignal* sigObj = asSignal(eventVal);
                     ev = sigObj->ensureChangeEvent();
                     eventVal = sigObj->changeEvent;
-                    thread->eventToSignal[eventVal.weakRef()] = objVal(sigObj);
+                    thread->eventToSignal[eventVal.weakRef()] = Value(sigObj);
                 }
 
                 // record this handler on the current thread
@@ -3593,7 +3593,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
 
                 // record inheritance relationship and copy properties
-                subType->superType = objVal(superType);
+                subType->superType = Value(superType);
                 subType->properties.insert(superType->properties.cbegin(), superType->properties.cend());
                 subType->propertyOrder.insert(subType->propertyOrder.end(),
                                              superType->propertyOrder.begin(),

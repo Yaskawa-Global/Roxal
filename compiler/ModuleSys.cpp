@@ -15,7 +15,7 @@ using namespace roxal;
 
 ModuleSys::ModuleSys()
 {
-    moduleTypeValue = objVal(newModuleTypeObj(toUnicodeString("sys")));
+    moduleTypeValue = Value::objVal(newModuleTypeObj(toUnicodeString("sys")));
     ObjModuleType::allModules.push_back(moduleTypeValue);
 }
 
@@ -692,9 +692,9 @@ Value ModuleSys::typeof_native(VM& vm, ArgsView args)
     } else if (val.isObj()) {
         Obj* obj = val.asObj();
         if (obj->type == ObjType::Instance)
-            return objVal(asObjectInstance(val)->instanceType);
+            return Value(asObjectInstance(val)->instanceType);
         if (obj->type == ObjType::Actor)
-            return objVal(asActorInstance(val)->instanceType);
+            return Value(asActorInstance(val)->instanceType);
         if (obj->type == ObjType::Exception) {
             ObjException* ex = asException(val);
             if (!ex->exType.isNil())
@@ -708,8 +708,8 @@ Value ModuleSys::typeof_native(VM& vm, ArgsView args)
 
         // For primitive object wrappers like strings
         valueType = obj->valueType();
-        ObjTypeSpec* typeObj = newTypeSpecObj(valueType);
-        return objVal(typeObj);
+        auto typeObj = newTypeSpecObj(valueType);
+        return Value::objVal(std::move(typeObj));
     } else {
         // Fallback
         valueType = ValueType::Nil;
