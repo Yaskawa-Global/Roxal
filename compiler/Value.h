@@ -165,8 +165,10 @@ public:
     static Value boxedTypeVal(ValueType bt);
 
     /// @brief Constructs a value from an object pointer.
+    /// @tparam D deleter type for the unique_ptr
     /// @param o The object managed by a unique_ptr.
-    explicit Value(unique_ptr<Obj> o);
+    template<class D>
+    explicit Value(unique_ptr<Obj, D> o);
 
     explicit Value(int16_t enumLabelValue, uint16_t enumTypeId)
         { val = QNAN | TagEnum | (0xffffffff & (enumLabelValue | (uint64_t(enumTypeId) << 16))); }
@@ -175,7 +177,11 @@ public:
 
     //
     // Builtin reference type constructors
-    static Value objVal(unique_ptr<Obj> o) { return Value(std::move(o)); }
+    template<class T, class D>
+    static Value objVal(unique_ptr<T, D> o) {
+        unique_ptr<Obj, D> base(std::move(o));
+        return Value(std::move(base));
+    }
     static Value stringVal(const icu::UnicodeString& s); // ObjString
 
     static Value rangeVal();  // ObjRange

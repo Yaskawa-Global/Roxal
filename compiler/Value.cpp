@@ -36,12 +36,16 @@ namespace roxal {
 using namespace roxal;
 
 
-Value::Value(unique_ptr<Obj> o)
+template<class D>
+Value::Value(unique_ptr<Obj, D> o)
 {
     Obj* raw = o.release();
     raw->incRef();
     val = SignBit | QNAN | uint64_t(uintptr_t(raw));
 }
+
+template Value::Value(unique_ptr<Obj, std::default_delete<Obj>>);
+template Value::Value(unique_ptr<Obj, UnreleasedObj>);
 
 std::string roxal::to_string(ValueType t)
 {
