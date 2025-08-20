@@ -283,7 +283,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 
     if (!imported) {  // import it
         if (builtinModule) {
-            importedModuleType = Value(VM::instance().getBuiltinModule(module.name));
+            importedModuleType = Value::objRef(VM::instance().getBuiltinModule(module.name));
             importedModules[module] = importedModuleType;
         } else {
             // compile it, emit code to execute it

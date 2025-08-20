@@ -652,7 +652,7 @@ std::vector<int8_t> CallSpec::paramPositions(ptr<type::Type> calleeType, bool th
 void CallSpec::testParamPositions()
 {
     // create type for func (p0,p1,p2:real,p3,p4=,p5:real=) -> int
-    auto type { make_ptr<type::Type>(type::BuiltinType::Func) };
+    ptr<type::Type> type = make_ptr<type::Type>(type::BuiltinType::Func);
     type->func = type::Type::FuncType();
     type->func.value().returnTypes.push_back(make_ptr<type::Type>(type::BuiltinType::Int));
     auto& params { type->func.value().params };
