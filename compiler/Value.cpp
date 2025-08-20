@@ -47,6 +47,15 @@ Value::Value(unique_ptr<Obj, D> o)
 template Value::Value(unique_ptr<Obj, std::default_delete<Obj>>);
 template Value::Value(unique_ptr<Obj, UnreleasedObj>);
 
+Value Value::objRef(Obj* o)
+{
+    if (!o) return nilVal();
+    o->incRef();
+    Value v;
+    v.val = SignBit | QNAN | uint64_t(uintptr_t(o));
+    return v;
+}
+
 std::string roxal::to_string(ValueType t)
 {
     switch (t) {
@@ -2331,12 +2340,12 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
         if(useCtx && flag==0){
             auto it = ctx->idToObj.find(id);
             if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown object ref id");
-            return Value(it->second);
+            return Value::objRef(it->second);
         }
         obj = objMaker();
         if(useCtx) ctx->idToObj[id] = obj;
         obj->read(in, ctx);
-        return Value(obj);
+        return Value::objRef(obj);
     };
 
     if (t == ValueType::Boxed) {
@@ -2413,7 +2422,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             if(useCtx && flag==0) {
                 auto it = ctx->idToObj.find(id);
                 if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown object ref id");
-                return Value(it->second);
+                return Value::objRef(it->second);
             }
             Value typeVal = readValue(in, ctx);
             ObjObjectType* t = asObjectType(typeVal);
@@ -2435,7 +2444,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             if(useCtx && flag==0) {
                 auto it = ctx->idToObj.find(id);
                 if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown actor ref id");
-                return Value(it->second);
+                return Value::objRef(it->second);
             }
             Value typeVal = readValue(in, ctx);
             ObjObjectType* t = asObjectType(typeVal);

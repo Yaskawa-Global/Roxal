@@ -1063,7 +1063,7 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
     exitFuncScope();
 
     {
-        uint16_t constIdx = makeConstant(Value(function));
+        uint16_t constIdx = makeConstant(Value::objRef(function));
         if (constIdx <= 255)
             emitBytes(OpCode::Closure, uint8_t(constIdx));
         else
@@ -1320,7 +1320,7 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     // std::cout << "Closure " << toUTF8StdString(function->name) << ": #" << function->upvalueCount << std::endl;
     // std::cout << "   #" << functionState.upvalues.size() << std::endl;
     {
-        uint16_t constIdx = makeConstant(Value(function));
+        uint16_t constIdx = makeConstant(Value::objRef(function));
         if (constIdx <= 255)
             emitBytes(OpCode::Closure, uint8_t(constIdx));
         else

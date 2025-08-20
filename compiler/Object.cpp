@@ -1801,13 +1801,13 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     if(len>0) in.read(ns.data(), len);
     name = icu::UnicodeString::fromUTF8(ns);
 
-    allModules.push_back(Value(this));
+    allModules.push_back(Value::objRef(this));
 }
 void ObjectInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     // Only serialize the object contents here.  Reference tracking is handled
     // by the calling writeValue() helper.
-    writeValue(out, Value(instanceType), ctx);
+    writeValue(out, Value::objRef(instanceType), ctx);
     uint32_t count = properties.size();
     out.write(reinterpret_cast<char*>(&count),4);
     for(const auto& kv : properties) {
@@ -1895,7 +1895,7 @@ void ObjBoundNative::read(std::istream& in, roxal::ptr<SerializationContext> ctx
 void ActorInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     // Only serialize the contents. Reference tracking is handled by writeValue().
-    writeValue(out, Value(instanceType), ctx);
+    writeValue(out, Value::objRef(instanceType), ctx);
     uint32_t count = properties.size();
     out.write(reinterpret_cast<char*>(&count),4);
     for(const auto& kv : properties) {
@@ -1925,7 +1925,7 @@ void ActorInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     // joinable.
     VM::instance().registerThread(newThread);
     thread = newThread;
-    newThread->act(Value(this));
+    newThread->act(Value::objRef(this));
 }
 
 void ObjMatrix::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const

@@ -989,7 +989,7 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
             for (size_t i = 0; i < ctx->buffers.size(); i++) {
                 if (ctx->buffers[i].data() == p && ctx->instances[i]) {
                     updateObjectFromCStruct(ctx->instances[i], ctx->buffers[i].data(), ctx->buffers[i].size(), ctx);
-                    return Value(ctx->instances[i]);
+                    return Value::objRef(ctx->instances[i]);
                 }
             }
         }

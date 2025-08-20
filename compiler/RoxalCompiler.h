@@ -271,7 +271,7 @@ protected:
             // while modules are lexically static, variables are declared in them at runtime
             // create a new ObjModuleType in which module vars are held
             if (existing)
-                moduleType = Value(existing);
+                moduleType = Value::objRef(existing);
             else {
                 moduleType = Value::objVal(newModuleTypeObj(moduleName_));
                 ObjModuleType::allModules.push_back(moduleType);

@@ -182,6 +182,7 @@ public:
         unique_ptr<Obj, D> base(std::move(o));
         return Value(std::move(base));
     }
+    static Value objRef(Obj* o);
     static Value stringVal(const icu::UnicodeString& s); // ObjString
 
     static Value rangeVal();  // ObjRange

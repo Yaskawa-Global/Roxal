@@ -692,9 +692,9 @@ Value ModuleSys::typeof_native(VM& vm, ArgsView args)
     } else if (val.isObj()) {
         Obj* obj = val.asObj();
         if (obj->type == ObjType::Instance)
-            return Value(asObjectInstance(val)->instanceType);
+            return Value::objRef(asObjectInstance(val)->instanceType);
         if (obj->type == ObjType::Actor)
-            return Value(asActorInstance(val)->instanceType);
+            return Value::objRef(asActorInstance(val)->instanceType);
         if (obj->type == ObjType::Exception) {
             ObjException* ex = asException(val);
             if (!ex->exType.isNil())
