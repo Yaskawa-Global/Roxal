@@ -162,6 +162,9 @@ public:
 
     void executeBuiltinModuleScript(const std::string& path, ObjModuleType* moduleType);
 
+    // Builtin functions (moved from private)
+    void defineBuiltinFunctions();
+
 protected:
     VM();
     ~VM();
@@ -217,6 +220,8 @@ protected:
 
     Value conditionalInterruptClosure {}; // ObjClosure
 
+    
+
 public:
     Value getConditionalInterruptClosure() const { return conditionalInterruptClosure; } // ObjClosure
 
@@ -256,8 +261,7 @@ public:
     void runtimeError(const std::string& format, ...);
 
 
-    // Builtin functions
-    void defineBuiltinFunctions();
+    
 
     void defineBuiltinMethods();
     void defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn,
