@@ -116,7 +116,7 @@ static int repl()
                     std::stringstream scriptStream;
                     scriptStream << script.rdbuf();
                     try {
-                        vm.interpretLine(scriptStream);
+                        vm.interpretLine(scriptStream, false);
                     } catch (std::exception& e) {
                         std::cerr << "Error: " << e.what() << std::endl;
                     }

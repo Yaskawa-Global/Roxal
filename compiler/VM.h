@@ -87,7 +87,7 @@ public:
     void registerBuiltinModule(ptr<BuiltinModule> module);
 
     InterpretResult interpret(std::istream& source, const std::string& sourceName);
-    InterpretResult interpretLine(std::istream& linestream);
+    InterpretResult interpretLine(std::istream& linestream, bool replMode=true);
 
 
     bool call(ObjClosure* closure, const CallSpec& callSpec);
