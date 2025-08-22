@@ -270,12 +270,16 @@ protected:
 
             // while modules are lexically static, variables are declared in them at runtime
             // create a new ObjModuleType in which module vars are held
-            if (existing)
-                moduleType = Value(existing);
-            else {
-                moduleType = Value(newModuleTypeObj(moduleName_));
-                ObjModuleType::allModules.push_back(moduleType);
-            }
+          if (existing) {
+              moduleType = Value(existing);
+              auto names = existing->vars.variableNames();
+              for (const auto& n : names)
+                  moduleVarLines[n] = ast::LinePos{};
+          }
+          else {
+              moduleType = Value(newModuleTypeObj(moduleName_));
+              ObjModuleType::allModules.push_back(moduleType);
+          }
 
             // since this scope only persists during compilation, store the moduleType
             //  in the function for runtime access
