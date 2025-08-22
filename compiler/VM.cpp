@@ -477,7 +477,7 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
 }
 
 
-InterpretResult VM::interpretLine(std::istream& linestream)
+InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
 {
     Value function { Value::nilVal() }; // ObjFunction
 
@@ -487,7 +487,7 @@ InterpretResult VM::interpretLine(std::istream& linestream)
     static ObjModuleType* replModule { nullptr };
     compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
     compiler.setModulePaths(modulePaths);
-    compiler.setReplMode(true);
+    compiler.setReplMode(replMode);
 
     try {
         function = compiler.compile(linestream, "cli", replModule);
