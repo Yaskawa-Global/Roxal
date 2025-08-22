@@ -56,7 +56,7 @@ RoxalCompiler::RoxalCompiler()
 
 
 Value RoxalCompiler::compile(std::istream& source, const std::string& name,
-                             ObjModuleType* existingModule)
+                             Value existingModule)
 {
     Value function { Value::nilVal() };
 
@@ -2142,7 +2142,7 @@ void RoxalCompiler::outputScopes()
 void RoxalCompiler::enterModuleScope(const icu::UnicodeString& packageName,
                                     const icu::UnicodeString& moduleName,
                                     const icu::UnicodeString& sourceName,
-                                    ObjModuleType* existingModule)
+                                    Value existingModule)
 {
     auto moduleScope { make_ptr<ModuleScope>(packageName, moduleName,
                                              sourceName,
