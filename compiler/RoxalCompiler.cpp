@@ -2848,7 +2848,8 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
             setOp = (arg<=255) ? OpCode::SetModuleVar : OpCode::SetModuleVar2;
         else
             setOp = (arg<=255) ? OpCode::SetNewModuleVar : OpCode::SetNewModuleVar2;
-        if (assign && asFuncScope(funcScope())->functionType == FunctionType::Module && !exists)
+        if (assign && asFuncScope(funcScope())->functionType == FunctionType::Module && !exists &&
+            !asFuncScope(funcScope())->strict)
             module->moduleVarLines[name] = currentNode->interval.first;
 
         // if module variable isn't found at runtime, the VM will raise an error.
