@@ -2737,8 +2737,17 @@ int16_t RoxalCompiler::resolveUpvalue(Scope scopeState, const icu::UnicodeString
 
 void RoxalCompiler::declareVariable(const icu::UnicodeString& name, std::optional<VarTypeSpec> type)
 {
-    if (asFuncScope(funcScope())->scopeDepth == 0)
+    if (asFuncScope(funcScope())->scopeDepth == 0) {
+        auto module = asModuleScope(moduleScope());
+        auto it = module->moduleVarLines.find(name);
+        if (it != module->moduleVarLines.end()) {
+            error("A variable with this name already exists in this scope (previously declared at line " + std::to_string(it->second.line) + ").");
+        }
+        module->moduleVarLines[name] = currentNode->interval.first;
+        if (type.has_value())
+            module->moduleVarTypes[name] = type.value();
         return;
+    }
 
     // check there is no variable with the same name in this scope (an error)
     for(auto li = asFuncScope(funcScope())->locals.rbegin(); li != asFuncScope(funcScope())->locals.rend(); ++li) {
@@ -2833,11 +2842,14 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
         // try module scope first
         arg = identifierConstant(name);
         getOp = (arg<=255) ? OpCode::GetModuleVar : OpCode::GetModuleVar2;
-        //  allow assigning without previously declaring, except within functions
-        if (asFuncScope(funcScope())->functionType != FunctionType::Module)
+        auto module = asModuleScope(moduleScope());
+        bool exists = module->moduleVarLines.find(name) != module->moduleVarLines.end();
+        if (asFuncScope(funcScope())->functionType != FunctionType::Module || exists)
             setOp = (arg<=255) ? OpCode::SetModuleVar : OpCode::SetModuleVar2;
         else
             setOp = (arg<=255) ? OpCode::SetNewModuleVar : OpCode::SetNewModuleVar2;
+        if (assign && asFuncScope(funcScope())->functionType == FunctionType::Module && !exists)
+            module->moduleVarLines[name] = currentNode->interval.first;
 
         // if module variable isn't found at runtime, the VM will raise an error.
         // to allow implicit property access, check for 'this' method context as fallback

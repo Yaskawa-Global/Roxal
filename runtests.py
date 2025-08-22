@@ -35,7 +35,7 @@ tests = [
     'event_in_sleep', 'event_in_sleep2',
     'until_event', 'until_signal', 'signal_vector_dot',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
-    'module_strict_assign_err', 'func_nonstrict', 'conversions1',
+    'module_strict_assign_err', 'var_redeclare_err', 'var_redeclare_assign_err', 'func_nonstrict', 'conversions1',
     'serialize_values', 'serialize_objects', 'serialize_user_objects', 'serialize_func', 'serialize_actor',
     'json_basic',
     'byteops', 'bitwise', 'byte_int_bits', 'list_byte_concat', 'list_enum_concat', 'object_init', 'object_inherit_is',

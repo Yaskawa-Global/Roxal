@@ -288,6 +288,7 @@ protected:
         icu::UnicodeString sourceName;
         Value moduleType;  // ObjModuleType
         std::unordered_map<icu::UnicodeString, VarTypeSpec> moduleVarTypes;
+        std::unordered_map<icu::UnicodeString, ast::LinePos> moduleVarLines;
     };
 
     ptr<ModuleScope> asModuleScope(Scope s) const { return dynamic_ptr_cast<ModuleScope>(*s); }
