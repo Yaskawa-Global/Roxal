@@ -5,6 +5,7 @@
 #include <sstream>
 #include <cstdlib>
 #include <csignal>
+#include <fstream>
 
 #include <core/AST.h>
 #include "RoxalIndentationLexer.h"
@@ -59,6 +60,19 @@ static std::string rstrip(const std::string& s)
     return s.substr(0,end+1);
 }
 
+static std::string lstrip(const std::string& s)
+{
+    size_t start = s.find_first_not_of(" \t");
+    if (start == std::string::npos)
+        return "";
+    return s.substr(start);
+}
+
+static std::string trimws(const std::string& s)
+{
+    return rstrip(lstrip(s));
+}
+
 static int repl()
 {
     linenoiseHistorySetMaxLen(1000);
@@ -85,6 +99,37 @@ static int repl()
         if (line=="quit") {
             quit = true;
             break;
+        } else if (line.rfind("run ", 0) == 0) {
+            std::string path = trimws(line.substr(4));
+            if (path.empty()) {
+                std::cerr << "Error: no file specified" << std::endl;
+            } else {
+                std::ifstream script(path);
+                if (!script.is_open()) {
+                    std::cerr << "Error: file not found: " << path << std::endl;
+                } else {
+                    std::filesystem::path filePath = std::filesystem::absolute(path);
+                    std::filesystem::path parentPath = filePath.parent_path();
+                    std::filesystem::path currentPath = std::filesystem::current_path();
+                    std::filesystem::path relativePath = std::filesystem::relative(parentPath, currentPath);
+                    vm.appendModulePaths({relativePath.string()});
+                    std::stringstream scriptStream;
+                    scriptStream << script.rdbuf();
+                    try {
+                        vm.interpretLine(scriptStream, false);
+                    } catch (std::exception& e) {
+                        std::cerr << "Error: " << e.what() << std::endl;
+                    }
+                }
+            }
+            buffer.clear();
+            indents.assign(1,0);
+            waitingIndent = false;
+            if (vm.isExitRequested()) {
+                exitCode = vm.exitCode();
+                break;
+            }
+            continue;
         }
 
         int indent = indentationLength(line);

@@ -71,7 +71,7 @@ tests = [
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
     'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle',
     'runtime_error_snippet',
-    'property_count', 'cmdline_execute', 'invalid_option', 'fileio_basic', 'fileio_binary',
+    'property_count', 'cmdline_execute', 'repl_run', 'invalid_option', 'fileio_basic', 'fileio_binary',
     'fileio_read_binary', 'fileio_write_binary', 'fileio_extra', 'help_doc', 'docstring_func'
     ,'builtin_object_methods', 'print_flush'
 ]
@@ -152,6 +152,11 @@ try:
             with open(testrox, 'r') as f:
                 snippet = f.read().strip()
             cmd = [roxal, '-e', snippet]
+        if test == 'repl_run':
+            script_path = os.path.join(test_dir, 'repl_run_script.rox')
+            rel_script = os.path.relpath(script_path, os.getcwd())
+            cmd = [roxal]
+            input_data = f"run {rel_script}\nquit\n".encode()
         if test == 'invalid_option':
             cmd = [roxal, '--bogus']
 
