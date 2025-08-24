@@ -1,0 +1,1 @@
+.*var_redeclare_assign_err\.rox:2:0: error: A variable with this name already exists in this scope \(previously declared at line 1\).*
