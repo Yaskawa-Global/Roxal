@@ -484,7 +484,7 @@ InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
     runtimeErrorFlag = false;
 
     static RoxalCompiler compiler {};
-    static ObjModuleType* replModule { nullptr };
+    static Value replModule { Value::nilVal() };
     compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
     compiler.setModulePaths(modulePaths);
     compiler.setReplMode(replMode);
@@ -499,8 +499,8 @@ InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
     if (function.isNil())
         return InterpretResult::CompileError;
 
-    if (replModule == nullptr)
-        replModule = asModuleType(asFunction(function)->moduleType);
+    if (replModule.isNil())
+        replModule = asFunction(function)->moduleType.strongRef();
 
     lineMode = true;
     lineStream = &linestream;
@@ -4539,7 +4539,7 @@ void VM::executeBuiltinModuleScript(const std::string& path, ObjModuleType* modu
     compiler.setOutputBytecodeDisassembly(false);
     compiler.setModulePaths(modulePaths);
 
-    Value fn = compiler.compile(in, path, moduleType);
+    Value fn = compiler.compile(in, path, objVal(moduleType));
     if (fn.isNil())
         return;
 

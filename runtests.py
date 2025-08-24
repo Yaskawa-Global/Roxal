@@ -35,7 +35,7 @@ tests = [
     'event_in_sleep', 'event_in_sleep2',
     'until_event', 'until_signal', 'signal_vector_dot',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
-    'module_strict_assign_err', 'func_nonstrict', 'conversions1',
+    'module_strict_assign_err', 'var_redeclare_err', 'var_redeclare_assign_err', 'repl_var_redeclare_err', 'func_nonstrict', 'conversions1',
     'serialize_values', 'serialize_objects', 'serialize_user_objects', 'serialize_func', 'serialize_actor',
     'json_basic',
     'byteops', 'bitwise', 'byte_int_bits', 'list_byte_concat', 'list_enum_concat', 'object_init', 'object_inherit_is',
@@ -140,9 +140,13 @@ try:
             raise RuntimeError(f"Test expected output {testout} or {testerr} not found.")
 
         rel_testrox = os.path.relpath(testrox, os.getcwd())
-        cmd = [roxal, rel_testrox]
         input_data = None
-        if test.startswith('typededucer_'):
+        cmd = [roxal, rel_testrox]
+        if test.startswith('repl_'):
+            with open(testrox, 'r') as f:
+                input_data = f.read()
+            cmd = [roxal]
+        elif test.startswith('typededucer_'):
             cmd = [roxal, '--ast', rel_testrox]
         if test == 'cmdline_execute':
             with open(testrox, 'r') as f:
@@ -160,7 +164,8 @@ try:
 
         try:
             compProc = subprocess.run(
-                cmd, input=input_data, capture_output=True, shell=False,
+                cmd, input=(input_data.encode() if input_data else None),
+                capture_output=True, shell=False,
                 timeout=TEST_TIMEOUT_SECS, env=env_base)
         except subprocess.TimeoutExpired:
             duration_ms = (time.perf_counter() - start_time) * 1000

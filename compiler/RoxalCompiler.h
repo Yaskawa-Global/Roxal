@@ -22,7 +22,7 @@ public:
 
     // Compile the specified source code and return a Value ObjFunction reference
     Value compile(std::istream& source, const std::string& name,
-                  ObjModuleType* existingModule = nullptr);
+                  Value existingModule = Value::nilVal());
 
     void setOutputBytecodeDisassembly(bool outputBytecodeDisassembly);
     void setModulePaths(const std::vector<std::string>& modulePaths);
@@ -165,7 +165,7 @@ protected:
     void enterModuleScope(const icu::UnicodeString& packageName,
                           const icu::UnicodeString& moduleName,
                           const icu::UnicodeString& sourceName,
-                          ObjModuleType* existingModule = nullptr);
+                          Value existingModule = Value::nilVal());
     void exitModuleScope();
 
     void enterTypeScope(const icu::UnicodeString& typeName);
@@ -258,7 +258,7 @@ protected:
         ModuleScope(const icu::UnicodeString& packageName_,
                     const icu::UnicodeString& moduleName_,
                     const icu::UnicodeString& sourceName_,
-                    ObjModuleType* existing = nullptr)
+                    Value existing = Value::nilVal())
             : FunctionScope(packageName_, moduleName_, sourceName_, moduleName_,
                             FunctionType::Module,
                             make_ptr<type::Type>(type::BuiltinType::Func)),
@@ -270,12 +270,16 @@ protected:
 
             // while modules are lexically static, variables are declared in them at runtime
             // create a new ObjModuleType in which module vars are held
-            if (existing)
-                moduleType = Value(existing);
-            else {
-                moduleType = Value(newModuleTypeObj(moduleName_));
-                ObjModuleType::allModules.push_back(moduleType);
-            }
+          if (existing.isNonNil()) {
+              moduleType = existing;
+              auto names = asModuleType(existing)->vars.variableNames();
+              for (const auto& n : names)
+                  moduleVarLines[n] = ast::LinePos{};
+          }
+          else {
+              moduleType = Value(newModuleTypeObj(moduleName_));
+              ObjModuleType::allModules.push_back(moduleType);
+          }
 
             // since this scope only persists during compilation, store the moduleType
             //  in the function for runtime access
@@ -288,6 +292,7 @@ protected:
         icu::UnicodeString sourceName;
         Value moduleType;  // ObjModuleType
         std::unordered_map<icu::UnicodeString, VarTypeSpec> moduleVarTypes;
+        std::unordered_map<icu::UnicodeString, ast::LinePos> moduleVarLines;
     };
 
     ptr<ModuleScope> asModuleScope(Scope s) const { return dynamic_ptr_cast<ModuleScope>(*s); }
