@@ -62,7 +62,7 @@ tests = [
     'mathfuncs',
     'typeassign1', 'typeassign2', 'typeassign3',
     'vector1', 'vector2', 'vector3', 'vector4', 'vector5','vector_methods', 'vector_equal', 'vector_matrix_equal',
-    'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'unary_vector_matrix', 
+    'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'unary_vector_matrix',
     'matrix_index', 'matrix_methods', 'matrix_assign', 'matrix_equal', 'matrix_math',
     'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_toupper', 'ffi_primptr', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3', 'cstruct_byval', 'cstruct_array',
     'nested_cstruct', 'nested_cstruct_ptr', 'nested_cstruct_byval',
@@ -164,7 +164,8 @@ try:
 
         try:
             compProc = subprocess.run(
-                cmd, input=(input_data.encode() if input_data else None),
+                cmd,
+                input=(input_data.encode() if isinstance(input_data, str) else input_data if input_data else None),
                 capture_output=True, shell=False,
                 timeout=TEST_TIMEOUT_SECS, env=env_base)
         except subprocess.TimeoutExpired:
