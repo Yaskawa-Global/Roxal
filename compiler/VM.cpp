@@ -650,7 +650,7 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
     }
 
 
-    callframe.closure = closure;
+    callframe.closure = objVal(closure);
     callframe.startIp = callframe.ip = asFunction(closure->function)->chunk->code.begin();
     callframe.slots = &(*(thread->stackTop - argCount - 1));
     callframe.strict = asFunction(closure->function)->strict;
@@ -1665,7 +1665,7 @@ bool VM::isAccessAllowed(const Value& ownerType, ast::Access access)
         return true;
 
     for(auto it = thread->frames.rbegin(); it != thread->frames.rend(); ++it) {
-        ObjFunction* fn = asFunction(it->closure->function);
+        ObjFunction* fn = asFunction(asClosure(it->closure)->function);
         if (!fn->ownerType.isNil() && fn->ownerType.isAlive()) {
             if (fn->ownerType == ownerType)
                 return true;
@@ -1713,7 +1713,7 @@ void VM::defineProperty(ObjString* name)
     // check module annotations for ctype
     if (!thread->frames.empty()) {
         auto frame = thread->frames.end()-1;
-        ObjModuleType* mod = asModuleType(asFunction(frame->closure->function)->moduleType);
+        ObjModuleType* mod = asModuleType(asFunction(asClosure(frame->closure)->function)->moduleType);
         auto itType = mod->propertyCTypes.find(objType->name.hashCode());
         if (itType != mod->propertyCTypes.end()) {
             auto itProp = itType->second.find(name->hash);
@@ -1788,7 +1788,7 @@ void VM::defineNative(const std::string& name, NativeFn function,
 
 std::pair<InterpretResult,Value> VM::execute()
 {
-    if (thread->frames.empty() || asFunction(thread->frames.back().closure->function)->chunk->code.size()==0)
+    if (thread->frames.empty() || asFunction(asClosure(thread->frames.back().closure)->function)->chunk->code.size()==0)
         return std::make_pair(InterpretResult::OK, Value::nilVal()); // nothing to execute
 
     // Track execution depth for nested calls
@@ -1799,7 +1799,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
     auto readByte = [&]() -> uint8_t {
         #ifdef DEBUG_BUILD
-            if (frame->ip == asFunction(frame->closure->function)->chunk->code.end())
+            if (frame->ip == asFunction(asClosure(frame->closure)->function)->chunk->code.end())
                 throw std::runtime_error("Invalid IP");
         #endif
         return *frame->ip++;
@@ -1807,7 +1807,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
     auto readShort = [&]() -> uint16_t {
         #ifdef DEBUG_BUILD
-            if (frame->ip == asFunction(frame->closure->function)->chunk->code.end())
+            if (frame->ip == asFunction(asClosure(frame->closure)->function)->chunk->code.end())
                 throw std::runtime_error("Invalid IP");
         #endif
         frame->ip += 2;
@@ -1817,22 +1817,22 @@ std::pair<InterpretResult,Value> VM::execute()
     auto readConstant = [&]() -> Value {
         #ifdef DEBUG_BUILD
             auto index { Chunk::size_type(readByte()) };
-            if (index >= asFunction(frame->closure->function)->chunk->constants.size())
+            if (index >= asFunction(asClosure(frame->closure)->function)->chunk->constants.size())
                 throw std::runtime_error("Chunk instruction read constant invalid index into constants table");
-            return asFunction(frame->closure->function)->chunk->constants.at(index);
+            return asFunction(asClosure(frame->closure)->function)->chunk->constants.at(index);
         #else
-            return asFunction(frame->closure->function)->chunk->constants[Chunk::size_type(readByte())];
+            return asFunction(asClosure(frame->closure)->function)->chunk->constants[Chunk::size_type(readByte())];
         #endif
     };
 
     auto readConstant2 = [&]() -> Value {
         #ifdef DEBUG_BUILD
             auto index { Chunk::size_type((readByte() << 8) + readByte()) };
-            if (index >= asFunction(frame->closure->function)->chunk->constants.size())
+            if (index >= asFunction(asClosure(frame->closure)->function)->chunk->constants.size())
                 throw std::runtime_error("Chunk instruction read constant invalid index into constants table");
-            return asFunction(frame->closure->function)->chunk->constants.at(index);
+            return asFunction(asClosure(frame->closure)->function)->chunk->constants.at(index);
         #else
-            return asFunction(frame->closure->function)->chunk->constants[Chunk::size_type((readByte() << 8) + readByte())];
+            return asFunction(asClosure(frame->closure)->function)->chunk->constants[Chunk::size_type((readByte() << 8) + readByte())];
         #endif
     };
 
@@ -1893,9 +1893,9 @@ std::pair<InterpretResult,Value> VM::execute()
         #if defined(DEBUG_TRACE_EXECUTION)
             // output stack
             thread->outputStack();
-            if (frame->ip != frame->closure->function->chunk->code.end()) {
+            if (frame->ip != asFunction(asClosure(frame->closure)->function)->chunk->code.end()) {
                 // and instruction
-                frame->closure->function->chunk->disassembleInstruction(frame->ip - frame->closure->function->chunk->code.begin());
+                asFunction(asClosure(frame->closure)->function)->chunk->disassembleInstruction(frame->ip - asFunction(asClosure(frame->closure)->function)->chunk->code.begin());
             }
             else {
                 std::cout << "          <end of chunk>" << std::endl;
@@ -1908,7 +1908,7 @@ std::pair<InterpretResult,Value> VM::execute()
             // handle assignment of default param values to tail of args slots
             //  (hence, this must happen before reordering below)
             if (!frame->tailArgValues.empty()) {
-                int16_t argIndex = asFunction(frame->closure->function)->arity - frame->tailArgValues.size();
+                int16_t argIndex = asFunction(asClosure(frame->closure)->function)->arity - frame->tailArgValues.size();
                 for(const auto& argValue : frame->tailArgValues) {
                     *(frame->slots + 1 + argIndex) = argValue;
                     argIndex++;
@@ -1938,8 +1938,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
 
             // convert arguments to parameter types if specified
-            if (asFunction(frame->closure->function)->funcType.has_value()) {
-                const auto& params = asFunction(frame->closure->function)->funcType.value()->func.value().params;
+            if (asFunction(asClosure(frame->closure)->function)->funcType.has_value()) {
+                const auto& params = asFunction(asClosure(frame->closure)->function)->funcType.value()->func.value().params;
                 bool strictConv = false;
                 if (thread->frames.size() >= 2)
                     strictConv = (thread->frames.end()-2)->strict;
@@ -2409,7 +2409,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
-                        bool strictConv = asFunction(frame->closure->function)->strict;
+                        bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
                         // if type object specified the property type in the declaration,
                         //  convert the value to that type (if possible)
                         const auto& properties { objInst->instanceType->properties };
@@ -2441,7 +2441,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
-                        bool strictConv = asFunction(frame->closure->function)->strict;
+                        bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
                         const auto& properties { actorInst->instanceType->properties };
                         const auto& property = properties.find(name->hash);
                         if (property != properties.end()) {
@@ -2531,7 +2531,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
-                        bool strictConv = asFunction(frame->closure->function)->strict;
+                        bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
                         const auto& properties { objInst->instanceType->properties };
                         const auto& property = properties.find(name->hash);
                         if (property != properties.end()) {
@@ -2571,7 +2571,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
-                        bool strictConv = asFunction(frame->closure->function)->strict;
+                        bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
                         const auto& properties { actorInst->instanceType->properties };
                         const auto& property = properties.find(name->hash);
                         if (property != properties.end()) {
@@ -2934,8 +2934,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 debug_assert_msg(isFunction(function), "Expected a function value for OpCode::Closure");
                 Value closure { Value::closureVal(function) };
                 ObjFunction* funcObj = asFunction(function);
-                if (funcObj->ownerType.isNil() && !asFunction(frame->closure->function)->ownerType.isNil())
-                    funcObj->ownerType = asFunction(frame->closure->function)->ownerType;
+                if (funcObj->ownerType.isNil() && !asFunction(asClosure(frame->closure)->function)->ownerType.isNil())
+                    funcObj->ownerType = asFunction(asClosure(frame->closure)->function)->ownerType;
                 push(closure);
                 for (int i = 0; i < asClosure(closure)->upvalues.size(); i++) {
                     uint8_t isLocal = readByte();
@@ -2944,7 +2944,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     if (isLocal)
                         upvalue = captureUpvalue(*(frame->slots + index));
                     else
-                        upvalue = frame->closure->upvalues[index];
+                        upvalue = asClosure(frame->closure)->upvalues[index];
 
                     asClosure(closure)->upvalues[i] = upvalue;
                 }
@@ -2955,8 +2955,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 debug_assert_msg(isFunction(function), "Expected a function value for OpCode::Closure2");
                 Value closure = Value::closureVal(function);
                 ObjFunction* funcObj = asFunction(function);
-                if (funcObj->ownerType.isNil() && !asFunction(frame->closure->function)->ownerType.isNil())
-                    funcObj->ownerType = asFunction(frame->closure->function)->ownerType;
+                if (funcObj->ownerType.isNil() && !asFunction(asClosure(frame->closure)->function)->ownerType.isNil())
+                    funcObj->ownerType = asFunction(asClosure(frame->closure)->function)->ownerType;
                 push(closure);
                 for (int i = 0; i < asClosure(closure)->upvalues.size(); i++) {
                     uint8_t isLocal = readByte();
@@ -2965,7 +2965,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     if (isLocal)
                         upvalue = captureUpvalue(*(frame->slots + index));
                     else
-                        upvalue = frame->closure->upvalues[index];
+                        upvalue = asClosure(frame->closure)->upvalues[index];
                     asClosure(closure)->upvalues[i] = upvalue;
                 }
                 break;
@@ -3185,12 +3185,12 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case asByte(OpCode::GetUpvalue): {
                 uint8_t slot = readByte();
-                push(*asUpvalue(frame->closure->upvalues[slot])->location);
+                push(*asUpvalue(asClosure(frame->closure)->upvalues[slot])->location);
                 break;
             }
             case asByte(OpCode::SetUpvalue): {
                 uint8_t slot = readByte();
-                *(asUpvalue(frame->closure->upvalues[slot])->location) = peek(0);
+                *(asUpvalue(asClosure(frame->closure)->upvalues[slot])->location) = peek(0);
                 break;
             }
             case asByte(OpCode::Constant2): {
@@ -3464,7 +3464,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 Value tv { Value::objectTypeVal(name->s, false) }; // ObjObjectType
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
-                    ObjModuleType* mod = asModuleType(asFunction(frame->closure->function)->moduleType);
+                    ObjModuleType* mod = asModuleType(asFunction(asClosure(frame->closure)->function)->moduleType);
                     auto it = mod->cstructArch.find(name->hash);
                     if (it != mod->cstructArch.end()) {
                         auto t { asObjectType(tv) };
@@ -3480,7 +3480,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 Value tv { Value::objectTypeVal(name->s, true) }; // ObjObjectType
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
-                    ObjModuleType* mod = asModuleType(asFunction(frame->closure->function)->moduleType);
+                    ObjModuleType* mod = asModuleType(asFunction(asClosure(frame->closure)->function)->moduleType);
                     auto it = mod->cstructArch.find(name->hash);
                     if (it != mod->cstructArch.end()) {
                         auto t { asObjectType(tv) };
@@ -3497,7 +3497,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 Value tv { Value::objectTypeVal(name->s, false, true) };
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
-                    ObjModuleType* mod = asModuleType(asFunction(frame->closure->function)->moduleType);
+                    ObjModuleType* mod = asModuleType(asFunction(asClosure(frame->closure)->function)->moduleType);
                     auto it = mod->cstructArch.find(name->hash);
                     if (it != mod->cstructArch.end()) {
                         auto t { asObjectType(tv) };
@@ -3513,7 +3513,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 Value tv { Value::objectTypeVal(name->s, false, false, true) };
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
-                    ObjModuleType* mod = asModuleType(asFunction(frame->closure->function)->moduleType);
+                    ObjModuleType* mod = asModuleType(asFunction(asClosure(frame->closure)->function)->moduleType);
                     auto it = mod->cstructArch.find(name->hash);
                     if (it != mod->cstructArch.end()) {
                         auto t { asObjectType(tv) };
@@ -3933,8 +3933,8 @@ void VM::runtimeError(const std::string& format, ...)
 
     auto frame { thread->frames.end()-1 };
 
-    size_t instruction = frame->ip - asFunction(frame->closure->function)->chunk->code.begin() - 1;
-    auto chunk = asFunction(frame->closure->function)->chunk;
+    size_t instruction = frame->ip - asFunction(asClosure(frame->closure)->function)->chunk->code.begin() - 1;
+    auto chunk = asFunction(asClosure(frame->closure)->function)->chunk;
     int line = chunk->getLine(instruction);
     int col  = chunk->getColumn(instruction);
     std::string fname = toUTF8StdString(chunk->sourceName);
@@ -3942,14 +3942,14 @@ void VM::runtimeError(const std::string& format, ...)
     // output stacktrace
     for(auto it = thread->frames.begin(); it != thread->frames.end(); ++it) {
         const CallFrame& f { *it };
-        auto c = asFunction(f.closure->function)->chunk;
+        auto c = asFunction(asClosure(f.closure)->function)->chunk;
         size_t instr = 0;
         if (f.ip > c->code.begin())
             instr = f.ip - c->code.begin() - 1;
         int ln = c->getLine(instr);
         int cl = c->getColumn(instr);
         std::string fn = toUTF8StdString(c->sourceName);
-        UnicodeString funcName = asFunction(f.closure->function)->name;
+        UnicodeString funcName = asFunction(asClosure(f.closure)->function)->name;
         if (funcName.isEmpty())
             funcName = UnicodeString("<script>");
         if (!fn.empty())
@@ -4147,14 +4147,14 @@ Value VM::captureStacktrace()
         const CallFrame& frame { *it };
         Value frameDict { Value::dictVal() };
 
-        UnicodeString funcName = asFunction(frame.closure->function)->name;
+        UnicodeString funcName = asFunction(asClosure(frame.closure)->function)->name;
         if (funcName.isEmpty())
             funcName = UnicodeString("<script>");
 
         asDict(frameDict)->store(Value::stringVal(UnicodeString("function")),
                                  Value::stringVal(funcName));
 
-        auto chunk = asFunction(frame.closure->function)->chunk;
+        auto chunk = asFunction(asClosure(frame.closure)->function)->chunk;
         size_t instruction = 0;
         if (frame.ip > chunk->code.begin())
             instruction = frame.ip - chunk->code.begin() - 1;
