@@ -345,6 +345,16 @@ namespace sgcl::detail {
             for (auto offset : offsets) {
                 auto ap = (RawPointer*)ptr + offset;
                 auto p = ap->load(std::memory_order_relaxed);
+#ifdef SGCL_ARCH_X86_64
+                constexpr uintptr_t FlagMask = uintptr_t(3) << 62;
+#else
+                constexpr uintptr_t FlagMask = uintptr_t(3);
+#endif
+                if ((uintptr_t)p & FlagMask) {
+                    auto ref = (RawPointer*)((uintptr_t)p & ~FlagMask);
+                    _mark(ref);
+                    p = ref->load(std::memory_order_relaxed);
+                }
                 if ((size_t)p > 1) {
                     _mark(p);
                 }
@@ -359,6 +369,16 @@ namespace sgcl::detail {
                     auto offset = index * 8 + i;
                     auto ap = (RawPointer*)ptr + offset;
                     auto p = ap->load(std::memory_order_relaxed);
+#ifdef SGCL_ARCH_X86_64
+                    constexpr uintptr_t FlagMask = uintptr_t(3) << 62;
+#else
+                    constexpr uintptr_t FlagMask = uintptr_t(3);
+#endif
+                    if ((uintptr_t)p & FlagMask) {
+                        auto ref = (RawPointer*)((uintptr_t)p & ~FlagMask);
+                        _mark(ref);
+                        p = ref->load(std::memory_order_relaxed);
+                    }
                     if ((size_t)p > 1) {
                         _mark(p);
                     }
@@ -510,8 +530,19 @@ namespace sgcl::detail {
 
         inline static void _clear_childs(void* ptr, const ChildPointers::Vector& offsets) noexcept {
             for (auto offset : offsets) {
-                auto p = (RawPointer*)ptr + offset;
-                p->store(nullptr, std::memory_order_relaxed);
+                auto ap = (RawPointer*)ptr + offset;
+                auto v = ap->load(std::memory_order_relaxed);
+#ifdef SGCL_ARCH_X86_64
+                constexpr uintptr_t FlagMask = uintptr_t(3) << 62;
+#else
+                constexpr uintptr_t FlagMask = uintptr_t(3);
+#endif
+                if ((uintptr_t)v & FlagMask) {
+                    auto ref = (RawPointer*)((uintptr_t)v & ~FlagMask);
+                    ref->store(nullptr, std::memory_order_relaxed);
+                } else {
+                    ap->store(nullptr, std::memory_order_relaxed);
+                }
             }
         }
 
@@ -521,8 +552,19 @@ namespace sgcl::detail {
                 while(flags) {
                     auto i = detail::countr_zero(flags);
                     auto offset = index * 8 + i;
-                    auto p = (RawPointer*)ptr + offset;
-                    p->store(nullptr, std::memory_order_relaxed);
+                    auto ap = (RawPointer*)ptr + offset;
+                    auto v = ap->load(std::memory_order_relaxed);
+#ifdef SGCL_ARCH_X86_64
+                    constexpr uintptr_t FlagMask = uintptr_t(3) << 62;
+#else
+                    constexpr uintptr_t FlagMask = uintptr_t(3);
+#endif
+                    if ((uintptr_t)v & FlagMask) {
+                        auto ref = (RawPointer*)((uintptr_t)v & ~FlagMask);
+                        ref->store(nullptr, std::memory_order_relaxed);
+                    } else {
+                        ap->store(nullptr, std::memory_order_relaxed);
+                    }
                     flags &= flags - 1;
                 };
             }
