@@ -5,6 +5,7 @@
 #include <unordered_map>
 
 #include "core/atomic.h"
+#include "core/memory.h"
 #include "Chunk.h"
 #include "Value.h"
 #include "ArgsView.h"
@@ -220,7 +221,7 @@ protected:
 
     Value conditionalInterruptClosure {}; // ObjClosure
 
-    
+
 
 public:
     Value getConditionalInterruptClosure() const { return conditionalInterruptClosure; } // ObjClosure
@@ -261,7 +262,7 @@ public:
     void runtimeError(const std::string& format, ...);
 
 
-    
+
 
     void defineBuiltinMethods();
     void defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn,

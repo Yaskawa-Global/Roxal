@@ -11,6 +11,7 @@
 #include <istream>
 
 #include <core/common.h>
+#include <core/memory.h>
 #include <core/types.h>
 #include <Eigen/Dense>
 
