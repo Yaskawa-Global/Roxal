@@ -11,12 +11,13 @@
 #include <istream>
 
 #include <core/common.h>
+#include <core/memory.h>
 #include <core/types.h>
 #include <Eigen/Dense>
 
-#if USE_GC_SGCL
-#include <core/sgcl/sgcl.h>
-#endif
+// #if USE_GC_SGCL
+// #include <core/sgcl/sgcl.h>
+// #endif
 
 #include "ObjControl.h"
 
