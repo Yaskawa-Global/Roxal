@@ -5,6 +5,7 @@
 #include <map>
 
 #include <core/common.h>
+#include <core/memory.h>
 
 
 //
@@ -15,10 +16,10 @@ namespace roxal::type {
 
 
 enum class BuiltinType {
-    Nil, 
-    Bool, Byte, Number, Int, Real, Decimal, 
+    Nil,
+    Bool, Byte, Number, Int, Real, Decimal,
     String, Range, Enum,
-    List, Dict, 
+    List, Dict,
     Vector, Matrix, Signal, Tensor,
     Orient,
     Func,
@@ -101,7 +102,7 @@ struct Type {
 
 struct LexicalScope {
     // func name for func scope, object/actor type name for object/actor type decl scope
-    icu::UnicodeString name; 
+    icu::UnicodeString name;
 
     // symbols declared in this scope (and type if known)
     std::map<icu::UnicodeString, std::optional<ptr<Type>>> symbols;

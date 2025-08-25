@@ -6,6 +6,7 @@
 #include <cmath>
 #include <sstream>
 #include "core/common.h"
+#include "core/memory.h"
 
 namespace df {
 
