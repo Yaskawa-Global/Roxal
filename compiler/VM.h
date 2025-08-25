@@ -32,11 +32,11 @@ typedef std::vector<CallFrame> CallFrames;
 
 struct CallFrame {
     #ifdef DEBUG_BUILD
-    CallFrame() : closure(nullptr), slots(nullptr), strict(false) {}
+    CallFrame() : closure(Value::nilVal()), slots(nullptr), strict(false) {}
     #else
-    CallFrame() : closure(nullptr), strict(false) {}
+    CallFrame() : closure(Value::nilVal()), strict(false) {}
     #endif
-    ObjClosure* closure;
+    Value closure; // ObjClosure
     Chunk::iterator startIp;
     Chunk::iterator ip;
     Value* slots;
@@ -193,14 +193,14 @@ protected:
         #ifdef DEBUG_BUILD
         assert(thread != nullptr);
         assert(!thread->frames.empty());
-        assert(thread->frames.back().closure != nullptr);
-        assert(thread->frames.back().closure->function.isNonNil());
-        assert(isFunction(thread->frames.back().closure->function));
-        assert(isModuleType(asFunction(thread->frames.back().closure->function)->moduleType));
+        assert(isClosure(thread->frames.back().closure));
+        assert(asClosure(thread->frames.back().closure)->function.isNonNil());
+        assert(isFunction(asClosure(thread->frames.back().closure)->function));
+        assert(isModuleType(asFunction(asClosure(thread->frames.back().closure)->function)->moduleType));
         #endif
         auto currentFrame { thread->frames.back() };
 
-        return asModuleType(asFunction(currentFrame.closure->function)->moduleType);
+        return asModuleType(asFunction(asClosure(currentFrame.closure)->function)->moduleType);
     }
     inline VariablesMap& moduleVars() { return moduleType()->vars; }
 
