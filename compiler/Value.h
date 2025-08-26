@@ -17,6 +17,7 @@
 #if USE_GC_SGCL
 #include <core/sgcl/sgcl.h>
 #include <core/sgcl/detail/pointer.h>
+#include <core/sgcl/detail/collector.h>
 #endif
 
 #include "ObjControl.h"
@@ -286,7 +287,7 @@ public:
         if (this == &v) return *this;
         if (isObj() || isBoxed()) {
             if (isUnique()) {
-                sgcl::Collector::delete_unique(asObj());
+                sgcl::detail::Collector::delete_unique(asObj());
             } else {
                 sgcl::detail::Pointer p;
                 p.store(asObj());
@@ -331,7 +332,7 @@ public:
 #if USE_GC_SGCL
         if (isObj() || isBoxed()) {
             if (isUnique()) {
-                sgcl::Collector::delete_unique(asObj());
+                sgcl::detail::Collector::delete_unique(asObj());
             } else {
                 sgcl::detail::Pointer p;
                 p.store(asObj());
