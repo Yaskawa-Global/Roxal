@@ -3,6 +3,39 @@
 #include <memory>
 #include "core/common.h"
 
+
+//
+// Memory management
+
+// There are two independent memory management schemes:
+//  - one for internal C++ objects in the implementation (e.g. Thread, Signal)
+//  - one for Roxal objects (subclasses of class Obj) managed by class Value
+//
+// For C++ code not using Roxal Obj types, use roxal::ptr<T> similar to how you'd use std::shared_ptr<T>
+//  Specifically:
+//   ptr<T>                  <- std::shared_ptr<T>
+//   make_ptr<T>             <- std::make_shared<T>
+//   unique_ptr<T>           <- std::unique_ptr<T>
+//   dynamic_ptr_cast<T>(p)  <- std::dynamic_pointer_cast<T>(p)
+//   enable_ptr_from_this<T> <- std::enable_shared_from_this<T>
+//   ptr_from_this<T>        <- std::shared_from_this<T>
+//
+// One significant difference is that make_ptr<T> creates a unique_ptr<T>, which can be
+//  immediately deleted upon unique_ptr destruction if not copied.  However, ptr<T> can be
+//  constructed from a unique_ptr, essentially 'promoting' it to a shared instance.
+//
+// Instances of Roxal Obj types (e.g. ObjList, ...) are created with newObj<T> that also
+//  yields a unique_ptr, with the intention that it is immediately handed over to Value(unique_ptr<Obj>)
+//  which will take over the management (resetting the unique_ptr to nullptr).  Currently, Value
+//  uses its own reference counting implementation for management.
+//
+//
+// If USE_GC_SGCL is defined true, then the internal management will be managed by the SGCL garbage collector.
+//  (ptr<T> will wrap sgcl::tracked_ptr<T> instead of std::shared_ptr<T> etc.)
+//  This will not impact Value which will continue to use reference counting.
+
+
+
 #if USE_GC_SGCL
 #include <core/sgcl/sgcl.h>
 #include <core/sgcl/detail/page.h>

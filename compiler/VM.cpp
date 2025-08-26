@@ -396,9 +396,6 @@ VM::~VM()
     #ifdef DEBUG_TRACE_MEMORY
     // Final attempt to release any objects that might still be pending
     freeObjects();
-    // Clear any leftover bookkeeping so that debug output doesn't report
-    // spurious leaks during shutdown.
-    Obj::allocatedObjs.clear();
     size_t activeThreads = threads.size();
     if (activeThreads > 0)
         std::cout << "== active threads: " << activeThreads << std::endl;

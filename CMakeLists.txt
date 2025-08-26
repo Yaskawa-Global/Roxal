@@ -12,7 +12,7 @@ option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
 
 
 option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
-option(USE_GC_SGCL "Use the SGCL garbage collector" ON)
+option(USE_GC_SGCL "Use the SGCL garbage collector" OFF)
 
 
 add_compile_definitions(
