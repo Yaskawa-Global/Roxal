@@ -268,6 +268,10 @@ public:
                 uint64_t base = val.load() & ~UniqueMask;
                 val.store(base);
                 const_cast<Value&>(v).val.store(base);
+                alignas(sgcl::detail::Pointer) char pbuf2[sizeof(sgcl::detail::Pointer)]{};
+                auto* p2 = new (pbuf2) sgcl::detail::Pointer();
+                p2->store(const_cast<Value&>(v).asObj());
+                p2->~Pointer();
             } else {
                 alignas(sgcl::detail::Pointer) char pbuf[sizeof(sgcl::detail::Pointer)]{};
                 auto* p = new (pbuf) sgcl::detail::Pointer();
@@ -280,6 +284,44 @@ public:
             if (isWeak()) incWeakObj();
             else incRefObj();
         }
+#endif
+    }
+
+    /// @brief Move constructor.
+    /// @param v The value to move from.
+    Value(Value&& v) noexcept
+    {
+#if USE_GC_SGCL
+        val.store(v.val.load());
+        if (isObj() || isBoxed()) {
+            if (isUnique()) {
+                v.val.store(QNAN | TagNil);
+            } else {
+                alignas(sgcl::detail::Pointer) char pbuf[sizeof(sgcl::detail::Pointer)]{};
+                auto* p = new (pbuf) sgcl::detail::Pointer();
+                p->store(asObj());
+                p->~Pointer();
+                alignas(sgcl::detail::Pointer) char pbuf2[sizeof(sgcl::detail::Pointer)]{};
+                auto* p2 = new (pbuf2) sgcl::detail::Pointer();
+                p2->store(v.asObj());
+                p2->store(nullptr);
+                p2->~Pointer();
+                v.val.store(QNAN | TagNil);
+            }
+        } else {
+            v.val.store(QNAN | TagNil);
+        }
+#else
+        val.store(v.val.load());
+        if (isObj() || isBoxed()) {
+            if (isWeak()) incWeakObj();
+            else incRefObj();
+        }
+        if (v.isObj() || v.isBoxed()) {
+            if (v.isWeak()) v.decWeakObj();
+            else v.decRefObj();
+        }
+        v.val.store(QNAN | TagNil);
 #endif
     }
 
@@ -312,6 +354,10 @@ public:
                 uint64_t base = val.load() & ~UniqueMask;
                 val.store(base);
                 const_cast<Value&>(v).val.store(base);
+                alignas(sgcl::detail::Pointer) char pbuf4[sizeof(sgcl::detail::Pointer)]{};
+                auto* p4 = new (pbuf4) sgcl::detail::Pointer();
+                p4->store(const_cast<Value&>(v).asObj());
+                p4->~Pointer();
             } else {
                 alignas(sgcl::detail::Pointer) char pbuf4[sizeof(sgcl::detail::Pointer)]{};
                 auto* p4 = new (pbuf4) sgcl::detail::Pointer();
@@ -333,6 +379,66 @@ public:
             else incRefObj();
         }
 
+        return *this;
+#endif
+    }
+
+    /// @brief Move assignment operator.
+    /// @param v The value to move from.
+    /// @return The assigned value.
+    Value& operator=(Value&& v) noexcept
+    {
+#if USE_GC_SGCL
+        if (this == &v) return *this;
+        if (isObj() || isBoxed()) {
+            if (isUnique()) {
+                sgcl::detail::Collector::delete_unique(asObj());
+            } else {
+                alignas(sgcl::detail::Pointer) char pbuf[sizeof(sgcl::detail::Pointer)]{};
+                auto* p = new (pbuf) sgcl::detail::Pointer();
+                p->store(asObj());
+                p->store(nullptr);
+                p->~Pointer();
+            }
+        }
+
+        val.store(v.val.load());
+        if (isObj() || isBoxed()) {
+            if (isUnique()) {
+                v.val.store(QNAN | TagNil);
+            } else {
+                alignas(sgcl::detail::Pointer) char pbuf2[sizeof(sgcl::detail::Pointer)]{};
+                auto* p2 = new (pbuf2) sgcl::detail::Pointer();
+                p2->store(asObj());
+                p2->~Pointer();
+                alignas(sgcl::detail::Pointer) char pbuf3[sizeof(sgcl::detail::Pointer)]{};
+                auto* p3 = new (pbuf3) sgcl::detail::Pointer();
+                p3->store(v.asObj());
+                p3->store(nullptr);
+                p3->~Pointer();
+                v.val.store(QNAN | TagNil);
+            }
+        } else {
+            v.val.store(QNAN | TagNil);
+        }
+        return *this;
+#else
+        if (this == &v) return *this;
+        bool wasWeak = isWeak();
+        if (isObj() || isBoxed()) {
+            if (wasWeak) decWeakObj();
+            else decRefObj();
+        }
+        val.store(v.val.load());
+        if (isObj() || isBoxed()) {
+            if (isWeak()) incWeakObj();
+            else incRefObj();
+        }
+        if (v.isObj() || v.isBoxed()) {
+            if (v.isWeak()) v.decWeakObj();
+            else v.decRefObj();
+        }
+        v.val.store(QNAN | TagNil);
         return *this;
 #endif
     }
