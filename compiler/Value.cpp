@@ -17,6 +17,7 @@
 #include <memory>
 #include <cmath>
 #include <sstream>
+#include <new>
 
 
 namespace roxal {
@@ -55,8 +56,10 @@ Value Value::objRef(Obj* o)
 {
     if (!o) return nilVal();
 #if USE_GC_SGCL
-    sgcl::detail::Pointer p;
-    p.store(o);
+    alignas(sgcl::detail::Pointer) char pbuf[sizeof(sgcl::detail::Pointer)]{};
+    auto* p = new (pbuf) sgcl::detail::Pointer();
+    p->store(o);
+    p->~Pointer();
     Value v;
     v.val = SignBit | QNAN | uint64_t(uintptr_t(o));
     return v;

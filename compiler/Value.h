@@ -9,6 +9,7 @@
 #include <cassert>
 #include <ostream>
 #include <istream>
+#include <new>
 
 #include <core/common.h>
 #include <core/memory.h>
@@ -260,14 +261,18 @@ public:
 #if USE_GC_SGCL
         if (isObj() || isBoxed()) {
             if (isUnique()) {
-                sgcl::detail::Pointer p;
-                p.store(asObj());
+                alignas(sgcl::detail::Pointer) char pbuf[sizeof(sgcl::detail::Pointer)]{};
+                auto* p = new (pbuf) sgcl::detail::Pointer();
+                p->store(asObj());
+                p->~Pointer();
                 uint64_t base = val.load() & ~UniqueMask;
                 val.store(base);
                 const_cast<Value&>(v).val.store(base);
             } else {
-                sgcl::detail::Pointer p;
-                p.store(asObj());
+                alignas(sgcl::detail::Pointer) char pbuf[sizeof(sgcl::detail::Pointer)]{};
+                auto* p = new (pbuf) sgcl::detail::Pointer();
+                p->store(asObj());
+                p->~Pointer();
             }
         }
 #else
@@ -289,23 +294,29 @@ public:
             if (isUnique()) {
                 sgcl::detail::Collector::delete_unique(asObj());
             } else {
-                sgcl::detail::Pointer p;
-                p.store(asObj());
-                p.store(nullptr);
+                alignas(sgcl::detail::Pointer) char pbuf[sizeof(sgcl::detail::Pointer)]{};
+                auto* p = new (pbuf) sgcl::detail::Pointer();
+                p->store(asObj());
+                p->store(nullptr);
+                p->~Pointer();
             }
         }
 
         val.store(v.val.load());
         if (isObj() || isBoxed()) {
             if (isUnique()) {
-                sgcl::detail::Pointer p;
-                p.store(asObj());
+                alignas(sgcl::detail::Pointer) char pbuf2[sizeof(sgcl::detail::Pointer)]{};
+                auto* p2 = new (pbuf2) sgcl::detail::Pointer();
+                p2->store(asObj());
+                p2->~Pointer();
                 uint64_t base = val.load() & ~UniqueMask;
                 val.store(base);
                 const_cast<Value&>(v).val.store(base);
             } else {
-                sgcl::detail::Pointer p;
-                p.store(asObj());
+                alignas(sgcl::detail::Pointer) char pbuf4[sizeof(sgcl::detail::Pointer)]{};
+                auto* p4 = new (pbuf4) sgcl::detail::Pointer();
+                p4->store(asObj());
+                p4->~Pointer();
             }
         }
         return *this;
@@ -334,9 +345,11 @@ public:
             if (isUnique()) {
                 sgcl::detail::Collector::delete_unique(asObj());
             } else {
-                sgcl::detail::Pointer p;
-                p.store(asObj());
-                p.store(nullptr);
+                alignas(sgcl::detail::Pointer) char pbuf3[sizeof(sgcl::detail::Pointer)]{};
+                auto* p3 = new (pbuf3) sgcl::detail::Pointer();
+                p3->store(asObj());
+                p3->store(nullptr);
+                p3->~Pointer();
             }
         }
 #else
