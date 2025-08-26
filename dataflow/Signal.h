@@ -125,11 +125,6 @@ private:
     weak_ptr<Signal> baseSignal;  // base signal for derived signals
     int baseIndex = 0;       // index relative to base signal (negative)
 
-    #if USE_GC_SGCL
-    friend class sgcl::detail::MakerBase;
-    #else
-    // FIXME:!!!
-    #endif
 
 };
 

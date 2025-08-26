@@ -34,12 +34,6 @@
 #include <fstream>
 #include <cstdio>
 
-#if USE_GC_SGCL
-#include "core/sgcl/detail/thread.h"
-// Force initialization of the SGCL thread-local context before the VM starts
-// so that it outlives the VM during shutdown.
-static auto& sgclThreadContext = sgcl::detail::current_thread();
-#endif
 
 
 using namespace roxal;
@@ -311,10 +305,6 @@ VM::VM()
 
 VM::~VM()
 {
-    #if USE_GC_SGCL
-    sgcl::collector::force_collect(true);
-    #endif
-
     for(auto moduleTypeVal : ObjModuleType::allModules.get()) {
         asModuleType(moduleTypeVal)->vars.clear();
     }
@@ -367,31 +357,13 @@ VM::~VM()
     // objects referenced through its stacks and handlers can be reclaimed
     thread.reset();
 
-
-    #if USE_GC_SGCL
-    sgcl::collector::force_collect(true);
-    #endif
-
     freeObjects();
 
-
     // Final cleanup pass for any objects that became unreferenced during destructor
-    #if USE_GC_SGCL
-    sgcl::collector::force_collect(true);
-    #endif
     freeObjects();
 
     // ensure all threads are gone before reporting
     joinAllThreads();
-
-    // Perform additional forced collection cycles in case thread-local
-    // destructors released resources after the previous passes
-    #if USE_GC_SGCL
-    for (int i = 0; i < 4 && Obj::allocatedObjs.size() > 0; ++i) {
-        sgcl::collector::force_collect(true);
-        freeObjects();
-    }
-    #endif
 
     #ifdef DEBUG_TRACE_MEMORY
     // Final attempt to release any objects that might still be pending
