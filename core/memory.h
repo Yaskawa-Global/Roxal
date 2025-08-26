@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <type_traits>
 #include "core/common.h"
 
 #if USE_GC_SGCL
@@ -136,7 +137,51 @@ inline unique_ptr<T> make_ptr(Args&&... args) {
 #else // USE_GC_SGCL
 
 template<class T, class D = void>
-using unique_ptr = sgcl::unique_ptr<T>;
+class unique_ptr {
+    sgcl::unique_ptr<T> _ptr;
+
+    template<class, class>
+    friend class unique_ptr;
+
+public:
+    using element_type = T;
+
+    unique_ptr() noexcept = default;
+    unique_ptr(std::nullptr_t) noexcept : _ptr(nullptr) {}
+
+    explicit unique_ptr(T* p) : _ptr(sgcl::detail::UniquePtr<T>(p)) {}
+
+    template<class U, class E,
+             class = std::enable_if_t<std::is_convertible_v<U*, T*>>>
+    unique_ptr(unique_ptr<U, E>&& other) noexcept
+        : _ptr(std::move(other._ptr)) {}
+
+    unique_ptr(unique_ptr&&) noexcept = default;
+    unique_ptr& operator=(unique_ptr&&) noexcept = default;
+
+    template<class U, class E,
+             class = std::enable_if_t<std::is_convertible_v<U*, T*>>>
+    unique_ptr& operator=(unique_ptr<U, E>&& other) noexcept {
+        _ptr = std::move(other._ptr);
+        return *this;
+    }
+
+    T* get() const noexcept { return _ptr.get(); }
+    T& operator*() const noexcept { return *_ptr; }
+    T* operator->() const noexcept { return _ptr.get(); }
+    explicit operator bool() const noexcept { return static_cast<bool>(_ptr); }
+
+    T* release() noexcept { return _ptr.release(); }
+    void reset(T* p = nullptr) noexcept {
+        if (p)
+            _ptr = sgcl::unique_ptr<T>(sgcl::detail::UniquePtr<T>(p));
+        else
+            _ptr.reset();
+    }
+
+    bool operator==(std::nullptr_t) const noexcept { return _ptr.get() == nullptr; }
+    bool operator!=(std::nullptr_t) const noexcept { return _ptr.get() != nullptr; }
+};
 
 template<class T>
 using ptr = sgcl::tracked_ptr<T>;

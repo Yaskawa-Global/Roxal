@@ -15,10 +15,6 @@
 #include <core/types.h>
 #include <Eigen/Dense>
 
-// #if USE_GC_SGCL
-// #include <core/sgcl/sgcl.h>
-// #endif
-
 #include "ObjControl.h"
 
 
@@ -168,7 +164,7 @@ public:
     /// @brief Constructs a value from an object pointer.
     /// @tparam D deleter type for the unique_ptr
     /// @param o The object managed by a unique_ptr.
-    template<class D>
+    template<class D = void>
     explicit Value(unique_ptr<Obj, D> o);
 
     explicit Value(int16_t enumLabelValue, uint16_t enumTypeId)
@@ -178,7 +174,7 @@ public:
 
     //
     // Builtin reference type constructors
-    template<class T, class D>
+    template<class T, class D = void>
     static Value objVal(unique_ptr<T, D> o) {
         unique_ptr<Obj, D> base(std::move(o));
         return Value(std::move(base));

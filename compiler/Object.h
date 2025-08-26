@@ -341,7 +341,9 @@ struct ObjString : public Obj
     // number of 16bit Unicode code units
     int32_t length() const { return s.length(); }
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override { return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjString*>(this)); } // strings are interned/immutable
+    unique_ptr<Obj, UnreleasedObj> clone() const override {
+        return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjString*>(this));
+    } // strings are interned/immutable
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
