@@ -15,7 +15,7 @@ class BuiltinModule {
 public:
     virtual ~BuiltinModule() {};
     virtual void registerBuiltins(VM& vm) = 0;
-    virtual ObjModuleType* moduleType() const = 0;
+    virtual Value moduleType() const = 0; // ObjModuleType
 
 protected:
     // Helper to construct function parameter type information. Parameter types
@@ -82,7 +82,7 @@ BuiltinModule::makeFuncType(const std::vector<std::pair<std::string,
 inline void BuiltinModule::link(const std::string& name, NativeFn fn,
                                 std::vector<Value> defaults)
 {
-    auto val = moduleType()->vars.load(toUnicodeString(name));
+    auto val = asModuleType(moduleType())->vars.load(toUnicodeString(name));
     if (val.has_value() && isClosure(val.value())) {
         ObjClosure* cl = asClosure(val.value());
         asFunction(cl->function)->nativeImpl = fn;
@@ -95,7 +95,7 @@ inline void BuiltinModule::linkMethod(const std::string& typeName,
                                       NativeFn fn,
                                       std::vector<Value> defaults)
 {
-    auto typeVal = moduleType()->vars.load(toUnicodeString(typeName));
+    auto typeVal = asModuleType(moduleType())->vars.load(toUnicodeString(typeName));
     if (typeVal.has_value() && isObjectType(typeVal.value())) {
         ObjObjectType* type = asObjectType(typeVal.value());
         auto it = type->methods.find(toUnicodeString(methodName).hashCode());

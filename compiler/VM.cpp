@@ -474,17 +474,17 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
 }
 
 
-InterpretResult VM::interpretLine(std::istream& linestream)
+InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
 {
     Value function { Value::nilVal() }; // ObjFunction
 
     runtimeErrorFlag = false;
 
     static RoxalCompiler compiler {};
-    static ObjModuleType* replModule { nullptr };
+    static Value replModule { Value::nilVal() };
     compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
     compiler.setModulePaths(modulePaths);
-    compiler.setReplMode(true);
+    compiler.setReplMode(replMode);
 
     try {
         function = compiler.compile(linestream, "cli", replModule);
@@ -496,8 +496,8 @@ InterpretResult VM::interpretLine(std::istream& linestream)
     if (function.isNil())
         return InterpretResult::CompileError;
 
-    if (replModule == nullptr)
-        replModule = asModuleType(asFunction(function)->moduleType);
+    if (replModule.isNil())
+        replModule = asFunction(function)->moduleType.strongRef();
 
     lineMode = true;
     lineStream = &linestream;
@@ -4001,7 +4001,7 @@ void VM::defineBuiltinFunctions()
            mod->registerBuiltins(*this);
         } catch (std::exception& e) {
             runtimeError("Error registering builtins for module '%s': %s",
-                         toUTF8StdString(mod->moduleType()->name).c_str(), e.what());
+                         toUTF8StdString(asModuleType(mod->moduleType())->name).c_str(), e.what());
             return;
         }
     }
@@ -4514,17 +4514,18 @@ Value VM::ffi_native(ArgsView args)
 
 
 
-ObjModuleType* VM::getBuiltinModule(const icu::UnicodeString& name)
+Value VM::getBuiltinModule(const icu::UnicodeString& name)
 {
     for (auto& m : builtinModules) {
-        if (m->moduleType()->name == name)
+        if (asModuleType(m->moduleType())->name == name)
             return m->moduleType();
     }
-    return nullptr;
+    return Value::nilVal();
 }
 
-void VM::executeBuiltinModuleScript(const std::string& path, ObjModuleType* moduleType)
+void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
 {
+    debug_assert_msg(isModuleType(moduleType),"is ObjModuleType");
     std::ifstream in(path);
     if (!in.is_open()) {
         std::string alt = "../" + path;

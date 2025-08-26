@@ -56,7 +56,7 @@ RoxalCompiler::RoxalCompiler()
 
 
 Value RoxalCompiler::compile(std::istream& source, const std::string& name,
-                             ObjModuleType* existingModule)
+                             Value existingModule)
 {
     Value function { Value::nilVal() };
 
@@ -246,7 +246,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     if (module.name.isEmpty()) {
         if (ast->packages.size() == 1) {
             icu::UnicodeString modName { ast->packages[0] };
-            if (VM::instance().getBuiltinModule(modName) != nullptr) {
+            if (VM::instance().getBuiltinModule(modName).isNonNil()) {
                 module.name = modName;
                 builtinModule = true;
             }
@@ -283,7 +283,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 
     if (!imported) {  // import it
         if (builtinModule) {
-            importedModuleType = Value::objRef(VM::instance().getBuiltinModule(module.name));
+            importedModuleType = VM::instance().getBuiltinModule(module.name);
             importedModules[module] = importedModuleType;
         } else {
             // compile it, emit code to execute it
@@ -2142,7 +2142,7 @@ void RoxalCompiler::outputScopes()
 void RoxalCompiler::enterModuleScope(const icu::UnicodeString& packageName,
                                     const icu::UnicodeString& moduleName,
                                     const icu::UnicodeString& sourceName,
-                                    ObjModuleType* existingModule)
+                                    Value existingModule)
 {
     ptr<ModuleScope> moduleScope { make_ptr<ModuleScope>(packageName, moduleName,
                                                          sourceName,
@@ -2737,8 +2737,17 @@ int16_t RoxalCompiler::resolveUpvalue(Scope scopeState, const icu::UnicodeString
 
 void RoxalCompiler::declareVariable(const icu::UnicodeString& name, std::optional<VarTypeSpec> type)
 {
-    if (asFuncScope(funcScope())->scopeDepth == 0)
+    if (asFuncScope(funcScope())->scopeDepth == 0) {
+        auto module = asModuleScope(moduleScope());
+        auto it = module->moduleVarLines.find(name);
+        if (it != module->moduleVarLines.end()) {
+            error("A variable with this name already exists in this scope (previously declared at line " + std::to_string(it->second.line) + ").");
+        }
+        module->moduleVarLines[name] = currentNode->interval.first;
+        if (type.has_value())
+            module->moduleVarTypes[name] = type.value();
         return;
+    }
 
     // check there is no variable with the same name in this scope (an error)
     for(auto li = asFuncScope(funcScope())->locals.rbegin(); li != asFuncScope(funcScope())->locals.rend(); ++li) {
@@ -2833,11 +2842,15 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
         // try module scope first
         arg = identifierConstant(name);
         getOp = (arg<=255) ? OpCode::GetModuleVar : OpCode::GetModuleVar2;
-        //  allow assigning without previously declaring, except within functions
-        if (asFuncScope(funcScope())->functionType != FunctionType::Module)
+        auto module = asModuleScope(moduleScope());
+        bool exists = module->moduleVarLines.find(name) != module->moduleVarLines.end();
+        if (asFuncScope(funcScope())->functionType != FunctionType::Module || exists)
             setOp = (arg<=255) ? OpCode::SetModuleVar : OpCode::SetModuleVar2;
         else
             setOp = (arg<=255) ? OpCode::SetNewModuleVar : OpCode::SetNewModuleVar2;
+        if (assign && asFuncScope(funcScope())->functionType == FunctionType::Module && !exists &&
+            !asFuncScope(funcScope())->strict)
+            module->moduleVarLines[name] = currentNode->interval.first;
 
         // if module variable isn't found at runtime, the VM will raise an error.
         // to allow implicit property access, check for 'this' method context as fallback

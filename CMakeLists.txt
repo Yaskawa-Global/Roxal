@@ -191,6 +191,7 @@ target_link_libraries(roxalcore
         icudata
         pthread
         dataflow
+        dl
         ${LIBFFI_LIBRARIES}
 )
 

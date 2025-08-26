@@ -11,14 +11,14 @@ public:
     ModuleSys();
     virtual ~ModuleSys() {
         if (!moduleTypeValue.isNil())
-            moduleType()->vars.clear();
+            asModuleType(moduleTypeValue)->vars.clear();
         moduleTypeValue = Value::nilVal();
     }
 
     // Register builtin sys functions and natives
     void registerBuiltins(VM& vm) override;
 
-    inline ObjModuleType* moduleType() const { return asModuleType(moduleTypeValue); }
+    inline Value moduleType() const { return moduleTypeValue; }
 
     // builtin function implementations
     Value print_builtin(VM& vm, ArgsView args);

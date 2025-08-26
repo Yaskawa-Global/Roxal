@@ -35,7 +35,7 @@ tests = [
     'event_in_sleep', 'event_in_sleep2',
     'until_event', 'until_signal', 'signal_vector_dot',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
-    'module_strict_assign_err', 'func_nonstrict', 'conversions1',
+    'module_strict_assign_err', 'var_redeclare_err', 'var_redeclare_assign_err', 'repl_var_redeclare_err', 'func_nonstrict', 'conversions1',
     'serialize_values', 'serialize_objects', 'serialize_user_objects', 'serialize_func', 'serialize_actor',
     'json_basic',
     'byteops', 'bitwise', 'byte_int_bits', 'list_byte_concat', 'list_enum_concat', 'object_init', 'object_inherit_is',
@@ -62,7 +62,7 @@ tests = [
     'mathfuncs',
     'typeassign1', 'typeassign2', 'typeassign3',
     'vector1', 'vector2', 'vector3', 'vector4', 'vector5','vector_methods', 'vector_equal', 'vector_matrix_equal',
-    'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'unary_vector_matrix', 
+    'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'unary_vector_matrix',
     'matrix_index', 'matrix_methods', 'matrix_assign', 'matrix_equal', 'matrix_math',
     'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_toupper', 'ffi_primptr', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3', 'cstruct_byval', 'cstruct_array',
     'nested_cstruct', 'nested_cstruct_ptr', 'nested_cstruct_byval',
@@ -71,7 +71,7 @@ tests = [
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
     'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle',
     'runtime_error_snippet',
-    'property_count', 'cmdline_execute', 'invalid_option', 'fileio_basic', 'fileio_binary',
+    'property_count', 'cmdline_execute', 'repl_run', 'invalid_option', 'fileio_basic', 'fileio_binary',
     'fileio_read_binary', 'fileio_write_binary', 'fileio_extra', 'help_doc', 'docstring_func'
     ,'builtin_object_methods', 'print_flush'
 ]
@@ -140,13 +140,23 @@ try:
             raise RuntimeError(f"Test expected output {testout} or {testerr} not found.")
 
         rel_testrox = os.path.relpath(testrox, os.getcwd())
+        input_data = None
         cmd = [roxal, rel_testrox]
-        if test.startswith('typededucer_'):
+        if test.startswith('repl_'):
+            with open(testrox, 'r') as f:
+                input_data = f.read()
+            cmd = [roxal]
+        elif test.startswith('typededucer_'):
             cmd = [roxal, '--ast', rel_testrox]
         if test == 'cmdline_execute':
             with open(testrox, 'r') as f:
                 snippet = f.read().strip()
             cmd = [roxal, '-e', snippet]
+        if test == 'repl_run':
+            script_path = os.path.join(test_dir, 'repl_run_script.rox')
+            rel_script = os.path.relpath(script_path, os.getcwd())
+            cmd = [roxal]
+            input_data = f"run {rel_script}\nquit\n".encode()
         if test == 'invalid_option':
             cmd = [roxal, '--bogus']
 
@@ -154,7 +164,9 @@ try:
 
         try:
             compProc = subprocess.run(
-                cmd, capture_output=True, shell=False,
+                cmd,
+                input=(input_data.encode() if isinstance(input_data, str) else input_data if input_data else None),
+                capture_output=True, shell=False,
                 timeout=TEST_TIMEOUT_SECS, env=env_base)
         except subprocess.TimeoutExpired:
             duration_ms = (time.perf_counter() - start_time) * 1000

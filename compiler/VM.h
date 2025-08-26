@@ -82,12 +82,12 @@ public:
     void setDisassemblyOutput(bool outputBytecodeDisassembly);
     void appendModulePaths(const std::vector<std::string>& modulePaths);
 
-    ObjModuleType* getBuiltinModule(const icu::UnicodeString& name);
+    Value getBuiltinModule(const icu::UnicodeString& name);
     std::optional<Value> loadGlobal(const icu::UnicodeString& name) { return globals.load(name); }
     void registerBuiltinModule(ptr<BuiltinModule> module);
 
     InterpretResult interpret(std::istream& source, const std::string& sourceName);
-    InterpretResult interpretLine(std::istream& linestream);
+    InterpretResult interpretLine(std::istream& linestream, bool replMode=true);
 
 
     bool call(ObjClosure* closure, const CallSpec& callSpec);
@@ -160,7 +160,10 @@ public:
     // the current thread
     static thread_local ptr<Thread> thread;
 
-    void executeBuiltinModuleScript(const std::string& path, ObjModuleType* moduleType);
+    void executeBuiltinModuleScript(const std::string& path, Value moduleType/*ObjModuleType */);
+
+    // Builtin functions (moved from private)
+    void defineBuiltinFunctions();
 
 protected:
     VM();
@@ -217,6 +220,8 @@ protected:
 
     Value conditionalInterruptClosure {}; // ObjClosure
 
+
+
 public:
     Value getConditionalInterruptClosure() const { return conditionalInterruptClosure; } // ObjClosure
 
@@ -256,8 +261,7 @@ public:
     void runtimeError(const std::string& format, ...);
 
 
-    // Builtin functions
-    void defineBuiltinFunctions();
+
 
     void defineBuiltinMethods();
     void defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn,

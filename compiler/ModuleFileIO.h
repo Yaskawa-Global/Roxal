@@ -11,13 +11,13 @@ public:
     ModuleFileIO();
     virtual ~ModuleFileIO() {
         if (!moduleTypeValue.isNil())
-            moduleType()->vars.clear();
+            asModuleType(moduleTypeValue)->vars.clear();
         moduleTypeValue = Value::nilVal();
     }
 
     void registerBuiltins(VM& vm) override;
 
-    inline ObjModuleType* moduleType() const { return asModuleType(moduleTypeValue); }
+    inline Value moduleType() const { return moduleTypeValue; }
 
     // builtin function implementations
     Value fileio_open_builtin(VM& vm, ArgsView args);
