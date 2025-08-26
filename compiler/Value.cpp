@@ -40,8 +40,12 @@ template<class D>
 Value::Value(unique_ptr<Obj, D> o)
 {
     Obj* raw = o.release();
+#if USE_GC_SGCL
+    val = SignBit | QNAN | UniqueMask | uint64_t(uintptr_t(raw));
+#else
     raw->incRef();
     val = SignBit | QNAN | uint64_t(uintptr_t(raw));
+#endif
 }
 
 template Value::Value(unique_ptr<Obj, std::default_delete<Obj>>);
@@ -50,10 +54,18 @@ template Value::Value(unique_ptr<Obj, UnreleasedObj>);
 Value Value::objRef(Obj* o)
 {
     if (!o) return nilVal();
+#if USE_GC_SGCL
+    sgcl::detail::Pointer p;
+    p.store(o);
+    Value v;
+    v.val = SignBit | QNAN | uint64_t(uintptr_t(o));
+    return v;
+#else
     o->incRef();
     Value v;
     v.val = SignBit | QNAN | uint64_t(uintptr_t(o));
     return v;
+#endif
 }
 
 std::string roxal::to_string(ValueType t)
@@ -312,6 +324,7 @@ void Value::unbox() {
 }
 
 
+#if !USE_GC_SGCL
 void roxal::Value::incRefObj()
 {
     #ifdef DEBUG_BUILD
@@ -348,6 +361,7 @@ void roxal::Value::decWeakObj()
     if (asControl()->weak.fetch_sub(1,std::memory_order_relaxed) == 1)
         delete[] reinterpret_cast<char*>(asControl());
 }
+#endif
 
 
 
@@ -862,6 +876,10 @@ Value Value::clone() const
     throw std::runtime_error("unhandled clone()");
 }
 
+#if USE_GC_SGCL
+Value Value::weakRef() const { return *this; }
+Value Value::strongRef() const { return *this; }
+#else
 Value Value::weakRef() const
 {
     if (!isObj())
@@ -888,6 +906,7 @@ Value Value::strongRef() const
     v.val = SignBit | QNAN | uint64_t(uintptr_t(obj));
     return v;
 }
+#endif
 
 static type::BuiltinType valueTypeToBuiltin(ValueType t)
 {

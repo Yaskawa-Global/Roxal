@@ -14,10 +14,10 @@
 #include <core/memory.h>
 #include <core/types.h>
 #include <Eigen/Dense>
-
-// #if USE_GC_SGCL
-// #include <core/sgcl/sgcl.h>
-// #endif
+#if USE_GC_SGCL
+#include <core/sgcl/sgcl.h>
+#include <core/sgcl/detail/pointer.h>
+#endif
 
 #include "ObjControl.h"
 
@@ -98,6 +98,8 @@ const uint64_t SignBit = ((uint64_t)0x8000000000000000);
 // Bit 49 is unused in the NAN object representation.  Use it for the weak
 // reference flag when the value holds an object pointer.
 const uint64_t WeakMask = uint64_t(1) << 49;
+// Bit 48 is used to mark unique ownership of an SGCL-managed pointer.
+const uint64_t UniqueMask = uint64_t(1) << 48;
 
 const int TypeTagOffset = 46;
 const uint64_t TypeTag = uint64_t(0xf) << TypeTagOffset;
@@ -254,10 +256,25 @@ public:
     Value(const Value& v)
     {
         val.store(v.val.load());
+#if USE_GC_SGCL
+        if (isObj() || isBoxed()) {
+            if (isUnique()) {
+                sgcl::detail::Pointer p;
+                p.store(asObj());
+                uint64_t base = val.load() & ~UniqueMask;
+                val.store(base);
+                const_cast<Value&>(v).val.store(base);
+            } else {
+                sgcl::detail::Pointer p;
+                p.store(asObj());
+            }
+        }
+#else
         if (isObj() || isBoxed()) {
             if (isWeak()) incWeakObj();
             else incRefObj();
         }
+#endif
     }
 
     /// @brief Assignment operator.
@@ -265,6 +282,33 @@ public:
     /// @return The assigned value.
     Value& operator=(const Value& v)
     {
+#if USE_GC_SGCL
+        if (this == &v) return *this;
+        if (isObj() || isBoxed()) {
+            if (isUnique()) {
+                sgcl::Collector::delete_unique(asObj());
+            } else {
+                sgcl::detail::Pointer p;
+                p.store(asObj());
+                p.store(nullptr);
+            }
+        }
+
+        val.store(v.val.load());
+        if (isObj() || isBoxed()) {
+            if (isUnique()) {
+                sgcl::detail::Pointer p;
+                p.store(asObj());
+                uint64_t base = val.load() & ~UniqueMask;
+                val.store(base);
+                const_cast<Value&>(v).val.store(base);
+            } else {
+                sgcl::detail::Pointer p;
+                p.store(asObj());
+            }
+        }
+        return *this;
+#else
         bool wasWeak = isWeak();
         if (isObj() || isBoxed()) {
             if (wasWeak) decWeakObj();
@@ -278,15 +322,28 @@ public:
         }
 
         return *this;
+#endif
     }
 
 
     /// @brief Destructor. Will decrement the reference count of objects.
     ~Value() {
+#if USE_GC_SGCL
+        if (isObj() || isBoxed()) {
+            if (isUnique()) {
+                sgcl::Collector::delete_unique(asObj());
+            } else {
+                sgcl::detail::Pointer p;
+                p.store(asObj());
+                p.store(nullptr);
+            }
+        }
+#else
         if (isObj() || isBoxed()) {
             if (isWeak()) decWeakObj();
             else decRefObj();
         }
+#endif
     }
 
 
@@ -296,6 +353,7 @@ public:
     /// @brief Unboxes the value from an object if it is boxed.
     void unbox();
 
+    bool isUnique() const { return (val.load() & UniqueMask) != 0; }
     bool isWeak() const { return (val.load() & WeakMask) != 0; }
     Value weakRef() const;
     Value strongRef() const;
@@ -309,9 +367,13 @@ public:
     bool isBoxable() const { return !isBoxed() && (isBool() || isInt() || isReal()); }
 
     bool isAlive() const {
+#if USE_GC_SGCL
+        return true;
+#else
         if (!isWeak()) return true;
         ObjControl* c = asControl();
         return c->obj != nullptr && c->strong.load(std::memory_order_relaxed) > 0;
+#endif
     }
 
     /// @brief Retrieves the value type.
@@ -414,17 +476,17 @@ public:
         assert(isObj());
         #endif
         if (isWeak()) {
-            ObjControl* c = (ObjControl*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask));
+            ObjControl* c = (ObjControl*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask | UniqueMask));
             return c->obj;
         }
-        return (Obj*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask));
+        return (Obj*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask | UniqueMask));
     }
 
     inline ObjControl* asControl() const {
         #ifdef DEBUG_BUILD
         assert(isObj());
         #endif
-        return (ObjControl*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask));
+        return (ObjControl*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask | UniqueMask));
     }
 
 
@@ -472,11 +534,17 @@ public:
 
 protected:
     std::atomic_uint64_t val;
-
+#if USE_GC_SGCL
+    void incRefObj() {}
+    void decRefObj() {}
+    void incWeakObj() {}
+    void decWeakObj() {}
+#else
     void incRefObj();
     void decRefObj();
     void incWeakObj();
     void decWeakObj();
+#endif
 };
 
 
