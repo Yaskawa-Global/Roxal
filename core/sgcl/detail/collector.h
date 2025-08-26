@@ -117,6 +117,12 @@ namespace sgcl::detail {
         }
 
     private:
+#ifdef SGCL_ARCH_X86_64
+        static constexpr uintptr_t TrackedPtrFlagMask = uintptr_t(3) << 62;
+#else
+        static constexpr uintptr_t TrackedPtrFlagMask = uintptr_t(3);
+#endif
+
         inline static void _update_child_offsets(ChildPointers& childs) {
             if (!childs.offsets && childs.final.load(std::memory_order_acquire)) {
                 childs.offsets.reset(new ChildPointers::Vector);
@@ -345,6 +351,14 @@ namespace sgcl::detail {
             for (auto offset : offsets) {
                 auto ap = (RawPointer*)ptr + offset;
                 auto p = ap->load(std::memory_order_relaxed);
+                // A flagged value means the slot stores a reference to a
+                // tracked pointer rather than the pointer directly. The
+                // referenced pointer itself is guaranteed to be unflagged.
+                if ((uintptr_t)p & TrackedPtrFlagMask) {
+                    auto ref = (RawPointer*)((uintptr_t)p & ~TrackedPtrFlagMask);
+                    _mark(ref);
+                    p = ref->load(std::memory_order_relaxed);
+                }
                 if ((size_t)p > 1) {
                     _mark(p);
                 }
@@ -359,6 +373,12 @@ namespace sgcl::detail {
                     auto offset = index * 8 + i;
                     auto ap = (RawPointer*)ptr + offset;
                     auto p = ap->load(std::memory_order_relaxed);
+                    // Flagged entries point to another tracked pointer.
+                    if ((uintptr_t)p & TrackedPtrFlagMask) {
+                        auto ref = (RawPointer*)((uintptr_t)p & ~TrackedPtrFlagMask);
+                        _mark(ref);
+                        p = ref->load(std::memory_order_relaxed);
+                    }
                     if ((size_t)p > 1) {
                         _mark(p);
                     }
@@ -510,8 +530,15 @@ namespace sgcl::detail {
 
         inline static void _clear_childs(void* ptr, const ChildPointers::Vector& offsets) noexcept {
             for (auto offset : offsets) {
-                auto p = (RawPointer*)ptr + offset;
-                p->store(nullptr, std::memory_order_relaxed);
+                auto ap = (RawPointer*)ptr + offset;
+                auto v = ap->load(std::memory_order_relaxed);
+                // Clear the referenced pointer if the slot uses tagging.
+                if ((uintptr_t)v & TrackedPtrFlagMask) {
+                    auto ref = (RawPointer*)((uintptr_t)v & ~TrackedPtrFlagMask);
+                    ref->store(nullptr, std::memory_order_relaxed);
+                } else {
+                    ap->store(nullptr, std::memory_order_relaxed);
+                }
             }
         }
 
@@ -521,8 +548,15 @@ namespace sgcl::detail {
                 while(flags) {
                     auto i = detail::countr_zero(flags);
                     auto offset = index * 8 + i;
-                    auto p = (RawPointer*)ptr + offset;
-                    p->store(nullptr, std::memory_order_relaxed);
+                    auto ap = (RawPointer*)ptr + offset;
+                    auto v = ap->load(std::memory_order_relaxed);
+                    // Flagged entries hold a reference to a tracked pointer.
+                    if ((uintptr_t)v & TrackedPtrFlagMask) {
+                        auto ref = (RawPointer*)((uintptr_t)v & ~TrackedPtrFlagMask);
+                        ref->store(nullptr, std::memory_order_relaxed);
+                    } else {
+                        ap->store(nullptr, std::memory_order_relaxed);
+                    }
                     flags &= flags - 1;
                 };
             }
