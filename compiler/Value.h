@@ -180,6 +180,7 @@ public:
     // Builtin reference type constructors
     template<class T, class D>
     static Value objVal(unique_ptr<T, D> o) {
+        static_assert(std::is_base_of<Obj, T>::value, "T must be Obj or a subclass of Obj");
         unique_ptr<Obj, D> base(std::move(o));
         return Value(std::move(base));
     }

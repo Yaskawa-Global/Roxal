@@ -2735,7 +2735,6 @@ ActorInstance::ActorInstance(ObjObjectType* objectType)
 
 ActorInstance::~ActorInstance()
 {
-    instanceType->decRef();
     #if USE_GC_SGCL
     if (!thread.expired()) {
         if (auto t = thread.get()) {
@@ -2743,6 +2742,7 @@ ActorInstance::~ActorInstance()
         }
     }
     #else
+    instanceType->decRef();
     if (auto t = thread.lock()) {
         t->join(this);
     }
