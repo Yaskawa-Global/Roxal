@@ -330,6 +330,10 @@ protected:
     void emitBytes(uint8_t byte1, uint8_t byte2, const std::string& comment = "");
     void emitBytes(OpCode op, uint8_t byte2, const std::string& comment = "");
     void emitBytes(OpCode op, uint8_t byte2, uint8_t byte3, const std::string& comment = "");
+    void emitBytes(OpCode op, uint16_t value, const std::string& comment = "") {
+        debug_assert_msg(isDoubleByte(op), "emitBytes(OpCode, int16_t) only allowed for double-byte opcodes.");
+        emitBytes(op, uint8_t(value >> 8), uint8_t(value & 0xFF), comment);
+    }
     uint8_t lastByte();
 
     void emitLoop(Chunk::size_type loopStart, const std::string& comment = "");
@@ -341,10 +345,10 @@ protected:
 
     void patchJump(Chunk::size_type jumpInstrOffset);
 
-    int16_t makeConstant(const Value& value);
+    uint16_t makeConstant(const Value& value);
 
     // keep track of which chunk string constants table entires are for identifiers and re-use them
-    int16_t identifierConstant(const icu::UnicodeString& ident);
+    uint16_t identifierConstant(const icu::UnicodeString& ident);
 
     void addLocal(const icu::UnicodeString& name, std::optional<VarTypeSpec> type = std::nullopt);
     int16_t resolveLocal(Scope scopeState, const icu::UnicodeString& name);

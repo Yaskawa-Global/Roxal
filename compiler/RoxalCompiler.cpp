@@ -435,7 +435,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             asTypeScope(typeScope())->propertyNames.insert(it->second.begin(), it->second.end());
     }
 
-    int16_t typeNameConstant = identifierConstant(ast->name);
+    uint16_t typeNameConstant = identifierConstant(ast->name);
     declareVariable(ast->name);
 
     if (ast->implements.size()>2)
@@ -444,10 +444,13 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     if (isInterface && (ast->implements.size() > 0))
         throw std::runtime_error("Interfaces can't implement (only extend)");
 
-    if (isActor) emitBytes(OpCode::ActorType, typeNameConstant);
-    else if (isInterface) emitBytes(OpCode::InterfaceType, typeNameConstant);
-    else if (isEnumeration) emitBytes(OpCode::EnumerationType, typeNameConstant);
-    else emitBytes(OpCode::ObjectType, typeNameConstant);
+    if (typeNameConstant > 255)
+        error("Too many object/actor/enum types declared (>255)");
+
+    if (isActor) emitBytes(OpCode::ActorType, uint8_t(typeNameConstant));
+    else if (isInterface) emitBytes(OpCode::InterfaceType, uint8_t(typeNameConstant));
+    else if (isEnumeration) emitBytes(OpCode::EnumerationType, uint8_t(typeNameConstant));
+    else emitBytes(OpCode::ObjectType, uint8_t(typeNameConstant));
     defineVariable(typeNameConstant);
 
 
@@ -965,7 +968,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     // index the iterable via the loop index
     emitByte(OpCode::DupBelow); // iterable
     namedVariable(iname);
-    emitBytes(OpCode::Index, 1); // single index/arg indexing
+    emitBytes(OpCode::Index, uint8_t(1)); // single index/arg indexing
 
     // if there is a single target, just assign the target the result of indexing the iterable (stack top)
     bool strict = asFuncScope(funcScope())->strict;
@@ -993,7 +996,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
                 emitByte(OpCode::ConstInt1);
             else
                 emitConstant(Value::intVal(i));
-            emitBytes(OpCode::Index, 1);
+            emitBytes(OpCode::Index, uint8_t(1));
 
             // assign it to target
             if (targetVarTypes.at(i).has_value()) {
@@ -1030,7 +1033,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     patchJump(jumpToAbort);
     emitByte(OpCode::Pop, "exit/abort cond");
 
-    emitBytes(OpCode::PopN, 2, "iterable & len"); // discard the iterable & it's length (necessary?)
+    emitBytes(OpCode::PopN, uint8_t(2), "iterable & len"); // discard the iterable & it's length (necessary?)
 
     exitLocalScope();
 
@@ -1470,7 +1473,8 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             index->indexable->accept(*this);
             for(auto& arg : index->args)
                 arg->accept(*this);
-            emitBytes(OpCode::Index, index->args.size());
+            debug_assert_msg(index->args.size() <= 255, "Indexing with more than 255 arguments is not supported");
+            emitBytes(OpCode::Index, uint8_t(index->args.size()));
 
             ast->rhs->accept(*this);
             emitByte(OpCode::CopyInto);          // mutate element
@@ -1479,7 +1483,8 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             index->indexable->accept(*this);
             for(auto& arg : index->args)
                 arg->accept(*this);
-            emitBytes(OpCode::SetIndex, index->args.size());
+            debug_assert_msg(index->args.size() <= 255, "Indexing with more than 255 arguments is not supported");
+            emitBytes(OpCode::SetIndex, uint8_t(index->args.size()));
         }
         else {
             throw std::runtime_error("LHS of copy into must be a variable, property accessor or indexing");
@@ -1516,7 +1521,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
         if (!accessor->member.has_value())
             throw std::runtime_error("accessor unary operator expects member name");
-        int16_t propName = identifierConstant(accessor->member.value());
+        uint16_t propName = identifierConstant(accessor->member.value());
 
         OpCode op = (propName <= 255 ? OpCode::SetPropCheck : OpCode::SetPropCheck2);
         if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
@@ -1534,7 +1539,10 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
         ast->rhs->accept(*this);
 
-        emitBytes(op, propName);
+        if (propName <= 255)
+            emitBytes(op, uint8_t(propName));
+        else
+            emitBytes(op, propName);
     }
     else if (isa<Index>(ast->lhs)) {
 
@@ -1550,7 +1558,8 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
         for(auto& arg : index->args)
             arg->accept(*this);
 
-        emitBytes(OpCode::SetIndex, index->args.size());
+            debug_assert_msg(index->args.size() <= 255, "Indexing with more than 255 arguments is not supported");
+        emitBytes(OpCode::SetIndex, uint8_t(index->args.size()));
     }
     else if (isa<List>(ast->lhs)) {
         // binding assignment - assign east LHS element of list seperately from indexed element of RHS
@@ -1567,7 +1576,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             // first index the RHS list to get the RHS element to assign
             emitByte(OpCode::Dup); // duplicate the RHS (as Index will pop it)
             emitConstant(Value::intVal(li));
-            emitBytes(OpCode::Index, 1);
+            emitBytes(OpCode::Index, uint8_t(1));
 
             if (isa<Variable>(lhsElt)) {
                 auto varname { as<Variable>(lhsElt)->name };
@@ -1594,11 +1603,14 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
                 if (!accessor->member.has_value())
                     throw std::runtime_error("accessor unary operator expects member name");
-                int16_t propName = identifierConstant(accessor->member.value());
+                uint16_t propName = identifierConstant(accessor->member.value());
 
                 emitByte(OpCode::Swap);
 
-                emitBytes(propName <= 255 ? OpCode::SetProp : OpCode::SetProp2, propName);
+                if (propName <= 255)
+                    emitBytes(OpCode::SetProp, uint8_t(propName));
+                else
+                    emitBytes(OpCode::SetProp2, propName);
             }
             else if (isa<Index>(lhsElt)) {
 
@@ -1611,7 +1623,8 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                 for(auto& arg : index->args)
                     arg->accept(*this);
 
-                emitBytes(OpCode::SetIndex, index->args.size());
+                debug_assert_msg(index->args.size() <= 255, "Indexing with more than 255 arguments is not supported");
+                emitBytes(OpCode::SetIndex, uint8_t(index->args.size()));
             }
             else
                 throw std::runtime_error("Elements of LHS list of binding assignment must be variables, property accessors or indexing");
@@ -1725,7 +1738,7 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
             if (!ast->member.has_value())
                 throw std::runtime_error("Accessor . requires member name");
 
-            int16_t identConstant = identifierConstant(ast->member.value());
+            uint16_t identConstant = identifierConstant(ast->member.value());
             OpCode op = (identConstant <= 255 ? OpCode::GetPropCheck : OpCode::GetPropCheck2);
             if (isa<Variable>(ast->arg) && as<Variable>(ast->arg)->name == "this" && inTypeScope()) {
                 auto itType = typePropertyRegistry.find(asTypeScope(typeScope())->name);
@@ -1742,10 +1755,10 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
             if (identConstant <= 255)
                 emitBytes(op, uint8_t(identConstant));
             else
-                emitBytes(op, uint8_t(identConstant>>8), uint8_t(identConstant&0xff));
+                emitBytes(op, identConstant);
         } break;
         default:
-            throw std::runtime_error("unimplemented unary opertor:"+ast->opString());
+            throw std::runtime_error("unimplemented unary operator:"+ast->opString());
     }
     return {};
 }
@@ -1873,7 +1886,7 @@ std::any RoxalCompiler::visit(ptr<ast::Index> ast)
     auto argCount = ast->args.size();
     if (argCount > 255)
         error("Number of indices is limited to 255");
-    emitBytes(OpCode::Index, argCount);
+    emitBytes(OpCode::Index, uint8_t(argCount));
     return {};
 }
 
@@ -1961,7 +1974,7 @@ std::any RoxalCompiler::visit(ptr<ast::List> ast)
     if (ast->elements.size() > 255)
         error("Number of literal list elements is limited to 255");
 
-    emitBytes(OpCode::NewList, ast->elements.size());
+    emitBytes(OpCode::NewList, uint8_t(ast->elements.size()));
     return {};
 }
 
@@ -1977,7 +1990,7 @@ std::any RoxalCompiler::visit(ptr<ast::Vector> ast)
     if (ast->elements.size() > 255)
         error("Number of literal vector elements is limited to 255");
 
-    emitBytes(OpCode::NewVector, ast->elements.size());
+    emitBytes(OpCode::NewVector, uint8_t(ast->elements.size()));
     return {};
 }
 
@@ -1993,7 +2006,7 @@ std::any RoxalCompiler::visit(ptr<ast::Matrix> ast)
     if (ast->rows.size() > 255)
         error("Number of literal matrix rows is limited to 255");
 
-    emitBytes(OpCode::NewMatrix, ast->rows.size());
+    emitBytes(OpCode::NewMatrix, uint8_t(ast->rows.size()));
     return {};
 }
 
@@ -2010,7 +2023,7 @@ std::any RoxalCompiler::visit(ptr<ast::Dict> ast)
         error("Number of literal dict entries is limited to 255");
 
     // arg is entry count, so 2x as many stack values (key & value for each entry)
-    emitBytes(OpCode::NewDict, ast->entries.size());
+    emitBytes(OpCode::NewDict, uint8_t(ast->entries.size()));
     return {};
 }
 
@@ -2540,7 +2553,7 @@ Chunk::size_type RoxalCompiler::emitJump(OpCode instruction, const std::string& 
 void RoxalCompiler::emitReturn(const std::string& comment)
 {
     if (asFuncScope(funcScope())->functionType == FunctionType::Initializer)
-        emitBytes(OpCode::GetLocal, 0);
+        emitBytes(OpCode::GetLocal, uint8_t(0));
     else
         emitByte(OpCode::ConstNil, comment);
 
@@ -2554,8 +2567,7 @@ void RoxalCompiler::emitConstant(const Value& value, const std::string& comment)
     if (constant <= 255)
         emitBytes(OpCode::Constant, uint8_t(constant), comment);
     else {
-        emitByte(OpCode::Constant2);
-        emitBytes( uint8_t(constant >> 8), uint8_t(constant & 0xff), comment );
+        emitBytes(OpCode::Constant2, constant, comment);
     }
 }
 
@@ -2573,22 +2585,22 @@ void RoxalCompiler::patchJump(Chunk::size_type jumpInstrOffset)
 }
 
 
-int16_t RoxalCompiler::makeConstant(const Value& value)
+uint16_t RoxalCompiler::makeConstant(const Value& value)
 {
     size_t constant = currentChunk()->addConstant(value);
-    if (constant >= std::numeric_limits<int16_t>::max()) {
+    if (constant >= std::numeric_limits<uint16_t>::max()) {
         error("Too many constants in one chunk.");
         return 0;
     }
-    return int16_t(constant);
+    return uint16_t(constant);
 }
 
 
-int16_t RoxalCompiler::identifierConstant(const icu::UnicodeString& ident)
+uint16_t RoxalCompiler::identifierConstant(const icu::UnicodeString& ident)
 {
     // search for existing identifier string constant to re-use first
     bool found { false };
-    int16_t constant {};
+    uint16_t constant {};
     for(auto identConst : asFuncScope(funcScope())->identConsts) {
         if (asStringObj(currentChunk()->constants.at(identConst))->s == ident) {
             constant = identConst;
@@ -2647,7 +2659,7 @@ int16_t RoxalCompiler::resolveLocal(Scope scopeState, const icu::UnicodeString& 
                 if (locals[i].name == name) {
             #endif
                     if (locals[i].depth == -1)
-                        error("Reference to local varaiable in initializer not allowed.");
+                        error("Reference to local variable in initializer not allowed.");
                     #ifdef DEBUG_TRACE_NAME_RESOLUTION
                     std::cout << " - found " << i << std::endl;
                     #endif
@@ -2812,9 +2824,11 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
     OpCode getOp, setOp;
     bool found = false;
 
-    int16_t arg = resolveLocal(funcScope(),name);
-    if (arg != -1) { // found
+    uint16_t arg;
+    int16_t localArg = resolveLocal(funcScope(),name);
+    if (localArg != -1) { // found
         found = true;
+        arg = localArg;
         getOp = (arg<=255) ? OpCode::GetLocal : OpCode::GetLocal2;
         setOp = (arg<=255) ? OpCode::SetLocal : OpCode::SetLocal2;
     }
@@ -2832,8 +2846,10 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
     //     }
     // }
 
-    if (!found && ((arg = resolveUpvalue(funcScope(),name)) != -1)) {
+    int16_t upValueArg;
+    if (!found && ((upValueArg = resolveUpvalue(funcScope(),name)) != -1)) {
         found = true;
+        arg = upValueArg;
         getOp = (arg<=255) ? OpCode::GetUpvalue : OpCode::GetUpvalue2;
         setOp = (arg<=255) ? OpCode::SetUpvalue : OpCode::SetUpvalue2;
     }
@@ -2865,11 +2881,17 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
                 // treat as property access
                 if (!assign) {
                     namedVariable(UnicodeString("this"), false);
-                    emitBytes(arg<=255 ? OpCode::GetProp : OpCode::GetProp2, arg);
+                    if (arg <= 255)
+                        emitBytes(OpCode::GetProp, uint8_t(arg));
+                    else
+                        emitBytes(OpCode::GetProp2, arg);
                 } else {
                     namedVariable(UnicodeString("this"), false);
                     emitByte(OpCode::Swap);
-                    emitBytes(arg<=255 ? OpCode::SetProp : OpCode::SetProp2, arg);
+                    if (arg <= 255)
+                        emitBytes(OpCode::SetProp, uint8_t(arg));
+                    else
+                        emitBytes(OpCode::SetProp2, arg);
                 }
                 return true;
             }
@@ -2878,15 +2900,15 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
 
     if (!assign) {
         if (arg <= 255)
-            emitBytes(getOp, arg, toUTF8StdString(name));
+            emitBytes(getOp, uint8_t(arg), toUTF8StdString(name));
         else
-            emitBytes(getOp, arg>>8, arg%256, toUTF8StdString(name));
+            emitBytes(getOp, arg, toUTF8StdString(name));
     }
     else {
         if (arg <= 255)
-            emitBytes(setOp, arg, toUTF8StdString(name));
+            emitBytes(setOp, uint8_t(arg), toUTF8StdString(name));
         else
-            emitBytes(setOp, arg>>8, arg%256, toUTF8StdString(name));
+            emitBytes(setOp, arg, toUTF8StdString(name));
     }
 
     return true;
@@ -2897,7 +2919,7 @@ void RoxalCompiler::namedModuleVariable(const icu::UnicodeString& name, bool ass
 {
     OpCode getOp, setOp;
 
-    int16_t arg = identifierConstant(name);
+    uint16_t arg = identifierConstant(name);
     getOp = (arg<=255) ? OpCode::GetModuleVar  : OpCode::GetModuleVar2;
     //  allow assigning without previously declaring, except within functions
     if (asFuncScope(funcScope())->functionType != FunctionType::Module)
@@ -2907,15 +2929,15 @@ void RoxalCompiler::namedModuleVariable(const icu::UnicodeString& name, bool ass
 
     if (!assign) {
         if (arg <= 255)
-            emitBytes(getOp, arg, toUTF8StdString(name));
+            emitBytes(getOp, uint8_t(arg), toUTF8StdString(name));
         else
-            emitBytes(getOp, arg>>8, arg%256, toUTF8StdString(name));
+            emitBytes(getOp, arg, toUTF8StdString(name));
     }
     else {
         if (arg <= 255)
-            emitBytes(setOp, arg, toUTF8StdString(name));
+            emitBytes(setOp, uint8_t(arg), toUTF8StdString(name));
         else
-            emitBytes(setOp, arg>>8, arg%256, toUTF8StdString(name));
+            emitBytes(setOp, arg, toUTF8StdString(name));
     }
 }
 

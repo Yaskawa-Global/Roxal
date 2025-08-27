@@ -9,12 +9,13 @@
 
 namespace roxal {
 
+constexpr uint8_t DoubleByteArg = 0x80;
 
 enum class OpCode {
     Nop,
     Constant,
-    Constant2,
-    ConstNil,
+    Constant2 = Constant | DoubleByteArg,
+    ConstNil  = Constant+1,
     ConstTrue,
     ConstFalse,
     ConstInt0,
@@ -54,7 +55,8 @@ enum class OpCode {
     Return,
     ReturnStore,
     ObjectType,
-    ActorType,
+    ObjectType2 = ObjectType | DoubleByteArg,
+    ActorType = ObjectType + 1,
     InterfaceType,
     EnumerationType,
     Property,
@@ -62,31 +64,31 @@ enum class OpCode {
     EnumLabel,
     Extend,
     DefineModuleVar,
-    DefineModuleVar2,
-    GetModuleVar,
+    DefineModuleVar2 = DefineModuleVar | DoubleByteArg,
+    GetModuleVar = DefineModuleVar+1,
     SetModuleVar,
-    GetModuleVar2,
-    SetModuleVar2,
-    SetNewModuleVar,
-    SetNewModuleVar2,
-    ImportModuleVars,
+    GetModuleVar2 = GetModuleVar | DoubleByteArg,
+    SetModuleVar2 = SetModuleVar | DoubleByteArg,
+    SetNewModuleVar = SetModuleVar + 1,
+    SetNewModuleVar2 = SetNewModuleVar | DoubleByteArg,
+    ImportModuleVars = SetNewModuleVar + 1,
     GetUpvalue,
     SetUpvalue,
-    GetUpvalue2,
-    SetUpvalue2,
-    GetLocal,
+    GetUpvalue2 = GetUpvalue | DoubleByteArg,
+    SetUpvalue2 = SetUpvalue | DoubleByteArg,
+    GetLocal = SetUpvalue+1,
     SetLocal,
-    GetLocal2,
-    SetLocal2,
-    SetProp,
+    GetLocal2 = GetLocal | DoubleByteArg,
+    SetLocal2 = SetLocal | DoubleByteArg,
+    SetProp = SetLocal+1,
     GetProp,
     SetPropCheck,
     GetPropCheck,
-    GetPropCheck2,
-    SetPropCheck2,
-    SetProp2,
-    GetProp2,
-    GetSuper,
+    GetPropCheck2 = GetPropCheck | DoubleByteArg,
+    SetPropCheck2 = SetPropCheck | DoubleByteArg,
+    SetProp2 = SetProp | DoubleByteArg,
+    GetProp2 = GetProp | DoubleByteArg,
+    GetSuper = GetPropCheck+1,
     NewRange,
     NewList,
     NewDict,
@@ -104,13 +106,16 @@ enum class OpCode {
     EndExcept,
     Throw,
     CopyInto,
-    Property2,
-    Method2,
-    EnumLabel2
+    Property2 = Property | DoubleByteArg,
+    Method2 = Method | DoubleByteArg,
+    EnumLabel2 = EnumLabel | DoubleByteArg,
+    _Last = CopyInto+1
 };
 
 inline constexpr uint8_t asByte(OpCode op) { return uint8_t(op); }
+inline constexpr bool isDoubleByte(OpCode op) { return (uint8_t(op) & DoubleByteArg) != 0; }
 
+static_assert(int(OpCode::_Last) < 128);
 
 
 class Chunk
