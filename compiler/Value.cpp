@@ -245,13 +245,13 @@ Value Value::moduleTypeVal(const icu::UnicodeString& typeName)
 Value Value::objectInstanceVal(const Value& objectType)
 {
     debug_assert_msg(isObjectType(objectType), "Value is an ObjObjectType");
-    return Value::objVal(newObjectInstance(asObjectType(objectType)));
+    return Value::objVal(newObjectInstance(objectType));
 }
 
 Value Value::actorInstanceVal(const Value& objectType)
 {
     debug_assert_msg(isObjectType(objectType), "Value is an ObjObjectType");
-    return Value::objVal(newActorInstance(asObjectType(objectType)));
+    return Value::objVal(newActorInstance(objectType));
 }
 
 Value Value::boundMethodVal(const Value& instance, const Value& closure)
@@ -791,7 +791,7 @@ bool Value::is(const Value& rhs, bool strict) const
         switch (ts->typeValue) {
             case ValueType::Object:
                 if (isObjectInstance(*this)) {
-                    ObjObjectType* t = asObjectInstance(*this)->instanceType;
+                    ObjObjectType* t = asObjectType(asObjectInstance(*this)->instanceType);
                     while (t) {
                         if (t == ts)
                             return true;
@@ -816,7 +816,7 @@ bool Value::is(const Value& rhs, bool strict) const
                 break;
             case ValueType::Actor:
                 if (isActorInstance(*this)) {
-                    ObjObjectType* t = asActorInstance(*this)->instanceType;
+                    ObjObjectType* t = asObjectType(asActorInstance(*this)->instanceType);
                     while (t) {
                         if (t == ts)
                             return true;
@@ -1267,7 +1267,7 @@ Value roxal::toType(ValueType t, Value v, bool strict)
                 Value dictValue { Value::dictVal({}) };
 
                 ObjectInstance* vObj = asObjectInstance(v);
-                ObjObjectType* vObjType = vObj->instanceType;
+                ObjObjectType* vObjType = asObjectType(vObj->instanceType);
                 for(int32_t hash : vObjType->propertyOrder) {
                     const auto& prop { vObjType->properties.at(hash) };
                     if (prop.access != ast::Access::Public)
