@@ -1173,7 +1173,7 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
             return callValue(value, callSpec);
         }
 
-        return invokeFromType(instance->instanceType, name, callSpec);
+        return invokeFromType(asObjectType(instance->instanceType), name, callSpec);
     }
     else if (isActorInstance(receiver)) {
         ActorInstance* instance = asActorInstance(receiver);
@@ -1187,8 +1187,9 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
         }
 
         // Try to invoke from the actor's type (user-defined methods)
-        auto methodIt = instance->instanceType->methods.find(name->hash);
-        if (methodIt != instance->instanceType->methods.end()) {
+        ObjObjectType* type = asObjectType(instance->instanceType);
+        auto methodIt = type->methods.find(name->hash);
+        if (methodIt != type->methods.end()) {
             const auto& methodInfo = methodIt->second;
             if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
                 runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
@@ -2062,13 +2063,13 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                     else { // no
                         // check if it is a method name
-                        auto br = bindMethod(objInst->instanceType, name);
+                        auto br = bindMethod(asObjectType(objInst->instanceType), name);
                         if (br == BindResult::Bound)
                             break;
                         if (br == BindResult::Private)
                             return errorReturn;
 
-                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(objInst->instanceType->name)+"'.");
+                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(asObjectType(objInst->instanceType)->name)+"'.");
                         return errorReturn;
                     }
                 } else if (isActorInstance(inst)) {
@@ -2079,7 +2080,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         push(it->second);
                         break;
                     } else {
-                        auto br = bindMethod(actorInst->instanceType, name);
+                        auto br = bindMethod(asObjectType(actorInst->instanceType), name);
                         if (br == BindResult::Bound)
                             break;
                         if (br == BindResult::Private)
@@ -2101,7 +2102,7 @@ std::pair<InterpretResult,Value> VM::execute()
                             }
                         }
 
-                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(actorInst->instanceType->name)+"'.");
+                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(asObjectType(actorInst->instanceType)->name)+"'.");
                         return errorReturn;
                     }
 
@@ -2234,12 +2235,13 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
+                    ObjObjectType* t = asObjectType(objInst->instanceType);
                     auto it = objInst->properties.find(name->hash);
                     if (it != objInst->properties.end()) {
-                        auto pit = objInst->instanceType->properties.find(name->hash);
+                        auto pit = t->properties.find(name->hash);
                         ast::Access propAccess = ast::Access::Public;
-                        Value ownerT = Value::objRef(objInst->instanceType).weakRef();
-                        if (pit != objInst->instanceType->properties.end()) {
+                        Value ownerT = objInst->instanceType.weakRef();
+                        if (pit != t->properties.end()) {
                             propAccess = pit->second.access;
                             ownerT = pit->second.ownerType;
                         }
@@ -2251,23 +2253,24 @@ std::pair<InterpretResult,Value> VM::execute()
                         push(it->second);
                         break;
                     } else {
-                        auto br = bindMethod(objInst->instanceType, name);
+                        auto br = bindMethod(t, name);
                         if (br == BindResult::Bound)
                             break;
                         if (br == BindResult::Private)
                             return errorReturn;
 
-                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(objInst->instanceType->name)+"'.");
+                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(t->name)+"'.");
                         return errorReturn;
                     }
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
-                    auto pit = actorInst->instanceType->properties.find(name->hash);
+                    ObjObjectType* t = asObjectType(actorInst->instanceType);
+                    auto pit = t->properties.find(name->hash);
                     auto it = actorInst->properties.find(name->hash);
                     if (it != actorInst->properties.end()) {
                         ast::Access propAccess = ast::Access::Public;
-                        Value ownerT = Value::objRef(actorInst->instanceType).weakRef();
-                        if (pit != actorInst->instanceType->properties.end()) {
+                        Value ownerT = actorInst->instanceType.weakRef();
+                        if (pit != t->properties.end()) {
                             propAccess = pit->second.access;
                             ownerT = pit->second.ownerType;
                         }
@@ -2279,7 +2282,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         push(it->second);
                         break;
                     } else {
-                        auto br = bindMethod(actorInst->instanceType, name);
+                        auto br = bindMethod(t, name);
                         if (br == BindResult::Bound)
                             break;
                         if (br == BindResult::Private)
@@ -2301,7 +2304,7 @@ std::pair<InterpretResult,Value> VM::execute()
                             }
                         }
 
-                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(actorInst->instanceType->name)+"'.");
+                        runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(t->name)+"'.");
                         return errorReturn;
                     }
 
@@ -2411,7 +2414,8 @@ std::pair<InterpretResult,Value> VM::execute()
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
                         // if type object specified the property type in the declaration,
                         //  convert the value to that type (if possible)
-                        const auto& properties { objInst->instanceType->properties };
+                        ObjObjectType* t = asObjectType(objInst->instanceType);
+                        const auto& properties { t->properties };
                         const auto& property = properties.find(name->hash);
                         if (property != properties.end()) {
                             const auto& prop { property->second };
@@ -2441,7 +2445,8 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     if (!value.isNil()) {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
-                        const auto& properties { actorInst->instanceType->properties };
+                        ObjObjectType* tA = asObjectType(actorInst->instanceType);
+                        const auto& properties { tA->properties };
                         const auto& property = properties.find(name->hash);
                         if (property != properties.end()) {
                             const auto& prop { property->second };
@@ -2526,12 +2531,13 @@ std::pair<InterpretResult,Value> VM::execute()
                     break;
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
+                    ObjObjectType* t = asObjectType(objInst->instanceType);
 
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
-                        const auto& properties { objInst->instanceType->properties };
+                        const auto& properties { t->properties };
                         const auto& property = properties.find(name->hash);
                         if (property != properties.end()) {
                             const auto& prop { property->second };
@@ -2548,10 +2554,10 @@ std::pair<InterpretResult,Value> VM::execute()
                         }
                     }
 
-                    auto pit = objInst->instanceType->properties.find(name->hash);
+                    auto pit = t->properties.find(name->hash);
                     ast::Access propAccess = ast::Access::Public;
-                    Value ownerT = Value::objRef(objInst->instanceType).weakRef();
-                    if (pit != objInst->instanceType->properties.end()) {
+                    Value ownerT = objInst->instanceType.weakRef();
+                    if (pit != t->properties.end()) {
                         propAccess = pit->second.access;
                         ownerT = pit->second.ownerType;
                     }
@@ -2566,12 +2572,13 @@ std::pair<InterpretResult,Value> VM::execute()
                     break;
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
+                    ObjObjectType* tA = asObjectType(actorInst->instanceType);
 
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
-                        const auto& properties { actorInst->instanceType->properties };
+                        const auto& properties { tA->properties };
                         const auto& property = properties.find(name->hash);
                         if (property != properties.end()) {
                             const auto& prop { property->second };
@@ -2588,10 +2595,10 @@ std::pair<InterpretResult,Value> VM::execute()
                         }
                     }
 
-                    auto pit = actorInst->instanceType->properties.find(name->hash);
+                    auto pit = tA->properties.find(name->hash);
                     ast::Access propAccess = ast::Access::Public;
-                    Value ownerT = Value::objRef(actorInst->instanceType).weakRef();
-                    if (pit != actorInst->instanceType->properties.end()) {
+                    Value ownerT = actorInst->instanceType.weakRef();
+                    if (pit != tA->properties.end()) {
                         propAccess = pit->second.access;
                         ownerT = pit->second.ownerType;
                     }

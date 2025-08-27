@@ -1142,10 +1142,10 @@ unique_ptr<ObjModuleType, UnreleasedObj> newModuleTypeObj(const icu::UnicodeStri
 
 struct ObjectInstance : public Obj
 {
-    ObjectInstance(ObjObjectType* objectType);
+    ObjectInstance(const Value& objectType);
     virtual ~ObjectInstance();
 
-    ObjObjectType* instanceType;
+    Value instanceType;
     std::unordered_map<int32_t, Value> properties;
 
     // convenience methods for property access (e.g. for builtin method implementations)
@@ -1165,7 +1165,7 @@ struct ObjectInstance : public Obj
 inline bool isObjectInstance(const Value& v) { return isObjType(v, ObjType::Instance); }
 inline ObjectInstance* asObjectInstance(const Value& v) { return static_cast<ObjectInstance*>(v.asObj()); }
 
-unique_ptr<ObjectInstance, UnreleasedObj> newObjectInstance(ObjObjectType* objectType);
+unique_ptr<ObjectInstance, UnreleasedObj> newObjectInstance(const Value& objectType);
 
 
 //
@@ -1173,10 +1173,10 @@ unique_ptr<ObjectInstance, UnreleasedObj> newObjectInstance(ObjObjectType* objec
 
 struct ActorInstance : public Obj
 {
-    ActorInstance(ObjObjectType* objectType);
+    ActorInstance(const Value& objectType);
     virtual ~ActorInstance();
 
-    ObjObjectType* instanceType;
+    Value instanceType;
     std::unordered_map<int32_t, Value> properties;
 
     // returns Value of ObjFuture or nil
@@ -1212,7 +1212,7 @@ struct ActorInstance : public Obj
 inline bool isActorInstance(const Value& v) { return isObjType(v, ObjType::Actor); }
 inline ActorInstance* asActorInstance(const Value& v) { return static_cast<ActorInstance*>(v.asObj()); }
 
-unique_ptr<ActorInstance, UnreleasedObj> newActorInstance(ObjObjectType* objectType);
+unique_ptr<ActorInstance, UnreleasedObj> newActorInstance(const Value& objectType);
 
 
 

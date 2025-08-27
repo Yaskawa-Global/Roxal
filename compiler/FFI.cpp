@@ -884,7 +884,7 @@ void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& pro
         if (!isObjectInstance(val))
             throw std::runtime_error("struct field '"+toUTF8StdString(prop.name)+"' expects object instance of type "+toString(prop.type));
         ObjectInstance* inst = asObjectInstance(val);
-        ObjObjectType* t = inst->instanceType;
+        ObjObjectType* t = asObjectType(inst->instanceType);
         if (!t->isCStruct)
             throw std::runtime_error("nested struct field not cstruct type");
         size_t startOffset = offset;
@@ -1111,7 +1111,7 @@ std::vector<uint8_t> roxal::objectToCStruct(ObjectInstance* instance, std::vecto
     if (!instance)
         throw std::invalid_argument("objectToCStruct null instance");
 
-    ObjObjectType* type = instance->instanceType;
+    ObjObjectType* type = asObjectType(instance->instanceType);
     if (!type->isCStruct)
         throw std::runtime_error("cannot convert non-cstruct type "+toUTF8StdString(type->name)+" to a cstruct");
 
@@ -1177,7 +1177,7 @@ void roxal::updateObjectFromCStruct(ObjectInstance* instance, const void* data, 
     if (!instance || !data)
         throw std::invalid_argument("updateObjectFromCStruct null instance or data");
 
-    ObjObjectType* type = instance->instanceType;
+    ObjObjectType* type = asObjectType(instance->instanceType);
     if (!type->isCStruct)
         throw std::runtime_error("updateObjectFromCStruct called on non-cstruct type");
 

@@ -1807,7 +1807,7 @@ void ObjectInstance::write(std::ostream& out, roxal::ptr<SerializationContext> c
 {
     // Only serialize the object contents here.  Reference tracking is handled
     // by the calling writeValue() helper.
-    writeValue(out, Value::objRef(instanceType), ctx);
+    writeValue(out, instanceType, ctx);
     uint32_t count = properties.size();
     out.write(reinterpret_cast<char*>(&count),4);
     for(const auto& kv : properties) {
@@ -1821,9 +1821,7 @@ void ObjectInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx
 {
     // Reference tracking is handled by readValue().  Just read the object
     // contents here.
-    Value typeVal = readValue(in, ctx);
-    instanceType = asObjectType(typeVal);
-    instanceType->incRef();
+    instanceType = readValue(in, ctx);
     uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
     properties.clear();
     for(uint32_t i=0;i<count;i++) {
@@ -1895,7 +1893,7 @@ void ObjBoundNative::read(std::istream& in, roxal::ptr<SerializationContext> ctx
 void ActorInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     // Only serialize the contents. Reference tracking is handled by writeValue().
-    writeValue(out, Value::objRef(instanceType), ctx);
+    writeValue(out, instanceType, ctx);
     uint32_t count = properties.size();
     out.write(reinterpret_cast<char*>(&count),4);
     for(const auto& kv : properties) {
@@ -1908,9 +1906,7 @@ void ActorInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ct
 void ActorInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     // Only read the contents. Reference tracking is handled by readValue().
-    Value typeVal = readValue(in, ctx);
-    instanceType = asObjectType(typeVal);
-    instanceType->incRef();
+    instanceType = readValue(in, ctx);
     uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
     properties.clear();
     for(uint32_t i=0;i<count;i++) {
@@ -2487,11 +2483,11 @@ std::string roxal::objToString(const Value& v)
         }
         case ObjType::Instance: {
             ObjectInstance* inst = asObjectInstance(v);
-            return std::string("object "+toUTF8StdString(inst->instanceType->name));
+            return std::string("object "+toUTF8StdString(asObjectType(inst->instanceType)->name));
         }
         case ObjType::Actor: {
             ActorInstance* inst = asActorInstance(v);
-            return std::string("actor "+toUTF8StdString(inst->instanceType->name));
+            return std::string("actor "+toUTF8StdString(asObjectType(inst->instanceType)->name));
         }
         case ObjType::BoundMethod: {
             return objFunctionToString(asFunction(asClosure(asBoundMethod(v)->method)->function));
@@ -2636,25 +2632,22 @@ ObjModuleType::~ObjModuleType() {}
 
 
 
-ObjectInstance::ObjectInstance(ObjObjectType* objectType)
+ObjectInstance::ObjectInstance(const Value& objectType)
 {
     type = ObjType::Instance;
-    instanceType = objectType;
-    instanceType->incRef();
-    debug_assert_msg(objectType->typeValue == ValueType::Object,
+    debug_assert_msg(isObjectType(objectType),
                      "ObjectInstance created with object type");
+    instanceType = objectType.strongRef();
 
-    for(const auto& property : objectType->properties) {
+    ObjObjectType* ot = asObjectType(objectType);
+    for(const auto& property : ot->properties) {
         const auto& prop { property.second };
         auto propInitialvalue { prop.initialValue };
         properties[prop.name.hashCode()] = propInitialvalue;
     }
 }
 
-ObjectInstance::~ObjectInstance()
-{
-    instanceType->decRef();
-}
+ObjectInstance::~ObjectInstance() {}
 
 Value ObjectInstance::getProperty(const icu::UnicodeString& name) const
 {
@@ -2670,10 +2663,10 @@ void ObjectInstance::setProperty(const icu::UnicodeString& name, Value value)
 }
 
 
-unique_ptr<ObjectInstance, UnreleasedObj> roxal::newObjectInstance(ObjObjectType* objectType)
+unique_ptr<ObjectInstance, UnreleasedObj> roxal::newObjectInstance(const Value& objectType)
 {
     #ifdef DEBUG_BUILD
-    debug_assert_msg(objectType != nullptr && objectType->typeValue == ValueType::Object,
+    debug_assert_msg(isObjectType(objectType),
                      "objectInstanceVal called with object type");
     return newObj<ObjectInstance>(__func__, __FILE__, __LINE__, objectType);
     #else
@@ -2718,15 +2711,16 @@ unique_ptr<Obj, UnreleasedObj> ObjectInstance::clone() const
 
 
 
-ActorInstance::ActorInstance(ObjObjectType* objectType)
+ActorInstance::ActorInstance(const Value& objectType)
 {
     type = ObjType::Actor;
-    instanceType = objectType;
-    instanceType->incRef();
-    debug_assert_msg(objectType->isActor, "ActorInstance created with actor type");
+    debug_assert_msg(isObjectType(objectType) && asObjectType(objectType)->isActor,
+                     "ActorInstance created with actor type");
+    instanceType = objectType.strongRef();
 
     // initialize instance properties from actor type definition
-    for(const auto& property : objectType->properties) {
+    ObjObjectType* ot = asObjectType(objectType);
+    for(const auto& property : ot->properties) {
         const auto& prop { property.second };
         auto propInitialvalue { prop.initialValue };
         properties[prop.name.hashCode()] = propInitialvalue;
@@ -2742,7 +2736,6 @@ ActorInstance::~ActorInstance()
         }
     }
     #else
-    instanceType->decRef();
     if (auto t = thread.lock()) {
         t->join(this);
     }
@@ -2811,12 +2804,14 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
 }
 
 
-unique_ptr<ActorInstance, UnreleasedObj> roxal::newActorInstance(ObjObjectType* objectType)
+unique_ptr<ActorInstance, UnreleasedObj> roxal::newActorInstance(const Value& objectType)
 {
     #ifdef DEBUG_BUILD
-    debug_assert_msg(objectType != nullptr && objectType->typeValue == ValueType::Actor,
+    debug_assert_msg(isObjectType(objectType) && asObjectType(objectType)->typeValue == ValueType::Actor,
                      "newActorInstance called with actor type");
-    return newObj<ActorInstance>(std::string(__func__)+(objectType != nullptr?toUTF8StdString(objectType->name):""), __FILE__, __LINE__, objectType);
+    return newObj<ActorInstance>(std::string(__func__) +
+                                 toUTF8StdString(asObjectType(objectType)->name),
+                                 __FILE__, __LINE__, objectType);
     #else
     return newObj<ActorInstance>(objectType);
     #endif
