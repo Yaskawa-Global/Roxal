@@ -1796,6 +1796,13 @@ std::pair<InterpretResult,Value> VM::execute()
 
     auto frame { thread->frames.end()-1 };
 
+    uint8_t instructionByte {};
+    OpCode instruction {};
+
+    // does the next instruction OpCode expect 2 bytes or 1 byte for it's argument in the Chunk?
+    //  (used by read* lambdas below)
+    bool singleByteArg = true;
+
     auto readByte = [&]() -> uint8_t {
         #ifdef DEBUG_BUILD
             if (frame->ip == asFunction(asClosure(frame->closure)->function)->chunk->code.end())
@@ -1815,23 +1822,13 @@ std::pair<InterpretResult,Value> VM::execute()
 
     auto readConstant = [&]() -> Value {
         #ifdef DEBUG_BUILD
-            auto index { Chunk::size_type(readByte()) };
-            if (index >= asFunction(asClosure(frame->closure)->function)->chunk->constants.size())
-                throw std::runtime_error("Chunk instruction read constant invalid index into constants table");
+            auto index { Chunk::size_type(singleByteArg ? readByte() : (readByte() << 8) + readByte()) };
+            auto constantsSize = asFunction(asClosure(frame->closure)->function)->chunk->constants.size();
+            if (index >= constantsSize)
+                throw std::runtime_error("Chunk instruction read constant invalid index ("+std::to_string(index)+") into constants table (size "+std::to_string(constantsSize)+") for instruction "+std::to_string(instructionByte)+(singleByteArg?"":" (2 byte arg)"));
             return asFunction(asClosure(frame->closure)->function)->chunk->constants.at(index);
         #else
-            return asFunction(asClosure(frame->closure)->function)->chunk->constants[Chunk::size_type(readByte())];
-        #endif
-    };
-
-    auto readConstant2 = [&]() -> Value {
-        #ifdef DEBUG_BUILD
-            auto index { Chunk::size_type((readByte() << 8) + readByte()) };
-            if (index >= asFunction(asClosure(frame->closure)->function)->chunk->constants.size())
-                throw std::runtime_error("Chunk instruction read constant invalid index into constants table");
-            return asFunction(asClosure(frame->closure)->function)->chunk->constants.at(index);
-        #else
-            return asFunction(asClosure(frame->closure)->function)->chunk->constants[Chunk::size_type((readByte() << 8) + readByte())];
+            return asFunction(asClosure(frame->closure)->function)->chunk->constants[Chunk::size_type(singleByteArg ? readByte() : (readByte() << 8) + readByte())];
         #endif
     };
 
@@ -1845,9 +1842,6 @@ std::pair<InterpretResult,Value> VM::execute()
         #endif
     };
 
-    auto readString2 = [&]() -> ObjString* {
-        return asStringObj(readConstant2());
-    };
 
     auto binaryOp = [&](std::function<Value(Value, Value)> op) {
         Value rhs = pop();
@@ -1873,8 +1867,6 @@ std::pair<InterpretResult,Value> VM::execute()
 
     //
     //  main dispatch loop
-
-    uint8_t instruction {};
 
     for(;;) {
 
@@ -1961,37 +1953,47 @@ std::pair<InterpretResult,Value> VM::execute()
         }
 
 
-        instruction = readByte();
+        // Fetch the next instruction OpCode from the Chunk
+        //  If it has the DoubleByteArg flag set, clear it and note the OpCode
+        //  expects two bytes for its 'argument'
+        singleByteArg = true; // common case
+        instructionByte = readByte();
+        if ((instructionByte & DoubleByteArg) == 0)
+            instruction = OpCode(instructionByte);
+        else {
+            instruction = OpCode(instructionByte & ~DoubleByteArg);
+            singleByteArg = false; // expects 2 bytes of argument
+        }
+
         thread->frameStart = false;
 
         // TODO: consider if using gcc/clang extension will help performance:
         //   https://stackoverflow.com/questions/8019849/labels-as-values-vs-switch-statement
         switch(instruction) {
-            case asByte(OpCode::Constant): {
+            case OpCode::Constant: {
                 Value constant = readConstant();
                 push(constant);
                 break;
             }
-            case asByte(OpCode::ConstTrue): {
+            case OpCode::ConstTrue: {
                 push(Value::trueVal());
                 break;
             }
-            case asByte(OpCode::ConstFalse): {
+            case OpCode::ConstFalse: {
                 push(Value::falseVal());
                 break;
             }
-            case asByte(OpCode::ConstInt0): {
+            case OpCode::ConstInt0: {
                 push(Value::intVal(0));
                 break;
             }
-            case asByte(OpCode::ConstInt1): {
+            case OpCode::ConstInt1: {
                 push(Value::intVal(1));
                 break;
             }
-            case asByte(OpCode::GetProp2):
-            case asByte(OpCode::GetProp): {
+            case OpCode::GetProp: {
                 Value& inst { peek(0) };
-                ObjString* name = (instruction == asByte(OpCode::GetProp)) ? readString() : readString2();
+                ObjString* name = readString();
 
                 // Check for signal properties BEFORE resolving
                 if (isSignal(inst)) {
@@ -2169,10 +2171,9 @@ std::pair<InterpretResult,Value> VM::execute()
                 return errorReturn;
                 break;
             }
-            case asByte(OpCode::GetPropCheck2):
-            case asByte(OpCode::GetPropCheck): {
+            case OpCode::GetPropCheck: {
                 Value& inst { peek(0) };
-                ObjString* name = (instruction == asByte(OpCode::GetPropCheck)) ? readString() : readString2();
+                ObjString* name = readString();
 
                 // Check for signal properties BEFORE resolving
                 if (isSignal(inst)) {
@@ -2367,10 +2368,9 @@ std::pair<InterpretResult,Value> VM::execute()
                 return errorReturn;
                 break;
             }
-            case asByte(OpCode::SetProp2):
-            case asByte(OpCode::SetProp): {
+            case OpCode::SetProp: {
                 Value& inst { peek(1) };
-                ObjString* name = (instruction == asByte(OpCode::SetProp)) ? readString() : readString2();
+                ObjString* name = readString();
 
                 if (isSignal(inst)) {
                     auto vt = inst.type();
@@ -2492,10 +2492,9 @@ std::pair<InterpretResult,Value> VM::execute()
                 return errorReturn;
                 break;
             }
-            case asByte(OpCode::SetPropCheck2):
-            case asByte(OpCode::SetPropCheck): {
+            case OpCode::SetPropCheck: {
                 Value& inst { peek(1) };
-                ObjString* name = (instruction == asByte(OpCode::SetPropCheck)) ? readString() : readString2();
+                ObjString* name = readString();
                 if (isSignal(inst)) {
                     auto vt = inst.type();
                     auto pit = builtinProperties.find(vt);
@@ -2632,7 +2631,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 return errorReturn;
                 break;
             }
-            case asByte(OpCode::GetSuper): {
+            case OpCode::GetSuper: {
                 ObjString* name = readString();
                 #ifdef DEBUG_BUILD
                 if (!isTypeSpec(peek(0)) && !isObjectType(peek(0)))
@@ -2646,7 +2645,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
                 break;
             }
-            case asByte(OpCode::Equal): {
+            case OpCode::Equal: {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
 
@@ -2658,7 +2657,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::Is): {
+            case OpCode::Is: {
                 Value b = pop();
                 Value a = pop();
                 a.resolve();
@@ -2666,7 +2665,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(Value::boolVal(a.is(b, frame->strict)));
                 break;
             }
-            case asByte(OpCode::Greater): {
+            case OpCode::Greater: {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
 
@@ -2678,7 +2677,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::Less): {
+            case OpCode::Less: {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
 
@@ -2690,7 +2689,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::Add): {
+            case OpCode::Add: {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
 
@@ -2706,7 +2705,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::Subtract): {
+            case OpCode::Subtract: {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
 
@@ -2718,7 +2717,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::Multiply): {
+            case OpCode::Multiply: {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
 
@@ -2730,7 +2729,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::Divide): {
+            case OpCode::Divide: {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
 
@@ -2742,7 +2741,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::Negate): {
+            case OpCode::Negate: {
                 Value& operand { peek(0) };
                 operand.resolveFuture();
 
@@ -2754,7 +2753,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::Modulo): {
+            case OpCode::Modulo: {
                 // TODO: support decimal
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
@@ -2767,7 +2766,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::And): {
+            case OpCode::And: {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
                 if (!peek(0).isBool() && !isSignal(peek(0))) {
@@ -2786,7 +2785,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::Or): {
+            case OpCode::Or: {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
                 if (!peek(0).isBool() && !isSignal(peek(0))) {
@@ -2805,7 +2804,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::BitAnd): {
+            case OpCode::BitAnd: {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
                 try {
@@ -2816,7 +2815,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::BitOr): {
+            case OpCode::BitOr: {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
                 try {
@@ -2827,7 +2826,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::BitXor): {
+            case OpCode::BitXor: {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
                 try {
@@ -2838,7 +2837,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::BitNot): {
+            case OpCode::BitNot: {
                 Value& operand { peek(0) };
                 operand.resolveFuture();
                 try {
@@ -2849,31 +2848,31 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::Pop): {
+            case OpCode::Pop: {
                 pop();
                 break;
             }
-            case asByte(OpCode::PopN): {
+            case OpCode::PopN: {
                 uint8_t count = readByte();
                 for(auto i=0; i<count; i++)
                     pop();
                 break;
             }
-            case asByte(OpCode::Dup): {
+            case OpCode::Dup: {
                 auto value = peek(0);
                 push(value);
                 break;
             }
-            case asByte(OpCode::DupBelow): {
+            case OpCode::DupBelow: {
                 auto value = peek(1);
                 push(value);
                 break;
             }
-            case asByte(OpCode::Swap): {
+            case OpCode::Swap: {
                 std::swap(peek(0), peek(1));
                 break;
             }
-            case asByte(OpCode::CopyInto): {
+            case OpCode::CopyInto: {
                 Value rhs = pop();
                 Value lhs = pop();
                 try {
@@ -2885,31 +2884,31 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(lhs);
                 break;
             }
-            case asByte(OpCode::JumpIfFalse): {
+            case OpCode::JumpIfFalse: {
                 uint16_t jumpDist = readShort();
                 peek(0).resolve();
                 if (isFalsey(peek(0)))
                     frame->ip += jumpDist;
                 break;
             }
-            case asByte(OpCode::JumpIfTrue): {
+            case OpCode::JumpIfTrue: {
                 uint16_t jumpDist = readShort();
                 peek(0).resolve();
                 if (isTruthy(peek(0)))
                     frame->ip += jumpDist;
                 break;
             }
-            case asByte(OpCode::Jump): {
+            case OpCode::Jump: {
                 uint16_t jumpDist = readShort();
                 frame->ip += jumpDist;
                 break;
             }
-            case asByte(OpCode::Loop): {
+            case OpCode::Loop: {
                 uint16_t jumpDist = readShort();
                 frame->ip -= jumpDist;
                 break;
             }
-            case asByte(OpCode::Call): {
+            case OpCode::Call: {
                 CallSpec callSpec{frame->ip};
                 Value& callee { peek(callSpec.argCount) };
                 callee.resolve();
@@ -2918,7 +2917,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 frame = thread->frames.end()-1;
                 break;
             }
-            case asByte(OpCode::Index): {
+            case OpCode::Index: {
                 uint8_t argCount = readByte();
                 peek(argCount).resolveFuture(); // don't resolve signals here
                 if (!indexValue(peek(argCount), argCount))
@@ -2927,7 +2926,7 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             // TODO: reimplement optimization to use Invoke as single step for object.method()
             //  instead of current two step push & call (see original Antlr visitor compiler impl)
-            case asByte(OpCode::Invoke): {
+            case OpCode::Invoke: {
                 ObjString* method = readString();
                 CallSpec callSpec{frame->ip};
                 if (!invoke(method, callSpec))
@@ -2935,7 +2934,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 frame = thread->frames.end()-1;
                 break;
             }
-            case asByte(OpCode::Closure): {
+            case OpCode::Closure: {
                 Value function = readConstant();
                 debug_assert_msg(isFunction(function), "Expected a function value for OpCode::Closure");
                 Value closure { Value::closureVal(function) };
@@ -2956,32 +2955,12 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::Closure2): {
-                Value function = readConstant2(); // ObjFunction
-                debug_assert_msg(isFunction(function), "Expected a function value for OpCode::Closure2");
-                Value closure = Value::closureVal(function);
-                ObjFunction* funcObj = asFunction(function);
-                if (funcObj->ownerType.isNil() && !asFunction(asClosure(frame->closure)->function)->ownerType.isNil())
-                    funcObj->ownerType = asFunction(asClosure(frame->closure)->function)->ownerType;
-                push(closure);
-                for (int i = 0; i < asClosure(closure)->upvalues.size(); i++) {
-                    uint8_t isLocal = readByte();
-                    uint8_t index = readByte();
-                    Value upvalue; // ObjUpvalue
-                    if (isLocal)
-                        upvalue = captureUpvalue(*(frame->slots + index));
-                    else
-                        upvalue = asClosure(frame->closure)->upvalues[index];
-                    asClosure(closure)->upvalues[i] = upvalue;
-                }
-                break;
-            }
-            case asByte(OpCode::CloseUpvalue): {
+            case OpCode::CloseUpvalue: {
                 closeUpvalues(&(*(thread->stackTop -1)));
                 pop();
                 break;
             }
-            case asByte(OpCode::Return): {
+            case OpCode::Return: {
 
                 try {
                     Value result = opReturn();
@@ -3019,7 +2998,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
                 break;
             }
-            case asByte(OpCode::ReturnStore): {
+            case OpCode::ReturnStore: {
 
                 try {
                     Value result = opReturn();
@@ -3057,12 +3036,12 @@ std::pair<InterpretResult,Value> VM::execute()
 
                 break;
             }
-            case asByte(OpCode::ConstNil): {
+            case OpCode::ConstNil: {
                 push(Value::nilVal());
                 break;
             }
-            case asByte(OpCode::GetLocal): {
-                uint8_t slot = readByte();
+            case OpCode::GetLocal: {
+                uint16_t slot = singleByteArg ? readByte() : readShort();
                 #ifdef DEBUG_BUILD
                 auto stackIndex = (frame->slots - &thread->stack[0]) + slot;
                 if (stackIndex >= thread->stack.size())
@@ -3071,8 +3050,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(frame->slots[slot]);
                 break;
             }
-            case asByte(OpCode::SetLocal): {
-                uint8_t slot = readByte();
+            case OpCode::SetLocal: {
+                uint16_t slot = singleByteArg ? readByte() : readShort();
                 #ifdef DEBUG_BUILD
                 auto stackIndex = (frame->slots - &thread->stack[0]) + slot;
                 if (stackIndex >= thread->stack.size())
@@ -3081,7 +3060,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 frame->slots[slot] = peek(0);
                 break;
             }
-            case asByte(OpCode::SetIndex): {
+            case OpCode::SetIndex: {
                 uint8_t argCount = readByte();
                 peek(argCount).resolveFuture(); // don't resolve signals here
                 try {
@@ -3094,17 +3073,12 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::DefineModuleVar): {
+            case OpCode::DefineModuleVar: {
                 ObjString* name = readString();
                 moduleVars().store(name->hash, name->s,pop());
                 break;
             }
-            case asByte(OpCode::DefineModuleVar2): {
-                ObjString* name = readString2();
-                moduleVars().store(name->hash, name->s,pop());
-                break;
-            }
-            case asByte(OpCode::GetModuleVar): {
+            case OpCode::GetModuleVar: {
                 ObjString* name = readString();
                 auto& vars { moduleVars() };
                 auto optValue { vars.load(name->hash) };
@@ -3118,21 +3092,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::GetModuleVar2): {
-                ObjString* name = readString2();
-                const auto& vars { moduleVars() };
-                auto optValue { vars.load(name->hash) };
-                if (optValue.has_value()) {
-                    Value value = optValue.value();
-                    push(value);
-                }
-                else {
-                    runtimeError("Undefined variable '"+name->toStdString()+"'");
-                    return errorReturn;
-                }
-                break;
-            }
-            case asByte(OpCode::SetModuleVar): {
+            case OpCode::SetModuleVar: {
                 ObjString* name = readString();
                 auto& vars { moduleVars() };
                 // set new value, but leave it on stack (as assignment is an expression)
@@ -3143,18 +3103,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::SetModuleVar2): {
-                ObjString* name = readString2();
-                auto& vars { moduleVars() };
-                // set new value, but leave it on stack (as assignment is an expression)
-                bool stored = vars.storeIfExists(name->hash, name->s,peek(0));
-                if (!stored) { // not stored, since not existing
-                    runtimeError("Undefined variable '"+name->toStdString()+"'");
-                    return errorReturn;
-                }
-                break;
-            }
-            case asByte(OpCode::SetNewModuleVar): {
+            case OpCode::SetNewModuleVar: {
                 ObjString* name = readString();
                 auto& vars { moduleVars() };
 
@@ -3172,39 +3121,17 @@ std::pair<InterpretResult,Value> VM::execute()
 
                 break;
             }
-            case asByte(OpCode::SetNewModuleVar2): {
-                ObjString* name = readString2();
-                auto& vars { moduleVars() };
-
-                // only automatic declaration of globals on assignment when
-                //   at module level scope
-                bool moduleScope = true; // FIXME: set false if not in module scope
-
-                bool exists = vars.exists(name->hash);
-                if (!exists && !moduleScope) {
-                    runtimeError("Undefined variable '"+name->toStdString()+"'");
-                    return errorReturn;
-                }
-
-                vars.store(name->hash, name->s,peek(0), /*overwrite=*/true);
-                break;
-            }
-            case asByte(OpCode::GetUpvalue): {
-                uint8_t slot = readByte();
+            case OpCode::GetUpvalue: {
+                uint16_t slot = singleByteArg ? readByte() : readShort();
                 push(*asUpvalue(asClosure(frame->closure)->upvalues[slot])->location);
                 break;
             }
-            case asByte(OpCode::SetUpvalue): {
-                uint8_t slot = readByte();
+            case OpCode::SetUpvalue: {
+                uint16_t slot = singleByteArg ? readByte() : readShort();
                 *(asUpvalue(asClosure(frame->closure)->upvalues[slot])->location) = peek(0);
                 break;
             }
-            case asByte(OpCode::Constant2): {
-                Value constant = readConstant2();
-                push(constant);
-                break;
-            }
-            case asByte(OpCode::NewRange): {
+            case OpCode::NewRange: {
                 bool closed = ((readByte() & 1) > 0);
                 if (!peek(2).isNil() && !peek(2).isNumber())
                     runtimeError("The start bound of a range must be a number");
@@ -3217,7 +3144,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(rangeVal);
                 break;
             }
-            case asByte(OpCode::NewList): {
+            case OpCode::NewList: {
                 int eltCount = readByte();
                 std::vector<Value> elts {};
                 elts.reserve(eltCount);
@@ -3228,7 +3155,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(Value::listVal(elts));
                 break;
             }
-            case asByte(OpCode::NewDict): {
+            case OpCode::NewDict: {
                 int entryCount = readByte();
                 std::vector<std::pair<Value,Value>> entries {};
                 entries.reserve(entryCount);
@@ -3241,7 +3168,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(Value::dictVal(entries));
                 break;
             }
-            case asByte(OpCode::NewVector): {
+            case OpCode::NewVector: {
                 int eltCount = readByte();
                 Eigen::VectorXd vals(eltCount);
                 for(int i=0; i<eltCount; i++)
@@ -3250,7 +3177,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(Value::vectorVal(vals));
                 break;
             }
-            case asByte(OpCode::NewMatrix): {
+            case OpCode::NewMatrix: {
                 int rowCount = readByte();
                 if (rowCount == 0) {
                     push(Value::matrixVal());
@@ -3280,7 +3207,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(Value::matrixVal(mat));
                 break;
             }
-            case asByte(OpCode::IfDictToKeys): {
+            case OpCode::IfDictToKeys: {
                 Value& maybeDict = peek(0);
                 if (!isDict(maybeDict))
                     maybeDict.resolve();
@@ -3292,7 +3219,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::IfDictToItems): {
+            case OpCode::IfDictToItems: {
                 Value& maybeDict = peek(0);
                 if (!isDict(maybeDict))
                     maybeDict.resolve();
@@ -3311,7 +3238,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::ToType): {
+            case OpCode::ToType: {
                 uint8_t typeByte = readByte();
                 try {
                     peek(0) = toType(ValueType(typeByte), peek(0), /*strict=*/false);
@@ -3321,7 +3248,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::ToTypeStrict): {
+            case OpCode::ToTypeStrict: {
                 uint8_t typeByte = readByte();
                 try {
                     peek(0) = toType(ValueType(typeByte), peek(0), /*strict=*/true);
@@ -3331,7 +3258,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::ToTypeSpec): {
+            case OpCode::ToTypeSpec: {
                 Value typeSpec = pop();
                 try {
                     peek(0) = toType(typeSpec, peek(0), /*strict=*/false);
@@ -3341,7 +3268,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::ToTypeSpecStrict): {
+            case OpCode::ToTypeSpecStrict: {
                 Value typeSpec = pop();
                 try {
                     peek(0) = toType(typeSpec, peek(0), /*strict=*/true);
@@ -3351,7 +3278,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::EventOn): {
+            case OpCode::EventOn: {
                 Value closureVal = pop();
                 Value eventVal = pop();
                 if (!isClosure(closureVal) || !(isEvent(eventVal) || isSignal(eventVal))) {
@@ -3379,7 +3306,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 ev->subscribers.push_back(closureVal.weakRef());
                 break;
             }
-            case asByte(OpCode::EventOff): {
+            case OpCode::EventOff: {
                 Value closureVal = pop();
                 Value eventVal = pop();
                 if (!isClosure(closureVal) || !(isEvent(eventVal) || isSignal(eventVal))) {
@@ -3420,7 +3347,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
                 break;
             }
-            case asByte(OpCode::SetupExcept): {
+            case OpCode::SetupExcept: {
                 uint16_t off = readShort();
                 CallFrame::ExceptionHandler h;
                 h.handlerIp = frame->ip + off;
@@ -3429,12 +3356,12 @@ std::pair<InterpretResult,Value> VM::execute()
                 frame->exceptionHandlers.push_back(h);
                 break;
             }
-            case asByte(OpCode::EndExcept): {
+            case OpCode::EndExcept: {
                 if (!frame->exceptionHandlers.empty())
                     frame->exceptionHandlers.pop_back();
                 break;
             }
-            case asByte(OpCode::Throw): {
+            case OpCode::Throw: {
                 Value exc = pop();
                 if (!isException(exc))
                     exc = Value::exceptionVal(exc);
@@ -3465,7 +3392,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 frame = thread->frames.end()-1;
                 break;
             }
-            case asByte(OpCode::ObjectType): {
+            case OpCode::ObjectType: {
                 ObjString* name = readString();
                 Value tv { Value::objectTypeVal(name->s, false) }; // ObjObjectType
                 if (!thread->frames.empty()) {
@@ -3481,7 +3408,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(tv);
                 break;
             }
-            case asByte(OpCode::ActorType): {
+            case OpCode::ActorType: {
                 ObjString* name = readString();
                 Value tv { Value::objectTypeVal(name->s, true) }; // ObjObjectType
                 if (!thread->frames.empty()) {
@@ -3497,7 +3424,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(tv);
                 break;
             }
-            case asByte(OpCode::InterfaceType): {
+            case OpCode::InterfaceType: {
                 // interface types are represented as object types (but are abstract - all abstract methods)
                 ObjString* name = readString();
                 Value tv { Value::objectTypeVal(name->s, false, true) };
@@ -3514,7 +3441,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(tv);
                 break;
             }
-            case asByte(OpCode::EnumerationType): {
+            case OpCode::EnumerationType: {
                 ObjString* name = readString();
                 Value tv { Value::objectTypeVal(name->s, false, false, true) };
                 if (!thread->frames.empty()) {
@@ -3530,7 +3457,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(tv);
                 break;
             }
-            case asByte(OpCode::Property): {
+            case OpCode::Property: {
                 try {
                     defineProperty(readString());
                 } catch (std::exception& e) {
@@ -3539,16 +3466,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::Property2): {
-                try {
-                    defineProperty(readString2());
-                } catch (std::exception& e) {
-                    runtimeError(e.what());
-                    return errorReturn;
-                }
-                break;
-            }
-            case asByte(OpCode::Method): {
+            case OpCode::Method: {
                 try {
                     defineMethod(readString());
                 } catch (std::exception& e) {
@@ -3557,16 +3475,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::Method2): {
-                try {
-                    defineMethod(readString2());
-                } catch (std::exception& e) {
-                    runtimeError(e.what());
-                    return errorReturn;
-                }
-                break;
-            }
-            case asByte(OpCode::EnumLabel): {
+            case OpCode::EnumLabel: {
                 try {
                     defineEnumLabel(readString());
                 } catch (std::exception& e) {
@@ -3575,16 +3484,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case asByte(OpCode::EnumLabel2): {
-                try {
-                    defineEnumLabel(readString2());
-                } catch (std::exception& e) {
-                    runtimeError(e.what());
-                    return errorReturn;
-                }
-                break;
-            }
-            case asByte(OpCode::Extend): {
+            case OpCode::Extend: {
                 if (!isObjectType(peek(1))) {
                     runtimeError("Super type to extend must be an object or actor type");
                     return errorReturn;
@@ -3607,7 +3507,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 pop();
                 break;
             }
-            case asByte(OpCode::ImportModuleVars): {
+            case OpCode::ImportModuleVars: {
                 // given a list of var identifiers and two module types, copy the list of vars from
                 //  one module's vars to the other (copy the declarations, not deep copying values)
 
@@ -3659,12 +3559,12 @@ std::pair<InterpretResult,Value> VM::execute()
                 popN(3);
                 break;
             }
-            case asByte(OpCode::Nop): {
+            case OpCode::Nop: {
                 break;
             }
             default:
                 #ifdef DEBUG_BUILD
-                runtimeError("Invalid instruction "+std::to_string(instruction));
+                runtimeError("Invalid instruction "+std::to_string(int(instruction)));
                 #endif
                 return std::make_pair(InterpretResult::RuntimeError,Value::nilVal());
                 break;

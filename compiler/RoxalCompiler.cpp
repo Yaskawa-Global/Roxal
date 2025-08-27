@@ -303,10 +303,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
                 assert(asFunction(function)->upvalueCount == 0);
                 {
                     uint16_t constIdx = makeConstant(function);
-                    if (constIdx <= 255)
-                        emitBytes(OpCode::Closure, uint8_t(constIdx));
-                    else
-                        emitBytes(OpCode::Closure2, uint8_t(constIdx >> 8), uint8_t(constIdx & 0xff));
+                    emitOpArgsBytes(OpCode::Closure, constIdx);
                 }
 
                 // call it to have it executed (which will result in module vars being declared)
@@ -2511,6 +2508,10 @@ void RoxalCompiler::emitBytes(OpCode op, uint8_t byte2, const std::string& comme
 
 void RoxalCompiler::emitBytes(OpCode op, uint8_t byte2, uint8_t byte3, const std::string& comment)
 {
+    #ifdef DEBUG_BUILD
+    if (!isDoubleByte(op))
+        std::cerr << "Warning: Emitting single-byte opcode " << int(op) << " with double-byte argument." << std::endl;
+    #endif
     currentChunk()->write(op, currentNode->interval.first.line,
                           currentNode->interval.first.pos, comment);
     currentChunk()->write(byte2, currentNode->interval.first.line,

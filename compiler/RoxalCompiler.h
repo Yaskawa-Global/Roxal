@@ -331,8 +331,17 @@ protected:
     void emitBytes(OpCode op, uint8_t byte2, const std::string& comment = "");
     void emitBytes(OpCode op, uint8_t byte2, uint8_t byte3, const std::string& comment = "");
     void emitBytes(OpCode op, uint16_t value, const std::string& comment = "") {
-        debug_assert_msg(isDoubleByte(op), "emitBytes(OpCode, int16_t) only allowed for double-byte opcodes.");
+        debug_assert_msg(isDoubleByte(op), "emitBytes(OpCode, uint16_t) only allowed for double-byte arg OpCodes.");
         emitBytes(op, uint8_t(value >> 8), uint8_t(value & 0xFF), comment);
+    }
+    // if arg <= 255 output op and single byte,
+    // if arg >  255 output op and two bytes (most and least significant byte of arg)
+    void emitOpArgsBytes(OpCode op, uint16_t arg, const std::string& comment = "") {
+        debug_assert_msg(!isDoubleByte(op), "emitOpArgsBytes(OpCode, int16_t) accepts only regular OpCode (automatically proposed to double-byte variant).");
+        if (arg <= 255)
+            emitBytes(op, uint8_t(arg), comment);
+        else
+            emitBytes(OpCode(uint8_t(op) | DoubleByteArg), uint8_t(arg >> 8), uint8_t(arg & 0xFF), comment);
     }
     uint8_t lastByte();
 
