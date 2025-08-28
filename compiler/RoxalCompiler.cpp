@@ -492,8 +492,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         // emit code to push type & initial value (if any) on stack, then OpCode::Property
 
         auto propName { prop->name };
-        int16_t propNameConstant = identifierConstant(propName);
-        OpCode propOp = (propNameConstant <= 255) ? OpCode::Property : OpCode::Property2;
+        uint16_t propNameConstant = identifierConstant(propName);
 
         // record property name for implicit access within methods
         asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name};
@@ -550,11 +549,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         emitByte(prop->access == Access::Private ? OpCode::ConstTrue : OpCode::ConstFalse);
 
-        if (propNameConstant <= 255)
-            emitBytes(propOp, uint8_t(propNameConstant), "property "+toUTF8StdString(propName));
-        else
-            emitBytes(propOp, uint8_t(propNameConstant>>8), uint8_t(propNameConstant&0xff),
-                     "property "+toUTF8StdString(propName));
+        emitOpArgsBytes(OpCode::Property, propNameConstant, "property "+toUTF8StdString(propName));
 
     } // properties
 
@@ -566,16 +561,11 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         assert(func->name.has_value()); // methods must have names
         auto methodName { func->name.value() };
         asTypeScope(typeScope())->propertyNames[methodName] = {func->access, ast->name};
-        int16_t methodNameConstant = identifierConstant(methodName);
-        OpCode methodOp = (methodNameConstant <= 255) ? OpCode::Method : OpCode::Method2;
+        uint16_t methodNameConstant = identifierConstant(methodName);
 
         func->accept(*this);
 
-        if (methodNameConstant <= 255)
-            emitBytes(methodOp, uint8_t(methodNameConstant), "method "+toUTF8StdString(methodName));
-        else
-            emitBytes(methodOp, uint8_t(methodNameConstant>>8), uint8_t(methodNameConstant&0xff),
-                     "method "+toUTF8StdString(methodName));
+        emitOpArgsBytes(OpCode::Method, methodNameConstant, "method "+toUTF8StdString(methodName));
     }
 
 
@@ -590,8 +580,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             assert(enumLabel.second != nullptr);
 
             auto labelName { enumLabel.first };
-            int16_t propNameConstant = identifierConstant(labelName);
-            OpCode labelOp = (propNameConstant <= 255) ? OpCode::EnumLabel : OpCode::EnumLabel2;
+            uint16_t propNameConstant = identifierConstant(labelName);
 
             assert(enumLabel.second->type.has_value());
             auto valType { enumLabel.second->type.value() };
@@ -613,11 +602,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
             emitConstant(value);
 
-            if (propNameConstant <= 255)
-                emitBytes(labelOp, uint8_t(propNameConstant), "enum value "+toUTF8StdString(labelName));
-            else
-                emitBytes(labelOp, uint8_t(propNameConstant>>8), uint8_t(propNameConstant&0xff),
-                         "enum value "+toUTF8StdString(labelName));
+            emitOpArgsBytes(OpCode::EnumLabel, propNameConstant, "enum value "+toUTF8StdString(labelName));
         }
     }
 
@@ -1058,20 +1043,17 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
     ast->body->accept(*this);
     emitReturn();
 
-    ObjFunction* function = asFunction(asFuncScope(funcScope())->function);
-    auto fs = *asFuncScope(funcScope());
+    auto fs = asFuncScope(funcScope());
+    Value function { fs->function };
+    ObjFunction* functionObj = asFunction(function);
     exitFuncScope();
 
-    {
-        uint16_t constIdx = makeConstant(Value::objRef(function));
-        if (constIdx <= 255)
-            emitBytes(OpCode::Closure, uint8_t(constIdx));
-        else
-            emitBytes(OpCode::Closure2, uint8_t(constIdx >> 8), uint8_t(constIdx & 0xff));
-    }
-    for (int i = 0; i < function->upvalueCount; i++) {
-        emitByte(fs.upvalues[i].isLocal ? 1 : 0);
-        emitByte(fs.upvalues[i].index);
+    uint16_t constIdx = makeConstant(function);
+    emitOpArgsBytes(OpCode::Closure, constIdx);
+
+    for (int i = 0; i < functionObj->upvalueCount; i++) {
+        emitByte(fs->upvalues[i].isLocal ? 1 : 0);
+        emitByte(fs->upvalues[i].index);
     }
 
     emitByte(OpCode::EventOn);
@@ -1319,13 +1301,10 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 
     // std::cout << "Closure " << toUTF8StdString(function->name) << ": #" << function->upvalueCount << std::endl;
     // std::cout << "   #" << functionState.upvalues.size() << std::endl;
-    {
-        uint16_t constIdx = makeConstant(Value::objRef(function));
-        if (constIdx <= 255)
-            emitBytes(OpCode::Closure, uint8_t(constIdx));
-        else
-            emitBytes(OpCode::Closure2, uint8_t(constIdx >> 8), uint8_t(constIdx & 0xff));
-    }
+
+    uint16_t constIdx = makeConstant(Value::objRef(function));
+    emitOpArgsBytes(OpCode::Closure, constIdx);
+
     for (int i = 0; i < function->upvalueCount; i++) {
         #ifdef DEBUG_BUILD
         if (i >= functionScope.upvalues.size())
@@ -1431,10 +1410,10 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
             if (!accessor->member.has_value())
                 throw std::runtime_error("accessor unary operator expects member name");
-            int16_t propName = identifierConstant(accessor->member.value());
+            uint16_t propName = identifierConstant(accessor->member.value());
 
-            OpCode getOp = (propName <= 255 ? OpCode::GetPropCheck : OpCode::GetPropCheck2);
-            OpCode setOp = (propName <= 255 ? OpCode::SetPropCheck : OpCode::SetPropCheck2);
+            OpCode getOp = OpCode::GetPropCheck;
+            OpCode setOp = OpCode::SetPropCheck;
             if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
                 auto itType = typePropertyRegistry.find(asTypeScope(typeScope())->name);
                 if (itType != typePropertyRegistry.end()) {
@@ -1443,25 +1422,19 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                         const auto& info = itMem->second;
                         if (info.access == Access::Private && info.owner != asTypeScope(typeScope())->name)
                             error("Cannot access private member '"+toUTF8StdString(accessor->member.value())+"'");
-                        getOp = (propName <= 255 ? OpCode::GetProp : OpCode::GetProp2);
-                        setOp = (propName <= 255 ? OpCode::SetProp : OpCode::SetProp2);
+                        getOp = OpCode::GetProp;
+                        setOp = OpCode::SetProp;
                     }
                 }
             }
 
-            emitByte(OpCode::Dup);                 // keep instance for SetProp
-            if (propName <= 255)
-                emitBytes(getOp, uint8_t(propName));            // push current property value
-            else
-                emitBytes(getOp, uint8_t(propName>>8), uint8_t(propName&0xff));
+            emitByte(OpCode::Dup);             // keep instance for SetProp
+            emitOpArgsBytes(getOp, propName);  // push current property value
 
             ast->rhs->accept(*this);
 
-            emitByte(OpCode::CopyInto);          // mutate property value
-            if (propName <= 255)
-                emitBytes(setOp, uint8_t(propName));            // store back
-            else
-                emitBytes(setOp, uint8_t(propName>>8), uint8_t(propName&0xff));
+            emitByte(OpCode::CopyInto);        // mutate property value
+            emitOpArgsBytes(setOp, propName);  // store back
         }
         else if (isa<Index>(ast->lhs)) {
             auto index { as<Index>(ast->lhs) };
@@ -1520,7 +1493,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             throw std::runtime_error("accessor unary operator expects member name");
         uint16_t propName = identifierConstant(accessor->member.value());
 
-        OpCode op = (propName <= 255 ? OpCode::SetPropCheck : OpCode::SetPropCheck2);
+        OpCode op = OpCode::SetPropCheck;
         if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
             auto itType = typePropertyRegistry.find(asTypeScope(typeScope())->name);
             if (itType != typePropertyRegistry.end()) {
@@ -1529,17 +1502,14 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                     const auto& info = itMem->second;
                     if (info.access == Access::Private && info.owner != asTypeScope(typeScope())->name)
                         error("Cannot access private member '"+toUTF8StdString(accessor->member.value())+"'");
-                    op = (propName <= 255 ? OpCode::SetProp : OpCode::SetProp2);
+                    op = OpCode::SetProp;
                 }
             }
         }
 
         ast->rhs->accept(*this);
 
-        if (propName <= 255)
-            emitBytes(op, uint8_t(propName));
-        else
-            emitBytes(op, propName);
+        emitOpArgsBytes(op, propName);
     }
     else if (isa<Index>(ast->lhs)) {
 
@@ -1555,7 +1525,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
         for(auto& arg : index->args)
             arg->accept(*this);
 
-            debug_assert_msg(index->args.size() <= 255, "Indexing with more than 255 arguments is not supported");
+        debug_assert_msg(index->args.size() <= 255, "Indexing with more than 255 arguments is not supported");
         emitBytes(OpCode::SetIndex, uint8_t(index->args.size()));
     }
     else if (isa<List>(ast->lhs)) {
@@ -1604,10 +1574,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
                 emitByte(OpCode::Swap);
 
-                if (propName <= 255)
-                    emitBytes(OpCode::SetProp, uint8_t(propName));
-                else
-                    emitBytes(OpCode::SetProp2, propName);
+                emitOpArgsBytes(OpCode::SetProp, propName);
             }
             else if (isa<Index>(lhsElt)) {
 
@@ -1736,7 +1703,7 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
                 throw std::runtime_error("Accessor . requires member name");
 
             uint16_t identConstant = identifierConstant(ast->member.value());
-            OpCode op = (identConstant <= 255 ? OpCode::GetPropCheck : OpCode::GetPropCheck2);
+            OpCode op = OpCode::GetPropCheck;
             if (isa<Variable>(ast->arg) && as<Variable>(ast->arg)->name == "this" && inTypeScope()) {
                 auto itType = typePropertyRegistry.find(asTypeScope(typeScope())->name);
                 if (itType != typePropertyRegistry.end()) {
@@ -1745,14 +1712,11 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
                         const auto& info = itMem->second;
                         if (info.access == Access::Private && info.owner != asTypeScope(typeScope())->name)
                             error("Cannot access private member '"+toUTF8StdString(ast->member.value())+"'");
-                        op = (identConstant <= 255 ? OpCode::GetProp : OpCode::GetProp2);
+                        op = OpCode::GetProp;
                     }
                 }
             }
-            if (identConstant <= 255)
-                emitBytes(op, uint8_t(identConstant));
-            else
-                emitBytes(op, identConstant);
+            emitOpArgsBytes(op, identConstant);
         } break;
         default:
             throw std::runtime_error("unimplemented unary operator:"+ast->opString());
@@ -2565,11 +2529,7 @@ void RoxalCompiler::emitReturn(const std::string& comment)
 void RoxalCompiler::emitConstant(const Value& value, const std::string& comment)
 {
     uint16_t constant = makeConstant(value);
-    if (constant <= 255)
-        emitBytes(OpCode::Constant, uint8_t(constant), comment);
-    else {
-        emitBytes(OpCode::Constant2, constant, comment);
-    }
+    emitOpArgsBytes(OpCode::Constant, constant, comment);
 }
 
 
@@ -2810,10 +2770,7 @@ void RoxalCompiler::defineVariable(uint16_t moduleVar)
     }
 
     // emit code to define named module scope variable at runtime
-    if (moduleVar <= 255)
-        emitBytes(OpCode::DefineModuleVar, uint8_t(moduleVar));
-    else
-        emitBytes(OpCode::DefineModuleVar2, uint8_t(moduleVar >> 8), uint8_t(moduleVar & 0xff));
+    emitOpArgsBytes(OpCode::DefineModuleVar, moduleVar);
 }
 
 
@@ -2830,8 +2787,8 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
     if (localArg != -1) { // found
         found = true;
         arg = localArg;
-        getOp = (arg<=255) ? OpCode::GetLocal : OpCode::GetLocal2;
-        setOp = (arg<=255) ? OpCode::SetLocal : OpCode::SetLocal2;
+        getOp = OpCode::GetLocal;
+        setOp = OpCode::SetLocal;
     }
     // else if ((funcScope()->functionType == FunctionType::Method ) && ((arg = resolveLocal(funcScope(),"this") != -1))) {
     //     // if we have a property name, allow access without 'this.' prefix
@@ -2841,8 +2798,8 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
     //         arg = identifierConstant(name);
     //         namedVariable("this", false);
     //         //emitBytes(OpCode::GetProp, uint8_t(identConstant));
-    //         getOp = (arg<=255) ? OpCode::GetProp : OpCode::GetProp2;
-    //         setOp = (arg<=255) ? OpCode::SetProp : OpCode::SetProp2;
+    //         getOp = OpCode::GetProp;
+    //         setOp = OpCode::SetProp;
     //         found = true;
     //     }
     // }
@@ -2851,20 +2808,20 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
     if (!found && ((upValueArg = resolveUpvalue(funcScope(),name)) != -1)) {
         found = true;
         arg = upValueArg;
-        getOp = (arg<=255) ? OpCode::GetUpvalue : OpCode::GetUpvalue2;
-        setOp = (arg<=255) ? OpCode::SetUpvalue : OpCode::SetUpvalue2;
+        getOp = OpCode::GetUpvalue;
+        setOp = OpCode::SetUpvalue;
     }
 
     if (!found) { // local or upvalue not found
         // try module scope first
         arg = identifierConstant(name);
-        getOp = (arg<=255) ? OpCode::GetModuleVar : OpCode::GetModuleVar2;
+        getOp = OpCode::GetModuleVar;
         auto module = asModuleScope(moduleScope());
         bool exists = module->moduleVarLines.find(name) != module->moduleVarLines.end();
         if (asFuncScope(funcScope())->functionType != FunctionType::Module || exists)
-            setOp = (arg<=255) ? OpCode::SetModuleVar : OpCode::SetModuleVar2;
+            setOp = OpCode::SetModuleVar;
         else
-            setOp = (arg<=255) ? OpCode::SetNewModuleVar : OpCode::SetNewModuleVar2;
+            setOp = OpCode::SetNewModuleVar;
         if (assign && asFuncScope(funcScope())->functionType == FunctionType::Module && !exists &&
             !asFuncScope(funcScope())->strict)
             module->moduleVarLines[name] = currentNode->interval.first;
@@ -2882,35 +2839,21 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
                 // treat as property access
                 if (!assign) {
                     namedVariable(UnicodeString("this"), false);
-                    if (arg <= 255)
-                        emitBytes(OpCode::GetProp, uint8_t(arg));
-                    else
-                        emitBytes(OpCode::GetProp2, arg);
+                    emitOpArgsBytes(OpCode::GetProp, arg);
                 } else {
                     namedVariable(UnicodeString("this"), false);
                     emitByte(OpCode::Swap);
-                    if (arg <= 255)
-                        emitBytes(OpCode::SetProp, uint8_t(arg));
-                    else
-                        emitBytes(OpCode::SetProp2, arg);
+                    emitOpArgsBytes(OpCode::SetProp, arg);
                 }
                 return true;
             }
         }
     }
 
-    if (!assign) {
-        if (arg <= 255)
-            emitBytes(getOp, uint8_t(arg), toUTF8StdString(name));
-        else
-            emitBytes(getOp, arg, toUTF8StdString(name));
-    }
-    else {
-        if (arg <= 255)
-            emitBytes(setOp, uint8_t(arg), toUTF8StdString(name));
-        else
-            emitBytes(setOp, arg, toUTF8StdString(name));
-    }
+    if (!assign)
+        emitOpArgsBytes(getOp, arg, toUTF8StdString(name));
+    else
+        emitOpArgsBytes(setOp, arg, toUTF8StdString(name));
 
     return true;
 }
@@ -2921,24 +2864,18 @@ void RoxalCompiler::namedModuleVariable(const icu::UnicodeString& name, bool ass
     OpCode getOp, setOp;
 
     uint16_t arg = identifierConstant(name);
-    getOp = (arg<=255) ? OpCode::GetModuleVar  : OpCode::GetModuleVar2;
+    getOp = OpCode::GetModuleVar;
     //  allow assigning without previously declaring, except within functions
     if (asFuncScope(funcScope())->functionType != FunctionType::Module)
-        setOp = (arg<=255) ? OpCode::SetModuleVar : OpCode::SetModuleVar2;
+        setOp = OpCode::SetModuleVar;
     else
-        setOp = (arg<=255) ? OpCode::SetNewModuleVar : OpCode::SetNewModuleVar2;
+        setOp = OpCode::SetNewModuleVar;
 
     if (!assign) {
-        if (arg <= 255)
-            emitBytes(getOp, uint8_t(arg), toUTF8StdString(name));
-        else
-            emitBytes(getOp, arg, toUTF8StdString(name));
+        emitOpArgsBytes(getOp, arg, toUTF8StdString(name));
     }
     else {
-        if (arg <= 255)
-            emitBytes(setOp, uint8_t(arg), toUTF8StdString(name));
-        else
-            emitBytes(setOp, arg, toUTF8StdString(name));
+        emitOpArgsBytes(setOp, arg, toUTF8StdString(name));
     }
 }
 

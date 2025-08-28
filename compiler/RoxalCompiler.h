@@ -337,7 +337,7 @@ protected:
     // if arg <= 255 output op and single byte,
     // if arg >  255 output op and two bytes (most and least significant byte of arg)
     void emitOpArgsBytes(OpCode op, uint16_t arg, const std::string& comment = "") {
-        debug_assert_msg(!isDoubleByte(op), "emitOpArgsBytes(OpCode, int16_t) accepts only regular OpCode (automatically proposed to double-byte variant).");
+        debug_assert_msg(!isDoubleByte(op), "emitOpArgsBytes(OpCode, int16_t) accepts only regular OpCode (automatically promoted to double-byte variant).");
         if (arg <= 255)
             emitBytes(op, uint8_t(arg), comment);
         else
