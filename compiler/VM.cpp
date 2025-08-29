@@ -158,7 +158,7 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                       const CallSpec& callSpec,
                       bool includeReceiver,
                       const Value& receiver,
-                      ObjFunction* declFunction)
+                      const Value& declFunction)
 {
     try {
         if (funcType) {
@@ -172,7 +172,7 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 buf = heapArgs.data();
             }
             static const std::map<int32_t, Value> emptyDefaults;
-            const auto& paramDefaults = declFunction ? declFunction->paramDefaultFunc : emptyDefaults;
+            const auto& paramDefaults = declFunction.isNonNil() ? asFunction(declFunction)->paramDefaultFunc : emptyDefaults;
             size_t actual = marshalArgs(funcType, defaults, callSpec, buf, includeReceiver, receiver, paramDefaults);
             ArgsView view{buf, actual};
             Value result { fn(*this, view) };
@@ -1044,7 +1044,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         ? function->funcType.value() : nullptr;
                     return callNativeFn(native, funcType,
                                         function->nativeDefaults, callSpec,
-                                        false, Value::nilVal(), function);
+                                        false, Value::nilVal(), closure->function);
                 } else {
                     bool cfunc = false;
                     for(const auto& annot : function->annotations) {
@@ -1069,7 +1069,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 NativeFn native = nativeObj->function;
                 return callNativeFn(native, nativeObj->funcType,
                                     nativeObj->defaultValues, callSpec,
-                                    false, Value::nilVal(), nullptr);
+                                    false, Value::nilVal(), Value::nilVal());
             }
             case ObjType::BoundNative: {
                 ObjBoundNative* bound { asBoundNative(callee) };
@@ -1080,7 +1080,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     return callNativeFn(native, bound->funcType,
                                         bound->defaultValues, callSpec,
                                         true, bound->receiver,
-                                        bound->declFunction.isNil() ? nullptr : asFunction(bound->declFunction));
+                                        bound->declFunction);
                 }
                 else {
                     // call to actor native method.
@@ -1097,7 +1097,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         return callNativeFn(native, bound->funcType,
                                             bound->defaultValues, callSpec,
                                             true, bound->receiver,
-                                            bound->declFunction.isNil() ? nullptr : asFunction(bound->declFunction));
+                                            bound->declFunction);
                     } else {
                         // call to other actor
                         Value future = inst->queueCall(callee, callSpec, &(*thread->stackTop) );
@@ -1234,10 +1234,10 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                     if (methodInfo.funcType) {
                         return callNativeFn(fn, methodInfo.funcType,
                                             methodInfo.defaultValues, callSpec,
-                                            true, receiver, nullptr);
+                                            true, receiver, Value::nilVal());
                     } else {
                         return callNativeFn(fn, nullptr, {}, callSpec,
-                                            true, receiver, nullptr);
+                                            true, receiver, Value::nilVal());
                     }
                 } else {
                     // Different thread - queue the call
@@ -1267,10 +1267,10 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                     if (methodInfo.funcType) {
                         return callNativeFn(fn, methodInfo.funcType,
                                             methodInfo.defaultValues, callSpec,
-                                            true, receiver, nullptr);
+                                            true, receiver, Value::nilVal());
                     } else {
                         return callNativeFn(fn, nullptr, {}, callSpec,
-                                            true, receiver, nullptr);
+                                            true, receiver, Value::nilVal());
                     }
                 }
             }
@@ -1604,7 +1604,7 @@ VM::BindResult VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
                                                   func->funcType.has_value() ?
                                                       func->funcType.value() : nullptr,
                                                   func->nativeDefaults,
-                                                  Value::objRef(func)) };
+                                                  cl->function) };
         pop();
         push(boundNative);
     } else {
