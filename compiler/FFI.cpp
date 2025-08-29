@@ -1125,6 +1125,16 @@ std::vector<uint8_t> roxal::objectToCStruct(ObjectInstance* instance, std::vecto
     if (!instance)
         throw std::invalid_argument("objectToCStruct null instance");
 
+    // Defensive: validate the instance type really is an object type
+    if (!isObjectType(instance->instanceType)) {
+        std::ostringstream oss;
+        oss << "objectToCStruct: instance->instanceType is not an object type; actual Value type: "
+            << instance->instanceType.typeName();
+        if (isString(instance->instanceType)) {
+            oss << ", string='" << toUTF8StdString(asUString(instance->instanceType)) << "'";
+        }
+        throw std::runtime_error(oss.str());
+    }
     ObjObjectType* type = asObjectType(instance->instanceType);
     if (!type->isCStruct)
         throw std::runtime_error("cannot convert non-cstruct type "+toUTF8StdString(type->name)+" to a cstruct");

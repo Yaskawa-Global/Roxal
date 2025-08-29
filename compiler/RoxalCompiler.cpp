@@ -445,10 +445,11 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     if (isInterface && (ast->implements.size() > 0))
         throw std::runtime_error("Interfaces can't implement (only extend)");
 
-    if (isActor) emitBytes(OpCode::ActorType, uint8_t(typeNameConstant));
-    else if (isInterface) emitBytes(OpCode::InterfaceType, uint8_t(typeNameConstant));
-    else if (isEnumeration) emitBytes(OpCode::EnumerationType, uint8_t(typeNameConstant));
-    else emitBytes(OpCode::ObjectType, uint8_t(typeNameConstant));
+    // Write type opcode with automatic single/double-byte argument handling
+    if (isActor) emitOpArgsBytes(OpCode::ActorType, typeNameConstant);
+    else if (isInterface) emitOpArgsBytes(OpCode::InterfaceType, typeNameConstant);
+    else if (isEnumeration) emitOpArgsBytes(OpCode::EnumerationType, typeNameConstant);
+    else emitOpArgsBytes(OpCode::ObjectType, typeNameConstant);
     defineVariable(typeNameConstant);
 
 
@@ -1689,7 +1690,7 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
 
         namedVariable("this", false);
         namedVariable("super", false);
-        emitBytes(OpCode::GetSuper, uint8_t(identConstant));
+        emitOpArgsBytes(OpCode::GetSuper, identConstant);
         return {};
     }
 
