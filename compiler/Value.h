@@ -144,13 +144,13 @@ public:
 
     /// @brief Constructs a byte value.
     /// @param b The byte value.
-    explicit Value(uint8_t b) { val = QNAN | TagByte | (0xff & *reinterpret_cast<uint8_t*>(&b)); }
+    explicit Value(uint8_t b) { val = QNAN | TagByte | static_cast<uint64_t>(b); }
     static inline Value byteVal(uint8_t b) { return Value(b); }
     static Value boxedByteVal(uint8_t b);
 
     /// @brief Constructs an integer value.
     /// @param i The integer value.
-    explicit Value(int32_t i) { val = QNAN | TagInt | (0xffffffff & *reinterpret_cast<uint64_t*>(&i)); }
+    explicit Value(int32_t i) { val = QNAN | TagInt | static_cast<uint64_t>(static_cast<uint32_t>(i)); }
     static inline Value intVal(int32_t i) { return Value(i); }
     static Value boxedIntVal(uint8_t b);
 
