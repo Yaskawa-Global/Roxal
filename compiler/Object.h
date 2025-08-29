@@ -153,15 +153,27 @@ struct UnreleasedObj {
 #ifdef DEBUG_BUILD
 template<typename T, typename... Args>
 inline unique_ptr<T, UnreleasedObj> newObj(const std::string& name, const std::string& filename, int lineNumber, Args&&... args) {
-    // allocate one contiguous block for control and object
-    char* mem = new char[sizeof(ObjControl) + sizeof(T)];
+    // Allocate one contiguous block for control and object, ensuring proper alignment for T.
+    constexpr std::size_t alignT = alignof(T);
+    const std::size_t total = sizeof(ObjControl) + sizeof(T) + alignT - 1; // extra space for alignment adjustment
+    char* mem = new char[total];
+
+    // Place control at the start
     ObjControl* ctrl = new (mem) ObjControl();
-    T* o = new (mem + sizeof(ObjControl)) T(std::forward<Args>(args)...);
+
+    // Compute an aligned address for T immediately after ObjControl
+    std::uintptr_t base = reinterpret_cast<std::uintptr_t>(mem);
+    std::uintptr_t unaligned = base + sizeof(ObjControl);
+    std::uintptr_t aligned = (unaligned + (alignT - 1)) & ~(static_cast<std::uintptr_t>(alignT) - 1);
+    T* o = new (reinterpret_cast<void*>(aligned)) T(std::forward<Args>(args)...);
 
     ctrl->strong = 0;
     ctrl->weak   = 1;   // implicit weak ref representing strong refs
     ctrl->obj    = o;
     o->control   = ctrl;
+
+    // In debug builds, verify alignment to catch subtle UB early
+    debug_assert_msg(reinterpret_cast<std::uintptr_t>(o) % alignT == 0, "newObj produced misaligned object memory");
 
     #ifdef DEBUG_TRACE_MEMORY
     if (Obj::allocatedObjs.containsKey(o))
@@ -174,10 +186,19 @@ inline unique_ptr<T, UnreleasedObj> newObj(const std::string& name, const std::s
 #else
 template<typename T, typename... Args>
 inline unique_ptr<T, UnreleasedObj> newObj(Args&&... args) {
-    // allocate one contiguous block for control and object
-    char* mem = new char[sizeof(ObjControl) + sizeof(T)];
+    // Allocate one contiguous block for control and object, ensuring proper alignment for T.
+    constexpr std::size_t alignT = alignof(T);
+    const std::size_t total = sizeof(ObjControl) + sizeof(T) + alignT - 1; // extra space for alignment adjustment
+    char* mem = new char[total];
+
+    // Place control at the start
     ObjControl* ctrl = new (mem) ObjControl();
-    T* o = new (mem + sizeof(ObjControl)) T(std::forward<Args>(args)...);
+
+    // Compute an aligned address for T immediately after ObjControl
+    std::uintptr_t base = reinterpret_cast<std::uintptr_t>(mem);
+    std::uintptr_t unaligned = base + sizeof(ObjControl);
+    std::uintptr_t aligned = (unaligned + (alignT - 1)) & ~(static_cast<std::uintptr_t>(alignT) - 1);
+    T* o = new (reinterpret_cast<void*>(aligned)) T(std::forward<Args>(args)...);
 
     ctrl->strong = 0;
     ctrl->weak   = 1;   // implicit weak ref representing strong refs
