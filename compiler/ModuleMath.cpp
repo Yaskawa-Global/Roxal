@@ -97,8 +97,8 @@ void ModuleMath::registerBuiltins(VM& vm)
     link("cross", [this](VM& vm, ArgsView a){ return math_cross_builtin(vm,a); });
 
     // Link builtin Counter methods
-    linkMethod("_Counter", "init", [this](VM& vm, ArgsView a){ return counter_init_builtin(vm,a); }, { Value::intVal(0) });
-    linkMethod("_Counter", "inc", [this](VM& vm, ArgsView a){ return counter_inc_builtin(vm,a); }, { Value::intVal(1) });
+    linkMethod("_Counter", "init", [this](VM& vm, ArgsView a){ return counter_init_builtin(vm,a); });
+    linkMethod("_Counter", "inc", [this](VM& vm, ArgsView a){ return counter_inc_builtin(vm,a); });
     linkMethod("_Counter", "value", [this](VM& vm, ArgsView a){ return counter_value_builtin(vm,a); }, {});
 }
 

@@ -17,8 +17,7 @@ ModuleFileIO::ModuleFileIO()
 void ModuleFileIO::registerBuiltins(VM& vm)
 {
     {
-        std::vector<Value> d{ Value::nilVal(), Value::falseVal(), Value::stringVal(toUnicodeString("text")) };
-        link("open", [this](VM& vm, ArgsView a){ return fileio_open_builtin(vm,a); }, d);
+        link("open", [this](VM& vm, ArgsView a){ return fileio_open_builtin(vm,a); });
     }
     {
         link("close", [this](VM& vm, ArgsView a){ return fileio_close_builtin(vm,a); });
@@ -36,8 +35,7 @@ void ModuleFileIO::registerBuiltins(VM& vm)
         link("readLine", [this](VM& vm, ArgsView a){ return fileio_readline_builtin(vm,a); });
     }
     {
-        std::vector<Value> d{ Value::nilVal(), Value::stringVal(toUnicodeString("text")) };
-        link("readFile", [this](VM& vm, ArgsView a){ return fileio_readfile_builtin(vm,a); }, d);
+        link("readFile", [this](VM& vm, ArgsView a){ return fileio_readfile_builtin(vm,a); });
     }
     {
         link("write", [this](VM& vm, ArgsView a){ return fileio_write_builtin(vm,a); });

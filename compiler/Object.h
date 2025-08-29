@@ -38,6 +38,7 @@ namespace roxal {
 struct ObjObjectType; // forward
 class Thread; // forward declaration for handler threads
 struct ObjEvent; // forward
+struct ObjFunction; // forward for bound native default values
 struct ObjException; // forward
 }
 
@@ -1251,9 +1252,11 @@ struct ObjBoundNative : public Obj
 {
     ObjBoundNative(const Value& instance, NativeFn fn, bool proc = false,
                    ptr<roxal::type::Type> funcType=nullptr,
-                   std::vector<Value> defaults = {})
+                   std::vector<Value> defaults = {},
+                   Value declFunction = Value::nilVal())
       : receiver(instance), function(fn), isProc(proc),
-        funcType(funcType), defaultValues(std::move(defaults)) { type = ObjType::BoundNative; }
+        funcType(funcType), defaultValues(std::move(defaults)),
+        declFunction(declFunction) { type = ObjType::BoundNative; }
     virtual ~ObjBoundNative() {}
 
     Value receiver;
@@ -1261,6 +1264,7 @@ struct ObjBoundNative : public Obj
     bool isProc;  // true for proc methods, false for func methods
     ptr<roxal::type::Type> funcType;
     std::vector<Value> defaultValues;
+    Value declFunction; // ObjFunction for default arg expressions
 
     unique_ptr<Obj, UnreleasedObj> clone() const override;
 
@@ -1272,11 +1276,12 @@ inline bool isBoundNative(const Value& v) { return isObjType(v, ObjType::BoundNa
 inline ObjBoundNative* asBoundNative(const Value& v) { return static_cast<ObjBoundNative*>(v.asObj()); }
 inline unique_ptr<ObjBoundNative, UnreleasedObj> newBoundNativeObj(const Value& instance, NativeFn fn, bool isProc = false,
                                          ptr<roxal::type::Type> funcType=nullptr,
-                                         std::vector<Value> defaults = {}) {
+                                         std::vector<Value> defaults = {},
+                                         Value declFunction = Value::nilVal()) {
     #ifdef DEBUG_BUILD
-    return newObj<ObjBoundNative>(__func__, __FILE__, __LINE__, instance, fn, isProc, funcType, std::move(defaults));
+    return newObj<ObjBoundNative>(__func__, __FILE__, __LINE__, instance, fn, isProc, funcType, std::move(defaults), declFunction);
     #else
-    return newObj<ObjBoundNative>(instance, fn, isProc, funcType, std::move(defaults));
+    return newObj<ObjBoundNative>(instance, fn, isProc, funcType, std::move(defaults), declFunction);
     #endif
 }
 

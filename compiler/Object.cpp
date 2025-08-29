@@ -1858,7 +1858,7 @@ void ObjBoundMethod::read(std::istream& in, roxal::ptr<SerializationContext> ctx
 
 unique_ptr<Obj, UnreleasedObj> ObjBoundNative::clone() const
 {
-    auto newbm = newBoundNativeObj(receiver, function, isProc, funcType, defaultValues);
+    auto newbm = newBoundNativeObj(receiver, function, isProc, funcType, defaultValues, declFunction);
     newbm->receiver = newbm->receiver.clone();
     return newbm;
 }
@@ -1887,6 +1887,7 @@ void ObjBoundNative::read(std::istream& in, roxal::ptr<SerializationContext> ctx
         defaultValues.push_back(readValue(in, ctx));
     function = nullptr;
     funcType = nullptr;
+    declFunction = Value::nilVal();
     type = ObjType::BoundNative;
 }
 
