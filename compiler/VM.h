@@ -3,6 +3,7 @@
 #include <vector>
 #include <atomic>
 #include <unordered_map>
+#include <map>
 
 #include "core/atomic.h"
 #include "Chunk.h"
@@ -125,14 +126,14 @@ public:
                        Value* out,
                        bool includeReceiver = false,
                        const Value& receiver = Value::nilVal(),
-                       ObjFunction* funcObj = nullptr);
+                       const std::map<int32_t, Value>& paramDefaultFuncs = {});
 
     bool callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                       const std::vector<Value>& defaults,
                       const CallSpec& callSpec,
                       bool includeReceiver = false,
                       const Value& receiver = Value::nilVal(),
-                      ObjFunction* funcObj = nullptr);
+                      ObjFunction* declFunction = nullptr);
 
     // Expose a simple helper to keep track of active threads.  Actor
     // deserialization needs this to prevent the thread object from being

@@ -248,7 +248,7 @@ public:
     static Value boundNativeVal(const Value& instance, NativeFn fn, bool isProc = false, // ObjBoundNative
                                 ptr<roxal::type::Type> funcType=nullptr,
                                 std::vector<Value> defaults = {},
-                                ObjFunction* funcObj = nullptr);
+                                Value declFunction = Value::nilVal());
 
 
     /// @brief Copy constructor.

@@ -1253,10 +1253,10 @@ struct ObjBoundNative : public Obj
     ObjBoundNative(const Value& instance, NativeFn fn, bool proc = false,
                    ptr<roxal::type::Type> funcType=nullptr,
                    std::vector<Value> defaults = {},
-                   ObjFunction* funcObj = nullptr)
+                   Value declFunction = Value::nilVal())
       : receiver(instance), function(fn), isProc(proc),
         funcType(funcType), defaultValues(std::move(defaults)),
-        functionObj(funcObj) { type = ObjType::BoundNative; }
+        declFunction(declFunction) { type = ObjType::BoundNative; }
     virtual ~ObjBoundNative() {}
 
     Value receiver;
@@ -1264,7 +1264,7 @@ struct ObjBoundNative : public Obj
     bool isProc;  // true for proc methods, false for func methods
     ptr<roxal::type::Type> funcType;
     std::vector<Value> defaultValues;
-    ObjFunction* functionObj; // Roxal function for default arg expressions
+    Value declFunction; // ObjFunction for default arg expressions
 
     unique_ptr<Obj, UnreleasedObj> clone() const override;
 
@@ -1277,11 +1277,11 @@ inline ObjBoundNative* asBoundNative(const Value& v) { return static_cast<ObjBou
 inline unique_ptr<ObjBoundNative, UnreleasedObj> newBoundNativeObj(const Value& instance, NativeFn fn, bool isProc = false,
                                          ptr<roxal::type::Type> funcType=nullptr,
                                          std::vector<Value> defaults = {},
-                                         ObjFunction* funcObj = nullptr) {
+                                         Value declFunction = Value::nilVal()) {
     #ifdef DEBUG_BUILD
-    return newObj<ObjBoundNative>(__func__, __FILE__, __LINE__, instance, fn, isProc, funcType, std::move(defaults), funcObj);
+    return newObj<ObjBoundNative>(__func__, __FILE__, __LINE__, instance, fn, isProc, funcType, std::move(defaults), declFunction);
     #else
-    return newObj<ObjBoundNative>(instance, fn, isProc, funcType, std::move(defaults), funcObj);
+    return newObj<ObjBoundNative>(instance, fn, isProc, funcType, std::move(defaults), declFunction);
     #endif
 }
 
