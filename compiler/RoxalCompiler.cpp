@@ -294,7 +294,11 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 
             try {
                 replModeFlag = false; // don't auto-print expressions when compiling imported module
-                function = compile(sourcestream, toUTF8StdString(module.name));
+                function = compile(sourcestream,
+                                   !absoluteModuleFilePath.empty() ?
+                                          absoluteModuleFilePath
+                                        : toUTF8StdString(module.name)
+                                  );
                 replModeFlag = prevRepl;
 
                 importedModuleType = asFunction(function)->moduleType;

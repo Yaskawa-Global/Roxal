@@ -1,0 +1,8 @@
+import sys
+mylib = sys.loadlib('./testlib.so')
+
+@cfunc(lib=mylib, cname='cstrlen', args='const char* s', ret='int')
+func mystrlen(s: str) -> int:
+  _
+
+print(mystrlen('hello'))
