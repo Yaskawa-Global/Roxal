@@ -14,8 +14,7 @@ constexpr uint8_t DoubleByteArg = 0x80;
 enum class OpCode {
     Nop,
     Constant,
-    Constant2 = Constant | DoubleByteArg,
-    ConstNil  = Constant+1,
+    ConstNil,
     ConstTrue,
     ConstFalse,
     ConstInt0,
@@ -50,13 +49,11 @@ enum class OpCode {
     SetIndex,
     Invoke,
     Closure,
-    Closure2 = Closure | DoubleByteArg,
-    CloseUpvalue = Closure + 1,
+    CloseUpvalue,
     Return,
     ReturnStore,
     ObjectType,
-    ObjectType2 = ObjectType | DoubleByteArg,
-    ActorType = ObjectType + 1,
+    ActorType,
     InterfaceType,
     EnumerationType,
     Property,
@@ -64,31 +61,19 @@ enum class OpCode {
     EnumLabel,
     Extend,
     DefineModuleVar,
-    DefineModuleVar2 = DefineModuleVar | DoubleByteArg,
-    GetModuleVar = DefineModuleVar+1,
+    GetModuleVar,
     SetModuleVar,
-    GetModuleVar2 = GetModuleVar | DoubleByteArg,
-    SetModuleVar2 = SetModuleVar | DoubleByteArg,
-    SetNewModuleVar = SetModuleVar + 1,
-    SetNewModuleVar2 = SetNewModuleVar | DoubleByteArg,
-    ImportModuleVars = SetNewModuleVar + 1,
+    SetNewModuleVar,
+    ImportModuleVars,
     GetUpvalue,
     SetUpvalue,
-    GetUpvalue2 = GetUpvalue | DoubleByteArg,
-    SetUpvalue2 = SetUpvalue | DoubleByteArg,
-    GetLocal = SetUpvalue+1,
+    GetLocal,
     SetLocal,
-    GetLocal2 = GetLocal | DoubleByteArg,
-    SetLocal2 = SetLocal | DoubleByteArg,
-    SetProp = SetLocal+1,
+    SetProp,
     GetProp,
     SetPropCheck,
     GetPropCheck,
-    GetPropCheck2 = GetPropCheck | DoubleByteArg,
-    SetPropCheck2 = SetPropCheck | DoubleByteArg,
-    SetProp2 = SetProp | DoubleByteArg,
-    GetProp2 = GetProp | DoubleByteArg,
-    GetSuper = GetPropCheck+1,
+    GetSuper,
     NewRange,
     NewList,
     NewDict,
@@ -106,10 +91,7 @@ enum class OpCode {
     EndExcept,
     Throw,
     CopyInto,
-    Property2 = Property | DoubleByteArg,
-    Method2 = Method | DoubleByteArg,
-    EnumLabel2 = EnumLabel | DoubleByteArg,
-    _Last = CopyInto+1
+    _Last
 };
 
 inline constexpr uint8_t asByte(OpCode op) { return uint8_t(op); }
@@ -169,12 +151,11 @@ public:
 protected:
     std::vector<LineEntry> lineTable; // sparse line/column table
 
-    size_type constantInstruction(const std::string& name, size_type offset) const;
-    size_type constantInstruction2(const std::string& name, size_type offset) const;
+    size_type constantInstruction(const std::string& name, size_type offset, bool doubleByteArg) const;
     size_type invokeInstruction(const std::string& name, size_type offset) const;
     size_type simpleInstruction(const std::string& name, size_type offset) const;
     size_type byteInstruction(const std::string& name, size_type offset) const;
-    size_type shortInstruction(const std::string& name, size_type offset) const;
+    size_type argInstruction(const std::string& name, size_type offset, bool doubleByteArg) const;
     size_type jumpInstruction(const std::string& name, int sign, size_type offset) const;
 
 

@@ -122,9 +122,9 @@ Chunk::size_type Chunk::byteInstruction(const std::string& name, size_type offse
 }
 
 
-Chunk::size_type Chunk::shortInstruction(const std::string& name, size_type offset) const
+Chunk::size_type Chunk::argInstruction(const std::string& name, size_type offset, bool doubleByteArg) const
 {
-    uint16_t arg = (code.at(offset+1) << 8) + code.at(offset+2); // LSByte last
+    uint16_t arg = doubleByteArg ? (code.at(offset+1) << 8) + code.at(offset+2) : code.at(offset+1); // LSByte last
     #ifdef DEBUG_BUILD
     auto comment { codeComments.at(offset) };
     if (comment.empty())
@@ -134,7 +134,7 @@ Chunk::size_type Chunk::shortInstruction(const std::string& name, size_type offs
     #else
     std::cout << format("%-16s %4d", name.c_str(), arg) << std::endl;
     #endif
-    return offset+3;
+    return doubleByteArg ? offset+3 : offset+2;
 }
 
 
@@ -156,9 +156,9 @@ Chunk::size_type Chunk::jumpInstruction(const std::string& name, int sign, size_
 
 
 
-Chunk::size_type Chunk::constantInstruction(const std::string& name, size_type offset) const
+Chunk::size_type Chunk::constantInstruction(const std::string& name, size_type offset, bool doubleByteArg) const
 {
-    uint8_t constant = code.at(offset+1);
+    uint16_t constant = doubleByteArg ? (code.at(offset+1) << 8) + code.at(offset+2) : code.at(offset+1);
     #ifdef DEBUG_BUILD
     if (constant >= constants.size())
         throw std::runtime_error("Constant instruction at "+std::to_string(offset)+" references constant "+std::to_string(constant)+" but constant table size is "+std::to_string(constants.size()));
@@ -167,17 +167,7 @@ Chunk::size_type Chunk::constantInstruction(const std::string& name, size_type o
     std::cout << format("%-16s %4d '", name.c_str(), constant)
               << toString(value)
               << "':" << value.typeName() << std::endl;
-    return offset+2;
-}
-
-
-Chunk::size_type Chunk::constantInstruction2(const std::string& name, size_type offset) const
-{
-    uint16_t constant = (code.at(offset+1) << 8) + code.at(offset+2); // LSByte last
-    std::cout << format("%-16s %4d '", name.c_str(), constant)
-              << toString(constants.at(constant))
-              << "'" << std::endl;
-    return offset+3;
+    return doubleByteArg ? offset+3 : offset+2;
 }
 
 
@@ -199,81 +189,87 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
 
     if (offset >= code.size())
         return offset;
-        //throw std::runtime_error("No instruction to dissasemble a offset "+std::to_string(offset));
+        //throw std::runtime_error("No instruction to disassemble a offset "+std::to_string(offset));
 
     if (offset > 0 && getLine(offset) == getLine(offset-1))
         std::cout << "   | ";
     else
         std::cout << format("%4d ", getLine(offset));
 
-    uint8_t instruction = code.at(offset);
+    bool doubleByteArg = false;
+    uint8_t instructionByte = code.at(offset);
+    OpCode instruction {};
+    if ((instructionByte & DoubleByteArg) == 0)
+        instruction = OpCode(instructionByte);
+    else {
+        instruction = OpCode(instructionByte & ~DoubleByteArg);
+        doubleByteArg = true; // expects 2 bytes of argument
+    }
 
     switch (instruction) {
-        case asByte(OpCode::Constant):
-            return constantInstruction("CONSTANT", offset);
-        case asByte(OpCode::Constant2):
-            return constantInstruction2("CONSTANT2", offset);
-        case asByte(OpCode::ConstNil):
+        case OpCode::Constant:
+            return constantInstruction("CONSTANT", offset, doubleByteArg);
+        case OpCode::ConstNil:
             return simpleInstruction("CONST_NIL", offset);
-        case asByte(OpCode::ConstTrue):
+        case OpCode::ConstTrue:
             return simpleInstruction("CONST_TRUE", offset);
-        case asByte(OpCode::ConstFalse):
+        case OpCode::ConstFalse:
             return simpleInstruction("CONST_FALSE", offset);
-        case asByte(OpCode::ConstInt0):
+        case OpCode::ConstInt0:
             return simpleInstruction("CONST_INT0", offset);
-        case asByte(OpCode::ConstInt1):
+        case OpCode::ConstInt1:
             return simpleInstruction("CONST_INT1", offset);
-        case asByte(OpCode::Equal):
+        case OpCode::Equal:
             return simpleInstruction("EQUAL", offset);
-        case asByte(OpCode::Is):
+        case OpCode::Is:
             return simpleInstruction("IS", offset);
-        case asByte(OpCode::Greater):
+        case OpCode::Greater:
             return simpleInstruction("GREATER", offset);
-        case asByte(OpCode::Less):
+        case OpCode::Less:
             return simpleInstruction("LESS", offset);
-        case asByte(OpCode::Add):
+        case OpCode::Add:
             return simpleInstruction("ADD", offset);
-        case asByte(OpCode::Subtract):
+        case OpCode::Subtract:
             return simpleInstruction("SUBTRACT", offset);
-        case asByte(OpCode::Multiply):
+        case OpCode::Multiply:
             return simpleInstruction("MULTIPLY", offset);
-        case asByte(OpCode::Divide):
+        case OpCode::Divide:
             return simpleInstruction("DIVIDE", offset);
-        case asByte(OpCode::Modulo):
+        case OpCode::Modulo:
             return simpleInstruction("MODULO", offset);
-        case asByte(OpCode::Negate):
+        case OpCode::Negate:
             return simpleInstruction("NEGATE", offset);
-        case asByte(OpCode::And):
+        case OpCode::And:
             return simpleInstruction("AND", offset);
-        case asByte(OpCode::Or):
+        case OpCode::Or:
             return simpleInstruction("OR", offset);
-        case asByte(OpCode::BitAnd):
+        case OpCode::BitAnd:
             return simpleInstruction("BIT_AND", offset);
-        case asByte(OpCode::BitOr):
+        case OpCode::BitOr:
             return simpleInstruction("BIT_OR", offset);
-        case asByte(OpCode::BitXor):
+        case OpCode::BitXor:
             return simpleInstruction("BIT_XOR", offset);
-        case asByte(OpCode::BitNot):
+        case OpCode::BitNot:
             return simpleInstruction("BIT_NOT", offset);
-        case asByte(OpCode::Pop):
+        case OpCode::Pop:
             return simpleInstruction("POP", offset);
-        case asByte(OpCode::PopN):
+        case OpCode::PopN:
             return byteInstruction("POPN", offset);
-        case asByte(OpCode::Dup):
+        case OpCode::Dup:
             return simpleInstruction("DUP", offset);
-        case asByte(OpCode::DupBelow):
+        case OpCode::DupBelow:
             return simpleInstruction("DUP_BELOW", offset);
-        case asByte(OpCode::Swap):
+        case OpCode::Swap:
             return simpleInstruction("SWAP", offset);
-        case asByte(OpCode::JumpIfFalse):
+        case OpCode::JumpIfFalse:
             return jumpInstruction("JUMP_IF_FALSE", 1, offset);
-        case asByte(OpCode::JumpIfTrue):
+        case OpCode::JumpIfTrue:
             return jumpInstruction("JUMP_IF_TRUE", 1, offset);
-        case asByte(OpCode::Jump):
+        case OpCode::Jump:
             return jumpInstruction("JUMP", 1, offset);
-        case asByte(OpCode::Loop):
+        case OpCode::Loop:
             return jumpInstruction("LOOP", -1, offset);
-        case asByte(OpCode::Call): {
+        case OpCode::Call: {
             byteInstruction("CALL", offset);
             // compute num of bytes to skip over CallSpec
             auto ip = code.begin()+offset+1;
@@ -289,15 +285,15 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             }
             return offset+1+callSpec.toBytes().size();
         }
-        case asByte(OpCode::Index):
+        case OpCode::Index:
             return byteInstruction("INDEX", offset);
-        case asByte(OpCode::SetIndex):
+        case OpCode::SetIndex:
             return byteInstruction("SET_INDEX", offset);
-        case asByte(OpCode::Invoke):
+        case OpCode::Invoke:
             return invokeInstruction("INVOKE", offset);
-        case asByte(OpCode::Closure): {
+        case OpCode::Closure: {
             offset++;
-            uint8_t constant = code.at(offset++);
+            uint16_t constant = doubleByteArg ? (code.at(offset++) << 8) + code.at(offset++) : code.at(offset++);
             std::cout << format("%-16s %4d ","CLOSURE", constant);
             std::cout << toString(constants.at(constant)) << std::endl;
 
@@ -312,141 +308,94 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
 
             return offset;
         }
-        case asByte(OpCode::Closure2): {
-            offset++;
-            uint16_t constant = (code.at(offset++) << 8) + code.at(offset++);
-            std::cout << format("%-16s %4d ","CLOSURE2", constant);
-            std::cout << toString(constants.at(constant)) << std::endl;
-
-            ObjFunction* function = asFunction(constants.at(constant));
-            for (int j=0; j < function->upvalueCount; j++) {
-                int isLocal = code.at(offset++);
-                int index = code.at(offset++);
-                std::cout << format("%04d      |                     %s %d",
-                                    offset - 2, isLocal ? "local" : "upvalue", index)
-                          << std::endl;
-            }
-
-            return offset;
-        }
-        case asByte(OpCode::CloseUpvalue):
+        case OpCode::CloseUpvalue:
             return simpleInstruction("CLOSE_UPVALUE", offset);
-        case asByte(OpCode::Return):
+        case OpCode::Return:
             return simpleInstruction("RETURN", offset);
-        case asByte(OpCode::ReturnStore):
+        case OpCode::ReturnStore:
             return simpleInstruction("RETURN_STORE", offset);
-        case asByte(OpCode::ObjectType):
-            return constantInstruction("OBJECT_TYPE", offset);
-        case asByte(OpCode::ActorType):
-            return constantInstruction("ACTOR_TYPE", offset);
-        case asByte(OpCode::InterfaceType):
-            return constantInstruction("INTERFACE_TYPE", offset);
-        case asByte(OpCode::EnumerationType):
-            return constantInstruction("ENUMERATION_TYPE", offset);
-        case asByte(OpCode::Property):
-            return constantInstruction("PROPERTY", offset);
-        case asByte(OpCode::Property2):
-            return constantInstruction2("PROPERTY2", offset);
-        case asByte(OpCode::Method):
-            return constantInstruction("METHOD", offset);
-        case asByte(OpCode::Method2):
-            return constantInstruction2("METHOD2", offset);
-        case asByte(OpCode::EnumLabel):
-            return constantInstruction("ENUM_LABEL", offset);
-        case asByte(OpCode::EnumLabel2):
-            return constantInstruction2("ENUM_LABEL2", offset);
-        case asByte(OpCode::Extend):
+        case OpCode::ObjectType:
+            return constantInstruction("OBJECT_TYPE", offset, doubleByteArg);
+        case OpCode::ActorType:
+            return constantInstruction("ACTOR_TYPE", offset, doubleByteArg);
+        case OpCode::InterfaceType:
+            return constantInstruction("INTERFACE_TYPE", offset, doubleByteArg);
+        case OpCode::EnumerationType:
+            return constantInstruction("ENUMERATION_TYPE", offset, doubleByteArg);
+        case OpCode::Property:
+            return constantInstruction("PROPERTY", offset, doubleByteArg);
+        case OpCode::Method:
+            return constantInstruction("METHOD", offset, doubleByteArg);
+        case OpCode::EnumLabel:
+            return constantInstruction("ENUM_LABEL", offset, doubleByteArg);
+        case OpCode::Extend:
             return simpleInstruction("EXTEND", offset);
-        case asByte(OpCode::DefineModuleVar):
-            return constantInstruction("DEFINE_MODULE_VAR", offset);
-        case asByte(OpCode::DefineModuleVar2):
-            return constantInstruction2("DEFINE_MODULE_VAR2", offset);
-        case asByte(OpCode::GetModuleVar):
-            return constantInstruction("GET_MODULE_VAR", offset);
-        case asByte(OpCode::GetModuleVar2):
-            return constantInstruction2("GET_MODULE_VAR2", offset);
-        case asByte(OpCode::SetModuleVar):
-            return constantInstruction("SET_MODULE_VAR", offset);
-        case asByte(OpCode::SetModuleVar2):
-            return constantInstruction2("SET_MODULE_VAR2", offset);
-        case asByte(OpCode::SetNewModuleVar):
-            return constantInstruction("SET_NEW_MODULE_VAR", offset);
-        case asByte(OpCode::SetNewModuleVar2):
-            return constantInstruction2("SET_NEW_MODULE_VAR2", offset);
-        case asByte(OpCode::ImportModuleVars):
+        case OpCode::DefineModuleVar:
+            return constantInstruction("DEFINE_MODULE_VAR", offset, doubleByteArg);
+        case OpCode::GetModuleVar:
+            return constantInstruction("GET_MODULE_VAR", offset, doubleByteArg);
+        case OpCode::SetModuleVar:
+            return constantInstruction("SET_MODULE_VAR", offset, doubleByteArg);
+        case OpCode::SetNewModuleVar:
+            return constantInstruction("SET_NEW_MODULE_VAR", offset, doubleByteArg);
+        case OpCode::ImportModuleVars:
             return simpleInstruction("IMPORT_MODULE_VARS", offset);
-        case asByte(OpCode::GetLocal):
-            return byteInstruction("GET_LOCAL", offset);
-        case asByte(OpCode::GetLocal2):
-            return shortInstruction("GET_LOCAL2", offset);
-        case asByte(OpCode::SetLocal):
-            return byteInstruction("SET_LOCAL", offset);
-        case asByte(OpCode::SetLocal2):
-            return shortInstruction("SET_LOCAL2", offset);
-        case asByte(OpCode::GetUpvalue):
-            return byteInstruction("GET_UPVALUE", offset);
-        case asByte(OpCode::GetUpvalue2):
-            return shortInstruction("GET_UPVALUE2", offset);
-        case asByte(OpCode::SetUpvalue):
-            return byteInstruction("SET_UPVALUE", offset);
-        case asByte(OpCode::SetUpvalue2):
-            return shortInstruction("SET_UPVALUE2", offset);
-        case asByte(OpCode::SetProp):
-            return constantInstruction("SET_PROP", offset);
-        case asByte(OpCode::GetProp):
-            return constantInstruction("GET_PROP", offset);
-        case asByte(OpCode::SetPropCheck):
-            return constantInstruction("SET_PROP_CHECK", offset);
-        case asByte(OpCode::SetPropCheck2):
-            return constantInstruction2("SET_PROP_CHECK", offset);
-        case asByte(OpCode::GetPropCheck):
-            return constantInstruction("GET_PROP_CHECK", offset);
-        case asByte(OpCode::GetPropCheck2):
-            return constantInstruction2("GET_PROP_CHECK", offset);
-        case asByte(OpCode::SetProp2):
-            return constantInstruction2("SET_PROP", offset);
-        case asByte(OpCode::GetProp2):
-            return constantInstruction2("GET_PROP", offset);
-        case asByte(OpCode::GetSuper):
-            return constantInstruction("GET_SUPER", offset);
-        case asByte(OpCode::NewRange):
+        case OpCode::GetLocal:
+            return argInstruction("GET_LOCAL", offset, doubleByteArg);
+        case OpCode::SetLocal:
+            return argInstruction("SET_LOCAL", offset, doubleByteArg);
+        case OpCode::GetUpvalue:
+            return argInstruction("GET_UPVALUE", offset, doubleByteArg);
+        case OpCode::SetUpvalue:
+            return argInstruction("SET_UPVALUE", offset, doubleByteArg);
+        case OpCode::SetProp:
+            return constantInstruction("SET_PROP", offset, doubleByteArg);
+        case OpCode::GetProp:
+            return constantInstruction("GET_PROP", offset, doubleByteArg);
+        case OpCode::SetPropCheck:
+            return constantInstruction("SET_PROP_CHECK", offset, doubleByteArg);
+        case OpCode::GetPropCheck:
+            return constantInstruction("GET_PROP_CHECK", offset, doubleByteArg);
+        case OpCode::GetSuper:
+            return constantInstruction("GET_SUPER", offset, doubleByteArg);
+        case OpCode::NewRange:
             return byteInstruction("NEWRANGE", offset);
-        case asByte(OpCode::NewList):
+        case OpCode::NewList:
             return byteInstruction("NEWLIST", offset);
-        case asByte(OpCode::NewDict):
+        case OpCode::NewDict:
             return byteInstruction("NEWDICT", offset);
-        case asByte(OpCode::NewVector):
+        case OpCode::NewVector:
             return byteInstruction("NEWVECTOR", offset);
-        case asByte(OpCode::NewMatrix):
+        case OpCode::NewMatrix:
             return byteInstruction("NEWMATRIX", offset);
-        case asByte(OpCode::IfDictToKeys):
+        case OpCode::IfDictToKeys:
             return simpleInstruction("IF_DICT_TO_KEYS", offset);
-        case asByte(OpCode::IfDictToItems):
+        case OpCode::IfDictToItems:
             return simpleInstruction("IF_DICT_TO_ITEMS", offset);
-        case asByte(OpCode::ToType):
+        case OpCode::ToType:
             return byteInstruction("TO_TYPE", offset);
-        case asByte(OpCode::ToTypeStrict):
+        case OpCode::ToTypeStrict:
             return byteInstruction("TO_TYPE_STRICT", offset);
-        case asByte(OpCode::ToTypeSpec):
+        case OpCode::ToTypeSpec:
             return simpleInstruction("TO_TYPE_SPEC", offset);
-        case asByte(OpCode::ToTypeSpecStrict):
+        case OpCode::ToTypeSpecStrict:
             return simpleInstruction("TO_TYPE_SPEC_STRICT", offset);
-        case asByte(OpCode::EventOn):
+        case OpCode::EventOn:
             return simpleInstruction("EVENT_ON", offset);
-        case asByte(OpCode::EventOff):
+        case OpCode::EventOff:
             return simpleInstruction("EVENT_OFF", offset);
-        case asByte(OpCode::SetupExcept):
+        case OpCode::SetupExcept:
             return jumpInstruction("SETUP_EXCEPT", 1, offset);
-        case asByte(OpCode::EndExcept):
+        case OpCode::EndExcept:
             return simpleInstruction("END_EXCEPT", offset);
-        case asByte(OpCode::Throw):
+        case OpCode::Throw:
             return simpleInstruction("THROW", offset);
-        case asByte(OpCode::CopyInto):
+        case OpCode::CopyInto:
             return simpleInstruction("COPY_INTO", offset);
-        case asByte(OpCode::Nop):
+        case OpCode::Nop:
             return simpleInstruction("NOP", offset);
         default:
-            std::cout << "Unknown opcode " << std::to_string(instruction) << std::endl;
+            std::cout << "Unknown opcode " << std::to_string(int(instruction)) << std::endl;
             return offset+1;
     }
 }

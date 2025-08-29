@@ -441,9 +441,6 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     if (isInterface && (ast->implements.size() > 0))
         throw std::runtime_error("Interfaces can't implement (only extend)");
 
-    if (typeNameConstant > 255)
-        error("Too many object/actor/enum types declared (>255)");
-
     if (isActor) emitBytes(OpCode::ActorType, uint8_t(typeNameConstant));
     else if (isInterface) emitBytes(OpCode::InterfaceType, uint8_t(typeNameConstant));
     else if (isEnumeration) emitBytes(OpCode::EnumerationType, uint8_t(typeNameConstant));
