@@ -109,7 +109,8 @@ size_t VM::marshalArgs(ptr<type::Type> funcType,
                        const CallSpec& callSpec,
                        Value* out,
                        bool includeReceiver,
-                       const Value& receiver)
+                       const Value& receiver,
+                       ObjFunction* funcObj)
 {
     const auto& params = funcType->func.value().params;
     auto paramPositions = callSpec.paramPositions(funcType, true);
@@ -125,6 +126,19 @@ size_t VM::marshalArgs(ptr<type::Type> funcType,
             arg = *(&(*thread->stackTop) - callSpec.argCount + pos);
         else if (pi < defaults.size())
             arg = defaults[pi];
+        else if (funcObj) {
+            auto it = funcObj->paramDefaultFunc.find(params[pi]->nameHashCode);
+            if (it != funcObj->paramDefaultFunc.end()) {
+                Value defFunc = it->second;
+                Value defClosure = Value::closureVal(defFunc);
+                auto res = callAndExec(asClosure(defClosure), {});
+                if (res.first != InterpretResult::OK)
+                    throw std::runtime_error("failed to evaluate default parameter");
+                arg = res.second;
+            } else {
+                arg = Value::nilVal();
+            }
+        }
         else
             arg = Value::nilVal();
 
@@ -144,7 +158,8 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                       const std::vector<Value>& defaults,
                       const CallSpec& callSpec,
                       bool includeReceiver,
-                      const Value& receiver)
+                      const Value& receiver,
+                      ObjFunction* funcObj)
 {
     try {
         if (funcType) {
@@ -157,7 +172,7 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 heapArgs.resize(paramCount);
                 buf = heapArgs.data();
             }
-            size_t actual = marshalArgs(funcType, defaults, callSpec, buf, includeReceiver, receiver);
+            size_t actual = marshalArgs(funcType, defaults, callSpec, buf, includeReceiver, receiver, funcObj);
             ArgsView view{buf, actual};
             Value result { fn(*this, view) };
             *(thread->stackTop - callSpec.argCount - 1) = result;
@@ -246,7 +261,7 @@ VM::VM()
     {
         ActorInstance* inst = asActorInstance(dataflowEngineActor);
         CallSpec cs{}; cs.argCount = 0; cs.allPositional = true;
-        Value callee { Value::boundNativeVal(dataflowEngineActor, std::mem_fn(&VM::dataflow_run_native), true, nullptr, {}) };
+        Value callee { Value::boundNativeVal(dataflowEngineActor, std::mem_fn(&VM::dataflow_run_native), true, nullptr, {}, nullptr) };
         inst->queueCall(callee, cs, nullptr);
     }
 
@@ -876,7 +891,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                                                      initFuncObj->funcType.value()->func->isProc : false,
                                                                   initFuncObj->funcType.has_value() ?
                                                                      initFuncObj->funcType.value() : nullptr,
-                                                                  initFuncObj->nativeDefaults);
+                                                                  initFuncObj->nativeDefaults,
+                                                                  initFuncObj);
                             } else {
                                 calleeVal = Value::boundMethodVal(inst, initMethod->closure);
                             }
@@ -1026,7 +1042,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     ptr<type::Type> funcType = function->funcType.has_value()
                         ? function->funcType.value() : nullptr;
                     return callNativeFn(native, funcType,
-                                        function->nativeDefaults, callSpec);
+                                        function->nativeDefaults, callSpec,
+                                        false, Value::nilVal(), function);
                 } else {
                     bool cfunc = false;
                     for(const auto& annot : function->annotations) {
@@ -1050,7 +1067,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 ObjNative* nativeObj = asNative(callee);
                 NativeFn native = nativeObj->function;
                 return callNativeFn(native, nativeObj->funcType,
-                                    nativeObj->defaultValues, callSpec);
+                                    nativeObj->defaultValues, callSpec,
+                                    false, Value::nilVal(), nullptr);
             }
             case ObjType::BoundNative: {
                 ObjBoundNative* bound { asBoundNative(callee) };
@@ -1060,7 +1078,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     NativeFn native = bound->function;
                     return callNativeFn(native, bound->funcType,
                                         bound->defaultValues, callSpec,
-                                        true, bound->receiver);
+                                        true, bound->receiver,
+                                        bound->functionObj);
                 }
                 else {
                     // call to actor native method.
@@ -1076,7 +1095,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         NativeFn native = bound->function;
                         return callNativeFn(native, bound->funcType,
                                             bound->defaultValues, callSpec,
-                                            true, bound->receiver);
+                                            true, bound->receiver,
+                                            bound->functionObj);
                     } else {
                         // call to other actor
                         Value future = inst->queueCall(callee, callSpec, &(*thread->stackTop) );
@@ -1213,15 +1233,15 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                     if (methodInfo.funcType) {
                         return callNativeFn(fn, methodInfo.funcType,
                                             methodInfo.defaultValues, callSpec,
-                                            true, receiver);
+                                            true, receiver, nullptr);
                     } else {
                         return callNativeFn(fn, nullptr, {}, callSpec,
-                                            true, receiver);
+                                            true, receiver, nullptr);
                     }
                 } else {
                     // Different thread - queue the call
                     Value callee = Value::boundNativeVal(receiver, fn, methodInfo.isProc,
-                                                         methodInfo.funcType, methodInfo.defaultValues);
+                                                         methodInfo.funcType, methodInfo.defaultValues, nullptr);
                     Value future = instance->queueCall(callee, callSpec, &(*thread->stackTop));
 
                     popN(callSpec.argCount + 1); // args & receiver
@@ -1246,10 +1266,10 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                     if (methodInfo.funcType) {
                         return callNativeFn(fn, methodInfo.funcType,
                                             methodInfo.defaultValues, callSpec,
-                                            true, receiver);
+                                            true, receiver, nullptr);
                     } else {
                         return callNativeFn(fn, nullptr, {}, callSpec,
-                                            true, receiver);
+                                            true, receiver, nullptr);
                     }
                 }
             }
@@ -1582,7 +1602,8 @@ VM::BindResult VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
                                                       func->funcType.value()->func->isProc : false,
                                                   func->funcType.has_value() ?
                                                       func->funcType.value() : nullptr,
-                                                  func->nativeDefaults) };
+                                                  func->nativeDefaults,
+                                                  func) };
         pop();
         push(boundNative);
     } else {
@@ -2018,7 +2039,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         if (methodIt != mit->second.end()) {
                             const BuiltinMethodInfo& methodInfo = methodIt->second;
                             Value bm { Value::boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
-                                                             methodInfo.funcType, methodInfo.defaultValues) };
+                                                             methodInfo.funcType, methodInfo.defaultValues, nullptr) };
                             pop();
                             push(bm);
                             break;
@@ -2097,7 +2118,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                 const BuiltinMethodInfo& methodInfo = methodIt->second;
                                 NativeFn fn = methodInfo.function;
                                 Value boundNative { Value::boundNativeVal(inst, fn, methodInfo.isProc,
-                                                                          methodInfo.funcType, methodInfo.defaultValues) };
+                                                                          methodInfo.funcType, methodInfo.defaultValues, nullptr) };
                                 pop();
                                 push(boundNative);
                                 break;
@@ -2147,7 +2168,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         if (it2 != mit->second.end()) {
                             const BuiltinMethodInfo& methodInfo = it2->second;
                             Value bm { Value::boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
-                                                             methodInfo.funcType, methodInfo.defaultValues) };
+                                                             methodInfo.funcType, methodInfo.defaultValues, nullptr) };
                             pop();
                             push(bm);
                             break;
@@ -2198,7 +2219,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         if (methodIt != mit->second.end()) {
                             const BuiltinMethodInfo& methodInfo = methodIt->second;
                             Value bm { Value::boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
-                                                               methodInfo.funcType, methodInfo.defaultValues) };
+                                                             methodInfo.funcType, methodInfo.defaultValues, nullptr) };
                             pop();
                             push(bm);
                             break;
@@ -2298,7 +2319,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                 const BuiltinMethodInfo& methodInfo = methodIt->second;
                                 NativeFn fn = methodInfo.function;
                                 Value boundNative { Value::boundNativeVal(inst, fn, methodInfo.isProc,
-                                                                              methodInfo.funcType, methodInfo.defaultValues) };
+                                                                          methodInfo.funcType, methodInfo.defaultValues, nullptr) };
                                 pop();
                                 push(boundNative);
                                 break;
@@ -2344,7 +2365,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         if (it2 != mit->second.end()) {
                             const BuiltinMethodInfo& methodInfo = it2->second;
                             Value bm { Value::boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
-                                                               methodInfo.funcType, methodInfo.defaultValues) };
+                                                             methodInfo.funcType, methodInfo.defaultValues, nullptr) };
                             pop();
                             push(bm);
                             break;

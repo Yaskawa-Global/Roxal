@@ -263,9 +263,10 @@ Value Value::boundMethodVal(const Value& instance, const Value& closure)
 
 Value Value::boundNativeVal(const Value& instance, NativeFn fn, bool isProc, // ObjBoundNative
                              ptr<roxal::type::Type> funcType,
-                             std::vector<Value> defaults)
+                             std::vector<Value> defaults,
+                             ObjFunction* funcObj)
 {
-    return Value::objVal(newBoundNativeObj(instance, fn, isProc, funcType, defaults));
+    return Value::objVal(newBoundNativeObj(instance, fn, isProc, funcType, defaults, funcObj));
 }
 
 

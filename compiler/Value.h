@@ -35,6 +35,7 @@ class VM;
 class Value;
 struct Obj;
 struct ObjString;
+struct ObjFunction;
 struct ArgsView;
 using NativeFn = std::function<Value(VM&, ArgsView)>;
 
@@ -246,7 +247,8 @@ public:
 
     static Value boundNativeVal(const Value& instance, NativeFn fn, bool isProc = false, // ObjBoundNative
                                 ptr<roxal::type::Type> funcType=nullptr,
-                                std::vector<Value> defaults = {});
+                                std::vector<Value> defaults = {},
+                                ObjFunction* funcObj = nullptr);
 
 
     /// @brief Copy constructor.
