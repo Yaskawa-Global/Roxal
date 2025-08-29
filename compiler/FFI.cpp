@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <dlfcn.h>
 #include <ffi.h>
+#include <filesystem>
 
 using namespace roxal;
 
@@ -36,8 +37,21 @@ Value roxal::loadlib_native(ArgsView args)
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("loadlib expects single string argument");
 
-    std::string path = toUTF8StdString(asUString(args[0]));
-    void* h = dlopen(path.c_str(), RTLD_LAZY);
+    std::filesystem::path path = toUTF8StdString(asUString(args[0]));
+
+    if (!path.is_absolute()) {
+        if (VM::thread && !VM::thread->frames.empty()) {
+            const CallFrame& frame = VM::thread->frames.back();
+            ObjFunction* fn = asFunction(asClosure(frame.closure)->function);
+            std::string src = toUTF8StdString(fn->chunk->sourceName);
+            if (!src.empty()) {
+                std::filesystem::path base = std::filesystem::path(src).parent_path();
+                path = base / path;
+            }
+        }
+    }
+
+    void* h = dlopen(path.string().c_str(), RTLD_LAZY);
     if (!h)
         throw std::runtime_error(std::string("dlopen failed: ") + dlerror());
 

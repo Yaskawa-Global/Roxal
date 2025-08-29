@@ -552,6 +552,7 @@ The functions in the sys module are always globally available (- as if `import s
 * `signal(freq, initial)` - create a source signal
 * `typeof(value)` - return the type of `value`
 * `loadlib(path)` - load a native library from `path`
+  * relative paths are resolved against the directory of the executing script
 
 #### Internal (likely to be removed or renamed)
 * `_clock()` - return process time in seconds
