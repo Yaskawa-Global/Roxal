@@ -116,6 +116,10 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include "linenoise.h"
+#ifdef VXWORKS_BUILD
+#include <stddef.h>
+typedef unsigned int uint;
+#endif
 
 #define LINENOISE_DEFAULT_HISTORY_MAX_LEN 100
 #define LINENOISE_MAX_LINE 4096

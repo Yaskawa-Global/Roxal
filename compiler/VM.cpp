@@ -1688,8 +1688,13 @@ void VM::defineProperty(ObjString* name)
         throw std::runtime_error("Can't create property for an interface");
     #endif
 
-    if (objType->properties.contains(name->hash))
-        throw std::runtime_error("Duplicate property '"+name->toStdString()+"' declared in type "+(objType->isActor?"actor":"object")+" "+toUTF8StdString(objType->name));
+    #ifdef VXWORKS_BUILD
+        if (objType->properties.find(name->hash) != objType->properties.end())
+    #else
+        if (objType->properties.contains(name->hash))
+    #endif
+            throw std::runtime_error("Duplicate property '"+name->toStdString()+"' declared in type "+(objType->isActor?"actor":"object")+" "+toUTF8StdString(objType->name));
+
 
     const Value& propertyType { peek(2) };
     Value propertyInitial { peek(1) };
@@ -1736,8 +1741,12 @@ void VM::defineMethod(ObjString* name)
     #endif
     ObjObjectType* type = asObjectType(peek(1));
 
-    if (type->methods.contains(name->hash))
-        throw std::runtime_error("Duplicate method '"+name->toStdString()+"' declared in type "+(type->isActor?"actor":"object")+" '"+toUTF8StdString(type->name)+"'");
+    #ifdef VXWORKS_BUILD
+       if (type->methods.find(name->hash) != type->methods.end())
+    #else
+       if (type->methods.contains(name->hash))
+    #endif
+           throw std::runtime_error("Duplicate method '"+name->toStdString()+"' declared in type "+(type->isActor?"actor":"object")+" '"+toUTF8StdString(type->name)+"'");
 
     ObjClosure* closure = asClosure(method);
     ObjFunction* function = asFunction(closure->function);
@@ -1760,8 +1769,12 @@ void VM::defineEnumLabel(ObjString* name)
     #endif
     ObjObjectType* type = asObjectType(peek(1));
 
-     if (type->enumLabelValues.contains(name->hash))
-         throw std::runtime_error("Duplicate enum label '"+name->toStdString()+"' declared in type '"+toUTF8StdString(type->name)+"'");
+    #ifdef VXWORKS_BUILD
+       if(type->enumLabelValues.find(name->hash) != type->enumLabelValues.end())
+    #else
+       if (type->enumLabelValues.contains(name->hash))
+    #endif
+            throw std::runtime_error("Duplicate enum label '"+name->toStdString()+"' declared in type '"+toUTF8StdString(type->name)+"'");
 
     // convert the value from byte or int to enum
     int32_t intVal = value.asInt();

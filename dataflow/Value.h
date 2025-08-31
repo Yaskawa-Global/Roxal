@@ -13,6 +13,8 @@ using roxal::Value;
 using roxal::ptr;
 using roxal::make_ptr;
 
+inline bool operator!=(const Value& a, const Value& b) { return !(a == b); } //Jay
+
 inline Value doubleVector(const std::vector<double>& elts) {
     Eigen::VectorXd vec(elts.size());
     for (size_t i = 0; i < elts.size(); ++i)

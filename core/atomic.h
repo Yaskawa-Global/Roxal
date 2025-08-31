@@ -21,7 +21,11 @@
 #include <stack>
 #include <queue>
 #include <optional>
-
+//Jay
+#include <unordered_map>
+#include <functional>
+#include <mutex>
+//Jay
 
 namespace roxal {
 
@@ -635,7 +639,8 @@ public:
 
     atomic_stack& operator=(const std::stack<T>& rhs)
     {
-        std::lock_guard<std::timed_mutex> lock(m_lock);
+        //Jay std::lock_guard<std::timed_mutex> lock(m_lock);
+        std::lock_guard<std::mutex> lock(m_lock);
         s = rhs;
         return *this;
     }

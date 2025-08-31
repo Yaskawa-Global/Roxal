@@ -1,8 +1,16 @@
 #pragma once
 #include "Value.h"
 #include "Object.h"
-#include <span>
 #include <string>
+//Jay
+#if __has_include(<span>) && (__cplusplus >= 202002L)
+#include <span>
+#else
+#include "External/compat/span.hpp"
+// 기존 코드가 std::span을 쓰고 있다면, 아래 한 줄로 매핑해 주세요.
+namespace std { template<class T> using span = ::compat::span<T>; }
+#endif
+//Jay
 
 namespace roxal {
 
