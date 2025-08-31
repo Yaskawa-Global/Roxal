@@ -1,0 +1,1022 @@
+1. Antlr4 build
+
+   - Support Cmake build
+   - Add followings in CmakeFileLists.txt
+   
+    [At the beginning]
+    
+     if(CMAKE_SYSTEM_NAME STREQUAL "VxWorks")
+        set(VXWORKS TRUE) 
+     endif() 
+   
+  
+    if(NOT VXWORKS)
+       message(STATUS  "Building ANTLR4 using vxworks too chain")
+       # Compiler-specific C++17 activation.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Intel")
+       execute_process(
+        COMMAND ${CMAKE_CXX_COMPILER} -dumpversion OUTPUT_VARIABLE GCC_VERSION)
+    # Just g++-5.0 and greater contain <codecvt> header. (test in ubuntu)
+        if(NOT (GCC_VERSION VERSION_GREATER 5.0 OR GCC_VERSION VERSION_EQUAL 5.0))
+            message(FATAL_ERROR "${PROJECT_NAME} requires g++ 5.0 or greater.")
+        endif ()
+    elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND ANDROID)
+	   # Need -Os cflag and cxxflags here to work with exception handling on armeabi.
+	   # see  https://github.com/android-ndk/ndk/issues/573
+	   # and without -stdlib=libc++ cxxflags
+    elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND APPLE)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -stdlib=libc++")
+    elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND ( CMAKE_SYSTEM_NAME MATCHES "Linux" OR CMAKE_SYSTEM_NAME MATCHES "FreeBSD") )
+        execute_process(
+            COMMAND ${CMAKE_CXX_COMPILER} -dumpversion OUTPUT_VARIABLE CLANG_VERSION)
+        if(NOT (CLANG_VERSION VERSION_GREATER 4.2.1 OR CLANG_VERSION VERSION_EQUAL 4.2.1))
+            message(FATAL_ERROR "${PROJECT_NAME} requires clang 4.2.1 or greater.")
+        endif()
+        # You can use libc++ to compile this project when g++ is NOT greater than or equal to 5.0.
+       if(WITH_LIBCXX)
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
+       endif()
+      elseif(MSVC_VERSION GREATER 1800 OR MSVC_VERSION EQUAL 1800)
+      # Visual Studio 2012+ supports C++17 features
+      elseif(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -stdlib=libc++")
+          else()
+       message(FATAL_ERROR "Your C++ compiler does not support C++17.")
+     endif()
+    endif()
+
+
+2. ICU build
+
+  - Not support Cmake build.
+  - Download Cmake wrapper from https://github.com/viaduck/icu-cmake 
+  - In the cmake folder change the  BuildICU.cmak
+  
+    [From]
+    ExternalProject_Add(
+            icu_cross
+            DEPENDS icu_host
+            SOURCE_DIR ${CMAKE_CURRENT_BINARY_DIR}/icu
+            BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/icu_cross-build
+            CONFIGURE_COMMAND ${CROSS_ENV_CMAKE} sh <SOURCE_DIR>/source/configure --prefix=${CMAKE_CURRENT_BINARY_DIR}/icu_cross
+            --libdir=${CMAKE_CURRENT_BINARY_DIR}/icu_cross/lib/ --host=${ICU_CROSS_ARCH} --with-cross-build=${CMAKE_CURRENT_BINARY_DIR}/icu_host-build ${ICU_CFG}
+            BUILD_COMMAND ${CROSS_ENV_CMAKE} ${MAKE_PROGRAM} -j ${NUM_JOBS}
+            BUILD_BYPRODUCTS ${ICU_LIBRARY_FILES}
+            INSTALL_COMMAND ${CROSS_ENV_CMAKE} ${MAKE_PROGRAM} install
+    )  
+    
+    
+    [To]
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/icu_cross-build")
+    set(_VX_PREINCLUDE "${CMAKE_CURRENT_BINARY_DIR}/icu_cross-build/vx_nl_off.h")
+    file(WRITE "${_VX_PREINCLUDE}"
+    "/* Force-disable nl_langinfo on VxWorks cross (preincluded before ICU headers) */
+    #ifdef U_NL_LANGINFO_CODESET
+    #  undef U_NL_LANGINFO_CODESET
+    #endif
+    #ifdef CODESET
+    #  undef CODESET
+    #endif
+    #ifdef U_HAVE_NL_LANGINFO
+    #  undef U_HAVE_NL_LANGINFO
+    #endif
+    #define U_HAVE_NL_LANGINFO 0
+
+    /* Lock default charset to UTF-8 for embedded/RTOS */
+    #ifndef U_CHARSET_IS_UTF8
+    #  define U_CHARSET_IS_UTF8 1
+    #endif
+    ")
+
+    ExternalProject_Add(icu_cross
+      DEPENDS icu_host
+      SOURCE_DIR ${CMAKE_CURRENT_BINARY_DIR}/icu
+      BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/icu_cross-build
+
+      # (1) PATCH는 사용 안 함 (이미 파일을 만들어놨음)
+      PATCH_COMMAND ""
+
+      # (2) configure — 반드시 물리적으로 한 줄! (개행/줄끝 공백 금지)
+      CONFIGURE_COMMAND /bin/sh -lc "PATH=/usr/bin:/bin:/usr/sbin:/sbin:$ENV{PATH} SHELL=/bin/sh CONFIG_SHELL=/bin/sh GREP=/usr/bin/grep SED=/usr/bin/sed AWK=/usr/bin/awk CC='${CROSS_CC}' CXX='${CROSS_CXX}' AR='${CROSS_AR}'    
+      RANLIB='${CROSS_RANLIB}' CPPFLAGS='-include ${_VX_PREINCLUDE} -DU_HAVE_NL_LANGINFO=0 -DU_CHARSET_IS_UTF8=1' CFLAGS='${CROSS_CFLAGS} -include ${_VX_PREINCLUDE} -DU_HAVE_NL_LANGINFO=0 -       
+      DU_CHARSET_IS_UTF8=1 -DU_HAVE_TZNAME=0 -DU_HAVE_STRTOD_L=0' CXXFLAGS='${CROSS_CXXFLAGS} -include ${_VX_PREINCLUDE} -DU_HAVE_NL_LANGINFO=0 -DU_CHARSET_IS_UTF8=1 -DU_HAVE_TZNAME=0 -DU_HAVE_STRTOD_L=0' LDFLAGS='${CROSS_LDFLAGS}' icu_cv_host_frag=mh-linux ac_cv_c_bigendian=no ac_cv_header_langinfo_h=no ac_cv_func_nl_langinfo=no am_cv_langinfo_codeset=no /bin/sh '<SOURCE_DIR>/source/configure' --prefix='$
+      {CMAKE_CURRENT_BINARY_DIR}/icu_cross' --libdir='${CMAKE_CURRENT_BINARY_DIR}/icu_cross/lib/' --host='${ICU_CROSS_ARCH}' --with-cross-build='${CMAKE_CURRENT_BINARY_DIR}/icu_host-build' ${ICU_CFG}"     	
+      
+   
+      # (3) build — 한 줄
+      BUILD_COMMAND /bin/sh -lc "PATH=/usr/bin:/bin:/usr/sbin:/sbin:$ENV{PATH} SHELL=/bin/sh CONFIG_SHELL=/bin/sh GREP=/usr/bin/grep SED=/usr/bin/sed AWK=/usr/bin/awk CC='${CROSS_CC}' CXX='${CROSS_CXX}' AR='${CROSS_AR}' RANLIB='${CROSS_RANLIB}' CPPFLAGS='-include ${_VX_PREINCLUDE} -DU_HAVE_NL_LANGINFO=0 -DU_CHARSET_IS_UTF8=1' CFLAGS='${CROSS_CFLAGS} -include ${_VX_PREINCLUDE} -DU_HAVE_NL_LANGINFO=0 -
+      DU_CHARSET_IS_UTF8=1 -DU_HAVE_TZNAME=0 -DU_HAVE_STRTOD_L=0' CXXFLAGS='${CROSS_CXXFLAGS} -include ${_VX_PREINCLUDE} -DU_HAVE_NL_LANGINFO=0 -DU_CHARSET_IS_UTF8=1 -DU_HAVE_TZNAME=0 -DU_HAVE_STRTOD_L=0' LDFLAGS='${CROSS_LDFLAGS}' icu_cv_host_frag=mh-linux ac_cv_c_bigendian=no ac_cv_header_langinfo_h=no ac_cv_func_nl_langinfo=no am_cv_langinfo_codeset=no ${MAKE_PROGRAM} -j ${NUM_JOBS}"
+
+      BUILD_BYPRODUCTS ${ICU_LIBRARY_FILES}
+
+      # (4) install — 한 줄
+      INSTALL_COMMAND /bin/sh -lc "PATH=/usr/bin:/bin:/usr/sbin:/sbin:$ENV{PATH} SHELL=/bin/sh CONFIG_SHELL=/bin/sh GREP=/usr/bin/grep SED=/usr/bin/sed AWK=/usr/bin/awk CC='${CROSS_CC}' CXX='${CROSS_CXX}' AR='${CROSS_AR}' RANLIB='${CROSS_RANLIB}' CPPFLAGS='-include ${_VX_PREINCLUDE} -DU_HAVE_NL_LANGINFO=0 -DU_CHARSET_IS_UTF8=1' CFLAGS='${CROSS_CFLAGS} -include ${_VX_PREINCLUDE} -DU_HAVE_NL_LANGINFO=0 -
+      DU_CHARSET_IS_UTF8=1 -DU_HAVE_TZNAME=0 -DU_HAVE_STRTOD_L=0' CXXFLAGS='${CROSS_CXXFLAGS} -include ${_VX_PREINCLUDE} -DU_HAVE_NL_LANGINFO=0 -DU_CHARSET_IS_UTF8=1 -DU_HAVE_TZNAME=0 -DU_HAVE_STRTOD_L=0' LDFLAGS='${CROSS_LDFLAGS}' icu_cv_host_frag=mh-linux ac_cv_c_bigendian=no ac_cv_header_langinfo_h=no ac_cv_func_nl_langinfo=no am_cv_langinfo_codeset=no ${MAKE_PROGRAM} install"
+     )
+    
+     
+   - Change the CmakeFileLists.txt
+   
+    [From]
+    # cache variables
+    set(BUILD_ICU OFF CACHE BOOL "Enable compilation of ICU")
+    set(ICU_BUILD_VERSION "" CACHE STRING "ICU version to build")
+    set(ICU_CFG_OPTIONS "" CACHE STRING "Additional ICU configuration options")
+    set(ICU_STATIC OFF CACHE BOOL "Use static instead of shared ICU (does not work for system)")
+    set(ICU_CROSS_ARCH "" CACHE STRING "Target triplet for ICU cross compile")
+    set(SYSTEM_ICU OFF CACHE BOOL "Use system-provided icu libraries (instead of prebuilts or building")  
+    
+    
+    [To]
+    # cache variables
+    set(BUILD_ICU ON CACHE BOOL "Enable compilation of ICU")
+    set(ICU_BUILD_VERSION "74.2" CACHE STRING "ICU version to build")
+
+    # VxWorks에선 파일 I/O 없이도 동작하도록 data를 바이너리에 포함: static 권장
+    set(ICU_CFG_OPTIONS "--disable-shared --disable-tests --disable-samples --disable-extras --with-data-packaging=static" CACHE STRING "Additional ICU configuration options")
+    set(ICU_STATIC ON CACHE BOOL "Use static ICU libraries")
+    # RPi4(VxWorks AArch64) 트리플릿 (wr-cc -dumpmachine 결과에 맞춰 필요 시 수정)
+    set(ICU_CROSS_ARCH "aarch64-wrs-vxworks" CACHE STRING "Target arch/triplet (e.g., aarch64-wrs-vxworks)")
+    set(SYSTEM_ICU OFF CACHE BOOL "Use system-provided ICU libraries (instead of prebuilts or building)")
+     
+    
+    
+3. FFI build
+   - Not support cmake build.
+   - Download cmake wrapper from https://github.com/blade-lang/ffi 
+   - Change CmakeFilelists.txt
+    
+======================================================CmakeFileLists.txt======================================    
+cmake_minimum_required(VERSION 3.10)
+project(libffi C ASM)
+
+
+option(FFI_USE_SHARED_LIBS "Build libffi as a shared library" OFF)
+option(FFI_SKIP_HEADERS   "Skip installing headers"           OFF)
+
+set(VERSION 3.4.2 CACHE STRING "libffi version")
+
+
+if(NOT FFI_ROOT)
+  set(FFI_ROOT ${CMAKE_CURRENT_LIST_DIR})
+endif()
+
+
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
+
+if(CMAKE_SYSTEM_NAME STREQUAL "VxWorks")
+   set(TARGET ARM64)
+endif()
+
+if(NOT DEFINED TARGET)
+  if(NOT CMAKE_SYSTEM_PROCESSOR)
+    set(CMAKE_SYSTEM_PROCESSOR "${CMAKE_HOST_SYSTEM_PROCESSOR}")
+  endif()
+  string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" lower_system_processor)
+
+  if(CMAKE_SYSTEM_NAME MATCHES "Windows" AND CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "arm")
+    set(TARGET ARM_WIN32)
+  elseif(CMAKE_SYSTEM_NAME MATCHES "Windows" AND CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "arm64")
+    set(TARGET ARM_WIN64)
+  elseif(CMAKE_SYSTEM_NAME MATCHES "Windows" AND CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86")
+    set(TARGET X86_WIN32)
+  elseif(CMAKE_SYSTEM_NAME MATCHES "Windows" AND (CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x64" OR CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "amd64"))
+    set(TARGET X86_WIN64)
+  elseif(lower_system_processor MATCHES "arm64|aarch64")
+    set(TARGET ARM64)
+  elseif(lower_system_processor MATCHES "^arm")
+    set(TARGET ARM)
+  elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(TARGET X86_64)
+  elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
+    set(TARGET X86)
+  else()
+    message(FATAL_ERROR "Unknown processor: ${CMAKE_SYSTEM_PROCESSOR} (set -DTARGET=ARM64 등으로 강제 지정 가능)")
+  endif()
+endif()
+
+message(STATUS "libffi TARGET = ${TARGET}")
+if("${TARGET}" STREQUAL "X86_64")
+  set(HAVE_LONG_DOUBLE 1)
+else()
+  set(HAVE_LONG_DOUBLE 0)
+endif()
+set(FFI_EXEC_TRAMPOLINE_TABLE 0)
+
+
+if(NOT FFI_CONFIG_FILE)
+  set(FFI_CONFIG_FILE ${FFI_ROOT}/fficonfig.h)
+endif()
+if(NOT EXISTS "${FFI_CONFIG_FILE}")
+  message(FATAL_ERROR "fficonfig.h not found: ${FFI_CONFIG_FILE}")
+endif()
+
+
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/include)
+configure_file(${FFI_ROOT}/include/ffi.h.in
+               ${CMAKE_CURRENT_BINARY_DIR}/include/ffi.h @ONLY)
+file(COPY ${FFI_CONFIG_FILE} DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+
+
+if("${TARGET}" STREQUAL "ARM64" OR "${TARGET}" STREQUAL "ARM_WIN64")
+  file(COPY ${FFI_ROOT}/src/aarch64/ffitarget.h DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/include)
+elseif("${TARGET}" STREQUAL "ARM" OR "${TARGET}" STREQUAL "ARM_WIN32")
+  file(COPY ${FFI_ROOT}/src/arm/ffitarget.h     DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/include)
+else()
+  file(COPY ${FFI_ROOT}/src/x86/ffitarget.h     DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/include)
+endif()
+
+
+include_directories(
+  ${CMAKE_CURRENT_BINARY_DIR}/include
+  ${CMAKE_CURRENT_BINARY_DIR}
+  ${FFI_ROOT}/include
+  ${FFI_ROOT}
+  ${FFI_ROOT}/src
+)
+
+
+if("${TARGET}" STREQUAL "ARM64" OR "${TARGET}" STREQUAL "ARM_WIN64")
+  include_directories(${FFI_ROOT}/src/aarch64)
+elseif("${TARGET}" STREQUAL "ARM" OR "${TARGET}" STREQUAL "ARM_WIN32")
+  include_directories(${FFI_ROOT}/src/arm)
+elseif("${TARGET}" MATCHES "^X86")
+  include_directories(${FFI_ROOT}/src/x86)
+endif()
+
+
+set(FFI_SOURCES
+  ${FFI_ROOT}/src/closures.c
+  ${FFI_ROOT}/src/prep_cif.c
+  ${FFI_ROOT}/src/types.c
+  ${FFI_ROOT}/src/tramp.c
+)
+
+if("${TARGET}" STREQUAL "ARM64" OR "${TARGET}" STREQUAL "ARM_WIN64")
+  list(APPEND FFI_SOURCES ${FFI_ROOT}/src/aarch64/ffi.c)
+elseif("${TARGET}" STREQUAL "ARM" OR "${TARGET}" STREQUAL "ARM_WIN32")
+  list(APPEND FFI_SOURCES ${FFI_ROOT}/src/arm/ffi.c)
+else()
+
+  list(APPEND FFI_SOURCES
+    ${FFI_ROOT}/src/java_raw_api.c
+    ${FFI_ROOT}/src/raw_api.c
+  )
+  if("${TARGET}" STREQUAL "X86")
+    list(APPEND FFI_SOURCES ${FFI_ROOT}/src/x86/ffi.c)
+  elseif("${TARGET}" STREQUAL "X86_WIN32")
+    list(APPEND FFI_SOURCES ${FFI_ROOT}/src/x86/ffi.c)
+  elseif("${TARGET}" STREQUAL "X86_WIN64")
+    list(APPEND FFI_SOURCES ${FFI_ROOT}/src/x86/ffiw64.c)
+  elseif("${TARGET}" STREQUAL "X86_64")
+    list(APPEND FFI_SOURCES
+      ${FFI_ROOT}/src/x86/ffi64.c
+      ${FFI_ROOT}/src/x86/ffiw64.c
+    )
+  endif()
+endif()
+
+
+function(add_ffi_asm ASMFILE)
+  if(NOT MSVC)
+    set_source_files_properties(${ASMFILE} PROPERTIES
+      LANGUAGE C
+      COMPILE_OPTIONS "-x;assembler-with-cpp"
+    )
+  endif()
+  list(APPEND FFI_SOURCES ${ASMFILE})
+  set(FFI_SOURCES "${FFI_SOURCES}" PARENT_SCOPE)
+endfunction()
+
+if("${TARGET}" STREQUAL "X86")
+  add_ffi_asm(${FFI_ROOT}/src/x86/sysv.S)
+elseif("${TARGET}" STREQUAL "X86_64")
+  add_ffi_asm(${FFI_ROOT}/src/x86/unix64.S)
+  add_ffi_asm(${FFI_ROOT}/src/x86/win64.S)
+elseif("${TARGET}" STREQUAL "X86_WIN32")
+  add_ffi_asm(${FFI_ROOT}/src/x86/sysv.S)
+elseif("${TARGET}" STREQUAL "X86_WIN64")
+  add_ffi_asm(${FFI_ROOT}/src/x86/win64.S)
+elseif("${TARGET}" STREQUAL "ARM_WIN32")
+  add_ffi_asm(${FFI_ROOT}/src/arm/sysv.S)
+elseif("${TARGET}" STREQUAL "ARM")
+  add_ffi_asm(${FFI_ROOT}/src/arm/sysv.S)
+elseif("${TARGET}" STREQUAL "ARM64" OR "${TARGET}" STREQUAL "ARM_WIN64")
+  add_ffi_asm(${FFI_ROOT}/src/aarch64/sysv.S)
+else()
+  message(FATAL_ERROR "No assembly mapping for TARGET=${TARGET}")
+endif()
+
+# Debug 빌드 시 디버그 소스/매크로
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  list(APPEND FFI_SOURCES ${FFI_ROOT}/src/debug.c)
+  add_definitions(-DFFI_DEBUG)
+endif()
+
+# libffi 내부 빌드 매크로
+if(NOT FFI_USE_SHARED_LIBS)
+  add_definitions(-DFFI_BUILDING)
+endif()
+if((BUILD_SHARED_LIBS OR FFI_USE_SHARED_LIBS) AND WIN32)
+  add_definitions(-DFFI_BUILDING_DLL)
+endif()
+
+
+add_library(ffi STATIC ${FFI_SOURCES})
+set_target_properties(ffi PROPERTIES
+  OUTPUT_NAME "ffi"                    # => libffi.a
+  POSITION_INDEPENDENT_CODE ON        
+)
+
+
+install(TARGETS ffi
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib
+)
+
+if(NOT FFI_SKIP_HEADERS)
+  install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/include/ffi.h
+    ${CMAKE_CURRENT_BINARY_DIR}/include/ffitarget.h
+    DESTINATION include
+  )
+endif()
+      
+ 
+
+4. build_antlr.sh
+
+# ~/Roxal/build_antlr.sh
+#!/bin/bash
+echo "Building antlr4-runtime"
+
+cd External/antlr4-cpp-runtime
+set -euo pipefail
+
+
+export WIND_BASE="$HOME/wrsdk-vxworks7-raspberrypi4b/vxsdk"
+export WIND_VX7_HOST_TYPE=x86_64-linux
+export WIND_CC_SYSROOT=$WIND_BASE/sysroot
+export PATH=$WIND_BASE/host/$WIND_VX7_HOST_TYPE/bin:$PATH
+
+
+which wr-c++
+wr-c++ --version
+
+
+rm -rf ~/Roxal/External/antlr4-cpp-runtime/build
+cmake -G Ninja \
+  -S ~/Roxal/External/antlr4-cpp-runtime \
+  -B ~/Roxal/External/antlr4-cpp-runtime/build \
+  -DCMAKE_CXX_STANDARD=17 \
+  -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+  -DCMAKE_TOOLCHAIN_FILE=~/Roxal/toolchains/vxworks.cmake \
+  -DCMAKE_BUILD_TYPE=Release \
+
+
+cmake --build ~/Roxal/External/antlr4-cpp-runtime/build -j
+
+
+5. build_ffi.sh
+
+# ~/Roxal/build_roxal.sh
+#!/bin/bash
+echo "Building ICU"
+
+cd External/ffi
+set -euo pipefail
+
+export WIND_HOME="$HOME/WindRiver"
+export WIND_BASE="$HOME/wrsdk-vxworks7-raspberrypi4b/vxsdk"
+export WIND_VX7_HOST_TYPE=x86_64-linux
+export WIND_CC_SYSROOT=$WIND_BASE/sysroot
+export PATH=$WIND_BASE/host/$WIND_VX7_HOST_TYPE/bin:$PATH
+
+
+which wr-c++
+wr-c++ --version
+
+rm -rf ~/Roxal/External/ffi/build
+cmake -G Ninja \
+  -S ~/Roxal/External/ffi \
+  -B ~/Roxal/External/ffi/build \
+  -DCMAKE_CXX_STANDARD=17 \
+  -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+  -DCMAKE_TOOLCHAIN_FILE=~/Roxal/toolchains/vxworksffi.cmake \
+  -DCMAKE_BUILD_TYPE=Release \
+ 
+cmake --build ~/Roxal/External/ffi/build -j
+
+6. build_icu.sh
+
+# ~/Roxal/build_icu.sh
+#! /bin/bash
+echo "Building ICU"
+cd External/icu
+set -euo pipefail
+
+if [ "${FULLCLEAN:-1}" = "1" ]; then
+  echo "[Full clean] Removing build dir: build-vx-rpi4"
+  rm -rf build-vx-rpi4
+fi
+
+#host utility setting
+export SHELL=/bin/sh
+export CONFIG_SHELL=/bin/sh
+export GREP=/usr/bin/grep
+export SED=/usr/bin/sed
+export AWK=/usr/bin/awk
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
+export WIND_BASE="$HOME/wrsdk-vxworks7-raspberrypi4b/vxsdk"
+export WIND_VX7_HOST_TYPE=x86_64-linux
+export WIND_CC_SYSROOT=$WIND_BASE/sysroot
+export PATH=$WIND_BASE/host/$WIND_VX7_HOST_TYPE/bin:$PATH
+
+which wr-c++
+wr-c++ --version
+
+cmake -S . -B build-vx-rpi4 \
+  -DBUILD_SHARED_LIBS=OFF \
+  -DBUILD_ICU=ON \
+  -DICU_STATIC=ON \
+  -DCMAKE_CXX_STANDARD=17 \
+  -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+  -DICU_BUILD_VERSION=74.2 \
+  -DCMAKE_TOOLCHAIN_FILE=~/Roxal/toolchains/vxworks.cmake \
+  -DICU_CROSS_ARCH=aarch64-wrs-vxworks7 \
+  -DICU_CFG_OPTIONS:STRING="--disable-shared;--enable-static;--disable-tests;--disable-samples;--disable-extras;--with-data-packaging=static"
+
+cmake --build build-vx-rpi4 -v
+
+
+7. build_roxal.sh
+
+# ~/Roxal/build_roxal.sh
+#!/bin/bash
+set -euo pipefail
+echo "Building Roxal"
+
+if [ "${FULLCLEAN:-1}" = "1" ]; then
+  echo "[Full clean] Removing build dir: build"
+  rm -rf build
+fi
+
+export WIND_HOME="$HOME/WindRiver"
+export WIND_BASE="$HOME/wrsdk-vxworks7-raspberrypi4b/vxsdk"
+export WIND_VX7_HOST_TYPE=x86_64-linux
+export WIND_CC_SYSROOT=$WIND_BASE/sysroot
+export PATH=$WIND_BASE/host/$WIND_VX7_HOST_TYPE/bin:$PATH
+
+
+which wr-c++
+wr-c++ --version
+
+
+rm -rf ~/Roxal-main/build
+cmake -G Ninja \
+  -S ~/Roxal\
+  -B ~/Roxal/build \
+  -DCMAKE_TOOLCHAIN_FILE=~/Roxal/toolchains/vxworks.cmake \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DEIGEN3_INCLUDE_DIR=/usr/local/include/eigen3
+
+
+cmake --build ~/Roxal/build -j
+
+
+=============================================Tool Chain Setting===========================================
+
+8. Roxal/toolchans(vxworks.cmake)
+
+# VxWorks.cmake -- Platform Definitions for VxWorks
+# Copyright (c) 2017 Wind River Systems, Inc. All Rights Reserved.
+#
+# This file is auto-included by cmake, when CMAKE_SYSTEM = VxWorks
+# It is included "late" so allows overriding improper defaults
+# from the cmake auto-discovery process where appropriate.
+#
+# modification history
+# --------------------
+# 18oct16,mob  written
+# 13Nov17,ryan Override the CMAKE_ASM_COMPILE_OBJECT
+set(CMAKE_SYSTEM_NAME VxWorks)
+set(CMAKE_SYSTEM_PROCESSOR aarch64)
+
+# Wind River compiler wrappers
+set(CMAKE_C_COMPILER   wr-cc)
+set(CMAKE_CXX_COMPILER wr-c++)
+set(CMAKE_AR           wr-ar)
+set(CMAKE_RANLIB       wr-ranlib)
+
+set(CMAKE_C_OUTPUT_EXTENSION .o)
+set(CMAKE_C_OUTPUT_EXTENSION_REPLACE 1)
+set(CMAKE_CXX_OUTPUT_EXTENSION .o)
+set(CMAKE_CXX_OUTPUT_EXTENSION_REPLACE 1)
+set(CMAKE_ASM_OUTPUT_EXTENSION .o)
+set(CMAKE_ASM_OUTPUT_EXTENSION_REPLACE 1)
+# .vxe or .out is set in the toolchain file - users may override
+set(CMAKE_EXECUTABLE_SUFFIX ${WIND_EXECUTABLE_SUFFIX})
+
+# The GNU Language discovery process for C and CXX overrides our
+# CMAKE_C_FLAGS_INIT and related settings from the Toolchain file.
+# Since we really need OUR cross flags and not the discovered ones,
+# these are force-overridden back here. Note: This may also mean
+# that environment variables are not considered for the _INIT flags.
+foreach(lang C CXX ASM)
+  foreach(c "" _DEBUG _RELEASE _MINSIZEREL _RELWITHDEBINFO)
+    set(CMAKE_${lang}_FLAGS${c}_INIT "${WIND_${lang}_FLAGS${c}}")
+  endforeach()
+endforeach()
+
+set(CMAKE_ASM_COMPILE_OBJECT "${CMAKE_ASM_COMPILER} ${CMAKE_ASM_FLAGS_INIT} -o <OBJECT> -c <SOURCE>")
+
+# For Auto-discovery purpopses, VxWorks is similar enough to UNIX
+# This helps porting software in most cases. It can be turned off
+# in a custom toolchain with WIND_VXWORKS_IS_NOT_UNIX if necessary.
+set(VXWORKS TRUE)
+
+# Workaround for FindOpenSSL.cmake not knowing VxWorks library names,
+# and even failing when the CRYPTO library is not there.
+# TODO The proper openssl library name should be contributed to cmake.
+find_library(OPENSSL_SSL_LIBRARY OPENSSL)
+find_library(OPENSSL_CRYPTO_LIBRARY OPENSSL)
+mark_as_advanced(OPENSSL_SSL_LIBRARY OPENSSL_CRYPTO_LIBRARY)
+
+
+
+9. Roxal/toolchans(vxworks_ffi.cmake)
+
+# VxWorks.cmake -- Platform Definitions for VxWorks
+# Copyright (c) 2017 Wind River Systems, Inc. All Rights Reserved.
+#
+# This file is auto-included by cmake, when CMAKE_SYSTEM = VxWorks
+# It is included "late" so allows overriding improper defaults
+# from the cmake auto-discovery process where appropriate.
+#
+# modification history
+# --------------------
+# 18oct16,mob  written
+# 13Nov17,ryan Override the CMAKE_ASM_COMPILE_OBJECT
+set(CMAKE_SYSTEM_NAME VxWorks)
+set(CMAKE_SYSTEM_PROCESSOR aarch64)
+
+# Wind River compiler wrappers
+set(CMAKE_C_COMPILER   wr-cc)
+set(CMAKE_CXX_COMPILER wr-c++)
+set(CMAKE_AR           wr-ar)
+set(CMAKE_RANLIB       wr-ranlib)
+
+set(CMAKE_C_OUTPUT_EXTENSION .o)
+set(CMAKE_C_OUTPUT_EXTENSION_REPLACE 1)
+set(CMAKE_CXX_OUTPUT_EXTENSION .o)
+set(CMAKE_CXX_OUTPUT_EXTENSION_REPLACE 1)
+set(CMAKE_ASM_OUTPUT_EXTENSION .o)
+set(CMAKE_ASM_OUTPUT_EXTENSION_REPLACE 1)
+# .vxe or .out is set in the toolchain file - users may override
+set(CMAKE_EXECUTABLE_SUFFIX ${WIND_EXECUTABLE_SUFFIX})
+
+# The GNU Language discovery process for C and CXX overrides our
+# CMAKE_C_FLAGS_INIT and related settings from the Toolchain file.
+# Since we really need OUR cross flags and not the discovered ones,
+# these are force-overridden back here. Note: This may also mean
+# that environment variables are not considered for the _INIT flags.
+foreach(lang C CXX ASM)
+  foreach(c "" _DEBUG _RELEASE _MINSIZEREL _RELWITHDEBINFO)
+    set(CMAKE_${lang}_FLAGS${c}_INIT "${WIND_${lang}_FLAGS${c}}")
+  endforeach()
+endforeach()
+
+set(CMAKE_ASM_COMPILE_OBJECT "${CMAKE_ASM_COMPILER} ${CMAKE_ASM_FLAGS_INIT} -o <OBJECT> -c <SOURCE>")
+
+# For Auto-discovery purpopses, VxWorks is similar enough to UNIX
+# This helps porting software in most cases. It can be turned off
+# in a custom toolchain with WIND_VXWORKS_IS_NOT_UNIX if necessary.
+set(VXWORKS TRUE)
+
+# Workaround for FindOpenSSL.cmake not knowing VxWorks library names,
+# and even failing when the CRYPTO library is not there.
+# TODO The proper openssl library name should be contributed to cmake.
+find_library(OPENSSL_SSL_LIBRARY OPENSSL)
+find_library(OPENSSL_CRYPTO_LIBRARY OPENSSL)
+mark_as_advanced(OPENSSL_SSL_LIBRARY OPENSSL_CRYPTO_LIBRARY)
+
+
+9-1 dataflow Cmakefilelists.txt
+
+# Minimum version
+cmake_minimum_required(VERSION 3.10)
+
+# This CMakeLists was originally used to build the dataflow engine as a
+# standalone test application. When included from the main Roxal build we
+# simply create a library that can be linked against.
+
+project(dataflow LANGUAGES CXX C)
+enable_testing()
+
+if(NOT VXWORKS)
+   list(APPEND CMAKE_PREFIX_PATH "~/.local")
+   list(APPEND CMAKE_PREFIX_PATH "/usr/local")
+endif()
+
+
+if(NOT VXWORKS)
+   #
+   # vcpkg
+
+   # Set the relative path to vcpkg (assumed to be at same level as project folder)
+   set(VCPKG_ROOT "${CMAKE_SOURCE_DIR}/../../../../vcpkg")
+
+   # Point CMake to the vcpkg toolchain file
+   set(CMAKE_TOOLCHAIN_FILE "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
+
+   # Add the vcpkg installation prefix to CMAKE_PREFIX_PATH
+   list(APPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-linux")
+endif()
+
+# Sources
+set(DATAFLOW_SOURCES
+    Signal.cpp
+    FuncNode.cpp
+    DataflowEngine.cpp
+)
+
+# Library
+add_library(dataflow ${DATAFLOW_SOURCES})
+
+# include the project root directory
+if(NOT VXWORKS)
+   include_directories(${CMAKE_HOME_DIRECTORY})
+else()
+   target_include_directories(dataflow PUBLIC ${CMAKE_HOME_DIRECTORY})
+endif()
+
+#Threads
+if(VXWORKS)
+   find_package(Threads REQUIRED)
+   target_link_libraries(dataflow
+      PUBLIC
+         icuuc icui18n icudata
+         Eigen3::Eigen
+         Threads::Threads)
+else()
+   target_link_libraries(dataflow
+       PUBLIC
+           pthread
+   )
+endif()
+
+# Build options
+target_compile_options(dataflow PRIVATE
+    $<$<CONFIG:DEBUG>:-fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1>
+    $<$<CONFIG:RELEASE>:-O3>
+)
+
+# Defines
+target_compile_definitions(dataflow PRIVATE
+    $<$<CONFIG:DEBUG>:DEBUG_BUILD>
+)
+
+
+
+===========================================================Roxal main Cmakefilelists.txt =============================================================
+
+cmake_minimum_required(VERSION 3.10)
+
+project(roxal VERSION 1.0 LANGUAGES CXX C)
+enable_testing()
+
+# --- Platform detect (VxWorks) ---
+if(CMAKE_SYSTEM_NAME STREQUAL "VxWorks")  
+  set(VXWORKS TRUE)
+  add_definitions(-DVXWORKS_BUILD)
+endif()
+
+# --- Build options ---
+if(NOT VXWORKS)
+  option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
+  option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
+else()
+  option(ROXAL_BUILD_MAIN "Build the roxal executable" OFF)
+  option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" OFF)
+endif()
+option(USE_GC_SGCL "Use the SGCL garbage collector" OFF)
+
+add_compile_definitions(
+#  DEBUG_OUTPUT_LEXER_TOKENS
+#  DEBUG_OUTPUT_PARSE_TREE
+#  DEBUG_TRACE_PARSE
+#  DEBUG_TRACE_SCOPES
+#  DEBUG_TRACE_NAME_RESOLUTION
+   DEBUG_TRACE_MEMORY
+#  DEBUG_TRACE_EXECUTION
+)
+
+# --- C++ standard ---
+if(VXWORKS)
+  add_compile_options(-fno-char8_t)
+endif()
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS ON)
+
+# --- vcpkg only for non-VxWorks ---
+if(NOT VXWORKS)
+  if(DEFINED ENV{VCPKG_ROOT})
+    set(VCPKG_ROOT $ENV{VCPKG_ROOT})
+  else()
+    set(VCPKG_ROOT "${CMAKE_SOURCE_DIR}/../vcpkg")
+  endif()
+  set(CMAKE_TOOLCHAIN_FILE "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
+  list(APPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-linux")
+endif()
+
+# =========================================================================
+# External: ANTLR4 / FFI / ICU
+# =========================================================================
+if(VXWORKS)
+  set(VX_LIB_DIR "${CMAKE_SOURCE_DIR}/libraries")
+
+  add_library(antlr4-runtime STATIC IMPORTED GLOBAL)
+  set_target_properties(antlr4-runtime PROPERTIES
+    IMPORTED_LOCATION             "${VX_LIB_DIR}/antlr4/libantlr4-runtime.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/External/antlr4-cpp-runtime/runtime/src"
+  )
+
+  add_library(ffi STATIC IMPORTED GLOBAL)
+  set_target_properties(ffi PROPERTIES
+    IMPORTED_LOCATION             "${VX_LIB_DIR}/ffi/libffi.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/External/ffi/include"
+  )
+
+  add_library(icuio STATIC IMPORTED GLOBAL)
+  set_target_properties(icuio PROPERTIES
+    IMPORTED_LOCATION             "${VX_LIB_DIR}/icu/libicuio.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/External/icu/icu4c/source/io"
+  )
+  add_library(icui18n STATIC IMPORTED GLOBAL)
+  set_target_properties(icui18n PROPERTIES
+    IMPORTED_LOCATION             "${VX_LIB_DIR}/icu/libicui18n.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/External/icu/icu4c/source/i18n"
+  )
+  add_library(icuuc STATIC IMPORTED GLOBAL)
+  set_target_properties(icuuc PROPERTIES
+    IMPORTED_LOCATION             "${VX_LIB_DIR}/icu/libicuuc.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/External/icu/icu4c/source/common;${CMAKE_SOURCE_DIR}/External/icu/icu4c/source/common/unicode"
+  )
+  add_library(icudata STATIC IMPORTED GLOBAL)
+  set_target_properties(icudata PROPERTIES
+    IMPORTED_LOCATION             "${VX_LIB_DIR}/icu/libicudata.a"
+  )
+else()
+  set(ANTLR4_ROOT "${VCPKG_ROOT}/installed/x64-linux")
+  find_package(antlr4-runtime 4.13.1 CONFIG REQUIRED)
+
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(LIBFFI REQUIRED libffi)
+endif()
+
+# =======================================================================
+# Eigen (header-only)
+# =======================================================================
+if(VXWORKS)
+  set(EIGEN3_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/External/eigen"
+      CACHE PATH "Eigen include dir" FORCE)
+  if(NOT EXISTS "${EIGEN3_INCLUDE_DIR}/Eigen/Dense")
+    file(GLOB _eigen_candidates "${CMAKE_SOURCE_DIR}/External/eigen*/Eigen")
+    list(LENGTH _eigen_candidates _n)
+    if(_n GREATER 0)
+      list(GET _eigen_candidates 0 _eigen_Eigen_dir)
+      get_filename_component(_eigen_root "${_eigen_Eigen_dir}" DIRECTORY)
+      set(EIGEN3_INCLUDE_DIR "${_eigen_root}" CACHE PATH "Eigen include dir" FORCE)
+    endif()
+  endif()
+  if(NOT EXISTS "${EIGEN3_INCLUDE_DIR}/Eigen/Dense")
+    message(FATAL_ERROR "Eigen headers not found. Expected: ${EIGEN3_INCLUDE_DIR}/Eigen/Dense")
+  endif()
+  add_library(Eigen3::Eigen INTERFACE IMPORTED)
+  set_target_properties(Eigen3::Eigen PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${EIGEN3_INCLUDE_DIR}"
+  )
+else()
+  find_package(Eigen3 REQUIRED NO_MODULE)
+endif()
+
+# =======================================================================
+# Subdir: dataflow
+# =======================================================================
+add_subdirectory(dataflow)
+target_compile_definitions(dataflow PRIVATE $<$<BOOL:${USE_GC_SGCL}>:USE_GC_SGCL>)
+
+# =======================================================================
+# Sources
+# =======================================================================
+set(CORE_SOURCES
+  core/AST.cpp
+  core/atomic.cpp
+  core/common.cpp
+  core/types.cpp
+  core/json11.cpp
+)
+
+set(COMPILER_SOURCES
+  compiler/ASTEditor.cpp
+  compiler/ASTGenerator.cpp
+  compiler/ASTGraphviz.cpp
+  compiler/Chunk.cpp
+  compiler/Object.cpp
+  compiler/FFI.cpp
+  compiler/RoxalCompiler.cpp
+  compiler/RoxalIndentationLexer.cpp
+  compiler/TypeDeducer.cpp
+  compiler/Value.cpp
+  compiler/Thread.cpp
+  compiler/VM.cpp
+  compiler/linenoise.c
+  compiler/ModuleMath.cpp
+  compiler/ModuleSys.cpp
+)
+if(ROXAL_ENABLE_FILEIO)
+  list(APPEND COMPILER_SOURCES compiler/ModuleFileIO.cpp)
+endif()
+
+set(MAIN_SOURCE compiler/roxal.cpp)
+
+# =======================================================================
+# ANTLR4 codegen
+# =======================================================================
+set(GENERATED_DIR ${CMAKE_SOURCE_DIR}/compiler/cpp-gen)
+set(GENERATED_SOURCES
+  ${GENERATED_DIR}/RoxalLexer.cpp
+  ${GENERATED_DIR}/RoxalParser.cpp
+  ${GENERATED_DIR}/RoxalVisitor.cpp
+  ${GENERATED_DIR}/RoxalBaseVisitor.cpp
+)
+set(GRAMMAR_FILE ${CMAKE_SOURCE_DIR}/compiler/Roxal.g4)
+
+add_custom_command(
+  OUTPUT  ${GENERATED_SOURCES}
+  COMMAND antlr4 -Dlanguage=Cpp -package "roxal" -no-listener -visitor ${GRAMMAR_FILE} -o ${GENERATED_DIR}
+  DEPENDS ${GRAMMAR_FILE}
+  COMMENT "Generating ANTLR4 parser and lexer from Roxal.g4"
+)
+add_custom_target(generate_parser DEPENDS ${GENERATED_SOURCES})
+
+# =======================================================================
+# Library: roxalcore
+# =======================================================================
+add_library(roxalcore STATIC ${CORE_SOURCES} ${COMPILER_SOURCES} ${GENERATED_SOURCES})
+set_target_properties(roxalcore PROPERTIES OUTPUT_NAME roxal)
+add_dependencies(roxalcore generate_parser)
+
+target_include_directories(roxalcore PRIVATE
+  ${CMAKE_SOURCE_DIR}
+  ${GENERATED_DIR}
+)
+
+# 공용 호환 헤더
+target_include_directories(roxalcore PUBLIC ${CMAKE_SOURCE_DIR}/External/compat)
+target_include_directories(dataflow  PUBLIC ${CMAKE_SOURCE_DIR}/External/compat)
+
+# --- VxWorks: roxalcore가 직접 사용하는 외부 헤더를 명시적으로 포함 ---
+if(VXWORKS)
+  target_include_directories(roxalcore PRIVATE
+    ${CMAKE_SOURCE_DIR}/External/antlr4-cpp-runtime/runtime/src
+    ${CMAKE_SOURCE_DIR}/External/icu/icu4c/source/common
+    ${CMAKE_SOURCE_DIR}/External/icu/icu4c/source/common/unicode
+    ${CMAKE_SOURCE_DIR}/External/icu/icu4c/source/i18n
+    ${CMAKE_SOURCE_DIR}/External/icu/icu4c/source/io
+    ${CMAKE_SOURCE_DIR}/External/ffi/include
+  )
+endif()
+
+# Eigen
+if(VXWORKS)
+  if(DEFINED EIGEN3_INCLUDE_DIR)
+    target_include_directories(roxalcore PRIVATE ${EIGEN3_INCLUDE_DIR})
+  endif()
+else()
+  if(TARGET Eigen3::Eigen)
+    target_link_libraries(roxalcore PRIVATE Eigen3::Eigen)
+  elseif(DEFINED EIGEN3_INCLUDE_DIRS)
+    target_include_directories(roxalcore PRIVATE ${EIGEN3_INCLUDE_DIRS})
+  endif()
+endif()
+
+# Threads / dl
+find_package(Threads REQUIRED)
+
+# Link to third-parties (usage reqs)
+if(VXWORKS)
+  target_link_libraries(roxalcore PUBLIC
+    antlr4-runtime
+    icuio icui18n icuuc icudata
+    ffi
+    dataflow
+    Threads::Threads
+  )
+  if(CMAKE_DL_LIBS)
+    target_link_libraries(roxalcore PUBLIC ${CMAKE_DL_LIBS})
+  endif()
+else()
+  target_link_libraries(roxalcore PUBLIC
+    antlr4-runtime
+    icuio icui18n icuuc icudata
+    dataflow
+    Threads::Threads
+    ${CMAKE_DL_LIBS}
+    ${LIBFFI_LIBRARIES}
+  )
+endif()
+
+# Compile options/defs
+target_compile_options(roxalcore PRIVATE
+  $<$<CONFIG:DEBUG>:-fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1>
+  $<$<CONFIG:RELEASE>:-O3>
+)
+target_compile_definitions(roxalcore PRIVATE
+  $<$<CONFIG:DEBUG>:DEBUG_BUILD>
+  $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
+  $<$<BOOL:${USE_GC_SGCL}>:USE_GC_SGCL>
+)
+
+# ==================================================================
+# Option: Linux Execution file
+# ==================================================================
+if(ROXAL_BUILD_MAIN)
+  add_executable(roxal ${MAIN_SOURCE}   ${CMAKE_SOURCE_DIR}/main.cpp)
+  target_link_libraries(roxal PRIVATE roxalcore boost_program_options)
+  target_compile_options(roxal PRIVATE
+    $<$<CONFIG:DEBUG>:-fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1>
+    $<$<CONFIG:RELEASE>:-O3>
+  )
+  target_compile_definitions(roxal PRIVATE
+    $<$<CONFIG:DEBUG>:DEBUG_BUILD>
+    $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
+    $<$<BOOL:${USE_GC_SGCL}>:USE_GC_SGCL>
+  )
+
+  add_test(NAME RoxalSourceTests
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/runtests.py
+  )
+  set_tests_properties(RoxalSourceTests PROPERTIES
+    PASS_REGULAR_EXPRESSION ".*"
+    FAIL_REGULAR_EXPRESSION ".*FAIL.*"
+  )
+endif()
+
+# ==================================================================
+# VxWorks: THIN Mega Achive + vxe
+# ==================================================================
+if(VXWORKS)
+  set(ALL_STATIC_LIBS
+    $<TARGET_FILE:roxalcore>
+    $<TARGET_FILE:dataflow>
+    ${VX_LIB_DIR}/antlr4/libantlr4-runtime.a
+    ${VX_LIB_DIR}/icu/libicuio.a
+    ${VX_LIB_DIR}/icu/libicui18n.a
+    ${VX_LIB_DIR}/icu/libicuuc.a
+    ${VX_LIB_DIR}/icu/libicudata.a
+    ${VX_LIB_DIR}/ffi/libffi.a
+  )
+  set(ROXAL_FATLIB ${CMAKE_BINARY_DIR}/libroxal_all.a)
+
+  add_custom_command(
+    OUTPUT ${ROXAL_FATLIB}
+    COMMAND ${CMAKE_AR} -crsT ${ROXAL_FATLIB} ${ALL_STATIC_LIBS}
+    DEPENDS roxalcore dataflow
+    COMMENT "Creating THIN mega-archive: libroxal_all.a"
+  )
+  add_custom_target(roxal_fatlib ALL DEPENDS ${ROXAL_FATLIB})
+endif()
+
+if(VXWORKS)
+  add_executable(roxal_vxe main.cpp)
+
+  target_link_options(roxal_vxe PRIVATE
+    -Wl,-Map,${CMAKE_BINARY_DIR}/roxal_link.map)
+
+  target_link_libraries(roxal_vxe PRIVATE
+    -Wl,--whole-archive
+      $<TARGET_FILE:roxalcore>
+      $<TARGET_FILE:dataflow>
+      ${VX_LIB_DIR}/antlr4/libantlr4-runtime.a
+      ${VX_LIB_DIR}/icu/libicuio.a
+      ${VX_LIB_DIR}/icu/libicui18n.a
+      ${VX_LIB_DIR}/icu/libicuuc.a
+      ${VX_LIB_DIR}/icu/libicudata.a
+      ${VX_LIB_DIR}/ffi/libffi.a
+    -Wl,--no-whole-archive
+    Threads::Threads
+  )
+  set_target_properties(roxal_vxe PROPERTIES OUTPUT_NAME "roxal" SUFFIX ".vxe")
+endif()
+
+
+add_custom_target(check
+  COMMAND ${CMAKE_COMMAND} --build . --target all
+  COMMAND ${CMAKE_CTEST_COMMAND}
+)
