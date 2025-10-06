@@ -61,17 +61,11 @@ void visitThreadRoots(Thread& thread, GCVisitor& visitor)
         visitStrongValue(visitor, entry.second);
     }
 
-    const auto pendingEvents = thread.pendingEvents.snapshot();
-    for (const auto& pending : pendingEvents) {
-        visitStrongValue(visitor, pending.event);
-    }
-}
-
-void visitVariables(GCVisitor& visitor, const std::vector<VariablesMap::NameValue>& vars)
-{
-    for (const auto& entry : vars) {
-        visitStrongValue(visitor, entry.second);
-    }
+    thread.pendingEvents.unsafeVisit([&visitor](const auto& pendingEvents) {
+        for (const auto& pending : pendingEvents) {
+            visitStrongValue(visitor, pending.event);
+        }
+    });
 }
 
 } // namespace
@@ -281,13 +275,14 @@ void ValueGC::visitRoots(GCVisitor& visitor) {
     VM& vm = VM::instance();
 
     std::vector<ptr<Thread>> threadsToVisit;
-    auto registered = vm.threads.get();
-    threadsToVisit.reserve(registered.size() + 3);
-    for (const auto& entry : registered) {
-        if (entry.second) {
-            threadsToVisit.push_back(entry.second);
+    threadsToVisit.reserve(vm.threads.size() + 3);
+    vm.threads.unsafeApply([&threadsToVisit](const auto& registered) {
+        for (const auto& entry : registered) {
+            if (entry.second) {
+                threadsToVisit.push_back(entry.second);
+            }
         }
-    }
+    });
     if (vm.replThread) {
         threadsToVisit.push_back(vm.replThread);
     }
@@ -310,8 +305,12 @@ void ValueGC::visitRoots(GCVisitor& visitor) {
         visitThreadRoots(*raw, visitor);
     }
 
-    visitVariables(visitor, vm.globals.snapshot());
-    visitVariables(visitor, vm.globals.snapshotGlobals());
+    vm.globals.unsafeForEachModuleVar([&visitor](const auto& entry) {
+        visitStrongValue(visitor, entry.second);
+    });
+    vm.globals.unsafeForEachGlobal([&visitor](const auto& entry) {
+        visitStrongValue(visitor, entry.second);
+    });
 
     visitStrongValue(visitor, vm.dataflowEngineActor);
     visitStrongValue(visitor, vm.conditionalInterruptClosure);
@@ -323,9 +322,11 @@ void ValueGC::visitRoots(GCVisitor& visitor) {
         }
     }
 
-    for (const auto& moduleVal : ObjModuleType::allModules.get()) {
-        visitStrongValue(visitor, moduleVal);
-    }
+    ObjModuleType::allModules.unsafeApply([&visitor](const auto& modules) {
+        for (const auto& moduleVal : modules) {
+            visitStrongValue(visitor, moduleVal);
+        }
+    });
 
     for (const auto& entry : ObjObjectType::enumTypes) {
         if (entry.second) {

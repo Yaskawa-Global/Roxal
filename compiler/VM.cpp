@@ -1808,12 +1808,13 @@ void VM::defineNative(const std::string& name, NativeFn function,
 
 void VM::wakeAllThreadsForGC()
 {
-    auto snapshot = threads.get();
-    for (const auto& entry : snapshot) {
-        if (entry.second) {
-            entry.second->wake();
+    threads.unsafeApply([](const auto& registered) {
+        for (const auto& entry : registered) {
+            if (entry.second) {
+                entry.second->wake();
+            }
         }
-    }
+    });
 
     if (replThread) {
         replThread->wake();

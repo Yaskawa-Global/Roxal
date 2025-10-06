@@ -710,6 +710,22 @@ public:
         return copy;
     }
 
+    template<typename Fn>
+    void unsafeForEachModuleVar(Fn&& fn) const
+    {
+        for (const auto& entry : vars) {
+            fn(entry.second);
+        }
+    }
+
+    template<typename Fn>
+    void unsafeForEachGlobal(Fn&& fn) const
+    {
+        for (const auto& entry : globals) {
+            fn(entry.second);
+        }
+    }
+
     // list of module variable names (globals not considered)
     std::vector<icu::UnicodeString> variableNames() const
     {

@@ -239,12 +239,13 @@ static atomic_unordered_map<int32_t, ObjString*> strings {};
 
 void roxal::visitInternedStrings(const std::function<void(ObjString*)>& fn)
 {
-    auto interned = strings.get();
-    for (const auto& entry : interned) {
-        if (entry.second) {
-            fn(entry.second);
+    strings.unsafeApply([&fn](const auto& interned) {
+        for (const auto& entry : interned) {
+            if (entry.second) {
+                fn(entry.second);
+            }
         }
-    }
+    });
 }
 
 ObjString::ObjString()
@@ -818,10 +819,11 @@ void ObjList::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
 void ObjList::trace(GCVisitor& visitor) const
 {
-    auto snapshot = elts.get();
-    for (const auto& value : snapshot) {
-        visitor.visit(value);
-    }
+    elts.unsafeApply([&visitor](const auto& values) {
+        for (const auto& value : values) {
+            visitor.visit(value);
+        }
+    });
 }
 
 void ObjList::set(const ObjList* other)
@@ -1025,25 +1027,9 @@ void ObjDict::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
 void ObjDict::trace(GCVisitor& visitor) const
 {
-    std::vector<Value> keysSnapshot;
-    std::vector<Value> valuesSnapshot;
-    {
-        std::lock_guard<std::mutex> lock(m);
-        keysSnapshot = m_keys;
-        valuesSnapshot.reserve(entries.size());
-        for (const auto& key : m_keys) {
-            auto it = entries.find(key);
-            if (it != entries.end()) {
-                valuesSnapshot.push_back(it->second);
-            }
-        }
-    }
-
-    for (const auto& key : keysSnapshot) {
-        visitor.visit(key);
-    }
-    for (const auto& value : valuesSnapshot) {
-        visitor.visit(value);
+    for (const auto& entry : entries) {
+        visitor.visit(entry.first);
+        visitor.visit(entry.second);
     }
 }
 
@@ -1932,10 +1918,9 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
 void ObjModuleType::trace(GCVisitor& visitor) const
 {
-    auto snapshot = vars.snapshot();
-    for (const auto& nameValue : snapshot) {
+    vars.unsafeForEachModuleVar([&visitor](const auto& nameValue) {
         visitor.visit(nameValue.second);
-    }
+    });
 }
 void ObjectInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
