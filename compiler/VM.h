@@ -141,6 +141,8 @@ public:
     // destroyed immediately after creation.
     inline void registerThread(ptr<Thread> t) { threads.store(t->id(), t); }
 
+    void wakeAllThreadsForGC();
+
     // Request termination of the VM with the given exit code
     void requestExit(int code);
     inline bool isExitRequested() const { return exitRequested.load(); }

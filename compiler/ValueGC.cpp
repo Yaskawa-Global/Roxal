@@ -110,6 +110,7 @@ void ValueGC::unregisterAllocation(ObjControl* control) {
 
 void ValueGC::requestCollect() {
     collectionRequested_.store(true, std::memory_order_release);
+    VM::instance().wakeAllThreadsForGC();
 }
 
 bool ValueGC::isCollectionRequested() const noexcept {
@@ -120,11 +121,65 @@ uint32_t ValueGC::currentEpoch() const noexcept {
     return epoch_.load(std::memory_order_relaxed);
 }
 
-void ValueGC::collectNow() {
-    std::unique_lock<std::mutex> lock(mutex_);
-    auto toDestroy = performCollection(lock);
-    collectionRequested_.store(false, std::memory_order_release);
-    lock.unlock();
+void ValueGC::onThreadEnter() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++activeThreads_;
+    safepointCv_.notify_all();
+}
+
+void ValueGC::onThreadExit() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (activeThreads_ > 0) {
+        --activeThreads_;
+    }
+    safepointCv_.notify_all();
+}
+
+void ValueGC::safepoint(Thread& currentThread) {
+    if (!collectionRequested_.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    std::vector<Obj*> toDestroy;
+
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (!collectionRequested_.load(std::memory_order_acquire)) {
+            return;
+        }
+
+        ++threadsAtSafepoint_;
+        safepointCv_.notify_all();
+
+        while (collectionRequested_.load(std::memory_order_acquire) &&
+               threadsAtSafepoint_ < activeThreads_) {
+            safepointCv_.wait(lock);
+        }
+
+        if (!collectionRequested_.load(std::memory_order_acquire)) {
+            --threadsAtSafepoint_;
+            safepointCv_.notify_all();
+            return;
+        }
+
+        if (collector_ && collector_ != &currentThread) {
+            // Another thread is handling the collection; wait for it to complete.
+            while (collectionRequested_.load(std::memory_order_acquire)) {
+                safepointCv_.wait(lock);
+            }
+            --threadsAtSafepoint_;
+            safepointCv_.notify_all();
+            return;
+        }
+
+        collector_ = &currentThread;
+        toDestroy = performCollection(lock);
+        collectionRequested_.store(false, std::memory_order_release);
+        collector_ = nullptr;
+        --threadsAtSafepoint_;
+    }
+
+    safepointCv_.notify_all();
 
     for (Obj* obj : toDestroy) {
         if (!obj) {
