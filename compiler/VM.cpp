@@ -3594,6 +3594,10 @@ std::pair<InterpretResult,Value> VM::execute()
 
         postInstructionDispatch:
 
+        if (ValueGC::instance().isCollectionRequested()) {
+            ValueGC::instance().collectNow();
+        }
+
         // are we supposed to be sleeping?  If so, block until the sleep time is over
         //  or until we get a wakeup signal (for a possible event)
         // if we've slept for long enough, reset the flag and continue execution

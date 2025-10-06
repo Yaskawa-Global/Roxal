@@ -69,6 +69,7 @@ class VM
 public:
     friend class Thread;
     friend class ModuleSys;
+    friend class ValueGC;
 
     static VM& instance()
     {
