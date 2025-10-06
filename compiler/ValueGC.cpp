@@ -1,0 +1,199 @@
+#include "ValueGC.h"
+
+#include "Object.h"
+#include "Thread.h"
+#include "Value.h"
+#include "VM.h"
+
+#include <unordered_set>
+#include <vector>
+
+namespace {
+
+using namespace roxal;
+
+void visitStrongValue(GCVisitor& visitor, const Value& value)
+{
+    if (!value.isObj()) {
+        return;
+    }
+    if (value.isWeak()) {
+        return;
+    }
+    visitor.visit(value);
+}
+
+template <typename Range>
+void visitStrongValues(GCVisitor& visitor, const Range& values)
+{
+    for (const auto& value : values) {
+        visitStrongValue(visitor, value);
+    }
+}
+
+void visitCallFrameRoots(const CallFrame& frame, GCVisitor& visitor)
+{
+    visitStrongValue(visitor, frame.closure);
+    visitStrongValues(visitor, frame.tailArgValues);
+}
+
+void visitThreadRoots(Thread& thread, GCVisitor& visitor)
+{
+    for (auto it = thread.stack.begin(); it != thread.stackTop; ++it) {
+        visitStrongValue(visitor, *it);
+    }
+
+    for (const auto& value : thread.openUpvalues) {
+        visitStrongValue(visitor, value);
+    }
+
+    for (const auto& frame : thread.frames) {
+        visitCallFrameRoots(frame, visitor);
+    }
+
+    for (const auto& entry : thread.eventHandlers) {
+        visitStrongValue(visitor, entry.first);
+        visitStrongValues(visitor, entry.second);
+    }
+
+    for (const auto& entry : thread.eventToSignal) {
+        visitStrongValue(visitor, entry.first);
+        visitStrongValue(visitor, entry.second);
+    }
+
+    const auto pendingEvents = thread.pendingEvents.snapshot();
+    for (const auto& pending : pendingEvents) {
+        visitStrongValue(visitor, pending.event);
+    }
+}
+
+void visitVariables(GCVisitor& visitor, const std::vector<VariablesMap::NameValue>& vars)
+{
+    for (const auto& entry : vars) {
+        visitStrongValue(visitor, entry.second);
+    }
+}
+
+} // namespace
+
+namespace roxal {
+
+ValueGC& ValueGC::instance() {
+    static ValueGC gc;
+    return gc;
+}
+
+void ValueGC::registerAllocation(ObjControl* control) {
+    if (!control) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto [_, inserted] = controls_.insert(control);
+    (void)inserted;
+    // New allocations start out "unmarked" by setting their mark epoch to 0.
+    // During a collection we compare this against the collector's global
+    // epoch to decide whether the object was reached, avoiding the need to
+    // reset a separate boolean on every cycle.
+    control->markEpoch.store(0u, std::memory_order_relaxed);
+}
+
+void ValueGC::unregisterAllocation(ObjControl* control) {
+    if (!control) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    controls_.erase(control);
+}
+
+void ValueGC::requestCollect() {
+    collectionRequested_.store(true, std::memory_order_relaxed);
+}
+
+bool ValueGC::isCollectionRequested() const noexcept {
+    return collectionRequested_.load(std::memory_order_relaxed);
+}
+
+uint32_t ValueGC::currentEpoch() const noexcept {
+    return epoch_.load(std::memory_order_relaxed);
+}
+
+void ValueGC::collectNow() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    collectionRequested_.store(false, std::memory_order_relaxed);
+    performCollection(lock);
+}
+
+void ValueGC::performCollection(std::unique_lock<std::mutex>& lock) {
+    // Step 1 scaffolding: future mark/sweep logic will live here.
+    // For now we simply advance the epoch counter while holding the lock
+    // to ensure callers observe a monotonically increasing value.
+    (void)lock;
+    epoch_.fetch_add(1u, std::memory_order_relaxed);
+}
+
+void ValueGC::visitRoots(GCVisitor& visitor) {
+    VM& vm = VM::instance();
+
+    std::vector<ptr<Thread>> threadsToVisit;
+    auto registered = vm.threads.get();
+    threadsToVisit.reserve(registered.size() + 3);
+    for (const auto& entry : registered) {
+        if (entry.second) {
+            threadsToVisit.push_back(entry.second);
+        }
+    }
+    if (vm.replThread) {
+        threadsToVisit.push_back(vm.replThread);
+    }
+    if (vm.dataflowEngineThread) {
+        threadsToVisit.push_back(vm.dataflowEngineThread);
+    }
+    if (VM::thread) {
+        threadsToVisit.push_back(VM::thread);
+    }
+
+    std::unordered_set<Thread*> seenThreads;
+    for (const auto& threadPtr : threadsToVisit) {
+        if (!threadPtr) {
+            continue;
+        }
+        Thread* raw = threadPtr.get();
+        if (!seenThreads.insert(raw).second) {
+            continue;
+        }
+        visitThreadRoots(*raw, visitor);
+    }
+
+    visitVariables(visitor, vm.globals.snapshot());
+    visitVariables(visitor, vm.globals.snapshotGlobals());
+
+    visitStrongValue(visitor, vm.dataflowEngineActor);
+    visitStrongValue(visitor, vm.conditionalInterruptClosure);
+    visitStrongValue(visitor, vm.initString);
+
+    for (const auto& typeEntry : vm.builtinMethods) {
+        for (const auto& methodEntry : typeEntry.second) {
+            visitStrongValues(visitor, methodEntry.second.defaultValues);
+        }
+    }
+
+    for (const auto& moduleVal : ObjModuleType::allModules.get()) {
+        visitStrongValue(visitor, moduleVal);
+    }
+
+    for (const auto& entry : ObjObjectType::enumTypes) {
+        if (entry.second) {
+            visitStrongValue(visitor, Value::objRef(entry.second));
+        }
+    }
+
+    visitInternedStrings([&visitor](ObjString* str) {
+        if (str) {
+            visitStrongValue(visitor, Value::objRef(str));
+        }
+    });
+}
+
+} // namespace roxal

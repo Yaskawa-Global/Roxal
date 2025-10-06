@@ -669,7 +669,7 @@ public:
         std::lock_guard<std::mutex> lock(m_lock);
     }
 
-    std::stack<T> get() const
+    std::queue<T> get() const
     {
         std::lock_guard<std::mutex> lock(m_lock);
         return q;
@@ -711,6 +711,20 @@ public:
     {
         std::lock_guard<std::mutex> lock(m_lock);
         return q.empty();
+    }
+
+    template<typename Fn>
+    void forEach(Fn fn) const
+    {
+        std::queue<T> copy;
+        {
+            std::lock_guard<std::mutex> lock(m_lock);
+            copy = q;
+        }
+        while (!copy.empty()) {
+            fn(copy.front());
+            copy.pop();
+        }
     }
 
 private:
@@ -775,6 +789,22 @@ public:
     {
         std::lock_guard<std::mutex> lock(m_lock);
         return q.size();
+    }
+
+    std::vector<T> snapshot() const
+    {
+        std::priority_queue<T, std::vector<T>, Compare> copy;
+        {
+            std::lock_guard<std::mutex> lock(m_lock);
+            copy = q;
+        }
+        std::vector<T> values;
+        values.reserve(copy.size());
+        while (!copy.empty()) {
+            values.push_back(copy.top());
+            copy.pop();
+        }
+        return values;
     }
 
     void clear()
