@@ -822,22 +822,6 @@ public:
         return q.size();
     }
 
-    std::vector<T> snapshot() const
-    {
-        std::priority_queue<T, std::vector<T>, Compare> copy;
-        {
-            std::lock_guard<std::mutex> lock(m_lock);
-            copy = q;
-        }
-        std::vector<T> values;
-        values.reserve(copy.size());
-        while (!copy.empty()) {
-            values.push_back(copy.top());
-            copy.pop();
-        }
-        return values;
-    }
-
     template<typename Fn>
     auto unsafeApply(Fn&& fn)
         -> decltype(std::forward<Fn>(fn)(std::declval<queue_type&>()))
@@ -873,6 +857,10 @@ public:
     }
 
 private:
+    // std::priority_queue does not expose an iterator or a const reference to
+    // its underlying container.  During stop-the-world GC we need to traverse
+    // the queued entries without copying them, so we derive a thin helper that
+    // simply surfaces the protected `c` member.
     class ExposedQueue : public queue_type
     {
     public:
@@ -883,6 +871,8 @@ private:
 
     mutable std::mutex m_lock;
 
+    // Stored directly; ExposedQueue is layout-compatible with queue_type so no
+    // extra copy of the data is kept.
     ExposedQueue q;
 };
 
