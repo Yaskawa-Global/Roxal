@@ -388,6 +388,18 @@ VM::~VM()
     // objects referenced through its stacks and handlers can be reclaimed
     thread.reset();
 
+    // Flush any reference-counted objects before performing a final tracing
+    // collection so we do not enqueue the same object twice.
+    freeObjects();
+
+    // With no mutator threads remaining, force a final GC cycle so any
+    // objects kept alive only by cycles are discovered before we report
+    // leaks under DEBUG_TRACE_MEMORY.
+    SimpleMarkSweepGC& shutdownCollector = SimpleMarkSweepGC::instance();
+    while (shutdownCollector.collectNowForShutdown() > 0) {
+        freeObjects();
+    }
+
 
     #if USE_GC_SGCL
     sgcl::collector::force_collect(true);

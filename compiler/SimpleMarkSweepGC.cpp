@@ -66,6 +66,8 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
             visitStrongValue(visitor, pending.event);
         }
     });
+
+    visitStrongValue(visitor, thread.currentActorCall);
 }
 
 } // namespace
@@ -82,15 +84,34 @@ void SimpleMarkSweepGC::registerAllocation(ObjControl* control) {
         return;
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto [_, inserted] = controls_.insert(control);
-    (void)inserted;
-    // New allocations start out "unmarked" by setting their mark epoch to 0.
-    // During a collection we compare this against the collector's global
-    // epoch to decide whether the object was reached, avoiding the need to
-    // reset a separate boolean on every cycle.
-    control->collecting.store(false, std::memory_order_relaxed);
-    control->markEpoch.store(0u, std::memory_order_relaxed);
+    bool shouldTrigger = false;
+    size_t threshold = autoTriggerThreshold_.load(std::memory_order_relaxed);
+    if (threshold > 0) {
+        size_t count = allocationsSinceLastCollect_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count >= threshold) {
+            shouldTrigger = true;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto [_, inserted] = controls_.insert(control);
+        (void)inserted;
+        // New allocations start out "unmarked" by setting their mark epoch to 0.
+        // During a collection we compare this against the collector's global
+        // epoch to decide whether the object was reached, avoiding the need to
+        // reset a separate boolean on every cycle.
+        control->collecting.store(false, std::memory_order_relaxed);
+        control->markEpoch.store(0u, std::memory_order_relaxed);
+    }
+
+    if (shouldTrigger) {
+        bool expected = false;
+        if (collectionRequested_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            allocationsSinceLastCollect_.store(0, std::memory_order_relaxed);
+            VM::instance().wakeAllThreadsForGC();
+        }
+    }
 }
 
 void SimpleMarkSweepGC::unregisterAllocation(ObjControl* control) {
@@ -103,8 +124,20 @@ void SimpleMarkSweepGC::unregisterAllocation(ObjControl* control) {
 }
 
 void SimpleMarkSweepGC::requestCollect() {
-    collectionRequested_.store(true, std::memory_order_release);
+    bool expected = false;
+    if (collectionRequested_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        allocationsSinceLastCollect_.store(0, std::memory_order_relaxed);
+    }
     VM::instance().wakeAllThreadsForGC();
+}
+
+void SimpleMarkSweepGC::setAutoTriggerThreshold(size_t threshold) {
+    autoTriggerThreshold_.store(threshold, std::memory_order_relaxed);
+    allocationsSinceLastCollect_.store(0, std::memory_order_relaxed);
+}
+
+size_t SimpleMarkSweepGC::autoTriggerThreshold() const noexcept {
+    return autoTriggerThreshold_.load(std::memory_order_relaxed);
 }
 
 bool SimpleMarkSweepGC::isCollectionRequested() const noexcept {
@@ -267,9 +300,8 @@ std::vector<Obj*> SimpleMarkSweepGC::performCollection(std::unique_lock<std::mut
             continue;
         }
 
-        if (obj->type != ObjType::Instance) {
-            continue;
-        }
+        control->collecting.store(true, std::memory_order_relaxed);
+        control->obj = nullptr;
 
         // Break any strong edges the object holds so that cycles see their
         // reference counts fall to zero once we hand them back to the regular
@@ -277,8 +309,6 @@ std::vector<Obj*> SimpleMarkSweepGC::performCollection(std::unique_lock<std::mut
         // explicitly.
         obj->dropReferences();
 
-        control->collecting.store(true, std::memory_order_relaxed);
-        control->obj = nullptr;
         unreachable.push_back(obj);
     }
 
@@ -351,6 +381,31 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
         }
     }
 
+}
+
+size_t SimpleMarkSweepGC::collectNowForShutdown() {
+    std::vector<Obj*> toDestroy;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        debug_assert_msg(activeThreads_ == 0,
+                         "collectNowForShutdown requires no active threads");
+        if (collector_) {
+            return 0;
+        }
+
+        toDestroy = performCollection(lock);
+        collectionRequested_.store(false, std::memory_order_release);
+        allocationsSinceLastCollect_.store(0, std::memory_order_relaxed);
+    }
+
+    for (Obj* obj : toDestroy) {
+        if (!obj) {
+            continue;
+        }
+        Obj::unrefedObjs.push_back(obj);
+    }
+
+    return toDestroy.size();
 }
 
 } // namespace roxal

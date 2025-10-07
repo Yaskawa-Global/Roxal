@@ -114,6 +114,10 @@ public:
 
     void pruneEventRegistrations();
 
+    // Keeps the currently executing actor call target alive while the
+    // interpreter is inside Thread::act().
+    Value currentActorCall { Value::nilVal() };
+
 private:
     ptr<std::thread> osthread;
 

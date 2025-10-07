@@ -25,6 +25,9 @@ public:
     void requestCollect();
     void safepoint(Thread& currentThread);
 
+    void setAutoTriggerThreshold(size_t threshold);
+    size_t autoTriggerThreshold() const noexcept;
+
     void onThreadEnter();
     void onThreadExit();
 
@@ -33,6 +36,12 @@ public:
     size_t lastCollectionFreed() const noexcept;
 
     void visitRoots(ValueVisitor& visitor);
+
+    // Run a synchronous collection assuming all mutator threads have already
+    // parked (e.g. during VM shutdown). Returns the number of objects queued
+    // for destruction. The caller is responsible for draining
+    // Obj::unrefedObjs afterwards via VM::freeObjects().
+    size_t collectNowForShutdown();
 
 private:
     SimpleMarkSweepGC() = default;
@@ -45,6 +54,8 @@ private:
     std::atomic<uint32_t> epoch_{1};
     std::atomic<bool> collectionRequested_{false};
     std::atomic<size_t> lastFreedCount_{0};
+    std::atomic<size_t> allocationsSinceLastCollect_{0};
+    std::atomic<size_t> autoTriggerThreshold_{0};
     size_t activeThreads_{0};
     size_t threadsAtSafepoint_{0};
     Thread* collector_{nullptr};

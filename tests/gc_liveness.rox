@@ -1,0 +1,38 @@
+// Ensure reference counting still provides deterministic reclamation for acyclic graphs.
+
+type Node object:
+  var next :Node
+
+n1 = Node()
+n2 = Node()
+
+n1.next = n2
+
+w1 = _weakref(n1)
+w2 = _weakref(n2)
+
+print(_weak_alive(w1))
+print(_weak_alive(w2))
+
+gc()
+
+print(_weak_alive(w1))
+print(_weak_alive(w2))
+
+n1 = nil
+
+print(_weak_alive(w1))
+print(_weak_alive(w2))
+
+gc()
+
+print(_weak_alive(w1))
+print(_weak_alive(w2))
+
+n2 = nil
+
+print(_weak_alive(w2))
+
+gc()
+
+print(_weak_alive(w2))
