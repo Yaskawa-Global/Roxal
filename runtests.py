@@ -6,32 +6,6 @@ import argparse
 import re
 import time
 
-# Remove DEBUG_TRACE_MEMORY leak diagnostics so they do not interfere with
-# stdout comparisons. These messages are useful interactively but contain
-# non-deterministic addresses that otherwise cause golden files to fail.
-def strip_allocated_objs(stdout: bytes) -> bytes:
-    lines = stdout.splitlines()
-    filtered = []
-    skip = False
-    for line in lines:
-        if not skip and line.startswith(b"== allocated Objs"):
-            skip = True
-            continue
-        if skip:
-            if line.startswith(b"  "):
-                continue
-            skip = False
-        filtered.append(line)
-
-    if not filtered:
-        return b""
-
-    ends_with_newline = stdout.endswith(b"\n")
-    result = b"\n".join(filtered)
-    if ends_with_newline:
-        result += b"\n"
-    return result
-
 # Maximum time in seconds to allow each test to run
 TEST_TIMEOUT_SECS = 5
 # Width of the test name column when printing results
@@ -231,15 +205,13 @@ try:
             print(compProc.stderr)
             print("--")
             passed = False
-        filtered_stdout = strip_allocated_objs(compProc.stdout)
-
         if os.path.exists(testout):
             with open(testout, mode='rb') as file:
                 expected = file.read()
-            if expected != filtered_stdout:
+            if expected != compProc.stdout:
                 print(f"FAIL: {opt_expected}", flush=True)
                 print("-- stdout --")
-                print(filtered_stdout)
+                print(compProc.stdout)
                 print("-- expected stdout --")
                 print(expected)
                 print("--")

@@ -37,6 +37,12 @@ public:
 
     void visitRoots(ValueVisitor& visitor);
 
+    // Run a synchronous collection assuming all mutator threads have already
+    // parked (e.g. during VM shutdown). Returns the number of objects queued
+    // for destruction. The caller is responsible for draining
+    // Obj::unrefedObjs afterwards via VM::freeObjects().
+    size_t collectNowForShutdown();
+
 private:
     SimpleMarkSweepGC() = default;
 

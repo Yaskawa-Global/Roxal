@@ -383,4 +383,29 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
 
 }
 
+size_t SimpleMarkSweepGC::collectNowForShutdown() {
+    std::vector<Obj*> toDestroy;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        debug_assert_msg(activeThreads_ == 0,
+                         "collectNowForShutdown requires no active threads");
+        if (collector_) {
+            return 0;
+        }
+
+        toDestroy = performCollection(lock);
+        collectionRequested_.store(false, std::memory_order_release);
+        allocationsSinceLastCollect_.store(0, std::memory_order_relaxed);
+    }
+
+    for (Obj* obj : toDestroy) {
+        if (!obj) {
+            continue;
+        }
+        Obj::unrefedObjs.push_back(obj);
+    }
+
+    return toDestroy.size();
+}
+
 } // namespace roxal
