@@ -12,6 +12,7 @@
 #include <time.h>
 #include <cmath>
 #include <limits>
+#include <cstdint>
 #include <algorithm>
 
 using namespace roxal;
@@ -466,11 +467,12 @@ Value ModuleSys::gc_config_builtin(VM& vm, ArgsView args)
     SimpleMarkSweepGC& collector = SimpleMarkSweepGC::instance();
 
     if (args.empty()) {
-        size_t threshold = collector.autoTriggerThreshold();
-        if (threshold == 0) {
+        std::uint64_t bytes = collector.autoTriggerThreshold();
+        if (bytes == 0) {
             return Value::nilVal();
         }
-        size_t clamped = std::min(threshold, static_cast<size_t>(std::numeric_limits<int32_t>::max()));
+        std::uint64_t kilobytes = (bytes + 1023) / 1024;
+        std::uint64_t clamped = std::min<std::uint64_t>(kilobytes, static_cast<std::uint64_t>(std::numeric_limits<int32_t>::max()));
         return Value::intVal(static_cast<int32_t>(clamped));
     }
 
@@ -485,15 +487,15 @@ Value ModuleSys::gc_config_builtin(VM& vm, ArgsView args)
     }
 
     if (!arg.isInt()) {
-        throw std::invalid_argument("gc_config threshold must be an int or nil");
+        throw std::invalid_argument("gc_config threshold (kilobytes) must be an int or nil");
     }
 
     int32_t threshold = arg.asInt();
     if (threshold < 0) {
-        throw std::invalid_argument("gc_config threshold must be non-negative");
+        throw std::invalid_argument("gc_config threshold (kilobytes) must be non-negative");
     }
 
-    collector.setAutoTriggerThreshold(static_cast<size_t>(threshold));
+    collector.setAutoTriggerThreshold(static_cast<std::uint64_t>(threshold) * 1024ull);
     if (threshold == 0) {
         return Value::nilVal();
     }
