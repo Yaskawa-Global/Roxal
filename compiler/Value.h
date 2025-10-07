@@ -688,6 +688,44 @@ public:
         }
     }
 
+    std::vector<NameValue> snapshot() const
+    {
+        std::lock_guard<std::mutex> lock(varsLock);
+        std::vector<NameValue> copy;
+        copy.reserve(vars.size());
+        for (const auto& entry : vars) {
+            copy.push_back(entry.second);
+        }
+        return copy;
+    }
+
+    std::vector<NameValue> snapshotGlobals() const
+    {
+        std::lock_guard<std::mutex> lock(globalsLock);
+        std::vector<NameValue> copy;
+        copy.reserve(globals.size());
+        for (const auto& entry : globals) {
+            copy.push_back(entry.second);
+        }
+        return copy;
+    }
+
+    template<typename Fn>
+    void unsafeForEachModuleVar(Fn&& fn) const
+    {
+        for (const auto& entry : vars) {
+            fn(entry.second);
+        }
+    }
+
+    template<typename Fn>
+    void unsafeForEachGlobal(Fn&& fn) const
+    {
+        for (const auto& entry : globals) {
+            fn(entry.second);
+        }
+    }
+
     // list of module variable names (globals not considered)
     std::vector<icu::UnicodeString> variableNames() const
     {

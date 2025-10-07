@@ -69,6 +69,7 @@ class VM
 public:
     friend class Thread;
     friend class ModuleSys;
+    friend class ValueGC;
 
     static VM& instance()
     {
@@ -139,6 +140,8 @@ public:
     // deserialization needs this to prevent the thread object from being
     // destroyed immediately after creation.
     inline void registerThread(ptr<Thread> t) { threads.store(t->id(), t); }
+
+    void wakeAllThreadsForGC();
 
     // Request termination of the VM with the given exit code
     void requestExit(int code);

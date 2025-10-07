@@ -20,6 +20,7 @@
 #include <core/types.h>
 #include "Chunk.h"
 #include "Value.h"
+#include "ValueGC.h"
 #include <Eigen/Dense>
 
 
@@ -40,6 +41,8 @@ class Thread; // forward declaration for handler threads
 struct ObjEvent; // forward
 struct ObjFunction; // forward for bound native default values
 struct ObjException; // forward
+
+void visitInternedStrings(const std::function<void(ObjString*)>& fn);
 }
 
 
@@ -96,6 +99,8 @@ struct Obj {
 
     ValueType valueType() const;
 
+    virtual void trace(GCVisitor& visitor) const = 0;
+
     virtual unique_ptr<Obj, UnreleasedObj> clone() const = 0; // deep copy
 
     virtual void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const = 0;
@@ -110,8 +115,10 @@ struct Obj {
     {
         auto prevCount = control->strong.fetch_sub(1,std::memory_order_relaxed);
         if (prevCount <= 1) {
-            control->obj = nullptr;
-            unrefedObjs.push_back(this);
+            if (!control->collecting.exchange(true, std::memory_order_relaxed)) {
+                control->obj = nullptr;
+                unrefedObjs.push_back(this);
+            }
         }
     }
 
@@ -170,7 +177,11 @@ inline unique_ptr<T, UnreleasedObj> newObj(const std::string& name, const std::s
     ctrl->strong = 0;
     ctrl->weak   = 1;   // implicit weak ref representing strong refs
     ctrl->obj    = o;
+    ctrl->collecting.store(false, std::memory_order_relaxed);
+    ctrl->markEpoch.store(0u, std::memory_order_relaxed);
     o->control   = ctrl;
+
+    ValueGC::instance().registerAllocation(ctrl);
 
     // In debug builds, verify alignment to catch subtle UB early
     debug_assert_msg(reinterpret_cast<std::uintptr_t>(o) % alignT == 0, "newObj produced misaligned object memory");
@@ -203,7 +214,11 @@ inline unique_ptr<T, UnreleasedObj> newObj(Args&&... args) {
     ctrl->strong = 0;
     ctrl->weak   = 1;   // implicit weak ref representing strong refs
     ctrl->obj    = o;
+    ctrl->collecting.store(false, std::memory_order_relaxed);
+    ctrl->markEpoch.store(0u, std::memory_order_relaxed);
     o->control   = ctrl;
+
+    ValueGC::instance().registerAllocation(ctrl);
 
     #ifdef DEBUG_TRACE_MEMORY
     if (Obj::allocatedObjs.containsKey(o))
@@ -223,6 +238,7 @@ inline void delObj(T* o) {
     Obj::allocatedObjs.erase(o);
     #endif
     ObjControl* ctrl = o->control;
+    ValueGC::instance().unregisterAllocation(ctrl);
     o->~T();
     if (ctrl->weak.fetch_sub(1, std::memory_order_relaxed) == 1)
         delete[] reinterpret_cast<char*>(ctrl);
@@ -298,6 +314,8 @@ struct ObjPrimitive : public Obj
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override { (void)visitor; }
 };
 
 inline bool isObjPrimitive(const Value& v)
@@ -373,6 +391,8 @@ struct ObjString : public Obj
 
     std::string toStdString() const
       { std::string ss; s.toUTF8String(ss); return ss; }
+
+    void trace(GCVisitor& visitor) const override { (void)visitor; }
 };
 
 
@@ -423,6 +443,7 @@ struct ObjRange : public Obj
     //   targetIndex(1) = 2
     int32_t targetIndex(int32_t index, int32_t targetLen=-1) const;
 
+    void trace(GCVisitor& visitor) const override;
 };
 
 
@@ -465,6 +486,8 @@ struct ObjList : public Obj
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override;
 };
 
 
@@ -549,6 +572,8 @@ public:
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override;
 };
 
 
@@ -587,6 +612,8 @@ struct ObjVector : public Obj
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override { (void)visitor; }
 };
 
 inline bool isVector(const Value& v) { return isObjType(v, ObjType::Vector); }
@@ -633,6 +660,8 @@ struct ObjMatrix : public Obj
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override { (void)visitor; }
 };
 
 inline bool isMatrix(const Value& v) { return isObjType(v, ObjType::Matrix); }
@@ -659,6 +688,8 @@ struct ObjSignal : public Obj {
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override;
 };
 
 inline bool isSignal(const Value& v) { return isObjType(v, ObjType::Signal); }
@@ -682,6 +713,8 @@ struct ObjEvent : public Obj {
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override;
 };
 
 inline bool isEvent(const Value& v) { return isObjType(v, ObjType::Event); }
@@ -703,6 +736,8 @@ struct ObjLibrary : public Obj {
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override { (void)visitor; }
 };
 
 inline bool isLibrary(const Value& v) { return isObjType(v, ObjType::Library); }
@@ -727,6 +762,8 @@ struct ObjForeignPtr : public Obj {
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override { (void)visitor; }
 };
 
 inline bool isForeignPtr(const Value& v) { return isObjType(v, ObjType::ForeignPtr); }
@@ -750,6 +787,8 @@ struct ObjFile : public Obj {
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override { (void)visitor; }
 };
 
 inline bool isFile(const Value& v) { return isObjType(v, ObjType::File); }
@@ -778,6 +817,8 @@ struct ObjException : public Obj {
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override;
 };
 
 inline bool isException(const Value& v) { return isObjType(v, ObjType::Exception); }
@@ -845,6 +886,8 @@ struct ObjFunction : public Obj
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override;
 };
 
 inline bool isFunction(const Value& v) { return isObjType(v, ObjType::Function); }
@@ -886,6 +929,8 @@ struct ObjUpvalue : public Obj {
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override;
 };
 
 inline bool isUpvalue(const Value& v) { return isObjType(v, ObjType::Upvalue); }
@@ -926,6 +971,8 @@ struct ObjClosure : public Obj
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override;
 };
 
 inline bool isClosure(const Value& v) { return isObjType(v, ObjType::Closure); }
@@ -970,6 +1017,8 @@ struct ObjFuture : public Obj
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override;
 };
 
 inline bool isFuture(const Value& v) { return isObjType(v, ObjType::Future); }
@@ -1007,6 +1056,8 @@ struct ObjNative : public Obj
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override;
 };
 
 inline bool isNative(const Value& v) { return isObjType(v, ObjType::Native); }
@@ -1038,6 +1089,8 @@ struct ObjTypeSpec : public Obj
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override { (void)visitor; }
 };
 
 inline bool isTypeSpec(const Value& v) { return isObjType(v,ObjType::Type); }
@@ -1105,6 +1158,8 @@ struct ObjObjectType : public ObjTypeSpec
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override;
 };
 
 
@@ -1124,6 +1179,8 @@ struct ObjPackageType : public ObjTypeSpec
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override { (void)visitor; }
 };
 
 struct ObjModuleType : public ObjTypeSpec
@@ -1148,6 +1205,8 @@ struct ObjModuleType : public ObjTypeSpec
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override;
 };
 
 inline bool isModuleType(const Value& v) { return isObjType(v, ObjType::Type) && (asTypeSpec(v)->typeValue == ValueType::Module); }
@@ -1182,6 +1241,8 @@ struct ObjectInstance : public Obj
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override;
 };
 
 inline bool isObjectInstance(const Value& v) { return isObjType(v, ObjType::Instance); }
@@ -1229,6 +1290,8 @@ struct ActorInstance : public Obj
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override;
 };
 
 inline bool isActorInstance(const Value& v) { return isObjType(v, ObjType::Actor); }
@@ -1253,6 +1316,8 @@ struct ObjBoundMethod : public Obj
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override;
 };
 
 inline bool isBoundMethod(const Value& v) { return isObjType(v, ObjType::BoundMethod); }
@@ -1291,6 +1356,8 @@ struct ObjBoundNative : public Obj
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(GCVisitor& visitor) const override;
 };
 
 inline bool isBoundNative(const Value& v) { return isObjType(v, ObjType::BoundNative); }

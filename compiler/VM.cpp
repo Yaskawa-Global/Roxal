@@ -28,6 +28,7 @@
 #include "FFI.h"
 #include "ModuleMath.h"
 #include "ModuleSys.h"
+#include "ValueGC.h"
 #include <Eigen/Dense>
 #include <core/types.h>
 #include <core/common.h>
@@ -1805,12 +1806,44 @@ void VM::defineNative(const std::string& name, NativeFn function,
     globals.storeGlobal(uname,funcVal);
 }
 
+void VM::wakeAllThreadsForGC()
+{
+    threads.unsafeApply([](const auto& registered) {
+        for (const auto& entry : registered) {
+            if (entry.second) {
+                entry.second->wake();
+            }
+        }
+    });
+
+    if (replThread) {
+        replThread->wake();
+    }
+
+    if (dataflowEngineThread) {
+        dataflowEngineThread->wake();
+    }
+
+    if (thread) {
+        thread->wake();
+    }
+}
+
 
 std::pair<InterpretResult,Value> VM::execute()
 {
     if (thread->frames.empty() ||
         asFunction(asClosure(thread->frames.back().closure)->function)->chunk->code.size() == 0)
         return std::make_pair(InterpretResult::OK, Value::nilVal()); // nothing to execute
+
+    ValueGC& valueGC = ValueGC::instance();
+    valueGC.onThreadEnter();
+    struct ThreadExecutionGuard {
+        ValueGC& gc;
+        ~ThreadExecutionGuard() { gc.onThreadExit(); }
+    } executionGuard{valueGC};
+
+    valueGC.safepoint(*thread);
 
     // Track execution depth for nested calls
     thread->execute_depth++;
@@ -3593,6 +3626,8 @@ std::pair<InterpretResult,Value> VM::execute()
         }
 
         postInstructionDispatch:
+
+        valueGC.safepoint(*thread);
 
         // are we supposed to be sleeping?  If so, block until the sleep time is over
         //  or until we get a wakeup signal (for a possible event)

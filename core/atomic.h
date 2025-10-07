@@ -21,6 +21,7 @@
 #include <stack>
 #include <queue>
 #include <optional>
+#include <utility>
 
 
 namespace roxal {
@@ -198,6 +199,20 @@ public:
         std::lock_guard<std::mutex> lock(m_lock);
         v.reserve(v.size() + otherValues.size());
         v.insert(v.end(), otherValues.begin(), otherValues.end());
+    }
+
+    template<typename Fn>
+    auto unsafeApply(Fn&& fn)
+        -> decltype(std::forward<Fn>(fn)(std::declval<std::vector<T>&>()))
+    {
+        return std::forward<Fn>(fn)(v);
+    }
+
+    template<typename Fn>
+    auto unsafeApply(Fn&& fn) const
+        -> decltype(std::forward<Fn>(fn)(std::declval<const std::vector<T>&>()))
+    {
+        return std::forward<Fn>(fn)(v);
     }
 
     T back() const 
@@ -482,6 +497,20 @@ public:
         return m;
     }
 
+    template<typename Fn>
+    auto unsafeApply(Fn&& fn)
+        -> decltype(std::forward<Fn>(fn)(std::declval<std::unordered_map<Key, T>&>()))
+    {
+        return std::forward<Fn>(fn)(m);
+    }
+
+    template<typename Fn>
+    auto unsafeApply(Fn&& fn) const
+        -> decltype(std::forward<Fn>(fn)(std::declval<const std::unordered_map<Key, T>&>()))
+    {
+        return std::forward<Fn>(fn)(m);
+    }
+
 
     // apply f to each map entry *while map is locked*
     //  (exceptions thrown by f are ignored)
@@ -669,7 +698,7 @@ public:
         std::lock_guard<std::mutex> lock(m_lock);
     }
 
-    std::stack<T> get() const
+    std::queue<T> get() const
     {
         std::lock_guard<std::mutex> lock(m_lock);
         return q;
@@ -713,6 +742,20 @@ public:
         return q.empty();
     }
 
+    template<typename Fn>
+    void forEach(Fn fn) const
+    {
+        std::queue<T> copy;
+        {
+            std::lock_guard<std::mutex> lock(m_lock);
+            copy = q;
+        }
+        while (!copy.empty()) {
+            fn(copy.front());
+            copy.pop();
+        }
+    }
+
 private:
     mutable std::mutex m_lock;
 
@@ -726,6 +769,8 @@ class atomic_priority_queue
 public:
 
     typedef T value_type;
+    using queue_type = std::priority_queue<T,std::vector<T>,Compare>;
+    using container_type = typename queue_type::container_type;
 
     atomic_priority_queue() {}
     ~atomic_priority_queue()
@@ -777,6 +822,34 @@ public:
         return q.size();
     }
 
+    template<typename Fn>
+    auto unsafeApply(Fn&& fn)
+        -> decltype(std::forward<Fn>(fn)(std::declval<queue_type&>()))
+    {
+        return std::forward<Fn>(fn)(q);
+    }
+
+    template<typename Fn>
+    auto unsafeApply(Fn&& fn) const
+        -> decltype(std::forward<Fn>(fn)(std::declval<const queue_type&>()))
+    {
+        return std::forward<Fn>(fn)(q);
+    }
+
+    template<typename Fn>
+    auto unsafeVisit(Fn&& fn)
+        -> decltype(std::forward<Fn>(fn)(std::declval<container_type&>()))
+    {
+        return std::forward<Fn>(fn)(q.c);
+    }
+
+    template<typename Fn>
+    auto unsafeVisit(Fn&& fn) const
+        -> decltype(std::forward<Fn>(fn)(std::declval<const container_type&>()))
+    {
+        return std::forward<Fn>(fn)(q.c);
+    }
+
     void clear()
     {
         std::lock_guard<std::mutex> lock(m_lock);
@@ -784,9 +857,23 @@ public:
     }
 
 private:
+    // std::priority_queue does not expose an iterator or a const reference to
+    // its underlying container.  During stop-the-world GC we need to traverse
+    // the queued entries without copying them, so we derive a thin helper that
+    // simply surfaces the protected `c` member.
+    class ExposedQueue : public queue_type
+    {
+    public:
+        using Base = queue_type;
+        using Base::Base;
+        using Base::c;
+    };
+
     mutable std::mutex m_lock;
 
-    std::priority_queue<T,std::vector<T>,Compare> q;
+    // Stored directly; ExposedQueue is layout-compatible with queue_type so no
+    // extra copy of the data is kept.
+    ExposedQueue q;
 };
 
 
