@@ -868,39 +868,75 @@ bool ObjList::equals(const ObjList* other) const
 
 namespace {
 
+struct ContainerPrintContext {
+    std::unordered_set<const ObjList*> activeLists;
+    std::unordered_set<const ObjDict*> activeDicts;
+};
+
 std::string objListToStringInternal(const ObjList* ol,
-                                   std::unordered_set<const ObjList*>& activeLists);
+                                    ContainerPrintContext& context);
 
-std::string listElementToString(const Value& value,
-                                std::unordered_set<const ObjList*>& activeLists)
+std::string objDictToStringInternal(const ObjDict* od,
+                                    ContainerPrintContext& context);
+
+std::string valueToPrintableString(const Value& value,
+                                   ContainerPrintContext& context)
 {
-    if (isList(value)) {
-        return objListToStringInternal(asList(value), activeLists);
-    }
+    if (isList(value))
+        return objListToStringInternal(asList(value), context);
 
-    auto valStr { toString(value) };
+    if (isDict(value))
+        return objDictToStringInternal(asDict(value), context);
+
+    auto result { toString(value) };
     if (isString(value))
-        valStr = "\"" + valStr + "\"";
-    return valStr;
+        result = "\"" + result + "\"";
+    return result;
 }
 
 std::string objListToStringInternal(const ObjList* ol,
-                                   std::unordered_set<const ObjList*>& activeLists)
+                                    ContainerPrintContext& context)
 {
-    if (!activeLists.insert(ol).second)
+    if (!context.activeLists.insert(ol).second)
         return "[...]";
 
     std::ostringstream os;
     os << "[";
     auto list { ol->elts.get() };
     for (auto it = list.begin(); it != list.end(); ++it) {
-        os << listElementToString(*it, activeLists);
+        os << valueToPrintableString(*it, context);
         if (it != list.end() - 1)
             os << ", ";
     }
     os << "]";
 
-    activeLists.erase(ol);
+    context.activeLists.erase(ol);
+    return os.str();
+}
+
+std::string objDictToStringInternal(const ObjDict* od,
+                                    ContainerPrintContext& context)
+{
+    if (!context.activeDicts.insert(od).second)
+        return "{...}";
+
+    std::ostringstream os;
+    os << "{";
+    auto keys { od->keys() };
+    for (auto it = keys.begin(); it != keys.end(); ++it) {
+        const auto& key { *it };
+        const auto value { od->at(key) };
+
+        os << valueToPrintableString(key, context)
+           << ": "
+           << valueToPrintableString(value, context);
+
+        if (it != keys.end() - 1)
+            os << ", ";
+    }
+    os << "}";
+
+    context.activeDicts.erase(od);
     return os.str();
 }
 
@@ -908,8 +944,8 @@ std::string objListToStringInternal(const ObjList* ol,
 
 std::string roxal::objListToString(const ObjList* ol)
 {
-    std::unordered_set<const ObjList*> activeLists;
-    return objListToStringInternal(ol, activeLists);
+    ContainerPrintContext context;
+    return objListToStringInternal(ol, context);
 }
 
 
@@ -984,23 +1020,8 @@ bool ObjDict::equals(const ObjDict* other) const
 
 std::string roxal::objDictToString(const ObjDict* od)
 {
-    std::ostringstream os;
-    os << "{";
-    size_t i=0;
-    auto keys { od->keys() };
-    for(const auto& key : keys) {
-        const auto value { od->at(key) };
-        auto keyStr { toString(key) };
-        auto valStr { toString(value) };
-        if (isString(key)) keyStr = "\""+keyStr+"\"";
-        if (isString(value)) valStr = "\""+valStr+"\"";
-        os << keyStr << ": " << valStr;
-        if (i != keys.size()-1)
-            os << ", ";
-        i++;
-    }
-    os << "}";
-    return os.str();
+    ContainerPrintContext context;
+    return objDictToStringInternal(od, context);
 }
 
 void ObjDict::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
