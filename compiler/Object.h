@@ -13,6 +13,7 @@
 #include <ostream>
 #include <istream>
 #include <fstream>
+#include <cstdint>
 
 #include <core/common.h>
 #include <core/AST.h>
@@ -183,8 +184,9 @@ inline unique_ptr<T, UnreleasedObj> newObj(const std::string& name, const std::s
     ctrl->strong = 0;
     ctrl->weak   = 1;   // implicit weak ref representing strong refs
     ctrl->obj    = o;
+    ctrl->allocationSize = static_cast<std::uint64_t>(total);
     ctrl->collecting.store(false, std::memory_order_relaxed);
-    ctrl->markEpoch.store(0u, std::memory_order_relaxed);
+    ctrl->markEpoch.store(0uLL, std::memory_order_relaxed);
     o->control   = ctrl;
 
     SimpleMarkSweepGC::instance().registerAllocation(ctrl);
@@ -220,8 +222,9 @@ inline unique_ptr<T, UnreleasedObj> newObj(Args&&... args) {
     ctrl->strong = 0;
     ctrl->weak   = 1;   // implicit weak ref representing strong refs
     ctrl->obj    = o;
+    ctrl->allocationSize = static_cast<std::uint64_t>(total);
     ctrl->collecting.store(false, std::memory_order_relaxed);
-    ctrl->markEpoch.store(0u, std::memory_order_relaxed);
+    ctrl->markEpoch.store(0uLL, std::memory_order_relaxed);
     o->control   = ctrl;
 
     SimpleMarkSweepGC::instance().registerAllocation(ctrl);

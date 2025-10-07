@@ -84,13 +84,12 @@ void SimpleMarkSweepGC::registerAllocation(ObjControl* control) {
         return;
     }
 
-    bool shouldTrigger = false;
-    size_t threshold = autoTriggerThreshold_.load(std::memory_order_relaxed);
-    if (threshold > 0) {
-        size_t count = allocationsSinceLastCollect_.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (count >= threshold) {
-            shouldTrigger = true;
-        }
+    std::uint64_t allocationSize = control->allocationSize;
+    currentAllocatedBytes_.fetch_add(allocationSize, std::memory_order_relaxed);
+
+    std::uint64_t threshold = autoTriggerThreshold_.load(std::memory_order_relaxed);
+    if (threshold > 0 && allocationSize > 0) {
+        bytesAllocatedSinceLastCollect_.fetch_add(allocationSize, std::memory_order_relaxed);
     }
 
     {
@@ -102,21 +101,18 @@ void SimpleMarkSweepGC::registerAllocation(ObjControl* control) {
         // epoch to decide whether the object was reached, avoiding the need to
         // reset a separate boolean on every cycle.
         control->collecting.store(false, std::memory_order_relaxed);
-        control->markEpoch.store(0u, std::memory_order_relaxed);
-    }
-
-    if (shouldTrigger) {
-        bool expected = false;
-        if (collectionRequested_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-            allocationsSinceLastCollect_.store(0, std::memory_order_relaxed);
-            VM::instance().wakeAllThreadsForGC();
-        }
+        control->markEpoch.store(0uLL, std::memory_order_relaxed);
     }
 }
 
 void SimpleMarkSweepGC::unregisterAllocation(ObjControl* control) {
     if (!control) {
         return;
+    }
+
+    std::uint64_t allocationSize = control->allocationSize;
+    if (allocationSize > 0) {
+        currentAllocatedBytes_.fetch_sub(allocationSize, std::memory_order_relaxed);
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -126,17 +122,17 @@ void SimpleMarkSweepGC::unregisterAllocation(ObjControl* control) {
 void SimpleMarkSweepGC::requestCollect() {
     bool expected = false;
     if (collectionRequested_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-        allocationsSinceLastCollect_.store(0, std::memory_order_relaxed);
+        bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
     }
     VM::instance().wakeAllThreadsForGC();
 }
 
-void SimpleMarkSweepGC::setAutoTriggerThreshold(size_t threshold) {
+void SimpleMarkSweepGC::setAutoTriggerThreshold(std::uint64_t threshold) {
     autoTriggerThreshold_.store(threshold, std::memory_order_relaxed);
-    allocationsSinceLastCollect_.store(0, std::memory_order_relaxed);
+    bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
 }
 
-size_t SimpleMarkSweepGC::autoTriggerThreshold() const noexcept {
+std::uint64_t SimpleMarkSweepGC::autoTriggerThreshold() const noexcept {
     return autoTriggerThreshold_.load(std::memory_order_relaxed);
 }
 
@@ -144,7 +140,7 @@ bool SimpleMarkSweepGC::isCollectionRequested() const noexcept {
     return collectionRequested_.load(std::memory_order_acquire);
 }
 
-uint32_t SimpleMarkSweepGC::currentEpoch() const noexcept {
+std::uint64_t SimpleMarkSweepGC::currentEpoch() const noexcept {
     return epoch_.load(std::memory_order_relaxed);
 }
 
@@ -167,6 +163,18 @@ void SimpleMarkSweepGC::onThreadExit() {
 }
 
 void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
+    std::uint64_t threshold = autoTriggerThreshold_.load(std::memory_order_relaxed);
+    if (threshold > 0) {
+        std::uint64_t allocated = bytesAllocatedSinceLastCollect_.load(std::memory_order_acquire);
+        if (allocated >= threshold) {
+            bool expected = false;
+            if (collectionRequested_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+                bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
+                VM::instance().wakeAllThreadsForGC();
+            }
+        }
+    }
+
     if (!collectionRequested_.load(std::memory_order_acquire)) {
         return;
     }
@@ -227,10 +235,20 @@ void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
 std::vector<Obj*> SimpleMarkSweepGC::performCollection(std::unique_lock<std::mutex>& lock) {
     (void)lock;
 
-    const uint32_t epoch = epoch_.fetch_add(1u, std::memory_order_relaxed) + 1u;
+    const std::uint64_t previousEpoch = epoch_.fetch_add(1uLL, std::memory_order_relaxed);
+    std::uint64_t epoch = previousEpoch + 1uLL;
+    if (epoch == 0) {
+        epoch = 1uLL;
+        epoch_.store(epoch, std::memory_order_relaxed);
+        for (ObjControl* control : controls_) {
+            if (control) {
+                control->markEpoch.store(0uLL, std::memory_order_relaxed);
+            }
+        }
+    }
 
     struct MarkWorklist : ValueVisitor {
-        explicit MarkWorklist(uint32_t epoch) : epoch(epoch) {}
+        explicit MarkWorklist(std::uint64_t epoch) : epoch(epoch) {}
 
         void visit(const Value& value) override {
             if (!value.isObj()) {
@@ -254,7 +272,7 @@ std::vector<Obj*> SimpleMarkSweepGC::performCollection(std::unique_lock<std::mut
                 return;
             }
 
-            uint32_t previous = control->markEpoch.load(std::memory_order_relaxed);
+            std::uint64_t previous = control->markEpoch.load(std::memory_order_relaxed);
             if (previous == epoch) {
                 return;
             }
@@ -273,7 +291,7 @@ std::vector<Obj*> SimpleMarkSweepGC::performCollection(std::unique_lock<std::mut
             }
         }
 
-        uint32_t epoch;
+        std::uint64_t epoch;
         std::vector<Obj*> worklist;
     } marker(epoch);
 
@@ -395,7 +413,7 @@ size_t SimpleMarkSweepGC::collectNowForShutdown() {
 
         toDestroy = performCollection(lock);
         collectionRequested_.store(false, std::memory_order_release);
-        allocationsSinceLastCollect_.store(0, std::memory_order_relaxed);
+        bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
     }
 
     for (Obj* obj : toDestroy) {

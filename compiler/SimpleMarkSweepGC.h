@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <condition_variable>
 #include <mutex>
 #include <unordered_set>
@@ -25,14 +26,14 @@ public:
     void requestCollect();
     void safepoint(Thread& currentThread);
 
-    void setAutoTriggerThreshold(size_t threshold);
-    size_t autoTriggerThreshold() const noexcept;
+    void setAutoTriggerThreshold(std::uint64_t threshold);
+    std::uint64_t autoTriggerThreshold() const noexcept;
 
     void onThreadEnter();
     void onThreadExit();
 
     bool isCollectionRequested() const noexcept;
-    uint32_t currentEpoch() const noexcept;
+    std::uint64_t currentEpoch() const noexcept;
     size_t lastCollectionFreed() const noexcept;
 
     void visitRoots(ValueVisitor& visitor);
@@ -51,11 +52,12 @@ private:
     mutable std::mutex mutex_;
     std::unordered_set<ObjControl*> controls_;
     std::condition_variable safepointCv_;
-    std::atomic<uint32_t> epoch_{1};
+    std::atomic<std::uint64_t> epoch_{1};
     std::atomic<bool> collectionRequested_{false};
     std::atomic<size_t> lastFreedCount_{0};
-    std::atomic<size_t> allocationsSinceLastCollect_{0};
-    std::atomic<size_t> autoTriggerThreshold_{0};
+    std::atomic<std::uint64_t> bytesAllocatedSinceLastCollect_{0};
+    std::atomic<std::uint64_t> currentAllocatedBytes_{0};
+    std::atomic<std::uint64_t> autoTriggerThreshold_{0};
     size_t activeThreads_{0};
     size_t threadsAtSafepoint_{0};
     Thread* collector_{nullptr};
