@@ -6,6 +6,32 @@ import argparse
 import re
 import time
 
+# Remove DEBUG_TRACE_MEMORY leak diagnostics so they do not interfere with
+# stdout comparisons. These messages are useful interactively but contain
+# non-deterministic addresses that otherwise cause golden files to fail.
+def strip_allocated_objs(stdout: bytes) -> bytes:
+    lines = stdout.splitlines()
+    filtered = []
+    skip = False
+    for line in lines:
+        if not skip and line.startswith(b"== allocated Objs"):
+            skip = True
+            continue
+        if skip:
+            if line.startswith(b"  "):
+                continue
+            skip = False
+        filtered.append(line)
+
+    if not filtered:
+        return b""
+
+    ends_with_newline = stdout.endswith(b"\n")
+    result = b"\n".join(filtered)
+    if ends_with_newline:
+        result += b"\n"
+    return result
+
 # Maximum time in seconds to allow each test to run
 TEST_TIMEOUT_SECS = 5
 # Width of the test name column when printing results
@@ -69,7 +95,7 @@ tests = [
     'weakref', 'strongref', 'is_operator', 'stackdepth', 'modulevar2',
     'is_operator_type',
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
-    'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle',
+    'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle', 'gc_list_cycle', 'gc_liveness',
     'runtime_error_snippet',
     'property_count', 'cmdline_execute', 'repl_run', 'invalid_option', 'fileio_basic', 'fileio_binary',
     'fileio_read_binary', 'fileio_write_binary', 'fileio_extra', 'help_doc', 'docstring_func'
@@ -205,13 +231,15 @@ try:
             print(compProc.stderr)
             print("--")
             passed = False
+        filtered_stdout = strip_allocated_objs(compProc.stdout)
+
         if os.path.exists(testout):
             with open(testout, mode='rb') as file:
                 expected = file.read()
-            if expected != compProc.stdout:
+            if expected != filtered_stdout:
                 print(f"FAIL: {opt_expected}", flush=True)
                 print("-- stdout --")
-                print(compProc.stdout)
+                print(filtered_stdout)
                 print("-- expected stdout --")
                 print(expected)
                 print("--")

@@ -450,6 +450,7 @@ struct ObjRange : public Obj
     int32_t targetIndex(int32_t index, int32_t targetLen=-1) const;
 
     void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 
@@ -494,6 +495,7 @@ struct ObjList : public Obj
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 
@@ -580,6 +582,7 @@ public:
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 
@@ -696,6 +699,7 @@ struct ObjSignal : public Obj {
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 inline bool isSignal(const Value& v) { return isObjType(v, ObjType::Signal); }
@@ -721,6 +725,7 @@ struct ObjEvent : public Obj {
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 inline bool isEvent(const Value& v) { return isObjType(v, ObjType::Event); }
@@ -825,6 +830,7 @@ struct ObjException : public Obj {
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 inline bool isException(const Value& v) { return isObjType(v, ObjType::Exception); }
@@ -894,6 +900,7 @@ struct ObjFunction : public Obj
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 inline bool isFunction(const Value& v) { return isObjType(v, ObjType::Function); }
@@ -937,6 +944,7 @@ struct ObjUpvalue : public Obj {
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 inline bool isUpvalue(const Value& v) { return isObjType(v, ObjType::Upvalue); }
@@ -979,6 +987,7 @@ struct ObjClosure : public Obj
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 inline bool isClosure(const Value& v) { return isObjType(v, ObjType::Closure); }
@@ -1025,6 +1034,7 @@ struct ObjFuture : public Obj
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 inline bool isFuture(const Value& v) { return isObjType(v, ObjType::Future); }
@@ -1064,6 +1074,7 @@ struct ObjNative : public Obj
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 inline bool isNative(const Value& v) { return isObjType(v, ObjType::Native); }
@@ -1301,6 +1312,7 @@ struct ActorInstance : public Obj
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 inline bool isActorInstance(const Value& v) { return isObjType(v, ObjType::Actor); }
@@ -1327,6 +1339,7 @@ struct ObjBoundMethod : public Obj
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 inline bool isBoundMethod(const Value& v) { return isObjType(v, ObjType::BoundMethod); }
@@ -1367,6 +1380,7 @@ struct ObjBoundNative : public Obj
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 inline bool isBoundNative(const Value& v) { return isObjType(v, ObjType::BoundNative); }

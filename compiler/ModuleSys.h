@@ -34,6 +34,7 @@ public:
     Value weak_alive_builtin(VM& vm, ArgsView args);
     Value strongref_builtin(VM& vm, ArgsView args);
     Value gc_builtin(VM& vm, ArgsView args);
+    Value gc_config_builtin(VM& vm, ArgsView args);
     Value serialize_builtin(VM& vm, ArgsView args);
     Value deserialize_builtin(VM& vm, ArgsView args);
     Value toJson_builtin(VM& vm, ArgsView args);

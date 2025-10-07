@@ -220,9 +220,11 @@ void Thread::act(Value actorInstance)
 
                 if (callInfo.valid()) {
 
+                    currentActorCall = callInfo.callee;
                     Value strongActor = this->actorInstance.strongRef();
                     if (strongActor.isNil()) {
                         quit = true;
+                        currentActorCall = Value::nilVal();
                         break;
                     }
                     // Ensure actor instance stays alive during call
@@ -265,6 +267,7 @@ void Thread::act(Value actorInstance)
                                 if (diff > 0) popN(size_t(diff));
                                 this->stack[0] = this->actorInstance;
                             }
+                            currentActorCall = Value::nilVal();
                             break;
                         }
 
@@ -290,7 +293,10 @@ void Thread::act(Value actorInstance)
 
                     // restore weak actor reference for next iteration
                     this->stack[0] = this->actorInstance;
+                    currentActorCall = Value::nilVal();
 
+                } else {
+                    currentActorCall = Value::nilVal();
                 }
 
             } while (true);

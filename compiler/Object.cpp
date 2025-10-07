@@ -451,6 +451,13 @@ void ObjRange::trace(ValueVisitor& visitor) const
     visitor.visit(step);
 }
 
+void ObjRange::dropReferences()
+{
+    start = Value::nilVal();
+    stop = Value::nilVal();
+    step = Value::nilVal();
+}
+
 ObjVector::ObjVector(const Eigen::VectorXd& values)
     : vec(values)
 {
@@ -855,6 +862,11 @@ void ObjList::trace(ValueVisitor& visitor) const
     });
 }
 
+void ObjList::dropReferences()
+{
+    elts.clear();
+}
+
 void ObjList::set(const ObjList* other)
 {
     elts = other->elts; // atomic_vector assignment performs copy
@@ -1060,6 +1072,13 @@ void ObjDict::trace(ValueVisitor& visitor) const
         visitor.visit(entry.first);
         visitor.visit(entry.second);
     }
+}
+
+void ObjDict::dropReferences()
+{
+    std::lock_guard<std::mutex> lock(m);
+    m_keys.clear();
+    entries.clear();
 }
 
 
@@ -1362,6 +1381,11 @@ void ObjEvent::trace(ValueVisitor& visitor) const
     }
 }
 
+void ObjEvent::dropReferences()
+{
+    subscribers.clear();
+}
+
 unique_ptr<Obj, UnreleasedObj> ObjLibrary::clone() const {
     // dynamic libraries are represented by handles; share the handle
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjLibrary*>(this));
@@ -1420,6 +1444,13 @@ void ObjException::trace(ValueVisitor& visitor) const
     visitor.visit(message);
     visitor.visit(exType);
     visitor.visit(stackTrace);
+}
+
+void ObjException::dropReferences()
+{
+    message = Value::nilVal();
+    exType = Value::nilVal();
+    stackTrace = Value::nilVal();
 }
 unique_ptr<Obj, UnreleasedObj> ObjFunction::clone() const {
     // function objects are immutable; share the reference
@@ -1550,6 +1581,20 @@ void ObjFunction::trace(ValueVisitor& visitor) const
     for (const auto& entry : paramDefaultFunc) {
         visitor.visit(entry.second);
     }
+    if (chunk) {
+        for (const auto& constant : chunk->constants) {
+            visitor.visit(constant);
+        }
+    }
+}
+
+void ObjFunction::dropReferences()
+{
+    ownerType = Value::nilVal();
+    moduleType = Value::nilVal();
+
+    nativeDefaults.clear();
+    paramDefaultFunc.clear();
 }
 
 unique_ptr<Obj, UnreleasedObj> ObjUpvalue::clone() const
@@ -1588,6 +1633,12 @@ void ObjUpvalue::trace(ValueVisitor& visitor) const
         visitor.visit(*location);
     }
     visitor.visit(closed);
+}
+
+void ObjUpvalue::dropReferences()
+{
+    closed = Value::nilVal();
+    location = &closed;
 }
 
 unique_ptr<Obj, UnreleasedObj> ObjClosure::clone() const
@@ -1649,6 +1700,13 @@ void ObjClosure::trace(ValueVisitor& visitor) const
     }
 }
 
+void ObjClosure::dropReferences()
+{
+    function = Value::nilVal();
+    upvalues.clear();
+    handlerThread.reset();
+}
+
 unique_ptr<Obj, UnreleasedObj> ObjFuture::clone() const
 {
     Value value = const_cast<ObjFuture*>(this)->asValue();
@@ -1680,6 +1738,13 @@ void ObjFuture::trace(ValueVisitor& visitor) const
             visitor.visit(future.get());
         }
     }
+}
+
+void ObjFuture::dropReferences()
+{
+    future = std::shared_future<Value>();
+    std::lock_guard<std::mutex> lk(waitMutex);
+    waiters.clear();
 }
 
 void ObjFuture::addWaiter(const ptr<Thread>& t)
@@ -1726,6 +1791,11 @@ void ObjNative::trace(ValueVisitor& visitor) const
     for (const auto& value : defaultValues) {
         visitor.visit(value);
     }
+}
+
+void ObjNative::dropReferences()
+{
+    defaultValues.clear();
 }
 unique_ptr<Obj, UnreleasedObj> ObjTypeSpec::clone() const {
     // type metadata is immutable; share the reference
@@ -1978,11 +2048,6 @@ void ObjModuleType::dropReferences()
 {
     vars.unsafeForEachModuleVar([](auto& nameValue) {
         Value& value = nameValue.second;
-        if (value.isObj() && !value.isWeak()) {
-            if (Obj* obj = value.asObj()) {
-                obj->dropReferences();
-            }
-        }
         value = Value::nilVal();
     });
     vars.clear();
@@ -2062,6 +2127,12 @@ void ObjBoundMethod::trace(ValueVisitor& visitor) const
     visitor.visit(method);
 }
 
+void ObjBoundMethod::dropReferences()
+{
+    receiver = Value::nilVal();
+    method = Value::nilVal();
+}
+
 unique_ptr<Obj, UnreleasedObj> ObjBoundNative::clone() const
 {
     auto newbm = newBoundNativeObj(receiver, function, isProc, funcType, defaultValues, declFunction);
@@ -2104,6 +2175,13 @@ void ObjBoundNative::trace(ValueVisitor& visitor) const
         visitor.visit(value);
     }
     visitor.visit(declFunction);
+}
+
+void ObjBoundNative::dropReferences()
+{
+    receiver = Value::nilVal();
+    defaultValues.clear();
+    declFunction = Value::nilVal();
 }
 
 void ActorInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -2189,6 +2267,11 @@ ObjSignal::~ObjSignal()
 void ObjSignal::trace(ValueVisitor& visitor) const
 {
     visitor.visit(changeEvent);
+}
+
+void ObjSignal::dropReferences()
+{
+    changeEvent = Value::nilVal();
 }
 
 ObjEvent* ObjSignal::ensureChangeEvent()
@@ -2977,6 +3060,21 @@ void ActorInstance::trace(ValueVisitor& visitor) const
         }
         visitor.visit(info.returnFuture);
     });
+}
+
+void ActorInstance::dropReferences()
+{
+    instanceType = Value::nilVal();
+    for (auto& entry : properties) {
+        entry.second = Value::nilVal();
+    }
+    properties.clear();
+    while (!callQueue.empty()) {
+        MethodCallInfo info = callQueue.pop();
+        info.callee = Value::nilVal();
+        info.args.clear();
+        info.returnFuture = Value::nilVal();
+    }
 }
 
 Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop)
