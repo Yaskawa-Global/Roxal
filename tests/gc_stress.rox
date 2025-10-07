@@ -1,0 +1,181 @@
+// Stress-test garbage collector with complex cyclic structures across lists, dicts, vectors,
+// user-defined objects, and actors.  Exercises several MB of allocations.
+
+type Payload object:
+  var id :int
+  var data
+  var mapping
+  var vec
+  var next :Payload
+
+type Collector actor:
+  private var label
+  private var store
+  proc init(name):
+    label = name
+    store = []
+  proc capture(item):
+    store.append(item)
+  proc build_payloads(count :int, width :int, vector_width :int):
+    var local = []
+    var idx :int = 0
+    var local_numbers = nil
+    var local_cycle = nil
+    var local_info = nil
+    var local_nested = nil
+    var local_vector = nil
+    var local_payload = nil
+    while idx < count:
+      local_numbers = []
+      var j :int = 0
+      var local_vec_data = []
+      while j < width:
+        var value = idx * width + j
+        local_numbers.append(value)
+        if j < vector_width:
+          local_vec_data.append(value)
+        j = j + 1
+      local_cycle = []
+      local_info = {'slot':idx, 'numbers':local_numbers}
+      local_cycle.append(local_info)
+      local_info['loop'] = local_cycle
+      local_cycle.append(local_cycle)
+      local_numbers.append(local_info)
+      local_numbers.append(local_cycle)
+      local_nested = {'mirror':local_cycle}
+      local_info['nested'] = local_nested
+      local_nested['back'] = local_info
+      local_vector = vector(local_vec_data)
+      local_payload = Payload()
+      local_payload.id = idx
+      local_payload.data = local_numbers
+      local_payload.mapping = local_info
+      local_payload.vec = local_vector
+      local.append(local_payload)
+      idx = idx + 1
+    store.append(local)
+    store.append({'payloads':local})
+    local_numbers = nil
+    local_cycle = nil
+    local_info = nil
+    local_nested = nil
+    local_vector = nil
+    local_payload = nil
+  proc make_cycle():
+    store.append(store)
+  proc clear():
+    store = []
+
+var block_count :int = 48
+var values_per_block :int = 4096
+var vector_slice :int = 2048
+
+var payloads = []
+var big_lists = []
+var big_dicts = []
+var big_vectors = []
+var aggregator = []
+
+var numbers = nil
+var vector_data = nil
+var cycle_list = nil
+var info = nil
+var vec = nil
+var payload = nil
+var nested = nil
+
+var block :int = 0
+
+while block < block_count:
+  numbers = []
+  vector_data = []
+  var j :int = 0
+  while j < values_per_block:
+    var val = block * values_per_block + j
+    numbers.append(val)
+    if j < vector_slice:
+      vector_data.append(val)
+    j = j + 1
+  cycle_list = []
+  info = {'idx':block, 'numbers':numbers}
+  cycle_list.append(info)
+  info['loop'] = cycle_list
+  info['numbers_tail'] = numbers
+  cycle_list.append(cycle_list)
+  numbers.append(info)
+  numbers.append(cycle_list)
+  nested = {'mirror':cycle_list}
+  info['nested'] = nested
+  nested['back'] = info
+  big_lists.append(cycle_list)
+  big_dicts.append(info)
+  vec = vector(vector_data)
+  big_vectors.append(vec)
+  payload = Payload()
+  payload.id = block
+  payload.data = numbers
+  payload.mapping = info
+  payload.vec = vec
+  payloads.append(payload)
+  aggregator.append({'payload':payload, 'list':cycle_list, 'dict':info, 'vector':vec})
+  block = block + 1
+
+numbers = nil
+vector_data = nil
+cycle_list = nil
+info = nil
+vec = nil
+payload = nil
+nested = nil
+
+var current = nil
+var nxt = nil
+var i :int = 0
+
+while i < block_count:
+  current = payloads[i]
+  nxt = payloads[(i + 1) % block_count]
+  current.next = nxt
+  i = i + 1
+
+current = nil
+nxt = nil
+
+var w_payload = _weakref(payloads[0])
+
+var actorA = Collector('alpha')
+var actorB = Collector('beta')
+
+wait(ms=100)
+
+actorA.build_payloads(12, 768, 384)
+actorB.build_payloads(12, 768, 384)
+actorA.make_cycle()
+actorB.make_cycle()
+
+wait(ms=200)
+
+print(_weak_alive(w_payload))
+
+aggregator = nil
+big_vectors = nil
+big_dicts = nil
+big_lists = nil
+payloads = nil
+
+actorA.clear()
+actorB.clear()
+
+wait(ms=200)
+
+actorA = nil
+actorB = nil
+
+wait(ms=200)
+
+gc()
+gc()
+
+print(_weak_alive(w_payload))
+
+print('done')
