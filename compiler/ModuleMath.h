@@ -9,11 +9,7 @@ namespace roxal {
 class ModuleMath : public BuiltinModule {
 public:
     ModuleMath();
-    virtual ~ModuleMath() {
-        if (!moduleTypeValue.isNil())
-            asModuleType(moduleTypeValue)->vars.clear();
-        moduleTypeValue = Value::nilVal();
-    }
+    virtual ~ModuleMath();
 
     void registerBuiltins(VM& vm) override;
 

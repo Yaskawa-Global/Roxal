@@ -69,7 +69,7 @@ class VM
 public:
     friend class Thread;
     friend class ModuleSys;
-    friend class ValueGC;
+    friend class SimpleMarkSweepGC;
 
     static VM& instance()
     {
@@ -258,6 +258,7 @@ public:
 
     void resetStack();
     void freeObjects();
+    void cleanupWeakRegistries();
     void unwindFrame();
     void raiseException(Value exc);
     void outputAllocatedObjs();

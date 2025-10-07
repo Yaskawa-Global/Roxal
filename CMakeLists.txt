@@ -109,7 +109,7 @@ set(COMPILER_SOURCES
     compiler/RoxalIndentationLexer.cpp
     compiler/TypeDeducer.cpp
     compiler/Value.cpp
-    compiler/ValueGC.cpp
+    compiler/SimpleMarkSweepGC.cpp
     compiler/Thread.cpp
     compiler/VM.cpp
     compiler/linenoise.c

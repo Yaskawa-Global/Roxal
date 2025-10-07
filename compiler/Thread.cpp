@@ -2,6 +2,8 @@
 #include "VM.h"
 #include "Object.h"
 
+#include <algorithm>
+
 using namespace roxal;
 
 Thread::~Thread()
@@ -21,6 +23,73 @@ Thread::~Thread()
                 it = ev->subscribers.erase(it);
             }
         }
+    }
+}
+
+void Thread::pruneEventRegistrations()
+{
+    // Walk the strong map of event -> handlers removing entries whose event
+    // object was reclaimed or whose subscribers no longer point at a live
+    // closure. This keeps the event registry from pinning dead closures and
+    // ensures the Value GC can drop cycles that involve events.
+    for (auto it = eventHandlers.begin(); it != eventHandlers.end();) {
+        Value eventRef = it->first;
+        if (!eventRef.isAlive()) {
+            eventToSignal.erase(eventRef);
+            it = eventHandlers.erase(it);
+            continue;
+        }
+
+        ObjEvent* ev = nullptr;
+        if (eventRef.isObj()) {
+            ev = asEvent(eventRef);
+        }
+
+        if (!ev) {
+            eventToSignal.erase(eventRef);
+            it = eventHandlers.erase(it);
+            continue;
+        }
+
+        // Clean up subscribers that point at dead closures. We only track
+        // weak references here so losing the closure automatically unhooks
+        // the handler.
+        auto& subscribers = ev->subscribers;
+        subscribers.erase(std::remove_if(subscribers.begin(), subscribers.end(),
+                                         [](const Value& subscriber) {
+                                             return !subscriber.isAlive();
+                                         }),
+                          subscribers.end());
+
+        auto& handlers = it->second;
+        handlers.erase(std::remove_if(handlers.begin(), handlers.end(),
+                                      [](const Value& handler) {
+                                          return handler.isWeak() && !handler.isAlive();
+                                      }),
+                       handlers.end());
+
+        if (handlers.empty()) {
+            eventToSignal.erase(eventRef);
+            it = eventHandlers.erase(it);
+            continue;
+        }
+
+        ++it;
+    }
+
+    // Finally prune the auxiliary map that tracks which signal each event is
+    // bound to. Both sides are stored as weak handles so we simply drop any
+    // entries whose endpoints are gone.
+    for (auto it = eventToSignal.begin(); it != eventToSignal.end();) {
+        if (!it->first.isAlive()) {
+            it = eventToSignal.erase(it);
+            continue;
+        }
+        if (it->second.isWeak() && !it->second.isAlive()) {
+            it = eventToSignal.erase(it);
+            continue;
+        }
+        ++it;
     }
 }
 
