@@ -1,6 +1,7 @@
 #include <stdexcept>
 #include <cassert>
 #include <unordered_map>
+#include <unordered_set>
 #include <sstream>
 #include <algorithm>
 #include <iomanip>
@@ -865,21 +866,50 @@ bool ObjList::equals(const ObjList* other) const
 
 
 
-std::string roxal::objListToString(const ObjList* ol)
+namespace {
+
+std::string objListToStringInternal(const ObjList* ol,
+                                   std::unordered_set<const ObjList*>& activeLists);
+
+std::string listElementToString(const Value& value,
+                                std::unordered_set<const ObjList*>& activeLists)
 {
+    if (isList(value)) {
+        return objListToStringInternal(asList(value), activeLists);
+    }
+
+    auto valStr { toString(value) };
+    if (isString(value))
+        valStr = "\"" + valStr + "\"";
+    return valStr;
+}
+
+std::string objListToStringInternal(const ObjList* ol,
+                                   std::unordered_set<const ObjList*>& activeLists)
+{
+    if (!activeLists.insert(ol).second)
+        return "[...]";
+
     std::ostringstream os;
     os << "[";
     auto list { ol->elts.get() };
-    for(auto it = list.begin(); it != list.end(); ++it) {
-        const auto& value { *it };
-        auto valStr { toString(value) };
-        if (isString(value)) valStr = "\""+valStr+"\"";
-        os << valStr;
-        if (it != list.end()-1)
+    for (auto it = list.begin(); it != list.end(); ++it) {
+        os << listElementToString(*it, activeLists);
+        if (it != list.end() - 1)
             os << ", ";
     }
     os << "]";
+
+    activeLists.erase(ol);
     return os.str();
+}
+
+} // namespace
+
+std::string roxal::objListToString(const ObjList* ol)
+{
+    std::unordered_set<const ObjList*> activeLists;
+    return objListToStringInternal(ol, activeLists);
 }
 
 
