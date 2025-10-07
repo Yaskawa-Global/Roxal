@@ -258,6 +258,7 @@ public:
 
     void resetStack();
     void freeObjects();
+    void cleanupWeakRegistries();
     void unwindFrame();
     void raiseException(Value exc);
     void outputAllocatedObjs();

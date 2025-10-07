@@ -36,6 +36,7 @@ public:
 
     bool isCollectionRequested() const noexcept;
     uint32_t currentEpoch() const noexcept;
+    size_t lastCollectionFreed() const noexcept;
 
     void visitRoots(GCVisitor& visitor);
 
@@ -49,6 +50,7 @@ private:
     std::condition_variable safepointCv_;
     std::atomic<uint32_t> epoch_{1};
     std::atomic<bool> collectionRequested_{false};
+    std::atomic<size_t> lastFreedCount_{0};
     size_t activeThreads_{0};
     size_t threadsAtSafepoint_{0};
     Thread* collector_{nullptr};

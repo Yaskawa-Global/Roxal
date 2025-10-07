@@ -115,6 +115,10 @@ uint32_t ValueGC::currentEpoch() const noexcept {
     return epoch_.load(std::memory_order_relaxed);
 }
 
+size_t ValueGC::lastCollectionFreed() const noexcept {
+    return lastFreedCount_.load(std::memory_order_relaxed);
+}
+
 void ValueGC::onThreadEnter() {
     std::lock_guard<std::mutex> lock(mutex_);
     ++activeThreads_;
@@ -263,10 +267,23 @@ std::vector<Obj*> ValueGC::performCollection(std::unique_lock<std::mutex>& lock)
             continue;
         }
 
+        if (obj->type != ObjType::Instance) {
+            continue;
+        }
+
+        // Break any strong edges the object holds so that cycles see their
+        // reference counts fall to zero once we hand them back to the regular
+        // destruction path. Modules reuse the same helper when being torn down
+        // explicitly.
+        obj->dropReferences();
+
         control->collecting.store(true, std::memory_order_relaxed);
         control->obj = nullptr;
         unreachable.push_back(obj);
     }
+
+    lastFreedCount_.store(unreachable.size(), std::memory_order_relaxed);
+    VM::instance().cleanupWeakRegistries();
 
     return unreachable;
 }
@@ -334,11 +351,6 @@ void ValueGC::visitRoots(GCVisitor& visitor) {
         }
     }
 
-    visitInternedStrings([&visitor](ObjString* str) {
-        if (str) {
-            visitStrongValue(visitor, Value::objRef(str));
-        }
-    });
 }
 
 } // namespace roxal

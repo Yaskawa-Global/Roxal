@@ -1,6 +1,7 @@
 #include "ModuleSys.h"
 #include "VM.h"
 #include "Object.h"
+#include "ValueGC.h"
 #include "core/AST.h"
 #include <core/json11.h>
 #include <core/TimePoint.h>
@@ -10,6 +11,8 @@
 #include <sstream>
 #include <time.h>
 #include <cmath>
+#include <limits>
+#include <algorithm>
 
 using namespace roxal;
 
@@ -17,6 +20,11 @@ ModuleSys::ModuleSys()
 {
     moduleTypeValue = Value::objVal(newModuleTypeObj(toUnicodeString("sys")));
     ObjModuleType::allModules.push_back(moduleTypeValue);
+}
+
+ModuleSys::~ModuleSys()
+{
+    destroyModuleType(moduleTypeValue);
 }
 
 
@@ -74,6 +82,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("_weakref", [this](VM& vm, ArgsView a){ return weakref_builtin(vm,a); });
         addSys("_weak_alive", [this](VM& vm, ArgsView a){ return weak_alive_builtin(vm,a); });
         addSys("_strongref", [this](VM& vm, ArgsView a){ return strongref_builtin(vm,a); });
+        addSys("gc", [this](VM& vm, ArgsView a){ return gc_builtin(vm,a); });
         addSys("serialize", [this](VM& vm, ArgsView a){ return serialize_builtin(vm,a); });
         addSys("deserialize", [this](VM& vm, ArgsView a){ return deserialize_builtin(vm,a); });
         addSys("toJson", [this](VM& vm, ArgsView a){ return toJson_builtin(vm,a); });
@@ -432,6 +441,23 @@ Value ModuleSys::strongref_builtin(VM& vm, ArgsView args)
         throw std::invalid_argument("strongref expects single argument");
 
     return args[0].strongRef();
+}
+
+Value ModuleSys::gc_builtin(VM& vm, ArgsView args)
+{
+    if (!args.empty())
+        throw std::invalid_argument("gc expects no arguments");
+
+    ValueGC& collector = ValueGC::instance();
+    collector.requestCollect();
+
+    if (VM::thread) {
+        collector.safepoint(*VM::thread);
+    }
+
+    size_t freed = collector.lastCollectionFreed();
+    size_t clamped = std::min(freed, static_cast<size_t>(std::numeric_limits<int32_t>::max()));
+    return Value::intVal(static_cast<int32_t>(clamped));
 }
 
 Value ModuleSys::serialize_builtin(VM& vm, ArgsView args)

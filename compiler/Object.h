@@ -43,6 +43,7 @@ struct ObjFunction; // forward for bound native default values
 struct ObjException; // forward
 
 void visitInternedStrings(const std::function<void(ObjString*)>& fn);
+void purgeDeadInternedStrings();
 }
 
 
@@ -100,6 +101,11 @@ struct Obj {
     ValueType valueType() const;
 
     virtual void trace(GCVisitor& visitor) const = 0;
+    // Release strong Value references owned by the object without destroying
+    // it. The GC invokes this to break cycles before routing the object
+    // through the existing unref queue, and builtin modules reuse it during
+    // manual teardown.
+    virtual void dropReferences();
 
     virtual unique_ptr<Obj, UnreleasedObj> clone() const = 0; // deep copy
 
@@ -1160,6 +1166,7 @@ struct ObjObjectType : public ObjTypeSpec
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(GCVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 
@@ -1207,6 +1214,7 @@ struct ObjModuleType : public ObjTypeSpec
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(GCVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 inline bool isModuleType(const Value& v) { return isObjType(v, ObjType::Type) && (asTypeSpec(v)->typeValue == ValueType::Module); }
@@ -1243,6 +1251,7 @@ struct ObjectInstance : public Obj
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(GCVisitor& visitor) const override;
+    void dropReferences() override;
 };
 
 inline bool isObjectInstance(const Value& v) { return isObjType(v, ObjType::Instance); }

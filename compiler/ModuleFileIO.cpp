@@ -5,6 +5,7 @@
 #include <fstream>
 #include <filesystem>
 #include <optional>
+#include <algorithm>
 
 using namespace roxal;
 
@@ -12,6 +13,11 @@ ModuleFileIO::ModuleFileIO()
 {
     moduleTypeValue = Value::objVal(newModuleTypeObj(toUnicodeString("fileio")));
     ObjModuleType::allModules.push_back(moduleTypeValue);
+}
+
+ModuleFileIO::~ModuleFileIO()
+{
+    destroyModuleType(moduleTypeValue);
 }
 
 void ModuleFileIO::registerBuiltins(VM& vm)

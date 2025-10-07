@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <dlfcn.h>
 #include <future>
+#include <vector>
 
 #include <core/types.h>
 #include "VM.h"
@@ -228,6 +229,11 @@ ValueType Obj::valueType() const
     }
 }
 
+void Obj::dropReferences()
+{
+    // Default implementation does nothing.
+}
+
 
 
 
@@ -246,6 +252,29 @@ void roxal::visitInternedStrings(const std::function<void(ObjString*)>& fn)
             }
         }
     });
+}
+
+void roxal::purgeDeadInternedStrings()
+{
+    std::vector<int32_t> deadHashes;
+    strings.unsafeApply([&deadHashes](const auto& interned) {
+        deadHashes.reserve(interned.size());
+        for (const auto& entry : interned) {
+            ObjString* str = entry.second;
+            if (!str) {
+                deadHashes.push_back(entry.first);
+                continue;
+            }
+            ObjControl* control = str->control;
+            if (!control || control->obj == nullptr) {
+                deadHashes.push_back(entry.first);
+            }
+        }
+    });
+
+    for (int32_t hash : deadHashes) {
+        strings.erase(hash);
+    }
 }
 
 ObjString::ObjString()
@@ -1873,6 +1902,28 @@ void ObjObjectType::trace(GCVisitor& visitor) const
         visitor.visit(entry.second.second);
     }
 }
+
+void ObjObjectType::dropReferences()
+{
+    superType = Value::nilVal();
+
+    for (auto& entry : properties) {
+        auto& prop = entry.second;
+        prop.type = Value::nilVal();
+        prop.initialValue = Value::nilVal();
+        prop.ownerType = Value::nilVal();
+    }
+
+    for (auto& entry : methods) {
+        auto& method = entry.second;
+        method.closure = Value::nilVal();
+        method.ownerType = Value::nilVal();
+    }
+
+    for (auto& entry : enumLabelValues) {
+        entry.second.second = Value::nilVal();
+    }
+}
 unique_ptr<Obj, UnreleasedObj> ObjPackageType::clone() const {
     // package types contain no mutable state; share the reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjPackageType*>(this));
@@ -1922,6 +1973,20 @@ void ObjModuleType::trace(GCVisitor& visitor) const
         visitor.visit(nameValue.second);
     });
 }
+
+void ObjModuleType::dropReferences()
+{
+    vars.unsafeForEachModuleVar([](auto& nameValue) {
+        Value& value = nameValue.second;
+        if (value.isObj() && !value.isWeak()) {
+            if (Obj* obj = value.asObj()) {
+                obj->dropReferences();
+            }
+        }
+        value = Value::nilVal();
+    });
+    vars.clear();
+}
 void ObjectInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     // Only serialize the object contents here.  Reference tracking is handled
@@ -1956,6 +2021,14 @@ void ObjectInstance::trace(GCVisitor& visitor) const
     for (const auto& entry : properties) {
         visitor.visit(entry.second);
     }
+}
+
+void ObjectInstance::dropReferences()
+{
+    for (auto& entry : properties) {
+        entry.second = Value::nilVal();
+    }
+    properties.clear();
 }
 
 unique_ptr<Obj, UnreleasedObj> ObjBoundMethod::clone() const

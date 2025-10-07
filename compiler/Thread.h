@@ -112,6 +112,8 @@ public:
 
     int execute_depth;
 
+    void pruneEventRegistrations();
+
 private:
     ptr<std::thread> osthread;
 

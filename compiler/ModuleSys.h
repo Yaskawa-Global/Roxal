@@ -9,11 +9,7 @@ namespace roxal {
 class ModuleSys : public BuiltinModule {
 public:
     ModuleSys();
-    virtual ~ModuleSys() {
-        if (!moduleTypeValue.isNil())
-            asModuleType(moduleTypeValue)->vars.clear();
-        moduleTypeValue = Value::nilVal();
-    }
+    virtual ~ModuleSys();
 
     // Register builtin sys functions and natives
     void registerBuiltins(VM& vm) override;
@@ -37,6 +33,7 @@ public:
     Value weakref_builtin(VM& vm, ArgsView args);
     Value weak_alive_builtin(VM& vm, ArgsView args);
     Value strongref_builtin(VM& vm, ArgsView args);
+    Value gc_builtin(VM& vm, ArgsView args);
     Value serialize_builtin(VM& vm, ArgsView args);
     Value deserialize_builtin(VM& vm, ArgsView args);
     Value toJson_builtin(VM& vm, ArgsView args);

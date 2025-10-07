@@ -9,6 +9,7 @@
 #include <sstream>
 #include <filesystem>
 #include <map>
+#include <unordered_set>
 #include <ffi.h>
 #include <dlfcn.h>
 
@@ -332,8 +333,11 @@ VM::~VM()
     sgcl::collector::force_collect(true);
     #endif
 
-    for(auto moduleTypeVal : ObjModuleType::allModules.get()) {
-        asModuleType(moduleTypeVal)->vars.clear();
+    for (auto moduleTypeVal : ObjModuleType::allModules.get()) {
+        ObjModuleType* moduleType = asModuleType(moduleTypeVal);
+        if (moduleType) {
+            moduleType->dropReferences();
+        }
     }
     ObjModuleType::allModules.clear();
 
@@ -3795,34 +3799,45 @@ void VM::freeObjects()
     }
 
     if (thread) {
-        // remove event handlers referencing destroyed events or closures
-        for(auto it = thread->eventHandlers.begin(); it != thread->eventHandlers.end(); ) {
-            if (!it->first.isAlive()) {
-                it = thread->eventHandlers.erase(it);
-                continue;
-            }
+        thread->pruneEventRegistrations();
+    }
+}
 
-            ObjEvent* ev = asEvent(it->first);
-            auto& handlers = it->second;
-            for(auto hit = handlers.begin(); hit != handlers.end(); ) {
-                if (!hit->isAlive()) {
-                    for(auto es = ev->subscribers.begin(); es != ev->subscribers.end(); ) {
-                        if (!es->isAlive() || asClosure(*es) == asClosure(*hit))
-                            es = ev->subscribers.erase(es);
-                        else
-                            ++es;
-                    }
-                    hit = handlers.erase(hit);
-                } else {
-                    ++hit;
-                }
-            }
+void VM::cleanupWeakRegistries()
+{
+    purgeDeadInternedStrings();
 
-            if (handlers.empty())
-                it = thread->eventHandlers.erase(it);
-            else
-                ++it;
+    std::vector<ptr<Thread>> threadsToClean;
+    threads.unsafeApply([&threadsToClean](const auto& registered) {
+        threadsToClean.reserve(registered.size());
+        for (const auto& entry : registered) {
+            if (entry.second) {
+                threadsToClean.push_back(entry.second);
+            }
         }
+    });
+
+    threadsToClean.reserve(threadsToClean.size() + 3);
+    auto appendThread = [&threadsToClean](const ptr<Thread>& candidate) {
+        if (candidate) {
+            threadsToClean.push_back(candidate);
+        }
+    };
+
+    appendThread(replThread);
+    appendThread(dataflowEngineThread);
+    appendThread(VM::thread);
+
+    std::unordered_set<Thread*> seen;
+    for (const auto& threadPtr : threadsToClean) {
+        if (!threadPtr) {
+            continue;
+        }
+        Thread* raw = threadPtr.get();
+        if (!seen.insert(raw).second) {
+            continue;
+        }
+        raw->pruneEventRegistrations();
     }
 }
 

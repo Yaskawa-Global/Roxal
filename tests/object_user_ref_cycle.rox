@@ -12,6 +12,12 @@ a2 = A()
 a1.a = a2
 a2.a = a1
 
+w1 = _weakref(a1)
+w2 = _weakref(a2)
+
+a1 = nil
+a2 = nil
+
 
 // A more challenging one:
 
@@ -23,4 +29,24 @@ a3.a = a4
 a4.a = a5
 a5.a = a3
 
+w3 = _weakref(a3)
+w4 = _weakref(a4)
+w5 = _weakref(a5)
 
+a3 = nil
+a4 = nil
+a5 = nil
+
+print(_weak_alive(w1))
+print(_weak_alive(w2))
+print(_weak_alive(w3))
+print(_weak_alive(w4))
+print(_weak_alive(w5))
+
+gc()
+
+print(_weak_alive(w1))
+print(_weak_alive(w2))
+print(_weak_alive(w3))
+print(_weak_alive(w4))
+print(_weak_alive(w5))

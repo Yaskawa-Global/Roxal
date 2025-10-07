@@ -719,6 +719,14 @@ public:
     }
 
     template<typename Fn>
+    void unsafeForEachModuleVar(Fn&& fn)
+    {
+        for (auto& entry : vars) {
+            fn(entry.second);
+        }
+    }
+
+    template<typename Fn>
     void unsafeForEachGlobal(Fn&& fn) const
     {
         for (const auto& entry : globals) {

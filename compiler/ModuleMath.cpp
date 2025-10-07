@@ -2,6 +2,7 @@
 #include "VM.h"
 #include "Object.h"
 #include <cmath>
+#include <algorithm>
 #include <Eigen/Dense>
 
 using namespace roxal;
@@ -10,6 +11,11 @@ ModuleMath::ModuleMath()
 {
     moduleTypeValue = Value::objVal(newModuleTypeObj(toUnicodeString("math")));
     ObjModuleType::allModules.push_back(moduleTypeValue);
+}
+
+ModuleMath::~ModuleMath()
+{
+    destroyModuleType(moduleTypeValue);
 }
 
 void ModuleMath::registerBuiltins(VM& vm)

@@ -5,6 +5,7 @@
 #include "Object.h"
 #include <core/types.h>
 #include <optional>
+#include <algorithm>
 
 namespace roxal {
 
@@ -41,6 +42,8 @@ protected:
                     const std::string& methodName,
                     NativeFn fn,
                     std::vector<Value> defaults = {});
+
+    static void destroyModuleType(Value& moduleTypeValue);
 };
 
 inline std::vector<type::Type::FuncType::ParamType>
@@ -116,6 +119,26 @@ inline void BuiltinModule::linkMethod(const std::string& typeName,
         throw std::runtime_error("BuiltinModule::linkMethod: Type '" + typeName +
                                  "' not found or not an object type.");
     }
+}
+
+inline void BuiltinModule::destroyModuleType(Value& moduleTypeValue)
+{
+    if (moduleTypeValue.isNil()) {
+        return;
+    }
+
+    ObjModuleType* moduleType = asModuleType(moduleTypeValue);
+    moduleType->dropReferences();
+
+    ObjModuleType::allModules.unsafeApply([moduleType](std::vector<Value>& modules) {
+        modules.erase(std::remove_if(modules.begin(), modules.end(),
+                                     [moduleType](const Value& value) {
+                                         return value.isObj() && value.asObj() == moduleType;
+                                     }),
+                      modules.end());
+    });
+
+    moduleTypeValue = Value::nilVal();
 }
 
 } // namespace roxal
