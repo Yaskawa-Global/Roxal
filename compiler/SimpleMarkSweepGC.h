@@ -13,17 +13,11 @@ namespace roxal {
 class Value;
 class Thread;
 
-class GCVisitor {
-public:
-    virtual ~GCVisitor() = default;
+class ValueVisitor;
 
-    /// Visit a strong reference held in a Value payload.
-    virtual void visit(const Value& value) = 0;
-};
-
-class ValueGC {
+class SimpleMarkSweepGC {
 public:
-    static ValueGC& instance();
+    static SimpleMarkSweepGC& instance();
 
     void registerAllocation(ObjControl* control);
     void unregisterAllocation(ObjControl* control);
@@ -38,10 +32,10 @@ public:
     uint32_t currentEpoch() const noexcept;
     size_t lastCollectionFreed() const noexcept;
 
-    void visitRoots(GCVisitor& visitor);
+    void visitRoots(ValueVisitor& visitor);
 
 private:
-    ValueGC() = default;
+    SimpleMarkSweepGC() = default;
 
     std::vector<Obj*> performCollection(std::unique_lock<std::mutex>& lock);
 

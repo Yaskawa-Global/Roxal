@@ -39,6 +39,14 @@ struct ObjFunction;
 struct ArgsView;
 using NativeFn = std::function<Value(VM&, ArgsView)>;
 
+class ValueVisitor {
+public:
+    virtual ~ValueVisitor() = default;
+
+    /// Visit a strong reference held in a Value payload.
+    virtual void visit(const Value& value) = 0;
+};
+
 
 enum class ValueType {
     // Values used for NAN type tag:

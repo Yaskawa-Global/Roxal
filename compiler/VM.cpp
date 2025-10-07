@@ -29,7 +29,7 @@
 #include "FFI.h"
 #include "ModuleMath.h"
 #include "ModuleSys.h"
-#include "ValueGC.h"
+#include "SimpleMarkSweepGC.h"
 #include <Eigen/Dense>
 #include <core/types.h>
 #include <core/common.h>
@@ -1840,10 +1840,10 @@ std::pair<InterpretResult,Value> VM::execute()
         asFunction(asClosure(thread->frames.back().closure)->function)->chunk->code.size() == 0)
         return std::make_pair(InterpretResult::OK, Value::nilVal()); // nothing to execute
 
-    ValueGC& valueGC = ValueGC::instance();
+    SimpleMarkSweepGC& valueGC = SimpleMarkSweepGC::instance();
     valueGC.onThreadEnter();
     struct ThreadExecutionGuard {
-        ValueGC& gc;
+        SimpleMarkSweepGC& gc;
         ~ThreadExecutionGuard() { gc.onThreadExit(); }
     } executionGuard{valueGC};
 

@@ -1,7 +1,7 @@
 #include "ModuleSys.h"
 #include "VM.h"
 #include "Object.h"
-#include "ValueGC.h"
+#include "SimpleMarkSweepGC.h"
 #include "core/AST.h"
 #include <core/json11.h>
 #include <core/TimePoint.h>
@@ -448,7 +448,7 @@ Value ModuleSys::gc_builtin(VM& vm, ArgsView args)
     if (!args.empty())
         throw std::invalid_argument("gc expects no arguments");
 
-    ValueGC& collector = ValueGC::instance();
+    SimpleMarkSweepGC& collector = SimpleMarkSweepGC::instance();
     collector.requestCollect();
 
     if (VM::thread) {

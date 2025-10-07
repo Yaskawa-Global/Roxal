@@ -444,7 +444,7 @@ void ObjRange::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     closed = c != 0;
 }
 
-void ObjRange::trace(GCVisitor& visitor) const
+void ObjRange::trace(ValueVisitor& visitor) const
 {
     visitor.visit(start);
     visitor.visit(stop);
@@ -846,7 +846,7 @@ void ObjList::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         elts.push_back(readValue(in, ctx));
 }
 
-void ObjList::trace(GCVisitor& visitor) const
+void ObjList::trace(ValueVisitor& visitor) const
 {
     elts.unsafeApply([&visitor](const auto& values) {
         for (const auto& value : values) {
@@ -1054,7 +1054,7 @@ void ObjDict::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     }
 }
 
-void ObjDict::trace(GCVisitor& visitor) const
+void ObjDict::trace(ValueVisitor& visitor) const
 {
     for (const auto& entry : entries) {
         visitor.visit(entry.first);
@@ -1355,7 +1355,7 @@ void ObjEvent::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     type = ObjType::Event;
 }
 
-void ObjEvent::trace(GCVisitor& visitor) const
+void ObjEvent::trace(ValueVisitor& visitor) const
 {
     for (const auto& subscriber : subscribers) {
         visitor.visit(subscriber);
@@ -1415,7 +1415,7 @@ void ObjException::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     type = ObjType::Exception;
 }
 
-void ObjException::trace(GCVisitor& visitor) const
+void ObjException::trace(ValueVisitor& visitor) const
 {
     visitor.visit(message);
     visitor.visit(exType);
@@ -1540,7 +1540,7 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         moduleType = moduleType.weakRef();
 }
 
-void ObjFunction::trace(GCVisitor& visitor) const
+void ObjFunction::trace(ValueVisitor& visitor) const
 {
     visitor.visit(ownerType);
     visitor.visit(moduleType);
@@ -1582,7 +1582,7 @@ void ObjUpvalue::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     location = &closed;
 }
 
-void ObjUpvalue::trace(GCVisitor& visitor) const
+void ObjUpvalue::trace(ValueVisitor& visitor) const
 {
     if (location && location != &closed) {
         visitor.visit(*location);
@@ -1641,7 +1641,7 @@ void ObjClosure::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     }
 }
 
-void ObjClosure::trace(GCVisitor& visitor) const
+void ObjClosure::trace(ValueVisitor& visitor) const
 {
     visitor.visit(function);
     for (const auto& upvalue : upvalues) {
@@ -1673,7 +1673,7 @@ void ObjFuture::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     future = p.get_future().share();
 }
 
-void ObjFuture::trace(GCVisitor& visitor) const
+void ObjFuture::trace(ValueVisitor& visitor) const
 {
     if (future.valid()) {
         if (future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
@@ -1721,7 +1721,7 @@ unique_ptr<Obj, UnreleasedObj> ObjNative::clone() const {
 void ObjNative::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("ObjNative serialization not implemented"); }
 void ObjNative::read(std::istream&, roxal::ptr<SerializationContext>) { throw std::runtime_error("ObjNative deserialization not implemented"); }
 
-void ObjNative::trace(GCVisitor& visitor) const
+void ObjNative::trace(ValueVisitor& visitor) const
 {
     for (const auto& value : defaultValues) {
         visitor.visit(value);
@@ -1884,7 +1884,7 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     }
 }
 
-void ObjObjectType::trace(GCVisitor& visitor) const
+void ObjObjectType::trace(ValueVisitor& visitor) const
 {
     visitor.visit(superType);
     for (const auto& entry : properties) {
@@ -1967,7 +1967,7 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     allModules.push_back(Value::objRef(this));
 }
 
-void ObjModuleType::trace(GCVisitor& visitor) const
+void ObjModuleType::trace(ValueVisitor& visitor) const
 {
     vars.unsafeForEachModuleVar([&visitor](const auto& nameValue) {
         visitor.visit(nameValue.second);
@@ -2015,7 +2015,7 @@ void ObjectInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx
     }
 }
 
-void ObjectInstance::trace(GCVisitor& visitor) const
+void ObjectInstance::trace(ValueVisitor& visitor) const
 {
     visitor.visit(instanceType);
     for (const auto& entry : properties) {
@@ -2056,7 +2056,7 @@ void ObjBoundMethod::read(std::istream& in, roxal::ptr<SerializationContext> ctx
     type = ObjType::BoundMethod;
 }
 
-void ObjBoundMethod::trace(GCVisitor& visitor) const
+void ObjBoundMethod::trace(ValueVisitor& visitor) const
 {
     visitor.visit(receiver);
     visitor.visit(method);
@@ -2097,7 +2097,7 @@ void ObjBoundNative::read(std::istream& in, roxal::ptr<SerializationContext> ctx
     type = ObjType::BoundNative;
 }
 
-void ObjBoundNative::trace(GCVisitor& visitor) const
+void ObjBoundNative::trace(ValueVisitor& visitor) const
 {
     visitor.visit(receiver);
     for (const auto& value : defaultValues) {
@@ -2186,7 +2186,7 @@ ObjSignal::~ObjSignal()
     }
 }
 
-void ObjSignal::trace(GCVisitor& visitor) const
+void ObjSignal::trace(ValueVisitor& visitor) const
 {
     visitor.visit(changeEvent);
 }
@@ -2964,7 +2964,7 @@ ActorInstance::~ActorInstance()
     thread.reset();
 }
 
-void ActorInstance::trace(GCVisitor& visitor) const
+void ActorInstance::trace(ValueVisitor& visitor) const
 {
     visitor.visit(instanceType);
     for (const auto& entry : properties) {

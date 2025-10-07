@@ -1,4 +1,4 @@
-#include "ValueGC.h"
+#include "SimpleMarkSweepGC.h"
 
 #include "Object.h"
 #include "Thread.h"
@@ -12,7 +12,7 @@ namespace {
 
 using namespace roxal;
 
-void visitStrongValue(GCVisitor& visitor, const Value& value)
+void visitStrongValue(ValueVisitor& visitor, const Value& value)
 {
     if (!value.isObj()) {
         return;
@@ -24,20 +24,20 @@ void visitStrongValue(GCVisitor& visitor, const Value& value)
 }
 
 template <typename Range>
-void visitStrongValues(GCVisitor& visitor, const Range& values)
+void visitStrongValues(ValueVisitor& visitor, const Range& values)
 {
     for (const auto& value : values) {
         visitStrongValue(visitor, value);
     }
 }
 
-void visitCallFrameRoots(const CallFrame& frame, GCVisitor& visitor)
+void visitCallFrameRoots(const CallFrame& frame, ValueVisitor& visitor)
 {
     visitStrongValue(visitor, frame.closure);
     visitStrongValues(visitor, frame.tailArgValues);
 }
 
-void visitThreadRoots(Thread& thread, GCVisitor& visitor)
+void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
 {
     for (auto it = thread.stack.begin(); it != thread.stackTop; ++it) {
         visitStrongValue(visitor, *it);
@@ -72,12 +72,12 @@ void visitThreadRoots(Thread& thread, GCVisitor& visitor)
 
 namespace roxal {
 
-ValueGC& ValueGC::instance() {
-    static ValueGC gc;
+SimpleMarkSweepGC& SimpleMarkSweepGC::instance() {
+    static SimpleMarkSweepGC gc;
     return gc;
 }
 
-void ValueGC::registerAllocation(ObjControl* control) {
+void SimpleMarkSweepGC::registerAllocation(ObjControl* control) {
     if (!control) {
         return;
     }
@@ -93,7 +93,7 @@ void ValueGC::registerAllocation(ObjControl* control) {
     control->markEpoch.store(0u, std::memory_order_relaxed);
 }
 
-void ValueGC::unregisterAllocation(ObjControl* control) {
+void SimpleMarkSweepGC::unregisterAllocation(ObjControl* control) {
     if (!control) {
         return;
     }
@@ -102,30 +102,30 @@ void ValueGC::unregisterAllocation(ObjControl* control) {
     controls_.erase(control);
 }
 
-void ValueGC::requestCollect() {
+void SimpleMarkSweepGC::requestCollect() {
     collectionRequested_.store(true, std::memory_order_release);
     VM::instance().wakeAllThreadsForGC();
 }
 
-bool ValueGC::isCollectionRequested() const noexcept {
+bool SimpleMarkSweepGC::isCollectionRequested() const noexcept {
     return collectionRequested_.load(std::memory_order_acquire);
 }
 
-uint32_t ValueGC::currentEpoch() const noexcept {
+uint32_t SimpleMarkSweepGC::currentEpoch() const noexcept {
     return epoch_.load(std::memory_order_relaxed);
 }
 
-size_t ValueGC::lastCollectionFreed() const noexcept {
+size_t SimpleMarkSweepGC::lastCollectionFreed() const noexcept {
     return lastFreedCount_.load(std::memory_order_relaxed);
 }
 
-void ValueGC::onThreadEnter() {
+void SimpleMarkSweepGC::onThreadEnter() {
     std::lock_guard<std::mutex> lock(mutex_);
     ++activeThreads_;
     safepointCv_.notify_all();
 }
 
-void ValueGC::onThreadExit() {
+void SimpleMarkSweepGC::onThreadExit() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (activeThreads_ > 0) {
         --activeThreads_;
@@ -133,7 +133,7 @@ void ValueGC::onThreadExit() {
     safepointCv_.notify_all();
 }
 
-void ValueGC::safepoint(Thread& currentThread) {
+void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
     if (!collectionRequested_.load(std::memory_order_acquire)) {
         return;
     }
@@ -191,12 +191,12 @@ void ValueGC::safepoint(Thread& currentThread) {
     }
 }
 
-std::vector<Obj*> ValueGC::performCollection(std::unique_lock<std::mutex>& lock) {
+std::vector<Obj*> SimpleMarkSweepGC::performCollection(std::unique_lock<std::mutex>& lock) {
     (void)lock;
 
     const uint32_t epoch = epoch_.fetch_add(1u, std::memory_order_relaxed) + 1u;
 
-    struct MarkWorklist : GCVisitor {
+    struct MarkWorklist : ValueVisitor {
         explicit MarkWorklist(uint32_t epoch) : epoch(epoch) {}
 
         void visit(const Value& value) override {
@@ -288,7 +288,7 @@ std::vector<Obj*> ValueGC::performCollection(std::unique_lock<std::mutex>& lock)
     return unreachable;
 }
 
-void ValueGC::visitRoots(GCVisitor& visitor) {
+void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
     VM& vm = VM::instance();
 
     std::vector<ptr<Thread>> threadsToVisit;

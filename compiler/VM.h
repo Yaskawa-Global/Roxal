@@ -69,7 +69,7 @@ class VM
 public:
     friend class Thread;
     friend class ModuleSys;
-    friend class ValueGC;
+    friend class SimpleMarkSweepGC;
 
     static VM& instance()
     {
