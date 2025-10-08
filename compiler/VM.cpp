@@ -3832,6 +3832,13 @@ void VM::freeObjects()
     std::vector<Obj*> pending;
     pending.reserve(64);
 
+    // Objects that reach zero strong references are appended to
+    // Obj::unrefedObjs by the ref-counting slow path.  We drain the queue in
+    // batches so we can dropReferences() on every pending object first,
+    // severing outgoing edges before any destructors run.  That way, if a
+    // destructor looks at another object from the same batch, it observes a
+    // consistent, fully dropped state instead of an object halfway through
+    // teardown, which prevents cross-object use-after-free hazards.
     while (true) {
         while (!Obj::unrefedObjs.empty()) {
             Obj::unrefedObjs.pop_back_and_apply([&pending](Obj* obj) {
