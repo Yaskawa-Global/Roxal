@@ -32,6 +32,10 @@ public:
     void onThreadEnter();
     void onThreadExit();
 
+    // Force any threads waiting in safepoints to resume, used during
+    // shutdown to avoid deadlocks while joining threads.
+    void forceReleaseSafepoints();
+
     bool isCollectionRequested() const noexcept;
     std::uint64_t currentEpoch() const noexcept;
     size_t lastCollectionFreed() const noexcept;

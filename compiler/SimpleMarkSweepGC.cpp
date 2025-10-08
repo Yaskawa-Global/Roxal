@@ -167,6 +167,13 @@ void SimpleMarkSweepGC::onThreadExit() {
     safepointCv_.notify_all();
 }
 
+void SimpleMarkSweepGC::forceReleaseSafepoints() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    collectionRequested_.store(false, std::memory_order_release);
+    collector_ = nullptr;
+    safepointCv_.notify_all();
+}
+
 void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
     std::uint64_t threshold = autoTriggerThreshold_.load(std::memory_order_relaxed);
     if (threshold > 0) {

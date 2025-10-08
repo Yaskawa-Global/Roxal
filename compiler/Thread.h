@@ -26,6 +26,7 @@ public:
         thisid = nextId.fetch_add(1);
         actor = false;
         quit = false;
+        forcedWake = false;
         result = InterpretResult::OK;
         frames.reserve(256);
     }
@@ -129,6 +130,7 @@ private:
     Value actorInstance;
     std::atomic<bool> actor;
     std::atomic<bool> quit;
+    std::atomic<bool> forcedWake;
 
     uint64_t thisid;
     static std::atomic_uint64_t nextId;

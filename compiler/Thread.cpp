@@ -1,6 +1,7 @@
 #include "Thread.h"
 #include "VM.h"
 #include "Object.h"
+#include "SimpleMarkSweepGC.h"
 
 #include <algorithm>
 
@@ -152,6 +153,8 @@ void Thread::join(ActorInstance* actorInstOverride)
         }
     }
 
+    SimpleMarkSweepGC::instance().forceReleaseSafepoints();
+
     osthread->join();
     osthread = nullptr;
     if (inst)
@@ -193,18 +196,28 @@ void Thread::act(Value actorInstance)
             do {
 
                 ActorInstance::MethodCallInfo callInfo {};
+                bool triggeredForcedWake = false;
                 {
                     std::unique_lock<std::mutex> lock { actorInst->queueMutex };
                     actorInst->queueConditionVar.wait(lock,[&]()
                     {
-                        // wake when quitting, when a method is queued, or when events are pending
-                        return quit || !actorInst->callQueue.empty() || !pendingEvents.empty();
+                        // wake when quitting, when forced awake, when a method is queued, or when events are pending
+                        return quit || forcedWake.load(std::memory_order_acquire) ||
+                               !actorInst->callQueue.empty() || !pendingEvents.empty();
                     });
                     if (!actorInst->callQueue.empty()) {
                         callInfo = actorInst->callQueue.pop();
                     }
+                    triggeredForcedWake = forcedWake.exchange(false, std::memory_order_acq_rel);
                     if (quit)
                         break;
+                }
+
+                if (triggeredForcedWake && !quit) {
+                    SimpleMarkSweepGC& valueGC = SimpleMarkSweepGC::instance();
+                    valueGC.onThreadEnter();
+                    valueGC.safepoint(*this);
+                    valueGC.onThreadExit();
                 }
 
                 if (!this->actorInstance.isAlive()) {
@@ -348,6 +361,7 @@ void Thread::wake()
 {
     {
         std::unique_lock<std::mutex> lk(sleepMutex);
+        forcedWake.store(true, std::memory_order_release);
         sleepCondVar.notify_one();
     }
     if (actor && actorInstance.isAlive()) {
