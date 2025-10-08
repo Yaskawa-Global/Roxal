@@ -235,6 +235,16 @@ void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
 std::vector<Obj*> SimpleMarkSweepGC::performCollection(std::unique_lock<std::mutex>& lock) {
     (void)lock;
 
+    struct CollectionGuard {
+        std::atomic<bool>& flag;
+        explicit CollectionGuard(std::atomic<bool>& flag) : flag(flag) {
+            flag.store(true, std::memory_order_release);
+        }
+        ~CollectionGuard() {
+            flag.store(false, std::memory_order_release);
+        }
+    } guard(performingCollection_);
+
     const std::uint64_t previousEpoch = epoch_.fetch_add(1uLL, std::memory_order_relaxed);
     std::uint64_t epoch = previousEpoch + 1uLL;
     if (epoch == 0) {
