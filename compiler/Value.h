@@ -593,7 +593,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(globalsLock);
             auto it = globals.find(nameHash);
-            if (it != vars.end())
+            if (it != globals.end())
                 return true;
         }
         return false;
@@ -607,7 +607,7 @@ public:
     bool existsGlobal(int32_t nameHash) const {
         std::lock_guard<std::mutex> lock(globalsLock);
         auto it = globals.find(nameHash);
-        return (it != vars.end());
+        return (it != globals.end());
     }
 
     bool existsGlobal(const icu::UnicodeString& name) const
@@ -630,7 +630,7 @@ public:
             std::lock_guard<std::mutex> lock(globalsLock);
 
             auto it = globals.find(nameHash);
-            if (it != vars.end())
+            if (it != globals.end())
                 return it->second.second;
         }
         return {};
