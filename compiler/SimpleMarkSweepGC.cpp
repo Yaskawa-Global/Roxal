@@ -169,7 +169,13 @@ void SimpleMarkSweepGC::onThreadExit() {
 
 void SimpleMarkSweepGC::forceReleaseSafepoints() {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!collectionRequested_.load(std::memory_order_acquire) &&
+        !collectionInProgress_.load(std::memory_order_acquire)) {
+        return;
+    }
+
     collectionRequested_.store(false, std::memory_order_release);
+    collectionInProgress_.store(false, std::memory_order_release);
     collector_ = nullptr;
     safepointCv_.notify_all();
 }

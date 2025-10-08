@@ -34,6 +34,9 @@ public:
 
     // Force any threads waiting in safepoints to resume, used during
     // shutdown to avoid deadlocks while joining threads.
+    // Cancel any pending collection request and wake threads that might be
+    // parked in a safepoint. This is primarily used during shutdown when a
+    // thread that participated in GC is being torn down.
     void forceReleaseSafepoints();
 
     bool isCollectionRequested() const noexcept;

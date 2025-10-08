@@ -153,6 +153,10 @@ void Thread::join(ActorInstance* actorInstOverride)
         }
     }
 
+    // If this thread was asked to stop while a GC cycle was pending, cancel
+    // the collection request so any threads parked in a safepoint are woken
+    // up and can make progress toward shutdown. When no collection is
+    // pending, this is a no-op.
     SimpleMarkSweepGC::instance().forceReleaseSafepoints();
 
     osthread->join();
