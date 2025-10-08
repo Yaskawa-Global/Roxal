@@ -68,6 +68,7 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
     });
 
     visitStrongValue(visitor, thread.currentActorCall);
+    visitStrongValue(visitor, thread.currentBoundCall);
 }
 
 } // namespace
@@ -146,6 +147,10 @@ std::uint64_t SimpleMarkSweepGC::currentEpoch() const noexcept {
 
 size_t SimpleMarkSweepGC::lastCollectionFreed() const noexcept {
     return lastFreedCount_.load(std::memory_order_relaxed);
+}
+
+bool SimpleMarkSweepGC::isCollectionInProgress() const noexcept {
+    return collectionInProgress_.load(std::memory_order_acquire);
 }
 
 void SimpleMarkSweepGC::onThreadEnter() {
@@ -234,6 +239,16 @@ void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
 
 std::vector<Obj*> SimpleMarkSweepGC::performCollection(std::unique_lock<std::mutex>& lock) {
     (void)lock;
+
+    collectionInProgress_.store(true, std::memory_order_release);
+    struct CollectionScope {
+        explicit CollectionScope(SimpleMarkSweepGC& owner) : gc(owner) {}
+        ~CollectionScope() {
+            gc.collectionInProgress_.store(false, std::memory_order_release);
+        }
+
+        SimpleMarkSweepGC& gc;
+    } scope(*this);
 
     const std::uint64_t previousEpoch = epoch_.fetch_add(1uLL, std::memory_order_relaxed);
     std::uint64_t epoch = previousEpoch + 1uLL;

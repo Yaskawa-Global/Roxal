@@ -47,6 +47,24 @@ static auto& sgclThreadContext = sgcl::detail::current_thread();
 
 using namespace roxal;
 
+namespace {
+
+struct BoundCallGuard {
+    explicit BoundCallGuard(Thread* thread) : thread_(thread) {}
+    BoundCallGuard(const BoundCallGuard&) = delete;
+    BoundCallGuard& operator=(const BoundCallGuard&) = delete;
+    ~BoundCallGuard() {
+        if (thread_) {
+            thread_->currentBoundCall = Value::nilVal();
+        }
+    }
+
+private:
+    Thread* thread_;
+};
+
+} // namespace
+
 static ValueType builtinToValueType(type::BuiltinType bt)
 {
     switch (bt) {
@@ -812,9 +830,12 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
     if (callee.isObj()) {
         switch (objType(callee)) {
             case ObjType::BoundMethod: {
-                ObjBoundMethod* boundMethod { asBoundMethod(callee) };
+                Value boundValue = callee;
+                ObjBoundMethod* boundMethod { asBoundMethod(boundValue) };
 
                 if (!isActorInstance(boundMethod->receiver)) {
+                    thread->currentBoundCall = boundValue;
+                    BoundCallGuard guard(thread.get());
                     *(thread->stackTop - callSpec.argCount - 1) = boundMethod->receiver;
                     return call(asClosure(boundMethod->method), callSpec);
                 }
@@ -828,6 +849,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
                     if (std::this_thread::get_id() == inst->thread_id) {
                         // actor to this/self method call
+                        thread->currentBoundCall = boundValue;
+                        BoundCallGuard guard(thread.get());
                         *(thread->stackTop - callSpec.argCount - 1) = boundMethod->receiver; // FIXME: or inst??
                         return call(asClosure(boundMethod->method), callSpec);
                     } else {
@@ -1089,9 +1112,12 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                     false, Value::nilVal(), Value::nilVal());
             }
             case ObjType::BoundNative: {
-                ObjBoundNative* bound { asBoundNative(callee) };
+                Value boundValue = callee;
+                ObjBoundNative* bound { asBoundNative(boundValue) };
 
                 if (!isActorInstance(bound->receiver)) {
+                    thread->currentBoundCall = boundValue;
+                    BoundCallGuard guard(thread.get());
                     *(thread->stackTop - callSpec.argCount - 1) = bound->receiver;
                     NativeFn native = bound->function;
                     return callNativeFn(native, bound->funcType,
@@ -1109,6 +1135,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
                     if (std::this_thread::get_id() == inst->thread_id) {
                         // actor to this/self native method call
+                        thread->currentBoundCall = boundValue;
+                        BoundCallGuard guard(thread.get());
                         *(thread->stackTop - callSpec.argCount - 1) = bound->receiver;
                         NativeFn native = bound->function;
                         return callNativeFn(native, bound->funcType,
@@ -3801,13 +3829,35 @@ void VM::resetStack()
 
 void VM::freeObjects()
 {
-    if (!Obj::unrefedObjs.empty()) {
-        // free objects who's reference count dropped to 0
-        while(!Obj::unrefedObjs.empty()) {
-            Obj::unrefedObjs.pop_back_and_apply([](Obj* obj) {
-                delObj(obj);
+    std::vector<Obj*> pending;
+    pending.reserve(64);
+
+    while (true) {
+        while (!Obj::unrefedObjs.empty()) {
+            Obj::unrefedObjs.pop_back_and_apply([&pending](Obj* obj) {
+                if (obj) {
+                    pending.push_back(obj);
+                }
             });
         }
+
+        if (pending.empty()) {
+            break;
+        }
+
+        for (Obj* obj : pending) {
+            if (obj) {
+                obj->dropReferences();
+            }
+        }
+
+        for (Obj* obj : pending) {
+            if (obj) {
+                delObj(obj);
+            }
+        }
+
+        pending.clear();
     }
 
     if (thread) {

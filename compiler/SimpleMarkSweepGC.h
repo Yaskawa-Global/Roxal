@@ -35,6 +35,7 @@ public:
     bool isCollectionRequested() const noexcept;
     std::uint64_t currentEpoch() const noexcept;
     size_t lastCollectionFreed() const noexcept;
+    bool isCollectionInProgress() const noexcept;
 
     void visitRoots(ValueVisitor& visitor);
 
@@ -54,6 +55,7 @@ private:
     std::condition_variable safepointCv_;
     std::atomic<std::uint64_t> epoch_{1};
     std::atomic<bool> collectionRequested_{false};
+    std::atomic<bool> collectionInProgress_{false};
     std::atomic<size_t> lastFreedCount_{0};
     std::atomic<std::uint64_t> bytesAllocatedSinceLastCollect_{0};
     std::atomic<std::uint64_t> currentAllocatedBytes_{0};
