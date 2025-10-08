@@ -36,6 +36,10 @@ public:
     std::uint64_t currentEpoch() const noexcept;
     size_t lastCollectionFreed() const noexcept;
 
+    bool isPerformingCollection() const noexcept {
+        return performingCollection_.load(std::memory_order_acquire);
+    }
+
     void visitRoots(ValueVisitor& visitor);
 
     // Run a synchronous collection assuming all mutator threads have already
@@ -61,6 +65,7 @@ private:
     size_t activeThreads_{0};
     size_t threadsAtSafepoint_{0};
     Thread* collector_{nullptr};
+    std::atomic<bool> performingCollection_{false};
 };
 
 } // namespace roxal
