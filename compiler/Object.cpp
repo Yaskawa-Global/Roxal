@@ -2141,6 +2141,7 @@ void ObjectInstance::trace(ValueVisitor& visitor) const
 
 void ObjectInstance::dropReferences()
 {
+    instanceType = Value::nilVal();
     for (auto& entry : properties) {
         entry.second = Value::nilVal();
     }

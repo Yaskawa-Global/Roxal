@@ -118,6 +118,10 @@ public:
     // interpreter is inside Thread::act().
     Value currentActorCall { Value::nilVal() };
 
+    // Keeps the currently executing bound callable (method or native)
+    // reachable while dispatched directly on this thread.
+    Value currentBoundCall { Value::nilVal() };
+
 private:
     ptr<std::thread> osthread;
 
