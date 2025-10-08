@@ -219,6 +219,7 @@ void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
         collector_ = &currentThread;
         toDestroy = performCollection(lock);
         collectionRequested_.store(false, std::memory_order_release);
+        bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
         collector_ = nullptr;
         --threadsAtSafepoint_;
     }
