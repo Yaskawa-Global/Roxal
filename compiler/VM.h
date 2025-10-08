@@ -147,6 +147,7 @@ public:
     void requestExit(int code);
     inline bool isExitRequested() const { return exitRequested.load(); }
     inline int exitCode() const { return exitCodeValue.load(); }
+    bool isShuttingDown() const noexcept;
 
     // Join all currently tracked threads, optionally skipping one by id.
     // Returns InterpretResult::RuntimeError if any joined thread failed.
@@ -192,6 +193,7 @@ protected:
     // Set when exit() builtin is called to terminate the VM.
     std::atomic_bool exitRequested {false};
     std::atomic_int exitCodeValue {0};
+    std::atomic_bool shuttingDown_ {false};
 
     // Persistent thread used for REPL execution so that state such as event
     // handlers persists across entered lines.

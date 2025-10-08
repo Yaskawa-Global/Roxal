@@ -1,4 +1,5 @@
 #include <functional>
+#include <atomic>
 #include <time.h>
 #include <math.h>
 #include <chrono>
@@ -1848,6 +1849,11 @@ void VM::defineNative(const std::string& name, NativeFn function,
     UnicodeString uname { toUnicodeString(name) };
     Value funcVal { Value::nativeVal(function, nullptr, funcType, defaults) };
     globals.storeGlobal(uname,funcVal);
+}
+
+bool VM::isShuttingDown() const noexcept
+{
+    return shuttingDown_.load(std::memory_order_acquire);
 }
 
 void VM::wakeAllThreadsForGC()
@@ -4634,6 +4640,14 @@ void VM::dumpStackTraces()
 
 InterpretResult VM::joinAllThreads(uint64_t skipId)
 {
+    struct ShutdownScope {
+        VM& vm;
+        bool previous;
+        explicit ShutdownScope(VM& vm)
+          : vm(vm), previous(vm.shuttingDown_.exchange(true, std::memory_order_acq_rel)) {}
+        ~ShutdownScope() { vm.shuttingDown_.store(previous, std::memory_order_release); }
+    } scope(*this);
+
     InterpretResult combined = InterpretResult::OK;
     for (;;) {
         auto ids = threads.keys();

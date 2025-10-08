@@ -140,6 +140,8 @@ void Thread::join(ActorInstance* actorInstOverride)
     if (state == State::Constructed || osthread == nullptr || !osthread->joinable())
         return;
 
+    assert(std::this_thread::get_id() != osthread->get_id());
+
     ActorInstance* inst = actorInstOverride;
     if (actor) {
         if (inst == nullptr && actorInstance.isAlive())
@@ -153,11 +155,16 @@ void Thread::join(ActorInstance* actorInstOverride)
         }
     }
 
-    // If this thread was asked to stop while a GC cycle was pending, cancel
-    // the collection request so any threads parked in a safepoint are woken
-    // up and can make progress toward shutdown. When no collection is
-    // pending, this is a no-op.
-    SimpleMarkSweepGC::instance().forceReleaseSafepoints();
+    // Nudge the worker in case it is blocked in a sleep or event wait so it
+    // can observe the quit flag we just set.
+    wake();
+
+    // When the VM is shutting down we may be joining a thread while a GC
+    // cycle is pending. In that case, release any outstanding safepoint so
+    // the thread can make forward progress toward exit.
+    if (VM::instance().isShuttingDown()) {
+        SimpleMarkSweepGC::instance().forceReleaseSafepoints();
+    }
 
     osthread->join();
     osthread = nullptr;
