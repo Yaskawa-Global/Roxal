@@ -153,6 +153,14 @@ bool SimpleMarkSweepGC::isCollectionInProgress() const noexcept {
     return collectionInProgress_.load(std::memory_order_acquire);
 }
 
+bool SimpleMarkSweepGC::isCollectorThread(const Thread* thread) const noexcept {
+    if (!thread) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    return collector_ == thread;
+}
+
 void SimpleMarkSweepGC::onThreadEnter() {
     std::lock_guard<std::mutex> lock(mutex_);
     ++activeThreads_;
@@ -185,6 +193,7 @@ void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
     }
 
     std::vector<Obj*> toDestroy;
+    Thread* collectorThread = nullptr;
 
     {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -217,14 +226,16 @@ void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
         }
 
         collector_ = &currentThread;
+        collectorThread = collector_;
         toDestroy = performCollection(lock);
         collectionRequested_.store(false, std::memory_order_release);
         bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
-        collector_ = nullptr;
         --threadsAtSafepoint_;
     }
 
     safepointCv_.notify_all();
+
+    bool hasPendingFinalizers = !toDestroy.empty();
 
     for (Obj* obj : toDestroy) {
         if (!obj) {
@@ -233,9 +244,17 @@ void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
         Obj::unrefedObjs.push_back(obj);
     }
 
-    if (!toDestroy.empty()) {
+    if (hasPendingFinalizers) {
         VM::instance().freeObjects();
     }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (collectorThread && collector_ == collectorThread) {
+            collector_ = nullptr;
+        }
+    }
+    safepointCv_.notify_all();
 }
 
 std::vector<Obj*> SimpleMarkSweepGC::performCollection(std::unique_lock<std::mutex>& lock) {

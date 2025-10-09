@@ -36,6 +36,7 @@ public:
     std::uint64_t currentEpoch() const noexcept;
     size_t lastCollectionFreed() const noexcept;
     bool isCollectionInProgress() const noexcept;
+    bool isCollectorThread(const Thread* thread) const noexcept;
 
     void visitRoots(ValueVisitor& visitor);
 

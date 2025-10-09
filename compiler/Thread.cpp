@@ -1,6 +1,7 @@
 #include "Thread.h"
 #include "VM.h"
 #include "Object.h"
+#include "SimpleMarkSweepGC.h"
 
 #include <algorithm>
 
@@ -152,7 +153,19 @@ void Thread::join(ActorInstance* actorInstOverride)
         }
     }
 
-    if (osthread->get_id() == std::this_thread::get_id()) {
+    bool shouldDetachForCollector = false;
+    if (VM::thread) {
+        SimpleMarkSweepGC& gc = SimpleMarkSweepGC::instance();
+        Thread* current = VM::thread.get();
+        if (current && current != this && gc.isCollectorThread(current)) {
+            shouldDetachForCollector = true;
+        }
+    }
+
+    if (shouldDetachForCollector) {
+        osthread->detach();
+    }
+    else if (osthread->get_id() == std::this_thread::get_id()) {
         // An actor instance can be collected while the worker thread is in the
         // middle of running its own GC safepoint. Joining the same std::thread
         // would therefore self-deadlock. We already set quit=true and notified
