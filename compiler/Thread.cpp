@@ -2,6 +2,7 @@
 #include "VM.h"
 #include "Object.h"
 #include "SimpleMarkSweepGC.h"
+#include "dataflow/DataflowEngine.h"
 
 #include <algorithm>
 
@@ -151,6 +152,26 @@ void Thread::join(ActorInstance* actorInstOverride)
         } else {
             quit = true;
         }
+    }
+
+    bool shouldStopDataflowEngine = false;
+    VM& vm = VM::instance();
+    if (vm.dataflowEngineThread && vm.dataflowEngineThread.get() == this) {
+        shouldStopDataflowEngine = true;
+    }
+
+    if (!shouldStopDataflowEngine) {
+        Value dataflowActor = vm.dataflowEngineActor;
+        if (!dataflowActor.isNil() && isActorInstance(dataflowActor)) {
+            ActorInstance* dataflowInst = asActorInstance(dataflowActor);
+            if (dataflowInst == inst || dataflowInst == actorInstOverride) {
+                shouldStopDataflowEngine = true;
+            }
+        }
+    }
+
+    if (shouldStopDataflowEngine && vm.dataflowEngine) {
+        vm.dataflowEngine->stop();
     }
 
     SimpleMarkSweepGC& gc = SimpleMarkSweepGC::instance();
