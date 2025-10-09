@@ -175,6 +175,8 @@ protected:
     VM();
     ~VM();
 
+    void ensureDataflowEngineStopped();
+
     std::pair<InterpretResult,Value> execute();
 
     bool outputBytecodeDisassembly;

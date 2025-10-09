@@ -345,6 +345,23 @@ VM::VM()
 
 
 
+void VM::ensureDataflowEngineStopped()
+{
+    if (dataflowEngine) {
+        dataflowEngine->stop();
+    } else {
+        if (auto engine = df::DataflowEngine::instance(false)) {
+            engine->stop();
+        }
+    }
+
+    if (dataflowEngineThread) {
+        dataflowEngineThread->wake();
+    }
+}
+
+
+
 VM::~VM()
 {
     #if USE_GC_SGCL
@@ -359,14 +376,13 @@ VM::~VM()
     }
     ObjModuleType::allModules.clear();
 
-    // Clean up dataflow engine resources before globals cleanup
-    // First stop the dataflow engine and its actor thread properly
-    if (dataflowEngine) {
-        dataflowEngine->stop(); // Stop the engine's run loop
-    }
+    // Clean up dataflow engine resources before globals cleanup. Signal the
+    // engine to exit cooperatively before waiting on the actor thread so the
+    // join cannot block inside the run loop.
+    ensureDataflowEngineStopped();
     if (dataflowEngineThread) {
-        dataflowEngineThread->join(); // This will set quit=true and wait for thread to finish
-        dataflowEngineThread.reset(); // Release the thread
+        dataflowEngineThread->join();
+        dataflowEngineThread.reset();
     }
     dataflowEngineActor = Value::nilVal();  // This will call decRef() via Value destructor
 
@@ -4673,6 +4689,8 @@ void VM::requestExit(int code)
         if (entry.second)
             entry.second->wake();
     });
+
+    ensureDataflowEngineStopped();
 
     uint64_t currentId = thread ? thread->id() : 0;
     joinAllThreads(currentId);

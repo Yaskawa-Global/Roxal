@@ -1,7 +1,6 @@
 #include "Thread.h"
 #include "VM.h"
 #include "Object.h"
-
 #include <algorithm>
 
 using namespace roxal;
