@@ -176,6 +176,14 @@ void Thread::join(ActorInstance* actorInstOverride)
     if (shouldDetachForCollector) {
         osthread->detach();
     }
+    else if (currentThread == this) {
+        // When an actor instance is being collected it runs its destructor on
+        // the same worker thread that originally executed the actor. That
+        // thread invokes join() on itself as part of tearing down the
+        // associated Thread wrapper. Joining a std::thread from itself would
+        // deadlock, so allow the worker to wind down naturally.
+        osthread->detach();
+    }
     else if (osthread->get_id() == std::this_thread::get_id()) {
         // An actor instance can be collected while the worker thread is in the
         // middle of running its own GC safepoint. Joining the same std::thread
