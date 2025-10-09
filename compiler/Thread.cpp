@@ -153,13 +153,24 @@ void Thread::join(ActorInstance* actorInstOverride)
         }
     }
 
-    bool shouldDetachForCollector = false;
+    SimpleMarkSweepGC& gc = SimpleMarkSweepGC::instance();
+    Thread* currentThread = nullptr;
     if (VM::thread) {
-        SimpleMarkSweepGC& gc = SimpleMarkSweepGC::instance();
-        Thread* current = VM::thread.get();
-        if (current && current != this && gc.isCollectorThread(current)) {
-            shouldDetachForCollector = true;
+        currentThread = VM::thread.get();
+        if (currentThread && currentThread != this) {
+            while (gc.isCollectionRequested()) {
+                gc.safepoint(*currentThread);
+                if (!gc.isCollectionRequested()) {
+                    break;
+                }
+                std::this_thread::yield();
+            }
         }
+    }
+
+    bool shouldDetachForCollector = false;
+    if (currentThread && currentThread != this && gc.isCollectorThread(currentThread)) {
+        shouldDetachForCollector = true;
     }
 
     if (shouldDetachForCollector) {
