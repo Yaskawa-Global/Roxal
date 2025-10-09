@@ -152,7 +152,17 @@ void Thread::join(ActorInstance* actorInstOverride)
         }
     }
 
-    osthread->join();
+    if (osthread->get_id() == std::this_thread::get_id()) {
+        // An actor instance can be collected while the worker thread is in the
+        // middle of running its own GC safepoint. Joining the same std::thread
+        // would therefore self-deadlock. We already set quit=true and notified
+        // the queue above, so detach the std::thread and allow this worker to
+        // wind down naturally once it unwinds back out of Thread::act().
+        osthread->detach();
+    } else {
+        osthread->join();
+    }
+
     osthread = nullptr;
     if (inst)
         inst->thread.reset();
