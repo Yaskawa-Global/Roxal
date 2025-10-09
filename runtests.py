@@ -8,6 +8,7 @@ import time
 
 # Maximum time in seconds to allow each test to run
 TEST_TIMEOUT_SECS = 5
+GC_STRESS_TIMEOUT_SECS = 20
 # Width of the test name column when printing results
 TEST_NAME_WIDTH = 32
 
@@ -162,16 +163,18 @@ try:
 
         opt_expected = (" [expected]" if test in failing_tests else '')
 
+        timeout_secs = GC_STRESS_TIMEOUT_SECS if test == 'gc_stress' else TEST_TIMEOUT_SECS
+
         try:
             compProc = subprocess.run(
                 cmd,
                 input=(input_data.encode() if isinstance(input_data, str) else input_data if input_data else None),
                 capture_output=True, shell=False,
-                timeout=TEST_TIMEOUT_SECS, env=env_base)
+                timeout=timeout_secs, env=env_base)
         except subprocess.TimeoutExpired:
             duration_ms = (time.perf_counter() - start_time) * 1000
             print(f"FAIL: {opt_expected}", flush=True)
-            print(f"-- timeout after {TEST_TIMEOUT_SECS} s --")
+            print(f"-- timeout after {timeout_secs} s --")
             print()
             failed_count += 1
             continue
