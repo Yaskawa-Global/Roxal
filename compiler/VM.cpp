@@ -10,6 +10,8 @@
 #include <filesystem>
 #include <map>
 #include <unordered_set>
+#include <mutex>
+#include <algorithm>
 #include <ffi.h>
 #include <dlfcn.h>
 
@@ -365,7 +367,7 @@ VM::~VM()
         dataflowEngine->stop(); // Stop the engine's run loop
     }
     if (dataflowEngineThread) {
-        dataflowEngineThread->join(); // This will set quit=true and wait for thread to finish
+        (void)dataflowEngineThread->join(); // This will set quit=true and wait for thread to finish
         dataflowEngineThread.reset(); // Release the thread
     }
     dataflowEngineActor = Value::nilVal();  // This will call decRef() via Value destructor
@@ -3859,7 +3861,16 @@ void VM::freeObjects()
         }
 
         for (Obj* obj : pending) {
-            if (obj) {
+            if (!obj) {
+                continue;
+            }
+            if (obj->type == ObjType::Actor) {
+                ActorInstance* actor = static_cast<ActorInstance*>(obj);
+                Value actorHandle = Value::objRef(actor).weakRef();
+                if (tryFinalizeActorInstance(actorHandle)) {
+                    delObj(actor);
+                }
+            } else {
                 delObj(obj);
             }
         }
@@ -3867,8 +3878,118 @@ void VM::freeObjects()
         pending.clear();
     }
 
+    drainDeferredActorJoins();
+
     if (thread) {
         thread->pruneEventRegistrations();
+    }
+}
+
+bool VM::tryFinalizeActorInstance(Value actorHandle)
+{
+    if (!actorHandle.isObj()) {
+        return true;
+    }
+
+    Obj* raw = actorHandle.asObj();
+    if (!raw || raw->type != ObjType::Actor) {
+        return true;
+    }
+
+    ActorInstance* actor = static_cast<ActorInstance*>(raw);
+    bool joined = true;
+
+#if USE_GC_SGCL
+    ptr<Thread> actorThread;
+    if (!actor->thread.expired()) {
+        actorThread = actor->thread.get();
+    }
+#else
+    auto actorThread = actor->thread.lock();
+#endif
+
+    if (actorThread) {
+        joined = actorThread->join(actorHandle);
+    }
+
+    if (joined) {
+        cancelDeferredActorJoin(actorHandle);
+    }
+
+    return joined;
+}
+
+void VM::enqueueDeferredActorJoin(Value actor, const ptr<Thread>& threadPtr)
+{
+    if (!actor.isObj()) {
+        return;
+    }
+
+    Obj* raw = actor.asObj();
+    if (!raw || raw->type != ObjType::Actor) {
+        return;
+    }
+
+    Value weakActor = actor.isWeak() ? actor : actor.weakRef();
+
+    std::lock_guard<std::mutex> lock(deferredActorJoinMutex);
+    if (deferredActorJoinSet.insert(weakActor).second) {
+        deferredActorJoins.push_back(DeferredActorJoin{weakActor, threadPtr});
+    }
+}
+
+void VM::cancelDeferredActorJoin(Value actor)
+{
+    if (!actor.isObj()) {
+        return;
+    }
+
+    Obj* raw = actor.asObj();
+    if (!raw || raw->type != ObjType::Actor) {
+        return;
+    }
+
+    Value weakActor = actor.isWeak() ? actor : actor.weakRef();
+
+    std::lock_guard<std::mutex> lock(deferredActorJoinMutex);
+    deferredActorJoinSet.erase(weakActor);
+    auto it = std::remove_if(deferredActorJoins.begin(), deferredActorJoins.end(),
+                             [&weakActor](const DeferredActorJoin& entry) {
+                                 return entry.actor == weakActor;
+                             });
+    deferredActorJoins.erase(it, deferredActorJoins.end());
+}
+
+void VM::drainDeferredActorJoins()
+{
+    std::vector<DeferredActorJoin> handoff;
+    {
+        std::lock_guard<std::mutex> lock(deferredActorJoinMutex);
+        if (deferredActorJoins.empty()) {
+            return;
+        }
+        handoff.swap(deferredActorJoins);
+        for (const DeferredActorJoin& entry : handoff) {
+            deferredActorJoinSet.erase(entry.actor);
+        }
+    }
+
+    for (const DeferredActorJoin& entry : handoff) {
+        Value actorHandle = entry.actor;
+        Obj* raw = actorHandle.isObj() ? actorHandle.asObj() : nullptr;
+        ActorInstance* actor = (raw && raw->type == ObjType::Actor)
+                                   ? static_cast<ActorInstance*>(raw)
+                                   : nullptr;
+        ptr<Thread> threadPtr = entry.thread;
+        bool joined = false;
+        if (threadPtr) {
+            joined = threadPtr->join(actorHandle);
+        } else {
+            joined = tryFinalizeActorInstance(actorHandle);
+        }
+        if (joined && actor) {
+            delObj(actor);
+        }
     }
 }
 
@@ -4641,7 +4762,6 @@ InterpretResult VM::joinAllThreads(uint64_t skipId)
         for(uint64_t id : ids) {
             if (skipId != 0 && id == skipId)
                 continue;
-            joinedAny = true;
             ptr<Thread> t;
             {
                 auto opt = threads.lookup(id);
@@ -4650,12 +4770,23 @@ InterpretResult VM::joinAllThreads(uint64_t skipId)
             }
 
             if (t) {
-                t->join();
-                if (t->result != InterpretResult::OK)
-                    combined = InterpretResult::RuntimeError;
+                bool joined = t->join();
+                if (joined) {
+                    if (t->result != InterpretResult::OK)
+                        combined = InterpretResult::RuntimeError;
+                    threads.erase(id);
+                    joinedAny = true;
+                } else {
+                    // Unable to join on this iteration (likely because the
+                    // caller is the worker thread). Try again on the next
+                    // pass once another coordinator thread invokes
+                    // joinAllThreads().
+                    continue;
+                }
+            } else {
+                threads.erase(id);
+                joinedAny = true;
             }
-
-            threads.erase(id);
         }
         if (!joinedAny)
             break;

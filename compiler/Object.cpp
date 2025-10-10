@@ -3085,17 +3085,26 @@ ActorInstance::ActorInstance(const Value& objectType)
 
 ActorInstance::~ActorInstance()
 {
-    #if USE_GC_SGCL
+    Value selfWeak { Value::nilVal() };
+#if USE_GC_SGCL
     if (!thread.expired()) {
         if (auto t = thread.get()) {
-            t->join(this);
+            selfWeak = t->actorHandle();
+            (void)t->join(selfWeak);
         }
     }
-    #else
+#else
     if (auto t = thread.lock()) {
-        t->join(this);
+        selfWeak = t->actorHandle();
+        (void)t->join(selfWeak);
     }
-    #endif
+#endif
+    if (selfWeak.isObj()) {
+        if (!selfWeak.isWeak()) {
+            selfWeak = selfWeak.weakRef();
+        }
+        VM::instance().cancelDeferredActorJoin(selfWeak);
+    }
     thread.reset();
 }
 

@@ -4,6 +4,8 @@
 #include <atomic>
 #include <unordered_map>
 #include <map>
+#include <mutex>
+#include <unordered_set>
 
 #include "core/atomic.h"
 #include "Chunk.h"
@@ -224,6 +226,22 @@ protected:
     Value dataflowEngineActor;
     ptr<Thread> dataflowEngineThread;
 
+    struct DeferredActorJoin {
+        Value actor;
+        ptr<Thread> thread;
+    };
+
+    struct ValueHasher {
+        size_t operator()(const Value& v) const noexcept { return v.hash(); }
+    };
+
+    struct ValueEqual {
+        bool operator()(const Value& a, const Value& b) const noexcept { return a == b; }
+    };
+    std::mutex deferredActorJoinMutex;
+    std::vector<DeferredActorJoin> deferredActorJoins;
+    std::unordered_set<Value, ValueHasher, ValueEqual> deferredActorJoinSet;
+
     Value conditionalInterruptClosure {}; // ObjClosure
 
 
@@ -258,6 +276,10 @@ public:
 
     void resetStack();
     void freeObjects();
+    bool tryFinalizeActorInstance(Value actor);
+    void drainDeferredActorJoins();
+    void enqueueDeferredActorJoin(Value actor, const ptr<Thread>& threadPtr);
+    void cancelDeferredActorJoin(Value actor);
     void cleanupWeakRegistries();
     void unwindFrame();
     void raiseException(Value exc);

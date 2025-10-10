@@ -283,11 +283,25 @@ Value ModuleSys::join_builtin(VM& vm, ArgsView args)
 
     uint64_t id = args[0].asInt(); // FIXME: id is uint64
 
-    auto count = vm.threads.erase_and_apply(id, [](ptr<Thread> t){
-        t->join();
-    });
+    ptr<Thread> threadToJoin;
+    {
+        auto opt = vm.threads.lookup(id);
+        if (opt) {
+            threadToJoin = *opt;
+        }
+    }
 
-    return count > 0 ? Value::trueVal() : Value::falseVal();
+    if (!threadToJoin) {
+        vm.threads.erase(id);
+        return Value::falseVal();
+    }
+
+    if (!threadToJoin->join()) {
+        return Value::falseVal();
+    }
+
+    vm.threads.erase(id);
+    return Value::trueVal();
 }
 
 Value ModuleSys::exit_builtin(VM& vm, ArgsView args)

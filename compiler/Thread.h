@@ -43,10 +43,12 @@ public:
     std::atomic<State> state;
 
     void spawn(Value closure);
-    void join(ActorInstance* actorInstOverride = nullptr);
+    bool join(Value actorInstOverride = Value());
     void act(Value actorInstance);
     void detach();
     void wake();
+
+    Value actorHandle() const;
 
     // is this thread associated with an actor instance?
     bool isActorThread() const { return actor; }

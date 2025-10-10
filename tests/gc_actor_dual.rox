@@ -1,0 +1,28 @@
+// Ensure multiple actors can be reclaimed simultaneously without deadlocking
+// the garbage collector.
+
+type Worker actor:
+  private var name
+  proc init(label):
+    name = label
+  proc ping():
+    // keep the actor busy long enough for GC to observe it
+    wait(ms=5)
+
+var first = Worker('alpha')
+var second = Worker('beta')
+
+// Allow the actor threads to start and block on their queues.
+wait(ms=20)
+
+// Queue simple calls so both actors have pending work.
+first.ping()
+second.ping()
+
+// Drop all strong references to the actors at once and trigger GC.
+first = nil
+second = nil
+
+gc()
+
+print('actors collected')

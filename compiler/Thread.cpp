@@ -134,15 +134,27 @@ void Thread::spawn(Value closure)
     });
 }
 
-void Thread::join(ActorInstance* actorInstOverride)
+bool Thread::join(Value actorInstOverride)
 {
-    if (state == State::Constructed || osthread == nullptr || !osthread->joinable())
-        return;
+    Value actorHandle = actorInstOverride;
+    if (actorHandle.isNil() && actor && actorInstance.isObj()) {
+        actorHandle = actorInstance;
+    }
 
-    ActorInstance* inst = actorInstOverride;
+    ActorInstance* inst = nullptr;
+    if (actorHandle.isObj()) {
+        inst = asActorInstance(actorHandle);
+    }
+
+    if (state == State::Constructed || osthread == nullptr || !osthread->joinable()) {
+        if (inst) {
+            VM::instance().cancelDeferredActorJoin(actorHandle);
+            inst->thread.reset();
+        }
+        return true;
+    }
+
     if (actor) {
-        if (inst == nullptr && actorInstance.isAlive())
-            inst = asActorInstance(actorInstance);
         if (inst != nullptr) {
             std::lock_guard<std::mutex> lock { inst->queueMutex };
             quit = true;
@@ -153,23 +165,24 @@ void Thread::join(ActorInstance* actorInstOverride)
     }
 
     if (osthread->get_id() == std::this_thread::get_id()) {
-        // An actor instance can be collected while the worker thread is in the
-        // middle of running its own GC safepoint. Joining the same std::thread
-        // would therefore self-deadlock. We already set quit=true and notified
-        // the queue above, so detach the std::thread and allow this worker to
-        // wind down naturally once it unwinds back out of Thread::act().
-        osthread->detach();
-    } else {
-        osthread->join();
+        if (inst) {
+            VM::instance().enqueueDeferredActorJoin(actorHandle, ptr_from_this());
+        }
+        return false;
     }
 
+    osthread->join();
+
     osthread = nullptr;
-    if (inst)
+    if (inst) {
+        VM::instance().cancelDeferredActorJoin(actorHandle);
         inst->thread.reset();
+    }
     actorInstance = Value::nilVal();
     actor = false;
 
     state = State::Completed;
+    return true;
 }
 
 
@@ -364,6 +377,12 @@ void Thread::wake()
         ActorInstance* inst = asActorInstance(actorInstance);
         inst->queueConditionVar.notify_one();
     }
+}
+
+
+Value Thread::actorHandle() const
+{
+    return actorInstance;
 }
 
 
