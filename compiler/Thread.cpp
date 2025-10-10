@@ -134,7 +134,7 @@ void Thread::spawn(Value closure)
     });
 }
 
-bool Thread::join(Value actorInstOverride)
+bool Thread::join(Value actorInstOverride, ActorInstance* instFallback)
 {
     Value actorHandle = actorInstOverride;
     if (actorHandle.isNil() && actor && actorInstance.isObj()) {
@@ -145,10 +145,15 @@ bool Thread::join(Value actorInstOverride)
     if (actorHandle.isObj()) {
         inst = asActorInstance(actorHandle);
     }
+    if (!inst) {
+        inst = instFallback;
+    }
 
     if (state == State::Constructed || osthread == nullptr || !osthread->joinable()) {
         if (inst) {
-            VM::instance().cancelDeferredActorJoin(actorHandle);
+            if (actorHandle.isObj()) {
+                VM::instance().cancelDeferredActorJoin(actorHandle);
+            }
             inst->thread.reset();
         }
         return true;
@@ -165,7 +170,7 @@ bool Thread::join(Value actorInstOverride)
     }
 
     if (osthread->get_id() == std::this_thread::get_id()) {
-        if (inst) {
+        if (inst && actorHandle.isObj()) {
             VM::instance().enqueueDeferredActorJoin(actorHandle, ptr_from_this());
         }
         return false;
@@ -175,7 +180,9 @@ bool Thread::join(Value actorInstOverride)
 
     osthread = nullptr;
     if (inst) {
-        VM::instance().cancelDeferredActorJoin(actorHandle);
+        if (actorHandle.isObj()) {
+            VM::instance().cancelDeferredActorJoin(actorHandle);
+        }
         inst->thread.reset();
     }
     actorInstance = Value::nilVal();

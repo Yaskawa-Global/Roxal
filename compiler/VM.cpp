@@ -3909,7 +3909,7 @@ bool VM::tryFinalizeActorInstance(Value actorHandle)
 #endif
 
     if (actorThread) {
-        joined = actorThread->join(actorHandle);
+        joined = actorThread->join(actorHandle, actor);
     }
 
     if (joined) {
@@ -3983,7 +3983,7 @@ void VM::drainDeferredActorJoins()
         ptr<Thread> threadPtr = entry.thread;
         bool joined = false;
         if (threadPtr) {
-            joined = threadPtr->join(actorHandle);
+            joined = threadPtr->join(actorHandle, actor);
         } else {
             joined = tryFinalizeActorInstance(actorHandle);
         }

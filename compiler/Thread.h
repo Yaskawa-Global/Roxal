@@ -43,7 +43,7 @@ public:
     std::atomic<State> state;
 
     void spawn(Value closure);
-    bool join(Value actorInstOverride = Value());
+    bool join(Value actorInstOverride = Value(), ActorInstance* instFallback = nullptr);
     void act(Value actorInstance);
     void detach();
     void wake();
