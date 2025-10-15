@@ -3086,6 +3086,9 @@ ActorInstance::ActorInstance(const Value& objectType)
 
 ActorInstance::~ActorInstance()
 {
+    // The VM ensures the worker thread has already been joined (or detached in
+    // the self-join case) before destroying the actor instance, so clearing the
+    // weak thread reference here is just bookkeeping.
     thread.reset();
 }
 

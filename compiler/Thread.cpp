@@ -139,6 +139,10 @@ void Thread::join(ActorInstance* actorInstOverride)
     if (state == State::Constructed || osthread == nullptr || !osthread->joinable())
         return;
 
+    // When GC schedules this thread for shutdown it may only hold a raw pointer
+    // to the actor instance.  Start with the override supplied by the finalizer
+    // and fall back to the cached raw pointer if needed before attempting to
+    // revive the weak handle below.
     ActorInstance* inst = actorInstOverride;
     if (inst == nullptr)
         inst = actorInstanceRaw.load(std::memory_order_acquire);
@@ -197,6 +201,10 @@ void Thread::act(Value actorInstance)
                 return;
             }
             ActorInstance* actorInst = asActorInstance(actorVal);
+            // Store a raw pointer while the actor is unquestionably alive so
+            // the finalizer can still signal the worker after the weak handle
+            // goes dead.  The join path clears the cache again once teardown is
+            // complete.
             actorInstanceRaw.store(actorInst, std::memory_order_release);
             actorInst->thread_id = std::this_thread::get_id(); // store actor's thread in instance
             actorInst->thread = ptr_from_this();

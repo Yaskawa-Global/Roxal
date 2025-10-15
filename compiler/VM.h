@@ -361,11 +361,18 @@ public:
 
 private:
     bool isCurrentThreadActorWorker() const;
+    // Actor workers are not allowed to synchronously join other actor threads
+    // during GC teardown because they might be the very threads being joined.
+    // We therefore collect actor instances that need their worker shut down in
+    // a queue and let whichever non-actor thread next runs the GC drain it.
     void enqueueActorFinalizer(ActorInstance* actorInst);
     void drainActorFinalizerQueue(std::vector<ActorInstance*>& out);
     void finalizeActorInstances(std::vector<ActorInstance*>& actors);
 
     std::mutex actorFinalizerMutex;
+    // Stores actor instances whose workers must be joined from a safe
+    // (non-actor) context.  Entries are populated by actor worker threads and
+    // drained by regular VM threads before the objects are finally deleted.
     std::deque<ActorInstance*> pendingActorFinalizers;
 };
 
