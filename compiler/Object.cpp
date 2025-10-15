@@ -5,6 +5,7 @@
 #include <sstream>
 #include <algorithm>
 #include <iomanip>
+#include <iostream>
 #include <dlfcn.h>
 #include <future>
 #include <vector>
@@ -3085,17 +3086,6 @@ ActorInstance::ActorInstance(const Value& objectType)
 
 ActorInstance::~ActorInstance()
 {
-    #if USE_GC_SGCL
-    if (!thread.expired()) {
-        if (auto t = thread.get()) {
-            t->join(this);
-        }
-    }
-    #else
-    if (auto t = thread.lock()) {
-        t->join(this);
-    }
-    #endif
     thread.reset();
 }
 

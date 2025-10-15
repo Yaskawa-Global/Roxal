@@ -4,6 +4,8 @@
 #include <atomic>
 #include <unordered_map>
 #include <map>
+#include <deque>
+#include <mutex>
 
 #include "core/atomic.h"
 #include "Chunk.h"
@@ -27,6 +29,7 @@ namespace df { class DataflowEngine; }
 namespace roxal {
 
 struct CallFrame; // forward
+struct ActorInstance;
 
 
 typedef std::vector<CallFrame> CallFrames;
@@ -356,6 +359,14 @@ public:
     Value loadlib_native(ArgsView args);
     Value ffi_native(ArgsView args);
 
+private:
+    bool isCurrentThreadActorWorker() const;
+    void enqueueActorFinalizer(ActorInstance* actorInst);
+    void drainActorFinalizerQueue(std::vector<ActorInstance*>& out);
+    void finalizeActorInstances(std::vector<ActorInstance*>& actors);
+
+    std::mutex actorFinalizerMutex;
+    std::deque<ActorInstance*> pendingActorFinalizers;
 };
 
 

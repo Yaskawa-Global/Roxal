@@ -36,6 +36,7 @@
 #include <core/AST.h>
 #include <fstream>
 #include <cstdio>
+#include <iostream>
 
 #if USE_GC_SGCL
 #include "core/sgcl/detail/thread.h"
@@ -3843,10 +3844,69 @@ void VM::resetStack()
 }
 
 
+bool VM::isCurrentThreadActorWorker() const
+{
+    return thread && thread->isActorThread();
+}
+
+void VM::enqueueActorFinalizer(ActorInstance* actorInst)
+{
+    if (!actorInst) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(actorFinalizerMutex);
+    pendingActorFinalizers.push_back(actorInst);
+}
+
+void VM::drainActorFinalizerQueue(std::vector<ActorInstance*>& out)
+{
+    std::lock_guard<std::mutex> lock(actorFinalizerMutex);
+    while (!pendingActorFinalizers.empty()) {
+        ActorInstance* inst = pendingActorFinalizers.front();
+        pendingActorFinalizers.pop_front();
+        if (!inst) {
+            continue;
+        }
+        out.push_back(inst);
+    }
+}
+
+void VM::finalizeActorInstances(std::vector<ActorInstance*>& actors)
+{
+    for (ActorInstance* inst : actors) {
+        if (!inst) {
+            continue;
+        }
+#if USE_GC_SGCL
+        if (!inst->thread.expired()) {
+            if (auto t = inst->thread.get()) {
+                t->join(inst);
+            }
+        }
+#else
+        if (auto t = inst->thread.lock()) {
+            t->join(inst);
+        }
+#endif
+        delObj(inst);
+    }
+
+    actors.clear();
+}
+
 void VM::freeObjects()
 {
     std::vector<Obj*> pending;
     pending.reserve(64);
+
+    const bool actorWorker = isCurrentThreadActorWorker();
+    std::vector<ActorInstance*> actorsToFinalize;
+    actorsToFinalize.reserve(16);
+
+    if (!actorWorker) {
+        drainActorFinalizerQueue(actorsToFinalize);
+    }
 
     // Objects that reach zero strong references are appended to
     // Obj::unrefedObjs by the ref-counting slow path.  We drain the queue in
@@ -3875,12 +3935,30 @@ void VM::freeObjects()
         }
 
         for (Obj* obj : pending) {
-            if (obj) {
-                delObj(obj);
+            if (!obj) {
+                continue;
             }
+
+            if (obj->type == ObjType::Actor) {
+                auto actorInst = static_cast<ActorInstance*>(obj);
+                if (actorWorker) {
+                    enqueueActorFinalizer(actorInst);
+                } else {
+                    actorsToFinalize.push_back(actorInst);
+                }
+                continue;
+            }
+
+            delObj(obj);
         }
 
         pending.clear();
+    }
+
+    if (!actorWorker) {
+        finalizeActorInstances(actorsToFinalize);
+    } else {
+        actorsToFinalize.clear();
     }
 
     if (thread) {

@@ -2,6 +2,7 @@
 #include "VM.h"
 #include "Object.h"
 #include <algorithm>
+#include <iostream>
 
 using namespace roxal;
 
