@@ -15,6 +15,7 @@ TEST_NAME_WIDTH = 32
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Run Roxal tests.")
 parser.add_argument('--convs', action='store_true', help='Include tests/conversions/* tests')
+parser.add_argument('--all', action='store_true', help='Run all tests, including conversions and long running tests')
 args = parser.parse_args()
 
 # for each named test, run the <test>.rox file in the tests folder
@@ -70,19 +71,24 @@ tests = [
     'weakref', 'strongref', 'is_operator', 'stackdepth', 'modulevar2',
     'is_operator_type',
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
-    'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle', 'gc_list_cycle', 'gc_liveness', 'gc_stress',
+    'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle', 'gc_list_cycle', 'gc_liveness',
     'runtime_error_snippet',
     'property_count', 'cmdline_execute', 'repl_run', 'invalid_option', 'fileio_basic', 'fileio_binary',
     'fileio_read_binary', 'fileio_write_binary', 'fileio_extra', 'help_doc', 'docstring_func'
     ,'builtin_object_methods', 'print_flush'
 ]
 
+long_running_tests = [
+    'gc_stress',
+]
+
 # implementation doesn't yet allow these tests to pass (do not add to this list without human consent)
 failing_tests = ['signal_network1']
-assert(set(failing_tests).issubset(tests))
+assert(set(failing_tests).issubset(set(tests) | set(long_running_tests)))
 
 
-if args.convs:
+include_convs = args.convs or args.all
+if include_convs:
     conv_test_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tests/conversions')
     conv_tests = sorted([
         os.path.join('conversions', os.path.splitext(f)[0])
@@ -90,6 +96,9 @@ if args.convs:
         if f.endswith('.rox') and ('decimal' not in f) and os.path.exists(os.path.join(conv_test_dir, os.path.splitext(f)[0] + '.out'))
     ])
     tests += conv_tests
+
+if args.all:
+    tests += long_running_tests
 
 project_root = os.path.dirname(os.path.abspath(__file__))
 test_dir = os.path.join(project_root, 'tests')
