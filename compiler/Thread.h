@@ -28,6 +28,7 @@ public:
         quit = false;
         result = InterpretResult::OK;
         frames.reserve(256);
+        actorInstanceRaw.store(nullptr, std::memory_order_relaxed);
     }
     Thread(Thread&) = delete;
     virtual ~Thread();
@@ -127,6 +128,7 @@ private:
 
     // weak reference to associated actor instance
     Value actorInstance;
+    std::atomic<ActorInstance*> actorInstanceRaw;
     std::atomic<bool> actor;
     std::atomic<bool> quit;
 
