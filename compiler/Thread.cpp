@@ -2,6 +2,7 @@
 #include "VM.h"
 #include "Object.h"
 #include <algorithm>
+#include <iostream>
 
 using namespace roxal;
 
@@ -138,7 +139,13 @@ void Thread::join(ActorInstance* actorInstOverride)
     if (state == State::Constructed || osthread == nullptr || !osthread->joinable())
         return;
 
+    // When GC schedules this thread for shutdown it may only hold a raw pointer
+    // to the actor instance.  Start with the override supplied by the finalizer
+    // and fall back to the cached raw pointer if needed before attempting to
+    // revive the weak handle below.
     ActorInstance* inst = actorInstOverride;
+    if (inst == nullptr)
+        inst = actorInstanceRaw.load(std::memory_order_acquire);
     if (actor) {
         if (inst == nullptr && actorInstance.isAlive())
             inst = asActorInstance(actorInstance);
@@ -166,6 +173,7 @@ void Thread::join(ActorInstance* actorInstOverride)
     if (inst)
         inst->thread.reset();
     actorInstance = Value::nilVal();
+    actorInstanceRaw.store(nullptr, std::memory_order_release);
     actor = false;
 
     state = State::Completed;
@@ -189,9 +197,15 @@ void Thread::act(Value actorInstance)
             Value actorVal = this->actorInstance;
             if (!actorVal.isAlive()) {
                 state = State::Completed;
+                actorInstanceRaw.store(nullptr, std::memory_order_release);
                 return;
             }
             ActorInstance* actorInst = asActorInstance(actorVal);
+            // Store a raw pointer while the actor is unquestionably alive so
+            // the finalizer can still signal the worker after the weak handle
+            // goes dead.  The join path clears the cache again once teardown is
+            // complete.
+            actorInstanceRaw.store(actorInst, std::memory_order_release);
             actorInst->thread_id = std::this_thread::get_id(); // store actor's thread in instance
             actorInst->thread = ptr_from_this();
 
@@ -325,6 +339,7 @@ void Thread::act(Value actorInstance)
             stack.clear();
 
             state = State::Completed;
+            actorInstanceRaw.store(nullptr, std::memory_order_release);
         }
         catch (std::exception& e) {
             std::cerr << "VM Runtime error: " << e.what() << std::endl;
@@ -339,6 +354,7 @@ void Thread::act(Value actorInstance)
             result = InterpretResult::RuntimeError;
             stack.clear();
             state = State::Completed;
+            actorInstanceRaw.store(nullptr, std::memory_order_release);
         }
     });
 
@@ -359,9 +375,16 @@ void Thread::wake()
         std::unique_lock<std::mutex> lk(sleepMutex);
         sleepCondVar.notify_one();
     }
-    if (actor && actorInstance.isAlive()) {
-        ActorInstance* inst = asActorInstance(actorInstance);
-        inst->queueConditionVar.notify_one();
+    if (actor) {
+        ActorInstance* inst = nullptr;
+        if (actorInstance.isAlive()) {
+            inst = asActorInstance(actorInstance);
+        } else {
+            inst = actorInstanceRaw.load(std::memory_order_acquire);
+        }
+        if (inst) {
+            inst->queueConditionVar.notify_one();
+        }
     }
 }
 

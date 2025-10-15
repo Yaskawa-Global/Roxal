@@ -36,6 +36,7 @@
 #include <core/AST.h>
 #include <fstream>
 #include <cstdio>
+#include <iostream>
 
 #if USE_GC_SGCL
 #include "core/sgcl/detail/thread.h"
@@ -3843,10 +3844,86 @@ void VM::resetStack()
 }
 
 
+bool VM::isCurrentThreadActorWorker() const
+{
+    return thread && thread->isActorThread();
+}
+
+void VM::enqueueActorFinalizer(ActorInstance* actorInst)
+{
+    // Actor workers call into freeObjects() from their own GC safepoints just
+    // like any other thread.  When they encounter another actor instance we do
+    // not let them perform the blocking join immediately—doing so risks
+    // deadlocking if two actors try to finalize each other.  Instead they push
+    // the instance onto this queue for a later, safe thread to handle.
+    if (!actorInst) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(actorFinalizerMutex);
+    pendingActorFinalizers.push_back(actorInst);
+}
+
+void VM::drainActorFinalizerQueue(std::vector<ActorInstance*>& out)
+{
+    // Non-actor threads call this helper before running the regular GC pass so
+    // they can take ownership of any actor instances enqueued by worker
+    // threads.  Once an instance is moved out it will be joined and deleted in
+    // finalizeActorInstances().
+    std::lock_guard<std::mutex> lock(actorFinalizerMutex);
+    while (!pendingActorFinalizers.empty()) {
+        ActorInstance* inst = pendingActorFinalizers.front();
+        pendingActorFinalizers.pop_front();
+        if (!inst) {
+            continue;
+        }
+        out.push_back(inst);
+    }
+}
+
+void VM::finalizeActorInstances(std::vector<ActorInstance*>& actors)
+{
+    // Every ActorInstance handed to this function has already been detached
+    // from the ref-counted object graph.  The only remaining teardown step is
+    // to request the worker thread to exit and wait for it to finish.  The
+    // join() call handles both, so once it returns we can safely destroy the
+    // ActorInstance itself.
+    for (ActorInstance* inst : actors) {
+        if (!inst) {
+            continue;
+        }
+#if USE_GC_SGCL
+        if (!inst->thread.expired()) {
+            if (auto t = inst->thread.get()) {
+                t->join(inst);
+            }
+        }
+#else
+        if (auto t = inst->thread.lock()) {
+            t->join(inst);
+        }
+#endif
+        delObj(inst);
+    }
+
+    actors.clear();
+}
+
 void VM::freeObjects()
 {
     std::vector<Obj*> pending;
     pending.reserve(64);
+
+    const bool actorWorker = isCurrentThreadActorWorker();
+    std::vector<ActorInstance*> actorsToFinalize;
+    actorsToFinalize.reserve(16);
+
+    if (!actorWorker) {
+        // Only non-actor threads are allowed to drain the finalizer queue so
+        // that all joins are performed from a context that cannot be the
+        // target of the join itself.
+        drainActorFinalizerQueue(actorsToFinalize);
+    }
 
     // Objects that reach zero strong references are appended to
     // Obj::unrefedObjs by the ref-counting slow path.  We drain the queue in
@@ -3875,12 +3952,37 @@ void VM::freeObjects()
         }
 
         for (Obj* obj : pending) {
-            if (obj) {
-                delObj(obj);
+            if (!obj) {
+                continue;
             }
+
+            if (obj->type == ObjType::Actor) {
+                auto actorInst = static_cast<ActorInstance*>(obj);
+                if (actorWorker) {
+                    // Actor workers enqueue actor instances for later
+                    // processing.  The actual join will happen when a
+                    // non-actor thread next calls freeObjects().
+                    enqueueActorFinalizer(actorInst);
+                } else {
+                    // Non-actor threads can finalize the actor in-line once
+                    // the current batch is done dropping references.
+                    actorsToFinalize.push_back(actorInst);
+                }
+                continue;
+            }
+
+            delObj(obj);
         }
 
         pending.clear();
+    }
+
+    if (!actorWorker) {
+        // When freeObjects() runs on a non-actor thread we now own the right to
+        // perform the actual joins for any actors we collected above.
+        finalizeActorInstances(actorsToFinalize);
+    } else {
+        actorsToFinalize.clear();
     }
 
     if (thread) {

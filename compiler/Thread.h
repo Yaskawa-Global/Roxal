@@ -28,6 +28,7 @@ public:
         quit = false;
         result = InterpretResult::OK;
         frames.reserve(256);
+        actorInstanceRaw.store(nullptr, std::memory_order_relaxed);
     }
     Thread(Thread&) = delete;
     virtual ~Thread();
@@ -125,8 +126,13 @@ public:
 private:
     ptr<std::thread> osthread;
 
-    // weak reference to associated actor instance
+    // Weak reference to the associated actor instance so the worker does not
+    // keep itself alive once all other strong references disappear.
     Value actorInstance;
+    // Cached raw pointer to the actor instance.  The GC clears weak references
+    // before scheduling finalization, so join()/wake() fall back to this value
+    // to notify the worker even after actorInstance reports "dead".
+    std::atomic<ActorInstance*> actorInstanceRaw;
     std::atomic<bool> actor;
     std::atomic<bool> quit;
 
