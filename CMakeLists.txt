@@ -12,7 +12,6 @@ option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
 
 
 option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
-option(USE_GC_SGCL "Use the SGCL garbage collector" OFF)
 
 
 add_compile_definitions(
@@ -83,11 +82,6 @@ pkg_check_modules(LIBFFI REQUIRED libffi)
 
 # Build the dataflow engine library
 add_subdirectory(dataflow)
-
-target_compile_definitions(dataflow PRIVATE
-    $<$<BOOL:${USE_GC_SGCL}>:USE_GC_SGCL>
-)
-
 
 # Add the source files
 set(CORE_SOURCES
@@ -163,7 +157,6 @@ include_directories(${CMAKE_HOME_DIRECTORY})
 include_directories(
     ${ANTLR4_ROOT}/include/antlr4-runtime
     compiler/cpp-gen
-    $<$<BOOL:${USE_GC_SGCL}>:${CMAKE_SOURCE_DIR}/core/sgcl>
 )
 
 link_directories(
@@ -207,7 +200,6 @@ target_compile_options(roxalcore PRIVATE
 target_compile_definitions(roxalcore PRIVATE
     $<$<CONFIG:DEBUG>:DEBUG_BUILD>
     $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
-    $<$<BOOL:${USE_GC_SGCL}>:USE_GC_SGCL>
 )
 
 
@@ -221,7 +213,6 @@ if(ROXAL_BUILD_MAIN)
     target_compile_definitions(roxal PRIVATE
         $<$<CONFIG:DEBUG>:DEBUG_BUILD>
         $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
-        $<$<BOOL:${USE_GC_SGCL}>:USE_GC_SGCL>
     )
 
     add_test(NAME RoxalSourceTests

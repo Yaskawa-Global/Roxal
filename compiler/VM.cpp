@@ -38,14 +38,6 @@
 #include <cstdio>
 #include <iostream>
 
-#if USE_GC_SGCL
-#include "core/sgcl/detail/thread.h"
-// Force initialization of the SGCL thread-local context before the VM starts
-// so that it outlives the VM during shutdown.
-static auto& sgclThreadContext = sgcl::detail::current_thread();
-#endif
-
-
 using namespace roxal;
 
 namespace {
@@ -365,10 +357,6 @@ void VM::ensureDataflowEngineStopped()
 
 VM::~VM()
 {
-    #if USE_GC_SGCL
-    sgcl::collector::force_collect(true);
-    #endif
-
     for (auto moduleTypeVal : ObjModuleType::allModules.get()) {
         ObjModuleType* moduleType = asModuleType(moduleTypeVal);
         if (moduleType) {
@@ -436,17 +424,10 @@ VM::~VM()
     }
 
 
-    #if USE_GC_SGCL
-    sgcl::collector::force_collect(true);
-    #endif
-
     freeObjects();
 
 
     // Final cleanup pass for any objects that became unreferenced during destructor
-    #if USE_GC_SGCL
-    sgcl::collector::force_collect(true);
-    #endif
     freeObjects();
 
     // ensure all threads are gone before reporting
@@ -454,13 +435,6 @@ VM::~VM()
 
     // Perform additional forced collection cycles in case thread-local
     // destructors released resources after the previous passes
-    #if USE_GC_SGCL
-    for (int i = 0; i < 4 && Obj::allocatedObjs.size() > 0; ++i) {
-        sgcl::collector::force_collect(true);
-        freeObjects();
-    }
-    #endif
-
     #ifdef DEBUG_TRACE_MEMORY
     // Final attempt to release any objects that might still be pending
     freeObjects();
@@ -3892,17 +3866,9 @@ void VM::finalizeActorInstances(std::vector<ActorInstance*>& actors)
         if (!inst) {
             continue;
         }
-#if USE_GC_SGCL
-        if (!inst->thread.expired()) {
-            if (auto t = inst->thread.get()) {
-                t->join(inst);
-            }
-        }
-#else
         if (auto t = inst->thread.lock()) {
             t->join(inst);
         }
-#endif
         delObj(inst);
     }
 

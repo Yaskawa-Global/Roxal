@@ -14,11 +14,7 @@ using namespace df;
 
 ptr<Signal> Signal::newClockSignal(double freq, std::optional<std::string> name)
 {
-    #if USE_GC_SGCL
-    auto s = roxal::make_ptr<Signal>(freq, Value(0), name);
-    #else
     auto s = ptr<Signal>::from_raw(new Signal(freq, Value(0), name)); // direct new needed
-    #endif
     s->isClock = true;
     s->isSource = true;
     s->clockCount = 0;
@@ -29,11 +25,7 @@ ptr<Signal> Signal::newClockSignal(double freq, std::optional<std::string> name)
 
 ptr<Signal> Signal::newSignal(double freq, Value initial, std::optional<std::string> name)
 {
-    #if USE_GC_SGCL
-    auto s = roxal::make_ptr<Signal>(freq, initial, name);
-    #else
     auto s = ptr<Signal>::from_raw(new Signal(freq, initial, name));
-    #endif
     s->isClock = false;
     s->isSource = false;
     DataflowEngine::instance()->addSignal(s);
@@ -42,11 +34,7 @@ ptr<Signal> Signal::newSignal(double freq, Value initial, std::optional<std::str
 
 ptr<Signal> Signal::newSourceSignal(double freq, Value initial, std::optional<std::string> name)
 {
-    #if USE_GC_SGCL
-    auto s = roxal::make_ptr<Signal>(freq, initial, name);
-    #else
     auto s = ptr<Signal>::from_raw(new Signal(freq, initial, name));
-    #endif
     s->isClock = false;
     s->isSource = true;
     DataflowEngine::instance()->addSignal(s);
@@ -274,11 +262,7 @@ ptr<Signal> Signal::indexedSignal(int index)
     // The old standalone DataflowEngine supported latency by storing the
     // desired index on FuncInputInfo.  Here we emulate that behaviour by
     // generating a separate Signal updated whenever the source updates.
-    #if USE_GC_SGCL
-    auto newSig = roxal::make_ptr<Signal>(m_frequency, initial, m_name + "[" + std::to_string(index) + "]");
-    #else
     auto newSig = ptr<Signal>::from_raw(new Signal(m_frequency, initial, m_name + "[" + std::to_string(index) + "]"));
-    #endif
     newSig->isClock = false;
     newSig->isSource = false;
     newSig->isDerived = true;
