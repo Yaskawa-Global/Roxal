@@ -423,18 +423,12 @@ VM::~VM()
         freeObjects();
     }
 
-
-    freeObjects();
-
-
     // Final cleanup pass for any objects that became unreferenced during destructor
     freeObjects();
 
     // ensure all threads are gone before reporting
     joinAllThreads();
 
-    // Perform additional forced collection cycles in case thread-local
-    // destructors released resources after the previous passes
     #ifdef DEBUG_TRACE_MEMORY
     // Final attempt to release any objects that might still be pending
     freeObjects();
