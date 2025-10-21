@@ -90,7 +90,14 @@ void SimpleMarkSweepGC::registerAllocation(ObjControl* control) {
 
     std::uint64_t threshold = autoTriggerThreshold_.load(std::memory_order_relaxed);
     if (threshold > 0 && allocationSize > 0) {
-        bytesAllocatedSinceLastCollect_.fetch_add(allocationSize, std::memory_order_relaxed);
+        std::uint64_t previous = bytesAllocatedSinceLastCollect_.fetch_add(allocationSize, std::memory_order_relaxed);
+        std::uint64_t updated = previous + allocationSize;
+        if (previous < threshold && updated >= threshold) {
+            // requestCollect() clears bytesAllocatedSinceLastCollect_ once it flips
+            // collectionRequested_ from false to true so that the next GC cycle
+            // starts counting from zero immediately.
+            requestCollect();
+        }
     }
 
     {
@@ -126,6 +133,16 @@ void SimpleMarkSweepGC::requestCollect() {
         bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
     }
     VM::instance().wakeAllThreadsForGC();
+}
+
+void SimpleMarkSweepGC::setVM(VM* vm) {
+    vm_.store(vm, std::memory_order_release);
+}
+
+void SimpleMarkSweepGC::notifyCleanupPending() {
+    if (VM* vm = vm_.load(std::memory_order_acquire)) {
+        vm->requestObjectCleanup();
+    }
 }
 
 void SimpleMarkSweepGC::setAutoTriggerThreshold(std::uint64_t threshold) {
@@ -168,18 +185,6 @@ void SimpleMarkSweepGC::onThreadExit() {
 }
 
 void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
-    std::uint64_t threshold = autoTriggerThreshold_.load(std::memory_order_relaxed);
-    if (threshold > 0) {
-        std::uint64_t allocated = bytesAllocatedSinceLastCollect_.load(std::memory_order_acquire);
-        if (allocated >= threshold) {
-            bool expected = false;
-            if (collectionRequested_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-                bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
-                VM::instance().wakeAllThreadsForGC();
-            }
-        }
-    }
-
     if (!collectionRequested_.load(std::memory_order_acquire)) {
         return;
     }
@@ -226,15 +231,20 @@ void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
 
     safepointCv_.notify_all();
 
+    bool pushed = false;
     for (Obj* obj : toDestroy) {
         if (!obj) {
             continue;
         }
         Obj::unrefedObjs.push_back(obj);
+        pushed = true;
     }
 
-    if (!toDestroy.empty()) {
-        VM::instance().freeObjects();
+    if (pushed) {
+        if (VM* vm = vm_.load(std::memory_order_acquire)) {
+            vm->requestObjectCleanup();
+            vm->freeObjects();
+        }
     }
 }
 

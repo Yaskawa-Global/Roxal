@@ -234,6 +234,8 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when)
 VM::VM()
     : lineMode(false)
 {
+    SimpleMarkSweepGC::instance().setVM(this);
+
     assert(sizeof(Value) == sizeof(uint64_t)); // ensure Value is 64bit
 
     runtimeErrorFlag = false;
@@ -357,6 +359,8 @@ void VM::ensureDataflowEngineStopped()
 
 VM::~VM()
 {
+    SimpleMarkSweepGC::instance().setVM(nullptr);
+
     for (auto moduleTypeVal : ObjModuleType::allModules.get()) {
         ObjModuleType* moduleType = asModuleType(moduleTypeVal);
         if (moduleType) {
@@ -1859,6 +1863,22 @@ void VM::wakeAllThreadsForGC()
 }
 
 
+void VM::requestObjectCleanup()
+{
+    objectCleanupPending.store(true, std::memory_order_release);
+}
+
+bool VM::consumePendingObjectCleanup()
+{
+    return objectCleanupPending.exchange(false, std::memory_order_acq_rel);
+}
+
+bool VM::isObjectCleanupPending() const
+{
+    return objectCleanupPending.load(std::memory_order_acquire);
+}
+
+
 std::pair<InterpretResult,Value> VM::execute()
 {
     if (thread->frames.empty() ||
@@ -1872,7 +1892,9 @@ std::pair<InterpretResult,Value> VM::execute()
         ~ThreadExecutionGuard() { gc.onThreadExit(); }
     } executionGuard{valueGC};
 
-    valueGC.safepoint(*thread);
+    if (valueGC.isCollectionRequested()) {
+        valueGC.safepoint(*thread);
+    }
 
     // Track execution depth for nested calls
     thread->execute_depth++;
@@ -3055,7 +3077,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     if (thread->execute_depth > 1 && thread->frames.size() <= frame_depth_on_entry) {
                         Value returnVal = pop();
 
-                        freeObjects(); // Always cleanup objects on scope exit for deterministic destruction
+                        if (consumePendingObjectCleanup()) {
+                            freeObjects(); // Drain pending objects on scope exit for deterministic destruction
+                        }
 
                         if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,returnVal);
@@ -3065,7 +3089,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     if (thread->execute_depth == 1 && thread->frames.empty()) {
                         Value returnVal = pop();
 
-                        freeObjects();
+                        if (consumePendingObjectCleanup()) {
+                            freeObjects();
+                        }
 
                         if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,returnVal);
@@ -3089,7 +3115,9 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     // For nested execute() calls, only terminate when we return to entry depth
                     if (thread->execute_depth > 1 && thread->frames.size() <= frame_depth_on_entry) {
-                        freeObjects(); // Always cleanup objects on scope exit for deterministic destruction
+                        if (consumePendingObjectCleanup()) {
+                            freeObjects(); // Drain pending objects on scope exit for deterministic destruction
+                        }
 
                         if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,result);
@@ -3097,7 +3125,9 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     // For top-level execute(), use original termination logic
                     if (thread->execute_depth == 1 && thread->frames.empty()) {
-                        freeObjects();
+                        if (consumePendingObjectCleanup()) {
+                            freeObjects();
+                        }
 
                         if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,result);
@@ -3656,7 +3686,9 @@ std::pair<InterpretResult,Value> VM::execute()
 
         postInstructionDispatch:
 
-        valueGC.safepoint(*thread);
+        if (valueGC.isCollectionRequested()) {
+            valueGC.safepoint(*thread);
+        }
 
         // are we supposed to be sleeping?  If so, block until the sleep time is over
         //  or until we get a wakeup signal (for a possible event)
@@ -3675,7 +3707,9 @@ std::pair<InterpretResult,Value> VM::execute()
         if (!processPendingEvents())
             return errorReturn;
 
-        freeObjects();
+        if (consumePendingObjectCleanup()) {
+            freeObjects();
+        }
 
     } // for
 
@@ -3830,6 +3864,7 @@ void VM::enqueueActorFinalizer(ActorInstance* actorInst)
 
     std::lock_guard<std::mutex> lock(actorFinalizerMutex);
     pendingActorFinalizers.push_back(actorInst);
+    requestObjectCleanup();
 }
 
 void VM::drainActorFinalizerQueue(std::vector<ActorInstance*>& out)

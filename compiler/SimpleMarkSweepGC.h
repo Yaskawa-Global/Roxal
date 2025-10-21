@@ -13,6 +13,7 @@ namespace roxal {
 
 class Value;
 class Thread;
+class VM;
 
 class ValueVisitor;
 
@@ -25,6 +26,9 @@ public:
 
     void requestCollect();
     void safepoint(Thread& currentThread);
+
+    void setVM(VM* vm);
+    void notifyCleanupPending();
 
     void setAutoTriggerThreshold(std::uint64_t threshold);
     std::uint64_t autoTriggerThreshold() const noexcept;
@@ -63,6 +67,7 @@ private:
     size_t activeThreads_{0};
     size_t threadsAtSafepoint_{0};
     Thread* collector_{nullptr};
+    std::atomic<VM*> vm_{nullptr};
 };
 
 } // namespace roxal

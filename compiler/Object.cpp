@@ -9,6 +9,7 @@
 #include <dlfcn.h>
 #include <future>
 #include <vector>
+#include <core/AST.h>
 
 #include <core/types.h>
 #include "VM.h"
@@ -24,7 +25,22 @@ using namespace roxal;
 
 atomic_vector<Obj*> Obj::unrefedObjs {};
 
-#include <core/AST.h>
+void Obj::decRef()
+{
+    auto prevCount = control->strong.fetch_sub(1, std::memory_order_relaxed);
+    if (prevCount <= 1) {
+        if (!control->collecting.exchange(true, std::memory_order_relaxed)) {
+            if (SimpleMarkSweepGC::instance().isCollectionInProgress()) {
+                dropReferences();
+            }
+            control->obj = nullptr;
+            unrefedObjs.push_back(this);
+            SimpleMarkSweepGC::instance().notifyCleanupPending();
+        }
+    }
+}
+
+
 
 namespace {
 
