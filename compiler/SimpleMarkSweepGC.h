@@ -52,7 +52,12 @@ public:
 private:
     SimpleMarkSweepGC() = default;
 
-    std::vector<Obj*> performCollection(std::unique_lock<std::mutex>& lock);
+    struct CollectionResult {
+        std::vector<Obj*> unreachable;
+        std::uint64_t freedBytes = 0;
+    };
+
+    CollectionResult performCollection(std::unique_lock<std::mutex>& lock);
 
     mutable std::mutex mutex_;
     std::unordered_set<ObjControl*> controls_;
@@ -61,6 +66,8 @@ private:
     std::atomic<bool> collectionRequested_{false};
     std::atomic<bool> collectionInProgress_{false};
     std::atomic<size_t> lastFreedCount_{0};
+    std::atomic<std::uint64_t> lastFreedBytes_{0};
+    std::atomic<std::uint64_t> lastRequestedBytes_{0};
     std::atomic<std::uint64_t> bytesAllocatedSinceLastCollect_{0};
     std::atomic<std::uint64_t> currentAllocatedBytes_{0};
     std::atomic<std::uint64_t> autoTriggerThreshold_{0};
