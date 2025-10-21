@@ -41,7 +41,7 @@ Value::Value(unique_ptr<Obj, D> o)
 {
     Obj* raw = o.release();
     raw->incRef();
-    val = SignBit | QNAN | uint64_t(uintptr_t(raw));
+    bits_ = SignBit | QNAN | uint64_t(uintptr_t(raw));
 }
 
 template Value::Value(unique_ptr<Obj, std::default_delete<Obj>>);
@@ -52,7 +52,7 @@ Value Value::objRef(Obj* o)
     if (!o) return nilVal();
     o->incRef();
     Value v;
-    v.val = SignBit | QNAN | uint64_t(uintptr_t(o));
+    v.bits_ = SignBit | QNAN | uint64_t(uintptr_t(o));
     return v;
 }
 
@@ -289,7 +289,7 @@ void Value::box() {
         throw std::runtime_error("Unsupported type for auto-boxing "+typeName());
 
     obj->incRef();
-    val = SignBit | QNAN | uint64_t(uintptr_t(obj));
+    storeBits(SignBit | QNAN | uint64_t(uintptr_t(obj)));
 }
 
 
@@ -369,7 +369,7 @@ bool Value::asBool(bool strict) const
     if (!v->isObj()) {
         switch (v->type()) {
         case ValueType::Bool:
-            return v->val == (QNAN | TagTrue);
+            return v->loadBits() == (QNAN | TagTrue);
         case ValueType::Byte:
             if (!strict)
                 return v->asByte(false) != 0;
@@ -421,24 +421,24 @@ uint8_t Value::asByte(bool strict) const
     }
 
     if (!v->isObj()) {
+        const uint64_t bits = v->loadBits();
         switch (v->type()) {
         case ValueType::Byte:
-            return uint8_t(v->val & 0xff);
+            return uint8_t(bits & 0xff);
         case ValueType::Int:
             if (!strict) {
-                uint64_t i { v->val & ~(QNAN | TypeTag) };
-                return uint8_t(*reinterpret_cast<int32_t*>(&i));
+                const uint32_t raw = static_cast<uint32_t>(bits & ~(QNAN | TypeTag));
+                return uint8_t(std::bit_cast<int32_t>(raw));
             }
             throw std::invalid_argument("unable to convert int to byte in strict mode");
         case ValueType::Real:
             if (!strict) {
-                uint64_t bits = v->val.load();
-                double d = *reinterpret_cast<double*>(&bits);
+                const double d = std::bit_cast<double>(bits);
                 return uint8_t(int32_t(d));
             }
             throw std::invalid_argument("unable to convert real to byte in strict mode");
         case ValueType::Bool:
-            return (v->val == (QNAN | TagTrue)) ? 1 : 0;
+            return (bits == (QNAN | TagTrue)) ? 1 : 0;
         case ValueType::Decimal:
             throw std::runtime_error("decimal unimplemented");
         default: ;
@@ -480,18 +480,24 @@ int32_t Value::asInt(bool strict) const
     }
 
     if (!v->isObj()) {
+        const uint64_t bits = v->loadBits();
         switch (v->type()) {
-        case ValueType::Enum: return int32_t(asEnum());
-        case ValueType::Byte: return int32_t(uint8_t(v->val & 0xff));
-        case ValueType::Int: { uint64_t i {v->val & ~(QNAN | TypeTag)} ; return *reinterpret_cast<int32_t*>(&i); }
+        case ValueType::Enum:
+            return int32_t(asEnum());
+        case ValueType::Byte:
+            return int32_t(uint8_t(bits & 0xff));
+        case ValueType::Int: {
+            const uint32_t raw = static_cast<uint32_t>(bits & ~(QNAN | TypeTag));
+            return std::bit_cast<int32_t>(raw);
+        }
         case ValueType::Real:
             if (!strict) {
-                uint64_t bits = v->val.load();
-                double d = *reinterpret_cast<double*>(&bits);
+                const double d = std::bit_cast<double>(bits);
                 return int32_t(d);
             }
             throw std::invalid_argument("unable to convert real to int in strict mode");
-        case ValueType::Bool: return (v->val == (QNAN | TagTrue)) ? 1 : 0;
+        case ValueType::Bool:
+            return (bits == (QNAN | TagTrue)) ? 1 : 0;
         case ValueType::Decimal: throw std::runtime_error("decimal unimplemented");
         default: ;
         }
@@ -521,7 +527,7 @@ int16_t Value::asEnum() const
 {
     // TODO: handle boxed enum value
     if (isEnum())
-        return int16_t(val & 0xffff);
+        return int16_t(loadBits() & 0xffff);
     return 0;
 }
 
@@ -541,18 +547,16 @@ double Value::asReal(bool strict) const
     }
 
     if (!v->isObj()) {
+        const uint64_t bits = v->loadBits();
         switch (v->type()) {
         case ValueType::Real:
-            {
-                uint64_t bits = v->val.load();
-                return *reinterpret_cast<double*>(&bits);
-            }
+            return std::bit_cast<double>(bits);
         case ValueType::Int: {
-                uint64_t i { v->val & ~(QNAN | TypeTag) };
-                return double(*reinterpret_cast<int32_t*>(&i)); }
+                const uint32_t raw = static_cast<uint32_t>(bits & ~(QNAN | TypeTag));
+                return static_cast<double>(std::bit_cast<int32_t>(raw)); }
         case ValueType::Byte:
-                return double(uint8_t(v->val & 0xff));
-        case ValueType::Bool: return (v->val == (QNAN | TagTrue)) ? 1.0 : 0.0;
+                return double(uint8_t(bits & 0xff));
+        case ValueType::Bool: return (bits == (QNAN | TagTrue)) ? 1.0 : 0.0;
         case ValueType::Decimal: throw std::runtime_error("decimal unimplemented");
         default: ;
         }
@@ -576,8 +580,8 @@ ValueType Value::asType(bool strict) const
 {
     if (!isBoxed()) {
         if (type()==ValueType::Type) {
-            uint64_t t {val & ~(QNAN | TypeTag)};
-            return ValueType(*reinterpret_cast<uint64_t*>(&t));
+            const uint64_t t {loadBits() & ~(QNAN | TypeTag)};
+            return ValueType(t);
         }
     }
     else {
@@ -599,7 +603,7 @@ ValueType Value::type() const {
                                             : (isInt() ? ValueType::Int
                                                        : (isReal() ? ValueType::Real
                                                                    : (isObj() ? asObj()->valueType()
-                                                                              : ValueType((val & TypeTag) >> TypeTagOffset) ) ) ) ) );
+                                                                              : ValueType((loadBits() & TypeTag) >> TypeTagOffset) ) ) ) ) );
 }
 
 
@@ -869,7 +873,7 @@ Value Value::weakRef() const
         return *this; // primitives just copy
     Value v;
     ObjControl* c = asObj()->control;
-    v.val = SignBit | QNAN | WeakMask | uint64_t(uintptr_t(c));
+    v.bits_ = SignBit | QNAN | WeakMask | uint64_t(uintptr_t(c));
     v.incWeakObj();
     return v;
 }
@@ -886,7 +890,7 @@ Value Value::strongRef() const
     // Increment strong count before constructing Value to ensure object stays alive
     obj->incRef();
     Value v;
-    v.val = SignBit | QNAN | uint64_t(uintptr_t(obj));
+    v.bits_ = SignBit | QNAN | uint64_t(uintptr_t(obj));
     return v;
 }
 

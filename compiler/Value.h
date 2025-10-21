@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <bit>
 #include <optional>
 #include <unordered_map>
 #include <future>
@@ -139,12 +140,12 @@ bool isObjPrimitive(const Value& v); // forward from Object.h
 class Value {
 public:
     /// @brief Default constructor. Initializes the value to Nil.
-    Value() : val(QNAN | TagNil) {}
+    Value() noexcept : bits_(QNAN | TagNil) {}
     static inline Value nilVal() { return Value(); }
 
     /// @brief Constructs a boolean value.
     /// @param b The boolean value.
-    explicit Value(bool b) { val = b ? (QNAN | TagTrue) : (QNAN | TagFalse); }
+    explicit Value(bool b) noexcept : bits_(b ? (QNAN | TagTrue) : (QNAN | TagFalse)) {}
     static inline Value boolVal(bool b) { return Value(b); }
     static inline Value trueVal() { return Value(true); }
     static inline Value falseVal() { return Value(false); }
@@ -152,25 +153,25 @@ public:
 
     /// @brief Constructs a byte value.
     /// @param b The byte value.
-    explicit Value(uint8_t b) { val = QNAN | TagByte | static_cast<uint64_t>(b); }
+    explicit Value(uint8_t b) noexcept : bits_(QNAN | TagByte | static_cast<uint64_t>(b)) {}
     static inline Value byteVal(uint8_t b) { return Value(b); }
     static Value boxedByteVal(uint8_t b);
 
     /// @brief Constructs an integer value.
     /// @param i The integer value.
-    explicit Value(int32_t i) { val = QNAN | TagInt | static_cast<uint64_t>(static_cast<uint32_t>(i)); }
+    explicit Value(int32_t i) noexcept : bits_(QNAN | TagInt | static_cast<uint64_t>(static_cast<uint32_t>(i))) {}
     static inline Value intVal(int32_t i) { return Value(i); }
     static Value boxedIntVal(uint8_t b);
 
     /// @brief Constructs a real value.
     /// @param r The real value.
-    explicit Value(double r) { val = (*reinterpret_cast<uint64_t*>(&r)); }
+    explicit Value(double r) noexcept : bits_(std::bit_cast<uint64_t>(r)) {}
     static inline Value realVal(double r) { return Value(r); }
     static Value boxedRealVal(double r);
 
     /// @brief Constructs a value of the specified builtin type.
     /// @param bt The builtin type.
-    explicit Value(ValueType bt) { val = QNAN | TagType | uint64_t(bt); }
+    explicit Value(ValueType bt) noexcept : bits_(QNAN | TagType | uint64_t(bt)) {}
     static inline Value typeVal(ValueType bt) { return Value(bt); }
     static Value boxedTypeVal(ValueType bt);
 
@@ -180,8 +181,8 @@ public:
     template<class D>
     explicit Value(unique_ptr<Obj, D> o);
 
-    explicit Value(int16_t enumLabelValue, uint16_t enumTypeId)
-        { val = QNAN | TagEnum | (0xffffffff & (enumLabelValue | (uint64_t(enumTypeId) << 16))); }
+    explicit Value(int16_t enumLabelValue, uint16_t enumTypeId) noexcept
+        : bits_(QNAN | TagEnum | (0xffffffff & (enumLabelValue | (uint64_t(enumTypeId) << 16)))) {}
     static inline Value enumVal(int16_t labelVal, uint16_t enumTypeId) { return Value(labelVal, enumTypeId); }
 
 
@@ -261,9 +262,9 @@ public:
 
     /// @brief Copy constructor.
     /// @param v The value to copy.
-    Value(const Value& v)
+    Value(const Value& v) noexcept
     {
-        val.store(v.val.load());
+        storeBits(v.loadBits());
         if (isObj() || isBoxed()) {
             if (isWeak()) incWeakObj();
             else incRefObj();
@@ -281,7 +282,7 @@ public:
             else decRefObj();
         }
 
-        val.store(v.val.load());
+        storeBits(v.loadBits());
         if (isObj() || isBoxed()) {
             if (isWeak()) incWeakObj();
             else incRefObj();
@@ -306,7 +307,7 @@ public:
     /// @brief Unboxes the value from an object if it is boxed.
     void unbox();
 
-    bool isWeak() const { return (val.load() & WeakMask) != 0; }
+    bool isWeak() const { return (loadBits() & WeakMask) != 0; }
     Value weakRef() const;
     Value strongRef() const;
 
@@ -334,15 +335,16 @@ public:
 
     /// @brief Checks if the value is Nil.
     /// @return True if the value is Nil, false otherwise.
-    inline bool isNil() const { return val == (QNAN | TagNil); }
+    inline bool isNil() const { return loadBits() == (QNAN | TagNil); }
 
-    inline bool isNonNil() const { return val != (QNAN | TagNil); }
+    inline bool isNonNil() const { return loadBits() != (QNAN | TagNil); }
 
     /// @brief Checks if the value is a boolean.
     /// @return True if the value is a boolean, false otherwise.
     inline bool isBool() const {
-        return (val & SignBit) == 0 &&
-               ((val | uint64_t(1) << TypeTagOffset) == (QNAN | TagTrue));
+        const uint64_t bits = loadBits();
+        return (bits & SignBit) == 0 &&
+               ((bits | uint64_t(1) << TypeTagOffset) == (QNAN | TagTrue));
     }
 
     /// @brief Retrieves the value as a boolean.
@@ -353,7 +355,7 @@ public:
     /// @brief Checks if the value is a byte.
     /// @return True if the value is a byte, false otherwise.
     inline bool isByte() const {
-        return (val & (SignBit | QNAN | TypeTag)) == (QNAN | TagByte);
+        return (loadBits() & (SignBit | QNAN | TypeTag)) == (QNAN | TagByte);
     }
 
     /// @brief Retrieves the value as a byte.
@@ -364,7 +366,7 @@ public:
     /// @brief Checks if the value is an integer.
     /// @return True if the value is an integer, false otherwise.
     inline bool isInt() const {
-        return (val & (SignBit | QNAN | TypeTag)) == (QNAN | TagInt);
+        return (loadBits() & (SignBit | QNAN | TypeTag)) == (QNAN | TagInt);
     }
 
     /// @brief Retrieves the value as an integer.
@@ -374,7 +376,7 @@ public:
 
     /// @brief Checks if the value is a real number.
     /// @return True if the value is a real number, false otherwise.
-    inline bool isReal() const { return (val&QNAN) != QNAN; }
+    inline bool isReal() const { return (loadBits() & QNAN) != QNAN; }
 
     /// @brief Retrieves the value as a real number.
     /// @param strict If true, performs strict type checking. If false, allows type coercion.
@@ -386,20 +388,21 @@ public:
     inline bool isNumber() const { return isInt() || isReal() || isByte(); } // TODO: || isDecimal(v)
 
     inline bool isEnum() const {
-        return (val & (SignBit | QNAN | TypeTag)) == (QNAN | TagEnum);
+        return (loadBits() & (SignBit | QNAN | TypeTag)) == (QNAN | TagEnum);
     }
     int16_t asEnum() const;
     uint16_t enumTypeId() const {
         #ifdef DEBUG_BUILD
         assert(isEnum());
         #endif
-        return uint16_t((val & 0xffff0000) >> 16);
+        const uint64_t bits = loadBits();
+        return uint16_t((bits & 0xffff0000) >> 16);
     }
 
     /// @brief Checks if the value is a type.
     /// @return True if the value is a type, false otherwise.
     inline bool isType() const {
-        return (val & (SignBit | QNAN | TypeTag)) == (QNAN | TagType);
+        return (loadBits() & (SignBit | QNAN | TypeTag)) == (QNAN | TagType);
     }
 
     /// @brief Retrieves the value as a type.
@@ -415,26 +418,28 @@ public:
 
     /// @brief Checks if the value is an object.
     /// @return True if the value is an object, false otherwise.
-    inline bool isObj() const { return (val & (QNAN | SignBit)) == (QNAN | SignBit); }
+    inline bool isObj() const { return (loadBits() & (QNAN | SignBit)) == (QNAN | SignBit); }
 
     /// @brief Retrieves the value as an object pointer.
     /// @return The object pointer.
     inline Obj* asObj() const {
+        const uint64_t bits = loadBits();
         #ifdef DEBUG_BUILD
-        assert(isObj());
+        assert((bits & (QNAN | SignBit)) == (QNAN | SignBit));
         #endif
-        if (isWeak()) {
-            ObjControl* c = (ObjControl*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask));
+        if ((bits & WeakMask) != 0) {
+            auto* c = reinterpret_cast<ObjControl*>(static_cast<uintptr_t>(bits & ~(SignBit | QNAN | WeakMask)));
             return c->obj;
         }
-        return (Obj*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask));
+        return reinterpret_cast<Obj*>(static_cast<uintptr_t>(bits & ~(SignBit | QNAN | WeakMask)));
     }
 
     inline ObjControl* asControl() const {
+        const uint64_t bits = loadBits();
         #ifdef DEBUG_BUILD
-        assert(isObj());
+        assert((bits & (QNAN | SignBit)) == (QNAN | SignBit));
         #endif
-        return (ObjControl*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask));
+        return reinterpret_cast<ObjControl*>(static_cast<uintptr_t>(bits & ~(SignBit | QNAN | WeakMask)));
     }
 
 
@@ -455,11 +460,11 @@ public:
     /// @brief Calculates the hash value of the value.
     /// @return The hash value.
     size_t hash() const {
-        return size_t(val.load());
+        return size_t(loadBits());
     }
 
     #ifdef DEBUG_BUILD
-    uint64_t getVal() const { return val; }
+    uint64_t getVal() const { return loadBits(); }
     static void testPrimitiveValues();
     #endif
 
@@ -481,7 +486,19 @@ public:
     }
 
 protected:
-    std::atomic_uint64_t val;
+    static constexpr std::memory_order RelaxedOrder = std::memory_order_relaxed;
+
+    uint64_t loadBits() const noexcept
+    {
+        return std::atomic_ref<uint64_t>(const_cast<uint64_t&>(bits_)).load(RelaxedOrder);
+    }
+
+    void storeBits(uint64_t bits) noexcept
+    {
+        std::atomic_ref<uint64_t>(bits_).store(bits, RelaxedOrder);
+    }
+
+    alignas(8) uint64_t bits_;
 
     void incRefObj();
     void decRefObj();
