@@ -90,14 +90,16 @@ void SimpleMarkSweepGC::registerAllocation(ObjControl* control) {
     std::uint64_t allocationSize = control->allocationSize;
     currentAllocatedBytes_.fetch_add(allocationSize, std::memory_order_relaxed);
 
-    std::uint64_t threshold = autoTriggerThreshold_.load(std::memory_order_relaxed);
-    if (threshold > 0 && allocationSize > 0) {
+    if (allocationSize > 0) {
         std::uint64_t previous = bytesAllocatedSinceLastCollect_.fetch_add(allocationSize, std::memory_order_relaxed);
         std::uint64_t updated = previous + allocationSize;
-        if (previous < threshold && updated >= threshold) {
+        std::uint64_t threshold = autoTriggerThreshold_.load(std::memory_order_relaxed);
+        if (threshold > 0 && previous < threshold && updated >= threshold) {
             // requestCollect() clears bytesAllocatedSinceLastCollect_ once it flips
             // collectionRequested_ from false to true so that the next GC cycle
-            // starts counting from zero immediately.
+            // starts counting from zero immediately while still reporting the
+            // bytes that triggered the request (including manual gc() calls when
+            // the threshold is disabled).
             requestCollect();
         }
     }
