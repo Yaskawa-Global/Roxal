@@ -19,6 +19,8 @@ class ValueVisitor;
 
 class SimpleMarkSweepGC {
 public:
+    static constexpr std::uint64_t kDefaultAutoTriggerThreshold = 64ull * 1024ull * 1024ull; // 64 MiB
+
     static SimpleMarkSweepGC& instance();
 
     void registerAllocation(ObjControl* control);
@@ -70,7 +72,7 @@ private:
     std::atomic<std::uint64_t> lastRequestedBytes_{0};
     std::atomic<std::uint64_t> bytesAllocatedSinceLastCollect_{0};
     std::atomic<std::uint64_t> currentAllocatedBytes_{0};
-    std::atomic<std::uint64_t> autoTriggerThreshold_{0};
+    std::atomic<std::uint64_t> autoTriggerThreshold_{kDefaultAutoTriggerThreshold};
     size_t activeThreads_{0};
     size_t threadsAtSafepoint_{0};
     Thread* collector_{nullptr};
