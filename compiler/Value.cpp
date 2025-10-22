@@ -2458,7 +2458,10 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             return owned;
         }
         case ValueType::String: {
-            return readOwnedObject([&](){ return Value::stringVal(icu::UnicodeString()); });
+            return readOwnedObject([&](){
+                auto stringObj = newObj<ObjString>();
+                return Value::objVal(std::move(stringObj));
+            });
         }
         case ValueType::Range: {
             return readOwnedObject([&](){ return Value::rangeVal(Value::intVal(0), Value::intVal(0), Value::intVal(1), false); });
