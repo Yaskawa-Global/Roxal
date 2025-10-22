@@ -2459,7 +2459,11 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
         }
         case ValueType::String: {
             return readOwnedObject([&](){
+#ifdef DEBUG_BUILD
+                auto stringObj = newObj<ObjString>("readValue:string", __FILE__, __LINE__);
+#else
                 auto stringObj = newObj<ObjString>();
+#endif
                 return Value::objVal(std::move(stringObj));
             });
         }
