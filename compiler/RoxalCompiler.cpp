@@ -5,6 +5,9 @@
 
 #include <cstdint>
 #include <fstream>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "Object.h"
 
@@ -246,12 +249,6 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
     if (function.isNil() || !isFunction(function))
         return;
 
-    ObjFunction* fn = asFunction(function);
-    if (!isModuleType(fn->moduleType) || fn->chunk == nullptr)
-        return;
-
-    ObjModuleType* moduleType = asModuleType(fn->moduleType);
-
     auto canonicalizeModuleValue = [](const Value& moduleValue) -> Value {
         Value strong = moduleValue.strongRef();
         if (!isModuleType(strong))
@@ -265,28 +262,94 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         return strong;
     };
 
-    std::unordered_map<int32_t, Value> moduleValues;
-    for (auto& constant : fn->chunk->constants) {
-        if (isFunction(constant) && isModuleType(asFunction(constant)->moduleType)) {
-            Value moduleValue = canonicalizeModuleValue(asFunction(constant)->moduleType);
-            asFunction(constant)->moduleType = moduleValue.weakRef();
-            ObjModuleType* imported = asModuleType(moduleValue);
-            moduleValues[imported->name.hashCode()] = moduleValue;
-        } else if (isModuleType(constant)) {
-            Value moduleValue = canonicalizeModuleValue(constant);
-            constant = moduleValue;
-            ObjModuleType* imported = asModuleType(moduleValue);
-            moduleValues[imported->name.hashCode()] = moduleValue;
+    std::unordered_set<ObjFunction*> visited;
+    std::vector<ObjFunction*> stack;
+    std::unordered_map<ObjModuleType*, std::vector<icu::UnicodeString>> moduleImports;
+    std::unordered_map<int32_t, Value> canonicalModules;
+
+    auto enqueueFunction = [&](const Value& fnValue) {
+        if (!isFunction(fnValue))
+            return;
+
+        ObjFunction* candidate = asFunction(fnValue);
+        if (visited.insert(candidate).second)
+            stack.push_back(candidate);
+    };
+
+    enqueueFunction(function);
+
+    while (!stack.empty()) {
+        ObjFunction* fn = stack.back();
+        stack.pop_back();
+
+        if (!isModuleType(fn->moduleType) || fn->chunk == nullptr)
+            continue;
+
+        ObjModuleType* moduleType = asModuleType(fn->moduleType);
+
+        std::unordered_set<int32_t> importHashes;
+        std::vector<icu::UnicodeString> imports;
+
+        for (const auto& entry : moduleType->vars.snapshot()) {
+            const icu::UnicodeString& name = entry.first;
+            if (importHashes.insert(name.hashCode()).second)
+                imports.push_back(name);
         }
+
+        for (auto& constant : fn->chunk->constants) {
+            if (isFunction(constant)) {
+                enqueueFunction(constant);
+                Value moduleTypeValue = asFunction(constant)->moduleType;
+                if (isModuleType(moduleTypeValue)) {
+                    Value moduleValue = canonicalizeModuleValue(moduleTypeValue);
+                    asFunction(constant)->moduleType = moduleValue.weakRef();
+                    ObjModuleType* imported = asModuleType(moduleValue);
+                    canonicalModules[imported->name.hashCode()] = moduleValue;
+                    if (importHashes.insert(imported->name.hashCode()).second)
+                        imports.push_back(imported->name);
+                }
+            } else if (isModuleType(constant)) {
+                Value moduleValue = canonicalizeModuleValue(constant);
+                constant = moduleValue;
+                ObjModuleType* imported = asModuleType(moduleValue);
+                canonicalModules[imported->name.hashCode()] = moduleValue;
+                if (importHashes.insert(imported->name.hashCode()).second)
+                    imports.push_back(imported->name);
+            }
+        }
+
+        moduleImports[moduleType] = std::move(imports);
     }
 
-    if (moduleValues.empty())
-        return;
+    auto ensureModuleValueByName = [&](const icu::UnicodeString& name) -> Value {
+        int32_t hash = name.hashCode();
+        auto canonicalIt = canonicalModules.find(hash);
+        if (canonicalIt != canonicalModules.end())
+            return canonicalIt->second;
 
-    moduleType->vars.clear();
-    for (const auto& entry : moduleValues) {
-        ObjModuleType* canonical = asModuleType(entry.second);
-        moduleType->vars.store(canonical->name, entry.second, true);
+        Value builtin = VM::instance().getBuiltinModule(name);
+        if (builtin.isNonNil())
+            return builtin.strongRef();
+
+        for (const auto& moduleValue : ObjModuleType::allModules.get()) {
+            if (moduleValue.isNonNil()) {
+                ObjModuleType* candidate = asModuleType(moduleValue);
+                if (candidate->name == name)
+                    return moduleValue.strongRef();
+            }
+        }
+
+        return Value::nilVal();
+    };
+
+    for (const auto& entry : moduleImports) {
+        ObjModuleType* moduleType = entry.first;
+        moduleType->vars.clear();
+        for (const auto& name : entry.second) {
+            Value moduleValue = ensureModuleValueByName(name);
+            if (moduleValue.isNonNil())
+                moduleType->vars.store(name, moduleValue, true);
+        }
     }
 }
 

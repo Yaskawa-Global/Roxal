@@ -2101,8 +2101,17 @@ void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
     out.write(reinterpret_cast<char*>(&len), 4);
     out.write(n.data(), len);
 
-    uint32_t varCount = 0;
+    auto varsSnapshot = vars.snapshot();
+    uint32_t varCount = varsSnapshot.size();
     out.write(reinterpret_cast<char*>(&varCount), 4);
+    for (const auto& entry : varsSnapshot) {
+        std::string varName;
+        entry.first.toUTF8String(varName);
+        uint32_t nameLen = static_cast<uint32_t>(varName.size());
+        out.write(reinterpret_cast<char*>(&nameLen), 4);
+        if (nameLen)
+            out.write(varName.data(), nameLen);
+    }
 }
 
 void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
@@ -2122,10 +2131,11 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     for (uint32_t i = 0; i < varCount; ++i) {
         uint32_t nameLen = 0;
         in.read(reinterpret_cast<char*>(&nameLen), 4);
-        if (nameLen) {
-            std::string dummy(nameLen, '\0');
-            in.read(dummy.data(), nameLen);
-        }
+        std::string name(nameLen, '\0');
+        if (nameLen)
+            in.read(name.data(), nameLen);
+        icu::UnicodeString varName = icu::UnicodeString::fromUTF8(name);
+        vars.store(varName, Value::nilVal(), true);
     }
 }
 
