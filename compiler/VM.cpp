@@ -490,6 +490,12 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
     // go
     firstThread->spawn(closureValue);
 
+    // Transfer execution ownership to the spawned thread. Drop our local strong
+    // references so they cannot outlive the running closure and get collected
+    // out from underneath us.
+    closureValue = Value::nilVal();
+    function = Value::nilVal();
+
     // join all threads (they may spawn additional threads while running)
     InterpretResult joinResult = joinAllThreads();
     InterpretResult result = firstThread->result;
