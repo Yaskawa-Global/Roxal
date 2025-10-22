@@ -25,6 +25,10 @@ public:
     Value compile(std::istream& source, const std::string& name,
                   Value existingModule = Value::nilVal());
 
+    // Attempt to load/store cached bytecode for a standalone source file (.rox)
+    Value loadFileCache(const std::filesystem::path& sourcePath) const;
+    void storeFileCache(const std::filesystem::path& sourcePath, const Value& function) const;
+
     void setOutputBytecodeDisassembly(bool outputBytecodeDisassembly);
     void setModulePaths(const std::vector<std::string>& modulePaths);
     void setReplMode(bool replMode);
@@ -203,6 +207,7 @@ protected:
 
     Value loadModuleFromCache(const ModuleInfo& module) const;
     void storeModuleCache(const ModuleInfo& module, const Value& function) const;
+    void reconcileModuleReferences(const Value& function) const;
 
 
     // stack new states when we enter new functions to compile

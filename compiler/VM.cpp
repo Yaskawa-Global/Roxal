@@ -473,7 +473,31 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
         compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
         compiler.setModulePaths(modulePaths);
 
-        function = compiler.compile(source, name);
+        std::filesystem::path cacheSourcePath;
+        if (!name.empty()) {
+            try {
+                std::filesystem::path namePath(name);
+                if (namePath.has_extension() && namePath.extension() == ".rox")
+                    cacheSourcePath = std::filesystem::canonical(std::filesystem::absolute(namePath));
+            } catch (...) {
+                cacheSourcePath.clear();
+            }
+        }
+
+        bool loadedFromCache = false;
+        if (!cacheSourcePath.empty()) {
+            Value cached = compiler.loadFileCache(cacheSourcePath);
+            if (cached.isNonNil()) {
+                function = cached;
+                loadedFromCache = true;
+            }
+        }
+
+        if (!loadedFromCache) {
+            function = compiler.compile(source, name);
+            if (!function.isNil() && !cacheSourcePath.empty())
+                compiler.storeFileCache(cacheSourcePath, function);
+        }
 
     } catch (std::exception& e) {
         return InterpretResult::CompileError;

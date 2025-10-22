@@ -2100,6 +2100,9 @@ void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
     uint32_t len = n.size();
     out.write(reinterpret_cast<char*>(&len), 4);
     out.write(n.data(), len);
+
+    uint32_t varCount = 0;
+    out.write(reinterpret_cast<char*>(&varCount), 4);
 }
 
 void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
@@ -2112,6 +2115,18 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     name = icu::UnicodeString::fromUTF8(ns);
 
     allModules.push_back(Value::objRef(this));
+
+    vars.clear();
+    uint32_t varCount = 0;
+    in.read(reinterpret_cast<char*>(&varCount), 4);
+    for (uint32_t i = 0; i < varCount; ++i) {
+        uint32_t nameLen = 0;
+        in.read(reinterpret_cast<char*>(&nameLen), 4);
+        if (nameLen) {
+            std::string dummy(nameLen, '\0');
+            in.read(dummy.data(), nameLen);
+        }
+    }
 }
 
 void ObjModuleType::trace(ValueVisitor& visitor) const

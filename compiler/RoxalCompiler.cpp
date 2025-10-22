@@ -22,7 +22,7 @@ using ast::Access;
 namespace {
 
 constexpr char kModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t kModuleCacheVersion = 1;
+constexpr std::uint32_t kModuleCacheVersion = 3;
 
 } // namespace
 
@@ -184,6 +184,96 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
     }
 
     return function;
+}
+
+Value RoxalCompiler::loadFileCache(const std::filesystem::path& sourcePath) const
+{
+    if (sourcePath.empty())
+        return Value::nilVal();
+
+    try {
+        std::filesystem::path resolved = std::filesystem::absolute(sourcePath);
+        if (!std::filesystem::exists(resolved))
+            return Value::nilVal();
+
+        resolved = std::filesystem::canonical(resolved);
+        if (resolved.extension() != ".rox")
+            return Value::nilVal();
+
+        std::filesystem::path cachePath = resolved;
+        cachePath.replace_extension(".roc");
+        if (!std::filesystem::exists(cachePath))
+            return Value::nilVal();
+
+        auto sourceTime = std::filesystem::last_write_time(resolved);
+        auto cacheTime = std::filesystem::last_write_time(cachePath);
+        if (cacheTime < sourceTime)
+            return Value::nilVal();
+
+        ModuleInfo module{};
+        module.cachePath = cachePath;
+        return loadModuleFromCache(module);
+    } catch (...) {
+        return Value::nilVal();
+    }
+}
+
+void RoxalCompiler::storeFileCache(const std::filesystem::path& sourcePath, const Value& function) const
+{
+    if (function.isNil() || !isFunction(function))
+        return;
+
+    try {
+        std::filesystem::path resolved = std::filesystem::absolute(sourcePath);
+        if (!std::filesystem::exists(resolved))
+            return;
+
+        resolved = std::filesystem::canonical(resolved);
+        if (resolved.extension() != ".rox")
+            return;
+
+        ModuleInfo module{};
+        module.cachePath = resolved;
+        module.cachePath.replace_extension(".roc");
+        storeModuleCache(module, function);
+    } catch (...) {
+        // ignore cache write failures
+    }
+}
+
+void RoxalCompiler::reconcileModuleReferences(const Value& function) const
+{
+    if (function.isNil() || !isFunction(function))
+        return;
+
+    ObjFunction* fn = asFunction(function);
+    if (!isModuleType(fn->moduleType) || fn->chunk == nullptr)
+        return;
+
+    ObjModuleType* moduleType = asModuleType(fn->moduleType);
+
+    std::unordered_map<int32_t, Value> moduleValues;
+    for (const auto& constant : fn->chunk->constants) {
+        Value candidate = constant;
+        if (isFunction(candidate) && isModuleType(asFunction(candidate)->moduleType)) {
+            Value moduleValue = asFunction(candidate)->moduleType.strongRef();
+            ObjModuleType* imported = asModuleType(moduleValue);
+            moduleValues[imported->name.hashCode()] = moduleValue;
+        } else if (isModuleType(candidate)) {
+            Value moduleValue = candidate.strongRef();
+            ObjModuleType* imported = asModuleType(moduleValue);
+            moduleValues[imported->name.hashCode()] = moduleValue;
+        }
+    }
+
+    if (moduleValues.empty())
+        return;
+
+    moduleType->vars.clear();
+    for (const auto& entry : moduleValues) {
+        ObjModuleType* canonical = asModuleType(entry.second);
+        moduleType->vars.store(canonical->name, entry.second, true);
+    }
 }
 
 
@@ -2169,6 +2259,7 @@ Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module) const
         Value value = readValue(cacheStream, ctx);
         if (!isFunction(value))
             return Value::nilVal();
+        reconcileModuleReferences(value);
         return value;
     } catch (...) {
         return Value::nilVal();
