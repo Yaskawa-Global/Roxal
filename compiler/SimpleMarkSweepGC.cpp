@@ -5,6 +5,8 @@
 #include "Value.h"
 #include "VM.h"
 
+#include <chrono>
+#include <iostream>
 #include <unordered_set>
 #include <vector>
 
@@ -88,9 +90,18 @@ void SimpleMarkSweepGC::registerAllocation(ObjControl* control) {
     std::uint64_t allocationSize = control->allocationSize;
     currentAllocatedBytes_.fetch_add(allocationSize, std::memory_order_relaxed);
 
-    std::uint64_t threshold = autoTriggerThreshold_.load(std::memory_order_relaxed);
-    if (threshold > 0 && allocationSize > 0) {
-        bytesAllocatedSinceLastCollect_.fetch_add(allocationSize, std::memory_order_relaxed);
+    if (allocationSize > 0) {
+        std::uint64_t previous = bytesAllocatedSinceLastCollect_.fetch_add(allocationSize, std::memory_order_relaxed);
+        std::uint64_t updated = previous + allocationSize;
+        std::uint64_t threshold = autoTriggerThreshold_.load(std::memory_order_relaxed);
+        if (threshold > 0 && previous < threshold && updated >= threshold) {
+            // requestCollect() clears bytesAllocatedSinceLastCollect_ once it flips
+            // collectionRequested_ from false to true so that the next GC cycle
+            // starts counting from zero immediately while still reporting the
+            // bytes that triggered the request (including manual gc() calls when
+            // the threshold is disabled).
+            requestCollect();
+        }
     }
 
     {
@@ -121,16 +132,29 @@ void SimpleMarkSweepGC::unregisterAllocation(ObjControl* control) {
 }
 
 void SimpleMarkSweepGC::requestCollect() {
+    std::uint64_t allocated = bytesAllocatedSinceLastCollect_.load(std::memory_order_relaxed);
     bool expected = false;
     if (collectionRequested_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        lastRequestedBytes_.store(allocated, std::memory_order_relaxed);
         bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
     }
     VM::instance().wakeAllThreadsForGC();
 }
 
+void SimpleMarkSweepGC::setVM(VM* vm) {
+    vm_.store(vm, std::memory_order_release);
+}
+
+void SimpleMarkSweepGC::notifyCleanupPending() {
+    if (VM* vm = vm_.load(std::memory_order_acquire)) {
+        vm->requestObjectCleanup();
+    }
+}
+
 void SimpleMarkSweepGC::setAutoTriggerThreshold(std::uint64_t threshold) {
     autoTriggerThreshold_.store(threshold, std::memory_order_relaxed);
     bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
+    lastRequestedBytes_.store(0, std::memory_order_relaxed);
 }
 
 std::uint64_t SimpleMarkSweepGC::autoTriggerThreshold() const noexcept {
@@ -168,23 +192,20 @@ void SimpleMarkSweepGC::onThreadExit() {
 }
 
 void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
-    std::uint64_t threshold = autoTriggerThreshold_.load(std::memory_order_relaxed);
-    if (threshold > 0) {
-        std::uint64_t allocated = bytesAllocatedSinceLastCollect_.load(std::memory_order_acquire);
-        if (allocated >= threshold) {
-            bool expected = false;
-            if (collectionRequested_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-                bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
-                VM::instance().wakeAllThreadsForGC();
-            }
-        }
-    }
-
     if (!collectionRequested_.load(std::memory_order_acquire)) {
         return;
     }
 
     std::vector<Obj*> toDestroy;
+#ifdef DEBUG_TRACE_GC
+    bool emitTrace = false;
+    std::uint64_t triggerBytes = 0;
+    std::uint64_t thresholdBytes = 0;
+    std::uint64_t allocatedBefore = 0;
+    std::uint64_t epochStarted = 0;
+    std::uint64_t freedBytes = 0;
+    std::chrono::steady_clock::time_point collectionStart;
+#endif
 
     {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -217,7 +238,25 @@ void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
         }
 
         collector_ = &currentThread;
-        toDestroy = performCollection(lock);
+#ifdef DEBUG_TRACE_GC
+        emitTrace = true;
+        triggerBytes = lastRequestedBytes_.load(std::memory_order_relaxed);
+        thresholdBytes = autoTriggerThreshold_.load(std::memory_order_relaxed);
+        allocatedBefore = currentAllocatedBytes_.load(std::memory_order_relaxed);
+        epochStarted = epoch_.load(std::memory_order_relaxed) + 1uLL;
+        collectionStart = std::chrono::steady_clock::now();
+        std::cout << "[GC] start epoch " << epochStarted
+                  << ": allocated since last " << triggerBytes << " bytes";
+        if (thresholdBytes > 0) {
+            std::cout << " (threshold " << thresholdBytes << ")";
+        }
+        std::cout << "; currently allocated " << allocatedBefore << " bytes" << std::endl;
+#endif
+        CollectionResult result = performCollection(lock);
+        toDestroy = std::move(result.unreachable);
+#ifdef DEBUG_TRACE_GC
+        freedBytes = result.freedBytes;
+#endif
         collectionRequested_.store(false, std::memory_order_release);
         bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
         collector_ = nullptr;
@@ -226,19 +265,36 @@ void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
 
     safepointCv_.notify_all();
 
+    bool pushed = false;
     for (Obj* obj : toDestroy) {
         if (!obj) {
             continue;
         }
         Obj::unrefedObjs.push_back(obj);
+        pushed = true;
     }
 
-    if (!toDestroy.empty()) {
-        VM::instance().freeObjects();
+    if (pushed) {
+        if (VM* vm = vm_.load(std::memory_order_acquire)) {
+            vm->requestObjectCleanup();
+            vm->freeObjects();
+        }
     }
+
+#ifdef DEBUG_TRACE_GC
+    if (emitTrace) {
+        auto collectionEnd = std::chrono::steady_clock::now();
+        double durationMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(collectionEnd - collectionStart).count();
+        std::uint64_t allocatedAfter = currentAllocatedBytes_.load(std::memory_order_relaxed);
+        std::cout << "[GC] end epoch " << epochStarted
+                  << ": reclaimed " << toDestroy.size() << " objects ("
+                  << freedBytes << " bytes) in " << durationMs
+                  << " ms; allocated now " << allocatedAfter << " bytes" << std::endl;
+    }
+#endif
 }
 
-std::vector<Obj*> SimpleMarkSweepGC::performCollection(std::unique_lock<std::mutex>& lock) {
+SimpleMarkSweepGC::CollectionResult SimpleMarkSweepGC::performCollection(std::unique_lock<std::mutex>& lock) {
     (void)lock;
 
     collectionInProgress_.store(true, std::memory_order_release);
@@ -316,6 +372,7 @@ std::vector<Obj*> SimpleMarkSweepGC::performCollection(std::unique_lock<std::mut
 
     std::vector<Obj*> unreachable;
     unreachable.reserve(controls_.size());
+    std::uint64_t totalFreedBytes = 0;
     for (ObjControl* control : controls_) {
         if (!control) {
             continue;
@@ -337,6 +394,8 @@ std::vector<Obj*> SimpleMarkSweepGC::performCollection(std::unique_lock<std::mut
         control->collecting.store(true, std::memory_order_relaxed);
         control->obj = nullptr;
 
+        totalFreedBytes += control->allocationSize;
+
         // Break any strong edges the object holds so that cycles see their
         // reference counts fall to zero once we hand them back to the regular
         // destruction path. Modules reuse the same helper when being torn down
@@ -347,9 +406,13 @@ std::vector<Obj*> SimpleMarkSweepGC::performCollection(std::unique_lock<std::mut
     }
 
     lastFreedCount_.store(unreachable.size(), std::memory_order_relaxed);
+    lastFreedBytes_.store(totalFreedBytes, std::memory_order_relaxed);
     VM::instance().cleanupWeakRegistries();
 
-    return unreachable;
+    CollectionResult result;
+    result.unreachable = std::move(unreachable);
+    result.freedBytes = totalFreedBytes;
+    return result;
 }
 
 void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
@@ -427,7 +490,8 @@ size_t SimpleMarkSweepGC::collectNowForShutdown() {
             return 0;
         }
 
-        toDestroy = performCollection(lock);
+        CollectionResult result = performCollection(lock);
+        toDestroy = std::move(result.unreachable);
         collectionRequested_.store(false, std::memory_order_release);
         bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
     }

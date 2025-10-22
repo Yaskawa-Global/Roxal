@@ -22,7 +22,14 @@ add_compile_definitions(
 #    DEBUG_TRACE_NAME_RESOLUTION
     DEBUG_TRACE_MEMORY
 #    DEBUG_TRACE_EXECUTION
+#    DEBUG_TRACE_GC
 )
+
+# Enable verbose GC tracing when requested.
+option(ROXAL_DEBUG_TRACE_GC "Emit GC diagnostics while running" OFF)
+if(ROXAL_DEBUG_TRACE_GC)
+    add_compile_definitions(DEBUG_TRACE_GC)
+endif()
 
 # Set the C++ standard
 set(CMAKE_CXX_STANDARD 20)

@@ -198,6 +198,8 @@ protected:
     std::atomic_bool exitRequested {false};
     std::atomic_int exitCodeValue {0};
 
+    std::atomic_bool objectCleanupPending {false};
+
     // Persistent thread used for REPL execution so that state such as event
     // handlers persists across entered lines.
     ptr<Thread> replThread;
@@ -263,6 +265,9 @@ public:
 
     void resetStack();
     void freeObjects();
+    void requestObjectCleanup();
+    bool consumePendingObjectCleanup();
+    bool isObjectCleanupPending() const;
     void cleanupWeakRegistries();
     void unwindFrame();
     void raiseException(Value exc);

@@ -6,6 +6,9 @@
 #include <cstdlib>
 #include <csignal>
 #include <fstream>
+#include <limits>
+#include <cstdint>
+#include <string>
 
 #include <core/AST.h>
 #include "RoxalIndentationLexer.h"
@@ -16,6 +19,7 @@
 
 #include "VM.h"
 #include "Error.h"
+#include "SimpleMarkSweepGC.h"
 
 
 extern "C" {
@@ -283,6 +287,12 @@ static void generateAST(const std::string& inputPath, bool graph, const std::str
 
 int main(int argc, const char* argv[])
 {
+    const std::uint64_t defaultGcThresholdKb =
+        SimpleMarkSweepGC::kDefaultAutoTriggerThreshold / 1024ull;
+    const std::string gcOptionHelp =
+        "set GC auto-trigger threshold in kilobytes (0 disables automatic collections, default " +
+        std::to_string(defaultGcThresholdKb) + " KB)";
+
     po::options_description desc("Allowed options");
     desc.add_options()
         ("help,h", "options help")
@@ -292,6 +302,7 @@ int main(int argc, const char* argv[])
         ("dis", "output dissasembly of VM bytecodes during compilation")
         ("ast", "parse only and output text Abstract Syntax Tree (AST)")
         ("astgraph", po::value< std::vector<std::string> >(), "parse only and output GraphViz dot file")
+        ("gc-threshold", po::value<long long>(), gcOptionHelp.c_str())
     ;
 
     po::positional_options_description pos;
@@ -336,6 +347,23 @@ int main(int argc, const char* argv[])
         modulePaths.insert(modulePaths.end(), cliPaths.begin(), cliPaths.end());
     }
 
+
+    if (vmap.count("gc-threshold")) {
+        long long thresholdKb = vmap["gc-threshold"].as<long long>();
+        if (thresholdKb < 0) {
+            std::cerr << "Error: --gc-threshold must be non-negative" << std::endl;
+            return 1;
+        }
+
+        const std::uint64_t maxThresholdKb = std::numeric_limits<std::uint64_t>::max() / 1024ull;
+        const std::uint64_t thresholdKbUnsigned = static_cast<std::uint64_t>(thresholdKb);
+        if (thresholdKbUnsigned > maxThresholdKb) {
+            std::cerr << "Error: --gc-threshold value is too large" << std::endl;
+            return 1;
+        }
+
+        SimpleMarkSweepGC::instance().setAutoTriggerThreshold(thresholdKbUnsigned * 1024ull);
+    }
 
     if (vmap.count("execute")) {
         bool outputBytecodeDisassembly = (vmap.count("dis") > 0);

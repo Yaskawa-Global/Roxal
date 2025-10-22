@@ -9,6 +9,7 @@
 #include <dlfcn.h>
 #include <future>
 #include <vector>
+#include <core/AST.h>
 
 #include <core/types.h>
 #include "VM.h"
@@ -24,7 +25,22 @@ using namespace roxal;
 
 atomic_vector<Obj*> Obj::unrefedObjs {};
 
-#include <core/AST.h>
+void Obj::decRef()
+{
+    auto prevCount = control->strong.fetch_sub(1, std::memory_order_relaxed);
+    if (prevCount <= 1) {
+        if (!control->collecting.exchange(true, std::memory_order_relaxed)) {
+            if (SimpleMarkSweepGC::instance().isCollectionInProgress()) {
+                dropReferences();
+            }
+            control->obj = nullptr;
+            unrefedObjs.push_back(this);
+            SimpleMarkSweepGC::instance().notifyCleanupPending();
+        }
+    }
+}
+
+
 
 namespace {
 
@@ -1645,6 +1661,15 @@ void ObjFunction::dropReferences()
     ownerType = Value::nilVal();
     moduleType = Value::nilVal();
 
+    if (chunk) {
+        // Constants can hold strong refs to other objects. Clear them here so
+        // they decRef while the chunk is still intact instead of during the
+        // destructor after the pointed-to objects may already have been freed.
+        chunk->code.clear();
+        chunk->constants.clear();
+        chunk.reset();
+    }
+
     nativeDefaults.clear();
     paramDefaultFunc.clear();
 }
@@ -2895,7 +2920,11 @@ void ObjFunction::clear()
     strict = false;
     ownerType = Value::nilVal();
     moduleType = Value::nilVal();
-    chunk.reset();
+    if (chunk) {
+        chunk->code.clear();
+        chunk->constants.clear();
+        chunk.reset();
+    }
     paramDefaultFunc.clear();
     if (nativeSpec) {
         delete static_cast<FFIWrapper*>(nativeSpec);
