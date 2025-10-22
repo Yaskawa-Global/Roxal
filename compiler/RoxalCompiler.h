@@ -72,9 +72,12 @@ public:
         std::string modulePathRoot; // which module search path root is the module in? (from moduleRootPaths)
         icu::UnicodeString packagePath; // package path of the module
         icu::UnicodeString name;    // name of the module
-        bool isPackage;
+        bool isPackage{false};
         std::string filename;       // filename of the module (e.g. with .rox extension)
         bool invalidFolder{false};  // folder existed but didn't contain init.rox or a single .rox file
+        std::string absolutePath;   // canonical absolute path to the module source file
+        std::string cachePath;      // canonical absolute path to the module cache file
+        bool cacheValid{false};     // true if cachePath exists and is newer than the source file
 
         // FIXME: make members protected, cache hashCode
 

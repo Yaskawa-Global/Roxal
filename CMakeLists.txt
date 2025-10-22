@@ -107,6 +107,7 @@ set(COMPILER_SOURCES
     compiler/Object.cpp
     compiler/FFI.cpp
     compiler/RoxalCompiler.cpp
+    compiler/ModuleCache.cpp
     compiler/RoxalIndentationLexer.cpp
     compiler/TypeDeducer.cpp
     compiler/Value.cpp

@@ -30,6 +30,9 @@
 *.exe
 *.app
 
+# Roxal compiled cache files
+*.roc
+
 # Build directories
 build/
 compiler/cpp-gen/

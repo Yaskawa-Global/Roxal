@@ -11,6 +11,7 @@
 #include "Error.h"
 
 #include "RoxalCompiler.h"
+#include "ModuleCache.h"
 
 using namespace roxal;
 using namespace roxal::ast;
@@ -263,11 +264,27 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 
     std::string absoluteModuleFilePath;
     if (!builtinModule) {
-        absoluteModuleFilePath = std::filesystem::canonical(std::filesystem::absolute(
-            module.modulePathRoot + "/" + toUTF8StdString(module.packagePath) + '/' + module.filename));
+        if (!module.absolutePath.empty()) {
+            absoluteModuleFilePath = module.absolutePath;
+        } else {
+            try {
+                auto resolved = std::filesystem::canonical(std::filesystem::absolute(
+                    module.modulePathRoot + "/" + toUTF8StdString(module.packagePath) + '/' + module.filename));
+                absoluteModuleFilePath = resolved.string();
+                module.absolutePath = absoluteModuleFilePath;
+            } catch (...) {
+                absoluteModuleFilePath.clear();
+            }
+        }
 
-        // extra check the module file exists
-        if (!std::filesystem::exists(std::filesystem::path(absoluteModuleFilePath))) {
+        if (!absoluteModuleFilePath.empty() && module.cachePath.empty()) {
+            std::filesystem::path cacheCandidate{absoluteModuleFilePath};
+            cacheCandidate.replace_extension(".roc");
+            module.cachePath = cacheCandidate.string();
+        }
+
+        if (absoluteModuleFilePath.empty() ||
+            !std::filesystem::exists(std::filesystem::path(absoluteModuleFilePath))) {
             error("import file '"+toUTF8StdString(module.packagePath) + '/' + module.filename+"' not found.");
             return {};
         }
@@ -286,45 +303,58 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
             importedModuleType = VM::instance().getBuiltinModule(module.name);
             importedModules[module] = importedModuleType;
         } else {
-            // compile it, emit code to execute it
-            std::ifstream sourcestream(absoluteModuleFilePath);
-
             Value function { Value::nilVal() }; // ObjFunction
             bool prevRepl = replModeFlag;
+            std::filesystem::path moduleSourcePath{absoluteModuleFilePath};
+            std::filesystem::path moduleCachePath{module.cachePath};
 
-            try {
-                replModeFlag = false; // don't auto-print expressions when compiling imported module
-                function = compile(sourcestream,
-                                   !absoluteModuleFilePath.empty() ?
-                                          absoluteModuleFilePath
-                                        : toUTF8StdString(module.name)
-                                  );
-                replModeFlag = prevRepl;
-
-                importedModuleType = asFunction(function)->moduleType;
-
-                // emit code to place module's main chunk on stack as closure
-                assert(asFunction(function)->upvalueCount == 0);
-                {
-                    uint16_t constIdx = makeConstant(function);
-                    emitOpArgsBytes(OpCode::Closure, constIdx);
+            if (module.cacheValid && !module.cachePath.empty()) {
+                auto cached = loadModuleCache(moduleCachePath, moduleSourcePath);
+                if (cached.has_value()) {
+                    function = cached.value();
                 }
-
-                // call it to have it executed (which will result in module vars being declared)
-                CallSpec callSpec {};
-                callSpec.allPositional = true;
-                callSpec.argCount = 0;
-                auto bytes = callSpec.toBytes();
-                assert(bytes.size()==1);
-                emitBytes(OpCode::Call, bytes[0]);
-
-                importedModules[module] = importedModuleType;
-
-            } catch (std::exception& e) {
-                replModeFlag = prevRepl;
-                error(e.what());
-                return {};
             }
+
+            if (function.isNil()) {
+                std::ifstream sourcestream(absoluteModuleFilePath);
+
+                try {
+                    replModeFlag = false; // don't auto-print expressions when compiling imported module
+                    function = compile(sourcestream,
+                                       !absoluteModuleFilePath.empty() ?
+                                              absoluteModuleFilePath
+                                            : toUTF8StdString(module.name)
+                                      );
+                    replModeFlag = prevRepl;
+
+                    if (!module.cachePath.empty()) {
+                        writeModuleCache(moduleCachePath, moduleSourcePath, function);
+                    }
+                } catch (std::exception& e) {
+                    replModeFlag = prevRepl;
+                    error(e.what());
+                    return {};
+                }
+            }
+
+            importedModuleType = asFunction(function)->moduleType;
+
+            // emit code to place module's main chunk on stack as closure
+            assert(asFunction(function)->upvalueCount == 0);
+            {
+                uint16_t constIdx = makeConstant(function);
+                emitOpArgsBytes(OpCode::Closure, constIdx);
+            }
+
+            // call it to have it executed (which will result in module vars being declared)
+            CallSpec callSpec {};
+            callSpec.allPositional = true;
+            callSpec.argCount = 0;
+            auto bytes = callSpec.toBytes();
+            assert(bytes.size()==1);
+            emitBytes(OpCode::Call, bytes[0]);
+
+            importedModules[module] = importedModuleType;
         }
     } else { // already previously imported
         importedModuleType = importedEntry->second;
@@ -2095,6 +2125,24 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
             }
         } catch (...) { }
     }
+
+    try {
+        auto canonicalPath = std::filesystem::canonical(path);
+        module.absolutePath = canonicalPath.string();
+
+        auto cachePath = canonicalPath;
+        cachePath.replace_extension(".roc");
+        module.cachePath = cachePath.string();
+
+        if (isModuleCacheUpToDate(canonicalPath, cachePath)) {
+            module.cacheValid = true;
+        }
+    } catch (...) {
+        module.absolutePath.clear();
+        module.cachePath.clear();
+        module.cacheValid = false;
+    }
+
     return module;
 }
 
@@ -2889,7 +2937,10 @@ std::ostream& roxal::operator<<(std::ostream& out, const RoxalCompiler::ModuleIn
         << "name: " << toUTF8StdString(mi.name) << ", "
         << "isPackage: " << (mi.isPackage ? "true" : "false") << ", "
         << "filename: " << mi.filename << ", "
-        << "invalidFolder: " << (mi.invalidFolder ? "true" : "false")
+        << "invalidFolder: " << (mi.invalidFolder ? "true" : "false") << ", "
+        << "absolutePath: " << mi.absolutePath << ", "
+        << "cachePath: " << mi.cachePath << ", "
+        << "cacheValid: " << (mi.cacheValid ? "true" : "false")
         << "}";
     return out;
 }

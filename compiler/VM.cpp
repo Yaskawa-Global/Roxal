@@ -5,7 +5,9 @@
 #include <thread>
 #include <utility>
 #include <memory>
+#include <optional>
 #include <iomanip>
+#include <system_error>
 #include <sstream>
 #include <filesystem>
 #include <map>
@@ -19,6 +21,7 @@
 #include "ASTGenerator.h"
 #include "ASTGraphviz.h"
 #include "RoxalCompiler.h"
+#include "ModuleCache.h"
 #include "dataflow/Signal.h"
 #include "dataflow/DataflowEngine.h"
 #include "dataflow/FuncNode.h"
@@ -468,15 +471,44 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
 
     runtimeErrorFlag = false;
 
-    try {
-        RoxalCompiler compiler {};
-        compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
-        compiler.setModulePaths(modulePaths);
+    std::optional<std::filesystem::path> canonicalSourcePath;
+    std::filesystem::path moduleCachePath;
 
-        function = compiler.compile(source, name);
+    if (!name.empty()) {
+        std::error_code ec;
+        std::filesystem::path candidate{name};
+        if (std::filesystem::exists(candidate, ec)) {
+            auto canonicalPath = std::filesystem::canonical(candidate, ec);
+            if (!ec) {
+                canonicalSourcePath = canonicalPath;
+                moduleCachePath = canonicalPath;
+                moduleCachePath.replace_extension(".roc");
 
-    } catch (std::exception& e) {
-        return InterpretResult::CompileError;
+                if (isModuleCacheUpToDate(canonicalPath, moduleCachePath)) {
+                    auto cached = loadModuleCache(moduleCachePath, canonicalPath);
+                    if (cached.has_value()) {
+                        function = cached.value();
+                    }
+                }
+            }
+        }
+    }
+
+    if (function.isNil()) {
+        try {
+            RoxalCompiler compiler {};
+            compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
+            compiler.setModulePaths(modulePaths);
+
+            function = compiler.compile(source, name);
+
+        } catch (std::exception& e) {
+            return InterpretResult::CompileError;
+        }
+
+        if (!function.isNil() && canonicalSourcePath.has_value()) {
+            writeModuleCache(moduleCachePath, *canonicalSourcePath, function);
+        }
     }
 
     if (function.isNil())
