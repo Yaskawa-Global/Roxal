@@ -2101,7 +2101,18 @@ void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
     out.write(reinterpret_cast<char*>(&len), 4);
     out.write(n.data(), len);
 
+    std::string full;
+    fullName.toUTF8String(full);
+    uint32_t fullLen = static_cast<uint32_t>(full.size());
+    out.write(reinterpret_cast<char*>(&fullLen), 4);
+    if (fullLen)
+        out.write(full.data(), fullLen);
+
     auto varsSnapshot = vars.snapshot();
+    std::unordered_map<int32_t, icu::UnicodeString> aliasLookup;
+    for (const auto& alias : moduleAliasSnapshot())
+        aliasLookup.emplace(alias.first.hashCode(), alias.second);
+
     uint32_t varCount = varsSnapshot.size();
     out.write(reinterpret_cast<char*>(&varCount), 4);
     for (const auto& entry : varsSnapshot) {
@@ -2111,6 +2122,31 @@ void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
         out.write(reinterpret_cast<char*>(&nameLen), 4);
         if (nameLen)
             out.write(varName.data(), nameLen);
+
+        uint8_t flags = 0;
+        icu::UnicodeString aliasFullName;
+        auto aliasIt = aliasLookup.find(entry.first.hashCode());
+        if (aliasIt != aliasLookup.end()) {
+            flags |= 0x1;
+            aliasFullName = aliasIt->second;
+        } else if (isModuleType(entry.second)) {
+            flags |= 0x1;
+            ObjModuleType* module = asModuleType(entry.second);
+            aliasFullName = module->fullName.isEmpty() ? module->name : module->fullName;
+        }
+
+        out.write(reinterpret_cast<char*>(&flags), 1);
+
+        if (flags & 0x1) {
+            if (aliasFullName.isEmpty())
+                aliasFullName = entry.first;
+            std::string aliasFullUtf8;
+            aliasFullName.toUTF8String(aliasFullUtf8);
+            uint32_t aliasLen = static_cast<uint32_t>(aliasFullUtf8.size());
+            out.write(reinterpret_cast<char*>(&aliasLen), 4);
+            if (aliasLen)
+                out.write(aliasFullUtf8.data(), aliasFullUtf8.size());
+        }
     }
 }
 
@@ -2123,9 +2159,20 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     if(len>0) in.read(ns.data(), len);
     name = icu::UnicodeString::fromUTF8(ns);
 
+    uint32_t fullLen = 0;
+    in.read(reinterpret_cast<char*>(&fullLen), 4);
+    std::string full(fullLen, '\0');
+    if (fullLen)
+        in.read(full.data(), fullLen);
+    if (fullLen > 0)
+        fullName = icu::UnicodeString::fromUTF8(full);
+    else
+        fullName = name;
+
     allModules.push_back(Value::objRef(this));
 
     vars.clear();
+    clearModuleAliases();
     uint32_t varCount = 0;
     in.read(reinterpret_cast<char*>(&varCount), 4);
     for (uint32_t i = 0; i < varCount; ++i) {
@@ -2136,6 +2183,20 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             in.read(name.data(), nameLen);
         icu::UnicodeString varName = icu::UnicodeString::fromUTF8(name);
         vars.store(varName, Value::nilVal(), true);
+
+        uint8_t flags = 0;
+        in.read(reinterpret_cast<char*>(&flags), 1);
+        if (flags & 0x1) {
+            uint32_t aliasLen = 0;
+            in.read(reinterpret_cast<char*>(&aliasLen), 4);
+            std::string alias(aliasLen, '\0');
+            if (aliasLen)
+                in.read(alias.data(), aliasLen);
+            icu::UnicodeString aliasFullName = icu::UnicodeString::fromUTF8(alias);
+            if (aliasFullName.isEmpty())
+                aliasFullName = varName;
+            registerModuleAlias(varName, aliasFullName);
+        }
     }
 }
 
@@ -2153,6 +2214,35 @@ void ObjModuleType::dropReferences()
         value = Value::nilVal();
     });
     vars.clear();
+    clearModuleAliases();
+}
+
+void ObjModuleType::registerModuleAlias(const icu::UnicodeString& alias,
+                                        const icu::UnicodeString& moduleFullName)
+{
+    moduleAliases.insert_or_assign(alias.hashCode(), std::make_pair(alias, moduleFullName));
+}
+
+std::vector<std::pair<icu::UnicodeString, icu::UnicodeString>> ObjModuleType::moduleAliasSnapshot() const
+{
+    std::vector<std::pair<icu::UnicodeString, icu::UnicodeString>> result;
+    result.reserve(moduleAliases.size());
+    for (const auto& entry : moduleAliases)
+        result.push_back(entry.second);
+    return result;
+}
+
+icu::UnicodeString ObjModuleType::moduleAliasFullName(const icu::UnicodeString& alias) const
+{
+    auto it = moduleAliases.find(alias.hashCode());
+    if (it != moduleAliases.end())
+        return it->second.second;
+    return icu::UnicodeString();
+}
+
+void ObjModuleType::clearModuleAliases()
+{
+    moduleAliases.clear();
 }
 void ObjectInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
@@ -3026,6 +3116,7 @@ ObjModuleType::ObjModuleType(const icu::UnicodeString& typeName)
     : name(typeName)
 {
     typeValue = ValueType::Module;
+    fullName = typeName;
 }
 
 unique_ptr<ObjModuleType, UnreleasedObj> roxal::newModuleTypeObj(const icu::UnicodeString& typeName)
