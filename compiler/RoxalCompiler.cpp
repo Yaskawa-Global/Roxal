@@ -252,15 +252,29 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
 
     ObjModuleType* moduleType = asModuleType(fn->moduleType);
 
+    auto canonicalizeModuleValue = [](const Value& moduleValue) -> Value {
+        Value strong = moduleValue.strongRef();
+        if (!isModuleType(strong))
+            return strong;
+
+        ObjModuleType* module = asModuleType(strong);
+        Value builtin = VM::instance().getBuiltinModule(module->name);
+        if (builtin.isNonNil())
+            return builtin.strongRef();
+
+        return strong;
+    };
+
     std::unordered_map<int32_t, Value> moduleValues;
-    for (const auto& constant : fn->chunk->constants) {
-        Value candidate = constant;
-        if (isFunction(candidate) && isModuleType(asFunction(candidate)->moduleType)) {
-            Value moduleValue = asFunction(candidate)->moduleType.strongRef();
+    for (auto& constant : fn->chunk->constants) {
+        if (isFunction(constant) && isModuleType(asFunction(constant)->moduleType)) {
+            Value moduleValue = canonicalizeModuleValue(asFunction(constant)->moduleType);
+            asFunction(constant)->moduleType = moduleValue.weakRef();
             ObjModuleType* imported = asModuleType(moduleValue);
             moduleValues[imported->name.hashCode()] = moduleValue;
-        } else if (isModuleType(candidate)) {
-            Value moduleValue = candidate.strongRef();
+        } else if (isModuleType(constant)) {
+            Value moduleValue = canonicalizeModuleValue(constant);
+            constant = moduleValue;
             ObjModuleType* imported = asModuleType(moduleValue);
             moduleValues[imported->name.hashCode()] = moduleValue;
         }
@@ -388,7 +402,20 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     if (!imported) {  // import it
         if (builtinModule) {
             importedModuleType = VM::instance().getBuiltinModule(module.name);
+            importedModuleType = importedModuleType.strongRef();
             importedModules[module] = importedModuleType;
+
+            if (isModuleType(importedModuleType)) {
+                bool hasConstant = false;
+                for (const auto& constant : currentChunk()->constants) {
+                    if (constant.is(importedModuleType, true)) {
+                        hasConstant = true;
+                        break;
+                    }
+                }
+                if (!hasConstant)
+                    makeConstant(importedModuleType);
+            }
         } else {
             // compile or load it, emit code to execute it
             Value function { Value::nilVal() }; // ObjFunction

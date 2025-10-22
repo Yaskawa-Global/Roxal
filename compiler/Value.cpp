@@ -2445,7 +2445,8 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                     owned = Value::moduleTypeVal(icu::UnicodeString());
                     break;
                 default:
-                    throw std::runtime_error("readValue: unsupported type object tag " + std::to_string(static_cast<int>(tv)));
+                    owned = Value::typeSpecVal(tv);
+                    break;
             }
 
             in.putback(static_cast<char>(subType));
