@@ -1298,6 +1298,59 @@ Value roxal::toType(const Value& typeSpec, Value v, bool strict)
         if (ts->typeValue == ValueType::Nil)
             return v;
 
+        if (ts->typeValue == ValueType::Enum) {
+            ObjObjectType* enumType = dynamic_cast<ObjObjectType*>(ts);
+            if (enumType == nullptr || !enumType->isEnumeration)
+                throw std::invalid_argument("toType: typeSpec is not an enumeration type");
+
+            std::function<Value(Value)> convertEnum = [&](Value source) -> Value {
+                if (isFuture(source)) {
+                    Value resolved { source };
+                    resolved.resolveFuture();
+                    return convertEnum(resolved);
+                }
+
+                if (isSignal(source)) {
+                    Value sample = asSignal(source)->signal->lastValue();
+                    return convertEnum(sample);
+                }
+
+                if (source.isEnum()) {
+                    if (source.enumTypeId() == enumType->enumTypeId)
+                        return source;
+                    throw std::invalid_argument("unable to convert value of type enum to enum");
+                }
+
+                if (isString(source)) {
+                    if (strict)
+                        throw std::invalid_argument("unable to convert value of type string to enum in strict mode");
+
+                    ObjString* str = asStringObj(source);
+                    auto it = enumType->enumLabelValues.find(str->hash);
+                    if (it != enumType->enumLabelValues.end() && it->second.first == str->s)
+                        return it->second.second;
+
+                    for (const auto& entry : enumType->enumLabelValues) {
+                        if (entry.second.first == str->s)
+                            return entry.second.second;
+                    }
+
+                    throw std::invalid_argument(
+                        "enum type '" + toUTF8StdString(enumType->name) +
+                        "' has no label '" + toUTF8StdString(str->s) + "'");
+                }
+
+                if (source.isNil())
+                    throw std::invalid_argument("unable to convert value of type nil to enum");
+
+                throw std::invalid_argument(
+                    "Type enum '" + toUTF8StdString(enumType->name) +
+                    "' conversion requires a string label (not " + source.typeName() + ").");
+            };
+
+            return convertEnum(v);
+        }
+
         if (ts->typeValue == ValueType::Object || ts->typeValue == ValueType::Actor) {
             if (v.is(typeSpec))
                 return v;
