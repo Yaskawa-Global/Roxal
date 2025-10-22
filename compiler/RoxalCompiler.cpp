@@ -22,7 +22,7 @@ using ast::Access;
 namespace {
 
 constexpr char kModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t kModuleCacheVersion = 3;
+constexpr std::uint32_t kModuleCacheVersion = 4;
 
 } // namespace
 

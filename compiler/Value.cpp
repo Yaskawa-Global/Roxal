@@ -2299,14 +2299,17 @@ void roxal::writeValue(std::ostream& out, const Value& v, roxal::ptr<Serializati
             out.write(reinterpret_cast<char*>(&val),2);
             out.write(reinterpret_cast<char*>(&id),2);
             break; }
-        case ValueType::Type:
-            if (v.isObj())
-                v.asObj()->write(out, ctx);
-            else {
+        case ValueType::Type: {
+            uint8_t isObjType = v.isObj() ? 1 : 0;
+            out.write(reinterpret_cast<char*>(&isObjType), 1);
+            if (isObjType) {
+                writeObjWithRef(v.asObj());
+            } else {
                 uint8_t tv = static_cast<uint8_t>(v.asType());
-                out.write(reinterpret_cast<char*>(&tv),1);
+                out.write(reinterpret_cast<char*>(&tv), 1);
             }
             break;
+        }
         case ValueType::String:
         case ValueType::Range:
         case ValueType::List:
@@ -2394,22 +2397,64 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             in.read(reinterpret_cast<char*>(&id),2);
             return Value::enumVal(val, id); }
         case ValueType::Type: {
-            uint8_t subType;
-            in.read(reinterpret_cast<char*>(&subType),1);
-            ValueType tv = static_cast<ValueType>(subType);
-            if (tv == ValueType::Object || tv == ValueType::Actor || tv == ValueType::Enum || tv == ValueType::Module) {
-                in.putback(static_cast<char>(subType));
-                if (tv == ValueType::Object || tv == ValueType::Actor || tv == ValueType::Enum) {
-                    Value obj { Value::objectTypeVal(icu::UnicodeString(), false, false, false) };
-                    asObjectType(obj)->read(in, ctx);
-                    return obj;
-                } else { // Module
-                    Value module { Value::objVal(::newModuleTypeObj(icu::UnicodeString())) };
-                    asModuleType(module)->read(in, ctx);
-                    return module;
-                }
+            uint8_t isObjType;
+            in.read(reinterpret_cast<char*>(&isObjType), 1);
+            if (!in)
+                throw std::runtime_error("readValue: unable to read type object discriminator");
+
+            if (isObjType == 0) {
+                uint8_t subType;
+                in.read(reinterpret_cast<char*>(&subType), 1);
+                if (!in)
+                    throw std::runtime_error("readValue: unable to read builtin type tag");
+                return Value::typeVal(static_cast<ValueType>(subType));
             }
-            return Value::typeVal(tv);
+
+            uint8_t flag;
+            in.read(reinterpret_cast<char*>(&flag), 1);
+            uint64_t id;
+            in.read(reinterpret_cast<char*>(&id), 8);
+            if (!in)
+                throw std::runtime_error("readValue: unable to read type object reference id");
+
+            if (useCtx && flag == 0) {
+                auto it = ctx->idToObj.find(id);
+                if (it == ctx->idToObj.end())
+                    throw std::runtime_error("Unknown type object ref id");
+                return Value::objRef(it->second);
+            }
+
+            uint8_t subType;
+            in.read(reinterpret_cast<char*>(&subType), 1);
+            if (!in)
+                throw std::runtime_error("readValue: unable to read type object tag");
+
+            Value owned;
+            ValueType tv = static_cast<ValueType>(subType);
+            switch (tv) {
+                case ValueType::Object:
+                    owned = Value::objectTypeVal(icu::UnicodeString(), false, false, false);
+                    break;
+                case ValueType::Actor:
+                    owned = Value::objectTypeVal(icu::UnicodeString(), true, false, false);
+                    break;
+                case ValueType::Enum:
+                    owned = Value::objectTypeVal(icu::UnicodeString(), false, false, true);
+                    break;
+                case ValueType::Module:
+                    owned = Value::moduleTypeVal(icu::UnicodeString());
+                    break;
+                default:
+                    throw std::runtime_error("readValue: unsupported type object tag " + std::to_string(static_cast<int>(tv)));
+            }
+
+            in.putback(static_cast<char>(subType));
+
+            Obj* obj = owned.asObj();
+            if (useCtx)
+                ctx->idToObj[id] = obj;
+            obj->read(in, ctx);
+            return owned;
         }
         case ValueType::String: {
             return readOwnedObject([&](){ return Value::stringVal(icu::UnicodeString()); });
