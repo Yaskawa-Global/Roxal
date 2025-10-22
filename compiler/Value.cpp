@@ -2349,6 +2349,24 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
         return Value::objRef(obj);
     };
 
+    auto readOwnedObject = [&](auto&& valueFactory) -> Value {
+        uint8_t flag; in.read(reinterpret_cast<char*>(&flag), 1);
+        uint64_t id;  in.read(reinterpret_cast<char*>(&id), 8);
+        if (useCtx && flag == 0) {
+            auto it = ctx->idToObj.find(id);
+            if (it == ctx->idToObj.end())
+                throw std::runtime_error("Unknown object ref id");
+            return Value::objRef(it->second);
+        }
+
+        Value owned = valueFactory();
+        Obj* obj = owned.asObj();
+        if (useCtx)
+            ctx->idToObj[id] = obj;
+        obj->read(in, ctx);
+        return owned;
+    };
+
     if (t == ValueType::Boxed) {
         Value boxedVal { Value::boolVal(false) };
         boxedVal.box(); // now a reference to ObjPrimitive
@@ -2394,28 +2412,22 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             return Value::typeVal(tv);
         }
         case ValueType::String: {
-            Value strVal { Value::stringVal(icu::UnicodeString()) };
-            return readObjWithRef([=](){ return static_cast<Obj*>(asStringObj(strVal)); });
+            return readOwnedObject([&](){ return Value::stringVal(icu::UnicodeString()); });
         }
         case ValueType::Range: {
-            Value rangeVal { Value::rangeVal(Value::intVal(0), Value::intVal(0), Value::intVal(1), false) };
-            return readObjWithRef([=](){ return static_cast<Obj*>(asRange(rangeVal)); });
+            return readOwnedObject([&](){ return Value::rangeVal(Value::intVal(0), Value::intVal(0), Value::intVal(1), false); });
         }
         case ValueType::List: {
-            Value listVal { Value::listVal() };
-            return readObjWithRef([=](){ return static_cast<Obj*>(asList(listVal)); });
+            return readOwnedObject([&](){ return Value::listVal(); });
         }
         case ValueType::Dict: {
-            Value dictVal { Value::dictVal() };
-            return readObjWithRef([=](){ return static_cast<Obj*>(asDict(dictVal)); });
+            return readOwnedObject([&](){ return Value::dictVal(); });
         }
         case ValueType::Vector: {
-            Value vecVal { Value::vectorVal() };
-            return readObjWithRef([=](){ return static_cast<Obj*>(asVector(vecVal)); });
+            return readOwnedObject([&](){ return Value::vectorVal(); });
         }
         case ValueType::Matrix: {
-            Value matVal { Value::matrixVal() };
-            return readObjWithRef([=](){ return static_cast<Obj*>(asMatrix(matVal)); });
+            return readOwnedObject([&](){ return Value::matrixVal(); });
         }
         case ValueType::Object: {
             uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
@@ -2470,17 +2482,18 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             return objVal;
         }
         case ValueType::Function: {
-            Value func { Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString()) };
-            return readObjWithRef([=](){ return static_cast<Obj*>(asFunction(func)); });
+            return readOwnedObject([&](){
+                return Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+            });
         }
         case ValueType::Closure: {
-            Value func { Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString()) };
-            Value closure { Value::closureVal(func) };
-            return readObjWithRef([=](){ return static_cast<Obj*>(asClosure(closure)); });
+            return readOwnedObject([&](){
+                Value func { Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString()) };
+                return Value::closureVal(func);
+            });
         }
         case ValueType::Upvalue: {
-            Value upvalue { Value::upvalueVal(nullptr) };
-            return readObjWithRef([=](){ return static_cast<Obj*>(asUpvalue(upvalue)); });
+            return readOwnedObject([&](){ return Value::upvalueVal(nullptr); });
         }
         default:
             throw std::runtime_error("readValue: unsupported type " + std::to_string(static_cast<int>(t)));
