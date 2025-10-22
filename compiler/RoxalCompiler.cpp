@@ -3,6 +3,9 @@
 
 #include <core/common.h>
 
+#include <cstdint>
+#include <fstream>
+
 #include "Object.h"
 
 #include "ASTGenerator.h"
@@ -15,6 +18,13 @@
 using namespace roxal;
 using namespace roxal::ast;
 using ast::Access;
+
+namespace {
+
+constexpr char kModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
+constexpr std::uint32_t kModuleCacheVersion = 1;
+
+} // namespace
 
 
 
@@ -263,11 +273,15 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 
     std::string absoluteModuleFilePath;
     if (!builtinModule) {
-        absoluteModuleFilePath = std::filesystem::canonical(std::filesystem::absolute(
-            module.modulePathRoot + "/" + toUTF8StdString(module.packagePath) + '/' + module.filename));
+        if (!module.resolvedPath.empty()) {
+            absoluteModuleFilePath = module.resolvedPath.string();
+        } else {
+            absoluteModuleFilePath = std::filesystem::canonical(std::filesystem::absolute(
+                module.modulePathRoot + "/" + toUTF8StdString(module.packagePath) + '/' + module.filename));
+        }
 
         // extra check the module file exists
-        if (!std::filesystem::exists(std::filesystem::path(absoluteModuleFilePath))) {
+        if (absoluteModuleFilePath.empty() || !std::filesystem::exists(std::filesystem::path(absoluteModuleFilePath))) {
             error("import file '"+toUTF8StdString(module.packagePath) + '/' + module.filename+"' not found.");
             return {};
         }
@@ -286,19 +300,32 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
             importedModuleType = VM::instance().getBuiltinModule(module.name);
             importedModules[module] = importedModuleType;
         } else {
-            // compile it, emit code to execute it
-            std::ifstream sourcestream(absoluteModuleFilePath);
-
+            // compile or load it, emit code to execute it
             Value function { Value::nilVal() }; // ObjFunction
             bool prevRepl = replModeFlag;
+            bool loadedFromCache = false;
 
             try {
-                replModeFlag = false; // don't auto-print expressions when compiling imported module
-                function = compile(sourcestream,
-                                   !absoluteModuleFilePath.empty() ?
-                                          absoluteModuleFilePath
-                                        : toUTF8StdString(module.name)
-                                  );
+                if (module.cacheValid)
+                    function = loadModuleFromCache(module);
+
+                if (function.isNonNil())
+                    loadedFromCache = true;
+
+                if (!loadedFromCache) {
+                    std::ifstream sourcestream(absoluteModuleFilePath);
+                    if (!sourcestream.is_open())
+                        throw std::runtime_error("unable to open module source: " + absoluteModuleFilePath);
+
+                    replModeFlag = false; // don't auto-print expressions when compiling imported module
+                    function = compile(sourcestream,
+                                       !absoluteModuleFilePath.empty() ?
+                                              absoluteModuleFilePath
+                                            : toUTF8StdString(module.name)
+                                      );
+                    storeModuleCache(module, function);
+                }
+
                 replModeFlag = prevRepl;
 
                 importedModuleType = asFunction(function)->moduleType;
@@ -2095,7 +2122,77 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
             }
         } catch (...) { }
     }
+
+    try {
+        module.resolvedPath = std::filesystem::canonical(path);
+        module.cachePath = module.resolvedPath;
+        module.cachePath.replace_extension(".roc");
+
+        if (std::filesystem::exists(module.cachePath)) {
+            auto sourceTime = std::filesystem::last_write_time(module.resolvedPath);
+            auto cacheTime = std::filesystem::last_write_time(module.cachePath);
+            if (cacheTime >= sourceTime)
+                module.cacheValid = true;
+        }
+    } catch (...) {
+        module.cacheValid = false;
+        module.cachePath.clear();
+    }
+
     return module;
+}
+
+Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module) const
+{
+    if (module.cachePath.empty())
+        return Value::nilVal();
+
+    try {
+        std::ifstream cacheStream(module.cachePath, std::ios::binary);
+        if (!cacheStream.is_open())
+            return Value::nilVal();
+
+        char magic[4];
+        cacheStream.read(magic, sizeof(magic));
+        if (!cacheStream || magic[0] != kModuleCacheMagic[0] ||
+            magic[1] != kModuleCacheMagic[1] ||
+            magic[2] != kModuleCacheMagic[2] ||
+            magic[3] != kModuleCacheMagic[3])
+            return Value::nilVal();
+
+        std::uint32_t version = 0;
+        cacheStream.read(reinterpret_cast<char*>(&version), sizeof(version));
+        if (!cacheStream || version != kModuleCacheVersion)
+            return Value::nilVal();
+
+        auto ctx = ptr<SerializationContext>::from_raw(new SerializationContext());
+        Value value = readValue(cacheStream, ctx);
+        if (!isFunction(value))
+            return Value::nilVal();
+        return value;
+    } catch (...) {
+        return Value::nilVal();
+    }
+}
+
+void RoxalCompiler::storeModuleCache(const ModuleInfo& module, const Value& function) const
+{
+    if (module.cachePath.empty() || function.isNil() || !isFunction(function))
+        return;
+
+    try {
+        std::ofstream cacheStream(module.cachePath, std::ios::binary | std::ios::trunc);
+        if (!cacheStream.is_open())
+            return;
+
+        cacheStream.write(kModuleCacheMagic, sizeof(kModuleCacheMagic));
+        cacheStream.write(reinterpret_cast<const char*>(&kModuleCacheVersion), sizeof(kModuleCacheVersion));
+
+        auto ctx = ptr<SerializationContext>::from_raw(new SerializationContext());
+        writeValue(cacheStream, function, ctx);
+    } catch (...) {
+        // ignore cache write failures
+    }
 }
 
 

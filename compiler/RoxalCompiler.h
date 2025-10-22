@@ -4,6 +4,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <optional>
+#include <filesystem>
 
 #include <core/AST.h>
 
@@ -75,6 +76,9 @@ public:
         bool isPackage;
         std::string filename;       // filename of the module (e.g. with .rox extension)
         bool invalidFolder{false};  // folder existed but didn't contain init.rox or a single .rox file
+        std::filesystem::path resolvedPath; // canonical path to resolved .rox file
+        std::filesystem::path cachePath;    // path to compiled cache (.roc)
+        bool cacheValid{false};             // true if cache exists and is newer than source
 
         // FIXME: make members protected, cache hashCode
 
@@ -196,6 +200,9 @@ protected:
     bool inModuleScope();
     Scope moduleScope();
     Scope enclosingModuleScope(Scope s);
+
+    Value loadModuleFromCache(const ModuleInfo& module) const;
+    void storeModuleCache(const ModuleInfo& module, const Value& function) const;
 
 
     // stack new states when we enter new functions to compile
