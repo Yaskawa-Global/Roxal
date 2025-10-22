@@ -1661,6 +1661,15 @@ void ObjFunction::dropReferences()
     ownerType = Value::nilVal();
     moduleType = Value::nilVal();
 
+    if (chunk) {
+        // Constants can hold strong refs to other objects. Clear them here so
+        // they decRef while the chunk is still intact instead of during the
+        // destructor after the pointed-to objects may already have been freed.
+        chunk->code.clear();
+        chunk->constants.clear();
+        chunk.reset();
+    }
+
     nativeDefaults.clear();
     paramDefaultFunc.clear();
 }
@@ -2911,7 +2920,11 @@ void ObjFunction::clear()
     strict = false;
     ownerType = Value::nilVal();
     moduleType = Value::nilVal();
-    chunk.reset();
+    if (chunk) {
+        chunk->code.clear();
+        chunk->constants.clear();
+        chunk.reset();
+    }
     paramDefaultFunc.clear();
     if (nativeSpec) {
         delete static_cast<FFIWrapper*>(nativeSpec);
