@@ -1230,8 +1230,19 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     #endif
     enterLocalScope();
 
-    // declare a local for the loop index
+    // declare locals for the iterable, its length, and the loop index
+    icu::UnicodeString iterableName = "__iterable__";
+    icu::UnicodeString lenName = "__len__";
     icu::UnicodeString iname = "__index__";
+
+    declareVariable(iterableName);
+    emitByte(OpCode::ConstNil);
+    defineVariable();
+
+    declareVariable(lenName);
+    emitByte(OpCode::ConstNil);
+    defineVariable();
+
     declareVariable(iname);
     emitByte(OpCode::ConstInt0);
     defineVariable();
@@ -1282,13 +1293,17 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     else if (numTargets >= 2)
         emitByte(OpCode::IfDictToItems);
 
+    // store the iterable in a synthetic local
+    namedVariable(iterableName, /*assign=*/true);
+    emitByte(OpCode::Pop, "__iterable__ value");
+
     // compute the length of the iterable
 
     // first find built-in global "len" function
     namedModuleVariable("len");
 
-    // dup the iterable as arg for len
-    emitByte(OpCode::DupBelow);
+    // push the iterable as argument for len
+    namedVariable(iterableName);
 
     // call it
     CallSpec lenCallSpec { 1 };
@@ -1296,10 +1311,12 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     assert(lenCallSpecBytes.size() == 1);
     emitBytes(OpCode::Call, lenCallSpecBytes[0]);
 
-    // now we have stack: [iterable, len(iterable)]
+    // store len(iterable) in a synthetic local
+    namedVariable(lenName, /*assign=*/true);
+    emitByte(OpCode::Pop, "__len__ value");
 
     // check if len(iterable) == nil (e.g. for range, implies the range isn't definite)
-    emitByte(OpCode::Dup); // len
+    namedVariable(lenName);
     emitByte(OpCode::ConstNil);
     emitByte(OpCode::Equal);
     auto jumpToAbort = emitJump(OpCode::JumpIfTrue);
@@ -1312,14 +1329,14 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
 
     // check condition iname < len(iterable)
     namedVariable(iname);
-    emitByte(OpCode::DupBelow); // len
+    namedVariable(lenName);
     emitByte(OpCode::Less);
     auto jumpToExit = emitJump(OpCode::JumpIfFalse);
     emitByte(OpCode::Pop, "exit cond");
 
 
     // index the iterable via the loop index
-    emitByte(OpCode::DupBelow); // iterable
+    namedVariable(iterableName);
     namedVariable(iname);
     emitBytes(OpCode::Index, uint8_t(1)); // single index/arg indexing
 
@@ -1385,8 +1402,6 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     patchJump(jumpToExit);
     patchJump(jumpToAbort);
     emitByte(OpCode::Pop, "exit/abort cond");
-
-    emitBytes(OpCode::PopN, uint8_t(2), "iterable & len"); // discard the iterable & it's length (necessary?)
 
     exitLocalScope();
 
