@@ -32,6 +32,8 @@ public:
     void setOutputBytecodeDisassembly(bool outputBytecodeDisassembly);
     void setModulePaths(const std::vector<std::string>& modulePaths);
     void setReplMode(bool replMode);
+    void setCacheReadEnabled(bool enabled);
+    void setCacheWriteEnabled(bool enabled);
     bool replMode() const { return replModeFlag; }
 
     virtual TraversalOrder traversalOrder() const;
@@ -106,6 +108,8 @@ protected:
     bool outputBytecodeDisassembly;
     bool replModeFlag{false};
     std::vector<std::string> modulePaths;
+    bool cacheReadEnabled;
+    bool cacheWriteEnabled;
 
     std::map<ModuleInfo,Value> importedModules;
 

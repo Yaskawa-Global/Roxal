@@ -74,6 +74,12 @@ public:
     friend class ModuleSys;
     friend class SimpleMarkSweepGC;
 
+    enum class CacheMode {
+        Normal,
+        NoCache,
+        Recompile
+    };
+
     static VM& instance()
     {
         static VM instance; // Guaranteed to be destroyed.
@@ -86,6 +92,10 @@ public:
 
     void setDisassemblyOutput(bool outputBytecodeDisassembly);
     void appendModulePaths(const std::vector<std::string>& modulePaths);
+    void setCacheMode(CacheMode mode);
+    CacheMode cacheMode() const { return cacheModeSetting; }
+    bool cacheReadsEnabled() const;
+    bool cacheWritesEnabled() const;
 
     Value getBuiltinModule(const icu::UnicodeString& name);
     std::optional<Value> loadGlobal(const icu::UnicodeString& name) { return globals.load(name); }
@@ -187,6 +197,8 @@ protected:
     std::istream* lineStream;
 
     std::vector<std::string> modulePaths {};
+
+    CacheMode cacheModeSetting;
 
     atomic_unordered_map<uint64_t, ptr<Thread>> threads;
 

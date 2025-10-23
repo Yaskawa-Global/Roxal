@@ -299,6 +299,8 @@ int main(int argc, const char* argv[])
         ("input-file,f", po::value< std::vector<std::string> >(), "input .rox file to execute (run)")
         ("module-paths,p", po::value< std::vector<std::string> >(), "module search paths")
         ("execute,e", po::value<std::string>(), "execute code supplied as a string")
+        ("nocache", "disable reading and writing .roc cache files")
+        ("recompile", "ignore existing .roc cache files but write new ones")
         ("dis", "output dissasembly of VM bytecodes during compilation")
         ("ast", "parse only and output text Abstract Syntax Tree (AST)")
         ("astgraph", po::value< std::vector<std::string> >(), "parse only and output GraphViz dot file")
@@ -347,6 +349,14 @@ int main(int argc, const char* argv[])
         modulePaths.insert(modulePaths.end(), cliPaths.begin(), cliPaths.end());
     }
 
+    const bool disableCache = vmap.count("nocache") > 0;
+    const bool forceRecompile = (!disableCache) && vmap.count("recompile") > 0;
+    VM::CacheMode cacheMode = VM::CacheMode::Normal;
+    if (disableCache)
+        cacheMode = VM::CacheMode::NoCache;
+    else if (forceRecompile)
+        cacheMode = VM::CacheMode::Recompile;
+
 
     if (vmap.count("gc-threshold")) {
         long long thresholdKb = vmap["gc-threshold"].as<long long>();
@@ -366,6 +376,7 @@ int main(int argc, const char* argv[])
     }
 
     if (vmap.count("execute")) {
+        VM::instance().setCacheMode(cacheMode);
         bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
         InterpretResult res =
             runString(vmap["execute"].as<std::string>(), modulePaths,
@@ -376,7 +387,9 @@ int main(int argc, const char* argv[])
             return 1;
     }
     else if (vmap.count("input-file") == 0) {
-        VM::instance().appendModulePaths(modulePaths);
+        VM& vm = VM::instance();
+        vm.setCacheMode(cacheMode);
+        vm.appendModulePaths(modulePaths);
         int rc = repl();
         if (VM::instance().isExitRequested())
             return rc;
@@ -392,6 +405,7 @@ int main(int argc, const char* argv[])
                 generateAST(filename, true, vmap["astgraph"].as<std::vector<std::string>>().at(0));
             else {
                 bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
+                VM::instance().setCacheMode(cacheMode);
                 InterpretResult res =
                     runFile(filename, modulePaths, outputBytecodeDisassembly);
                 if (VM::instance().isExitRequested())

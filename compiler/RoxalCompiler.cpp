@@ -85,6 +85,8 @@ ptr<C> as(ptr<AST> p) {
 
 RoxalCompiler::RoxalCompiler()
     : outputBytecodeDisassembly(false)
+    , cacheReadEnabled(true)
+    , cacheWriteEnabled(true)
 {}
 
 
@@ -212,6 +214,9 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
 
 Value RoxalCompiler::loadFileCache(const std::filesystem::path& sourcePath) const
 {
+    if (!cacheReadEnabled)
+        return Value::nilVal();
+
     if (sourcePath.empty())
         return Value::nilVal();
 
@@ -244,7 +249,7 @@ Value RoxalCompiler::loadFileCache(const std::filesystem::path& sourcePath) cons
 
 void RoxalCompiler::storeFileCache(const std::filesystem::path& sourcePath, const Value& function) const
 {
-    if (function.isNil() || !isFunction(function))
+    if (!cacheWriteEnabled || function.isNil() || !isFunction(function))
         return;
 
     try {
@@ -477,6 +482,16 @@ void RoxalCompiler::setModulePaths(const std::vector<std::string>& modulePaths)
 void RoxalCompiler::setReplMode(bool replMode)
 {
     this->replModeFlag = replMode;
+}
+
+void RoxalCompiler::setCacheReadEnabled(bool enabled)
+{
+    cacheReadEnabled = enabled;
+}
+
+void RoxalCompiler::setCacheWriteEnabled(bool enabled)
+{
+    cacheWriteEnabled = enabled;
 }
 
 
@@ -2440,7 +2455,7 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
         module.cachePath = module.resolvedPath;
         module.cachePath.replace_extension(".roc");
 
-        if (std::filesystem::exists(module.cachePath)) {
+        if (cacheReadEnabled && std::filesystem::exists(module.cachePath)) {
             auto sourceTime = std::filesystem::last_write_time(module.resolvedPath);
             auto cacheTime = std::filesystem::last_write_time(module.cachePath);
             if (cacheTime >= sourceTime)
@@ -2456,7 +2471,7 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
 
 Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module) const
 {
-    if (module.cachePath.empty())
+    if (!cacheReadEnabled || module.cachePath.empty())
         return Value::nilVal();
 
     try {
@@ -2490,7 +2505,7 @@ Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module) const
 
 void RoxalCompiler::storeModuleCache(const ModuleInfo& module, const Value& function) const
 {
-    if (module.cachePath.empty() || function.isNil() || !isFunction(function))
+    if (!cacheWriteEnabled || module.cachePath.empty() || function.isNil() || !isFunction(function))
         return;
 
     try {

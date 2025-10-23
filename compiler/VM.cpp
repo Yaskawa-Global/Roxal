@@ -233,6 +233,7 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when)
 
 VM::VM()
     : lineMode(false)
+    , cacheModeSetting(CacheMode::Normal)
 {
     SimpleMarkSweepGC::instance().setVM(this);
 
@@ -459,6 +460,21 @@ void VM::appendModulePaths(const std::vector<std::string>& modulePaths)
     }
 }
 
+void VM::setCacheMode(CacheMode mode)
+{
+    cacheModeSetting = mode;
+}
+
+bool VM::cacheReadsEnabled() const
+{
+    return cacheModeSetting == CacheMode::Normal;
+}
+
+bool VM::cacheWritesEnabled() const
+{
+    return cacheModeSetting != CacheMode::NoCache;
+}
+
 
 
 
@@ -471,6 +487,8 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
     try {
         RoxalCompiler compiler {};
         compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
+        compiler.setCacheReadEnabled(cacheReadsEnabled());
+        compiler.setCacheWriteEnabled(cacheWritesEnabled());
         compiler.setModulePaths(modulePaths);
 
         std::filesystem::path cacheSourcePath;
@@ -553,6 +571,8 @@ InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
     static RoxalCompiler compiler {};
     static Value replModule { Value::nilVal() };
     compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
+    compiler.setCacheReadEnabled(cacheReadsEnabled());
+    compiler.setCacheWriteEnabled(cacheWritesEnabled());
     compiler.setModulePaths(modulePaths);
     compiler.setReplMode(replMode);
 
@@ -4729,6 +4749,8 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
 
     RoxalCompiler compiler;
     compiler.setOutputBytecodeDisassembly(false);
+    compiler.setCacheReadEnabled(cacheReadsEnabled());
+    compiler.setCacheWriteEnabled(cacheWritesEnabled());
     compiler.setModulePaths(modulePaths);
 
     Value fn = compiler.compile(in, path, moduleType);
