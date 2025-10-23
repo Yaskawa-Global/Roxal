@@ -548,6 +548,8 @@ The functions in the sys module are always globally available (- as if `import s
 * `deserialize(bytes, protocol='default')` - deserialize bytes using protocol
 * `toJson(value, indent=true)` - convert value to a JSON string
 * `fromJson(json)` - parse JSON string into a value
+* `Time` - timestamp object; use `Time.wall_now(tz='local')`, `Time.steady_now()`, or `Time.parse(...)` to construct and call instance methods like `format(...)`, `components(...)`, `diff(other)`, `seconds()`, and `microseconds()`
+* `TimeSpan` - duration object; construct via `TimeSpan(...)` or `TimeSpan.from_fields(...)`, query parts with `split()`, `seconds()`, `microseconds()`, and totals such as `total_seconds()` or `human()`
 * `clock(freq)` - create a clock signal at `freq`
 * `signal(freq, initial)` - create a source signal
 * `typeof(value)` - return the type of `value`

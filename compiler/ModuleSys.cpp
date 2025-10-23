@@ -27,11 +27,11 @@ using namespace roxal;
 
 namespace {
 
-constexpr int64_t kMicrosPerSecond = 1'000'000;
-constexpr int64_t kMicrosPerMillisecond = 1'000;
-constexpr int64_t kMicrosPerMinute = 60 * kMicrosPerSecond;
-constexpr int64_t kMicrosPerHour = 60 * kMicrosPerMinute;
-constexpr int64_t kMicrosPerDay = 24 * kMicrosPerHour;
+constexpr int64_t MICROS_PER_SECOND = 1'000'000;
+constexpr int64_t MICROS_PER_MILLISECOND = 1'000;
+constexpr int64_t MICROS_PER_MINUTE = 60 * MICROS_PER_SECOND;
+constexpr int64_t MICROS_PER_HOUR = 60 * MICROS_PER_MINUTE;
+constexpr int64_t MICROS_PER_DAY = 24 * MICROS_PER_HOUR;
 
 struct NormalizedParts {
     int32_t seconds;
@@ -40,10 +40,10 @@ struct NormalizedParts {
 
 NormalizedParts normalizeMicros(int64_t totalMicros)
 {
-    int64_t seconds = totalMicros / kMicrosPerSecond;
-    int64_t micros = totalMicros % kMicrosPerSecond;
+    int64_t seconds = totalMicros / MICROS_PER_SECOND;
+    int64_t micros = totalMicros % MICROS_PER_SECOND;
     if (micros < 0) {
-        micros += kMicrosPerSecond;
+        micros += MICROS_PER_SECOND;
         --seconds;
     }
     if (seconds < std::numeric_limits<int32_t>::min() ||
@@ -66,11 +66,11 @@ int64_t durationFromFields(int days, int hours, int minutes, int seconds,
                            int millis, int micros)
 {
     int64_t total = 0;
-    total = addChecked(total, static_cast<int64_t>(days) * kMicrosPerDay);
-    total = addChecked(total, static_cast<int64_t>(hours) * kMicrosPerHour);
-    total = addChecked(total, static_cast<int64_t>(minutes) * kMicrosPerMinute);
-    total = addChecked(total, static_cast<int64_t>(seconds) * kMicrosPerSecond);
-    total = addChecked(total, static_cast<int64_t>(millis) * kMicrosPerMillisecond);
+    total = addChecked(total, static_cast<int64_t>(days) * MICROS_PER_DAY);
+    total = addChecked(total, static_cast<int64_t>(hours) * MICROS_PER_HOUR);
+    total = addChecked(total, static_cast<int64_t>(minutes) * MICROS_PER_MINUTE);
+    total = addChecked(total, static_cast<int64_t>(seconds) * MICROS_PER_SECOND);
+    total = addChecked(total, static_cast<int64_t>(millis) * MICROS_PER_MILLISECOND);
     total = addChecked(total, static_cast<int64_t>(micros));
     return total;
 }
@@ -225,7 +225,7 @@ int64_t parseWallTime(const std::string& text, const std::string& format, ClockZ
         ? timegm_compat(&tmCopy)
         : std::mktime(&tmCopy);
 
-    int64_t totalMicros = static_cast<int64_t>(seconds) * kMicrosPerSecond + micros;
+    int64_t totalMicros = static_cast<int64_t>(seconds) * MICROS_PER_SECOND + micros;
     return totalMicros;
 }
 
@@ -275,7 +275,7 @@ int64_t timeTotalMicros(ObjectInstance* inst)
 {
     int64_t seconds = readIntProperty(inst, "_seconds");
     int64_t micros = readIntProperty(inst, "_micros");
-    return seconds * kMicrosPerSecond + micros;
+    return seconds * MICROS_PER_SECOND + micros;
 }
 
 bool timeIsSteady(ObjectInstance* inst)
@@ -287,7 +287,7 @@ int64_t spanTotalMicros(ObjectInstance* inst)
 {
     int64_t seconds = readIntProperty(inst, "_seconds");
     int64_t micros = readIntProperty(inst, "_micros");
-    return seconds * kMicrosPerSecond + micros;
+    return seconds * MICROS_PER_SECOND + micros;
 }
 
 void assignTime(ObjectInstance* inst, int64_t totalMicros, bool steady)
@@ -1355,16 +1355,16 @@ Value ModuleSys::timespan_split_native(VM& vm, ArgsView args)
     bool negative = total < 0;
     int64_t remaining = negative ? -total : total;
 
-    int32_t days = static_cast<int32_t>(remaining / kMicrosPerDay);
-    remaining %= kMicrosPerDay;
-    int32_t hours = static_cast<int32_t>(remaining / kMicrosPerHour);
-    remaining %= kMicrosPerHour;
-    int32_t minutes = static_cast<int32_t>(remaining / kMicrosPerMinute);
-    remaining %= kMicrosPerMinute;
-    int32_t seconds = static_cast<int32_t>(remaining / kMicrosPerSecond);
-    remaining %= kMicrosPerSecond;
-    int32_t millis = static_cast<int32_t>(remaining / kMicrosPerMillisecond);
-    int32_t micros = static_cast<int32_t>(remaining % kMicrosPerMillisecond);
+    int32_t days = static_cast<int32_t>(remaining / MICROS_PER_DAY);
+    remaining %= MICROS_PER_DAY;
+    int32_t hours = static_cast<int32_t>(remaining / MICROS_PER_HOUR);
+    remaining %= MICROS_PER_HOUR;
+    int32_t minutes = static_cast<int32_t>(remaining / MICROS_PER_MINUTE);
+    remaining %= MICROS_PER_MINUTE;
+    int32_t seconds = static_cast<int32_t>(remaining / MICROS_PER_SECOND);
+    remaining %= MICROS_PER_SECOND;
+    int32_t millis = static_cast<int32_t>(remaining / MICROS_PER_MILLISECOND);
+    int32_t micros = static_cast<int32_t>(remaining % MICROS_PER_MILLISECOND);
 
     Value dict { Value::dictVal() };
     auto* d = asDict(dict);
@@ -1385,7 +1385,7 @@ Value ModuleSys::timespan_total_days_native(VM& vm, ArgsView args)
         throw std::invalid_argument("TimeSpan.total_days expects no arguments");
 
     ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.total_days", "TimeSpan");
-    return Value::realVal(static_cast<double>(spanTotalMicros(inst)) / static_cast<double>(kMicrosPerDay));
+    return Value::realVal(static_cast<double>(spanTotalMicros(inst)) / static_cast<double>(MICROS_PER_DAY));
 }
 
 Value ModuleSys::timespan_total_hours_native(VM& vm, ArgsView args)
@@ -1394,7 +1394,7 @@ Value ModuleSys::timespan_total_hours_native(VM& vm, ArgsView args)
         throw std::invalid_argument("TimeSpan.total_hours expects no arguments");
 
     ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.total_hours", "TimeSpan");
-    return Value::realVal(static_cast<double>(spanTotalMicros(inst)) / static_cast<double>(kMicrosPerHour));
+    return Value::realVal(static_cast<double>(spanTotalMicros(inst)) / static_cast<double>(MICROS_PER_HOUR));
 }
 
 Value ModuleSys::timespan_total_minutes_native(VM& vm, ArgsView args)
@@ -1403,7 +1403,7 @@ Value ModuleSys::timespan_total_minutes_native(VM& vm, ArgsView args)
         throw std::invalid_argument("TimeSpan.total_minutes expects no arguments");
 
     ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.total_minutes", "TimeSpan");
-    return Value::realVal(static_cast<double>(spanTotalMicros(inst)) / static_cast<double>(kMicrosPerMinute));
+    return Value::realVal(static_cast<double>(spanTotalMicros(inst)) / static_cast<double>(MICROS_PER_MINUTE));
 }
 
 Value ModuleSys::timespan_total_seconds_native(VM& vm, ArgsView args)
@@ -1412,7 +1412,7 @@ Value ModuleSys::timespan_total_seconds_native(VM& vm, ArgsView args)
         throw std::invalid_argument("TimeSpan.total_seconds expects no arguments");
 
     ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.total_seconds", "TimeSpan");
-    return Value::realVal(static_cast<double>(spanTotalMicros(inst)) / static_cast<double>(kMicrosPerSecond));
+    return Value::realVal(static_cast<double>(spanTotalMicros(inst)) / static_cast<double>(MICROS_PER_SECOND));
 }
 
 Value ModuleSys::timespan_total_millis_native(VM& vm, ArgsView args)
@@ -1421,7 +1421,7 @@ Value ModuleSys::timespan_total_millis_native(VM& vm, ArgsView args)
         throw std::invalid_argument("TimeSpan.total_millis expects no arguments");
 
     ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.total_millis", "TimeSpan");
-    return Value::realVal(static_cast<double>(spanTotalMicros(inst)) / static_cast<double>(kMicrosPerMillisecond));
+    return Value::realVal(static_cast<double>(spanTotalMicros(inst)) / static_cast<double>(MICROS_PER_MILLISECOND));
 }
 
 Value ModuleSys::timespan_total_micros_native(VM& vm, ArgsView args)
@@ -1532,7 +1532,7 @@ Value ModuleSys::time_type_from_parts(VM& vm, ArgsView args)
     }
 
     TimeKind tk = parseKind(kind);
-    int64_t total = static_cast<int64_t>(seconds) * kMicrosPerSecond + micros;
+    int64_t total = static_cast<int64_t>(seconds) * MICROS_PER_SECOND + micros;
     return newTimeInstance(timeTypeValue, total, tk == TimeKind::Steady);
 }
 
