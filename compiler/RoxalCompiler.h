@@ -4,6 +4,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <optional>
+#include <filesystem>
 
 #include <core/AST.h>
 
@@ -24,9 +25,15 @@ public:
     Value compile(std::istream& source, const std::string& name,
                   Value existingModule = Value::nilVal());
 
+    // Attempt to load/store cached bytecode for a standalone source file (.rox)
+    Value loadFileCache(const std::filesystem::path& sourcePath) const;
+    void storeFileCache(const std::filesystem::path& sourcePath, const Value& function) const;
+
     void setOutputBytecodeDisassembly(bool outputBytecodeDisassembly);
     void setModulePaths(const std::vector<std::string>& modulePaths);
     void setReplMode(bool replMode);
+    void setCacheReadEnabled(bool enabled);
+    void setCacheWriteEnabled(bool enabled);
     bool replMode() const { return replModeFlag; }
 
     virtual TraversalOrder traversalOrder() const;
@@ -75,6 +82,9 @@ public:
         bool isPackage;
         std::string filename;       // filename of the module (e.g. with .rox extension)
         bool invalidFolder{false};  // folder existed but didn't contain init.rox or a single .rox file
+        std::filesystem::path resolvedPath; // canonical path to resolved .rox file
+        std::filesystem::path cachePath;    // path to compiled cache (.moc)
+        bool cacheValid{false};             // true if cache exists and is newer than source
 
         // FIXME: make members protected, cache hashCode
 
@@ -98,6 +108,8 @@ protected:
     bool outputBytecodeDisassembly;
     bool replModeFlag{false};
     std::vector<std::string> modulePaths;
+    bool cacheReadEnabled;
+    bool cacheWriteEnabled;
 
     std::map<ModuleInfo,Value> importedModules;
 
@@ -196,6 +208,10 @@ protected:
     bool inModuleScope();
     Scope moduleScope();
     Scope enclosingModuleScope(Scope s);
+
+    Value loadModuleFromCache(const ModuleInfo& module) const;
+    void storeModuleCache(const ModuleInfo& module, const Value& function) const;
+    void reconcileModuleReferences(const Value& function) const;
 
 
     // stack new states when we enter new functions to compile

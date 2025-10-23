@@ -1,7 +1,15 @@
 #include <filesystem>
+#include <system_error>
 #include <boost/algorithm/string/replace.hpp>
 
 #include <core/common.h>
+
+#include <cstdint>
+#include <fstream>
+#include <functional>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "Object.h"
 
@@ -15,6 +23,45 @@
 using namespace roxal;
 using namespace roxal::ast;
 using ast::Access;
+
+namespace {
+
+constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
+constexpr std::uint32_t ModuleCacheVersion = 8;
+
+std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
+    if (sourcePath.empty())
+        return {};
+
+    std::filesystem::path directory = sourcePath.parent_path();
+    std::string stem = sourcePath.stem().string();
+    if (stem.empty())
+        stem = sourcePath.filename().string();
+
+    std::string cacheFilename = "." + stem + ".moc";
+    return directory / cacheFilename;
+}
+
+// Compose a dotted module name from the package path and the leaf module.
+icu::UnicodeString makeFullModuleName(const icu::UnicodeString& packagePath,
+                                      const icu::UnicodeString& moduleName) {
+    icu::UnicodeString full;
+    if (!packagePath.isEmpty()) {
+        full = packagePath;
+        for (int32_t i = 0; i < full.length(); ++i) {
+            if (full.charAt(i) == '/')
+                full.setCharAt(i, '.');
+        }
+    }
+    if (!moduleName.isEmpty()) {
+        if (!full.isEmpty())
+            full += ".";
+        full += moduleName;
+    }
+    return full.isEmpty() ? moduleName : full;
+}
+
+} // namespace
 
 
 
@@ -51,6 +98,8 @@ ptr<C> as(ptr<AST> p) {
 
 RoxalCompiler::RoxalCompiler()
     : outputBytecodeDisassembly(false)
+    , cacheReadEnabled(true)
+    , cacheWriteEnabled(true)
 {}
 
 
@@ -176,6 +225,264 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
     return function;
 }
 
+Value RoxalCompiler::loadFileCache(const std::filesystem::path& sourcePath) const
+{
+    if (!cacheReadEnabled)
+        return Value::nilVal();
+
+    if (sourcePath.empty())
+        return Value::nilVal();
+
+    try {
+        std::filesystem::path resolved = std::filesystem::absolute(sourcePath);
+        if (!std::filesystem::exists(resolved))
+            return Value::nilVal();
+
+        resolved = std::filesystem::canonical(resolved);
+        if (resolved.extension() != ".rox")
+            return Value::nilVal();
+
+        std::filesystem::path cachePath = moduleCachePathFor(resolved);
+        if (cachePath.empty())
+            return Value::nilVal();
+        if (!std::filesystem::exists(cachePath))
+            return Value::nilVal();
+
+        auto sourceTime = std::filesystem::last_write_time(resolved);
+        auto cacheTime = std::filesystem::last_write_time(cachePath);
+        if (cacheTime < sourceTime)
+            return Value::nilVal();
+
+        ModuleInfo module{};
+        module.cachePath = cachePath;
+        return loadModuleFromCache(module);
+    } catch (...) {
+        return Value::nilVal();
+    }
+}
+
+void RoxalCompiler::storeFileCache(const std::filesystem::path& sourcePath, const Value& function) const
+{
+    if (!cacheWriteEnabled || function.isNil() || !isFunction(function))
+        return;
+
+    try {
+        std::filesystem::path resolved = std::filesystem::absolute(sourcePath);
+        if (!std::filesystem::exists(resolved))
+            return;
+
+        resolved = std::filesystem::canonical(resolved);
+        if (resolved.extension() != ".rox")
+            return;
+
+        ModuleInfo module{};
+        module.cachePath = moduleCachePathFor(resolved);
+        if (module.cachePath.empty())
+            return;
+        storeModuleCache(module, function);
+    } catch (...) {
+        // ignore cache write failures
+    }
+}
+
+void RoxalCompiler::reconcileModuleReferences(const Value& function) const
+{
+    if (function.isNil() || !isFunction(function))
+        return;
+
+    // Helpers --------------------------------------------------------------
+
+    auto toKey = [](const icu::UnicodeString& value) {
+        std::string result;
+        value.toUTF8String(result);
+        return result;
+    };
+
+    auto moduleQualifiedName = [&](ObjModuleType* module) {
+        if (module->fullName.isEmpty())
+            return module->name;
+        return module->fullName;
+    };
+
+    auto canonicalizeModuleValue = [&](const Value& moduleValue) -> Value {
+        Value strong = moduleValue.strongRef();
+        if (!isModuleType(strong))
+            return strong;
+
+        ObjModuleType* module = asModuleType(strong);
+        icu::UnicodeString qualified = moduleQualifiedName(module);
+        Value builtin = VM::instance().getBuiltinModule(qualified);
+        if (builtin.isNil())
+            builtin = VM::instance().getBuiltinModule(module->name);
+        if (builtin.isNonNil())
+            return builtin.strongRef();
+
+        return strong;
+    };
+
+    // Walk every function owned by the entry chunk and collect the module
+    // types they reference (both directly and via nested functions).  At the
+    // same time, remember any alias information recorded on the module so we
+    // can restore the import table after we rebuild the canonical module
+    // hierarchy below.
+    std::unordered_set<ObjFunction*> visited;
+    std::vector<ObjFunction*> stack;
+    using AliasList = std::vector<std::pair<icu::UnicodeString, icu::UnicodeString>>;
+    std::unordered_map<ObjModuleType*, AliasList> moduleImports;
+    std::unordered_map<std::string, Value> canonicalModules;
+
+    auto enqueueFunction = [&](const Value& fnValue) {
+        if (!isFunction(fnValue))
+            return;
+
+        ObjFunction* candidate = asFunction(fnValue);
+        if (visited.insert(candidate).second)
+            stack.push_back(candidate);
+    };
+
+    enqueueFunction(function);
+
+    while (!stack.empty()) {
+        ObjFunction* fn = stack.back();
+        stack.pop_back();
+
+        if (!isModuleType(fn->moduleType) || fn->chunk == nullptr)
+            continue;
+
+        ObjModuleType* moduleType = asModuleType(fn->moduleType);
+
+        std::unordered_set<int32_t> importHashes;
+        AliasList imports;
+
+        auto aliasSnapshot = moduleType->moduleAliasSnapshot();
+        for (const auto& alias : aliasSnapshot) {
+            if (importHashes.insert(alias.first.hashCode()).second)
+                imports.emplace_back(alias.first, alias.second);
+        }
+
+        if (imports.empty()) {
+            // Fall back to the variable table when the module did not record
+            // explicit alias metadata (this covers older cache files or
+            // modules that populated the table manually).
+            for (const auto& entry : moduleType->vars.snapshot()) {
+                const icu::UnicodeString& name = entry.first;
+                if (importHashes.insert(name.hashCode()).second)
+                    imports.emplace_back(name, icu::UnicodeString());
+            }
+        }
+
+        for (auto& constant : fn->chunk->constants) {
+            if (isFunction(constant)) {
+                enqueueFunction(constant);
+                Value moduleTypeValue = asFunction(constant)->moduleType;
+                if (isModuleType(moduleTypeValue)) {
+                    Value moduleValue = canonicalizeModuleValue(moduleTypeValue);
+                    asFunction(constant)->moduleType = moduleValue.weakRef();
+                    ObjModuleType* imported = asModuleType(moduleValue);
+                    canonicalModules[toKey(moduleQualifiedName(imported))] = moduleValue.strongRef();
+                }
+            } else if (isModuleType(constant)) {
+                Value moduleValue = canonicalizeModuleValue(constant);
+                constant = moduleValue;
+                ObjModuleType* imported = asModuleType(moduleValue);
+                canonicalModules[toKey(moduleQualifiedName(imported))] = moduleValue.strongRef();
+            }
+        }
+
+        moduleImports[moduleType] = std::move(imports);
+    }
+
+    std::unordered_map<std::string, Value> ensuredModules;
+
+    std::function<Value(const icu::UnicodeString&)> ensureModuleHierarchy =
+        [&](const icu::UnicodeString& fullName) -> Value {
+            if (fullName.isEmpty())
+                return Value::nilVal();
+
+            std::string key = toKey(fullName);
+            auto ensuredIt = ensuredModules.find(key);
+            if (ensuredIt != ensuredModules.end())
+                return ensuredIt->second.strongRef();
+
+            Value moduleValue { Value::nilVal() };
+            auto canonicalIt = canonicalModules.find(key);
+            if (canonicalIt != canonicalModules.end()) {
+                moduleValue = canonicalIt->second.strongRef();
+            } else {
+                // Lazily create placeholder modules for missing entries so we
+                // can rebuild a consistent hierarchy (e.g. when a cached
+                // module references a package parent that was not serialized
+                // in the cache file).
+                int32_t dotIndex = fullName.lastIndexOf('.');
+                icu::UnicodeString localName = dotIndex >= 0 ? fullName.tempSubString(dotIndex + 1)
+                                                             : fullName;
+                moduleValue = Value::moduleTypeVal(localName);
+                ObjModuleType* created = asModuleType(moduleValue);
+                created->fullName = fullName;
+                ObjModuleType::allModules.push_back(moduleValue);
+            }
+
+            ObjModuleType* moduleType = asModuleType(moduleValue);
+            if (moduleType->fullName.isEmpty())
+                moduleType->fullName = fullName;
+
+            ensuredModules.emplace(key, moduleValue.strongRef());
+            canonicalModules[key] = moduleValue.strongRef();
+
+            int32_t dotIndex = fullName.lastIndexOf('.');
+            if (dotIndex >= 0) {
+                icu::UnicodeString parentFullName = fullName.tempSubString(0, dotIndex);
+                Value parentValue = ensureModuleHierarchy(parentFullName);
+                if (parentValue.isNonNil()) {
+                    icu::UnicodeString alias = fullName.tempSubString(dotIndex + 1);
+                    ObjModuleType* parentModule = asModuleType(parentValue);
+                    // Recreate the parent->child relationship so lookups on
+                    // the parent module continue to work as they did during
+                    // the original compile.
+                    parentModule->vars.store(alias, moduleValue, true);
+                    parentModule->registerModuleAlias(alias, fullName);
+                }
+            }
+
+            return moduleValue.strongRef();
+        };
+
+    for (const auto& canonicalEntry : canonicalModules)
+        ensureModuleHierarchy(icu::UnicodeString::fromUTF8(canonicalEntry.first));
+
+    for (const auto& entry : moduleImports) {
+        ObjModuleType* moduleType = entry.first;
+
+        std::unordered_map<int32_t, icu::UnicodeString> previousAliases;
+        for (const auto& alias : moduleType->moduleAliasSnapshot())
+            previousAliases.emplace(alias.first.hashCode(), alias.second);
+
+        moduleType->vars.clear();
+        moduleType->clearModuleAliases();
+
+        for (const auto& alias : entry.second) {
+            const icu::UnicodeString& aliasName = alias.first;
+            icu::UnicodeString aliasFullName = alias.second;
+            if (aliasFullName.isEmpty()) {
+                auto fallback = previousAliases.find(aliasName.hashCode());
+                if (fallback != previousAliases.end())
+                    aliasFullName = fallback->second;
+            }
+            if (aliasFullName.isEmpty())
+                aliasFullName = aliasName;
+
+            Value moduleValue = ensureModuleHierarchy(aliasFullName);
+            if (moduleValue.isNonNil()) {
+                // Re-populate the module with the canonical module reference
+                // and re-register the alias so subsequent cache loads know
+                // where the import originated.
+                moduleType->vars.store(aliasName, moduleValue, true);
+                moduleType->registerModuleAlias(aliasName, aliasFullName);
+            }
+        }
+    }
+}
+
 
 void RoxalCompiler::setOutputBytecodeDisassembly(bool outputBytecodeDisassembly)
 {
@@ -190,6 +497,16 @@ void RoxalCompiler::setModulePaths(const std::vector<std::string>& modulePaths)
 void RoxalCompiler::setReplMode(bool replMode)
 {
     this->replModeFlag = replMode;
+}
+
+void RoxalCompiler::setCacheReadEnabled(bool enabled)
+{
+    cacheReadEnabled = enabled;
+}
+
+void RoxalCompiler::setCacheWriteEnabled(bool enabled)
+{
+    cacheWriteEnabled = enabled;
 }
 
 
@@ -262,12 +579,17 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     }
 
     std::string absoluteModuleFilePath;
+    icu::UnicodeString moduleFullName = makeFullModuleName(module.packagePath, module.name);
     if (!builtinModule) {
-        absoluteModuleFilePath = std::filesystem::canonical(std::filesystem::absolute(
-            module.modulePathRoot + "/" + toUTF8StdString(module.packagePath) + '/' + module.filename));
+        if (!module.resolvedPath.empty()) {
+            absoluteModuleFilePath = module.resolvedPath.string();
+        } else {
+            absoluteModuleFilePath = std::filesystem::canonical(std::filesystem::absolute(
+                module.modulePathRoot + "/" + toUTF8StdString(module.packagePath) + '/' + module.filename));
+        }
 
         // extra check the module file exists
-        if (!std::filesystem::exists(std::filesystem::path(absoluteModuleFilePath))) {
+        if (absoluteModuleFilePath.empty() || !std::filesystem::exists(std::filesystem::path(absoluteModuleFilePath))) {
             error("import file '"+toUTF8StdString(module.packagePath) + '/' + module.filename+"' not found.");
             return {};
         }
@@ -284,24 +606,57 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     if (!imported) {  // import it
         if (builtinModule) {
             importedModuleType = VM::instance().getBuiltinModule(module.name);
+            importedModuleType = importedModuleType.strongRef();
             importedModules[module] = importedModuleType;
-        } else {
-            // compile it, emit code to execute it
-            std::ifstream sourcestream(absoluteModuleFilePath);
 
+            if (isModuleType(importedModuleType)) {
+                bool hasConstant = false;
+                for (const auto& constant : currentChunk()->constants) {
+                    if (constant.is(importedModuleType, true)) {
+                        hasConstant = true;
+                        break;
+                    }
+                }
+                if (!hasConstant)
+                    makeConstant(importedModuleType);
+                ObjModuleType* builtinType = asModuleType(importedModuleType);
+                if (builtinType->fullName.isEmpty())
+                    builtinType->fullName = moduleFullName;
+            }
+        } else {
+            // compile or load it, emit code to execute it
             Value function { Value::nilVal() }; // ObjFunction
             bool prevRepl = replModeFlag;
+            bool loadedFromCache = false;
 
             try {
-                replModeFlag = false; // don't auto-print expressions when compiling imported module
-                function = compile(sourcestream,
-                                   !absoluteModuleFilePath.empty() ?
-                                          absoluteModuleFilePath
-                                        : toUTF8StdString(module.name)
-                                  );
+                if (module.cacheValid)
+                    function = loadModuleFromCache(module);
+
+                if (function.isNonNil())
+                    loadedFromCache = true;
+
+                if (!loadedFromCache) {
+                    std::ifstream sourcestream(absoluteModuleFilePath);
+                    if (!sourcestream.is_open())
+                        throw std::runtime_error("unable to open module source: " + absoluteModuleFilePath);
+
+                    replModeFlag = false; // don't auto-print expressions when compiling imported module
+                    function = compile(sourcestream,
+                                       !absoluteModuleFilePath.empty() ?
+                                              absoluteModuleFilePath
+                                            : toUTF8StdString(module.name)
+                                      );
+                    storeModuleCache(module, function);
+                }
+
                 replModeFlag = prevRepl;
 
                 importedModuleType = asFunction(function)->moduleType;
+                if (isModuleType(importedModuleType)) {
+                    ObjModuleType* imported = asModuleType(importedModuleType);
+                    imported->fullName = moduleFullName;
+                }
 
                 // emit code to place module's main chunk on stack as closure
                 assert(asFunction(function)->upvalueCount == 0);
@@ -354,10 +709,19 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
             pkgModuleVal = pkgEntry->second;
         }
 
-        if (parentModuleVal.isObj())
-            asModuleType(parentModuleVal)->vars.store(pkgName, pkgModuleVal);
-        else
+        ObjModuleType* pkgModule = asModuleType(pkgModuleVal);
+        icu::UnicodeString pkgFullName = makeFullModuleName(pkgInfo.packagePath, pkgName);
+        pkgModule->fullName = pkgFullName;
+
+        if (parentModuleVal.isObj()) {
+            ObjModuleType* parentModule = asModuleType(parentModuleVal);
+            parentModule->vars.store(pkgName, pkgModuleVal);
+            parentModule->registerModuleAlias(pkgName, pkgFullName);
+        } else {
             importingModuleVars.store(pkgName, pkgModuleVal);
+            ObjModuleType* importingModule = asModuleType(importingModuleType);
+            importingModule->registerModuleAlias(pkgName, pkgFullName);
+        }
 
         parentModuleVal = pkgModuleVal;
         if (!packagePath.isEmpty())
@@ -365,13 +729,18 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         packagePath += pkgName;
     }
 
-    if (parentModuleVal.isObj())
-        asModuleType(parentModuleVal)->vars.store(module.name, importedModuleType);
+    if (parentModuleVal.isObj()) {
+        ObjModuleType* parentModule = asModuleType(parentModuleVal);
+        parentModule->vars.store(module.name, importedModuleType);
+        parentModule->registerModuleAlias(module.name, moduleFullName);
+    }
 
     // For non-nested imports expose the module directly in the importing module
     if (ast->packages.size() == 1) {
         icu::UnicodeString moduleName { module.name };
         importingModuleVars.store(moduleName, importedModuleType);
+        ObjModuleType* importingModule = asModuleType(importingModuleType);
+        importingModule->registerModuleAlias(moduleName, moduleFullName);
     }
 
 
@@ -2095,7 +2464,77 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
             }
         } catch (...) { }
     }
+
+    try {
+        module.resolvedPath = std::filesystem::canonical(path);
+        module.cachePath = moduleCachePathFor(module.resolvedPath);
+
+        if (cacheReadEnabled && !module.cachePath.empty() && std::filesystem::exists(module.cachePath)) {
+            auto sourceTime = std::filesystem::last_write_time(module.resolvedPath);
+            auto cacheTime = std::filesystem::last_write_time(module.cachePath);
+            if (cacheTime >= sourceTime)
+                module.cacheValid = true;
+        }
+    } catch (...) {
+        module.cacheValid = false;
+        module.cachePath.clear();
+    }
+
     return module;
+}
+
+Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module) const
+{
+    if (!cacheReadEnabled || module.cachePath.empty())
+        return Value::nilVal();
+
+    try {
+        std::ifstream cacheStream(module.cachePath, std::ios::binary);
+        if (!cacheStream.is_open())
+            return Value::nilVal();
+
+        char magic[4];
+        cacheStream.read(magic, sizeof(magic));
+        if (!cacheStream || magic[0] != ModuleCacheMagic[0] ||
+            magic[1] != ModuleCacheMagic[1] ||
+            magic[2] != ModuleCacheMagic[2] ||
+            magic[3] != ModuleCacheMagic[3])
+            return Value::nilVal();
+
+        std::uint32_t version = 0;
+        cacheStream.read(reinterpret_cast<char*>(&version), sizeof(version));
+        if (!cacheStream || version != ModuleCacheVersion)
+            return Value::nilVal();
+
+        auto ctx = ptr<SerializationContext>::from_raw(new SerializationContext());
+        Value value = readValue(cacheStream, ctx);
+        if (!isFunction(value))
+            return Value::nilVal();
+        reconcileModuleReferences(value);
+        return value;
+    } catch (...) {
+        return Value::nilVal();
+    }
+}
+
+void RoxalCompiler::storeModuleCache(const ModuleInfo& module, const Value& function) const
+{
+    if (!cacheWriteEnabled || module.cachePath.empty() || function.isNil() || !isFunction(function))
+        return;
+
+    try {
+        std::ofstream cacheStream(module.cachePath, std::ios::binary | std::ios::trunc);
+        if (!cacheStream.is_open())
+            return;
+
+        cacheStream.write(ModuleCacheMagic, sizeof(ModuleCacheMagic));
+        cacheStream.write(reinterpret_cast<const char*>(&ModuleCacheVersion), sizeof(ModuleCacheVersion));
+
+        auto ctx = ptr<SerializationContext>::from_raw(new SerializationContext());
+        writeValue(cacheStream, function, ctx);
+    } catch (...) {
+        // ignore cache write failures
+    }
 }
 
 
@@ -2123,6 +2562,23 @@ void RoxalCompiler::enterModuleScope(const icu::UnicodeString& packageName,
     ptr<ModuleScope> moduleScope { make_ptr<ModuleScope>(packageName, moduleName,
                                                          sourceName,
                                                          existingModule) };
+
+    if (moduleScope->moduleType.isObj()) {
+        ObjModuleType* moduleType = asModuleType(moduleScope->moduleType);
+        std::string sourceUtf8 = toUTF8StdString(sourceName);
+        bool assigned = false;
+        if (!sourceUtf8.empty()) {
+            std::error_code ec;
+            std::filesystem::path candidate = std::filesystem::absolute(sourceUtf8, ec);
+            if (!ec) {
+                std::filesystem::path normalized = candidate.lexically_normal();
+                moduleType->sourcePath = toUnicodeString(normalized.string());
+                assigned = true;
+            }
+        }
+        if (!assigned)
+            moduleType->sourcePath = sourceName;
+    }
 
     lexicalScopes.push_back(moduleScope);
     #ifdef DEBUG_TRACE_SCOPES

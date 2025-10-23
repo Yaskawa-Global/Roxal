@@ -1202,9 +1202,17 @@ struct ObjModuleType : public ObjTypeSpec
     virtual ~ObjModuleType();
 
     icu::UnicodeString name;
+    icu::UnicodeString fullName;
+    icu::UnicodeString sourcePath;
 
     // variables declared at runtime via VM OpCode::DefineModuleVar
     VariablesMap vars;
+
+    void registerModuleAlias(const icu::UnicodeString& alias,
+                             const icu::UnicodeString& moduleFullName);
+    std::vector<std::pair<icu::UnicodeString, icu::UnicodeString>> moduleAliasSnapshot() const;
+    icu::UnicodeString moduleAliasFullName(const icu::UnicodeString& alias) const;
+    void clearModuleAliases();
 
     // cstruct type annotations: type name hash -> arch (32 or 64)
     std::unordered_map<int32_t, int> cstructArch;
@@ -1220,6 +1228,9 @@ struct ObjModuleType : public ObjTypeSpec
 
     void trace(ValueVisitor& visitor) const override;
     void dropReferences() override;
+
+private:
+    std::unordered_map<int32_t, std::pair<icu::UnicodeString, icu::UnicodeString>> moduleAliases;
 };
 
 inline bool isModuleType(const Value& v) { return isObjType(v, ObjType::Type) && (asTypeSpec(v)->typeValue == ValueType::Module); }
