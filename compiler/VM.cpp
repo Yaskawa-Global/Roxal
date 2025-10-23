@@ -1935,7 +1935,7 @@ bool VM::isObjectCleanupPending() const
 }
 
 
-void VM::enableOpcodeProfiling(const std::string& filePath)
+void VM::enableOpcodeProfiling(std::string filePath)
 {
     std::filesystem::path path = filePath.empty() ? std::filesystem::path("opcode_profile.json")
                                                   : std::filesystem::path(filePath);

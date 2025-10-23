@@ -98,7 +98,7 @@ public:
     CacheMode cacheMode() const { return cacheModeSetting; }
     bool cacheReadsEnabled() const;
     bool cacheWritesEnabled() const;
-    void enableOpcodeProfiling(const std::string& filePath);
+    void enableOpcodeProfiling(std::string filePath = {});
     void writeOpcodeProfile();
 
     Value getBuiltinModule(const icu::UnicodeString& name);

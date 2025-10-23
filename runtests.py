@@ -16,6 +16,7 @@ TEST_NAME_WIDTH = 32
 parser = argparse.ArgumentParser(description="Run Roxal tests.")
 parser.add_argument('--convs', action='store_true', help='Include tests/conversions/* tests')
 parser.add_argument('--all', action='store_true', help='Run all tests, including conversions and long running tests')
+parser.add_argument('--opcode-prof', action='store_true', help='Enable opcode profiling for each Roxal invocation')
 args = parser.parse_args()
 
 # for each named test, run the <test>.rox file in the tests folder
@@ -169,6 +170,9 @@ try:
             input_data = f"run {rel_script}\nquit\n".encode()
         if test == 'invalid_option':
             cmd = [roxal, '--bogus']
+
+        if args.opcode_prof and '--opcode-prof' not in cmd:
+            cmd = [cmd[0], '--opcode-prof', *cmd[1:]]
 
         opt_expected = (" [expected]" if test in failing_tests else '')
 
