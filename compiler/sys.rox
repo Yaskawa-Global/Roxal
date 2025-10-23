@@ -79,6 +79,123 @@ func fromJson(json:string):
   """parse JSON string into a value"""
 
 @builtin
+type Time object:
+
+  private var _seconds:int
+  private var _micros:int
+  private var _steady:bool
+
+  @builtin
+  proc init(kind:string='wall', tz:string='local'):
+    """initialize this instance to the current time using the requested clock"""
+
+  @builtin
+  func kind() -> string:
+    """return 'wall' or 'steady' depending on the underlying clock"""
+
+  @builtin
+  func isSteady() -> bool:
+    """return true when this time tracks the steady clock"""
+
+  @builtin
+  func seconds() -> int:
+    """the whole seconds component relative to the unix epoch"""
+
+  @builtin
+  func microseconds() -> int:
+    """the fractional microseconds component"""
+
+  @builtin
+  func diff(other:Time) -> TimeSpan:
+    """return the interval between this time and other (self - other)"""
+
+  @builtin
+  func since(other:Time) -> TimeSpan:
+    """alias for diff(other)"""
+
+  @builtin
+  func until_time(other:Time) -> TimeSpan:
+    """return the interval from this time until other (other - self)"""
+
+  @builtin
+  func format(format:string='%Y-%m-%d %H:%M:%S', tz:string='local') -> string:
+    """format a wall-clock time using strftime directives (supports %f for micros)"""
+
+  @builtin
+  func components(tz:string='local') -> dict:
+    """return calendar components for wall-clock times"""
+
+  @builtin
+  func wall_now(tz:string='local') -> Time:
+    """capture the current wall-clock time"""
+
+  @builtin
+  func steady_now() -> Time:
+    """capture the current steady clock time"""
+
+  @builtin
+  func parse(text:string, format:string='%Y-%m-%d %H:%M:%S', tz:string='local') -> Time:
+    """parse text using strftime directives (supports optional fractional seconds)"""
+
+  @builtin
+  func from_parts(seconds:int, micros:int=0, kind:string='wall') -> Time:
+    """construct a Time from explicit seconds and microseconds"""
+
+@builtin
+type TimeSpan object:
+
+  private var _seconds:int
+  private var _micros:int
+
+  @builtin
+  proc init(days:int=0, hours:int=0, minutes:int=0, seconds:int=0, millis:int=0, micros:int=0):
+    """initialize this span from component fields"""
+
+  @builtin
+  func seconds() -> int:
+    """the normalized whole seconds component"""
+
+  @builtin
+  func microseconds() -> int:
+    """the fractional microseconds component"""
+
+  @builtin
+  func split() -> dict:
+    """return a dict with days, hours, minutes, seconds, millis, micros and negative"""
+
+  @builtin
+  func total_days() -> real:
+    """total duration in days"""
+
+  @builtin
+  func total_hours() -> real:
+    """total duration in hours"""
+
+  @builtin
+  func total_minutes() -> real:
+    """total duration in minutes"""
+
+  @builtin
+  func total_seconds() -> real:
+    """total duration in seconds"""
+
+  @builtin
+  func total_millis() -> real:
+    """total duration in milliseconds"""
+
+  @builtin
+  func total_micros() -> real:
+    """total duration in microseconds"""
+
+  @builtin
+  func human() -> string:
+    """a human readable representation of the span"""
+
+  @builtin
+  func from_fields(days:int=0, hours:int=0, minutes:int=0, seconds:int=0, millis:int=0, micros:int=0) -> TimeSpan:
+    """construct a new TimeSpan from component fields"""
+
+@builtin
 func _clock() -> real:
   """return process time in seconds"""
 

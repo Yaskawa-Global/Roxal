@@ -61,7 +61,7 @@ tests = [
     'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4',
     'private_prop', 'private_method', 'private_inherit',
     'typededucer_binop', 'typededucer_ops', 'typededucer_until', 'typededucer_bitwise',
-    'mathfuncs',
+    'time_basic', 'mathfuncs',
     'typeassign1', 'typeassign2', 'typeassign3',
     'vector1', 'vector2', 'vector3', 'vector4', 'vector5','vector_methods', 'vector_equal', 'vector_matrix_equal',
     'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'unary_vector_matrix',

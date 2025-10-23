@@ -5,6 +5,7 @@
 #include "core/AST.h"
 #include <core/json11.h>
 #include <core/TimePoint.h>
+#include <core/TimeDuration.h>
 #include "dataflow/Signal.h"
 #include "dataflow/DataflowEngine.h"
 #include "FFI.h"
@@ -14,13 +15,318 @@
 #include <limits>
 #include <cstdint>
 #include <algorithm>
+#include <chrono>
+#include <vector>
+#include <cctype>
+#include <cstdio>
+#include <iomanip>
+#include <locale>
+#include <stdexcept>
 
 using namespace roxal;
+
+namespace {
+
+constexpr int64_t kMicrosPerSecond = 1'000'000;
+constexpr int64_t kMicrosPerMillisecond = 1'000;
+constexpr int64_t kMicrosPerMinute = 60 * kMicrosPerSecond;
+constexpr int64_t kMicrosPerHour = 60 * kMicrosPerMinute;
+constexpr int64_t kMicrosPerDay = 24 * kMicrosPerHour;
+
+struct NormalizedParts {
+    int32_t seconds;
+    int32_t micros;
+};
+
+NormalizedParts normalizeMicros(int64_t totalMicros)
+{
+    int64_t seconds = totalMicros / kMicrosPerSecond;
+    int64_t micros = totalMicros % kMicrosPerSecond;
+    if (micros < 0) {
+        micros += kMicrosPerSecond;
+        --seconds;
+    }
+    if (seconds < std::numeric_limits<int32_t>::min() ||
+        seconds > std::numeric_limits<int32_t>::max()) {
+        throw std::out_of_range("time value exceeds 32-bit range");
+    }
+    return { static_cast<int32_t>(seconds), static_cast<int32_t>(micros) };
+}
+
+int64_t addChecked(int64_t total, int64_t delta)
+{
+    if (delta > 0 && total > std::numeric_limits<int64_t>::max() - delta)
+        throw std::out_of_range("time span overflow");
+    if (delta < 0 && total < std::numeric_limits<int64_t>::min() - delta)
+        throw std::out_of_range("time span overflow");
+    return total + delta;
+}
+
+int64_t durationFromFields(int days, int hours, int minutes, int seconds,
+                           int millis, int micros)
+{
+    int64_t total = 0;
+    total = addChecked(total, static_cast<int64_t>(days) * kMicrosPerDay);
+    total = addChecked(total, static_cast<int64_t>(hours) * kMicrosPerHour);
+    total = addChecked(total, static_cast<int64_t>(minutes) * kMicrosPerMinute);
+    total = addChecked(total, static_cast<int64_t>(seconds) * kMicrosPerSecond);
+    total = addChecked(total, static_cast<int64_t>(millis) * kMicrosPerMillisecond);
+    total = addChecked(total, static_cast<int64_t>(micros));
+    return total;
+}
+
+std::string toLowerCopy(const std::string& s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s)
+        out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    return out;
+}
+
+enum class ClockZone { Local, UTC };
+
+ClockZone parseZone(const std::string& tz)
+{
+    auto lower = toLowerCopy(tz);
+    if (lower == "local")
+        return ClockZone::Local;
+    if (lower == "utc" || lower == "gmt")
+        return ClockZone::UTC;
+    throw std::invalid_argument("unknown timezone '" + tz + "'");
+}
+
+enum class TimeKind { Wall, Steady };
+
+TimeKind parseKind(const std::string& kind)
+{
+    auto lower = toLowerCopy(kind);
+    if (lower == "wall")
+        return TimeKind::Wall;
+    if (lower == "steady")
+        return TimeKind::Steady;
+    throw std::invalid_argument("unknown time kind '" + kind + "'");
+}
+
+#ifdef _WIN32
+std::time_t timegm_compat(std::tm* tm)
+{
+    return _mkgmtime(tm);
+}
+#else
+std::time_t timegm_compat(std::tm* tm)
+{
+    return timegm(tm);
+}
+#endif
+
+bool toCalendar(int64_t seconds, ClockZone zone, std::tm& out)
+{
+    std::time_t tt = static_cast<std::time_t>(seconds);
+#ifdef _WIN32
+    if (zone == ClockZone::UTC)
+        return gmtime_s(&out, &tt) == 0;
+    return localtime_s(&out, &tt) == 0;
+#else
+    if (zone == ClockZone::UTC)
+        return gmtime_r(&tt, &out) != nullptr;
+    return localtime_r(&tt, &out) != nullptr;
+#endif
+}
+
+std::string formatWithMicros(const std::tm& tm, int32_t micros, const std::string& fmt)
+{
+    std::string result;
+    std::string chunk;
+
+    auto flushChunk = [&](const std::string& part) {
+        if (part.empty())
+            return;
+        std::size_t size = part.size() + 64;
+        std::vector<char> buffer(size);
+        std::size_t written = std::strftime(buffer.data(), buffer.size(), part.c_str(), &tm);
+        while (written == 0) {
+            size *= 2;
+            if (size > 8192)
+                throw std::runtime_error("failed to format time with strftime");
+            buffer.resize(size);
+            written = std::strftime(buffer.data(), buffer.size(), part.c_str(), &tm);
+        }
+        result.append(buffer.data(), written);
+    };
+
+    for (std::size_t i = 0; i < fmt.size(); ++i) {
+        if (fmt[i] == '%' && (i + 1) < fmt.size() && fmt[i + 1] == 'f') {
+            flushChunk(chunk);
+            chunk.clear();
+            char buf[7];
+            std::snprintf(buf, sizeof(buf), "%06d", micros);
+            result.append(buf);
+            ++i; // skip 'f'
+        } else {
+            chunk.push_back(fmt[i]);
+        }
+    }
+    flushChunk(chunk);
+    return result;
+}
+
+int64_t parseWallTime(const std::string& text, const std::string& format, ClockZone zone)
+{
+    std::string fmt = format;
+    std::string working = text;
+    int32_t micros = 0;
+
+    std::size_t pos = fmt.find("%f");
+    if (pos != std::string::npos) {
+        if (fmt.find("%f", pos + 2) != std::string::npos)
+            throw std::invalid_argument("format may contain at most one %f");
+        if (pos == 0)
+            throw std::invalid_argument("%f specifier must follow a character");
+        if (fmt[pos - 1] != '.')
+            throw std::invalid_argument("%f specifier must be preceded by '.'");
+        std::size_t dotPos = working.rfind('.');
+        if (dotPos == std::string::npos)
+            throw std::invalid_argument("time string missing fractional seconds");
+        std::size_t digitPos = dotPos + 1;
+        if (digitPos >= working.size() ||
+            !std::isdigit(static_cast<unsigned char>(working[digitPos])))
+            throw std::invalid_argument("expected digits after '.' for fractional seconds");
+        std::size_t scan = digitPos;
+        int32_t microVal = 0;
+        int digits = 0;
+        while (scan < working.size() && std::isdigit(static_cast<unsigned char>(working[scan]))) {
+            if (digits < 6)
+                microVal = microVal * 10 + (working[scan] - '0');
+            ++digits;
+            ++scan;
+        }
+        if (digits == 0)
+            throw std::invalid_argument("expected digits for fractional seconds");
+        while (digits < 6) {
+            microVal *= 10;
+            ++digits;
+        }
+        micros = microVal;
+        working.erase(dotPos, scan - dotPos);
+        fmt.erase(pos, 2);
+        fmt.erase(pos - 1, 1);
+    }
+
+    std::tm tm {};
+    std::istringstream iss(working);
+    iss.imbue(std::locale::classic());
+    iss >> std::get_time(&tm, fmt.c_str());
+    if (iss.fail())
+        throw std::invalid_argument("time string does not match format");
+
+    std::tm tmCopy = tm;
+    std::time_t seconds = (zone == ClockZone::UTC)
+        ? timegm_compat(&tmCopy)
+        : std::mktime(&tmCopy);
+
+    int64_t totalMicros = static_cast<int64_t>(seconds) * kMicrosPerSecond + micros;
+    return totalMicros;
+}
+
+bool instanceOf(ObjectInstance* inst, ObjObjectType* type)
+{
+    if (!type)
+        return false;
+    ObjObjectType* current = asObjectType(inst->instanceType);
+    while (current) {
+        if (current == type)
+            return true;
+        if (current->superType.isNil())
+            break;
+        current = asObjectType(current->superType);
+    }
+    return false;
+}
+
+ObjectInstance* requireInstance(const Value& value, ObjObjectType* type,
+                                const char* method, const char* expectedName)
+{
+    if (!isObjectInstance(value))
+        throw std::invalid_argument(std::string(method) + " expects " + expectedName + " instance");
+    ObjectInstance* inst = asObjectInstance(value);
+    if (!instanceOf(inst, type))
+        throw std::invalid_argument(std::string(method) + " expects " + expectedName + " instance");
+    return inst;
+}
+
+int32_t readIntProperty(ObjectInstance* inst, const char* name)
+{
+    Value v = inst->getProperty(name);
+    if (!v.isInt())
+        throw std::runtime_error(std::string("expected int property '") + name + "'");
+    return v.asInt();
+}
+
+bool readBoolProperty(ObjectInstance* inst, const char* name)
+{
+    Value v = inst->getProperty(name);
+    if (!v.isBool())
+        throw std::runtime_error(std::string("expected bool property '") + name + "'");
+    return v.asBool();
+}
+
+int64_t timeTotalMicros(ObjectInstance* inst)
+{
+    int64_t seconds = readIntProperty(inst, "_seconds");
+    int64_t micros = readIntProperty(inst, "_micros");
+    return seconds * kMicrosPerSecond + micros;
+}
+
+bool timeIsSteady(ObjectInstance* inst)
+{
+    return readBoolProperty(inst, "_steady");
+}
+
+int64_t spanTotalMicros(ObjectInstance* inst)
+{
+    int64_t seconds = readIntProperty(inst, "_seconds");
+    int64_t micros = readIntProperty(inst, "_micros");
+    return seconds * kMicrosPerSecond + micros;
+}
+
+void assignTime(ObjectInstance* inst, int64_t totalMicros, bool steady)
+{
+    NormalizedParts parts = normalizeMicros(totalMicros);
+    inst->setProperty("_seconds", Value::intVal(parts.seconds));
+    inst->setProperty("_micros", Value::intVal(parts.micros));
+    inst->setProperty("_steady", Value::boolVal(steady));
+}
+
+void assignSpan(ObjectInstance* inst, int64_t totalMicros)
+{
+    NormalizedParts parts = normalizeMicros(totalMicros);
+    inst->setProperty("_seconds", Value::intVal(parts.seconds));
+    inst->setProperty("_micros", Value::intVal(parts.micros));
+}
+
+Value newTimeInstance(const Value& typeValue, int64_t totalMicros, bool steady)
+{
+    Value inst = Value::objectInstanceVal(typeValue);
+    assignTime(asObjectInstance(inst), totalMicros, steady);
+    return inst;
+}
+
+Value newSpanInstance(const Value& typeValue, int64_t totalMicros)
+{
+    Value inst = Value::objectInstanceVal(typeValue);
+    assignSpan(asObjectInstance(inst), totalMicros);
+    return inst;
+}
+
+} // namespace
 
 ModuleSys::ModuleSys()
 {
     moduleTypeValue = Value::objVal(newModuleTypeObj(toUnicodeString("sys")));
     ObjModuleType::allModules.push_back(moduleTypeValue);
+    timeTypeValue = Value::nilVal();
+    timeSpanTypeValue = Value::nilVal();
 }
 
 ModuleSys::~ModuleSys()
@@ -111,6 +417,121 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("_df_graphdot", [this](VM& vm, ArgsView a){ return df_graphdot_native(vm,a); });
         addSys("loadlib", [this](VM& vm, ArgsView a){ return loadlib_native(vm,a); });
 
+    }
+
+    auto maybeTime = asModuleType(moduleType())->vars.load(toUnicodeString("Time"));
+    if (!maybeTime.has_value() || !isObjectType(maybeTime.value()))
+        throw std::runtime_error("sys.Time type not found");
+    timeTypeValue = maybeTime.value();
+    timeTypeObj = asObjectType(timeTypeValue);
+
+    auto maybeSpan = asModuleType(moduleType())->vars.load(toUnicodeString("TimeSpan"));
+    if (!maybeSpan.has_value() || !isObjectType(maybeSpan.value()))
+        throw std::runtime_error("sys.TimeSpan type not found");
+    timeSpanTypeValue = maybeSpan.value();
+    timeSpanTypeObj = asObjectType(timeSpanTypeValue);
+
+    std::vector<Value> timeInitDefaults{
+        Value::stringVal(toUnicodeString("wall")),
+        Value::stringVal(toUnicodeString("local"))
+    };
+    linkMethod("Time", "init", [this](VM& vm, ArgsView a){ return time_init_native(vm,a); }, timeInitDefaults);
+    linkMethod("Time", "kind", [this](VM& vm, ArgsView a){ return time_kind_native(vm,a); });
+    linkMethod("Time", "isSteady", [this](VM& vm, ArgsView a){ return time_is_steady_native(vm,a); });
+    linkMethod("Time", "seconds", [this](VM& vm, ArgsView a){ return time_seconds_native(vm,a); });
+    linkMethod("Time", "microseconds", [this](VM& vm, ArgsView a){ return time_micros_native(vm,a); });
+    linkMethod("Time", "diff", [this](VM& vm, ArgsView a){ return time_diff_native(vm,a); });
+    linkMethod("Time", "since", [this](VM& vm, ArgsView a){ return time_since_native(vm,a); });
+    linkMethod("Time", "until_time", [this](VM& vm, ArgsView a){ return time_until_native(vm,a); });
+    std::vector<Value> timeFormatDefaults{
+        Value::stringVal(toUnicodeString("%Y-%m-%d %H:%M:%S")),
+        Value::stringVal(toUnicodeString("local"))
+    };
+    linkMethod("Time", "format", [this](VM& vm, ArgsView a){ return time_format_native(vm,a); }, timeFormatDefaults);
+    std::vector<Value> timeComponentsDefaults{
+        Value::stringVal(toUnicodeString("local"))
+    };
+    linkMethod("Time", "components", [this](VM& vm, ArgsView a){ return time_components_native(vm,a); }, timeComponentsDefaults);
+
+    std::vector<Value> spanInitDefaults{
+        Value::intVal(0), Value::intVal(0), Value::intVal(0),
+        Value::intVal(0), Value::intVal(0), Value::intVal(0)
+    };
+    linkMethod("TimeSpan", "init", [this](VM& vm, ArgsView a){ return timespan_init_native(vm,a); }, spanInitDefaults);
+    linkMethod("TimeSpan", "seconds", [this](VM& vm, ArgsView a){ return timespan_seconds_native(vm,a); });
+    linkMethod("TimeSpan", "microseconds", [this](VM& vm, ArgsView a){ return timespan_micros_native(vm,a); });
+    linkMethod("TimeSpan", "split", [this](VM& vm, ArgsView a){ return timespan_split_native(vm,a); });
+    linkMethod("TimeSpan", "total_days", [this](VM& vm, ArgsView a){ return timespan_total_days_native(vm,a); });
+    linkMethod("TimeSpan", "total_hours", [this](VM& vm, ArgsView a){ return timespan_total_hours_native(vm,a); });
+    linkMethod("TimeSpan", "total_minutes", [this](VM& vm, ArgsView a){ return timespan_total_minutes_native(vm,a); });
+    linkMethod("TimeSpan", "total_seconds", [this](VM& vm, ArgsView a){ return timespan_total_seconds_native(vm,a); });
+    linkMethod("TimeSpan", "total_millis", [this](VM& vm, ArgsView a){ return timespan_total_millis_native(vm,a); });
+    linkMethod("TimeSpan", "total_micros", [this](VM& vm, ArgsView a){ return timespan_total_micros_native(vm,a); });
+    linkMethod("TimeSpan", "human", [this](VM& vm, ArgsView a){ return timespan_human_native(vm,a); });
+
+    {
+        std::vector<Value> defaults{ Value::stringVal(toUnicodeString("local")) };
+        auto funcType = makeFuncType({{"tz", type::BuiltinType::String}}, defaults);
+        vm.defineBuiltinMethod(ValueType::Type, "wall_now",
+                               [this](VM& vm, ArgsView a){ return time_type_wall_now(vm,a); },
+                               false, funcType, defaults);
+    }
+
+    {
+        auto funcType = makeFuncType({});
+        vm.defineBuiltinMethod(ValueType::Type, "steady_now",
+                               [this](VM& vm, ArgsView a){ return time_type_steady_now(vm,a); },
+                               false, funcType, {});
+    }
+
+    {
+        std::vector<Value> defaults{
+            Value::nilVal(),
+            Value::stringVal(toUnicodeString("%Y-%m-%d %H:%M:%S")),
+            Value::stringVal(toUnicodeString("local"))
+        };
+        auto funcType = makeFuncType({
+            {"text", type::BuiltinType::String},
+            {"format", type::BuiltinType::String},
+            {"tz", type::BuiltinType::String}
+        }, defaults);
+        vm.defineBuiltinMethod(ValueType::Type, "parse",
+                               [this](VM& vm, ArgsView a){ return time_type_parse(vm,a); },
+                               false, funcType, defaults);
+    }
+
+    {
+        std::vector<Value> defaults{
+            Value::nilVal(),
+            Value::intVal(0),
+            Value::stringVal(toUnicodeString("wall"))
+        };
+        auto funcType = makeFuncType({
+            {"seconds", type::BuiltinType::Int},
+            {"micros", type::BuiltinType::Int},
+            {"kind", type::BuiltinType::String}
+        }, defaults);
+        vm.defineBuiltinMethod(ValueType::Type, "from_parts",
+                               [this](VM& vm, ArgsView a){ return time_type_from_parts(vm,a); },
+                               false, funcType, defaults);
+    }
+
+    {
+        std::vector<Value> defaults{
+            Value::intVal(0), Value::intVal(0), Value::intVal(0),
+            Value::intVal(0), Value::intVal(0), Value::intVal(0)
+        };
+        auto funcType = makeFuncType({
+            {"days", type::BuiltinType::Int},
+            {"hours", type::BuiltinType::Int},
+            {"minutes", type::BuiltinType::Int},
+            {"seconds", type::BuiltinType::Int},
+            {"millis", type::BuiltinType::Int},
+            {"micros", type::BuiltinType::Int}
+        }, defaults);
+        vm.defineBuiltinMethod(ValueType::Type, "from_fields",
+                               [this](VM& vm, ArgsView a){ return timespan_type_from_fields(vm,a); },
+                               false, funcType, defaults);
     }
 }
 
@@ -698,6 +1119,448 @@ Value ModuleSys::fromJson_builtin(VM& vm, ArgsView args)
     if(!err.empty())
         throw std::invalid_argument(std::string("invalid json: ")+err);
     return jsonToValue(j);
+}
+
+Value ModuleSys::time_init_native(VM& vm, ArgsView args)
+{
+    if (args.size() < 1 || args.size() > 3)
+        throw std::invalid_argument("Time.init expects optional kind and tz");
+
+    ObjectInstance* inst = requireInstance(args[0], timeTypeObj, "Time.init", "Time");
+
+    std::string kind = "wall";
+    if (args.size() >= 2) {
+        if (!isString(args[1]))
+            throw std::invalid_argument("Time.init kind must be string");
+        kind = toString(args[1]);
+    }
+
+    std::string tz = "local";
+    if (args.size() >= 3) {
+        if (!isString(args[2]))
+            throw std::invalid_argument("Time.init tz must be string");
+        tz = toString(args[2]);
+    }
+
+    TimeKind tk = parseKind(kind);
+    if (tk == TimeKind::Steady) {
+        auto now = std::chrono::steady_clock::now();
+        int64_t total = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+        assignTime(inst, total, true);
+    } else {
+        (void)parseZone(tz);
+        auto now = std::chrono::system_clock::now();
+        int64_t total = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+        assignTime(inst, total, false);
+    }
+
+    return Value::nilVal();
+}
+
+Value ModuleSys::time_kind_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("Time.kind expects no arguments");
+
+    ObjectInstance* inst = requireInstance(args[0], timeTypeObj, "Time.kind", "Time");
+    return Value::stringVal(toUnicodeString(timeIsSteady(inst) ? "steady" : "wall"));
+}
+
+Value ModuleSys::time_is_steady_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("Time.isSteady expects no arguments");
+
+    ObjectInstance* inst = requireInstance(args[0], timeTypeObj, "Time.isSteady", "Time");
+    return timeIsSteady(inst) ? Value::trueVal() : Value::falseVal();
+}
+
+Value ModuleSys::time_seconds_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("Time.seconds expects no arguments");
+
+    ObjectInstance* inst = requireInstance(args[0], timeTypeObj, "Time.seconds", "Time");
+    return Value::intVal(readIntProperty(inst, "_seconds"));
+}
+
+Value ModuleSys::time_micros_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("Time.microseconds expects no arguments");
+
+    ObjectInstance* inst = requireInstance(args[0], timeTypeObj, "Time.microseconds", "Time");
+    return Value::intVal(readIntProperty(inst, "_micros"));
+}
+
+Value ModuleSys::time_diff_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 2)
+        throw std::invalid_argument("Time.diff expects one argument");
+
+    ObjectInstance* self = requireInstance(args[0], timeTypeObj, "Time.diff", "Time");
+    ObjectInstance* other = requireInstance(args[1], timeTypeObj, "Time.diff", "Time");
+    bool steadySelf = timeIsSteady(self);
+    bool steadyOther = timeIsSteady(other);
+    if (steadySelf != steadyOther)
+        throw std::invalid_argument("Time.diff requires both times from the same clock");
+
+    int64_t total = timeTotalMicros(self) - timeTotalMicros(other);
+    return newSpanInstance(timeSpanTypeValue, total);
+}
+
+Value ModuleSys::time_since_native(VM& vm, ArgsView args)
+{
+    return time_diff_native(vm, args);
+}
+
+Value ModuleSys::time_until_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 2)
+        throw std::invalid_argument("Time.until expects one argument");
+
+    ObjectInstance* self = requireInstance(args[0], timeTypeObj, "Time.until", "Time");
+    ObjectInstance* other = requireInstance(args[1], timeTypeObj, "Time.until", "Time");
+    bool steadySelf = timeIsSteady(self);
+    bool steadyOther = timeIsSteady(other);
+    if (steadySelf != steadyOther)
+        throw std::invalid_argument("Time.until requires both times from the same clock");
+
+    int64_t total = timeTotalMicros(other) - timeTotalMicros(self);
+    return newSpanInstance(timeSpanTypeValue, total);
+}
+
+Value ModuleSys::time_format_native(VM& vm, ArgsView args)
+{
+    if (args.size() < 1 || args.size() > 3)
+        throw std::invalid_argument("Time.format expects optional format and tz");
+
+    ObjectInstance* inst = requireInstance(args[0], timeTypeObj, "Time.format", "Time");
+    if (timeIsSteady(inst))
+        throw std::invalid_argument("Time.format is only valid for wall-clock times");
+
+    std::string format = "%Y-%m-%d %H:%M:%S";
+    if (args.size() >= 2) {
+        if (!isString(args[1]))
+            throw std::invalid_argument("Time.format format must be string");
+        format = toString(args[1]);
+    }
+
+    std::string tz = "local";
+    if (args.size() >= 3) {
+        if (!isString(args[2]))
+            throw std::invalid_argument("Time.format tz must be string");
+        tz = toString(args[2]);
+    }
+
+    ClockZone zone = parseZone(tz);
+    NormalizedParts parts = normalizeMicros(timeTotalMicros(inst));
+    std::tm tm {};
+    if (!toCalendar(parts.seconds, zone, tm))
+        throw std::runtime_error("time value out of range");
+
+    std::string out = formatWithMicros(tm, parts.micros, format);
+    return Value::stringVal(toUnicodeString(out));
+}
+
+Value ModuleSys::time_components_native(VM& vm, ArgsView args)
+{
+    if (args.size() < 1 || args.size() > 2)
+        throw std::invalid_argument("Time.components expects optional tz");
+
+    ObjectInstance* inst = requireInstance(args[0], timeTypeObj, "Time.components", "Time");
+    if (timeIsSteady(inst))
+        throw std::invalid_argument("Time.components is only valid for wall-clock times");
+
+    std::string tz = "local";
+    if (args.size() == 2) {
+        if (!isString(args[1]))
+            throw std::invalid_argument("Time.components tz must be string");
+        tz = toString(args[1]);
+    }
+
+    ClockZone zone = parseZone(tz);
+    NormalizedParts parts = normalizeMicros(timeTotalMicros(inst));
+    std::tm tm {};
+    if (!toCalendar(parts.seconds, zone, tm))
+        throw std::runtime_error("time value out of range");
+
+    Value dict { Value::dictVal() };
+    auto* d = asDict(dict);
+    d->store(Value::stringVal(toUnicodeString("year")), Value::intVal(tm.tm_year + 1900));
+    d->store(Value::stringVal(toUnicodeString("month")), Value::intVal(tm.tm_mon + 1));
+    d->store(Value::stringVal(toUnicodeString("day")), Value::intVal(tm.tm_mday));
+    d->store(Value::stringVal(toUnicodeString("hour")), Value::intVal(tm.tm_hour));
+    d->store(Value::stringVal(toUnicodeString("minute")), Value::intVal(tm.tm_min));
+    d->store(Value::stringVal(toUnicodeString("second")), Value::intVal(tm.tm_sec));
+    d->store(Value::stringVal(toUnicodeString("microsecond")), Value::intVal(parts.micros));
+    d->store(Value::stringVal(toUnicodeString("weekday")), Value::intVal(tm.tm_wday));
+    d->store(Value::stringVal(toUnicodeString("yearday")), Value::intVal(tm.tm_yday + 1));
+
+    return dict;
+}
+
+Value ModuleSys::timespan_init_native(VM& vm, ArgsView args)
+{
+    if (args.size() < 1 || args.size() > 7)
+        throw std::invalid_argument("TimeSpan.init expects up to six numeric arguments");
+
+    ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.init", "TimeSpan");
+
+    auto readArg = [&](size_t index, const char* name) -> int {
+        if (index >= args.size())
+            return 0;
+        if (!args[index].isNumber())
+            throw std::invalid_argument(std::string("TimeSpan.init ") + name + " must be int");
+        return toType(ValueType::Int, args[index], false).asInt();
+    };
+
+    int days = readArg(1, "days");
+    int hours = readArg(2, "hours");
+    int minutes = readArg(3, "minutes");
+    int seconds = readArg(4, "seconds");
+    int millis = readArg(5, "millis");
+    int micros = readArg(6, "micros");
+
+    int64_t total = durationFromFields(days, hours, minutes, seconds, millis, micros);
+    assignSpan(inst, total);
+    return Value::nilVal();
+}
+
+Value ModuleSys::timespan_seconds_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("TimeSpan.seconds expects no arguments");
+
+    ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.seconds", "TimeSpan");
+    return Value::intVal(readIntProperty(inst, "_seconds"));
+}
+
+Value ModuleSys::timespan_micros_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("TimeSpan.microseconds expects no arguments");
+
+    ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.microseconds", "TimeSpan");
+    return Value::intVal(readIntProperty(inst, "_micros"));
+}
+
+Value ModuleSys::timespan_split_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("TimeSpan.split expects no arguments");
+
+    ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.split", "TimeSpan");
+    int64_t total = spanTotalMicros(inst);
+    bool negative = total < 0;
+    int64_t remaining = negative ? -total : total;
+
+    int32_t days = static_cast<int32_t>(remaining / kMicrosPerDay);
+    remaining %= kMicrosPerDay;
+    int32_t hours = static_cast<int32_t>(remaining / kMicrosPerHour);
+    remaining %= kMicrosPerHour;
+    int32_t minutes = static_cast<int32_t>(remaining / kMicrosPerMinute);
+    remaining %= kMicrosPerMinute;
+    int32_t seconds = static_cast<int32_t>(remaining / kMicrosPerSecond);
+    remaining %= kMicrosPerSecond;
+    int32_t millis = static_cast<int32_t>(remaining / kMicrosPerMillisecond);
+    int32_t micros = static_cast<int32_t>(remaining % kMicrosPerMillisecond);
+
+    Value dict { Value::dictVal() };
+    auto* d = asDict(dict);
+    d->store(Value::stringVal(toUnicodeString("days")), Value::intVal(days));
+    d->store(Value::stringVal(toUnicodeString("hours")), Value::intVal(hours));
+    d->store(Value::stringVal(toUnicodeString("minutes")), Value::intVal(minutes));
+    d->store(Value::stringVal(toUnicodeString("seconds")), Value::intVal(seconds));
+    d->store(Value::stringVal(toUnicodeString("millis")), Value::intVal(millis));
+    d->store(Value::stringVal(toUnicodeString("micros")), Value::intVal(micros));
+    d->store(Value::stringVal(toUnicodeString("negative")), Value::boolVal(negative));
+
+    return dict;
+}
+
+Value ModuleSys::timespan_total_days_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("TimeSpan.total_days expects no arguments");
+
+    ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.total_days", "TimeSpan");
+    return Value::realVal(static_cast<double>(spanTotalMicros(inst)) / static_cast<double>(kMicrosPerDay));
+}
+
+Value ModuleSys::timespan_total_hours_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("TimeSpan.total_hours expects no arguments");
+
+    ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.total_hours", "TimeSpan");
+    return Value::realVal(static_cast<double>(spanTotalMicros(inst)) / static_cast<double>(kMicrosPerHour));
+}
+
+Value ModuleSys::timespan_total_minutes_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("TimeSpan.total_minutes expects no arguments");
+
+    ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.total_minutes", "TimeSpan");
+    return Value::realVal(static_cast<double>(spanTotalMicros(inst)) / static_cast<double>(kMicrosPerMinute));
+}
+
+Value ModuleSys::timespan_total_seconds_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("TimeSpan.total_seconds expects no arguments");
+
+    ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.total_seconds", "TimeSpan");
+    return Value::realVal(static_cast<double>(spanTotalMicros(inst)) / static_cast<double>(kMicrosPerSecond));
+}
+
+Value ModuleSys::timespan_total_millis_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("TimeSpan.total_millis expects no arguments");
+
+    ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.total_millis", "TimeSpan");
+    return Value::realVal(static_cast<double>(spanTotalMicros(inst)) / static_cast<double>(kMicrosPerMillisecond));
+}
+
+Value ModuleSys::timespan_total_micros_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("TimeSpan.total_micros expects no arguments");
+
+    ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.total_micros", "TimeSpan");
+    return Value::realVal(static_cast<double>(spanTotalMicros(inst)));
+}
+
+Value ModuleSys::timespan_human_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("TimeSpan.human expects no arguments");
+
+    ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.human", "TimeSpan");
+    std::string out = humanDurationString(spanTotalMicros(inst));
+    return Value::stringVal(toUnicodeString(out));
+}
+
+Value ModuleSys::time_type_wall_now(VM& vm, ArgsView args)
+{
+    if (args.size() < 1 || args.size() > 2)
+        throw std::invalid_argument("Time.wall_now expects optional tz");
+
+    if (!isObjectType(args[0]) || asObjectType(args[0]) != timeTypeObj)
+        throw std::invalid_argument("Time.wall_now must be called on sys.Time");
+
+    std::string tz = "local";
+    if (args.size() == 2) {
+        if (!isString(args[1]))
+            throw std::invalid_argument("Time.wall_now tz must be string");
+        tz = toString(args[1]);
+    }
+
+    (void)parseZone(tz);
+    auto now = std::chrono::system_clock::now();
+    int64_t total = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+    return newTimeInstance(timeTypeValue, total, false);
+}
+
+Value ModuleSys::time_type_steady_now(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("Time.steady_now expects no arguments");
+
+    if (!isObjectType(args[0]) || asObjectType(args[0]) != timeTypeObj)
+        throw std::invalid_argument("Time.steady_now must be called on sys.Time");
+
+    auto now = std::chrono::steady_clock::now();
+    int64_t total = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+    return newTimeInstance(timeTypeValue, total, true);
+}
+
+Value ModuleSys::time_type_parse(VM& vm, ArgsView args)
+{
+    if (args.size() < 2 || args.size() > 4)
+        throw std::invalid_argument("Time.parse expects text, optional format and tz");
+
+    if (!isObjectType(args[0]) || asObjectType(args[0]) != timeTypeObj)
+        throw std::invalid_argument("Time.parse must be called on sys.Time");
+    if (!isString(args[1]))
+        throw std::invalid_argument("Time.parse text must be string");
+
+    std::string text = toString(args[1]);
+    std::string format = "%Y-%m-%d %H:%M:%S";
+    if (args.size() >= 3) {
+        if (!isString(args[2]))
+            throw std::invalid_argument("Time.parse format must be string");
+        format = toString(args[2]);
+    }
+    std::string tz = "local";
+    if (args.size() == 4) {
+        if (!isString(args[3]))
+            throw std::invalid_argument("Time.parse tz must be string");
+        tz = toString(args[3]);
+    }
+
+    ClockZone zone = parseZone(tz);
+    int64_t total = parseWallTime(text, format, zone);
+    return newTimeInstance(timeTypeValue, total, false);
+}
+
+Value ModuleSys::time_type_from_parts(VM& vm, ArgsView args)
+{
+    if (args.size() < 2 || args.size() > 4)
+        throw std::invalid_argument("Time.from_parts expects seconds, optional micros and kind");
+
+    if (!isObjectType(args[0]) || asObjectType(args[0]) != timeTypeObj)
+        throw std::invalid_argument("Time.from_parts must be called on sys.Time");
+    if (!args[1].isNumber())
+        throw std::invalid_argument("Time.from_parts seconds must be int");
+
+    int32_t seconds = toType(ValueType::Int, args[1], false).asInt();
+    int32_t micros = 0;
+    if (args.size() >= 3) {
+        if (!args[2].isNumber())
+            throw std::invalid_argument("Time.from_parts micros must be int");
+        micros = toType(ValueType::Int, args[2], false).asInt();
+    }
+
+    std::string kind = "wall";
+    if (args.size() == 4) {
+        if (!isString(args[3]))
+            throw std::invalid_argument("Time.from_parts kind must be string");
+        kind = toString(args[3]);
+    }
+
+    TimeKind tk = parseKind(kind);
+    int64_t total = static_cast<int64_t>(seconds) * kMicrosPerSecond + micros;
+    return newTimeInstance(timeTypeValue, total, tk == TimeKind::Steady);
+}
+
+Value ModuleSys::timespan_type_from_fields(VM& vm, ArgsView args)
+{
+    if (args.size() < 1 || args.size() > 7)
+        throw std::invalid_argument("TimeSpan.from_fields expects up to six numeric arguments");
+
+    if (!isObjectType(args[0]) || asObjectType(args[0]) != timeSpanTypeObj)
+        throw std::invalid_argument("TimeSpan.from_fields must be called on sys.TimeSpan");
+
+    auto readArg = [&](size_t index, const char* name) -> int {
+        if (index >= args.size())
+            return 0;
+        if (!args[index].isNumber())
+            throw std::invalid_argument(std::string("TimeSpan.from_fields ") + name + " must be int");
+        return toType(ValueType::Int, args[index], false).asInt();
+    };
+
+    int days = readArg(1, "days");
+    int hours = readArg(2, "hours");
+    int minutes = readArg(3, "minutes");
+    int seconds = readArg(4, "seconds");
+    int millis = readArg(5, "millis");
+    int micros = readArg(6, "micros");
+
+    int64_t total = durationFromFields(days, hours, minutes, seconds, millis, micros);
+    return newSpanInstance(timeSpanTypeValue, total);
 }
 
 Value ModuleSys::clock_native(VM& vm, ArgsView args)
