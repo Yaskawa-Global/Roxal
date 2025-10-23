@@ -3,6 +3,7 @@
 #include "BuiltinModule.h"
 #include "Value.h"
 #include "Object.h"
+#include <string>
 
 namespace roxal {
 
@@ -89,5 +90,10 @@ private:
     ObjObjectType* timeTypeObj { nullptr };
     ObjObjectType* timeSpanTypeObj { nullptr };
 };
+
+ObjObjectType* sysTimeType();
+ObjObjectType* sysTimeSpanType();
+std::string sysTimeDefaultString(ObjectInstance* inst);
+std::string sysTimeSpanDefaultString(ObjectInstance* inst);
 
 }

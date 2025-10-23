@@ -1,10 +1,10 @@
 import sys
 
-var wall = sys.Time()
+var wall = Time()
 print(wall.kind())
 print(wall.isSteady())
 
-var parsed = sys.Time.parse("2023-08-20 13:36:00.500000", "%Y-%m-%d %H:%M:%S.%f", tz='utc')
+var parsed = Time.parse("2023-08-20 13:36:00.500000", "%Y-%m-%d %H:%M:%S.%f", tz='utc')
 var components = parsed.components(tz='utc')
 print(components['year'])
 print(components['month'])
@@ -17,8 +17,9 @@ print(components['weekday'])
 print(components['yearday'])
 
 print(parsed.format("%Y-%m-%d %H:%M:%S.%f", tz='utc'))
+print(parsed)
 
-var earlier = sys.Time.parse("2023-08-19 12:34:56", "%Y-%m-%d %H:%M:%S", tz='utc')
+var earlier = Time.parse("2023-08-19 12:34:56", "%Y-%m-%d %H:%M:%S", tz='utc')
 var diff = parsed.diff(earlier)
 print(diff.seconds())
 print(diff.microseconds())
@@ -32,16 +33,21 @@ print(split['micros'])
 print(split['negative'])
 print(diff.total_hours())
 print(diff.human())
+print(diff)
 
-var span = sys.TimeSpan.from_fields(days=1, hours=2, minutes=3, seconds=4, millis=5, micros=6)
+var span = TimeSpan.from_fields(days=1, hours=2, minutes=3, seconds=4, millis=5, micros=6)
 var spanSplit = span.split()
 print(spanSplit['days'])
 print(spanSplit['hours'])
 print(span.total_seconds())
 print(span.total_micros())
 print(span.human())
+print(span)
 
 var steady = sys.Time.steady_now()
 print(steady.isSteady())
 var steadyDiff = steady.diff(steady)
 print(steadyDiff.total_micros())
+
+var constructedSteady = Time.from_parts(seconds=0, micros=500, kind='steady')
+print(constructedSteady)

@@ -33,6 +33,9 @@ constexpr int64_t MICROS_PER_MINUTE = 60 * MICROS_PER_SECOND;
 constexpr int64_t MICROS_PER_HOUR = 60 * MICROS_PER_MINUTE;
 constexpr int64_t MICROS_PER_DAY = 24 * MICROS_PER_HOUR;
 
+ObjObjectType* gSysTimeType = nullptr;
+ObjObjectType* gSysTimeSpanType = nullptr;
+
 struct NormalizedParts {
     int32_t seconds;
     int32_t micros;
@@ -319,7 +322,56 @@ Value newSpanInstance(const Value& typeValue, int64_t totalMicros)
     return inst;
 }
 
+std::string defaultTimeString(ObjectInstance* inst)
+{
+    if (!inst)
+        return std::string();
+
+    if (timeIsSteady(inst))
+        return std::string("steady ") + humanDurationString(timeTotalMicros(inst));
+
+    int32_t seconds = readIntProperty(inst, "_seconds");
+    int32_t micros = readIntProperty(inst, "_micros");
+
+    std::tm tm {};
+    if (!toCalendar(seconds, ClockZone::Local, tm))
+        return std::string("object Time");
+
+    try {
+        return formatWithMicros(tm, micros, "%Y-%m-%d %H:%M:%S");
+    } catch (...) {
+        return std::string("object Time");
+    }
+}
+
+std::string defaultSpanString(ObjectInstance* inst)
+{
+    if (!inst)
+        return std::string();
+    return humanDurationString(spanTotalMicros(inst));
+}
+
 } // namespace
+
+ObjObjectType* roxal::sysTimeType()
+{
+    return gSysTimeType;
+}
+
+ObjObjectType* roxal::sysTimeSpanType()
+{
+    return gSysTimeSpanType;
+}
+
+std::string roxal::sysTimeDefaultString(ObjectInstance* inst)
+{
+    return defaultTimeString(inst);
+}
+
+std::string roxal::sysTimeSpanDefaultString(ObjectInstance* inst)
+{
+    return defaultSpanString(inst);
+}
 
 ModuleSys::ModuleSys()
 {
@@ -424,12 +476,18 @@ void ModuleSys::registerBuiltins(VM& vm)
         throw std::runtime_error("sys.Time type not found");
     timeTypeValue = maybeTime.value();
     timeTypeObj = asObjectType(timeTypeValue);
+    gSysTimeType = timeTypeObj;
+    if (!vm.loadGlobal(toUnicodeString("Time")).has_value())
+        vm.globals.storeGlobal(toUnicodeString("Time"), timeTypeValue);
 
     auto maybeSpan = asModuleType(moduleType())->vars.load(toUnicodeString("TimeSpan"));
     if (!maybeSpan.has_value() || !isObjectType(maybeSpan.value()))
         throw std::runtime_error("sys.TimeSpan type not found");
     timeSpanTypeValue = maybeSpan.value();
     timeSpanTypeObj = asObjectType(timeSpanTypeValue);
+    gSysTimeSpanType = timeSpanTypeObj;
+    if (!vm.loadGlobal(toUnicodeString("TimeSpan")).has_value())
+        vm.globals.storeGlobal(toUnicodeString("TimeSpan"), timeSpanTypeValue);
 
     std::vector<Value> timeInitDefaults{
         Value::stringVal(toUnicodeString("wall")),
