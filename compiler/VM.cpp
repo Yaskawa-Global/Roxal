@@ -38,6 +38,7 @@
 #include <fstream>
 #include <cstdio>
 #include <iostream>
+#include <stdexcept>
 
 using namespace roxal;
 
@@ -1935,10 +1936,13 @@ bool VM::isObjectCleanupPending() const
 
 void VM::enableOpcodeProfiling(std::string filePath)
 {
+#ifndef DEBUG_BUILD
+    throw std::runtime_error("Opcode profiling is only available in debug builds.");
+#else
     std::filesystem::path path = filePath.empty() ? std::filesystem::path("opcode_profile.json")
                                                   : std::filesystem::path(filePath);
 
-    opcodeProfilePath = std::move(path);
+    opcodeProfilePath = std::filesystem::absolute(path);
 
     for (auto& counter : opcodeProfileCounts)
         counter.store(0, std::memory_order_relaxed);
@@ -2001,10 +2005,14 @@ void VM::enableOpcodeProfiling(std::string filePath)
     }
 
     opcodeProfilingEnabled.store(true, std::memory_order_release);
+#endif
 }
 
 void VM::writeOpcodeProfile()
 {
+#ifndef DEBUG_BUILD
+    throw std::runtime_error("Opcode profiling is only available in debug builds.");
+#else
     if (!opcodeProfilingEnabled.load(std::memory_order_acquire))
         return;
 
@@ -2037,6 +2045,7 @@ void VM::writeOpcodeProfile()
     if (!out) {
         std::cerr << "Warning: failed to write opcode profile file '" << opcodeProfilePath << "'." << std::endl;
     }
+#endif
 }
 
 
@@ -2232,11 +2241,13 @@ std::pair<InterpretResult,Value> VM::execute()
             singleByteArg = false; // expects 2 bytes of argument
         }
 
+        #ifdef DEBUG_BUILD
         if (opcodeProfilingEnabled.load(std::memory_order_relaxed)) {
             size_t opcodeIndex = static_cast<size_t>(instruction);
             if (opcodeIndex < opcodeProfileCounts.size())
                 opcodeProfileCounts[opcodeIndex].fetch_add(1, std::memory_order_relaxed);
         }
+        #endif
 
         thread->frameStart = false;
 
