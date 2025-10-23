@@ -28,6 +28,7 @@ namespace {
 constexpr char kModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
 constexpr std::uint32_t kModuleCacheVersion = 5;
 
+// Compose a dotted module name from the package path and the leaf module.
 icu::UnicodeString makeFullModuleName(const icu::UnicodeString& packagePath,
                                       const icu::UnicodeString& moduleName) {
     icu::UnicodeString full;
@@ -268,6 +269,8 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
     if (function.isNil() || !isFunction(function))
         return;
 
+    // Helpers --------------------------------------------------------------
+
     auto toKey = [](const icu::UnicodeString& value) {
         std::string result;
         value.toUTF8String(result);
@@ -296,6 +299,11 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         return strong;
     };
 
+    // Walk every function owned by the entry chunk and collect the module
+    // types they reference (both directly and via nested functions).  At the
+    // same time, remember any alias information recorded on the module so we
+    // can restore the import table after we rebuild the canonical module
+    // hierarchy below.
     std::unordered_set<ObjFunction*> visited;
     std::vector<ObjFunction*> stack;
     using AliasList = std::vector<std::pair<icu::UnicodeString, icu::UnicodeString>>;
@@ -332,6 +340,9 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         }
 
         if (imports.empty()) {
+            // Fall back to the variable table when the module did not record
+            // explicit alias metadata (this covers older cache files or
+            // modules that populated the table manually).
             for (const auto& entry : moduleType->vars.snapshot()) {
                 const icu::UnicodeString& name = entry.first;
                 if (importHashes.insert(name.hashCode()).second)
@@ -377,6 +388,10 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
             if (canonicalIt != canonicalModules.end()) {
                 moduleValue = canonicalIt->second.strongRef();
             } else {
+                // Lazily create placeholder modules for missing entries so we
+                // can rebuild a consistent hierarchy (e.g. when a cached
+                // module references a package parent that was not serialized
+                // in the cache file).
                 int32_t dotIndex = fullName.lastIndexOf('.');
                 icu::UnicodeString localName = dotIndex >= 0 ? fullName.tempSubString(dotIndex + 1)
                                                              : fullName;
@@ -400,6 +415,9 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
                 if (parentValue.isNonNil()) {
                     icu::UnicodeString alias = fullName.tempSubString(dotIndex + 1);
                     ObjModuleType* parentModule = asModuleType(parentValue);
+                    // Recreate the parent->child relationship so lookups on
+                    // the parent module continue to work as they did during
+                    // the original compile.
                     parentModule->vars.store(alias, moduleValue, true);
                     parentModule->registerModuleAlias(alias, fullName);
                 }
@@ -434,6 +452,9 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
 
             Value moduleValue = ensureModuleHierarchy(aliasFullName);
             if (moduleValue.isNonNil()) {
+                // Re-populate the module with the canonical module reference
+                // and re-register the alias so subsequent cache loads know
+                // where the import originated.
                 moduleType->vars.store(aliasName, moduleValue, true);
                 moduleType->registerModuleAlias(aliasName, aliasFullName);
             }

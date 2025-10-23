@@ -2130,6 +2130,9 @@ void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
             flags |= 0x1;
             aliasFullName = aliasIt->second;
         } else if (isModuleType(entry.second)) {
+            // When no explicit alias metadata was recorded fall back to the
+            // module's full name.  This ensures older cache files still record
+            // enough information to rebuild the module graph when reloaded.
             flags |= 0x1;
             ObjModuleType* module = asModuleType(entry.second);
             aliasFullName = module->fullName.isEmpty() ? module->name : module->fullName;
@@ -2195,6 +2198,8 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             icu::UnicodeString aliasFullName = icu::UnicodeString::fromUTF8(alias);
             if (aliasFullName.isEmpty())
                 aliasFullName = varName;
+            // Store the alias so reconcileModuleReferences() knows which fully
+            // qualified module should be rebound to this slot.
             registerModuleAlias(varName, aliasFullName);
         }
     }
@@ -2220,6 +2225,8 @@ void ObjModuleType::dropReferences()
 void ObjModuleType::registerModuleAlias(const icu::UnicodeString& alias,
                                         const icu::UnicodeString& moduleFullName)
 {
+    // Track aliases by hash so they survive cache round-trips without
+    // depending on the underlying table layout.
     moduleAliases.insert_or_assign(alias.hashCode(), std::make_pair(alias, moduleFullName));
 }
 

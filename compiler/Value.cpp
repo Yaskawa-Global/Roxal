@@ -2352,6 +2352,10 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
         return Value::objRef(obj);
     };
 
+    // Many cached objects need to be reconstructed as fresh allocations so the
+    // GC owns them and they can participate in interning/lookups safely.  This
+    // helper creates the placeholder, registers it with the serialization
+    // context, then lets the object load its payload.
     auto readOwnedObject = [&](auto&& valueFactory) -> Value {
         uint8_t flag; in.read(reinterpret_cast<char*>(&flag), 1);
         uint64_t id;  in.read(reinterpret_cast<char*>(&id), 8);
