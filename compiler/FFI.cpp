@@ -7,6 +7,7 @@
 #include <dlfcn.h>
 #include <ffi.h>
 #include <filesystem>
+#include <system_error>
 
 using namespace roxal;
 
@@ -40,15 +41,40 @@ Value roxal::loadlib_native(ArgsView args)
     std::filesystem::path path = toUTF8StdString(asUString(args[0]));
 
     if (!path.is_absolute()) {
+        std::filesystem::path combined = path;
         if (VM::thread && !VM::thread->frames.empty()) {
             const CallFrame& frame = VM::thread->frames.back();
             ObjFunction* fn = asFunction(asClosure(frame.closure)->function);
-            std::string src = toUTF8StdString(fn->chunk->sourceName);
-            if (!src.empty()) {
-                std::filesystem::path base = std::filesystem::path(src).parent_path();
-                path = base / path;
+            Value moduleValue = fn->moduleType.strongRef();
+            ObjModuleType* moduleType = moduleValue.isObj() ? asModuleType(moduleValue) : nullptr;
+            if (moduleType && !moduleType->sourcePath.isEmpty()) {
+                std::filesystem::path base = std::filesystem::path(toUTF8StdString(moduleType->sourcePath)).parent_path();
+                if (!base.empty())
+                    combined = base / path;
+            }
+
+            if (combined == path) {
+                std::string src = toUTF8StdString(fn->chunk->sourceName);
+                if (!src.empty()) {
+                    std::filesystem::path base = std::filesystem::path(src).parent_path();
+                    if (!base.empty()) {
+                        std::error_code baseEc;
+                        std::filesystem::path absoluteBase = std::filesystem::absolute(base, baseEc);
+                        if (!baseEc)
+                            combined = absoluteBase / path;
+                        else
+                            combined = base / path;
+                    }
+                }
             }
         }
+
+        std::error_code ec;
+        std::filesystem::path absoluteCombined = std::filesystem::absolute(combined, ec);
+        if (!ec)
+            path = absoluteCombined.lexically_normal();
+        else
+            path = combined.lexically_normal();
     }
 
     void* h = dlopen(path.string().c_str(), RTLD_LAZY);

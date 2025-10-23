@@ -1203,6 +1203,7 @@ struct ObjModuleType : public ObjTypeSpec
 
     icu::UnicodeString name;
     icu::UnicodeString fullName;
+    icu::UnicodeString sourcePath;
 
     // variables declared at runtime via VM OpCode::DefineModuleVar
     VariablesMap vars;

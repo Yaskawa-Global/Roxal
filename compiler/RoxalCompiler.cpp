@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <system_error>
 #include <boost/algorithm/string/replace.hpp>
 
 #include <core/common.h>
@@ -26,7 +27,7 @@ using ast::Access;
 namespace {
 
 constexpr char kModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t kModuleCacheVersion = 5;
+constexpr std::uint32_t kModuleCacheVersion = 8;
 
 // Compose a dotted module name from the package path and the leaf module.
 icu::UnicodeString makeFullModuleName(const icu::UnicodeString& packagePath,
@@ -2532,6 +2533,23 @@ void RoxalCompiler::enterModuleScope(const icu::UnicodeString& packageName,
     ptr<ModuleScope> moduleScope { make_ptr<ModuleScope>(packageName, moduleName,
                                                          sourceName,
                                                          existingModule) };
+
+    if (moduleScope->moduleType.isObj()) {
+        ObjModuleType* moduleType = asModuleType(moduleScope->moduleType);
+        std::string sourceUtf8 = toUTF8StdString(sourceName);
+        bool assigned = false;
+        if (!sourceUtf8.empty()) {
+            std::error_code ec;
+            std::filesystem::path candidate = std::filesystem::absolute(sourceUtf8, ec);
+            if (!ec) {
+                std::filesystem::path normalized = candidate.lexically_normal();
+                moduleType->sourcePath = toUnicodeString(normalized.string());
+                assigned = true;
+            }
+        }
+        if (!assigned)
+            moduleType->sourcePath = sourceName;
+    }
 
     lexicalScopes.push_back(moduleScope);
     #ifdef DEBUG_TRACE_SCOPES

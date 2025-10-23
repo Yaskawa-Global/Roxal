@@ -2108,6 +2108,13 @@ void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
     if (fullLen)
         out.write(full.data(), fullLen);
 
+    std::string source;
+    sourcePath.toUTF8String(source);
+    uint32_t sourceLen = static_cast<uint32_t>(source.size());
+    out.write(reinterpret_cast<char*>(&sourceLen), 4);
+    if (sourceLen)
+        out.write(source.data(), sourceLen);
+
     auto varsSnapshot = vars.snapshot();
     std::unordered_map<int32_t, icu::UnicodeString> aliasLookup;
     for (const auto& alias : moduleAliasSnapshot())
@@ -2151,6 +2158,42 @@ void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
                 out.write(aliasFullUtf8.data(), aliasFullUtf8.size());
         }
     }
+
+    // Persist the cstruct annotation map so cached modules know which type
+    // declarations should recreate their FFI metadata when reloaded.
+    uint32_t cstructCount = static_cast<uint32_t>(cstructArch.size());
+    out.write(reinterpret_cast<char*>(&cstructCount), 4);
+    for (const auto& entry : cstructArch) {
+        int32_t nameHash = entry.first;
+        int32_t arch = static_cast<int32_t>(entry.second);
+        out.write(reinterpret_cast<char*>(&nameHash), 4);
+        out.write(reinterpret_cast<char*>(&arch), 4);
+    }
+
+    // Serialize property-level ctype annotations keyed by the declaring type
+    // hash and the property name hash so @ctype metadata survives cache loads.
+    uint32_t typeCount = static_cast<uint32_t>(propertyCTypes.size());
+    out.write(reinterpret_cast<char*>(&typeCount), 4);
+    for (const auto& typeEntry : propertyCTypes) {
+        int32_t typeHash = typeEntry.first;
+        out.write(reinterpret_cast<char*>(&typeHash), 4);
+
+        const auto& props = typeEntry.second;
+        uint32_t propCount = static_cast<uint32_t>(props.size());
+        out.write(reinterpret_cast<char*>(&propCount), 4);
+
+        for (const auto& propEntry : props) {
+            int32_t propHash = propEntry.first;
+            out.write(reinterpret_cast<char*>(&propHash), 4);
+
+            std::string ctypeUtf8;
+            propEntry.second.toUTF8String(ctypeUtf8);
+            uint32_t ctypeLen = static_cast<uint32_t>(ctypeUtf8.size());
+            out.write(reinterpret_cast<char*>(&ctypeLen), 4);
+            if (ctypeLen)
+                out.write(ctypeUtf8.data(), ctypeLen);
+        }
+    }
 }
 
 void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
@@ -2171,6 +2214,16 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         fullName = icu::UnicodeString::fromUTF8(full);
     else
         fullName = name;
+
+    uint32_t sourceLen = 0;
+    in.read(reinterpret_cast<char*>(&sourceLen), 4);
+    std::string source(sourceLen, '\0');
+    if (sourceLen)
+        in.read(source.data(), sourceLen);
+    if (sourceLen > 0)
+        sourcePath = icu::UnicodeString::fromUTF8(source);
+    else
+        sourcePath = icu::UnicodeString();
 
     allModules.push_back(Value::objRef(this));
 
@@ -2203,6 +2256,42 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             registerModuleAlias(varName, aliasFullName);
         }
     }
+
+    // Rebuild the cstruct metadata so the VM can mark cached object types as
+    // FFI-compatible when they are constructed.
+    cstructArch.clear();
+    uint32_t cstructCount = 0;
+    in.read(reinterpret_cast<char*>(&cstructCount), 4);
+    for (uint32_t i = 0; i < cstructCount; ++i) {
+        int32_t nameHash = 0;
+        int32_t arch = 0;
+        in.read(reinterpret_cast<char*>(&nameHash), 4);
+        in.read(reinterpret_cast<char*>(&arch), 4);
+        cstructArch[nameHash] = arch;
+    }
+
+    propertyCTypes.clear();
+    uint32_t typeCount = 0;
+    in.read(reinterpret_cast<char*>(&typeCount), 4);
+    for (uint32_t i = 0; i < typeCount; ++i) {
+        int32_t typeHash = 0;
+        in.read(reinterpret_cast<char*>(&typeHash), 4);
+
+        uint32_t propCount = 0;
+        in.read(reinterpret_cast<char*>(&propCount), 4);
+        auto& props = propertyCTypes[typeHash];
+        for (uint32_t p = 0; p < propCount; ++p) {
+            int32_t propHash = 0;
+            in.read(reinterpret_cast<char*>(&propHash), 4);
+
+            uint32_t ctypeLen = 0;
+            in.read(reinterpret_cast<char*>(&ctypeLen), 4);
+            std::string ctypeUtf8(ctypeLen, '\0');
+            if (ctypeLen)
+                in.read(ctypeUtf8.data(), ctypeLen);
+            props[propHash] = icu::UnicodeString::fromUTF8(ctypeUtf8);
+        }
+    }
 }
 
 void ObjModuleType::trace(ValueVisitor& visitor) const
@@ -2220,6 +2309,9 @@ void ObjModuleType::dropReferences()
     });
     vars.clear();
     clearModuleAliases();
+    cstructArch.clear();
+    sourcePath = icu::UnicodeString();
+    propertyCTypes.clear();
 }
 
 void ObjModuleType::registerModuleAlias(const icu::UnicodeString& alias,
