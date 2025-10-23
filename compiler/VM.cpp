@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <map>
 #include <unordered_set>
+#include <system_error>
 #include <ffi.h>
 #include <dlfcn.h>
 
@@ -37,6 +38,7 @@
 #include <fstream>
 #include <cstdio>
 #include <iostream>
+#include <stdexcept>
 
 using namespace roxal;
 
@@ -242,6 +244,9 @@ VM::VM()
     runtimeErrorFlag = false;
     exitRequested = false;
     exitCodeValue = 0;
+
+    for (auto& counter : opcodeProfileCounts)
+        counter.store(0, std::memory_order_relaxed);
 
     thread = nullptr;
     initString = Value::stringVal(UnicodeString("init"));
@@ -1929,6 +1934,121 @@ bool VM::isObjectCleanupPending() const
 }
 
 
+void VM::enableOpcodeProfiling(std::string filePath)
+{
+#ifndef DEBUG_BUILD
+    throw std::runtime_error("Opcode profiling is only available in debug builds.");
+#else
+    std::filesystem::path path = filePath.empty() ? std::filesystem::path("opcode_profile.json")
+                                                  : std::filesystem::path(filePath);
+
+    opcodeProfilePath = std::filesystem::absolute(path);
+
+    for (auto& counter : opcodeProfileCounts)
+        counter.store(0, std::memory_order_relaxed);
+
+    if (!opcodeProfilePath.empty()) {
+        std::error_code ec;
+        if (std::filesystem::exists(opcodeProfilePath, ec)) {
+            if (ec) {
+                std::cerr << "Warning: unable to check opcode profile file '" << opcodeProfilePath
+                          << "': " << ec.message() << std::endl;
+            } else {
+                std::ifstream in(opcodeProfilePath);
+                if (in) {
+                    std::ostringstream buffer;
+                    buffer << in.rdbuf();
+                    std::string contents = buffer.str();
+                    std::string err;
+                    auto json = json11::Json::parse(contents, err);
+                    if (err.empty() && json.is_object()) {
+                        for (const auto& kv : json.object_items()) {
+                            size_t opcodeIndex = 0;
+                            try {
+                                opcodeIndex = static_cast<size_t>(std::stoul(kv.first));
+                            } catch (const std::exception&) {
+                                continue;
+                            }
+                            if (opcodeIndex >= opcodeProfileCounts.size())
+                                continue;
+
+                            uint64_t value = 0;
+                            const auto& jvalue = kv.second;
+                            if (jvalue.is_number()) {
+                                double num = jvalue.number_value();
+                                if (num >= 0.0) {
+                                    value = static_cast<uint64_t>(num);
+                                }
+                            } else if (jvalue.is_string()) {
+                                try {
+                                    value = std::stoull(jvalue.string_value());
+                                } catch (const std::exception&) {
+                                    continue;
+                                }
+                            }
+
+                            opcodeProfileCounts[opcodeIndex].store(value, std::memory_order_relaxed);
+                        }
+                    } else if (!err.empty()) {
+                        std::cerr << "Warning: failed to parse opcode profile file '" << opcodeProfilePath
+                                  << "': " << err << std::endl;
+                    }
+                } else {
+                    std::cerr << "Warning: failed to open opcode profile file '" << opcodeProfilePath
+                              << "' for reading." << std::endl;
+                }
+            }
+        } else if (ec) {
+            std::cerr << "Warning: unable to check opcode profile file '" << opcodeProfilePath
+                      << "': " << ec.message() << std::endl;
+        }
+    }
+
+    opcodeProfilingEnabled.store(true, std::memory_order_release);
+#endif
+}
+
+void VM::writeOpcodeProfile()
+{
+#ifndef DEBUG_BUILD
+    throw std::runtime_error("Opcode profiling is only available in debug builds.");
+#else
+    if (!opcodeProfilingEnabled.load(std::memory_order_acquire))
+        return;
+
+    std::error_code ec;
+    const auto parent = opcodeProfilePath.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            std::cerr << "Warning: failed to create directory for opcode profile file '" << opcodeProfilePath
+                      << "': " << ec.message() << std::endl;
+            return;
+        }
+    }
+
+    json11::Json::object obj;
+    for (size_t i = 0; i < opcodeProfileCounts.size(); ++i) {
+        auto value = opcodeProfileCounts[i].load(std::memory_order_relaxed);
+        obj[std::to_string(i)] = json11::Json(static_cast<double>(value));
+    }
+
+    std::ofstream out(opcodeProfilePath, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        std::cerr << "Warning: failed to open opcode profile file '" << opcodeProfilePath
+                  << "' for writing." << std::endl;
+        return;
+    }
+
+    json11::Json json(obj);
+    out << json.dump();
+    if (!out) {
+        std::cerr << "Warning: failed to write opcode profile file '" << opcodeProfilePath << "'." << std::endl;
+    }
+#endif
+}
+
+
 std::pair<InterpretResult,Value> VM::execute()
 {
     if (thread->frames.empty() ||
@@ -2120,6 +2240,14 @@ std::pair<InterpretResult,Value> VM::execute()
             instruction = OpCode(instructionByte & ~DoubleByteArg);
             singleByteArg = false; // expects 2 bytes of argument
         }
+
+        #ifdef DEBUG_BUILD
+        if (opcodeProfilingEnabled.load(std::memory_order_relaxed)) {
+            size_t opcodeIndex = static_cast<size_t>(instruction);
+            if (opcodeIndex < opcodeProfileCounts.size())
+                opcodeProfileCounts[opcodeIndex].fetch_add(1, std::memory_order_relaxed);
+        }
+        #endif
 
         thread->frameStart = false;
 

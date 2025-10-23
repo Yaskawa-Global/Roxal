@@ -16,7 +16,18 @@ TEST_NAME_WIDTH = 32
 parser = argparse.ArgumentParser(description="Run Roxal tests.")
 parser.add_argument('--convs', action='store_true', help='Include tests/conversions/* tests')
 parser.add_argument('--all', action='store_true', help='Run all tests, including conversions and long running tests')
+parser.add_argument('--opcode-prof', action='store_true', help='Enable opcode profiling for each Roxal invocation')
 args = parser.parse_args()
+
+
+def is_debug_build(build_dir: str) -> bool:
+    flags_path = os.path.join(build_dir, 'CMakeFiles', 'roxal.dir', 'flags.make')
+    try:
+        with open(flags_path, 'r', encoding='utf-8') as handle:
+            contents = handle.read()
+        return 'DEBUG_BUILD' in contents
+    except OSError:
+        return False
 
 # for each named test, run the <test>.rox file in the tests folder
 # and compare its output with <test>.out (stdout) and <test>.err (stderr regex)
@@ -106,6 +117,12 @@ test_dir = os.path.join(project_root, 'tests')
 roxalpath = 'build'
 roxal = './roxal'
 
+build_dir = os.path.join(project_root, roxalpath)
+if args.opcode_prof and not is_debug_build(build_dir):
+    raise SystemExit("--opcode-prof requires a Debug build (configure CMake with -DCMAKE_BUILD_TYPE=Debug).")
+
+opcode_profile_path = os.path.abspath(os.path.join(build_dir, 'opcode_profile.json'))
+
 # Ensure the FFI test shared library is built
 testlib_c = os.path.join(test_dir, 'testlib.c')
 testlib_so = os.path.join(test_dir, 'testlib.so')
@@ -169,6 +186,9 @@ try:
             input_data = f"run {rel_script}\nquit\n".encode()
         if test == 'invalid_option':
             cmd = [roxal, '--bogus']
+
+        if args.opcode_prof and '--opcode-prof' not in cmd:
+            cmd = [cmd[0], '--opcode-prof', *cmd[1:]]
 
         opt_expected = (" [expected]" if test in failing_tests else '')
 
@@ -259,5 +279,11 @@ print(f"{passed_count} tests passed, {failed_unexpected_count} "+('FAILED' if fa
 if failed_count > 0:
   print(f"Tests expecied to fail currently: {', '.join(failing_tests)}")
 print(f"Total time {total_duration:.2f} s")
+
+if args.opcode_prof:
+    if os.path.exists(opcode_profile_path):
+        print(f"Opcode profile written to {opcode_profile_path}")
+    else:
+        print(f"Opcode profiling was requested but {opcode_profile_path} was not created.")
 
 os.chdir(cwd)

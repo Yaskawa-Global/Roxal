@@ -9,6 +9,7 @@
 #include <limits>
 #include <cstdint>
 #include <string>
+#include <memory>
 
 #include <core/AST.h>
 #include "RoxalIndentationLexer.h"
@@ -305,10 +306,23 @@ int main(int argc, const char* argv[])
         ("ast", "parse only and output text Abstract Syntax Tree (AST)")
         ("astgraph", po::value< std::vector<std::string> >(), "parse only and output GraphViz dot file")
         ("gc-threshold", po::value<long long>(), gcOptionHelp.c_str())
+        #ifdef DEBUG_BUILD
+        ("opcode-prof", "collect opcode execution frequencies in opcode_profile.json")
+        #endif
     ;
 
     po::positional_options_description pos;
     pos.add("input-file", -1);
+
+    #ifdef DEBUG_BUILD
+    struct OpcodeProfileFlushGuard {
+        ~OpcodeProfileFlushGuard() {
+            VM::instance().writeOpcodeProfile();
+        }
+    };
+
+    std::unique_ptr<OpcodeProfileFlushGuard> opcodeProfileFlushGuard;
+    #endif
 
     po::variables_map vmap;
     try {
@@ -356,6 +370,13 @@ int main(int argc, const char* argv[])
         cacheMode = VM::CacheMode::NoCache;
     else if (forceRecompile)
         cacheMode = VM::CacheMode::Recompile;
+
+    #ifdef DEBUG_BUILD
+    if (vmap.count("opcode-prof")) {
+        VM::instance().enableOpcodeProfiling();
+        opcodeProfileFlushGuard = std::make_unique<OpcodeProfileFlushGuard>();
+    }
+    #endif
 
 
     if (vmap.count("gc-threshold")) {
