@@ -31,7 +31,7 @@
 *.app
 
 # Roxal bytecode caches
-*.roc
+.*.moc
 
 # Build directories
 build/

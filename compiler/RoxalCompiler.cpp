@@ -26,8 +26,21 @@ using ast::Access;
 
 namespace {
 
-constexpr char kModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t kModuleCacheVersion = 8;
+constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
+constexpr std::uint32_t ModuleCacheVersion = 8;
+
+std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
+    if (sourcePath.empty())
+        return {};
+
+    std::filesystem::path directory = sourcePath.parent_path();
+    std::string stem = sourcePath.stem().string();
+    if (stem.empty())
+        stem = sourcePath.filename().string();
+
+    std::string cacheFilename = "." + stem + ".moc";
+    return directory / cacheFilename;
+}
 
 // Compose a dotted module name from the package path and the leaf module.
 icu::UnicodeString makeFullModuleName(const icu::UnicodeString& packagePath,
@@ -229,8 +242,9 @@ Value RoxalCompiler::loadFileCache(const std::filesystem::path& sourcePath) cons
         if (resolved.extension() != ".rox")
             return Value::nilVal();
 
-        std::filesystem::path cachePath = resolved;
-        cachePath.replace_extension(".roc");
+        std::filesystem::path cachePath = moduleCachePathFor(resolved);
+        if (cachePath.empty())
+            return Value::nilVal();
         if (!std::filesystem::exists(cachePath))
             return Value::nilVal();
 
@@ -262,8 +276,9 @@ void RoxalCompiler::storeFileCache(const std::filesystem::path& sourcePath, cons
             return;
 
         ModuleInfo module{};
-        module.cachePath = resolved;
-        module.cachePath.replace_extension(".roc");
+        module.cachePath = moduleCachePathFor(resolved);
+        if (module.cachePath.empty())
+            return;
         storeModuleCache(module, function);
     } catch (...) {
         // ignore cache write failures
@@ -2452,10 +2467,9 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
 
     try {
         module.resolvedPath = std::filesystem::canonical(path);
-        module.cachePath = module.resolvedPath;
-        module.cachePath.replace_extension(".roc");
+        module.cachePath = moduleCachePathFor(module.resolvedPath);
 
-        if (cacheReadEnabled && std::filesystem::exists(module.cachePath)) {
+        if (cacheReadEnabled && !module.cachePath.empty() && std::filesystem::exists(module.cachePath)) {
             auto sourceTime = std::filesystem::last_write_time(module.resolvedPath);
             auto cacheTime = std::filesystem::last_write_time(module.cachePath);
             if (cacheTime >= sourceTime)
@@ -2481,15 +2495,15 @@ Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module) const
 
         char magic[4];
         cacheStream.read(magic, sizeof(magic));
-        if (!cacheStream || magic[0] != kModuleCacheMagic[0] ||
-            magic[1] != kModuleCacheMagic[1] ||
-            magic[2] != kModuleCacheMagic[2] ||
-            magic[3] != kModuleCacheMagic[3])
+        if (!cacheStream || magic[0] != ModuleCacheMagic[0] ||
+            magic[1] != ModuleCacheMagic[1] ||
+            magic[2] != ModuleCacheMagic[2] ||
+            magic[3] != ModuleCacheMagic[3])
             return Value::nilVal();
 
         std::uint32_t version = 0;
         cacheStream.read(reinterpret_cast<char*>(&version), sizeof(version));
-        if (!cacheStream || version != kModuleCacheVersion)
+        if (!cacheStream || version != ModuleCacheVersion)
             return Value::nilVal();
 
         auto ctx = ptr<SerializationContext>::from_raw(new SerializationContext());
@@ -2513,8 +2527,8 @@ void RoxalCompiler::storeModuleCache(const ModuleInfo& module, const Value& func
         if (!cacheStream.is_open())
             return;
 
-        cacheStream.write(kModuleCacheMagic, sizeof(kModuleCacheMagic));
-        cacheStream.write(reinterpret_cast<const char*>(&kModuleCacheVersion), sizeof(kModuleCacheVersion));
+        cacheStream.write(ModuleCacheMagic, sizeof(ModuleCacheMagic));
+        cacheStream.write(reinterpret_cast<const char*>(&ModuleCacheVersion), sizeof(ModuleCacheVersion));
 
         auto ctx = ptr<SerializationContext>::from_raw(new SerializationContext());
         writeValue(cacheStream, function, ctx);
