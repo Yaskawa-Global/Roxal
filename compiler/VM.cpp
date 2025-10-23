@@ -438,8 +438,6 @@ VM::~VM()
     // ensure all threads are gone before reporting
     joinAllThreads();
 
-    writeOpcodeProfile();
-
     #ifdef DEBUG_TRACE_MEMORY
     // Final attempt to release any objects that might still be pending
     freeObjects();

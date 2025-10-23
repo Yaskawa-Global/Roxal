@@ -9,6 +9,7 @@
 #include <limits>
 #include <cstdint>
 #include <string>
+#include <memory>
 
 #include <core/AST.h>
 #include "RoxalIndentationLexer.h"
@@ -311,6 +312,14 @@ int main(int argc, const char* argv[])
     po::positional_options_description pos;
     pos.add("input-file", -1);
 
+    struct OpcodeProfileFlushGuard {
+        ~OpcodeProfileFlushGuard() {
+            VM::instance().writeOpcodeProfile();
+        }
+    };
+
+    std::unique_ptr<OpcodeProfileFlushGuard> opcodeProfileFlushGuard;
+
     po::variables_map vmap;
     try {
         po::store(po::command_line_parser(argc, argv).options(desc).positional(pos).run(), vmap);
@@ -360,6 +369,7 @@ int main(int argc, const char* argv[])
 
     if (vmap.count("opcode-prof")) {
         VM::instance().enableOpcodeProfiling();
+        opcodeProfileFlushGuard = std::make_unique<OpcodeProfileFlushGuard>();
     }
 
 
