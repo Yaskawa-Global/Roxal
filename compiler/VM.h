@@ -6,6 +6,8 @@
 #include <map>
 #include <deque>
 #include <mutex>
+#include <array>
+#include <filesystem>
 
 #include "core/atomic.h"
 #include "Chunk.h"
@@ -96,6 +98,8 @@ public:
     CacheMode cacheMode() const { return cacheModeSetting; }
     bool cacheReadsEnabled() const;
     bool cacheWritesEnabled() const;
+    void enableOpcodeProfiling(const std::string& filePath);
+    void writeOpcodeProfile();
 
     Value getBuiltinModule(const icu::UnicodeString& name);
     std::optional<Value> loadGlobal(const icu::UnicodeString& name) { return globals.load(name); }
@@ -197,6 +201,11 @@ protected:
     std::istream* lineStream;
 
     std::vector<std::string> modulePaths {};
+
+    static constexpr size_t OpcodeCount = static_cast<size_t>(OpCode::_Last);
+    std::atomic_bool opcodeProfilingEnabled {false};
+    std::filesystem::path opcodeProfilePath {"opcode_profile.json"};
+    std::array<std::atomic<uint64_t>, OpcodeCount> opcodeProfileCounts {};
 
     CacheMode cacheModeSetting;
 

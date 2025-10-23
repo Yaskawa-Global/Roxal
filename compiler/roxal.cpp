@@ -305,6 +305,8 @@ int main(int argc, const char* argv[])
         ("ast", "parse only and output text Abstract Syntax Tree (AST)")
         ("astgraph", po::value< std::vector<std::string> >(), "parse only and output GraphViz dot file")
         ("gc-threshold", po::value<long long>(), gcOptionHelp.c_str())
+        ("opcode-prof", po::value<std::string>()->implicit_value("opcode_profile.json"),
+         "collect opcode execution frequencies in the specified JSON file")
     ;
 
     po::positional_options_description pos;
@@ -356,6 +358,13 @@ int main(int argc, const char* argv[])
         cacheMode = VM::CacheMode::NoCache;
     else if (forceRecompile)
         cacheMode = VM::CacheMode::Recompile;
+
+    if (vmap.count("opcode-prof")) {
+        std::string profilePath = vmap["opcode-prof"].as<std::string>();
+        if (profilePath.empty())
+            profilePath = "opcode_profile.json";
+        VM::instance().enableOpcodeProfiling(profilePath);
+    }
 
 
     if (vmap.count("gc-threshold")) {
