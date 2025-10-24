@@ -38,7 +38,7 @@ std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath
     if (stem.empty())
         stem = sourcePath.filename().string();
 
-    std::string cacheFilename = "." + stem + ".moc";
+    std::string cacheFilename = "." + stem + ".roc";
     return directory / cacheFilename;
 }
 

@@ -83,7 +83,7 @@ public:
         std::string filename;       // filename of the module (e.g. with .rox extension)
         bool invalidFolder{false};  // folder existed but didn't contain init.rox or a single .rox file
         std::filesystem::path resolvedPath; // canonical path to resolved .rox file
-        std::filesystem::path cachePath;    // path to compiled cache (.moc)
+        std::filesystem::path cachePath;    // path to compiled cache (.roc)
         bool cacheValid{false};             // true if cache exists and is newer than source
 
         // FIXME: make members protected, cache hashCode
