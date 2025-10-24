@@ -87,21 +87,48 @@ void ModuleFileIO::registerBuiltins(VM& vm)
 
 Value ModuleFileIO::fileio_open_builtin(VM& vm, ArgsView args)
 {
-    if (args.size() < 1 || args.size() > 3 || !isString(args[0]))
-        throw std::invalid_argument("fileio.open expects path string, optional append bool and format string");
+    if (args.size() < 1 || args.size() > 4 || !isString(args[0]))
+        throw std::invalid_argument("fileio.open expects path string and optional append bool, format string, and write bool");
     bool append = false;
     if (args.size() >= 2)
         append = args[1].asBool();
+
+    bool write = false;
+    bool writeProvided = false;
+    bool formatProvided = false;
     std::string format = "text";
-    if (args.size() == 3) {
-        if (!isString(args[2]))
-            throw std::invalid_argument("fileio.open format must be 'text' or 'binary'");
-        format = toUTF8StdString(asStringObj(args[2])->s);
+    if (args.size() >= 3) {
+        if (isString(args[2])) {
+            format = toUTF8StdString(asStringObj(args[2])->s);
+            formatProvided = true;
+        } else {
+            write = args[2].asBool();
+            writeProvided = true;
+        }
     }
+    if (args.size() == 4) {
+        if (!formatProvided) {
+            if (!isString(args[3]))
+                throw std::invalid_argument("fileio.open format must be 'text' or 'binary'");
+            format = toUTF8StdString(asStringObj(args[3])->s);
+            formatProvided = true;
+        } else if (!writeProvided) {
+            write = args[3].asBool();
+            writeProvided = true;
+        } else {
+            throw std::invalid_argument("fileio.open received too many arguments");
+        }
+    }
+
+    if (append) {
+        write = true;
+        writeProvided = true;
+    }
+
     bool binary = false;
     std::filesystem::path path = std::filesystem::path(toUTF8StdString(asStringObj(args[0])->s));
     ptr<std::fstream> f = roxal::make_ptr<std::fstream>();
-    std::ios_base::openmode mode = std::ios::in | std::ios::out;
+    std::ios_base::openmode mode = write ? (std::ios::in | std::ios::out) : std::ios::in;
     if (append)
         mode |= std::ios::app;
     if (format == "binary") {

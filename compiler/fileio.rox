@@ -1,6 +1,6 @@
 @builtin
-func open(path:string, append:bool=false, format:string='text'):
-  """open file at path with optional append and format"""
+func open(path:string, append:bool=false, format:string='text', write:bool=false):
+  """open file at path with optional append, format, and write access"""
 
 @builtin
 proc close(file):
