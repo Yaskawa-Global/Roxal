@@ -418,6 +418,8 @@ void ModuleSys::registerBuiltins(VM& vm)
                                            {"ns", type::BuiltinType::Int},
                                            {"for", std::nullopt} },
                                          defaults);
+            if (params.size() == defaults.size())
+                params.back().hasDefault = true;
             t->func->params.resize(params.size());
             for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
             addSys("wait", [this](VM& vm, ArgsView a){ return wait_builtin(vm,a); }, t, defaults);
