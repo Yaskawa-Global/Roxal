@@ -15,7 +15,7 @@ print(components['weekday'])
 print(components['yearday'])
 
 print(parsed.format("%Y-%m-%d %H:%M:%S.%f", tz='utc'))
-print(parsed)
+print(parsed.format("%Y-%m-%d %H:%M:%S", tz='utc'))
 
 var earlier = Time.parse("2023-08-19 12:34:56", "%Y-%m-%d %H:%M:%S", tz='utc')
 var diff = parsed.diff(earlier)
