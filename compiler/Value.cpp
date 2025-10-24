@@ -5,6 +5,7 @@
 #include "Value.h"
 
 #include "Object.h"
+#include "SimpleMarkSweepGC.h"
 #include "dataflow/Signal.h"
 #include "dataflow/FuncNode.h"
 #include "dataflow/DataflowEngine.h"
@@ -1142,6 +1143,7 @@ void Value::resolveFuture()
     ObjFuture* fut = asFuture(*this);
     auto& vm { VM::instance() };
     auto thread = VM::thread;
+    auto& gc = SimpleMarkSweepGC::instance();
 
     bool added = false;
     while (fut->future.wait_for(std::chrono::microseconds(0)) != std::future_status::ready) {
@@ -1158,6 +1160,9 @@ void Value::resolveFuture()
         }
 
         vm.processPendingEvents();
+        if (thread) {
+            gc.safepoint(*thread);
+        }
     }
 
     if (fut->future.wait_for(std::chrono::microseconds(0)) == std::future_status::ready)
