@@ -35,6 +35,9 @@ public:
     void setAutoTriggerThreshold(std::uint64_t threshold);
     std::uint64_t autoTriggerThreshold() const noexcept;
 
+    void setEnabled(bool enabled) noexcept;
+    bool isEnabled() const noexcept;
+
     void onThreadEnter();
     void onThreadExit();
 
@@ -73,6 +76,7 @@ private:
     std::atomic<std::uint64_t> bytesAllocatedSinceLastCollect_{0};
     std::atomic<std::uint64_t> currentAllocatedBytes_{0};
     std::atomic<std::uint64_t> autoTriggerThreshold_{kDefaultAutoTriggerThreshold};
+    std::atomic<bool> gcEnabled_{true};
     size_t activeThreads_{0};
     size_t threadsAtSafepoint_{0};
     Thread* collector_{nullptr};

@@ -306,6 +306,7 @@ int main(int argc, const char* argv[])
         ("ast", "parse only and output text Abstract Syntax Tree (AST)")
         ("astgraph", po::value< std::vector<std::string> >(), "parse only and output GraphViz dot file")
         ("gc-threshold", po::value<long long>(), gcOptionHelp.c_str())
+        ("nogc", "disable garbage collection")
         #ifdef DEBUG_BUILD
         ("opcode-prof", "collect opcode execution frequencies in opcode_profile.json")
         #endif
@@ -378,6 +379,10 @@ int main(int argc, const char* argv[])
     }
     #endif
 
+
+    if (vmap.count("nogc")) {
+        SimpleMarkSweepGC::instance().setEnabled(false);
+    }
 
     if (vmap.count("gc-threshold")) {
         long long thresholdKb = vmap["gc-threshold"].as<long long>();
