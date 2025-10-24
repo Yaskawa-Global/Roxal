@@ -2671,6 +2671,7 @@ std::string roxal::objFileToString(const ObjFile* f)
 {
     std::ostringstream oss;
     oss << "<file";
+    std::lock_guard<std::mutex> lock(f->mutex);
     if (f->file && f->file->is_open()) oss << " open";
     oss << ">";
     return oss.str();

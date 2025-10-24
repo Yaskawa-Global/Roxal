@@ -149,8 +149,11 @@ Value ModuleFileIO::fileio_close_builtin(VM& vm, ArgsView args)
     if (args.size() != 1 || !isFile(args[0]))
         throw std::invalid_argument("fileio.close expects file handle");
     ObjFile* f = asFile(args[0]);
-    if (f->file && f->file->is_open())
-        f->file->close();
+    {
+        std::lock_guard<std::mutex> lock(f->mutex);
+        if (f->file && f->file->is_open())
+            f->file->close();
+    }
     return Value::nilVal();
 }
 
@@ -159,6 +162,7 @@ Value ModuleFileIO::fileio_isopen_builtin(VM& vm, ArgsView args)
     if (args.size() != 1 || !isFile(args[0]))
         throw std::invalid_argument("fileio.isOpen expects file handle");
     ObjFile* f = asFile(args[0]);
+    std::lock_guard<std::mutex> lock(f->mutex);
     return f->file && f->file->is_open() ? Value::trueVal() : Value::falseVal();
 }
 
@@ -167,6 +171,7 @@ Value ModuleFileIO::fileio_moredata_builtin(VM& vm, ArgsView args)
     if (args.size() != 1 || !isFile(args[0]))
         throw std::invalid_argument("fileio.moreData expects file handle");
     ObjFile* f = asFile(args[0]);
+    std::lock_guard<std::mutex> lock(f->mutex);
     if (!f->file || !f->file->is_open()) return Value::falseVal();
     int c = f->file->peek();
     return (c == std::char_traits<char>::eof()) ? Value::falseVal() : Value::trueVal();
@@ -177,6 +182,7 @@ Value ModuleFileIO::fileio_read_builtin(VM& vm, ArgsView args)
     if (args.size() != 1 || !isFile(args[0]))
         throw std::invalid_argument("fileio.read expects file handle");
     ObjFile* f = asFile(args[0]);
+    std::lock_guard<std::mutex> lock(f->mutex);
     if (!f->file || !f->file->is_open()) return Value::nilVal();
     char buf[4096];
     f->file->read(buf, sizeof(buf));
@@ -197,6 +203,7 @@ Value ModuleFileIO::fileio_readline_builtin(VM& vm, ArgsView args)
     if (args.size() != 1 || !isFile(args[0]))
         throw std::invalid_argument("fileio.readLine expects file handle");
     ObjFile* f = asFile(args[0]);
+    std::lock_guard<std::mutex> lock(f->mutex);
     if (!f->file || !f->file->is_open()) return Value::nilVal();
     if (f->binary) {
         Value exType = vm.loadGlobal(toUnicodeString("FileIOException")).value();
@@ -253,6 +260,7 @@ Value ModuleFileIO::fileio_write_builtin(VM& vm, ArgsView args)
     if (args.size() != 2 || !isFile(args[0]))
         throw std::invalid_argument("fileio.write expects file handle and data");
     ObjFile* f = asFile(args[0]);
+    std::lock_guard<std::mutex> lock(f->mutex);
     if (!f->file || !f->file->is_open()) return Value::nilVal();
     if (f->binary) {
         if (!isList(args[1]))
@@ -285,6 +293,7 @@ Value ModuleFileIO::fileio_flush_builtin(VM& vm, ArgsView args)
     if (args.size() != 1 || !isFile(args[0]))
         throw std::invalid_argument("fileio.flush expects file handle");
     ObjFile* f = asFile(args[0]);
+    std::lock_guard<std::mutex> lock(f->mutex);
     if (!f->file || !f->file->is_open()) return Value::falseVal();
     f->file->flush();
     return f->file->good() ? Value::trueVal() : Value::falseVal();

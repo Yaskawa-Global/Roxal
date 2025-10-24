@@ -14,6 +14,7 @@
 #include <istream>
 #include <fstream>
 #include <cstdint>
+#include <mutex>
 
 #include <core/common.h>
 #include <core/AST.h>
@@ -784,9 +785,13 @@ std::string objForeignPtrToString(const ObjForeignPtr* fp);
 struct ObjFile : public Obj {
     ObjFile(roxal::ptr<std::fstream> f, bool binary = false)
         : file(std::move(f)), binary(binary) { type = ObjType::File; }
-    virtual ~ObjFile() { if (file && file->is_open()) file->close(); }
+    virtual ~ObjFile() {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (file && file->is_open()) file->close();
+    }
     roxal::ptr<std::fstream> file;
     bool binary;
+    mutable std::mutex mutex;
 
     unique_ptr<Obj, UnreleasedObj> clone() const override;
 
