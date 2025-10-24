@@ -1,0 +1,2 @@
+func(tz :string=)→object
+capture the current wall-clock time
