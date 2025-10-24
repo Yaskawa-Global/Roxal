@@ -411,13 +411,21 @@ Value ModuleSys::typeMethodDecl(const Value& typeValue, const std::string& metho
     ObjFunction* fn = asFunction(functionValue);
     if (fn->doc.isEmpty() && fn->chunk && !fn->chunk->code.empty()) {
         const auto& code = fn->chunk->code;
-        if (code.size() >= 3 && static_cast<OpCode>(code[0]) == OpCode::Constant) {
-            uint8_t constIndex = code[1];
-            OpCode nextOp = static_cast<OpCode>(code[2]);
-            if (nextOp == OpCode::Pop && constIndex < fn->chunk->constants.size()) {
-                const Value& candidate = fn->chunk->constants[constIndex];
-                if (isString(candidate))
-                    fn->doc = asStringObj(candidate)->s;
+        for (size_t i = 0; i + 2 < code.size();) {
+            OpCode op = static_cast<OpCode>(code[i]);
+            if (op == OpCode::Constant) {
+                uint8_t constIndex = code[i + 1];
+                OpCode nextOp = static_cast<OpCode>(code[i + 2]);
+                if (nextOp == OpCode::Pop && constIndex < fn->chunk->constants.size()) {
+                    const Value& candidate = fn->chunk->constants[constIndex];
+                    if (isString(candidate)) {
+                        fn->doc = asStringObj(candidate)->s;
+                        break;
+                    }
+                }
+                i += 2; // skip opcode and operand
+            } else {
+                ++i;
             }
         }
     }
