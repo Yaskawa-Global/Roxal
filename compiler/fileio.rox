@@ -7,6 +7,10 @@ proc close(file):
   """close file handle"""
 
 @builtin
+func flush(file) -> bool:
+  """flush pending output for file handle"""
+
+@builtin
 func isOpen(file) -> bool:
   """return true if file handle is open"""
 

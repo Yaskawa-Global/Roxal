@@ -29,6 +29,9 @@ void ModuleFileIO::registerBuiltins(VM& vm)
         link("close", [this](VM& vm, ArgsView a){ return fileio_close_builtin(vm,a); });
     }
     {
+        link("flush", [this](VM& vm, ArgsView a){ return fileio_flush_builtin(vm,a); });
+    }
+    {
         link("isOpen", [this](VM& vm, ArgsView a){ return fileio_isopen_builtin(vm,a); });
     }
     {
@@ -238,6 +241,16 @@ Value ModuleFileIO::fileio_write_builtin(VM& vm, ArgsView args)
         (*f->file) << s;
     }
     return Value::nilVal();
+}
+
+Value ModuleFileIO::fileio_flush_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 1 || !isFile(args[0]))
+        throw std::invalid_argument("fileio.flush expects file handle");
+    ObjFile* f = asFile(args[0]);
+    if (!f->file || !f->file->is_open()) return Value::falseVal();
+    f->file->flush();
+    return f->file->good() ? Value::trueVal() : Value::falseVal();
 }
 
 Value ModuleFileIO::fileio_fileexists_builtin(VM& vm, ArgsView args)
