@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <optional>
 #include <algorithm>
+#include <system_error>
 
 using namespace roxal;
 
@@ -29,6 +30,9 @@ void ModuleFileIO::registerBuiltins(VM& vm)
         link("close", [this](VM& vm, ArgsView a){ return fileio_close_builtin(vm,a); });
     }
     {
+        link("flush", [this](VM& vm, ArgsView a){ return fileio_flush_builtin(vm,a); });
+    }
+    {
         link("isOpen", [this](VM& vm, ArgsView a){ return fileio_isopen_builtin(vm,a); });
     }
     {
@@ -50,7 +54,16 @@ void ModuleFileIO::registerBuiltins(VM& vm)
         link("fileExists", [this](VM& vm, ArgsView a){ return fileio_fileexists_builtin(vm,a); });
     }
     {
+        link("deleteFile", [this](VM& vm, ArgsView a){ return fileio_deletefile_builtin(vm,a); });
+    }
+    {
+        link("createDir", [this](VM& vm, ArgsView a){ return fileio_createdir_builtin(vm,a); });
+    }
+    {
         link("dirExists", [this](VM& vm, ArgsView a){ return fileio_direxists_builtin(vm,a); });
+    }
+    {
+        link("deleteDir", [this](VM& vm, ArgsView a){ return fileio_deletedir_builtin(vm,a); });
     }
     {
         link("fileSize", [this](VM& vm, ArgsView a){ return fileio_filesize_builtin(vm,a); });
@@ -74,21 +87,48 @@ void ModuleFileIO::registerBuiltins(VM& vm)
 
 Value ModuleFileIO::fileio_open_builtin(VM& vm, ArgsView args)
 {
-    if (args.size() < 1 || args.size() > 3 || !isString(args[0]))
-        throw std::invalid_argument("fileio.open expects path string, optional append bool and format string");
+    if (args.size() < 1 || args.size() > 4 || !isString(args[0]))
+        throw std::invalid_argument("fileio.open expects path string and optional append bool, format string, and write bool");
     bool append = false;
     if (args.size() >= 2)
         append = args[1].asBool();
+
+    bool write = false;
+    bool writeProvided = false;
+    bool formatProvided = false;
     std::string format = "text";
-    if (args.size() == 3) {
-        if (!isString(args[2]))
-            throw std::invalid_argument("fileio.open format must be 'text' or 'binary'");
-        format = toUTF8StdString(asStringObj(args[2])->s);
+    if (args.size() >= 3) {
+        if (isString(args[2])) {
+            format = toUTF8StdString(asStringObj(args[2])->s);
+            formatProvided = true;
+        } else {
+            write = args[2].asBool();
+            writeProvided = true;
+        }
     }
+    if (args.size() == 4) {
+        if (!formatProvided) {
+            if (!isString(args[3]))
+                throw std::invalid_argument("fileio.open format must be 'text' or 'binary'");
+            format = toUTF8StdString(asStringObj(args[3])->s);
+            formatProvided = true;
+        } else if (!writeProvided) {
+            write = args[3].asBool();
+            writeProvided = true;
+        } else {
+            throw std::invalid_argument("fileio.open received too many arguments");
+        }
+    }
+
+    if (append) {
+        write = true;
+        writeProvided = true;
+    }
+
     bool binary = false;
     std::filesystem::path path = std::filesystem::path(toUTF8StdString(asStringObj(args[0])->s));
     ptr<std::fstream> f = roxal::make_ptr<std::fstream>();
-    std::ios_base::openmode mode = std::ios::in | std::ios::out;
+    std::ios_base::openmode mode = write ? (std::ios::in | std::ios::out) : std::ios::in;
     if (append)
         mode |= std::ios::app;
     if (format == "binary") {
@@ -240,6 +280,16 @@ Value ModuleFileIO::fileio_write_builtin(VM& vm, ArgsView args)
     return Value::nilVal();
 }
 
+Value ModuleFileIO::fileio_flush_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 1 || !isFile(args[0]))
+        throw std::invalid_argument("fileio.flush expects file handle");
+    ObjFile* f = asFile(args[0]);
+    if (!f->file || !f->file->is_open()) return Value::falseVal();
+    f->file->flush();
+    return f->file->good() ? Value::trueVal() : Value::falseVal();
+}
+
 Value ModuleFileIO::fileio_fileexists_builtin(VM& vm, ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
@@ -248,12 +298,86 @@ Value ModuleFileIO::fileio_fileexists_builtin(VM& vm, ArgsView args)
     return std::filesystem::exists(p) && std::filesystem::is_regular_file(p) ? Value::trueVal() : Value::falseVal();
 }
 
+Value ModuleFileIO::fileio_deletefile_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 1 || !isString(args[0]))
+        throw std::invalid_argument("fileio.deleteFile expects path string");
+    std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
+    std::error_code ec;
+    if (!std::filesystem::exists(p, ec))
+        return Value::falseVal();
+    if (ec)
+        return Value::falseVal();
+    bool isFile = std::filesystem::is_regular_file(p, ec);
+    if (ec || !isFile)
+        return Value::falseVal();
+    bool removed = std::filesystem::remove(p, ec);
+    if (ec)
+        return Value::falseVal();
+    return removed ? Value::trueVal() : Value::falseVal();
+}
+
+Value ModuleFileIO::fileio_createdir_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() < 1 || args.size() > 2 || !isString(args[0]))
+        throw std::invalid_argument("fileio.createDir expects path string and optional recurse bool");
+    bool recurse = false;
+    if (args.size() == 2)
+        recurse = args[1].asBool();
+    std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
+    std::error_code ec;
+    bool created = recurse ? std::filesystem::create_directories(p, ec)
+                           : std::filesystem::create_directory(p, ec);
+    if (ec)
+        return Value::falseVal();
+    if (created)
+        return Value::trueVal();
+    ec.clear();
+    bool exists = std::filesystem::exists(p, ec);
+    if (ec || !exists)
+        return Value::falseVal();
+    ec.clear();
+    bool isDir = std::filesystem::is_directory(p, ec);
+    if (ec || !isDir)
+        return Value::falseVal();
+    return Value::trueVal();
+}
+
 Value ModuleFileIO::fileio_direxists_builtin(VM& vm, ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.dirExists expects path string");
     std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     return std::filesystem::exists(p) && std::filesystem::is_directory(p) ? Value::trueVal() : Value::falseVal();
+}
+
+Value ModuleFileIO::fileio_deletedir_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() < 1 || args.size() > 2 || !isString(args[0]))
+        throw std::invalid_argument("fileio.deleteDir expects path string and optional recurse bool");
+    bool recurse = false;
+    if (args.size() == 2)
+        recurse = args[1].asBool();
+    std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
+    std::error_code ec;
+    if (!std::filesystem::exists(p, ec))
+        return Value::falseVal();
+    if (ec)
+        return Value::falseVal();
+    ec.clear();
+    bool isDir = std::filesystem::is_directory(p, ec);
+    if (ec || !isDir)
+        return Value::falseVal();
+    if (recurse) {
+        uintmax_t removed = std::filesystem::remove_all(p, ec);
+        if (ec)
+            return Value::falseVal();
+        return removed > 0 ? Value::trueVal() : Value::falseVal();
+    }
+    bool removed = std::filesystem::remove(p, ec);
+    if (ec)
+        return Value::falseVal();
+    return removed ? Value::trueVal() : Value::falseVal();
 }
 
 Value ModuleFileIO::fileio_filesize_builtin(VM& vm, ArgsView args)

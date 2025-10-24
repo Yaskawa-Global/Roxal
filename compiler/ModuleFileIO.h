@@ -24,8 +24,12 @@ public:
     Value fileio_readline_builtin(VM& vm, ArgsView args);
     Value fileio_readfile_builtin(VM& vm, ArgsView args);
     Value fileio_write_builtin(VM& vm, ArgsView args);
+    Value fileio_flush_builtin(VM& vm, ArgsView args);
     Value fileio_fileexists_builtin(VM& vm, ArgsView args);
+    Value fileio_deletefile_builtin(VM& vm, ArgsView args);
+    Value fileio_createdir_builtin(VM& vm, ArgsView args);
     Value fileio_direxists_builtin(VM& vm, ArgsView args);
+    Value fileio_deletedir_builtin(VM& vm, ArgsView args);
     Value fileio_filesize_builtin(VM& vm, ArgsView args);
     Value fileio_abspathfile_builtin(VM& vm, ArgsView args);
     Value fileio_pathdir_builtin(VM& vm, ArgsView args);

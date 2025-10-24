@@ -1,0 +1,48 @@
+import fileio
+
+var base = '../tests/tmp_fileio_delete'
+var file_path = base + '/file.txt'
+var missing_file = base + '/missing.txt'
+var empty_dir = base + '/empty_dir'
+var nested_dir = base + '/nested'
+var nested_child = nested_dir + '/child.txt'
+
+if fileio.dirExists(base):
+  fileio.deleteDir(base, true)
+
+print(fileio.createDir(base))
+print(fileio.dirExists(base))
+print(fileio.createDir(nested_dir + '/deep', true))
+print(fileio.dirExists(nested_dir))
+
+var handle = fileio.open(file_path, true)
+fileio.write(handle, 'alpha')
+fileio.close(handle)
+
+print(fileio.createDir(file_path))
+
+fileio.createDir(empty_dir)
+fileio.createDir(nested_dir)
+
+var nested_handle = fileio.open(nested_child, true)
+fileio.write(nested_handle, 'child')
+fileio.close(nested_handle)
+
+print(fileio.fileExists(file_path))
+print(fileio.deleteFile(file_path))
+print(fileio.fileExists(file_path))
+print(fileio.deleteFile(file_path))
+print(fileio.deleteFile(missing_file))
+
+print(fileio.dirExists(empty_dir))
+print(fileio.deleteDir(empty_dir, false))
+print(fileio.dirExists(empty_dir))
+print(fileio.deleteDir(empty_dir, false))
+
+print(fileio.deleteDir(nested_dir, false))
+print(fileio.dirExists(nested_dir))
+print(fileio.deleteDir(nested_dir, true))
+print(fileio.dirExists(nested_dir))
+print(fileio.deleteDir(nested_dir, true))
+
+fileio.deleteDir(base, true)
