@@ -968,10 +968,11 @@ std::any ASTGenerator::visitParameters(RoxalParser::ParametersContext *context)
 std::any ASTGenerator::visitParameter(RoxalParser::ParameterContext *context)
 {
     visitStart();
-    auto ident { UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText()) };
+    auto nameCtx = context->identifier_word();
+    auto ident { UnicodeString::fromUTF8(nameCtx->getText()) };
 
     ptr<Parameter> param = make_ptr<Parameter>();
-    setSourceInfo(param,context->IDENTIFIER().at(0));
+    setSourceInfo(param, nameCtx);
     param->name = ident;
 
    if (context->annotation().size() > 0) {
@@ -992,8 +993,8 @@ std::any ASTGenerator::visitParameter(RoxalParser::ParameterContext *context)
         auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
         param->type = builtinType;
     }
-    else if (context->IDENTIFIER().size()>1) {
-        auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
+    else if (auto typeIdentNode = context->IDENTIFIER()) {
+        auto typeIdent { UnicodeString::fromUTF8(typeIdentNode->getText()) };
         param->type = typeIdent;
     }
     else {} // type is optional
@@ -1947,14 +1948,22 @@ std::any ASTGenerator::visitArgument(RoxalParser::ArgumentContext *context)
 {
     visitStart();
 
-    UnicodeString argName { context->IDENTIFIER()? UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) : UnicodeString() };
+    UnicodeString argName { context->identifier_word()? UnicodeString::fromUTF8(context->identifier_word()->getText()) : UnicodeString() };
     ptr<Expression> expr = as<Expression>(visitExpression(context->expression()));
 
     return std::make_pair(argName, expr);
     visitEnd();
 }
 
+std::any ASTGenerator::visitIdentifier_word(RoxalParser::Identifier_wordContext *context)
+{
+    visitStart();
 
+    UnicodeString ident { UnicodeString::fromUTF8(context->getText()) };
+
+    return ident;
+    visitEnd();
+}
 
 
 std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)

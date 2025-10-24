@@ -123,6 +123,10 @@ public:
     // reachable while dispatched directly on this thread.
     Value currentBoundCall { Value::nilVal() };
 
+    // Future supplied to sys.wait(for=...) that should be awaited after
+    // any requested sleep completes.
+    Value pendingWaitFor { Value::nilVal() };
+
 private:
     ptr<std::thread> osthread;
 

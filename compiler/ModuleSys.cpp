@@ -436,12 +436,15 @@ void ModuleSys::registerBuiltins(VM& vm)
             ptr<type::Type> t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
             t->func->isProc = true;
-            std::vector<Value> defaults { Value::intVal(0), Value::intVal(0), Value::intVal(0), Value::intVal(0) };
+            std::vector<Value> defaults { Value::intVal(0), Value::intVal(0), Value::intVal(0), Value::intVal(0), Value::nilVal() };
             auto params = BuiltinModule::constructParams({ {"s", type::BuiltinType::Int},
                                            {"ms", type::BuiltinType::Int},
                                            {"us", type::BuiltinType::Int},
-                                           {"ns", type::BuiltinType::Int} },
+                                           {"ns", type::BuiltinType::Int},
+                                           {"for", std::nullopt} },
                                          defaults);
+            if (params.size() == defaults.size())
+                params.back().hasDefault = true;
             t->func->params.resize(params.size());
             for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
             addSys("wait", [this](VM& vm, ArgsView a){ return wait_builtin(vm,a); }, t, defaults);
@@ -461,7 +464,6 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("stacktrace", [this](VM& vm, ArgsView a){ return stacktrace_builtin(vm,a); });
         addSys("_threadid", [this](VM& vm, ArgsView a){ return threadid_builtin(vm,a); });
         addSys("_stackdepth", [this](VM& vm, ArgsView a){ return stackdepth_builtin(vm,a); });
-        addSys("_wait", [this](VM& vm, ArgsView a){ return await_builtin(vm,a); });
         addSys("_runtests", [this](VM& vm, ArgsView a){ return runtests_builtin(vm,a); });
         addSys("_weakref", [this](VM& vm, ArgsView a){ return weakref_builtin(vm,a); });
         addSys("_weak_alive", [this](VM& vm, ArgsView a){ return weak_alive_builtin(vm,a); });
@@ -750,19 +752,41 @@ Value ModuleSys::clone_builtin(VM& vm, ArgsView args)
 
 Value ModuleSys::wait_builtin(VM& vm, ArgsView args)
 {
-    if (args.size() != 4)
-        throw std::invalid_argument("wait expects 4 arguments");
+    if (args.size() != 5)
+        throw std::invalid_argument("wait expects 5 arguments");
 
     int64_t s = toType(ValueType::Int, args[0], false).asInt();
     int64_t ms = toType(ValueType::Int, args[1], false).asInt();
     int64_t us = toType(ValueType::Int, args[2], false).asInt();
     int64_t ns = toType(ValueType::Int, args[3], false).asInt();
+    Value waitTarget = args[4];
 
     int64_t totalus = s*1000000 + ms*1000 + us + ns/1000;
     auto microSecs { TimeDuration::microSecs(totalus) };
+    bool hasDelay = microSecs.microSecs() > 0;
 
-    VM::thread->threadSleep = true;
     VM::thread->threadSleepUntil = TimePoint::currentTime() + microSecs;
+    VM::thread->threadSleep = true;
+    VM::thread->pendingWaitFor = Value::nilVal();
+
+    auto resolveList = [](ObjList* list) {
+        for (auto& element : list->elts.get())
+            element.resolve();
+    };
+
+    if (isList(waitTarget)) {
+        if (hasDelay) {
+            VM::thread->pendingWaitFor = waitTarget;
+        } else {
+            resolveList(asList(waitTarget));
+        }
+    } else if (isFuture(waitTarget)) {
+        if (hasDelay) {
+            VM::thread->pendingWaitFor = waitTarget;
+        } else {
+            args[4].resolve();
+        }
+    }
 
     return Value::nilVal();
 }
@@ -840,38 +864,6 @@ Value ModuleSys::stackdepth_builtin(VM& vm, ArgsView args)
 
     int32_t depth = int32_t(VM::thread->stackTop - VM::thread->stack.begin());
     return Value::intVal(depth);
-}
-
-Value ModuleSys::await_builtin(VM& vm, ArgsView args)
-{
-    // Iterate over all the arguments and resolve each if it is a Future.
-    // Resolving may block until the promise is fulfilled unless it already was.
-    // As a special case, if a single argument is a list, iterate over the
-    // elements of that list and resolve them.
-    int32_t numFuturesResolved { 0 };
-    if (args.size() == 1) {
-        if (isFuture(args[0])) {
-            args[0].resolve();
-            numFuturesResolved++;
-        }
-        else if (isList(args[0])) {
-            ObjList* l = asList(args[0]);
-            for(auto& v : l->elts.get()) {
-                v.resolve();
-                numFuturesResolved++;
-            }
-        }
-    }
-    else {
-        for(size_t i=0; i<args.size(); i++) {
-            if (isFuture(args[i])) {
-                args[i].resolve();
-                numFuturesResolved++;
-            }
-        }
-    }
-
-    return Value::intVal(numFuturesResolved);
 }
 
 Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
