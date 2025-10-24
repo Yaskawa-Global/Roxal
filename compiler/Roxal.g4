@@ -154,7 +154,7 @@ parameters
  ;
 
 parameter
- : annotation* IDENTIFIER (':' (builtin_type | IDENTIFIER) )? (EQUALS expression)?
+ : annotation* identifier_word (':' (builtin_type | IDENTIFIER) )? (EQUALS expression)?
  ;
 
 
@@ -313,7 +313,14 @@ arguments
  ;
 
 argument
- : (IDENTIFIER '=')? expression
+ : (identifier_word '=')? expression
+ ;
+
+
+identifier_word
+ : IDENTIFIER
+ | FOR
+ | ON
  ;
 
 

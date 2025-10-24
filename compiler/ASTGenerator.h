@@ -124,6 +124,8 @@ public:
 
     virtual std::any visitArgument(RoxalParser::ArgumentContext *context);
 
+    virtual std::any visitIdentifier_word(RoxalParser::Identifier_wordContext *context);
+
     virtual std::any visitPrimary(RoxalParser::PrimaryContext *context);
 
     virtual std::any visitReturn_type(RoxalParser::Return_typeContext *context);
