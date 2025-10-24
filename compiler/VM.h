@@ -271,12 +271,23 @@ public:
         bool isProc;  // true for proc methods, false for func methods
         ptr<type::Type> funcType;
         std::vector<Value> defaultValues;
+        Value declFunction;
 
-        BuiltinMethodInfo() : isProc(false) {}
+        BuiltinMethodInfo() : isProc(false), declFunction(Value::nilVal()) {}
         BuiltinMethodInfo(NativeFn fn, bool proc = false,
                           ptr<type::Type> type=nullptr,
-                          std::vector<Value> defaults = {})
-            : function(fn), isProc(proc), funcType(type), defaultValues(std::move(defaults)) {}
+                          std::vector<Value> defaults = {},
+                          Value declFn = Value::nilVal())
+            : function(fn), isProc(proc), funcType(type),
+              defaultValues(std::move(defaults)), declFunction(declFn) {}
+
+        void trace(ValueVisitor& visitor) const
+        {
+            for (const auto& value : defaultValues) {
+                visitor.visit(value);
+            }
+            visitor.visit(declFunction);
+        }
     };
 
     // Builtin methods: builtin value type -> method name hash -> BuiltinMethodInfo
@@ -305,7 +316,8 @@ public:
     void defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn,
                              bool isProc = false,
                              ptr<type::Type> funcType = nullptr,
-                             std::vector<Value> defaults = {});
+                             std::vector<Value> defaults = {},
+                             Value declFunction = Value::nilVal());
 
     // Native property support
     typedef Value (VM::*NativePropertyGetter)(Value&);

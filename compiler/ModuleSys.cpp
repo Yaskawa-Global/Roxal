@@ -1,6 +1,7 @@
 #include "ModuleSys.h"
 #include "VM.h"
 #include "Object.h"
+#include "Chunk.h"
 #include "SimpleMarkSweepGC.h"
 #include "core/AST.h"
 #include <core/json11.h>
@@ -387,6 +388,44 @@ ModuleSys::~ModuleSys()
 }
 
 
+Value ModuleSys::typeMethodDecl(const Value& typeValue, const std::string& methodName) const
+{
+    if (typeValue.isNil() || !isObjectType(typeValue))
+        return Value::nilVal();
+
+    ObjObjectType* type = asObjectType(typeValue);
+    auto hash = toUnicodeString(methodName).hashCode();
+    auto it = type->methods.find(hash);
+    if (it == type->methods.end())
+        return Value::nilVal();
+
+    Value closure = it->second.closure;
+    if (!isClosure(closure))
+        return Value::nilVal();
+
+    ObjClosure* cl = asClosure(closure);
+    Value functionValue = cl->function;
+    if (!isFunction(functionValue))
+        return Value::nilVal();
+
+    ObjFunction* fn = asFunction(functionValue);
+    if (fn->doc.isEmpty() && fn->chunk && !fn->chunk->code.empty()) {
+        const auto& code = fn->chunk->code;
+        if (code.size() >= 3 && static_cast<OpCode>(code[0]) == OpCode::Constant) {
+            uint8_t constIndex = code[1];
+            OpCode nextOp = static_cast<OpCode>(code[2]);
+            if (nextOp == OpCode::Pop && constIndex < fn->chunk->constants.size()) {
+                const Value& candidate = fn->chunk->constants[constIndex];
+                if (isString(candidate))
+                    fn->doc = asStringObj(candidate)->s;
+            }
+        }
+    }
+
+    return functionValue;
+}
+
+
 void ModuleSys::registerBuiltins(VM& vm)
 {
     auto addSys = [&](const std::string& name, NativeFn fn,
@@ -532,14 +571,16 @@ void ModuleSys::registerBuiltins(VM& vm)
         auto funcType = makeFuncType({{"tz", type::BuiltinType::String}}, defaults);
         vm.defineBuiltinMethod(ValueType::Type, "wall_now",
                                [this](VM& vm, ArgsView a){ return time_type_wall_now(vm,a); },
-                               false, funcType, defaults);
+                               false, funcType, defaults,
+                               typeMethodDecl(timeTypeValue, "wall_now"));
     }
 
     {
         auto funcType = makeFuncType({});
         vm.defineBuiltinMethod(ValueType::Type, "steady_now",
                                [this](VM& vm, ArgsView a){ return time_type_steady_now(vm,a); },
-                               false, funcType, {});
+                               false, funcType, {},
+                               typeMethodDecl(timeTypeValue, "steady_now"));
     }
 
     {
@@ -555,7 +596,8 @@ void ModuleSys::registerBuiltins(VM& vm)
         }, defaults);
         vm.defineBuiltinMethod(ValueType::Type, "parse",
                                [this](VM& vm, ArgsView a){ return time_type_parse(vm,a); },
-                               false, funcType, defaults);
+                               false, funcType, defaults,
+                               typeMethodDecl(timeTypeValue, "parse"));
     }
 
     {
@@ -571,7 +613,8 @@ void ModuleSys::registerBuiltins(VM& vm)
         }, defaults);
         vm.defineBuiltinMethod(ValueType::Type, "from_parts",
                                [this](VM& vm, ArgsView a){ return time_type_from_parts(vm,a); },
-                               false, funcType, defaults);
+                               false, funcType, defaults,
+                               typeMethodDecl(timeTypeValue, "from_parts"));
     }
 
     {
@@ -589,7 +632,8 @@ void ModuleSys::registerBuiltins(VM& vm)
         }, defaults);
         vm.defineBuiltinMethod(ValueType::Type, "from_fields",
                                [this](VM& vm, ArgsView a){ return timespan_type_from_fields(vm,a); },
-                               false, funcType, defaults);
+                               false, funcType, defaults,
+                               typeMethodDecl(timeSpanTypeValue, "from_fields"));
     }
 }
 
@@ -665,7 +709,10 @@ Value ModuleSys::help_builtin(VM& vm, ArgsView args)
     } else if (isBoundMethod(target)) {
         fn = asFunction(asClosure(asBoundMethod(target)->method)->function);
     } else if (isBoundNative(target)) {
-        fnType = asBoundNative(target)->funcType;
+        ObjBoundNative* bound = asBoundNative(target);
+        fnType = bound->funcType;
+        if (bound->declFunction.isNonNil() && isFunction(bound->declFunction))
+            fn = asFunction(bound->declFunction);
     } else if (isNative(target)) {
         fnType = asNative(target)->funcType;
     } else {

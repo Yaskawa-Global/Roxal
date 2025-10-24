@@ -89,6 +89,8 @@ private:
     Value timeSpanTypeValue;
     ObjObjectType* timeTypeObj { nullptr };
     ObjObjectType* timeSpanTypeObj { nullptr };
+
+    Value typeMethodDecl(const Value& typeValue, const std::string& methodName) const;
 };
 
 ObjObjectType* sysTimeType();

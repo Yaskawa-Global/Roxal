@@ -462,7 +462,7 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
 
     for (const auto& typeEntry : vm.builtinMethods) {
         for (const auto& methodEntry : typeEntry.second) {
-            visitStrongValues(visitor, methodEntry.second.defaultValues);
+            methodEntry.second.trace(visitor);
         }
     }
 
