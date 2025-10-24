@@ -4220,9 +4220,6 @@ void VM::defineBuiltinFunctions()
 
 void VM::defineBuiltinMethods()
 {
-    if (!builtinMethods.empty())
-        return;
-
     defineBuiltinMethod(ValueType::Vector, "norm", std::mem_fn(&VM::vector_norm_builtin));
     defineBuiltinMethod(ValueType::Vector, "sum", std::mem_fn(&VM::vector_sum_builtin));
     defineBuiltinMethod(ValueType::Vector, "normalized", std::mem_fn(&VM::vector_normalized_builtin));
