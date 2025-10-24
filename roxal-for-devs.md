@@ -630,7 +630,7 @@ Functions for read & writing files and managing files, directories & paths.
 Use `import fileio` or `import fileio.*`.  See `fileio.sys`.
 (only available when built with cmake option ROXAL_ENABLE_FILEIO is on)
 
-* `open(path, append=false, format='text')` - open a file and return handle
+* `open(path, append=false, write=false, format='text')` - open a file and return handle (write access is enabled automatically when `append` is true)
 * `close(file)` - close a file handle
 * `isOpen(file)` - true if handle is open
 * `moreData(file)` - true if more data can be read
@@ -638,11 +638,15 @@ Use `import fileio` or `import fileio.*`.  See `fileio.sys`.
 * `readLine(file)` - read a line of text
 * `readFile(path, format='text')` - read entire file
 * `write(file, data)` - write data to file
+* `flush(file)` - flush buffered writes to the underlying file
 * `fileExists(path)` - true if file exists
 * `dirExists(path)` - true if directory exists
+* `createDir(path, recurse=false)` - create a directory (optionally creating parents)
 * `fileSize(path)` - size of file in bytes
 * `absoluteFilePath(path)` - absolute path of file
 * `pathDirectory(path)` - directory portion of path
 * `pathFile(path)` - file name portion of path
 * `fileExtension(path)` - extension of path
 * `fileWithoutExtension(path)` - path without the extension
+* `deleteFile(path)` - delete a file, returning true if it existed
+* `deleteDir(path, recurse=false)` - delete a directory, optionally recursively

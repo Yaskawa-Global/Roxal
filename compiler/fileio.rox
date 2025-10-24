@@ -1,10 +1,14 @@
 @builtin
-func open(path:string, append:bool=false, format:string='text'):
-  """open file at path with optional append and format"""
+func open(path:string, append:bool=false, format:string='text', write:bool=false):
+  """open file at path with optional append, format, and write access"""
 
 @builtin
 proc close(file):
   """close file handle"""
+
+@builtin
+func flush(file) -> bool:
+  """flush pending output for file handle"""
 
 @builtin
 func isOpen(file) -> bool:
@@ -35,8 +39,20 @@ func fileExists(path:string) -> bool:
   """return true if file exists"""
 
 @builtin
+func deleteFile(path:string) -> bool:
+  """delete a file if it exists"""
+
+@builtin
+func createDir(path:string, recurse:bool=false) -> bool:
+  """create directory optionally creating parents"""
+
+@builtin
 func dirExists(path:string) -> bool:
   """return true if directory exists"""
+
+@builtin
+func deleteDir(path:string, recurse:bool=false) -> bool:
+  """delete directory optionally recursing into contents"""
 
 @builtin
 func fileSize(path:string) -> int:
