@@ -56,7 +56,7 @@ tests = [
     'conversion1', 'string_interp',
     'call_param_type_nonstrict', 'call_param_type_strict', 'param_assign_static_err',
     'linkedlist', 'structbindassign',
-    'if', 'for1',
+    'if', 'for1', 'nested_for',
     'func_param_default', 'func_param_default2', 'func_param_default3','func_param_default4',
     'typeobj1', 'typeobj2', 'typeobj3', 'typeobj4', 'typeobj5', 'typeobj6', 'typeobj7',
     'object_to_dict_private', 'object_from_dict', 'virtual_method',
