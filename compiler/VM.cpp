@@ -3885,7 +3885,11 @@ std::pair<InterpretResult,Value> VM::execute()
         if (thread->pendingWaitFor.isNonNil()) {
             Value waitTarget = thread->pendingWaitFor;
             thread->pendingWaitFor = Value::nilVal();
-            if (isFuture(waitTarget)) {
+            if (isList(waitTarget)) {
+                ObjList* list = asList(waitTarget);
+                for (auto& element : list->elts.get())
+                    element.resolve();
+            } else if (isFuture(waitTarget)) {
                 waitTarget.resolve();
             }
         }

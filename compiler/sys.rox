@@ -16,7 +16,7 @@ func clone(v):
 
 @builtin
 proc wait(s:int=0, ms:int=0, us:int=0, ns:int=0, for=nil):
-  """wait until the specified amount of time elapses and optionally await a future afterwards"""
+  """wait until the specified amount of time elapses and optionally await a future or list of futures afterwards"""
 
 @builtin
 func fork(fn) -> int:
@@ -41,10 +41,6 @@ func _threadid() -> int:
 @builtin
 func _stackdepth() -> int:
   """return the current call stack depth"""
-
-@builtin
-func _wait(futures) -> int:
-  """await one or more futures and return the number resolved"""
 
 @builtin
 proc _runtests(suite:string):

@@ -29,7 +29,6 @@ public:
     Value stacktrace_builtin(VM& vm, ArgsView args);
     Value threadid_builtin(VM& vm, ArgsView args);
     Value stackdepth_builtin(VM& vm, ArgsView args);
-    Value await_builtin(VM& vm, ArgsView args);
     Value runtests_builtin(VM& vm, ArgsView args);
     Value weakref_builtin(VM& vm, ArgsView args);
     Value weak_alive_builtin(VM& vm, ArgsView args);
