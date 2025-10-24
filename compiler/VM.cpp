@@ -4220,6 +4220,15 @@ void VM::defineBuiltinFunctions()
 
 void VM::defineBuiltinMethods()
 {
+    // Modules may pre-register builtin methods (e.g., sys.Time helpers) before
+    // the VM installs its core methods. Guard against skipping this setup only
+    // when the canonical "list.append" hook is already present.
+    const auto appendHash = toUnicodeString("append").hashCode();
+    auto listIt = builtinMethods.find(ValueType::List);
+    if (listIt != builtinMethods.end() && listIt->second.find(appendHash) != listIt->second.end()) {
+        return;
+    }
+
     defineBuiltinMethod(ValueType::Vector, "norm", std::mem_fn(&VM::vector_norm_builtin));
     defineBuiltinMethod(ValueType::Vector, "sum", std::mem_fn(&VM::vector_sum_builtin));
     defineBuiltinMethod(ValueType::Vector, "normalized", std::mem_fn(&VM::vector_normalized_builtin));
