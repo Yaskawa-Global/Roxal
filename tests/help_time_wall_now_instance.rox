@@ -1,0 +1,2 @@
+var t = Time()
+print(help(t.wall_now))
