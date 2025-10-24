@@ -19,6 +19,7 @@
 #include "dataflow/Signal.h"
 #include "dataflow/DataflowEngine.h"
 #include "Object.h"
+#include "ModuleSys.h"
 
 using namespace roxal;
 
@@ -3079,7 +3080,16 @@ std::string roxal::objToString(const Value& v)
         }
         case ObjType::Instance: {
             ObjectInstance* inst = asObjectInstance(v);
-            return std::string("object "+toUTF8StdString(asObjectType(inst->instanceType)->name));
+            ObjObjectType* type = asObjectType(inst->instanceType);
+            if (ObjObjectType* timeType = sysTimeType()) {
+                if (type == timeType)
+                    return sysTimeDefaultString(inst);
+            }
+            if (ObjObjectType* spanType = sysTimeSpanType()) {
+                if (type == spanType)
+                    return sysTimeSpanDefaultString(inst);
+            }
+            return std::string("object "+toUTF8StdString(type->name));
         }
         case ObjType::Actor: {
             ActorInstance* inst = asActorInstance(v);

@@ -3,6 +3,7 @@
 #include "BuiltinModule.h"
 #include "Value.h"
 #include "Object.h"
+#include <string>
 
 namespace roxal {
 
@@ -40,6 +41,38 @@ public:
     Value toJson_builtin(VM& vm, ArgsView args);
     Value fromJson_builtin(VM& vm, ArgsView args);
 
+    // Time type natives
+    Value time_init_native(VM& vm, ArgsView args);
+    Value time_kind_native(VM& vm, ArgsView args);
+    Value time_is_steady_native(VM& vm, ArgsView args);
+    Value time_seconds_native(VM& vm, ArgsView args);
+    Value time_micros_native(VM& vm, ArgsView args);
+    Value time_diff_native(VM& vm, ArgsView args);
+    Value time_since_native(VM& vm, ArgsView args);
+    Value time_until_native(VM& vm, ArgsView args);
+    Value time_format_native(VM& vm, ArgsView args);
+    Value time_components_native(VM& vm, ArgsView args);
+
+    // TimeSpan type natives
+    Value timespan_init_native(VM& vm, ArgsView args);
+    Value timespan_seconds_native(VM& vm, ArgsView args);
+    Value timespan_micros_native(VM& vm, ArgsView args);
+    Value timespan_split_native(VM& vm, ArgsView args);
+    Value timespan_total_days_native(VM& vm, ArgsView args);
+    Value timespan_total_hours_native(VM& vm, ArgsView args);
+    Value timespan_total_minutes_native(VM& vm, ArgsView args);
+    Value timespan_total_seconds_native(VM& vm, ArgsView args);
+    Value timespan_total_millis_native(VM& vm, ArgsView args);
+    Value timespan_total_micros_native(VM& vm, ArgsView args);
+    Value timespan_human_native(VM& vm, ArgsView args);
+
+    // Type-level helpers
+    Value time_type_wall_now(VM& vm, ArgsView args);
+    Value time_type_steady_now(VM& vm, ArgsView args);
+    Value time_type_parse(VM& vm, ArgsView args);
+    Value time_type_from_parts(VM& vm, ArgsView args);
+    Value timespan_type_from_fields(VM& vm, ArgsView args);
+
     // native implementations
     Value clock_native(VM& vm, ArgsView args);
     Value clock_signal_native(VM& vm, ArgsView args);
@@ -52,6 +85,15 @@ public:
 
 private:
     Value moduleTypeValue; // ObjModuleType*
+    Value timeTypeValue;
+    Value timeSpanTypeValue;
+    ObjObjectType* timeTypeObj { nullptr };
+    ObjObjectType* timeSpanTypeObj { nullptr };
 };
+
+ObjObjectType* sysTimeType();
+ObjObjectType* sysTimeSpanType();
+std::string sysTimeDefaultString(ObjectInstance* inst);
+std::string sysTimeSpanDefaultString(ObjectInstance* inst);
 
 }
