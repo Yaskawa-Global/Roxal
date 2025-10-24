@@ -132,6 +132,9 @@ void SimpleMarkSweepGC::unregisterAllocation(ObjControl* control) {
 }
 
 void SimpleMarkSweepGC::requestCollect() {
+    if (!gcEnabled_.load(std::memory_order_acquire)) {
+        return;
+    }
     std::uint64_t allocated = bytesAllocatedSinceLastCollect_.load(std::memory_order_relaxed);
     bool expected = false;
     if (collectionRequested_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
@@ -159,6 +162,19 @@ void SimpleMarkSweepGC::setAutoTriggerThreshold(std::uint64_t threshold) {
 
 std::uint64_t SimpleMarkSweepGC::autoTriggerThreshold() const noexcept {
     return autoTriggerThreshold_.load(std::memory_order_relaxed);
+}
+
+void SimpleMarkSweepGC::setEnabled(bool enabled) noexcept {
+    gcEnabled_.store(enabled, std::memory_order_release);
+    if (!enabled) {
+        collectionRequested_.store(false, std::memory_order_release);
+        bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
+        lastRequestedBytes_.store(0, std::memory_order_relaxed);
+    }
+}
+
+bool SimpleMarkSweepGC::isEnabled() const noexcept {
+    return gcEnabled_.load(std::memory_order_acquire);
 }
 
 bool SimpleMarkSweepGC::isCollectionRequested() const noexcept {
@@ -192,7 +208,8 @@ void SimpleMarkSweepGC::onThreadExit() {
 }
 
 void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
-    if (!collectionRequested_.load(std::memory_order_acquire)) {
+    if (!gcEnabled_.load(std::memory_order_acquire) ||
+        !collectionRequested_.load(std::memory_order_acquire)) {
         return;
     }
 
