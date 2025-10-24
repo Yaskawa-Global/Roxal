@@ -1,21 +1,26 @@
 import fileio
 
 var path = 'fileio_actor_write.log'
+var line_count = 10
+
+type Writer actor:
+  proc emit_lines(path, count):
+    var h = fileio.open(path, append=false)
+    var i = 0
+    while i < count:
+      fileio.write(h, 'alpha ')
+      fileio.write(h, 'beta ')
+      fileio.write(h, string(i) + ' ')
+      fileio.write(h, '\n')
+      i = i + 1
+    fileio.close(h)
 
 var initializer = fileio.open(path, append=true)
 fileio.close(initializer)
 
-type Writer actor:
-  proc emit_line(path):
-    var h = fileio.open(path, append=false)
-    fileio.write(h, 'alpha ')
-    fileio.write(h, 'beta ')
-    fileio.write(h, '\n')
-    fileio.close(h)
-
 var writer = Writer()
-writer.emit_line(path)
-wait(us=50000)
+writer.emit_lines(path, line_count)
+wait(us=200000)
 
 var reader = fileio.open(path, append=false, format='binary')
 var data = fileio.read(reader)
