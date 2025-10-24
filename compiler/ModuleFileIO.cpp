@@ -57,6 +57,9 @@ void ModuleFileIO::registerBuiltins(VM& vm)
         link("deleteFile", [this](VM& vm, ArgsView a){ return fileio_deletefile_builtin(vm,a); });
     }
     {
+        link("createDir", [this](VM& vm, ArgsView a){ return fileio_createdir_builtin(vm,a); });
+    }
+    {
         link("dirExists", [this](VM& vm, ArgsView a){ return fileio_direxists_builtin(vm,a); });
     }
     {
@@ -285,6 +288,32 @@ Value ModuleFileIO::fileio_deletefile_builtin(VM& vm, ArgsView args)
     if (ec)
         return Value::falseVal();
     return removed ? Value::trueVal() : Value::falseVal();
+}
+
+Value ModuleFileIO::fileio_createdir_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() < 1 || args.size() > 2 || !isString(args[0]))
+        throw std::invalid_argument("fileio.createDir expects path string and optional recurse bool");
+    bool recurse = false;
+    if (args.size() == 2)
+        recurse = args[1].asBool();
+    std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
+    std::error_code ec;
+    bool created = recurse ? std::filesystem::create_directories(p, ec)
+                           : std::filesystem::create_directory(p, ec);
+    if (ec)
+        return Value::falseVal();
+    if (created)
+        return Value::trueVal();
+    ec.clear();
+    bool exists = std::filesystem::exists(p, ec);
+    if (ec || !exists)
+        return Value::falseVal();
+    ec.clear();
+    bool isDir = std::filesystem::is_directory(p, ec);
+    if (ec || !isDir)
+        return Value::falseVal();
+    return Value::trueVal();
 }
 
 Value ModuleFileIO::fileio_direxists_builtin(VM& vm, ArgsView args)

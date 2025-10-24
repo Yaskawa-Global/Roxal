@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import os
-import shutil
 import subprocess
 import argparse
 import re
@@ -195,21 +194,6 @@ try:
 
         timeout_secs = GC_STRESS_TIMEOUT_SECS if test == 'gc_stress' else TEST_TIMEOUT_SECS
 
-        tmp_fileio_delete_dir = None
-        if test == 'fileio_delete':
-            tmp_fileio_delete_dir = os.path.join(test_dir, 'tmp_fileio_delete')
-            if os.path.exists(tmp_fileio_delete_dir):
-                shutil.rmtree(tmp_fileio_delete_dir)
-            os.makedirs(tmp_fileio_delete_dir, exist_ok=True)
-            with open(os.path.join(tmp_fileio_delete_dir, 'file.txt'), 'w', encoding='utf-8') as handle:
-                handle.write('alpha')
-            empty_dir = os.path.join(tmp_fileio_delete_dir, 'empty_dir')
-            os.makedirs(empty_dir, exist_ok=True)
-            nested_dir = os.path.join(tmp_fileio_delete_dir, 'nested')
-            os.makedirs(nested_dir, exist_ok=True)
-            with open(os.path.join(nested_dir, 'child.txt'), 'w', encoding='utf-8') as handle:
-                handle.write('child')
-
         try:
             compProc = subprocess.run(
                 cmd,
@@ -222,8 +206,6 @@ try:
             print(f"-- timeout after {timeout_secs} s --")
             print()
             failed_count += 1
-            if tmp_fileio_delete_dir is not None:
-                shutil.rmtree(tmp_fileio_delete_dir, ignore_errors=True)
             continue
         duration_ms = (time.perf_counter() - start_time) * 1000
 
@@ -280,8 +262,6 @@ try:
                 print("--")
                 print()
                 passed = False
-        if tmp_fileio_delete_dir is not None:
-            shutil.rmtree(tmp_fileio_delete_dir, ignore_errors=True)
         if passed:
             print(f"pass ({duration_ms:.0f} ms)", flush=True)
             passed_count += 1

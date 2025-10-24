@@ -27,6 +27,7 @@ public:
     Value fileio_flush_builtin(VM& vm, ArgsView args);
     Value fileio_fileexists_builtin(VM& vm, ArgsView args);
     Value fileio_deletefile_builtin(VM& vm, ArgsView args);
+    Value fileio_createdir_builtin(VM& vm, ArgsView args);
     Value fileio_direxists_builtin(VM& vm, ArgsView args);
     Value fileio_deletedir_builtin(VM& vm, ArgsView args);
     Value fileio_filesize_builtin(VM& vm, ArgsView args);
