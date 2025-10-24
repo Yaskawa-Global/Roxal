@@ -1680,6 +1680,23 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
         asFunction(asFuncScope(funcScope())->function)->chunk->disassemble(asFunction(asFuncScope(funcScope())->function)->name);
 
     ObjFunction* function = asFunction(asFuncScope(funcScope())->function);
+    function->annotations = ast->annotations;
+    for (const auto& annot : function->annotations) {
+        if (annot->name == "doc") {
+            std::string d;
+            for (const auto& arg : annot->args) {
+                auto expr = arg.second;
+                if (auto s = dynamic_ptr_cast<ast::Str>(expr)) {
+                    if (!d.empty())
+                        d += "\n";
+                    std::string t;
+                    s->str.toUTF8String(t);
+                    d += t;
+                }
+            }
+            function->doc = toUnicodeString(d);
+        }
+    }
 
     auto functionScope { *asFuncScope(funcScope()) };
 

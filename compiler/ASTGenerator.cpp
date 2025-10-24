@@ -1143,7 +1143,26 @@ std::any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
     // has body suite?
     if (context->COLON()) {
         auto body = visitSuite(context->suite());
-        function->body = as<Suite>(body);
+        auto suite = as<Suite>(body);
+
+        if (!suite->declsOrStmts.empty()) {
+            auto first = suite->declsOrStmts.front();
+            if (std::holds_alternative<ptr<Statement>>(first)) {
+                auto stmt = std::get<ptr<Statement>>(first);
+                if (auto exprStmt = dynamic_ptr_cast<ExpressionStatement>(stmt)) {
+                    if (auto str = dynamic_ptr_cast<Str>(exprStmt->expr)) {
+                        str->str = trim(str->str);
+                        ptr<Annotation> annot = make_ptr<Annotation>();
+                        annot->name = UnicodeString::fromUTF8("doc");
+                        annot->args.emplace_back(UnicodeString(), str);
+                        function->annotations.push_back(annot);
+                        suite->declsOrStmts.erase(suite->declsOrStmts.begin());
+                    }
+                }
+            }
+        }
+
+        function->body = suite;
     }
     else // abstract method
         function->body = std::monostate();
