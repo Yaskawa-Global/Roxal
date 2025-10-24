@@ -3882,6 +3882,14 @@ std::pair<InterpretResult,Value> VM::execute()
             }
         }
 
+        if (thread->pendingWaitFor.isNonNil()) {
+            Value waitTarget = thread->pendingWaitFor;
+            thread->pendingWaitFor = Value::nilVal();
+            if (isFuture(waitTarget)) {
+                waitTarget.resolve();
+            }
+        }
+
         if (!processPendingEvents())
             return errorReturn;
 

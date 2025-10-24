@@ -15,8 +15,8 @@ func clone(v):
   """return a deep copy of v"""
 
 @builtin
-proc wait(s:int=0, ms:int=0, us:int=0, ns:int=0):
-  """wait until the specified amount of time elapses"""
+proc wait(s:int=0, ms:int=0, us:int=0, ns:int=0, for=nil):
+  """wait until the specified amount of time elapses and optionally await a future afterwards"""
 
 @builtin
 func fork(fn) -> int:

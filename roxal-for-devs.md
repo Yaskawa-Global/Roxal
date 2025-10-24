@@ -540,7 +540,7 @@ The functions in the sys module are always globally available (- as if `import s
 * `len(v)` - return the length of `v` if applicable
 * `help(fn)` - return signature and doc string for `fn`
 * `clone(v)` - deep copy `v`
-* `wait(s=0, ms=0, us=0, ns=0)` - pause execution for the specified time
+* `wait(s=0, ms=0, us=0, ns=0, for=nil)` - pause execution for the specified time and optionally await a future afterwards
 * `fork(fn)` - run `fn` in a new thread and return its id
 * `join(id)` - wait for thread `id` to finish and return true if joined
 * `stacktrace()` - return the current call stack as a list

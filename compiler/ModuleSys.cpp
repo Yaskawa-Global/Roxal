@@ -411,11 +411,12 @@ void ModuleSys::registerBuiltins(VM& vm)
             ptr<type::Type> t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
             t->func->isProc = true;
-            std::vector<Value> defaults { Value::intVal(0), Value::intVal(0), Value::intVal(0), Value::intVal(0) };
+            std::vector<Value> defaults { Value::intVal(0), Value::intVal(0), Value::intVal(0), Value::intVal(0), Value::nilVal() };
             auto params = BuiltinModule::constructParams({ {"s", type::BuiltinType::Int},
                                            {"ms", type::BuiltinType::Int},
                                            {"us", type::BuiltinType::Int},
-                                           {"ns", type::BuiltinType::Int} },
+                                           {"ns", type::BuiltinType::Int},
+                                           {"for", std::nullopt} },
                                          defaults);
             t->func->params.resize(params.size());
             for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
@@ -717,19 +718,29 @@ Value ModuleSys::clone_builtin(VM& vm, ArgsView args)
 
 Value ModuleSys::wait_builtin(VM& vm, ArgsView args)
 {
-    if (args.size() != 4)
-        throw std::invalid_argument("wait expects 4 arguments");
+    if (args.size() != 5)
+        throw std::invalid_argument("wait expects 5 arguments");
 
     int64_t s = toType(ValueType::Int, args[0], false).asInt();
     int64_t ms = toType(ValueType::Int, args[1], false).asInt();
     int64_t us = toType(ValueType::Int, args[2], false).asInt();
     int64_t ns = toType(ValueType::Int, args[3], false).asInt();
+    Value waitTarget = args[4];
 
     int64_t totalus = s*1000000 + ms*1000 + us + ns/1000;
     auto microSecs { TimeDuration::microSecs(totalus) };
 
-    VM::thread->threadSleep = true;
     VM::thread->threadSleepUntil = TimePoint::currentTime() + microSecs;
+    VM::thread->threadSleep = true;
+    VM::thread->pendingWaitFor = Value::nilVal();
+
+    if (isFuture(waitTarget)) {
+        if (microSecs.microSecs() > 0) {
+            VM::thread->pendingWaitFor = waitTarget;
+        } else {
+            waitTarget.resolve();
+        }
+    }
 
     return Value::nilVal();
 }
