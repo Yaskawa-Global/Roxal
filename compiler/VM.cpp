@@ -208,7 +208,7 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
     }
 }
 
-void roxal::scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when)
+void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, TimePoint when)
 {
     Thread::PendingEvent pe; pe.when = when; pe.event = eventWeak;
     for (auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
@@ -3585,7 +3585,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                ObjEvent* ev = nullptr;
+                ObjEventType* ev = nullptr;
                 if (isEvent(eventVal)) {
                     ev = asEvent(eventVal);
                 } else {
@@ -3613,7 +3613,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                ObjEvent* ev = nullptr;
+                ObjEventType* ev = nullptr;
                 if (isEvent(eventVal)) {
                     ev = asEvent(eventVal);
                 } else {
@@ -4552,7 +4552,7 @@ Value VM::event_emit_builtin(ArgsView args)
     }
 
     Value eventWeak = args[0].weakRef();
-    ObjEvent* ev = asEvent(args[0]);
+    ObjEventType* ev = asEvent(args[0]);
     if (ev->subscribers.empty())
         return Value::nilVal();
 
@@ -4572,7 +4572,7 @@ Value VM::event_on_builtin(ArgsView args)
     Value key = eventVal.weakRef();
     thread->eventHandlers[key].push_back(closureVal);
 
-    ObjEvent* ev = asEvent(eventVal);
+    ObjEventType* ev = asEvent(eventVal);
     ObjClosure* closure = asClosure(closureVal);
     closure->handlerThread = thread;
     ev->subscribers.push_back(closureVal.weakRef());
@@ -4588,7 +4588,7 @@ Value VM::event_off_builtin(ArgsView args)
     Value eventVal = args[0];
     Value closureVal = args[1];
 
-    ObjEvent* ev = nullptr;
+    ObjEventType* ev = nullptr;
     if (isEvent(eventVal)) {
         ev = asEvent(eventVal);
     } else {

@@ -775,6 +775,12 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 {
     currentNode = ast;
 
+    if (ast->kind == TypeDecl::Event) {
+        ast::Anys results {};
+        ast->acceptChildren(*this, results);
+        return results;
+    }
+
     bool isActor = ast->kind==TypeDecl::Actor;
     bool isInterface = ast->kind==TypeDecl::Interface;
     bool isEnumeration = ast->kind==TypeDecl::Enumeration;
@@ -990,7 +996,6 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     return {};
 }
-
 
 std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
 {

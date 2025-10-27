@@ -418,5 +418,5 @@ private:
 }
 
 namespace roxal {
-void scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when);
+void scheduleEventHandlers(Value eventWeak, ObjEventType* ev, TimePoint when);
 }

@@ -512,6 +512,8 @@ void OnStatement::output(std::ostream& os, int indent) const
     os << spaces(indent)+"On" << std::endl;
     os << spaces(indent+1) << "trigger:" << std::endl;
     trigger->output(os, indent+2);
+    if (binding.has_value())
+        os << spaces(indent+1) << "binding: " << toUTF8StdString(binding.value()) << std::endl;
     os << spaces(indent+1) << "body:" << std::endl;
     body->output(os,indent+2);
 }
@@ -875,8 +877,17 @@ void TypeDecl::acceptChildren(ASTVisitor& v, Anys& results)
 
 void TypeDecl::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"TypeDecl "
-       << (kind==Object ? "object" : (kind==Actor?"actor": (kind == Interface?"interface":(kind == Enumeration?"enum":"?")))) << " " << toUTF8StdString(name)
+    const char* kindName = nullptr;
+    switch (kind) {
+        case Object: kindName = "object"; break;
+        case Actor: kindName = "actor"; break;
+        case Interface: kindName = "interface"; break;
+        case Enumeration: kindName = "enum"; break;
+        case Event: kindName = "event"; break;
+        default: kindName = "?"; break;
+    }
+    os << spaces(indent)+"TypeDecl " << kindName
+       << " " << toUTF8StdString(name)
        << (extends.has_value() ? " "+toUTF8StdString(extends.value()) :"")
        << std::endl;
     if (!implements.empty()) {

@@ -16,6 +16,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <utility>
 #include <cmath>
 #include <sstream>
 
@@ -174,7 +175,13 @@ Value Value::signalVal(roxal::ptr<df::Signal> s)
 
 Value Value::eventVal()
 {
-    return Value::objVal(newEventObj());
+    return Value::objVal(newEventTypeObj(toUnicodeString("event")));
+}
+
+Value Value::eventInstanceVal(const Value& eventType, std::vector<Value> payload)
+{
+    debug_assert_msg(isEvent(eventType), "Value is an ObjEventType");
+    return Value::objVal(newEventInstanceObj(eventType, std::move(payload)));
 }
 
 Value Value::libraryVal(void* handle)
