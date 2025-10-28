@@ -102,7 +102,7 @@ for_stmt
  ;
 
 on_stmt
- : ON expression ':' suite
+ : ON expression (CHANGED)? (AS IDENTIFIER)? ':' suite
  ;
 
 emit_stmt
@@ -165,13 +165,33 @@ suite
  ;
 
 type_decl
- : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE | ENUM)
-    // only enum can extend byte or int
-    (EXTENDS (IDENTIFIER | BYTE | INT))? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)?
+ : object_type_decl
+ | enum_type_decl
+ | event_type_decl
+ ;
+
+object_type_decl
+ : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE)
+    (EXTENDS IDENTIFIER)? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)?
     (   (':' NEWLINE INDENT (str NEWLINE)? (property|method)* DEDENT)
-      // for enums, allow mixture of comma & line seperated labels
-      | (':' NEWLINE INDENT (enum_label (NEWLINE|COMMA) )* DEDENT)
+      | NEWLINE
+    )
+ ;
+
+enum_type_decl
+ : annotation* TYPE IDENTIFIER ENUM
+    // only enum can extend byte or int
+    (EXTENDS (IDENTIFIER | BYTE | INT))?
+    // for enums, allow mixture of comma & line separated labels
+    (   (':' NEWLINE INDENT (enum_label (NEWLINE|COMMA) )* DEDENT)
       | (':' (enum_label COMMA)* enum_label NEWLINE)
+      | NEWLINE
+    )
+ ;
+
+event_type_decl
+ : annotation* TYPE IDENTIFIER EVENT (EXTENDS IDENTIFIER)?
+    (   (':' NEWLINE INDENT (str NEWLINE)? property* DEDENT)
       | NEWLINE
     )
  ;
@@ -412,6 +432,7 @@ EXTENDS: 'extends';
 THIS: 'this';
 SUPER: 'super';
 IMPORT : 'import';
+CHANGED: 'changed';
 
 
 // Types

@@ -1701,7 +1701,7 @@ Value ModuleSys::typeof_native(VM& vm, ArgsView args)
         valueType = ValueType::Type;
     } else if (isSignal(val)) {
         valueType = ValueType::Signal;
-    } else if (isEvent(val)) {
+    } else if (isEventType(val)) {
         valueType = ValueType::Event;
     } else if (val.isObj()) {
         Obj* obj = val.asObj();

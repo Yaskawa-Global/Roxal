@@ -9,6 +9,7 @@
 #include <dlfcn.h>
 #include <future>
 #include <vector>
+#include <utility>
 #include <core/AST.h>
 
 #include <core/types.h>
@@ -231,7 +232,8 @@ ValueType Obj::valueType() const
         case ObjType::Matrix: return ValueType::Matrix;
         case ObjType::Signal: return ValueType::Signal;
         case ObjType::File: return ValueType::Object;
-        case ObjType::Event: return ValueType::Event;
+        case ObjType::EventType: return ValueType::Event;
+        case ObjType::EventInstance: return ValueType::Object;
         case ObjType::Function: return ValueType::Function;
         case ObjType::Closure: return ValueType::Closure;
         case ObjType::Upvalue: return ValueType::Upvalue;
@@ -1417,42 +1419,171 @@ void ObjSignal::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     type = ObjType::Signal;
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjEvent::clone() const {
-    // events currently have no user-mutable state; share reference
-    return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjEvent*>(this));
-}
-void ObjEvent::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
+ObjEventType::ObjEventType(const icu::UnicodeString& typeName)
+    : name(typeName)
+    , superType(Value::nilVal())
 {
-    uint8_t tag = static_cast<uint8_t>(ObjType::Event);
-    out.write(reinterpret_cast<char*>(&tag),1);
-    uint32_t count = subscribers.size();
-    out.write(reinterpret_cast<char*>(&count),4);
-    for(const auto& s : subscribers)
-        writeValue(out, s, ctx);
+    type = ObjType::EventType;
 }
 
-void ObjEvent::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
+unique_ptr<Obj, UnreleasedObj> ObjEventType::clone() const {
+    // event type definitions are immutable once created; share reference
+    return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjEventType*>(this));
+}
+
+void ObjEventType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
-    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
-    if(tag != static_cast<uint8_t>(ObjType::Event))
-        throw std::runtime_error("ObjEvent::read mismatched tag");
-    uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
+    uint8_t tag = static_cast<uint8_t>(ObjType::EventType);
+    out.write(reinterpret_cast<char*>(&tag), 1);
+
+    std::string n; name.toUTF8String(n);
+    uint32_t len = n.size();
+    out.write(reinterpret_cast<char*>(&len), 4);
+    if (len > 0) out.write(n.data(), len);
+
+    writeValue(out, superType, ctx);
+
+    uint32_t propCount = payloadProperties.size();
+    out.write(reinterpret_cast<char*>(&propCount), 4);
+    for (const auto& prop : payloadProperties) {
+        std::string pn; prop.name.toUTF8String(pn);
+        uint32_t plen = pn.size();
+        out.write(reinterpret_cast<char*>(&plen), 4);
+        if (plen > 0) out.write(pn.data(), plen);
+        writeValue(out, prop.type, ctx);
+        writeValue(out, prop.initialValue, ctx);
+    }
+
+    uint32_t subCount = subscribers.size();
+    out.write(reinterpret_cast<char*>(&subCount), 4);
+    for (const auto& subscriber : subscribers) {
+        writeValue(out, subscriber, ctx);
+    }
+}
+
+void ObjEventType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag), 1);
+    if (tag != static_cast<uint8_t>(ObjType::EventType))
+        throw std::runtime_error("ObjEventType::read mismatched tag");
+
+    uint32_t len; in.read(reinterpret_cast<char*>(&len), 4);
+    std::string ns(len, '\0');
+    if (len > 0) in.read(ns.data(), len);
+    name = icu::UnicodeString::fromUTF8(ns);
+
+    superType = readValue(in, ctx);
+
+    payloadProperties.clear();
+    propertyLookup.clear();
+
+    uint32_t propCount; in.read(reinterpret_cast<char*>(&propCount), 4);
+    for (uint32_t i = 0; i < propCount; ++i) {
+        uint32_t plen; in.read(reinterpret_cast<char*>(&plen), 4);
+        std::string pn(plen, '\0');
+        if (plen > 0) in.read(pn.data(), plen);
+        icu::UnicodeString propName = icu::UnicodeString::fromUTF8(pn);
+
+        Value typeValue = readValue(in, ctx);
+        Value initial = readValue(in, ctx);
+
+        payloadProperties.push_back({ propName, typeValue, initial });
+        propertyLookup[propName.hashCode()] = payloadProperties.size() - 1;
+    }
+
+    uint32_t subCount; in.read(reinterpret_cast<char*>(&subCount), 4);
     subscribers.clear();
-    for(uint32_t i=0;i<count;i++)
+    subscribers.reserve(subCount);
+    for (uint32_t i = 0; i < subCount; ++i) {
         subscribers.push_back(readValue(in, ctx));
-    type = ObjType::Event;
+    }
+
+    type = ObjType::EventType;
 }
 
-void ObjEvent::trace(ValueVisitor& visitor) const
+void ObjEventType::trace(ValueVisitor& visitor) const
 {
+    visitor.visit(superType);
+    for (const auto& prop : payloadProperties) {
+        visitor.visit(prop.type);
+        visitor.visit(prop.initialValue);
+    }
     for (const auto& subscriber : subscribers) {
         visitor.visit(subscriber);
     }
 }
 
-void ObjEvent::dropReferences()
+void ObjEventType::dropReferences()
 {
+    superType = Value::nilVal();
+    for (auto& prop : payloadProperties) {
+        prop.type = Value::nilVal();
+        prop.initialValue = Value::nilVal();
+    }
     subscribers.clear();
+}
+
+ObjEventInstance::ObjEventInstance(const Value& eventType)
+    : typeHandle(eventType)
+{
+    type = ObjType::EventInstance;
+    if (isEventType(eventType)) {
+        ObjEventType* typeObj = asEventType(eventType);
+        payload.reserve(typeObj->payloadProperties.size());
+        for (const auto& prop : typeObj->payloadProperties) {
+            payload.push_back(prop.initialValue);
+        }
+    }
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjEventInstance::clone() const {
+    // event instances are immutable snapshots; share reference
+    return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjEventInstance*>(this));
+}
+
+void ObjEventInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
+{
+    uint8_t tag = static_cast<uint8_t>(ObjType::EventInstance);
+    out.write(reinterpret_cast<char*>(&tag), 1);
+    writeValue(out, typeHandle, ctx);
+
+    uint32_t count = payload.size();
+    out.write(reinterpret_cast<char*>(&count), 4);
+    for (const auto& value : payload) {
+        writeValue(out, value, ctx);
+    }
+}
+
+void ObjEventInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag), 1);
+    if (tag != static_cast<uint8_t>(ObjType::EventInstance))
+        throw std::runtime_error("ObjEventInstance::read mismatched tag");
+
+    typeHandle = readValue(in, ctx);
+
+    uint32_t count; in.read(reinterpret_cast<char*>(&count), 4);
+    payload.clear();
+    payload.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        payload.push_back(readValue(in, ctx));
+    }
+
+    type = ObjType::EventInstance;
+}
+
+void ObjEventInstance::trace(ValueVisitor& visitor) const
+{
+    visitor.visit(typeHandle);
+    for (const auto& value : payload) {
+        visitor.visit(value);
+    }
+}
+
+void ObjEventInstance::dropReferences()
+{
+    typeHandle = Value::nilVal();
+    payload.clear();
 }
 
 unique_ptr<Obj, UnreleasedObj> ObjLibrary::clone() const {
@@ -2567,20 +2698,38 @@ void ObjSignal::dropReferences()
     changeEvent = Value::nilVal();
 }
 
-ObjEvent* ObjSignal::ensureChangeEvent()
+ObjEventType* ObjSignal::ensureChangeEvent()
 {
     if (!changeEvent.isNil())
-        return asEvent(changeEvent);
+        return asEventType(changeEvent);
 
-    changeEvent = Value::eventVal();
+    auto eventType = newEventTypeObj(toUnicodeString("SignalChanged"));
+    ObjEventType* typeObj = eventType.get();
+
+    ObjEventType::PayloadProperty valueProp { toUnicodeString("value"), Value::nilVal(), Value::nilVal() };
+    ObjEventType::PayloadProperty timeProp { toUnicodeString("timestamp"),
+                                             Value::typeSpecVal(ValueType::Int),
+                                             Value::intVal(0) };
+    typeObj->payloadProperties.push_back(valueProp);
+    typeObj->propertyLookup[valueProp.name.hashCode()] = 0;
+    typeObj->payloadProperties.push_back(timeProp);
+    typeObj->propertyLookup[timeProp.name.hashCode()] = 1;
+
+    changeEvent = Value::objVal(std::move(eventType));
     Value eventWeak = changeEvent.weakRef();
-    signal->addValueChangedCallback([eventWeak](TimePoint t, ptr<df::Signal>, const Value&){
+    signal->addValueChangedCallback([eventWeak](TimePoint t, ptr<df::Signal>, const Value& sample){
         if (!eventWeak.isAlive())
             return;
-        ObjEvent* ev = asEvent(eventWeak);
-        scheduleEventHandlers(eventWeak, ev, t);
+        ObjEventType* ev = asEventType(eventWeak);
+        Value eventTypeStrong = Value::objRef(ev);
+        std::vector<Value> payload;
+        payload.reserve(ev->payloadProperties.size());
+        payload.push_back(sample);
+        payload.push_back(Value::intVal(static_cast<int32_t>(t.microSecs())));
+        Value instance = Value::eventInstanceVal(eventTypeStrong, std::move(payload));
+        scheduleEventHandlers(eventWeak, ev, instance, t);
     });
-    return asEvent(changeEvent);
+    return asEventType(changeEvent);
 }
 
 unique_ptr<ObjSignal, UnreleasedObj> roxal::newSignalObj(ptr<df::Signal> s)
@@ -2603,19 +2752,53 @@ std::string roxal::objSignalToString(const ObjSignal* os)
     }
 }
 
-unique_ptr<ObjEvent, UnreleasedObj> roxal::newEventObj()
+unique_ptr<ObjEventType, UnreleasedObj> roxal::newEventTypeObj(const icu::UnicodeString& name,
+                                                               Value superType)
 {
     #ifdef DEBUG_BUILD
-    return newObj<ObjEvent>(__func__, __FILE__, __LINE__);
+    auto eventType = newObj<ObjEventType>(__func__, __FILE__, __LINE__, name);
     #else
-    return newObj<ObjEvent>();
+    auto eventType = newObj<ObjEventType>(name);
     #endif
+    eventType->superType = superType;
+    return eventType;
 }
 
-std::string roxal::objEventToString(const ObjEvent* ev)
+unique_ptr<ObjEventInstance, UnreleasedObj> roxal::newEventInstanceObj(const Value& eventType,
+                                                                       std::vector<Value> payload)
 {
-    (void)ev;
-    return std::string("<event>");
+    #ifdef DEBUG_BUILD
+    auto instance = newObj<ObjEventInstance>(__func__, __FILE__, __LINE__, eventType);
+    #else
+    auto instance = newObj<ObjEventInstance>(eventType);
+    #endif
+    if (!payload.empty())
+        instance->payload = std::move(payload);
+    return instance;
+}
+
+std::string roxal::objEventTypeToString(const ObjEventType* ev)
+{
+    if (!ev)
+        return std::string("<event>");
+    std::string name;
+    ev->name.toUTF8String(name);
+    if (name.empty() || name == "event")
+        return std::string("<event>");
+    return std::string("<event ") + name + ">";
+}
+
+std::string roxal::objEventInstanceToString(const ObjEventInstance* ev)
+{
+    if (!ev)
+        return std::string("<event instance>");
+    std::string typeName;
+    if (ev->typeHandle.isAlive() && isEventType(ev->typeHandle)) {
+        asEventType(ev->typeHandle)->name.toUTF8String(typeName);
+    }
+    if (typeName.empty())
+        typeName = "event";
+    return std::string("<event ") + typeName + " instance>";
 }
 
 
@@ -3057,8 +3240,11 @@ std::string roxal::objToString(const Value& v)
         case ObjType::File: {
             return objFileToString(asFile(v));
         }
-        case ObjType::Event: {
-            return objEventToString(asEvent(v));
+        case ObjType::EventType: {
+            return objEventTypeToString(asEventType(v));
+        }
+        case ObjType::EventInstance: {
+            return objEventInstanceToString(asEventInstance(v));
         }
         case ObjType::Library: {
             return objLibraryToString(asLibrary(v));
@@ -3521,7 +3707,8 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::Matrix: return "matrix";
     case ObjType::Signal: return "signal";
     case ObjType::File: return "file";
-    case ObjType::Event: return "event";
+    case ObjType::EventType: return "event";
+    case ObjType::EventInstance: return "event";
     case ObjType::Library: return "library";
     case ObjType::ForeignPtr: return "foreignptr";
     case ObjType::Exception: return "exception";

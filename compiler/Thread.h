@@ -100,7 +100,8 @@ public:
 
     struct PendingEvent {
         TimePoint when;
-        Value event;
+        Value eventType;
+        Value instance;
     };
 
     struct PendingEventCompare {
@@ -110,6 +111,7 @@ public:
     };
 
     atomic_priority_queue<PendingEvent, PendingEventCompare> pendingEvents;
+    std::atomic<size_t> pendingEventCount { 0 };
 
     int execute_depth;
 

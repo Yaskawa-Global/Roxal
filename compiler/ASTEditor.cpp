@@ -258,6 +258,10 @@ std::any ASTEditor::visit(ptr<ast::TypeDecl> ast)
 
     //for all suites in all methods
     //std::vector<ptr<Function>> methods;
+    for (auto& property : ast->properties)
+    {
+        property->accept(*this);
+    }
     for(auto &method: ast->methods)
     {
         method->accept(*this);

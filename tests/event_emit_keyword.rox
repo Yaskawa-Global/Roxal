@@ -2,7 +2,7 @@ var e:event
 on e:
   print('hello')
 
-emit e
+emit e()
 
 print('done')
 
