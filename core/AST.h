@@ -363,6 +363,8 @@ struct OnStatement : public Statement {
     OnStatement() : Statement(StmtType::On) {}
 
     ptr<ast::Expression> trigger;
+    std::optional<icu::UnicodeString> binding;
+    bool requiresSignalChange { false };
     ptr<ast::Suite> body;
 
     virtual std::any accept(ASTVisitor& v);
@@ -473,7 +475,7 @@ struct Parameter : public AST {
 struct TypeDecl : public Declaration {
     TypeDecl() : Declaration(DeclType::Type) {}
 
-    enum Kind { Object, Actor, Interface, Enumeration };
+    enum Kind { Object, Actor, Interface, Enumeration, Event };
     Kind kind;
 
     icu::UnicodeString name;

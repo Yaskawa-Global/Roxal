@@ -216,7 +216,8 @@ public:
 
     static Value signalVal(roxal::ptr<df::Signal> s); // ObjSignal
 
-    static Value eventVal(); // ObjEvent
+    static Value eventVal(); // ObjEventType
+    static Value eventInstanceVal(const Value& eventType, std::vector<Value> payload = {}); // ObjEventInstance
 
     static Value libraryVal(void* handle); // ObjLibrary
 

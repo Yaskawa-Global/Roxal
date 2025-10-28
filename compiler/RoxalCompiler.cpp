@@ -775,6 +775,89 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 {
     currentNode = ast;
 
+    if (ast->kind == TypeDecl::Event) {
+        enterTypeScope(ast->name);
+
+        if (!ast->methods.empty())
+            error("Events cannot declare methods");
+        if (!ast->implements.empty())
+            error("Events cannot implement interfaces");
+
+        if (ast->extends.has_value()) {
+            auto superName = ast->extends.value();
+            auto it = typePropertyRegistry.find(superName);
+            if (it != typePropertyRegistry.end())
+                asTypeScope(typeScope())->propertyNames.insert(it->second.begin(), it->second.end());
+        }
+
+        uint16_t typeNameConstant = identifierConstant(ast->name);
+        declareVariable(ast->name);
+        emitOpArgsBytes(OpCode::EventType, typeNameConstant);
+        defineVariable(typeNameConstant);
+
+        if (ast->extends.has_value()) {
+            asTypeScope(typeScope())->hasSuperType = true;
+            asTypeScope(typeScope())->superTypeName = ast->extends.value();
+
+            namedVariable(ast->extends.value(), false);
+            enterLocalScope();
+            addLocal("super");
+            defineVariable(0);
+            namedVariable(ast->name, false);
+            emitByte(OpCode::EventExtend);
+        }
+
+        namedVariable(ast->name, false);
+
+        for (const auto& prop : ast->properties) {
+            if (prop->access == Access::Private)
+                error("Event payload member '" + toUTF8StdString(prop->name) + "' cannot be private");
+
+            auto propName { prop->name };
+            uint16_t propNameConstant = identifierConstant(propName);
+            asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name};
+
+            if (prop->varType.has_value()) {
+                auto varType { prop->varType.value() };
+                if (std::holds_alternative<BuiltinType>(varType)) {
+                    auto builtinType { std::get<BuiltinType>(varType) };
+                    Value typeValue { Value::typeSpecVal(builtinToValueType(builtinType)) };
+                    emitConstant(typeValue, "event payload " + toUTF8StdString(propName) + " type");
+                } else {
+                    namedVariable(std::get<icu::UnicodeString>(varType), false);
+                }
+            } else {
+                emitByte(OpCode::ConstNil, "event payload " + toUTF8StdString(propName) + " (no type)");
+            }
+
+            if (prop->initializer.has_value()) {
+                prop->initializer.value()->accept(*this);
+            } else {
+                bool declaredBuiltinType = prop->varType.has_value() && std::holds_alternative<BuiltinType>(prop->varType.value());
+                if (declaredBuiltinType) {
+                    auto bt = std::get<BuiltinType>(prop->varType.value());
+                    if (bt == BuiltinType::Signal)
+                        error("Can't default-construct signal");
+                    emitConstant(defaultValue(builtinToValueType(bt)));
+                } else {
+                    emitByte(OpCode::ConstNil);
+                }
+            }
+
+            emitOpArgsBytes(OpCode::EventPayload, propNameConstant, "event payload " + toUTF8StdString(propName));
+        }
+
+        emitByte(OpCode::Pop, "event type");
+
+        if (asTypeScope(typeScope())->hasSuperType)
+            exitLocalScope();
+
+        typePropertyRegistry[ast->name] = asTypeScope(typeScope())->propertyNames;
+
+        exitTypeScope();
+        return {};
+    }
+
     bool isActor = ast->kind==TypeDecl::Actor;
     bool isInterface = ast->kind==TypeDecl::Interface;
     bool isEnumeration = ast->kind==TypeDecl::Enumeration;
@@ -990,7 +1073,6 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     return {};
 }
-
 
 std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
 {
@@ -1425,7 +1507,13 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
 
     enterFuncScope(enclosingModuleScope->moduleType, funcName, FunctionType::Function, funcType);
     enterLocalScope();
-    asFunction(asFuncScope(funcScope())->function)->arity = 0;
+    int handlerArity = ast->binding.has_value() ? 1 : 0;
+    asFunction(asFuncScope(funcScope())->function)->arity = handlerArity;
+    if (handlerArity == 1) {
+        auto bindingName = ast->binding.value();
+        declareVariable(bindingName);
+        defineVariable(identifierConstant(bindingName));
+    }
     ast->body->accept(*this);
     emitReturn();
 
@@ -1442,7 +1530,8 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
         emitByte(fs->upvalues[i].index);
     }
 
-    emitByte(OpCode::EventOn);
+    uint8_t onMode = ast->requiresSignalChange ? 1 : 2;
+    emitOpArgsBytes(OpCode::EventOn, onMode);
 
     return {};
 }
@@ -1475,7 +1564,7 @@ std::any RoxalCompiler::visit(ptr<ast::UntilStatement> ast)
     // subscribe conditional interrupt handler
     namedVariable(tmpName, false);          // [event]
     namedVariable(toUnicodeString("__conditional_interrupt"), false); // [event, closure]
-    emitByte(OpCode::EventOn);
+    emitOpArgsBytes(OpCode::EventOn, 0);
 
     // setup try/except
     auto handlerJump = emitJump(OpCode::SetupExcept);

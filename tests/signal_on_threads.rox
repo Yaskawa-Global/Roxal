@@ -2,16 +2,16 @@ var s = clock(10)
 
 type A actor:
   proc setup():
-    on s:
+    on s changed as evt:
       wait(us=10000)
-      print("actor:"+int(s))
+      print("actor:"+evt.value)
 
 a = A()
 a.setup()
 wait(us=2000)
 
-on s:
-  print("main:"+int(s))
+on s changed as evt:
+  print("main:"+evt.value)
 
 s.run()
 

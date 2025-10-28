@@ -186,7 +186,6 @@ std::any ASTGraphviz::visit(ptr<ast::Import> ast)
 }
 
 
-
 std::any ASTGraphviz::visit(ptr<ast::TypeDecl> ast)
 {
     startVisit();
@@ -199,10 +198,23 @@ std::any ASTGraphviz::visit(ptr<ast::TypeDecl> ast)
     for(int i=0; i<ast->methods.size();i++)
         addLink(name, stackPop());
 
+    std::string kindLabel;
+    switch (ast->kind) {
+        case TypeDecl::Object: kindLabel = "object"; break;
+        case TypeDecl::Actor: kindLabel = "actor"; break;
+        case TypeDecl::Interface: kindLabel = "interface"; break;
+        case TypeDecl::Enumeration: kindLabel = "enum"; break;
+        case TypeDecl::Event: kindLabel = "event"; break;
+        default: kindLabel = "?"; break;
+    }
+
+    std::string details = toUTF8StdString(ast->name);
+    if (ast->extends.has_value())
+        details += " : " + toUTF8StdString(ast->extends.value());
+
     nodes[name] = node(name,
-                       std::string("TypeDecl ")
-                       +(ast->kind==TypeDecl::Object?"object":(ast->kind==TypeDecl::Actor?"actor":"?")),
-                       toUTF8StdString(ast->name));
+                       std::string("TypeDecl ") + kindLabel,
+                       details);
     stackPush(name);
     endVisit();
     return {};
@@ -354,7 +366,13 @@ std::any ASTGraphviz::visit(ptr<ast::OnStatement> ast)
 
     addLink(name, stackPop(), "body");
     addLink(name, stackPop(), "trigger");
-    nodes[name] = node(name, "on");
+    std::string details;
+    if (ast->requiresSignalChange)
+        details = "changed";
+    if (ast->binding.has_value())
+        details = details.empty() ? toUTF8StdString(ast->binding.value())
+                                  : details + ":" + toUTF8StdString(ast->binding.value());
+    nodes[name] = node(name, "on", details);
     stackPush(name);
 
     endVisit();

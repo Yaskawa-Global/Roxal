@@ -208,9 +208,12 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
     }
 }
 
-void roxal::scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when)
+void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value eventInstance, TimePoint when)
 {
-    Thread::PendingEvent pe; pe.when = when; pe.event = eventWeak;
+    Thread::PendingEvent pe;
+    pe.when = when;
+    pe.eventType = eventWeak;
+    pe.instance = eventInstance;
     for (auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
         Value handlerVal = *it;
         if (!handlerVal.isAlive()) {
@@ -225,6 +228,7 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when)
             continue;
         }
         handlerThread->pendingEvents.push(pe);
+        handlerThread->pendingEventCount.fetch_add(1, std::memory_order_release);
         handlerThread->wake();
         ++it;
     }
@@ -908,6 +912,41 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
                     return true;
                 }
+            }
+            case ObjType::EventType: {
+                ObjEventType* eventType = asEvent(callee);
+                if (!callSpec.allPositional) {
+                    runtimeError("Named arguments are not supported when constructing event instances.");
+                    return false;
+                }
+
+                size_t payloadCount = eventType->payloadProperties.size();
+                size_t provided = callSpec.argCount;
+                if (provided > payloadCount) {
+                    runtimeError("Event instance expects at most " + std::to_string(payloadCount) +
+                                  " argument" + (payloadCount == 1 ? "" : "s") + ".");
+                    return false;
+                }
+
+                bool strict = false;
+                if (!thread->frames.empty())
+                    strict = (thread->frames.end() - 1)->strict;
+
+                auto argBegin = thread->stackTop - callSpec.argCount;
+                std::vector<Value> payload;
+                payload.reserve(payloadCount);
+                for (size_t i = 0; i < payloadCount; ++i) {
+                    Value value = (i < provided) ? *(argBegin + i) : eventType->payloadProperties[i].initialValue;
+                    const Value& typeSpec = eventType->payloadProperties[i].type;
+                    if (!value.isNil() && !typeSpec.isNil())
+                        value = toType(typeSpec, value, strict);
+                    payload.push_back(value);
+                }
+
+                Value instance = Value::eventInstanceVal(Value::objRef(eventType), std::move(payload));
+                *(thread->stackTop - callSpec.argCount - 1) = instance;
+                popN(callSpec.argCount);
+                return true;
             }
             case ObjType::Type: {
                 ObjTypeSpec* ts = asTypeSpec(callee);
@@ -1835,6 +1874,63 @@ void VM::defineProperty(ObjString* name)
 }
 
 
+void VM::defineEventPayload(ObjString* name)
+{
+    #ifdef DEBUG_BUILD
+    if (!isEvent(peek(2)))
+        throw std::runtime_error("Can't declare event payload without event type on stack");
+    #endif
+
+    ObjEventType* eventType = asEvent(peek(2));
+
+    if (eventType->propertyLookup.contains(name->hash))
+        throw std::runtime_error("Duplicate event payload '" + name->toStdString() + "' declared in event '" + toUTF8StdString(eventType->name) + "'");
+
+    Value propertyType = peek(1);
+    Value initialValue = peek(0);
+
+    if (!initialValue.isNil() && !propertyType.isNil() && isTypeSpec(propertyType)) {
+        ObjTypeSpec* spec = asTypeSpec(propertyType);
+        if (spec->typeValue != ValueType::Nil) {
+            bool strict = false;
+            if (!thread->frames.empty())
+                strict = (thread->frames.end() - 1)->strict;
+            initialValue = toType(propertyType, initialValue, strict);
+        }
+    }
+
+    ObjEventType::PayloadProperty payload { name->s, propertyType, initialValue };
+    eventType->payloadProperties.push_back(payload);
+    eventType->propertyLookup[name->hash] = eventType->payloadProperties.size() - 1;
+
+    popN(2);
+}
+
+
+void VM::extendEventType()
+{
+    Value superVal = peek(1);
+    Value subVal = peek(0);
+
+    if (!isEvent(superVal) || !isEvent(subVal))
+        throw std::runtime_error("Event inheritance requires event types");
+
+    ObjEventType* superType = asEvent(superVal);
+    ObjEventType* subType = asEvent(subVal);
+
+    subType->superType = Value::objRef(superType);
+    subType->payloadProperties.clear();
+    subType->payloadProperties.reserve(superType->payloadProperties.size());
+    subType->propertyLookup.clear();
+
+    for (size_t i = 0; i < superType->payloadProperties.size(); ++i) {
+        const auto& prop = superType->payloadProperties[i];
+        subType->payloadProperties.push_back(prop);
+        subType->propertyLookup[prop.name.hashCode()] = i;
+    }
+}
+
+
 void VM::defineMethod(ObjString* name)
 {
     Value method = peek(0);
@@ -2316,6 +2412,46 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
 
                 inst.resolve();
+                if (isEventInstance(inst)) {
+                    ObjEventInstance* eventInst = asEventInstance(inst);
+                    if (!eventInst->typeHandle.isAlive() || !isEvent(eventInst->typeHandle)) {
+                        runtimeError("Event instance is no longer associated with a live event type.");
+                        return errorReturn;
+                    }
+
+                    ObjEventType* type = asEvent(eventInst->typeHandle);
+                    auto pit = type->propertyLookup.find(name->hash);
+                    if (pit != type->propertyLookup.end()) {
+                        size_t index = pit->second;
+                        if (index >= eventInst->payload.size()) {
+                            runtimeError("Event instance payload is missing property '" + toUTF8StdString(name->s) + "'.");
+                            return errorReturn;
+                        }
+
+                        Value result = eventInst->payload[index];
+                        pop();
+                        push(result);
+                        break;
+                    }
+
+                    auto mit = builtinMethods.find(inst.type());
+                    if (mit != builtinMethods.end()) {
+                        auto methodIt = mit->second.find(name->hash);
+                        if (methodIt != mit->second.end()) {
+                            const BuiltinMethodInfo& methodInfo = methodIt->second;
+                            Value bound { Value::boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
+                                                                methodInfo.funcType, methodInfo.defaultValues,
+                                                                methodInfo.declFunction) };
+                            pop();
+                            push(bound);
+                            break;
+                        }
+                    }
+
+                    runtimeError("Undefined property '" + toUTF8StdString(name->s) + "' for event instance.");
+                    return errorReturn;
+                }
+
                 if (isDict(inst)) {
                     ObjDict* dict = asDict(inst);
                     Value key { Value::objRef(name) };
@@ -2456,6 +2592,11 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
 
                 runtimeError("Only object and actor instances have methods and only object, actor, and dictionary instances have properties (string keys only).");
+#ifdef DEBUG_BUILD
+                if (inst.isObj()) {
+                    std::cerr << "GetProp fallback objType=" << int(objType(inst)) << std::endl;
+                }
+#endif
                 return errorReturn;
                 break;
             }
@@ -2499,6 +2640,45 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
 
                 inst.resolve();
+                if (isEventInstance(inst)) {
+                    ObjEventInstance* eventInst = asEventInstance(inst);
+                    if (!eventInst->typeHandle.isAlive() || !isEvent(eventInst->typeHandle)) {
+                        runtimeError("Event instance is no longer associated with a live event type.");
+                        return errorReturn;
+                    }
+
+                    ObjEventType* type = asEvent(eventInst->typeHandle);
+                    auto pit = type->propertyLookup.find(name->hash);
+                    if (pit != type->propertyLookup.end()) {
+                        size_t index = pit->second;
+                        if (index >= eventInst->payload.size()) {
+                            runtimeError("Event instance payload is missing property '" + toUTF8StdString(name->s) + "'.");
+                            return errorReturn;
+                        }
+
+                        Value result = eventInst->payload[index];
+                        pop();
+                        push(result);
+                        break;
+                    }
+
+                    auto mit = builtinMethods.find(inst.type());
+                    if (mit != builtinMethods.end()) {
+                        auto methodIt = mit->second.find(name->hash);
+                        if (methodIt != mit->second.end()) {
+                            const BuiltinMethodInfo& methodInfo = methodIt->second;
+                            Value bound { Value::boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
+                                                                methodInfo.funcType, methodInfo.defaultValues,
+                                                                methodInfo.declFunction) };
+                            pop();
+                            push(bound);
+                            break;
+                        }
+                    }
+
+                    runtimeError("Undefined property '" + toUTF8StdString(name->s) + "' for event instance.");
+                    return errorReturn;
+                }
                 if (isDict(inst)) {
                     ObjDict* dict = asDict(inst);
                     Value key { Value::objRef(name) };
@@ -2686,6 +2866,11 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
+                if (isEventInstance(inst)) {
+                    runtimeError("Cannot assign to property '" + toUTF8StdString(name->s) + "' of event instance.");
+                    return errorReturn;
+                }
+
                 inst.resolve();
                 if (isDict(inst)) {
                     ObjDict* dict = asDict(inst);
@@ -2810,6 +2995,10 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
 
                 inst.resolve();
+                if (isEventInstance(inst)) {
+                    runtimeError("Cannot assign to property '" + toUTF8StdString(name->s) + "' of event instance.");
+                    return errorReturn;
+                }
                 if (isDict(inst)) {
                     ObjDict* dict = asDict(inst);
 
@@ -3578,21 +3767,35 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::EventOn: {
+                uint8_t modeByte = readByte();
+                bool requireChangedKeyword = (modeByte == 1);
+                bool disallowSignalTargets = (modeByte == 2);
                 Value closureVal = pop();
                 Value eventVal = pop();
-                if (!isClosure(closureVal) || !(isEvent(eventVal) || isSignal(eventVal))) {
+                if (!isClosure(closureVal)) {
                     runtimeError("EVENT_ON expects event/signal and closure");
                     return errorReturn;
                 }
 
-                ObjEvent* ev = nullptr;
-                if (isEvent(eventVal)) {
-                    ev = asEvent(eventVal);
-                } else {
+                ObjEventType* ev = nullptr;
+                if (isSignal(eventVal)) {
+                    if (disallowSignalTargets) {
+                        runtimeError("signal handlers must use 'changed'");
+                        return errorReturn;
+                    }
                     ObjSignal* sigObj = asSignal(eventVal);
                     ev = sigObj->ensureChangeEvent();
                     eventVal = sigObj->changeEvent;
                     thread->eventToSignal[eventVal.weakRef()] = Value::objRef(sigObj);
+                } else if (isEvent(eventVal)) {
+                    if (requireChangedKeyword) {
+                        runtimeError("'changed' is only valid with signals");
+                        return errorReturn;
+                    }
+                    ev = asEvent(eventVal);
+                } else {
+                    runtimeError("EVENT_ON expects event/signal and closure");
+                    return errorReturn;
                 }
 
                 // record this handler on the current thread
@@ -3613,7 +3816,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                ObjEvent* ev = nullptr;
+                ObjEventType* ev = nullptr;
                 if (isEvent(eventVal)) {
                     ev = asEvent(eventVal);
                 } else {
@@ -3756,6 +3959,12 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(tv);
                 break;
             }
+            case OpCode::EventType: {
+                ObjString* name = readString();
+                Value tv { Value::objVal(newEventTypeObj(name->s)) };
+                push(tv);
+                break;
+            }
             case OpCode::Property: {
                 try {
                     defineProperty(readString());
@@ -3763,6 +3972,25 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
+                break;
+            }
+            case OpCode::EventPayload: {
+                try {
+                    defineEventPayload(readString());
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case OpCode::EventExtend: {
+                try {
+                    extendEventType();
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                pop();
                 break;
             }
             case OpCode::Method: {
@@ -3921,26 +4149,32 @@ bool VM::processPendingEvents()
 
     if (exitRequested.load()) return false;
 
-    if (thread->eventHandlers.empty()) return true;
+    if (thread->pendingEventCount.load(std::memory_order_acquire) == 0)
+        return true;
 
     Thread::PendingEvent tev;
 
     // Drop events that are no longer alive or have no handlers
     while(thread->pendingEvents.pop_if([&](const Thread::PendingEvent& e){
-                return !e.event.isAlive() ||
-                        thread->eventHandlers.count(e.event) == 0;
+                return !e.eventType.isAlive() ||
+                        thread->eventHandlers.count(e.eventType) == 0;
             }, tev)) {
-        thread->eventHandlers.erase(tev.event);
+        size_t previous = thread->pendingEventCount.fetch_sub(1, std::memory_order_acq_rel);
+        assert(previous > 0);
+        thread->eventHandlers.erase(tev.eventType);
     }
 
-    if (thread->eventHandlers.empty()) return true;
+    if (thread->pendingEventCount.load(std::memory_order_acquire) == 0)
+        return true;
 
     auto now = TimePoint::currentTime();
     if (thread->pendingEvents.pop_if([&](const Thread::PendingEvent& e){
-            return e.when <= now && e.event.isAlive() &&
-                    thread->eventHandlers.count(e.event) > 0;
+            return e.when <= now && e.eventType.isAlive() &&
+                    thread->eventHandlers.count(e.eventType) > 0;
         }, tev)) {
-        auto handlersIt = thread->eventHandlers.find(tev.event);
+        size_t previous = thread->pendingEventCount.fetch_sub(1, std::memory_order_acq_rel);
+        assert(previous > 0);
+        auto handlersIt = thread->eventHandlers.find(tev.eventType);
         if (handlersIt != thread->eventHandlers.end()) {
             for(const auto& handler : handlersIt->second) {
                 auto closureObj = asClosure(handler);
@@ -3952,7 +4186,7 @@ bool VM::processPendingEvents()
 
                 if (handler == conditionalInterruptClosure) {
                     bool raise = true;
-                    auto sigIt = thread->eventToSignal.find(tev.event);
+                    auto sigIt = thread->eventToSignal.find(tev.eventType);
                     if (sigIt != thread->eventToSignal.end()) {
                         Value sigVal = sigIt->second;
                         if (isSignal(sigVal)) {
@@ -3971,7 +4205,12 @@ bool VM::processPendingEvents()
                         raiseException(exc);
                     }
                 } else {
-                    auto result = callAndExec(closureObj, {});
+                    std::vector<Value> handlerArgs;
+                    if (closureObj->function.isNonNil() &&
+                        asFunction(closureObj->function)->arity > 0) {
+                        handlerArgs.push_back(tev.instance);
+                    }
+                    auto result = callAndExec(closureObj, handlerArgs);
                     assert(!thread->threadSleep);
 
                     if (result.first != InterpretResult::OK)
@@ -4399,6 +4638,7 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Signal, "set", std::mem_fn(&VM::signal_set_builtin));
 
     defineBuiltinMethod(ValueType::Event, "emit", std::mem_fn(&VM::event_emit_builtin), true);
+    defineBuiltinMethod(ValueType::Object, "emit", std::mem_fn(&VM::event_emit_builtin), true);
     defineBuiltinMethod(ValueType::Event, "on", std::mem_fn(&VM::event_on_builtin), true);
     defineBuiltinMethod(ValueType::Event, "off", std::mem_fn(&VM::event_off_builtin), true);
 
@@ -4541,22 +4781,51 @@ Value VM::captureStacktrace()
 
 Value VM::event_emit_builtin(ArgsView args)
 {
-    if (args.size() > 2 || !isEvent(args[0]))
-        throw std::invalid_argument("event.emit expects optional time argument in microseconds");
+    if (args.empty())
+        throw std::invalid_argument("event.emit expects an event receiver");
+
+    const Value& receiver = args[0];
+
+    auto parseTime = [](const Value& candidate) {
+        if (!candidate.isNumber())
+            throw std::invalid_argument("event.emit time argument must be numeric microseconds");
+        return TimePoint::microSecs(candidate.asInt());
+    };
 
     TimePoint when = TimePoint::currentTime();
-    if (args.size() == 2) {
-        if (!args[1].isNumber())
-            throw std::invalid_argument("event.emit time argument must be numeric microseconds");
-        when = TimePoint::microSecs(args[1].asInt());
+    Value eventType = Value::nilVal();
+    Value instance = Value::nilVal();
+    ObjEventType* ev = nullptr;
+
+    if (isEvent(receiver)) {
+        throw std::invalid_argument("event.emit expects an event instance; call the event type to create one");
+    } else if (isEventInstance(receiver)) {
+        if (args.size() > 2)
+            throw std::invalid_argument("event.emit expects optional time argument in microseconds");
+
+        ObjEventInstance* inst = asEventInstance(receiver);
+        if (!inst->typeHandle.isAlive() || !isEvent(inst->typeHandle))
+            return Value::nilVal();
+
+        eventType = inst->typeHandle;
+        ev = asEvent(eventType);
+
+        if (args.size() == 2)
+            when = parseTime(args[1]);
+
+        if (ev->subscribers.empty())
+            return Value::nilVal();
+
+        instance = receiver;
+    } else {
+        throw std::invalid_argument("event.emit expects an event instance receiver");
     }
 
-    Value eventWeak = args[0].weakRef();
-    ObjEvent* ev = asEvent(args[0]);
-    if (ev->subscribers.empty())
-        return Value::nilVal();
+    if (!ev)
+        ev = asEvent(eventType);
 
-    scheduleEventHandlers(eventWeak, ev, when);
+    Value eventWeak = eventType.weakRef();
+    scheduleEventHandlers(eventWeak, ev, instance, when);
 
     return Value::nilVal();
 }
@@ -4572,8 +4841,13 @@ Value VM::event_on_builtin(ArgsView args)
     Value key = eventVal.weakRef();
     thread->eventHandlers[key].push_back(closureVal);
 
-    ObjEvent* ev = asEvent(eventVal);
+    ObjEventType* ev = asEvent(eventVal);
     ObjClosure* closure = asClosure(closureVal);
+    if (closure->function.isNonNil()) {
+        ObjFunction* fn = asFunction(closure->function);
+        if (fn->arity > 1)
+            throw std::invalid_argument("event handler must accept at most one argument");
+    }
     closure->handlerThread = thread;
     ev->subscribers.push_back(closureVal.weakRef());
 
@@ -4588,7 +4862,7 @@ Value VM::event_off_builtin(ArgsView args)
     Value eventVal = args[0];
     Value closureVal = args[1];
 
-    ObjEvent* ev = nullptr;
+    ObjEventType* ev = nullptr;
     if (isEvent(eventVal)) {
         ev = asEvent(eventVal);
     } else {
