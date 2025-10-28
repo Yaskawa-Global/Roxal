@@ -190,7 +190,7 @@ enum_type_decl
  ;
 
 event_type_decl
- : annotation* EVENT IDENTIFIER (EXTENDS IDENTIFIER)?
+ : annotation* TYPE IDENTIFIER EVENT (EXTENDS IDENTIFIER)?
     (   (':' NEWLINE INDENT (str NEWLINE)? property* DEDENT)
       | NEWLINE
     )

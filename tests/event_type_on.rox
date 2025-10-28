@@ -1,4 +1,4 @@
-event MyEvent:
+type MyEvent event:
   var payload:int
 
 func handler(evt):

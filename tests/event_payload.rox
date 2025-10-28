@@ -1,7 +1,7 @@
-event BaseEvent:
+type BaseEvent event:
   var base:int
 
-event DerivedEvent extends BaseEvent:
+type DerivedEvent event extends BaseEvent:
   var payload:int = 10
 
 var captured = nil
