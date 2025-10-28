@@ -131,6 +131,8 @@ public:
     bool isAccessAllowed(const Value& ownerType, ast::Access access);
 
     void defineProperty(ObjString* name);
+    void defineEventPayload(ObjString* name);
+    void extendEventType();
     void defineMethod(ObjString* name);
     void defineEnumLabel(ObjString* name);
     void defineNative(const std::string& name, NativeFn function,
@@ -418,5 +420,5 @@ private:
 }
 
 namespace roxal {
-void scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when);
+void scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value eventInstance, TimePoint when);
 }

@@ -10,7 +10,7 @@ proc take_a_while():
 type MyWorker actor:
   proc triggerEventAfterDelay(e :event, aftersecs :int):
     wait(s=aftersecs)
-    emit e
+    emit e()
 
 worker = MyWorker()
 print('calling triggerEventAfterDelay')

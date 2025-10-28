@@ -8,7 +8,7 @@ type MyActor actor:
       print('e handled in MyActor')
 
   proc trigger():
-    emit e
+    emit e()
 
 
 a = MyActor()

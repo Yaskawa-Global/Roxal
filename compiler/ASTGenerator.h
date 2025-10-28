@@ -68,6 +68,9 @@ public:
     virtual std::any visitSuite(RoxalParser::SuiteContext *context);
 
     virtual std::any visitType_decl(RoxalParser::Type_declContext *context);
+    virtual std::any visitObject_type_decl(RoxalParser::Object_type_declContext *context);
+    virtual std::any visitEnum_type_decl(RoxalParser::Enum_type_declContext *context);
+    virtual std::any visitEvent_type_decl(RoxalParser::Event_type_declContext *context);
 
     virtual std::any visitMethod(RoxalParser::MethodContext *context);
 

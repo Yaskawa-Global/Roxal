@@ -1,0 +1,9 @@
+event MyEvent:
+  var payload:int
+
+func handler(evt):
+  print('payload='+evt.payload)
+
+MyEvent.on(handler)
+emit MyEvent(17)
+wait(us=1000)

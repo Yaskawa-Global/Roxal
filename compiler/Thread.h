@@ -100,7 +100,8 @@ public:
 
     struct PendingEvent {
         TimePoint when;
-        Value event;
+        Value eventType;
+        Value instance;
     };
 
     struct PendingEventCompare {

@@ -15,6 +15,9 @@
 #include <fstream>
 #include <cstdint>
 #include <mutex>
+#include <optional>
+#include <unordered_map>
+#include <vector>
 
 #include <core/common.h>
 #include <core/AST.h>
@@ -40,7 +43,8 @@ namespace df { class Signal; class DataflowEngine; }
 namespace roxal {
 struct ObjObjectType; // forward
 class Thread; // forward declaration for handler threads
-struct ObjEvent; // forward
+struct ObjEventType; // forward
+struct ObjEventInstance; // forward
 struct ObjFunction; // forward for bound native default values
 struct ObjException; // forward
 
@@ -81,7 +85,8 @@ enum class ObjType {
     Library,
     ForeignPtr,
     File,
-    Event,
+    EventType,
+    EventInstance,
     Exception
 };
 
@@ -683,7 +688,7 @@ std::string objMatrixToString(const ObjMatrix* om);
 struct ObjSignal : public Obj {
     ObjSignal(ptr<df::Signal> s);
     virtual ~ObjSignal();
-    ObjEvent* ensureChangeEvent();
+    ObjEventType* ensureChangeEvent();
     ptr<df::Signal> signal;
     df::DataflowEngine* engine;
     Value changeEvent;
@@ -705,11 +710,22 @@ std::string objSignalToString(const ObjSignal* os);
 
 
 //
-// event
+// event types and instances
 
-struct ObjEvent : public Obj {
-    ObjEvent() { type = ObjType::Event; }
-    virtual ~ObjEvent() {}
+struct ObjEventType : public Obj {
+    struct PayloadProperty {
+        icu::UnicodeString name;
+        Value type;
+        Value initialValue;
+    };
+
+    explicit ObjEventType(const icu::UnicodeString& name);
+    virtual ~ObjEventType() {}
+
+    icu::UnicodeString name;
+    Value superType;
+    std::vector<PayloadProperty> payloadProperties;
+    std::unordered_map<int32_t, size_t> propertyLookup;
 
     // list of subscribed handler closures (weak references)
     std::vector<Value> subscribers;
@@ -723,11 +739,34 @@ struct ObjEvent : public Obj {
     void dropReferences() override;
 };
 
-inline bool isEvent(const Value& v) { return isObjType(v, ObjType::Event); }
-inline ObjEvent* asEvent(const Value& v) { return static_cast<ObjEvent*>(v.asObj()); }
+struct ObjEventInstance : public Obj {
+    explicit ObjEventInstance(const Value& eventType);
+    virtual ~ObjEventInstance() {}
 
-unique_ptr<ObjEvent, UnreleasedObj> newEventObj();
-std::string objEventToString(const ObjEvent* ev);
+    Value typeHandle;
+    std::vector<Value> payload;
+
+    unique_ptr<Obj, UnreleasedObj> clone() const override;
+
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
+};
+
+inline bool isEvent(const Value& v) { return isObjType(v, ObjType::EventType); }
+inline ObjEventType* asEvent(const Value& v) { return static_cast<ObjEventType*>(v.asObj()); }
+
+inline bool isEventInstance(const Value& v) { return isObjType(v, ObjType::EventInstance); }
+inline ObjEventInstance* asEventInstance(const Value& v) { return static_cast<ObjEventInstance*>(v.asObj()); }
+
+unique_ptr<ObjEventType, UnreleasedObj> newEventTypeObj(const icu::UnicodeString& name,
+                                                         Value superType = Value::nilVal());
+unique_ptr<ObjEventInstance, UnreleasedObj> newEventInstanceObj(const Value& eventType,
+                                                                std::vector<Value> payload = {});
+std::string objEventTypeToString(const ObjEventType* ev);
+std::string objEventInstanceToString(const ObjEventInstance* ev);
 
 
 //

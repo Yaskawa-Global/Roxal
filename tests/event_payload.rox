@@ -1,0 +1,22 @@
+event BaseEvent:
+  var base:int
+
+event DerivedEvent extends BaseEvent:
+  var payload:int = 10
+
+var captured = nil
+
+on DerivedEvent as evt:
+  print('handler base='+evt.base)
+  print('handler payload='+evt.payload)
+  captured = evt
+
+var inst = DerivedEvent(3)
+print('inst base='+inst.base)
+print('inst payload='+inst.payload)
+
+emit DerivedEvent(7)
+
+if captured != nil:
+  print('captured base='+captured.base)
+  print('captured payload='+captured.payload)
