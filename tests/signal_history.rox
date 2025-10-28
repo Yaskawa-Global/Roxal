@@ -3,7 +3,7 @@ c = clock(10)
 var last = int(c)
 
 on c changed as evt:
-  print("c="+int(evt.value)+" prev="+int(last))
+  print("c="+evt.value+" prev="+last)
   last = evt.value
 
 c.run()

@@ -2,7 +2,7 @@ var s = clock(10)
 var signals = [s]
 
 on signals[0] changed as evt:
-  print("tick="+int(evt.value))
+  print("tick="+evt.value)
 
 s.run()
 wait(us=350000)
