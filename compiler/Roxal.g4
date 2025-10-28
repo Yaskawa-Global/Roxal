@@ -102,7 +102,7 @@ for_stmt
  ;
 
 on_stmt
- : ON expression (AS IDENTIFIER)? ':' suite
+ : ON expression (CHANGED)? (AS IDENTIFIER)? ':' suite
  ;
 
 emit_stmt
@@ -432,6 +432,7 @@ EXTENDS: 'extends';
 THIS: 'this';
 SUPER: 'super';
 IMPORT : 'import';
+CHANGED: 'changed';
 
 
 // Types

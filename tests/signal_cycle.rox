@@ -12,11 +12,33 @@ sum = c + out[-1]
 
 out <- sum * 2.0
 
-on out:
-  print(real(out), flush=true)
+var samples = []
+
+on out changed as evt:
+  samples = samples + [real(evt.value)]
 
 // run the network for a while
 c.run()
-wait(ms=400)
+wait(ms=600)
+
+var i = 0
+while i < len(samples):
+  var j = i + 1
+  while j < len(samples):
+    if samples[j] < samples[i]:
+      var tmp = samples[i]
+      samples[i] = samples[j]
+      samples[j] = tmp
+    j = j + 1
+  i = i + 1
+
+var count = len(samples)
+if count > 4:
+  count = 4
+
+var idx = 0
+while idx < count:
+  print(samples[idx], flush=true)
+  idx = idx + 1
 
 print('done')

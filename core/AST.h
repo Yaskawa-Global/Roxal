@@ -364,6 +364,7 @@ struct OnStatement : public Statement {
 
     ptr<ast::Expression> trigger;
     std::optional<icu::UnicodeString> binding;
+    bool requiresSignalChange { false };
     ptr<ast::Suite> body;
 
     virtual std::any accept(ASTVisitor& v);

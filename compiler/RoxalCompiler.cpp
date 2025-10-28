@@ -1530,7 +1530,8 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
         emitByte(fs->upvalues[i].index);
     }
 
-    emitByte(OpCode::EventOn);
+    uint8_t onMode = ast->requiresSignalChange ? 1 : 2;
+    emitOpArgsBytes(OpCode::EventOn, onMode);
 
     return {};
 }
@@ -1563,7 +1564,7 @@ std::any RoxalCompiler::visit(ptr<ast::UntilStatement> ast)
     // subscribe conditional interrupt handler
     namedVariable(tmpName, false);          // [event]
     namedVariable(toUnicodeString("__conditional_interrupt"), false); // [event, closure]
-    emitByte(OpCode::EventOn);
+    emitOpArgsBytes(OpCode::EventOn, 0);
 
     // setup try/except
     auto handlerJump = emitJump(OpCode::SetupExcept);

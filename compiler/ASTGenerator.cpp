@@ -694,6 +694,7 @@ std::any ASTGenerator::visitOn_stmt(RoxalParser::On_stmtContext *context)
     setSourceInfo(onStmt, context);
 
     onStmt->trigger = as<Expression>(visitExpression(context->expression()));
+    onStmt->requiresSignalChange = context->CHANGED() != nullptr;
     if (context->IDENTIFIER())
         onStmt->binding = UnicodeString::fromUTF8(context->IDENTIFIER()->getText());
     onStmt->body = as<Suite>(visitSuite(context->suite()));

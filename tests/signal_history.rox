@@ -1,9 +1,10 @@
 
 c = clock(10)
-cm1 = c[-1]
+var last = int(c)
 
-on c:
-  print("c="+int(c)+" c[-1]="+int(cm1))
+on c changed as evt:
+  print("c="+int(evt.value)+" prev="+int(last))
+  last = evt.value
 
 c.run()
 wait(ms=250)

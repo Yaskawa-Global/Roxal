@@ -3766,21 +3766,35 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::EventOn: {
+                uint8_t modeByte = readByte();
+                bool requireChangedKeyword = (modeByte == 1);
+                bool disallowSignalTargets = (modeByte == 2);
                 Value closureVal = pop();
                 Value eventVal = pop();
-                if (!isClosure(closureVal) || !(isEvent(eventVal) || isSignal(eventVal))) {
+                if (!isClosure(closureVal)) {
                     runtimeError("EVENT_ON expects event/signal and closure");
                     return errorReturn;
                 }
 
                 ObjEventType* ev = nullptr;
-                if (isEvent(eventVal)) {
-                    ev = asEvent(eventVal);
-                } else {
+                if (isSignal(eventVal)) {
+                    if (disallowSignalTargets) {
+                        runtimeError("signal handlers must use 'changed'");
+                        return errorReturn;
+                    }
                     ObjSignal* sigObj = asSignal(eventVal);
                     ev = sigObj->ensureChangeEvent();
                     eventVal = sigObj->changeEvent;
                     thread->eventToSignal[eventVal.weakRef()] = Value::objRef(sigObj);
+                } else if (isEvent(eventVal)) {
+                    if (requireChangedKeyword) {
+                        runtimeError("'changed' is only valid with signals");
+                        return errorReturn;
+                    }
+                    ev = asEvent(eventVal);
+                } else {
+                    runtimeError("EVENT_ON expects event/signal and closure");
+                    return errorReturn;
                 }
 
                 // record this handler on the current thread
