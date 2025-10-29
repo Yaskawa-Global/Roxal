@@ -374,6 +374,17 @@ std::string roxal::sysTimeSpanDefaultString(ObjectInstance* inst)
     return defaultSpanString(inst);
 }
 
+Value roxal::sysNewTimeSpan(int64_t totalMicros)
+{
+    if (!gSysTimeSpanType)
+        throw std::runtime_error("sys.TimeSpan type not found");
+
+    Value typeValue = Value::objRef(gSysTimeSpanType);
+    Value span = Value::objectInstanceVal(typeValue);
+    assignSpan(asObjectInstance(span), totalMicros);
+    return span;
+}
+
 ModuleSys::ModuleSys()
 {
     moduleTypeValue = Value::objVal(newModuleTypeObj(toUnicodeString("sys")));
