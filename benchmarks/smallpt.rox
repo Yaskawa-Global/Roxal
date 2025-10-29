@@ -1,4 +1,5 @@
 import math
+import fileio
 
 // SmallPT-style path tracer implemented in Roxal.
 // Produces a simple Cornell box image and stresses floating point math.
@@ -21,9 +22,7 @@ type RNG object:
     state = (state * 1103515245 + 12345) % 2147483647
     return state / 2147483647.0
 
-var rng = RNG(1)
-
-func rand01():
+func rand01(rng :RNG):
   return rng.next()
 
 
@@ -147,7 +146,7 @@ func intersectScene(ray :Ray):
   return {'hit': true, 't': dist, 'id': hitId}
 
 
-func radiance(ray :Ray, depth):
+func radiance(ray :Ray, depth, rng :RNG):
   var hit = intersectScene(ray)
   if not hit['hit']:
     return Vec()
@@ -164,13 +163,13 @@ func radiance(ray :Ray, depth):
   if depth > 5:
     if p <= 0.0:
       return obj.e
-    if rand01() < p:
+    if rand01(rng) < p:
       f = f.scale(1.0 / p)
     else:
       return obj.e
   if obj.refl == REFL_DIFF:
-    var r1 = 2.0 * PI * rand01()
-    var r2 = rand01()
+    var r1 = 2.0 * PI * rand01(rng)
+    var r2 = rand01(rng)
     var r2s = math.sqrt(r2)
     var w = nl
     var u = nil
@@ -182,10 +181,10 @@ func radiance(ray :Ray, depth):
     var v = w.cross(u)
     var dir = u.scale(math.cos(r1) * r2s).add(v.scale(math.sin(r1) * r2s)).add(w.scale(math.sqrt(1.0 - r2)))
     dir = dir.norm()
-    return obj.e.add(f.mult(radiance(Ray(hitPoint, dir), depth)))
+    return obj.e.add(f.mult(radiance(Ray(hitPoint, dir), depth, rng)))
   if obj.refl == REFL_SPEC:
     var reflected = ray.d.sub(normal.scale(2.0 * normal.dot(ray.d)))
-    return obj.e.add(f.mult(radiance(Ray(hitPoint, reflected), depth)))
+    return obj.e.add(f.mult(radiance(Ray(hitPoint, reflected), depth, rng)))
 
   var reflDir = ray.d.sub(normal.scale(2.0 * normal.dot(ray.d)))
   var reflRay = Ray(hitPoint, reflDir)
@@ -200,7 +199,7 @@ func radiance(ray :Ray, depth):
   var ddn = ray.d.dot(nl)
   var cos2t = 1.0 - nnt * nnt * (1.0 - ddn * ddn)
   if cos2t < 0.0:
-    return obj.e.add(f.mult(radiance(reflRay, depth)))
+    return obj.e.add(f.mult(radiance(reflRay, depth, rng)))
   var directionSign = 0.0
   if into:
     directionSign = 1.0
@@ -222,17 +221,19 @@ func radiance(ray :Ray, depth):
   var RP = Re / P
   var TP = Tr / (1.0 - P)
   if depth > 2:
-    if rand01() < P:
-      return obj.e.add(f.mult(radiance(reflRay, depth).scale(RP)))
-    return obj.e.add(f.mult(radiance(Ray(hitPoint, tdir), depth).scale(TP)))
-  var reflRadiance = radiance(reflRay, depth).scale(Re)
-  var transRadiance = radiance(Ray(hitPoint, tdir), depth).scale(Tr)
+    if rand01(rng) < P:
+      return obj.e.add(f.mult(radiance(reflRay, depth, rng).scale(RP)))
+    return obj.e.add(f.mult(radiance(Ray(hitPoint, tdir), depth, rng).scale(TP)))
+  var reflRadiance = radiance(reflRay, depth, rng).scale(Re)
+  var transRadiance = radiance(Ray(hitPoint, tdir), depth, rng).scale(Tr)
   return obj.e.add(f.mult(reflRadiance.add(transRadiance)))
 
 
 var width = 200
 var height = 150
 var samples = 32
+var workerCount = 4
+var outputFile = 'smallpt.ppm'
 
 var cam = Ray(Vec(50.0, 52.0, 295.6), Vec(0.0, -0.042612, -1.0).norm())
 var cx = Vec(width * 0.5135 / height, 0.0, 0.0)
@@ -244,53 +245,114 @@ while initIdx < width * height:
   image.append(Vec())
   initIdx = initIdx + 1
 
-var y = 0
-while y < height:
-  var x = 0
-  while x < width:
-    var i = (height - y - 1) * width + x
-    var accumulated = Vec()
-    var sy = 0
-    while sy < 2:
-      var sx = 0
-      while sx < 2:
-        var r = Vec()
-        var s = 0
-        while s < samples:
-          var r1 = 2.0 * rand01()
-          var dx = 0.0
-          if r1 < 1.0:
-            dx = math.sqrt(r1) - 1.0
-          else:
-            dx = 1.0 - math.sqrt(2.0 - r1)
-          var r2 = 2.0 * rand01()
-          var dy = 0.0
-          if r2 < 1.0:
-            dy = math.sqrt(r2) - 1.0
-          else:
-            dy = 1.0 - math.sqrt(2.0 - r2)
-          var dir = cx.scale((((sx + 0.5 + dx) / 2.0 + x) / width) - 0.5).add(
-            cy.scale((((sy + 0.5 + dy) / 2.0 + y) / height) - 0.5)).add(cam.d)
-          var dirNorm = dir.norm()
-          var rayOrigin = cam.o.add(dir.scale(140.0))
-          var sample = radiance(Ray(rayOrigin, dirNorm), 0)
-          r = r.add(sample.scale(1.0 / samples))
-          s = s + 1
-        accumulated = accumulated.add(r.scale(0.25))
-        sx = sx + 1
-      sy = sy + 1
-    image[i] = accumulated
-    x = x + 1
-  y = y + 1
+type RowRenderer actor:
 
-print('P3')
-print(string(width) + ' ' + string(height))
-print('255')
+  func render_rows(startRow, endRow, seedBase) -> list:
+    var rng = RNG(seedBase)
+    var results = []
+    var y = startRow
+    while y < endRow:
+      var rowPixels = []
+      var x = 0
+      while x < width:
+        var accumulated = Vec()
+        var sy = 0
+        while sy < 2:
+          var sx = 0
+          while sx < 2:
+            var r = Vec()
+            var s = 0
+            while s < samples:
+              var r1 = 2.0 * rand01(rng)
+              var dx = 0.0
+              if r1 < 1.0:
+                dx = math.sqrt(r1) - 1.0
+              else:
+                dx = 1.0 - math.sqrt(2.0 - r1)
+              var r2 = 2.0 * rand01(rng)
+              var dy = 0.0
+              if r2 < 1.0:
+                dy = math.sqrt(r2) - 1.0
+              else:
+                dy = 1.0 - math.sqrt(2.0 - r2)
+              var dir = cx.scale((((sx + 0.5 + dx) / 2.0 + x) / width) - 0.5).add(
+                cy.scale((((sy + 0.5 + dy) / 2.0 + y) / height) - 0.5)).add(cam.d)
+              var dirNorm = dir.norm()
+              var rayOrigin = cam.o.add(dir.scale(140.0))
+              var sample = radiance(Ray(rayOrigin, dirNorm), 0, rng)
+              r = r.add(sample.scale(1.0 / samples))
+              s = s + 1
+            accumulated = accumulated.add(r.scale(0.25))
+            sx = sx + 1
+          sy = sy + 1
+        rowPixels.append(accumulated)
+        x = x + 1
+      results.append({'row': y, 'pixels': rowPixels})
+      y = y + 1
+    return results
+
+if workerCount < 1:
+  workerCount = 1
+
+print('Rendering ' + string(width) + 'x' + string(height) + ' with ' + string(samples) + ' samples per pixel')
+print('Using ' + string(workerCount) + ' worker actors')
+
+var workers = []
+var w = 0
+while w < workerCount:
+  workers.append(RowRenderer())
+  w = w + 1
+
+var tasks = []
+var startRow = 0
+var rowsPerChunk = int(math.ceil(height / workerCount))
+if rowsPerChunk < 1:
+  rowsPerChunk = 1
+var taskIndex = 0
+while startRow < height:
+  var endRow = startRow + rowsPerChunk
+  if endRow > height:
+    endRow = height
+  var worker = workers[taskIndex % workerCount]
+  var seed = 1 + startRow * 9176 + taskIndex
+  var future = worker.render_rows(startRow, endRow, seed)
+  tasks.append({'future': future, 'start': startRow, 'end': endRow})
+  startRow = endRow
+  taskIndex = taskIndex + 1
+
+var completedRows = 0
+var t = 0
+while t < len(tasks):
+  var task = tasks[t]
+  var rowsData = task['future']
+  var r = 0
+  while r < len(rowsData):
+    var rowInfo = rowsData[r]
+    var rowIndex = rowInfo['row']
+    var pixels = rowInfo['pixels']
+    var x = 0
+    while x < width:
+      var pixel = pixels[x]
+      var i = (height - rowIndex - 1) * width + x
+      image[i] = pixel
+      x = x + 1
+    completedRows = completedRows + 1
+    print('Progress: ' + string(completedRows) + '/' + string(height) + ' rows completed')
+    r = r + 1
+  t = t + 1
+
+var handle = fileio.open(outputFile, append=false, write=true)
+fileio.write(handle, 'P3\n')
+fileio.write(handle, string(width) + ' ' + string(height) + '\n')
+fileio.write(handle, '255\n')
 
 var idx = 0
 while idx < width * height:
   var pixel = image[idx]
   pixel = Vec(clamp(pixel.x), clamp(pixel.y), clamp(pixel.z))
-  var line = string(toInt(pixel.x)) + ' ' + string(toInt(pixel.y)) + ' ' + string(toInt(pixel.z))
-  print(line)
+  var line = string(toInt(pixel.x)) + ' ' + string(toInt(pixel.y)) + ' ' + string(toInt(pixel.z)) + '\n'
+  fileio.write(handle, line)
   idx = idx + 1
+
+fileio.close(handle)
+print('Image written to ' + outputFile)
