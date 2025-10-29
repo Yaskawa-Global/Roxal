@@ -657,7 +657,8 @@ Value ModuleSys::len_builtin(VM& vm, ArgsView args)
     if (args.size() != 1)
         throw std::invalid_argument("len expects single argument");
 
-    const Value& v (args[0]);
+    Value v (args[0]);
+    v.resolveFuture();
     int32_t len {1};
 
     switch (v.type()) {
