@@ -1,4 +1,4 @@
-var e:event
+type E event
 var captured = nil
 
 func handler(evt):
@@ -10,9 +10,9 @@ func handler(evt):
     print('second handler')
     print(evt)
 
-e.on(handler)
+E.on(handler)
 
-emit e()
+emit E()
 wait(us=1000)
 
 if captured != nil:

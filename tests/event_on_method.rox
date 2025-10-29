@@ -1,10 +1,10 @@
-var e:event
+type E event
 func handler():
   print('hello')
 
-e.on(handler)
+E.on(handler)
 
-emit e()
+emit E()
 
 print('done')
 

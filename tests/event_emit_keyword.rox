@@ -1,8 +1,8 @@
-var e:event
-on e:
+type E event
+on E:
   print('hello')
 
-emit e()
+emit E()
 
 print('done')
 
