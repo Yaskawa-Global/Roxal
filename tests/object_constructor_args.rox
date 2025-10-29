@@ -1,0 +1,23 @@
+type MyObj object:
+  var a :int
+  var b :real
+
+var o1 = MyObj()
+print(o1.a)
+print(o1.b)
+
+var o2 = MyObj(1, 2.5)
+print(o2.a)
+print(o2.b)
+
+var o3 = MyObj(b=3.5, a=4)
+print(o3.a)
+print(o3.b)
+
+var o4 = MyObj(a=7)
+print(o4.a)
+print(o4.b)
+
+var o5 = MyObj(1, b=5.5)
+print(o5.a)
+print(o5.b)

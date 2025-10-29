@@ -1193,6 +1193,16 @@ struct ObjObjectType : public ObjTypeSpec
     std::unordered_map<int32_t, Property> properties;
     std::vector<int32_t> propertyOrder;
 
+    struct PublicPropertyView {
+        int32_t key;
+        const Property* property;
+        uint16_t hash15;
+    };
+
+    std::vector<PublicPropertyView> orderedPublicProperties() const;
+    std::optional<PublicPropertyView> findPublicPropertyByHash15(uint16_t hash15,
+                                                                 bool& ambiguous) const;
+
     struct Method {
         icu::UnicodeString name;
         Value closure;

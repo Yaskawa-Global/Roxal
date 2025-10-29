@@ -1,0 +1,4 @@
+type MyObj object:
+  var a :int
+
+var o = MyObj(c=3)

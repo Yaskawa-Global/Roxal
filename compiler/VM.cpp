@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <map>
 #include <unordered_set>
+#include <unordered_map>
 #include <system_error>
 #include <ffi.h>
 #include <dlfcn.h>
@@ -1064,8 +1065,123 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 objInst->properties[hash] = val;
                             }
                             pop();
+                        } else if (!type->isActor && initMethod == nullptr) {
+                            ObjectInstance* objInst = asObjectInstance(inst);
+
+                            std::vector<ObjObjectType::PublicPropertyView> publicProps =
+                                type->orderedPublicProperties();
+
+                            std::string typeName = toUTF8StdString(type->name);
+
+                            bool strictConv = false;
+                            if (thread->frames.size() >= 1)
+                                strictConv = (thread->frames.end()-1)->strict;
+
+                            auto argBegin = thread->stackTop - callSpec.argCount;
+
+                            std::unordered_map<int32_t, Value> assignedValues;
+                            assignedValues.reserve(callSpec.argCount);
+                            std::unordered_set<int32_t> assignedKeys;
+
+                            // Helper that enforces duplicate/named argument validation and performs
+                            // type conversion before storing the value for later assignment.
+                            auto assignValue = [&](const ObjObjectType::PublicPropertyView& entry, Value value) -> bool {
+                                if (assignedKeys.contains(entry.key)) {
+                                    runtimeError("Multiple values provided for property '" +
+                                                 toUTF8StdString(entry.property->name) +
+                                                 "' when constructing type '" + typeName + "'.");
+                                    return false;
+                                }
+                                if (!entry.property->type.isNil() && isTypeSpec(entry.property->type)) {
+                                    ObjTypeSpec* ts = asTypeSpec(entry.property->type);
+                                    if (ts->typeValue != ValueType::Nil) {
+                                        try {
+                                            value = toType(entry.property->type, value, strictConv);
+                                        } catch (std::exception& e) {
+                                            runtimeError(e.what());
+                                            return false;
+                                        }
+                                    }
+                                }
+                                assignedKeys.insert(entry.key);
+                                assignedValues.emplace(entry.key, value);
+                                return true;
+                            };
+
+                            bool ok = true;
+                            if (callSpec.allPositional) {
+                                // No named parameters were present, so the argument order follows the
+                                // order of declaration for public properties.
+                                if (callSpec.argCount > publicProps.size()) {
+                                    runtimeError("Type '" + typeName + "' constructor expects at most " +
+                                                 std::to_string(publicProps.size()) +
+                                                 " argument" + (publicProps.size() == 1 ? "" : "s") +
+                                                 " but " + std::to_string(callSpec.argCount) + " were provided.");
+                                    ok = false;
+                                } else {
+                                    for (size_t i = 0; i < callSpec.argCount && ok; ++i) {
+                                        if (!assignValue(publicProps[i], *(argBegin + i)))
+                                            ok = false;
+                                    }
+                                }
+                            } else {
+                                // When mixed positional/named arguments are present we need to skip
+                                // properties that already received a value via a named parameter.
+                                size_t positionalIndex = 0;
+                                for (size_t i = 0; i < callSpec.argCount && ok; ++i) {
+                                    const auto& spec = callSpec.args[i];
+                                    Value value = *(argBegin + i);
+                                    if (spec.positional) {
+                                        while (positionalIndex < publicProps.size() &&
+                                               assignedKeys.contains(publicProps[positionalIndex].key))
+                                            ++positionalIndex;
+                                        if (positionalIndex >= publicProps.size()) {
+                                            runtimeError("Too many positional arguments when constructing type '" +
+                                                         typeName + "'.");
+                                            ok = false;
+                                            break;
+                                        }
+                                        if (!assignValue(publicProps[positionalIndex], value)) {
+                                            ok = false;
+                                            break;
+                                        }
+                                        ++positionalIndex;
+                                    } else {
+                                        bool ambiguous = false;
+                                        auto entry = type->findPublicPropertyByHash15(
+                                            static_cast<uint16_t>(spec.paramNameHash & 0x7fff),
+                                            ambiguous);
+                                        if (ambiguous) {
+                                            runtimeError("Ambiguous named argument when constructing type '" +
+                                                         typeName +
+                                                         "'; multiple public properties share that name hash.");
+                                            ok = false;
+                                            break;
+                                        }
+                                        if (!entry.has_value()) {
+                                            runtimeError("Unknown named argument when constructing type '" +
+                                                         typeName + "'.");
+                                            ok = false;
+                                            break;
+                                        }
+                                        if (!assignValue(*entry, value)) {
+                                            ok = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!ok)
+                                return false;
+
+                            for (const auto& kv : assignedValues)
+                                objInst->properties[kv.first] = kv.second;
+
+                            popN(callSpec.argCount);
                         } else if (callSpec.argCount != 0) {
-                            runtimeError("Expected 0 arguments for type instantiation, provided "+std::to_string(callSpec.argCount));
+                            runtimeError("Expected 0 arguments for type instantiation, provided " +
+                                         std::to_string(callSpec.argCount));
                             return false;
                         }
                     }
