@@ -1,0 +1,555 @@
+// DeltaBlue constraint solver benchmark ported to Roxal.
+// Based on the implementation from the Octane benchmark suite.
+
+var STRENGTH_REQUIRED = 0
+var STRENGTH_STRONG_PREFERRED = 1
+var STRENGTH_PREFERRED = 2
+var STRENGTH_STRONG_DEFAULT = 3
+var STRENGTH_NORMAL = 4
+var STRENGTH_WEAK_DEFAULT = 5
+var STRENGTH_WEAKEST = 6
+
+func strength_stronger(s1, s2):
+  return s1 < s2
+
+func strength_weaker(s1, s2):
+  return s1 > s2
+
+func strength_weakest_of(s1, s2):
+  if strength_weaker(s1, s2):
+    return s1
+  return s2
+
+func strength_strongest(s1, s2):
+  if strength_stronger(s1, s2):
+    return s1
+  return s2
+
+func strength_next_weaker(strength):
+  if strength == STRENGTH_REQUIRED:
+    return STRENGTH_WEAKEST
+  if strength == STRENGTH_STRONG_PREFERRED:
+    return STRENGTH_WEAK_DEFAULT
+  if strength == STRENGTH_PREFERRED:
+    return STRENGTH_NORMAL
+  if strength == STRENGTH_STRONG_DEFAULT:
+    return STRENGTH_PREFERRED
+  if strength == STRENGTH_NORMAL:
+    return STRENGTH_STRONG_DEFAULT
+  if strength == STRENGTH_WEAK_DEFAULT:
+    return STRENGTH_REQUIRED
+  return STRENGTH_WEAKEST
+
+type Direction enum:
+  NONE
+  FORWARD
+  BACKWARD
+
+type OrderedCollection object:
+  var elms
+  var start
+  proc init():
+    elms = []
+    start = 0
+
+  proc add(elm):
+    elms.append(elm)
+
+  func at(index :int):
+    return elms[start + index]
+
+  func size():
+    return len(elms) - start
+
+  func removeFirst():
+    if this.size() == 0:
+      return nil
+    var idx = start
+    var value = elms[idx]
+    start = start + 1
+    if start >= len(elms):
+      elms = []
+      start = 0
+    else:
+      if start * 2 > len(elms):
+        var newElms = []
+        var i = start
+        while i < len(elms):
+          newElms.append(elms[i])
+          i = i + 1
+        elms = newElms
+        start = 0
+    return value
+
+  proc remove(elm):
+    var newElms = []
+    var i = start
+    while i < len(elms):
+      var value = elms[i]
+      if value <> elm:
+        newElms.append(value)
+      i = i + 1
+    elms = newElms
+    start = 0
+
+var planner = nil
+
+type Constraint object:
+  var strength
+  proc init(s):
+    strength = s
+
+  proc addConstraint():
+    this.addToGraph()
+    planner.incrementalAdd(this)
+
+  func satisfy(mark):
+    this.chooseMethod(mark)
+    if not this.isSatisfied():
+      if strength == STRENGTH_REQUIRED:
+        print('Could not satisfy a required constraint!')
+      return nil
+    this.markInputs(mark)
+    var out = this.output()
+    var overridden = out.determinedBy
+    if overridden <> nil:
+      overridden.markUnsatisfied()
+    out.determinedBy = this
+    if not planner.addPropagate(this, mark):
+      print('Cycle encountered while adding constraint')
+    out.mark = mark
+    return overridden
+
+  proc destroyConstraint():
+    if this.isSatisfied():
+      planner.incrementalRemove(this)
+    else:
+      this.removeFromGraph()
+
+  func isInput():
+    return false
+
+type UnaryConstraint object extends Constraint:
+  var myOutput
+  var satisfied
+  proc init(v, strength):
+    super.init(strength)
+    myOutput = v
+    satisfied = false
+    this.addConstraint()
+
+  proc addToGraph():
+    myOutput.addConstraint(this)
+    satisfied = false
+
+  proc chooseMethod(mark):
+    satisfied = (myOutput.mark <> mark) and strength_stronger(strength, myOutput.walkStrength)
+
+  func isSatisfied():
+    return satisfied
+
+  proc markInputs(mark):
+    return
+
+  func output():
+    return myOutput
+
+  proc recalculate():
+    myOutput.walkStrength = strength
+    myOutput.stay = not this.isInput()
+    if myOutput.stay:
+      this.execute()
+
+  proc markUnsatisfied():
+    satisfied = false
+
+  func inputsKnown(mark):
+    return true
+
+  proc removeFromGraph():
+    if myOutput <> nil:
+      myOutput.removeConstraint(this)
+    satisfied = false
+
+type StayConstraint object extends UnaryConstraint:
+  proc init(v, strength):
+    super.init(v, strength)
+
+  proc execute():
+    return
+
+type EditConstraint object extends UnaryConstraint:
+  proc init(v, strength):
+    super.init(v, strength)
+
+  func isInput():
+    return true
+
+  proc execute():
+    return
+
+type BinaryConstraint object extends Constraint:
+  var v1
+  var v2
+  var direction
+  proc init(var1, var2, strength):
+    super.init(strength)
+    v1 = var1
+    v2 = var2
+    direction = Direction.NONE
+    this.addConstraint()
+
+  proc chooseMethod(mark):
+    if v1.mark == mark:
+      if (v2.mark <> mark) and strength_stronger(strength, v2.walkStrength):
+        direction = Direction.FORWARD
+      else:
+        direction = Direction.NONE
+      return
+    if v2.mark == mark:
+      if (v1.mark <> mark) and strength_stronger(strength, v1.walkStrength):
+        direction = Direction.BACKWARD
+      else:
+        direction = Direction.NONE
+      return
+    if strength_weaker(v1.walkStrength, v2.walkStrength):
+      if strength_stronger(strength, v1.walkStrength):
+        direction = Direction.BACKWARD
+      else:
+        direction = Direction.NONE
+    else:
+      if strength_stronger(strength, v2.walkStrength):
+        direction = Direction.FORWARD
+      else:
+        direction = Direction.BACKWARD
+
+  proc addToGraph():
+    v1.addConstraint(this)
+    v2.addConstraint(this)
+    direction = Direction.NONE
+
+  func isSatisfied():
+    return direction <> Direction.NONE
+
+  proc markInputs(mark):
+    if direction == Direction.NONE:
+      return
+    this.input().mark = mark
+
+  func input():
+    if direction == Direction.FORWARD:
+      return v1
+    return v2
+
+  func output():
+    if direction == Direction.FORWARD:
+      return v2
+    return v1
+
+  proc recalculate():
+    if direction == Direction.NONE:
+      return
+    var ihn = this.input()
+    var out = this.output()
+    out.walkStrength = strength_weakest_of(strength, ihn.walkStrength)
+    out.stay = ihn.stay
+    if out.stay:
+      this.execute()
+
+  proc markUnsatisfied():
+    direction = Direction.NONE
+
+  func inputsKnown(mark):
+    if direction == Direction.NONE:
+      return false
+    var i = this.input()
+    return (i.mark == mark) or i.stay or (i.determinedBy == nil)
+
+  proc removeFromGraph():
+    if v1 <> nil:
+      v1.removeConstraint(this)
+    if v2 <> nil:
+      v2.removeConstraint(this)
+    direction = Direction.NONE
+
+type ScaleConstraint object extends BinaryConstraint:
+  var scale
+  var offset
+  proc init(src, scaleVar, offsetVar, dest, strength):
+    scale = scaleVar
+    offset = offsetVar
+    super.init(src, dest, strength)
+
+  proc addToGraph():
+    super.addToGraph()
+    scale.addConstraint(this)
+    offset.addConstraint(this)
+
+  proc removeFromGraph():
+    super.removeFromGraph()
+    if scale <> nil:
+      scale.removeConstraint(this)
+    if offset <> nil:
+      offset.removeConstraint(this)
+
+  proc markInputs(mark):
+    super.markInputs(mark)
+    scale.mark = mark
+    offset.mark = mark
+
+  proc execute():
+    if direction == Direction.FORWARD:
+      v2.value = v1.value * scale.value + offset.value
+    else:
+      v1.value = (v2.value - offset.value) / scale.value
+
+  proc recalculate():
+    if direction == Direction.NONE:
+      return
+    var ihn = this.input()
+    var out = this.output()
+    out.walkStrength = strength_weakest_of(strength, ihn.walkStrength)
+    out.stay = ihn.stay and scale.stay and offset.stay
+    if out.stay:
+      this.execute()
+
+type EqualityConstraint object extends BinaryConstraint:
+  proc init(var1, var2, strength):
+    super.init(var1, var2, strength)
+
+  proc execute():
+    this.output().value = this.input().value
+
+type Variable object:
+  var name
+  var value
+  var constraints
+  var determinedBy
+  var mark
+  var walkStrength
+  var stay
+  proc init(variableName, initialValue=0):
+    name = variableName
+    value = initialValue
+    constraints = OrderedCollection()
+    determinedBy = nil
+    mark = 0
+    walkStrength = STRENGTH_WEAKEST
+    stay = true
+
+  proc addConstraint(c):
+    constraints.add(c)
+
+  proc removeConstraint(c):
+    constraints.remove(c)
+    if determinedBy == c:
+      determinedBy = nil
+
+type Planner object:
+  var currentMark
+  proc init():
+    currentMark = 0
+
+  proc incrementalAdd(c):
+    var mark = this.newMark()
+    var overridden = c.satisfy(mark)
+    while overridden <> nil:
+      overridden = overridden.satisfy(mark)
+
+  proc incrementalRemove(c):
+    var out = c.output()
+    c.markUnsatisfied()
+    c.removeFromGraph()
+    var unsatisfied = this.removePropagateFrom(out)
+    var strength = STRENGTH_REQUIRED
+    while true:
+      var i = 0
+      var size = unsatisfied.size()
+      while i < size:
+        var u = unsatisfied.at(i)
+        if u.strength == strength:
+          this.incrementalAdd(u)
+        i = i + 1
+      if strength == STRENGTH_WEAKEST:
+        return
+      strength = strength_next_weaker(strength)
+
+  func newMark():
+    currentMark = currentMark + 1
+    return currentMark
+
+  func makePlan(sources):
+    var mark = this.newMark()
+    var plan = Plan()
+    var todo = sources
+    while todo.size() > 0:
+      var c = todo.removeFirst()
+      if c == nil:
+        continue
+      if (c.output().mark <> mark) and c.inputsKnown(mark):
+        plan.addConstraint(c)
+        c.output().mark = mark
+        this.addConstraintsConsumingTo(c.output(), todo)
+    return plan
+
+  func extractPlanFromConstraints(constraints):
+    var sources = OrderedCollection()
+    var i = 0
+    var size = constraints.size()
+    while i < size:
+      var c = constraints.at(i)
+      if c.isInput() and c.isSatisfied():
+        sources.add(c)
+      i = i + 1
+    return this.makePlan(sources)
+
+  func addPropagate(c, mark):
+    var todo = OrderedCollection()
+    todo.add(c)
+    while todo.size() > 0:
+      var d = todo.removeFirst()
+      if d == nil:
+        continue
+      if d.output().mark == mark:
+        this.incrementalRemove(c)
+        return false
+      d.recalculate()
+      this.addConstraintsConsumingTo(d.output(), todo)
+    return true
+
+  func removePropagateFrom(out):
+    out.determinedBy = nil
+    out.walkStrength = STRENGTH_WEAKEST
+    out.stay = true
+    var unsatisfied = OrderedCollection()
+    var todo = OrderedCollection()
+    todo.add(out)
+    while todo.size() > 0:
+      var v = todo.removeFirst()
+      if v == nil:
+        continue
+      var i = 0
+      var size = v.constraints.size()
+      while i < size:
+        var c = v.constraints.at(i)
+        if not c.isSatisfied():
+          unsatisfied.add(c)
+        i = i + 1
+      var determining = v.determinedBy
+      i = 0
+      while i < size:
+        var next = v.constraints.at(i)
+        if (next <> determining) and next.isSatisfied():
+          next.recalculate()
+          todo.add(next.output())
+        i = i + 1
+    return unsatisfied
+
+  proc addConstraintsConsumingTo(v, coll):
+    var determining = v.determinedBy
+    var i = 0
+    var size = v.constraints.size()
+    while i < size:
+      var c = v.constraints.at(i)
+      if (c <> determining) and c.isSatisfied():
+        coll.add(c)
+      i = i + 1
+
+type Plan object:
+  var constraints
+  proc init():
+    constraints = OrderedCollection()
+
+  proc addConstraint(c):
+    constraints.add(c)
+
+  func size():
+    return constraints.size()
+
+  func constraintAt(index :int):
+    return constraints.at(index)
+
+  proc execute():
+    var i = 0
+    var count = this.size()
+    while i < count:
+      var c = this.constraintAt(i)
+      c.execute()
+      i = i + 1
+
+proc change(v, newValue):
+  var edit = EditConstraint(v, STRENGTH_PREFERRED)
+  var edits = OrderedCollection()
+  edits.add(edit)
+  var plan = planner.extractPlanFromConstraints(edits)
+  var i = 0
+  while i < 10:
+    v.value = newValue
+    plan.execute()
+    i = i + 1
+  edit.destroyConstraint()
+
+proc chainTest(n :int):
+  planner = Planner()
+  var prev = nil
+  var first = nil
+  var last = nil
+  var limit = n + 1
+  for i :int in range(..<limit):
+    var name = 'v' + i
+    var v = Variable(name)
+    if prev <> nil:
+      EqualityConstraint(prev, v, STRENGTH_REQUIRED)
+    if i == 0:
+      first = v
+    if i == n:
+      last = v
+    prev = v
+  StayConstraint(last, STRENGTH_STRONG_DEFAULT)
+  var edit = EditConstraint(first, STRENGTH_PREFERRED)
+  var edits = OrderedCollection()
+  edits.add(edit)
+  var plan = planner.extractPlanFromConstraints(edits)
+  for i :int in range(..<100):
+    first.value = i
+    plan.execute()
+    if last.value <> i:
+      print('Chain test failed at iteration ' + i)
+
+proc projectionTest(n :int):
+  planner = Planner()
+  var scale = Variable('scale', 10)
+  var offset = Variable('offset', 1000)
+  var src = nil
+  var dst = nil
+  var dests = OrderedCollection()
+  for i :int in range(..<n):
+    src = Variable('src' + i, i)
+    dst = Variable('dst' + i, i)
+    dests.add(dst)
+    StayConstraint(src, STRENGTH_NORMAL)
+    ScaleConstraint(src, scale, offset, dst, STRENGTH_REQUIRED)
+  change(src, 17)
+  if dst.value <> 1170:
+    print('Projection 1 failed')
+  change(dst, 1050)
+  if src.value <> 5:
+    print('Projection 2 failed')
+  change(scale, 5)
+  var limit = n - 1
+  for i :int in range(..<limit):
+    var expected = i * 5 + 1000
+    if dests.at(i).value <> expected:
+      print('Projection 3 failed at index ' + i)
+  change(offset, 2000)
+  for i :int in range(..<limit):
+    var expected2 = i * 5 + 2000
+    if dests.at(i).value <> expected2:
+      print('Projection 4 failed at index ' + i)
+
+proc deltaBlue():
+  chainTest(100)
+  projectionTest(100)
+  print('DeltaBlue benchmark complete')
+
+deltaBlue()
