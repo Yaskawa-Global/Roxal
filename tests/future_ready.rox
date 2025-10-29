@@ -1,0 +1,12 @@
+type Worker actor:
+
+  func slow(value:int) -> int:
+    wait(ms=50)
+    return value
+
+w = Worker()
+fut = w.slow(7)
+print(is_ready(fut))
+wait(ms=150)
+print(is_ready(fut))
+print(int(fut))

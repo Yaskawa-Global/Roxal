@@ -24,6 +24,7 @@ public:
     Value help_builtin(VM& vm, ArgsView args);
     Value clone_builtin(VM& vm, ArgsView args);
     Value wait_builtin(VM& vm, ArgsView args);
+    Value is_ready_builtin(VM& vm, ArgsView args);
     Value fork_builtin(VM& vm, ArgsView args);
     Value join_builtin(VM& vm, ArgsView args);
     Value exit_builtin(VM& vm, ArgsView args);
