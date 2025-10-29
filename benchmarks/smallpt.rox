@@ -1,0 +1,296 @@
+import math
+
+// SmallPT-style path tracer implemented in Roxal.
+// Produces a simple Cornell box image and stresses floating point math.
+
+var REFL_DIFF = 0
+var REFL_SPEC = 1
+var REFL_REFR = 2
+
+var PI = 3.141592653589793
+var INF = 1e20
+
+
+// Simple linear congruential generator for reproducible random numbers.
+type RNG object:
+  var state
+  proc init(seed = 1):
+    state = seed
+
+  func next():
+    state = (state * 1103515245 + 12345) % 2147483647
+    return state / 2147483647.0
+
+var rng = RNG(1)
+
+func rand01():
+  return rng.next()
+
+
+type Vec object:
+  var x
+  var y
+  var z
+
+  proc init(px = 0.0, py = 0.0, pz = 0.0):
+    x = px
+    y = py
+    z = pz
+
+  func add(b :Vec):
+    return Vec(x + b.x, y + b.y, z + b.z)
+
+  func sub(b :Vec):
+    return Vec(x - b.x, y - b.y, z - b.z)
+
+  func scale(s):
+    return Vec(x * s, y * s, z * s)
+
+  func mult(b :Vec):
+    return Vec(x * b.x, y * b.y, z * b.z)
+
+  func dot(b :Vec):
+    return x * b.x + y * b.y + z * b.z
+
+  func norm():
+    var mag = math.sqrt(this.dot(this))
+    if mag == 0.0:
+      return Vec(0.0, 0.0, 0.0)
+    return this.scale(1.0 / mag)
+
+  func cross(b :Vec):
+    return Vec(y * b.z - z * b.y, z * b.x - x * b.z, x * b.y - y * b.x)
+
+
+type Ray object:
+  var o
+  var d
+  proc init(origin :Vec, direction :Vec):
+    o = origin
+    d = direction
+
+
+type Sphere object:
+  var rad
+  var p
+  var e
+  var c
+  var refl
+
+  proc init(radius, position :Vec, emission :Vec, color :Vec, reflection):
+    rad = radius
+    p = position
+    e = emission
+    c = color
+    refl = reflection
+
+  func intersect(ray :Ray):
+    var op = p.sub(ray.o)
+    var b = op.dot(ray.d)
+    var det = b * b - op.dot(op) + rad * rad
+    if det < 0.0:
+      return nil
+    det = math.sqrt(det)
+    var eps = 1e-4
+    var t = b - det
+    if t > eps:
+      return t
+    t = b + det
+    if t > eps:
+      return t
+    return nil
+
+
+var spheres = []
+spheres.append(Sphere(1e5, Vec(1e5 + 1.0, 40.8, 81.6), Vec(), Vec(0.75, 0.25, 0.25), REFL_DIFF))
+spheres.append(Sphere(1e5, Vec(-1e5 + 99.0, 40.8, 81.6), Vec(), Vec(0.25, 0.25, 0.75), REFL_DIFF))
+spheres.append(Sphere(1e5, Vec(50.0, 40.8, 1e5), Vec(), Vec(0.75, 0.75, 0.75), REFL_DIFF))
+spheres.append(Sphere(1e5, Vec(50.0, 40.8, -1e5 + 170.0), Vec(), Vec(), REFL_DIFF))
+spheres.append(Sphere(1e5, Vec(50.0, 1e5, 81.6), Vec(), Vec(0.75, 0.75, 0.75), REFL_DIFF))
+spheres.append(Sphere(1e5, Vec(50.0, -1e5 + 81.6, 81.6), Vec(), Vec(0.75, 0.75, 0.75), REFL_DIFF))
+spheres.append(Sphere(16.5, Vec(27.0, 16.5, 47.0), Vec(), Vec(0.999, 0.999, 0.999), REFL_SPEC))
+spheres.append(Sphere(16.5, Vec(73.0, 16.5, 78.0), Vec(), Vec(0.999, 0.999, 0.999), REFL_REFR))
+spheres.append(Sphere(600.0, Vec(50.0, 681.6 - 0.27, 81.6), Vec(12.0, 12.0, 12.0), Vec(), REFL_DIFF))
+
+
+func clamp(x):
+  if x < 0.0:
+    return 0.0
+  if x > 1.0:
+    return 1.0
+  return x
+
+func toInt(x):
+  return int(math.pow(clamp(x), 1.0 / 2.2) * 255.0 + 0.5)
+
+func maxComponent(v :Vec):
+  var m = v.x
+  if v.y > m:
+    m = v.y
+  if v.z > m:
+    m = v.z
+  return m
+
+func intersectScene(ray :Ray):
+  var dist = INF
+  var hitId = -1
+  var i = 0
+  while i < len(spheres):
+    var sphere = spheres[i]
+    var d = sphere.intersect(ray)
+    if d <> nil and d < dist:
+      dist = d
+      hitId = i
+    i = i + 1
+  if hitId == -1:
+    return {'hit': false, 't': 0.0, 'id': -1}
+  return {'hit': true, 't': dist, 'id': hitId}
+
+
+func radiance(ray :Ray, depth):
+  var hit = intersectScene(ray)
+  if not hit['hit']:
+    return Vec()
+  var obj = spheres[hit['id']]
+  var t = hit['t']
+  var hitPoint = ray.o.add(ray.d.scale(t))
+  var normal = hitPoint.sub(obj.p).norm()
+  var nl = normal
+  if normal.dot(ray.d) > 0.0:
+    nl = normal.scale(-1.0)
+  var f = obj.c
+  var p = maxComponent(f)
+  depth = depth + 1
+  if depth > 5:
+    if p <= 0.0:
+      return obj.e
+    if rand01() < p:
+      f = f.scale(1.0 / p)
+    else:
+      return obj.e
+  if obj.refl == REFL_DIFF:
+    var r1 = 2.0 * PI * rand01()
+    var r2 = rand01()
+    var r2s = math.sqrt(r2)
+    var w = nl
+    var u = nil
+    if w.x > 0.1 or w.x < -0.1:
+      u = Vec(0.0, 1.0, 0.0)
+    else:
+      u = Vec(1.0, 0.0, 0.0)
+    u = u.cross(w).norm()
+    var v = w.cross(u)
+    var dir = u.scale(math.cos(r1) * r2s).add(v.scale(math.sin(r1) * r2s)).add(w.scale(math.sqrt(1.0 - r2)))
+    dir = dir.norm()
+    return obj.e.add(f.mult(radiance(Ray(hitPoint, dir), depth)))
+  if obj.refl == REFL_SPEC:
+    var reflected = ray.d.sub(normal.scale(2.0 * normal.dot(ray.d)))
+    return obj.e.add(f.mult(radiance(Ray(hitPoint, reflected), depth)))
+
+  var reflDir = ray.d.sub(normal.scale(2.0 * normal.dot(ray.d)))
+  var reflRay = Ray(hitPoint, reflDir)
+  var into = normal.dot(nl) > 0.0
+  var nc = 1.0
+  var nt = 1.5
+  var nnt = 0.0
+  if into:
+    nnt = nc / nt
+  else:
+    nnt = nt / nc
+  var ddn = ray.d.dot(nl)
+  var cos2t = 1.0 - nnt * nnt * (1.0 - ddn * ddn)
+  if cos2t < 0.0:
+    return obj.e.add(f.mult(radiance(reflRay, depth)))
+  var directionSign = 0.0
+  if into:
+    directionSign = 1.0
+  else:
+    directionSign = -1.0
+  var tdir = ray.d.scale(nnt).sub(normal.scale(directionSign * (ddn * nnt + math.sqrt(cos2t))))
+  tdir = tdir.norm()
+  var a = nt - nc
+  var b = nt + nc
+  var R0 = (a * a) / (b * b)
+  var c = 0.0
+  if into:
+    c = 1.0 - (-ddn)
+  else:
+    c = 1.0 - tdir.dot(normal)
+  var Re = R0 + (1.0 - R0) * math.pow(c, 5.0)
+  var Tr = 1.0 - Re
+  var P = 0.25 + 0.5 * Re
+  var RP = Re / P
+  var TP = Tr / (1.0 - P)
+  if depth > 2:
+    if rand01() < P:
+      return obj.e.add(f.mult(radiance(reflRay, depth).scale(RP)))
+    return obj.e.add(f.mult(radiance(Ray(hitPoint, tdir), depth).scale(TP)))
+  var reflRadiance = radiance(reflRay, depth).scale(Re)
+  var transRadiance = radiance(Ray(hitPoint, tdir), depth).scale(Tr)
+  return obj.e.add(f.mult(reflRadiance.add(transRadiance)))
+
+
+var width = 200
+var height = 150
+var samples = 32
+
+var cam = Ray(Vec(50.0, 52.0, 295.6), Vec(0.0, -0.042612, -1.0).norm())
+var cx = Vec(width * 0.5135 / height, 0.0, 0.0)
+var cy = cx.cross(cam.d).norm().scale(0.5135)
+
+var image = []
+var initIdx = 0
+while initIdx < width * height:
+  image.append(Vec())
+  initIdx = initIdx + 1
+
+var y = 0
+while y < height:
+  var x = 0
+  while x < width:
+    var i = (height - y - 1) * width + x
+    var accumulated = Vec()
+    var sy = 0
+    while sy < 2:
+      var sx = 0
+      while sx < 2:
+        var r = Vec()
+        var s = 0
+        while s < samples:
+          var r1 = 2.0 * rand01()
+          var dx = 0.0
+          if r1 < 1.0:
+            dx = math.sqrt(r1) - 1.0
+          else:
+            dx = 1.0 - math.sqrt(2.0 - r1)
+          var r2 = 2.0 * rand01()
+          var dy = 0.0
+          if r2 < 1.0:
+            dy = math.sqrt(r2) - 1.0
+          else:
+            dy = 1.0 - math.sqrt(2.0 - r2)
+          var dir = cx.scale((((sx + 0.5 + dx) / 2.0 + x) / width) - 0.5).add(
+            cy.scale((((sy + 0.5 + dy) / 2.0 + y) / height) - 0.5)).add(cam.d)
+          var dirNorm = dir.norm()
+          var rayOrigin = cam.o.add(dir.scale(140.0))
+          var sample = radiance(Ray(rayOrigin, dirNorm), 0)
+          r = r.add(sample.scale(1.0 / samples))
+          s = s + 1
+        accumulated = accumulated.add(r.scale(0.25))
+        sx = sx + 1
+      sy = sy + 1
+    image[i] = accumulated
+    x = x + 1
+  y = y + 1
+
+print('P3')
+print(string(width) + ' ' + string(height))
+print('255')
+
+var idx = 0
+while idx < width * height:
+  var pixel = image[idx]
+  pixel = Vec(clamp(pixel.x), clamp(pixel.y), clamp(pixel.z))
+  var line = string(toInt(pixel.x)) + ' ' + string(toInt(pixel.y)) + ' ' + string(toInt(pixel.z))
+  print(line)
+  idx = idx + 1
