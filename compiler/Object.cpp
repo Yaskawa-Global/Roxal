@@ -1524,6 +1524,43 @@ void ObjEventType::dropReferences()
     subscribers.clear();
 }
 
+std::vector<ObjEventType::PayloadPropertyView> ObjEventType::orderedPayloadProperties() const
+{
+    std::vector<PayloadPropertyView> result;
+    result.reserve(payloadProperties.size());
+    for (size_t i = 0; i < payloadProperties.size(); ++i) {
+        const auto& prop = payloadProperties[i];
+        int32_t hash = prop.name.hashCode();
+        result.push_back({i, &prop, static_cast<uint16_t>(hash & 0x7fff)});
+    }
+    return result;
+}
+
+std::optional<ObjEventType::PayloadPropertyView>
+ObjEventType::findPayloadPropertyByHash15(uint16_t hash15, bool& ambiguous) const
+{
+    ambiguous = false;
+    const PayloadProperty* match = nullptr;
+    size_t matchIndex = 0;
+    int32_t matchHash = 0;
+    for (size_t i = 0; i < payloadProperties.size(); ++i) {
+        const auto& prop = payloadProperties[i];
+        int32_t propHash = prop.name.hashCode();
+        if (static_cast<uint16_t>(propHash & 0x7fff) != hash15)
+            continue;
+        if (match != nullptr) {
+            ambiguous = true;
+            return std::nullopt;
+        }
+        match = &prop;
+        matchIndex = i;
+        matchHash = propHash;
+    }
+    if (match == nullptr)
+        return std::nullopt;
+    return PayloadPropertyView{matchIndex, match, static_cast<uint16_t>(matchHash & 0x7fff)};
+}
+
 ObjEventInstance::ObjEventInstance(const Value& eventType)
     : typeHandle(eventType)
 {

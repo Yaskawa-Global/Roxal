@@ -916,33 +916,94 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             }
             case ObjType::EventType: {
                 ObjEventType* eventType = asEventType(callee);
-                if (!callSpec.allPositional) {
-                    runtimeError("Named arguments are not supported when constructing event instances.");
-                    return false;
-                }
-
                 size_t payloadCount = eventType->payloadProperties.size();
-                size_t provided = callSpec.argCount;
-                if (provided > payloadCount) {
-                    runtimeError("Event instance expects at most " + std::to_string(payloadCount) +
-                                  " argument" + (payloadCount == 1 ? "" : "s") + ".");
-                    return false;
-                }
-
+                std::string eventName = toUTF8StdString(eventType->name);
                 bool strict = false;
                 if (!thread->frames.empty())
                     strict = (thread->frames.end() - 1)->strict;
 
                 auto argBegin = thread->stackTop - callSpec.argCount;
-                std::vector<Value> payload;
-                payload.reserve(payloadCount);
-                for (size_t i = 0; i < payloadCount; ++i) {
-                    Value value = (i < provided) ? *(argBegin + i) : eventType->payloadProperties[i].initialValue;
-                    const Value& typeSpec = eventType->payloadProperties[i].type;
+                std::vector<Value> payload(payloadCount);
+                std::vector<bool> assigned(payloadCount, false);
+                for (size_t i = 0; i < payloadCount; ++i)
+                    payload[i] = eventType->payloadProperties[i].initialValue;
+
+                auto orderedProps = eventType->orderedPayloadProperties();
+                auto assignValue = [&](const ObjEventType::PayloadPropertyView& entry, Value value) -> bool {
+                    if (assigned[entry.index]) {
+                        runtimeError("Multiple values provided for payload property '" +
+                                     toUTF8StdString(entry.property->name) +
+                                     "' when constructing event '" + eventName + "'.");
+                        return false;
+                    }
+                    const Value& typeSpec = entry.property->type;
                     if (!value.isNil() && !typeSpec.isNil())
                         value = toType(typeSpec, value, strict);
-                    payload.push_back(value);
+                    assigned[entry.index] = true;
+                    payload[entry.index] = value;
+                    return true;
+                };
+
+                bool ok = true;
+                if (callSpec.allPositional) {
+                    if (callSpec.argCount > payloadCount) {
+                        runtimeError("Event '" + eventName + "' expects at most " +
+                                     std::to_string(payloadCount) + " argument" +
+                                     (payloadCount == 1 ? "" : "s") + " but " +
+                                     std::to_string(callSpec.argCount) + " were provided.");
+                        ok = false;
+                    } else {
+                        for (size_t i = 0; i < callSpec.argCount && ok; ++i) {
+                            if (!assignValue(orderedProps[i], *(argBegin + i)))
+                                ok = false;
+                        }
+                    }
+                } else {
+                    size_t positionalIndex = 0;
+                    for (size_t i = 0; i < callSpec.argCount && ok; ++i) {
+                        const auto& spec = callSpec.args[i];
+                        Value value = *(argBegin + i);
+                        if (spec.positional) {
+                            while (positionalIndex < orderedProps.size() &&
+                                   assigned[orderedProps[positionalIndex].index])
+                                ++positionalIndex;
+                            if (positionalIndex >= orderedProps.size()) {
+                                runtimeError("Too many positional arguments when constructing event '" +
+                                             eventName + "'.");
+                                ok = false;
+                                break;
+                            }
+                            if (!assignValue(orderedProps[positionalIndex], value)) {
+                                ok = false;
+                                break;
+                            }
+                            ++positionalIndex;
+                        } else {
+                            bool ambiguous = false;
+                            auto entry = eventType->findPayloadPropertyByHash15(
+                                static_cast<uint16_t>(spec.paramNameHash & 0x7fff), ambiguous);
+                            if (ambiguous) {
+                                runtimeError("Ambiguous named argument when constructing event '" +
+                                             eventName + "'; multiple payload properties share that name hash.");
+                                ok = false;
+                                break;
+                            }
+                            if (!entry.has_value()) {
+                                runtimeError("Unknown named argument when constructing event '" +
+                                             eventName + "'.");
+                                ok = false;
+                                break;
+                            }
+                            if (!assignValue(*entry, value)) {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
                 }
+
+                if (!ok)
+                    return false;
 
                 Value instance = Value::eventInstanceVal(Value::objRef(eventType), std::move(payload));
                 *(thread->stackTop - callSpec.argCount - 1) = instance;
