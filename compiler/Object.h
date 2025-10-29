@@ -720,6 +720,12 @@ struct ObjEventType : public Obj {
         Value initialValue;
     };
 
+    struct PayloadPropertyView {
+        size_t index;
+        const PayloadProperty* property;
+        uint16_t hash15;
+    };
+
     explicit ObjEventType(const icu::UnicodeString& name);
     virtual ~ObjEventType() {}
 
@@ -730,6 +736,10 @@ struct ObjEventType : public Obj {
 
     // list of subscribed handler closures (weak references)
     std::vector<Value> subscribers;
+
+    std::vector<PayloadPropertyView> orderedPayloadProperties() const;
+    std::optional<PayloadPropertyView> findPayloadPropertyByHash15(uint16_t hash15,
+                                                                   bool& ambiguous) const;
 
     unique_ptr<Obj, UnreleasedObj> clone() const override;
 

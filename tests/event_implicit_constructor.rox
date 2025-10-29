@@ -1,0 +1,14 @@
+type MyEvent event:
+  var a:int = 10
+  var b:real = 1.5
+  var s:string = 'world'
+
+on MyEvent as evt:
+  print("event a="+evt.a+" b="+evt.b+" s="+evt.s)
+
+emit MyEvent(s='hello', a=1, b=2.2)
+emit MyEvent(3, s='bye')
+emit MyEvent()
+
+var inst = MyEvent(b=4.5)
+print("inst a="+inst.a+" b="+inst.b+" s="+inst.s)
