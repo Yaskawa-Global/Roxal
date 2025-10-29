@@ -3784,8 +3784,8 @@ std::pair<InterpretResult,Value> VM::execute()
                         return errorReturn;
                     }
                     ObjSignal* sigObj = asSignal(eventVal);
-                    ev = sigObj->ensureChangeEvent();
-                    eventVal = sigObj->changeEvent;
+                    ev = sigObj->ensureChangeEventType();
+                    eventVal = sigObj->changeEventType;
                     thread->eventToSignal[eventVal.weakRef()] = Value::objRef(sigObj);
                 } else if (isEventType(eventVal)) {
                     if (requireChangedKeyword) {
@@ -3821,8 +3821,8 @@ std::pair<InterpretResult,Value> VM::execute()
                     ev = asEventType(eventVal);
                 } else {
                     ObjSignal* sigObj = asSignal(eventVal);
-                    ev = sigObj->ensureChangeEvent();
-                    eventVal = sigObj->changeEvent;
+                    ev = sigObj->ensureChangeEventType();
+                    eventVal = sigObj->changeEventType;
                     thread->eventToSignal.erase(eventVal.weakRef());
                 }
 
@@ -4867,8 +4867,8 @@ Value VM::event_off_builtin(ArgsView args)
         ev = asEventType(eventVal);
     } else {
         ObjSignal* sigObj = asSignal(eventVal);
-        ev = sigObj->ensureChangeEvent();
-        eventVal = sigObj->changeEvent;
+        ev = sigObj->ensureChangeEventType();
+        eventVal = sigObj->changeEventType;
         thread->eventToSignal.erase(eventVal.weakRef());
     }
 

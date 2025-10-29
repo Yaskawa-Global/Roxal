@@ -498,7 +498,7 @@ c.run()    // start the clock counting
 wait(s=1)  // keep the script running so we can see ~10 prints
 ```
 
-The `changed` keyword is required when watching a signal.  Supplying `as evt` binds the automatically-generated event instance that contains the sampled signal value (`evt.value`) and the timestamp of the change (`evt.timestamp`).
+The `changed` keyword is required when watching a signal.  Supplying `as evt` binds the automatically-generated event instance that contains the sampled signal value (`evt.value`), a steady-clock duration since the engine started (`evt.timestamp`, a `sys.TimeSpan`), and the signal's own tick count (`evt.tick`).
 
 Transforming a some signals:
 ```php

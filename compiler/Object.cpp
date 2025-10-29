@@ -4,6 +4,7 @@
 #include <unordered_set>
 #include <sstream>
 #include <algorithm>
+#include <limits>
 #include <iomanip>
 #include <iostream>
 #include <dlfcn.h>
@@ -1415,7 +1416,7 @@ void ObjSignal::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     double freq; in.read(reinterpret_cast<char*>(&freq),8);
     Value v = readValue(in, ctx);
     signal = df::Signal::newSignal(freq, v, n);
-    changeEvent = Value::nilVal();
+    changeEventType = Value::nilVal();
     type = ObjType::Signal;
 }
 
@@ -2669,7 +2670,7 @@ void ObjMatrix::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 }
 
 ObjSignal::ObjSignal(ptr<df::Signal> s)
-    : signal(s), engine(nullptr), changeEvent(Value::nilVal())
+    : signal(s), engine(nullptr), changeEventType(Value::nilVal())
 {
     type = ObjType::Signal;
     if (signal) {
@@ -2690,46 +2691,86 @@ ObjSignal::~ObjSignal()
 
 void ObjSignal::trace(ValueVisitor& visitor) const
 {
-    visitor.visit(changeEvent);
+    visitor.visit(changeEventType);
 }
 
 void ObjSignal::dropReferences()
 {
-    changeEvent = Value::nilVal();
+    changeEventType = Value::nilVal();
 }
 
-ObjEventType* ObjSignal::ensureChangeEvent()
+// Lazily create the shared SignalChanged event type and register the callback
+// responsible for emitting instances when the signal's value changes.
+ObjEventType* ObjSignal::ensureChangeEventType()
 {
-    if (!changeEvent.isNil())
-        return asEventType(changeEvent);
+    if (!changeEventType.isNil())
+        return asEventType(changeEventType);
 
     auto eventType = newEventTypeObj(toUnicodeString("SignalChanged"));
     ObjEventType* typeObj = eventType.get();
 
     ObjEventType::PayloadProperty valueProp { toUnicodeString("value"), Value::nilVal(), Value::nilVal() };
-    ObjEventType::PayloadProperty timeProp { toUnicodeString("timestamp"),
+    ObjObjectType* spanType = sysTimeSpanType();
+    bool useSpan = spanType != nullptr;
+    ObjEventType::PayloadProperty timeProp { toUnicodeString("timestamp"), Value::nilVal(), Value::nilVal() };
+    if (useSpan) {
+        timeProp.type = Value::objRef(spanType);
+        timeProp.initialValue = sysNewTimeSpan(0);
+    } else {
+        timeProp.type = Value::typeSpecVal(ValueType::Int);
+        timeProp.initialValue = Value::intVal(0);
+    }
+    ObjEventType::PayloadProperty tickProp { toUnicodeString("tick"),
                                              Value::typeSpecVal(ValueType::Int),
                                              Value::intVal(0) };
     typeObj->payloadProperties.push_back(valueProp);
     typeObj->propertyLookup[valueProp.name.hashCode()] = 0;
     typeObj->payloadProperties.push_back(timeProp);
     typeObj->propertyLookup[timeProp.name.hashCode()] = 1;
+    typeObj->payloadProperties.push_back(tickProp);
+    typeObj->propertyLookup[tickProp.name.hashCode()] = 2;
 
-    changeEvent = Value::objVal(std::move(eventType));
-    Value eventWeak = changeEvent.weakRef();
-    signal->addValueChangedCallback([eventWeak](TimePoint t, ptr<df::Signal>, const Value& sample){
+    changeEventType = Value::objVal(std::move(eventType));
+    Value eventWeak = changeEventType.weakRef();
+    // Register a signal callback that creates a fresh event instance for
+    // each change and dispatches it to subscribed handlers.
+    signal->addValueChangedCallback([eventWeak, useSpan](TimePoint t, ptr<df::Signal> sig, const Value& sample){
         if (!eventWeak.isAlive())
             return;
         ObjEventType* ev = asEventType(eventWeak);
         Value eventTypeStrong = Value::objRef(ev);
         std::vector<Value> payload;
         payload.reserve(ev->payloadProperties.size());
+        // First payload slot carries the current signal sample.
         payload.push_back(sample);
-        payload.push_back(Value::intVal(static_cast<int32_t>(t.microSecs())));
+        if (useSpan) {
+            // Emit the elapsed steady-clock time since engine start as a
+            // TimeSpan instance when the sys module is available.
+            payload.push_back(sysNewTimeSpan(t.microSecs()));
+        } else {
+            payload.push_back(Value::intVal(static_cast<int32_t>(t.microSecs())));
+        }
+        // Track the discrete tick associated with this change. Prefer the
+        // signal's own period when available, otherwise fall back to the
+        // engine's global tick counter.
+        int64_t tickIndex = 0;
+        if (sig && sig->period() != TimeDuration::zero()) {
+            auto periodMicros = sig->period().microSecs();
+            if (periodMicros > 0)
+                tickIndex = t.microSecs() / periodMicros;
+        } else if (auto engine = df::DataflowEngine::instance(false)) {
+            tickIndex = static_cast<int64_t>(engine->currentTickNumber());
+        }
+        tickIndex = std::clamp(tickIndex,
+                               static_cast<int64_t>(std::numeric_limits<int32_t>::min()),
+                               static_cast<int64_t>(std::numeric_limits<int32_t>::max()));
+        payload.push_back(Value::intVal(static_cast<int32_t>(tickIndex)));
+        // Package the change information into a new event instance and invoke
+        // every subscribed handler for this occurrence.
         Value instance = Value::eventInstanceVal(eventTypeStrong, std::move(payload));
         scheduleEventHandlers(eventWeak, ev, instance, t);
     });
-    return asEventType(changeEvent);
+    return asEventType(changeEventType);
 }
 
 unique_ptr<ObjSignal, UnreleasedObj> roxal::newSignalObj(ptr<df::Signal> s)

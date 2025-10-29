@@ -327,6 +327,11 @@ TimeDuration DataflowEngine::tickPeriod() const
     return m_tickPeriod;
 }
 
+uint64_t DataflowEngine::currentTickNumber() const
+{
+    return m_tickNumber.load();
+}
+
 
 
 void DataflowEngine::run() {

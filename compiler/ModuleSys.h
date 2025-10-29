@@ -4,6 +4,7 @@
 #include "Value.h"
 #include "Object.h"
 #include <string>
+#include <cstdint>
 
 namespace roxal {
 
@@ -96,5 +97,6 @@ ObjObjectType* sysTimeType();
 ObjObjectType* sysTimeSpanType();
 std::string sysTimeDefaultString(ObjectInstance* inst);
 std::string sysTimeSpanDefaultString(ObjectInstance* inst);
+Value sysNewTimeSpan(int64_t totalMicros);
 
 }

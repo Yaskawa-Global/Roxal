@@ -688,10 +688,11 @@ std::string objMatrixToString(const ObjMatrix* om);
 struct ObjSignal : public Obj {
     ObjSignal(ptr<df::Signal> s);
     virtual ~ObjSignal();
-    ObjEventType* ensureChangeEvent();
+    ObjEventType* ensureChangeEventType();
     ptr<df::Signal> signal;
     df::DataflowEngine* engine;
-    Value changeEvent;
+    // Lazily initialized `SignalChanged` event type shared by all emissions.
+    Value changeEventType;
 
     unique_ptr<Obj, UnreleasedObj> clone() const override;
 
