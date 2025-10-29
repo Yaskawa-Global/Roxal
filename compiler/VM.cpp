@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <map>
 #include <unordered_set>
+#include <unordered_map>
 #include <system_error>
 #include <ffi.h>
 #include <dlfcn.h>
@@ -1064,6 +1065,134 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 objInst->properties[hash] = val;
                             }
                             pop();
+                        } else if (!type->isActor && initMethod == nullptr) {
+                            ObjectInstance* objInst = asObjectInstance(inst);
+
+                            struct PropEntry {
+                                int32_t key;
+                                const ObjObjectType::Property* prop;
+                                uint16_t hash15;
+                            };
+
+                            std::vector<PropEntry> publicProps;
+                            publicProps.reserve(type->propertyOrder.size());
+                            for (int32_t hash : type->propertyOrder) {
+                                auto pit = type->properties.find(hash);
+                                if (pit == type->properties.end())
+                                    continue;
+                                const ObjObjectType::Property* prop = &pit->second;
+                                if (prop->access != ast::Access::Public)
+                                    continue;
+                                int32_t key = prop->name.hashCode();
+                                publicProps.push_back({key, prop, static_cast<uint16_t>(key & 0x7fff)});
+                            }
+
+                            bool strictConv = false;
+                            if (thread->frames.size() >= 1)
+                                strictConv = (thread->frames.end()-1)->strict;
+
+                            auto argBegin = thread->stackTop - callSpec.argCount;
+
+                            std::unordered_map<int32_t, Value> assignedValues;
+                            assignedValues.reserve(callSpec.argCount);
+                            std::unordered_set<int32_t> assignedKeys;
+
+                            auto assignValue = [&](const PropEntry& entry, Value value) -> bool {
+                                if (assignedKeys.contains(entry.key)) {
+                                    runtimeError("Multiple values provided for property '" + toUTF8StdString(entry.prop->name) +
+                                                 "' when constructing type '" + toUTF8StdString(type->name) + "'.");
+                                    return false;
+                                }
+                                if (!entry.prop->type.isNil() && isTypeSpec(entry.prop->type)) {
+                                    ObjTypeSpec* ts = asTypeSpec(entry.prop->type);
+                                    if (ts->typeValue != ValueType::Nil) {
+                                        try {
+                                            value = toType(entry.prop->type, value, strictConv);
+                                        } catch (std::exception& e) {
+                                            runtimeError(e.what());
+                                            return false;
+                                        }
+                                    }
+                                }
+                                assignedKeys.insert(entry.key);
+                                assignedValues.emplace(entry.key, value);
+                                return true;
+                            };
+
+                            auto findByHash15 = [&](uint16_t hash15) -> const PropEntry* {
+                                const PropEntry* match = nullptr;
+                                for (const auto& entry : publicProps) {
+                                    if (entry.hash15 != hash15)
+                                        continue;
+                                    if (match != nullptr) {
+                                        runtimeError("Ambiguous named argument when constructing type '" +
+                                                     toUTF8StdString(type->name) +
+                                                     "'; multiple public properties share that name hash.");
+                                        return nullptr;
+                                    }
+                                    match = &entry;
+                                }
+                                if (match == nullptr)
+                                    runtimeError("Unknown named argument when constructing type '" +
+                                                 toUTF8StdString(type->name) + "'.");
+                                return match;
+                            };
+
+                            bool ok = true;
+                            if (callSpec.allPositional) {
+                                if (callSpec.argCount > publicProps.size()) {
+                                    runtimeError("Type '" + toUTF8StdString(type->name) + "' constructor expects at most " +
+                                                 std::to_string(publicProps.size()) +
+                                                 " argument" + (publicProps.size() == 1 ? "" : "s") +
+                                                 " but " + std::to_string(callSpec.argCount) + " were provided.");
+                                    ok = false;
+                                } else {
+                                    for (size_t i = 0; i < callSpec.argCount && ok; ++i) {
+                                        if (!assignValue(publicProps[i], *(argBegin + i)))
+                                            ok = false;
+                                    }
+                                }
+                            } else {
+                                size_t positionalIndex = 0;
+                                for (size_t i = 0; i < callSpec.argCount && ok; ++i) {
+                                    const auto& spec = callSpec.args[i];
+                                    Value value = *(argBegin + i);
+                                    if (spec.positional) {
+                                        while (positionalIndex < publicProps.size() &&
+                                               assignedKeys.contains(publicProps[positionalIndex].key))
+                                            ++positionalIndex;
+                                        if (positionalIndex >= publicProps.size()) {
+                                            runtimeError("Too many positional arguments when constructing type '" +
+                                                         toUTF8StdString(type->name) + "'.");
+                                            ok = false;
+                                            break;
+                                        }
+                                        if (!assignValue(publicProps[positionalIndex], value)) {
+                                            ok = false;
+                                            break;
+                                        }
+                                        ++positionalIndex;
+                                    } else {
+                                        const PropEntry* entry = findByHash15(spec.paramNameHash & 0x7fff);
+                                        if (entry == nullptr) {
+                                            ok = false;
+                                            break;
+                                        }
+                                        if (!assignValue(*entry, value)) {
+                                            ok = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!ok)
+                                return false;
+
+                            for (const auto& kv : assignedValues)
+                                objInst->properties[kv.first] = kv.second;
+
+                            popN(callSpec.argCount);
                         } else if (callSpec.argCount != 0) {
                             runtimeError("Expected 0 arguments for type instantiation, provided "+std::to_string(callSpec.argCount));
                             return false;
