@@ -17,6 +17,7 @@ parser = argparse.ArgumentParser(description="Run Roxal tests.")
 parser.add_argument('--convs', action='store_true', help='Include tests/conversions/* tests')
 parser.add_argument('--all', action='store_true', help='Run all tests, including conversions and long running tests')
 parser.add_argument('--opcode-prof', action='store_true', help='Enable opcode profiling for each Roxal invocation')
+parser.add_argument('--nocache', action='store_true', help='Disable reading and writing Roxal bytecode cache files')
 args = parser.parse_args()
 
 
@@ -51,7 +52,9 @@ tests = [
     'module_strict_assign_err', 'var_redeclare_err', 'var_redeclare_assign_err', 'repl_var_redeclare_err', 'func_nonstrict', 'conversions1',
     'serialize_values', 'serialize_objects', 'serialize_user_objects', 'serialize_func', 'serialize_actor',
     'json_basic',
-    'byteops', 'bitwise', 'byte_int_bits', 'list_byte_concat', 'list_enum_concat', 'object_init', 'object_inherit_is',
+    'byteops', 'bitwise', 'byte_int_bits', 'list_byte_concat', 'list_enum_concat',
+    'object_init', 'object_constructor_args', 'object_constructor_unknown_arg', 'object_constructor_arg_count',
+    'object_inherit_is',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'closure_many', 'lambda1',
     'conversion1', 'string_interp',
     'call_param_type_nonstrict', 'call_param_type_strict', 'param_assign_static_err',
@@ -190,6 +193,8 @@ try:
 
         if args.opcode_prof and '--opcode-prof' not in cmd:
             cmd = [cmd[0], '--opcode-prof', *cmd[1:]]
+        if args.nocache and '--nocache' not in cmd:
+            cmd = [cmd[0], '--nocache', *cmd[1:]]
 
         opt_expected = (" [expected]" if test in failing_tests else '')
 

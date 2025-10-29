@@ -2204,6 +2204,51 @@ void ObjObjectType::dropReferences()
         entry.second.second = Value::nilVal();
     }
 }
+
+std::vector<ObjObjectType::PublicPropertyView> ObjObjectType::orderedPublicProperties() const
+{
+    std::vector<PublicPropertyView> result;
+    result.reserve(propertyOrder.size());
+    for (int32_t hash : propertyOrder) {
+        auto it = properties.find(hash);
+        if (it == properties.end())
+            continue;
+        const Property& prop = it->second;
+        if (prop.access != ast::Access::Public)
+            continue;
+        int32_t key = prop.name.hashCode();
+        result.push_back({key, &prop, static_cast<uint16_t>(key & 0x7fff)});
+    }
+    return result;
+}
+
+std::optional<ObjObjectType::PublicPropertyView>
+ObjObjectType::findPublicPropertyByHash15(uint16_t hash15, bool& ambiguous) const
+{
+    ambiguous = false;
+    const Property* match = nullptr;
+    int32_t key = 0;
+    for (int32_t hash : propertyOrder) {
+        auto it = properties.find(hash);
+        if (it == properties.end())
+            continue;
+        const Property& prop = it->second;
+        if (prop.access != ast::Access::Public)
+            continue;
+        int32_t propKey = prop.name.hashCode();
+        if (static_cast<uint16_t>(propKey & 0x7fff) != hash15)
+            continue;
+        if (match != nullptr) {
+            ambiguous = true;
+            return std::nullopt;
+        }
+        match = &prop;
+        key = propKey;
+    }
+    if (match == nullptr)
+        return std::nullopt;
+    return PublicPropertyView{key, match, static_cast<uint16_t>(key & 0x7fff)};
+}
 unique_ptr<Obj, UnreleasedObj> ObjPackageType::clone() const {
     // package types contain no mutable state; share the reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjPackageType*>(this));

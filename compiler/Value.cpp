@@ -1281,17 +1281,13 @@ Value roxal::toType(ValueType t, Value v, bool strict)
 
                 ObjectInstance* vObj = asObjectInstance(v);
                 ObjObjectType* vObjType = asObjectType(vObj->instanceType);
-                for(int32_t hash : vObjType->propertyOrder) {
-                    const auto& prop { vObjType->properties.at(hash) };
-                    if (prop.access != ast::Access::Public)
-                        continue;
-                    auto propName { Value::stringVal(prop.name) };
-                    auto propHash = asStringObj(propName)->hash;
+                for (const auto& entry : vObjType->orderedPublicProperties()) {
+                    auto propName { Value::stringVal(entry.property->name) };
                     #ifdef DEBUG_BUILD
-                    assert(vObj->properties.find(propHash) != vObj->properties.end());
+                    assert(vObj->properties.find(entry.key) != vObj->properties.end());
                     #endif
                     asDict(dictValue)->store(propName,
-                                             vObj->properties[propHash]);
+                                             vObj->properties[entry.key]);
                 }
                 return dictValue;
             }
