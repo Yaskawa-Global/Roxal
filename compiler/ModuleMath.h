@@ -21,6 +21,7 @@ public:
     Value math_ones_builtin(VM& vm, ArgsView args);
     Value math_dot_builtin(VM& vm, ArgsView args);
     Value math_cross_builtin(VM& vm, ArgsView args);
+    Value math_setVecSignal_builtin(VM& vm, ArgsView args);
 
 
     // Example for implementing a builtin type (math.Counter) that wraps a C++ class

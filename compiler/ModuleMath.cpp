@@ -101,11 +101,13 @@ void ModuleMath::registerBuiltins(VM& vm)
     link("ones", [this](VM& vm, ArgsView a){ return math_ones_builtin(vm,a); });
     link("dot", [this](VM& vm, ArgsView a){ return math_dot_builtin(vm,a); });
     link("cross", [this](VM& vm, ArgsView a){ return math_cross_builtin(vm,a); });
+    link("_setVecSignal", [this](VM& vm, ArgsView a){ return math_setVecSignal_builtin(vm,a); });
 
     // Link builtin Counter methods
     linkMethod("_Counter", "init", [this](VM& vm, ArgsView a){ return counter_init_builtin(vm,a); });
     linkMethod("_Counter", "inc", [this](VM& vm, ArgsView a){ return counter_inc_builtin(vm,a); });
     linkMethod("_Counter", "value", [this](VM& vm, ArgsView a){ return counter_value_builtin(vm,a); }, {});
+
 }
 
 Value ModuleMath::math_identity_builtin(VM& vm, ArgsView args)
@@ -233,4 +235,14 @@ Value ModuleMath::counter_value_builtin(VM& vm, ArgsView args)
     auto counter = static_cast<Counter*>(asForeignPtr(inst->getProperty("_this"))->ptr);
 
     return Value::intVal(counter->value());
+}
+
+Value ModuleMath::math_setVecSignal_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 1 || !isVector(args[0]))
+        throw std::invalid_argument("math._setVecSignal expects a single vector argument");
+
+    setModuleSourceSignalValue("_vecSignal", args[0]);
+
+    return Value::nilVal();
 }
