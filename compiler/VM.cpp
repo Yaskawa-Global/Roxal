@@ -1097,6 +1097,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             assignedValues.reserve(callSpec.argCount);
                             std::unordered_set<int32_t> assignedKeys;
 
+                            // Helper that enforces duplicate/named argument validation and performs
+                            // type conversion before storing the value for later assignment.
                             auto assignValue = [&](const PropEntry& entry, Value value) -> bool {
                                 if (assignedKeys.contains(entry.key)) {
                                     runtimeError("Multiple values provided for property '" + toUTF8StdString(entry.prop->name) +
@@ -1119,6 +1121,9 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 return true;
                             };
 
+                            // Locate the property whose hashed name matches the supplied argument.
+                            // The 15-bit hashes are not guaranteed unique, so guard against collisions
+                            // by checking for multiple matches.
                             auto findByHash15 = [&](uint16_t hash15) -> const PropEntry* {
                                 const PropEntry* match = nullptr;
                                 for (const auto& entry : publicProps) {
@@ -1140,6 +1145,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
                             bool ok = true;
                             if (callSpec.allPositional) {
+                                // No named parameters were present, so the argument order follows the
+                                // order of declaration for public properties.
                                 if (callSpec.argCount > publicProps.size()) {
                                     runtimeError("Type '" + toUTF8StdString(type->name) + "' constructor expects at most " +
                                                  std::to_string(publicProps.size()) +
@@ -1153,6 +1160,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                     }
                                 }
                             } else {
+                                // When mixed positional/named arguments are present we need to skip
+                                // properties that already received a value via a named parameter.
                                 size_t positionalIndex = 0;
                                 for (size_t i = 0; i < callSpec.argCount && ok; ++i) {
                                     const auto& spec = callSpec.args[i];
