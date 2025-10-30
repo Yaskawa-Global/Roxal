@@ -102,16 +102,20 @@ public:
         TimePoint when;
         Value eventType;
         Value instance;
+        uint64_t sequence { 0 };
     };
 
     struct PendingEventCompare {
         bool operator()(const PendingEvent& a, const PendingEvent& b) const {
+            if (a.when == b.when)
+                return a.sequence > b.sequence;
             return a.when > b.when;
         }
     };
 
     atomic_priority_queue<PendingEvent, PendingEventCompare> pendingEvents;
     std::atomic<size_t> pendingEventCount { 0 };
+    std::atomic<uint64_t> nextPendingEventId { 0 };
 
     int execute_depth;
 

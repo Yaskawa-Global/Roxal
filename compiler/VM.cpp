@@ -211,10 +211,10 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
 
 void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value eventInstance, TimePoint when)
 {
-    Thread::PendingEvent pe;
-    pe.when = when;
-    pe.eventType = eventWeak;
-    pe.instance = eventInstance;
+    Thread::PendingEvent baseEvent;
+    baseEvent.when = when;
+    baseEvent.eventType = eventWeak;
+    baseEvent.instance = eventInstance;
     for (auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
         Value handlerVal = *it;
         if (!handlerVal.isAlive()) {
@@ -228,7 +228,9 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
             it = ev->subscribers.erase(it);
             continue;
         }
-        handlerThread->pendingEvents.push(pe);
+        Thread::PendingEvent pending = baseEvent;
+        pending.sequence = handlerThread->nextPendingEventId.fetch_add(1, std::memory_order_relaxed);
+        handlerThread->pendingEvents.push(pending);
         handlerThread->pendingEventCount.fetch_add(1, std::memory_order_release);
         handlerThread->wake();
         ++it;
