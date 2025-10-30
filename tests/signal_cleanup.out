@@ -1,8 +1,10 @@
 before:
 Funcs:
 Signals:
+  signal(20,[0 0 0])
 
 after:
 Funcs:
 Signals:
+  signal(20,[0 0 0])
 

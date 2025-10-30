@@ -2850,7 +2850,11 @@ ObjEventType* ObjSignal::ensureChangeEventType()
         // Package the change information into a new event instance and invoke
         // every subscribed handler for this occurrence.
         Value instance = Value::eventInstanceVal(eventTypeStrong, std::move(payload));
-        scheduleEventHandlers(eventWeak, ev, instance, t);
+        // Deliver change notifications immediately while preserving the
+        // original logical timestamp inside the payload. This keeps callbacks
+        // responsive even when the dataflow engine's tick time is ahead of the
+        // VM thread's wall clock (for example when ticks are advanced manually).
+        scheduleEventHandlers(eventWeak, ev, instance, TimePoint::currentTime());
     });
     return asEventType(changeEventType);
 }

@@ -9,6 +9,7 @@
 #include <thread>
 #include <iostream>
 #include <string.h>
+#include <algorithm>
 
 using namespace df;
 
@@ -448,7 +449,8 @@ void DataflowEngine::tick(bool waitForTickStart)
 
 
     m_tickStart = m_runStart + m_tickPeriod*m_tickNumber;
-    auto nextTickStart = m_tickStart + m_tickPeriod;
+    auto tickPeriod = m_tickPeriod.load();
+    auto nextTickStart = m_tickStart + tickPeriod;
 
     if (waitForTickStart)
         sleepUntil(m_tickStart);
@@ -516,7 +518,10 @@ void DataflowEngine::tick(bool waitForTickStart)
     #endif
 
     invokeTickCallbacks();
-    if (TimePoint::currentTime() > nextTickStart) {
+    int64_t slackUs = std::max<int64_t>(tickPeriod.microSecs() / 4, 5000);
+    slackUs = std::min<int64_t>(slackUs, std::max<int64_t>(tickPeriod.microSecs(), int64_t(0)));
+    TimePoint deadline = nextTickStart + TimeDuration::microSecs(slackUs);
+    if (TimePoint::currentTime() > deadline) {
         std::string message = "Engine tick period "+m_tickPeriod.load().humanString()+" exceeded after tick callbacks invoked";
 
         if (m_executionScheme == ExecutionScheme::Strict)
@@ -856,7 +861,16 @@ TimeDuration DataflowEngine::computeExecutionInterval(ptr<FuncNode> func) {
 
 TimePoint DataflowEngine::nextPeriodOnPeriodBoundary(TimeDuration period) const
 {
-    return nextPeriodOnPeriodBoundary(period.frequency());
+    if (period <= TimeDuration::zero())
+        return TimePoint::currentTime();
+
+    auto periodUs = period.microSecs();
+    auto leadUs = std::max<int64_t>(periodUs / 2, 1);
+    TimePoint candidate = TimePoint::currentTime() + TimeDuration::microSecs(leadUs);
+    auto remainder = candidate.microSecs() % periodUs;
+    if (remainder != 0)
+        candidate = candidate + TimeDuration::microSecs(periodUs - remainder);
+    return candidate;
 }
 
 TimePoint DataflowEngine::nextPeriodOnPeriodBoundary(double freq) const
@@ -864,10 +878,7 @@ TimePoint DataflowEngine::nextPeriodOnPeriodBoundary(double freq) const
     #ifdef DEBUG_BUILD
     assert(freq>0.0);
     #endif
-    TimeDuration period = TimeDuration::microSecs(int64_t(1000000ULL/freq));
-    TimePoint nextPlusHalf = TimePoint::currentTime()+TimeDuration::microSecs(1.5*period.microSecs());
-    TimePoint nextOnBoundary = nextPlusHalf - TimeDuration::microSecs(int64_t(nextPlusHalf.microSecs() % period.microSecs()));
-    return nextOnBoundary;
+    return nextPeriodOnPeriodBoundary(TimeDuration::microSecs(int64_t(1000000ULL/freq)));
 }
 
 
