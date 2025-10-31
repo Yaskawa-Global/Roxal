@@ -18,6 +18,8 @@ parser.add_argument('--convs', action='store_true', help='Include tests/conversi
 parser.add_argument('--all', action='store_true', help='Run all tests, including conversions and long running tests')
 parser.add_argument('--opcode-prof', action='store_true', help='Enable opcode profiling for each Roxal invocation')
 parser.add_argument('--nocache', action='store_true', help='Disable reading and writing Roxal bytecode cache files')
+parser.add_argument('--nogc', action='store_true', help='Disable Roxal garbage collection during tests')
+parser.add_argument('--recompile', action='store_true', help='Force Roxal to recompile input scripts on each run')
 args = parser.parse_args()
 
 
@@ -195,6 +197,10 @@ try:
             cmd = [cmd[0], '--opcode-prof', *cmd[1:]]
         if args.nocache and '--nocache' not in cmd:
             cmd = [cmd[0], '--nocache', *cmd[1:]]
+        if args.nogc and '--nogc' not in cmd:
+            cmd = [cmd[0], '--nogc', *cmd[1:]]
+        if args.recompile and '--recompile' not in cmd:
+            cmd = [cmd[0], '--recompile', *cmd[1:]]
 
         opt_expected = (" [expected]" if test in failing_tests else '')
 
