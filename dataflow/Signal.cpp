@@ -88,6 +88,13 @@ Signal::~Signal()
 {
 }
 
+void Signal::trace(roxal::ValueVisitor& visitor) const
+{
+    for (const auto& entry : values) {
+        visitor.visit(entry.second);
+    }
+}
+
 
 void Signal::setFrequency(double freq)
 {

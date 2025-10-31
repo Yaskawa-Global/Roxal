@@ -33,6 +33,8 @@ public:
 
     void addValueChangedCallback(std::function<void(TimePoint, ptr<Signal>,const Value&)> callback);
 
+    void trace(roxal::ValueVisitor& visitor) const;
+
     bool isInternal() const { return m_internal; }
     void setInternal(bool internal) { m_internal = internal; }
 

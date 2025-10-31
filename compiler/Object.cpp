@@ -2774,6 +2774,8 @@ ObjSignal::~ObjSignal()
 void ObjSignal::trace(ValueVisitor& visitor) const
 {
     visitor.visit(changeEventType);
+    if (signal)
+        signal->trace(visitor);
 }
 
 void ObjSignal::dropReferences()
