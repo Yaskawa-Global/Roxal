@@ -1,7 +1,7 @@
 var s = clock(10)
 
-on s:
-  print("s changed to:"+int(s))
+on s changed as evt:
+  print("s changed to:"+evt.value)
 
 s.run()
 wait(us=350000)

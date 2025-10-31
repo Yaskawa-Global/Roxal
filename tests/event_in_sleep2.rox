@@ -6,9 +6,9 @@ type EventConsumer actor:
   //proc printid():
   //  print('EventConsumer thread id '+_threadid())
 
-  func handleEvents(e :event):
+  func handleEvents():
 
-    on e:
+    on E:
       print('event e occured')
 
     print('handleEvents sleeping for .5s')
@@ -16,16 +16,16 @@ type EventConsumer actor:
     print('handleEvents exiting')    
 
 
-var e :event
+type E event
 p = EventConsumer()
 //p.printid()
-p.handleEvents(e)
+p.handleEvents()
 
 wait(us=100000)
 
 for i in range(1..2):
   print('emit '+i)
-  emit e
+  emit E()
   wait(us=100000)
 
 print('done')

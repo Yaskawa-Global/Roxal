@@ -88,6 +88,13 @@ Signal::~Signal()
 {
 }
 
+void Signal::trace(roxal::ValueVisitor& visitor) const
+{
+    for (const auto& entry : values) {
+        visitor.visit(entry.second);
+    }
+}
+
 
 void Signal::setFrequency(double freq)
 {
@@ -151,9 +158,10 @@ Value Signal::valueAt(TimePoint t) const
 
 void Signal::setValueAt(TimePoint t, const Value& v)
 {
-    auto age = t - DataflowEngine::instance()->tickStart();
+    auto tickStart = DataflowEngine::instance()->tickStart();
+    auto age = t - tickStart;
 #ifdef DEBUG_BUILD
-    if (age % m_period != TimeDuration::zero()) {
+    if (t >= tickStart && (age % m_period != TimeDuration::zero())) {
         std::cout << "setValueAt Signal " + name() + " for time " + t.humanString() +
             " not a multiple of period " + m_period.humanString() << std::endl;
     }
@@ -268,6 +276,7 @@ ptr<Signal> Signal::indexedSignal(int index)
     newSig->isDerived = true;
     newSig->baseSignal = ptr_from_this();
     newSig->baseIndex = index;
+    newSig->setInternal(isInternal());
     newSig->setMaxHistoryPeriods(std::max(m_maxHistoryPeriods, -index + 1));
     DataflowEngine::instance()->addSignal(newSig);
 

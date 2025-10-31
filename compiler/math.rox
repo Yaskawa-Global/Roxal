@@ -195,7 +195,13 @@ func cross(a:vector, b:vector) -> vector:
   """cross product of two 3-element vectors"""
 
 
-// Example only
+// Example only: source signal updated from native code
+var _vecSignal :signal = signal(freq=20, initial=[0.0 0.0 0.0])
+
+@builtin
+func _setVecSignal(v:vector):
+  """Update math._vecSignal from native code."""
+
 @builtin
 type _Counter object:
 

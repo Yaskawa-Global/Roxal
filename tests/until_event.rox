@@ -3,7 +3,7 @@ var e :event
 type A actor:
   proc emitIt(ev):
     wait(ms=100)
-    emit ev
+    emit ev()
 
 a = A()
 a.emitIt(e)

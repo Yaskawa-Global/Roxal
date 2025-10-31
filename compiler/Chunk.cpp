@@ -322,12 +322,18 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("INTERFACE_TYPE", offset, doubleByteArg);
         case OpCode::EnumerationType:
             return constantInstruction("ENUMERATION_TYPE", offset, doubleByteArg);
+        case OpCode::EventType:
+            return constantInstruction("EVENT_TYPE", offset, doubleByteArg);
         case OpCode::Property:
             return constantInstruction("PROPERTY", offset, doubleByteArg);
         case OpCode::Method:
             return constantInstruction("METHOD", offset, doubleByteArg);
         case OpCode::EnumLabel:
             return constantInstruction("ENUM_LABEL", offset, doubleByteArg);
+        case OpCode::EventPayload:
+            return constantInstruction("EVENT_PAYLOAD", offset, doubleByteArg);
+        case OpCode::EventExtend:
+            return simpleInstruction("EVENT_EXTEND", offset);
         case OpCode::Extend:
             return simpleInstruction("EXTEND", offset);
         case OpCode::DefineModuleVar:
@@ -381,7 +387,7 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
         case OpCode::ToTypeSpecStrict:
             return simpleInstruction("TO_TYPE_SPEC_STRICT", offset);
         case OpCode::EventOn:
-            return simpleInstruction("EVENT_ON", offset);
+            return byteInstruction("EVENT_ON", offset);
         case OpCode::EventOff:
             return simpleInstruction("EVENT_OFF", offset);
         case OpCode::SetupExcept:

@@ -17,6 +17,9 @@ parser = argparse.ArgumentParser(description="Run Roxal tests.")
 parser.add_argument('--convs', action='store_true', help='Include tests/conversions/* tests')
 parser.add_argument('--all', action='store_true', help='Run all tests, including conversions and long running tests')
 parser.add_argument('--opcode-prof', action='store_true', help='Enable opcode profiling for each Roxal invocation')
+parser.add_argument('--nocache', action='store_true', help='Disable reading and writing Roxal bytecode cache files')
+parser.add_argument('--nogc', action='store_true', help='Disable Roxal garbage collection during tests')
+parser.add_argument('--recompile', action='store_true', help='Force Roxal to recompile input scripts on each run')
 args = parser.parse_args()
 
 
@@ -44,14 +47,16 @@ tests = [
     'signal_func_nocall', 'signal_func_exec', 'signal_index', 'signal_on_stmt', 'signal_on_threads', 'on_expression',
     'test_signal_value_property', 'test_signal_name_property', 'signal_named_param', 'construct_by_signal', 'signal_run_stop', 'signal_source', 'signal_default_err', 'signal_network1',
     'dataflow_clocktest1', 'multi_clock', 'clock_error', 'clock_name_param',
-    'event1', 'event_on_stmt', 'event_emit_keyword', 'event_on_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4',
+    'event1', 'event_on_stmt', 'event_emit_keyword', 'event_on_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4', 'event_instance_emit', 'event_payload', 'event_implicit_constructor', 'event_type_on',
     'event_in_sleep', 'event_in_sleep2',
     'until_event', 'until_signal', 'signal_vector_dot',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
     'module_strict_assign_err', 'var_redeclare_err', 'var_redeclare_assign_err', 'repl_var_redeclare_err', 'func_nonstrict', 'conversions1',
     'serialize_values', 'serialize_objects', 'serialize_user_objects', 'serialize_func', 'serialize_actor',
     'json_basic',
-    'byteops', 'bitwise', 'byte_int_bits', 'list_byte_concat', 'list_enum_concat', 'object_init', 'object_inherit_is',
+    'byteops', 'bitwise', 'byte_int_bits', 'list_byte_concat', 'list_enum_concat',
+    'object_init', 'object_constructor_args', 'object_constructor_unknown_arg', 'object_constructor_arg_count',
+    'object_inherit_is',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'closure_many', 'lambda1',
     'conversion1', 'string_interp',
     'call_param_type_nonstrict', 'call_param_type_strict', 'param_assign_static_err',
@@ -67,7 +72,7 @@ tests = [
     'annot1', 'generic', 'objscopes',
     'threads1', 'fork_upvalue_error', 'fork_no_upvalues',
     'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8', 'actor9',
-    'actor_init', 'actor_stack', 'actor_future',
+    'actor_init', 'actor_stack', 'actor_future', 'future_ready',
     'actor_closure1', 'actor_closure2', 'actor_closure3',
     'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4',
     'private_prop', 'private_method', 'private_inherit',
@@ -87,7 +92,7 @@ tests = [
     'property_count', 'cmdline_execute', 'repl_run', 'invalid_option', 'fileio_basic', 'fileio_binary',
     'fileio_read_binary', 'fileio_write_binary', 'fileio_actor_write', 'fileio_delete', 'fileio_extra', 
     'help_doc', 'help_time_wall_now', 'help_time_wall_now_instance', 'docstring_func',
-    'builtin_object_methods', 'print_flush'
+    'builtin_object_methods', 'math_counter_signal', 'print_flush'
 ]
 
 long_running_tests = [
@@ -190,6 +195,12 @@ try:
 
         if args.opcode_prof and '--opcode-prof' not in cmd:
             cmd = [cmd[0], '--opcode-prof', *cmd[1:]]
+        if args.nocache and '--nocache' not in cmd:
+            cmd = [cmd[0], '--nocache', *cmd[1:]]
+        if args.nogc and '--nogc' not in cmd:
+            cmd = [cmd[0], '--nogc', *cmd[1:]]
+        if args.recompile and '--recompile' not in cmd:
+            cmd = [cmd[0], '--recompile', *cmd[1:]]
 
         opt_expected = (" [expected]" if test in failing_tests else '')
 

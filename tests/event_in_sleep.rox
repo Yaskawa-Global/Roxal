@@ -6,25 +6,25 @@ type EventProducer actor:
   //proc printid():
   //  print('EventProducer thread id '+_threadid())
 
-  func emitEvents(e :event):
+  func emitEvents():
 
     wait(us=100000)
 
     for i in range(1..2):
       print('emit '+i)
-      emit e
+      emit E()
       wait(us=100000)
-    
 
 
-var e :event
+
+type E event
 p = EventProducer()
 //p.printid()
 
-on e:
+on E:
   print('e occured')
 
-p.emitEvents(e)
+p.emitEvents()
 
 print('sleeping for .5s')
 wait(us=500000)

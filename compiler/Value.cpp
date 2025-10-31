@@ -16,6 +16,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <utility>
 #include <cmath>
 #include <sstream>
 
@@ -174,7 +175,13 @@ Value Value::signalVal(roxal::ptr<df::Signal> s)
 
 Value Value::eventVal()
 {
-    return Value::objVal(newEventObj());
+    return Value::objVal(newEventTypeObj(toUnicodeString("event")));
+}
+
+Value Value::eventInstanceVal(const Value& eventType, std::vector<Value> payload)
+{
+    debug_assert_msg(isEventType(eventType), "Value is an ObjEventType");
+    return Value::objVal(newEventInstanceObj(eventType, std::move(payload)));
 }
 
 Value Value::libraryVal(void* handle)
@@ -1274,17 +1281,13 @@ Value roxal::toType(ValueType t, Value v, bool strict)
 
                 ObjectInstance* vObj = asObjectInstance(v);
                 ObjObjectType* vObjType = asObjectType(vObj->instanceType);
-                for(int32_t hash : vObjType->propertyOrder) {
-                    const auto& prop { vObjType->properties.at(hash) };
-                    if (prop.access != ast::Access::Public)
-                        continue;
-                    auto propName { Value::stringVal(prop.name) };
-                    auto propHash = asStringObj(propName)->hash;
+                for (const auto& entry : vObjType->orderedPublicProperties()) {
+                    auto propName { Value::stringVal(entry.property->name) };
                     #ifdef DEBUG_BUILD
-                    assert(vObj->properties.find(propHash) != vObj->properties.end());
+                    assert(vObj->properties.find(entry.key) != vObj->properties.end());
                     #endif
                     asDict(dictValue)->store(propName,
-                                             vObj->properties[propHash]);
+                                             vObj->properties[entry.key]);
                 }
                 return dictValue;
             }
@@ -1389,6 +1392,12 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 return sample;
             }
         }
+    }
+
+    if (type == ValueType::Event) {
+        if (begin != end)
+            throw std::runtime_error("event constructor expects no arguments");
+        return Value::eventInstanceVal(Value::eventVal());
     }
 
     if (begin == end) {
