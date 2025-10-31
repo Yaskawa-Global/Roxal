@@ -269,6 +269,7 @@ ptr<Signal> Signal::indexedSignal(int index)
     newSig->isDerived = true;
     newSig->baseSignal = ptr_from_this();
     newSig->baseIndex = index;
+    newSig->setInternal(isInternal());
     newSig->setMaxHistoryPeriods(std::max(m_maxHistoryPeriods, -index + 1));
     DataflowEngine::instance()->addSignal(newSig);
 

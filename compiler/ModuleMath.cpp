@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <Eigen/Dense>
 
+#include "dataflow/Signal.h"
+
 using namespace roxal;
 
 ModuleMath::ModuleMath()
@@ -107,6 +109,9 @@ void ModuleMath::registerBuiltins(VM& vm)
     linkMethod("_Counter", "init", [this](VM& vm, ArgsView a){ return counter_init_builtin(vm,a); });
     linkMethod("_Counter", "inc", [this](VM& vm, ArgsView a){ return counter_inc_builtin(vm,a); });
     linkMethod("_Counter", "value", [this](VM& vm, ArgsView a){ return counter_value_builtin(vm,a); }, {});
+
+    if (auto vecSignal = moduleSourceSignal("_vecSignal", false))
+        vecSignal->setInternal(true);
 
 }
 

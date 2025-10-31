@@ -33,6 +33,9 @@ public:
 
     void addValueChangedCallback(std::function<void(TimePoint, ptr<Signal>,const Value&)> callback);
 
+    bool isInternal() const { return m_internal; }
+    void setInternal(bool internal) { m_internal = internal; }
+
     virtual ~Signal();
 
     double frequency() const { return m_frequency; }
@@ -124,6 +127,8 @@ private:
     bool isDerived = false; // true if this signal represents another signal delayed
     weak_ptr<Signal> baseSignal;  // base signal for derived signals
     int baseIndex = 0;       // index relative to base signal (negative)
+
+    bool m_internal = false;
 
 
 };

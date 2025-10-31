@@ -1020,6 +1020,8 @@ std::string DataflowEngine::graph() const
     ss << "Signals:\n";
 
     for (const auto& signal : signals) {
+        if (signal->isInternal())
+            continue;
         ss << "  " << signal->name() << "\n";
     }
 
@@ -1047,16 +1049,22 @@ std::string DataflowEngine::graphDot(const std::string& title, std::map<std::str
 
         for (size_t i = 0; i < func->m_inputs.size(); ++i) {
             const auto& input = func->m_inputs[i];
+            if (input.signal && input.signal->isInternal())
+                continue;
             signalToDestFuncs[input.signal].push_back({funcName, input.index});
         }
 
         for (const auto& output : func->m_outputs) {
+            if (output.signal && output.signal->isInternal())
+                continue;
             signalToSourceFunc[output.signal] = funcName;
         }
     }
 
     // Second pass: create edges
     for (const auto& [signal, destFuncs] : signalToDestFuncs) {
+        if (!signal || signal->isInternal())
+            continue;
         std::string signalName = signal->name();
         std::string sourceFunc = signalToSourceFunc[signal];
 
@@ -1092,6 +1100,8 @@ std::string DataflowEngine::graphDot(const std::string& title, std::map<std::str
 
     // Handle sink signals
     for (const auto& [signal, sourceFunc] : signalToSourceFunc) {
+        if (!signal || signal->isInternal())
+            continue;
         if (signalToDestFuncs.find(signal) == signalToDestFuncs.end()) {
             std::string signalName = signal->name();
             dot << "  \"" << signalName << "\" [shape=ellipse];\n";
@@ -1107,12 +1117,12 @@ std::string DataflowEngine::graphDot(const std::string& title, std::map<std::str
 
     // Show derived signal relationships
     for (const auto& signal : signals) {
-        if (signal->isDerived) {
-            auto base = signal->baseSignal.lock();
-            if (base) {
-                dot << "  \"" << base->name() << "\" -> \"" << signal->name()
-                    << "\" [label=\"[" << signal->baseIndex << "]\"];\n";
-            }
+        if (!signal || !signal->isDerived || signal->isInternal())
+            continue;
+        auto base = signal->baseSignal.lock();
+        if (base && !base->isInternal()) {
+            dot << "  \"" << base->name() << "\" -> \"" << signal->name()
+                << "\" [label=\"[" << signal->baseIndex << "]\"];\n";
         }
     }
 
