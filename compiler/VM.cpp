@@ -40,10 +40,19 @@
 #include <cstdio>
 #include <iostream>
 #include <stdexcept>
+#include <atomic>
 
 using namespace roxal;
 
 namespace {
+
+// Staging slots for CLI-provided limits. These are written before the VM
+// singleton exists and copied into the instance once it is constructed.
+std::atomic<size_t> configuredStackLimit{VM::DefaultMaxStack};
+std::atomic<size_t> configuredCallFrameLimit{VM::DefaultMaxCallFrames};
+// Tracks whether VM::instance() has already materialized the singleton so
+// later configureStackLimits() calls can update it in-place.
+std::atomic<bool> vmConstructed{false};
 
 struct BoundCallGuard {
     explicit BoundCallGuard(Thread* thread) : thread_(thread) {}
@@ -118,6 +127,30 @@ static bool isExceptionType(ObjObjectType* type)
         type = asObjectType(type->superType);
     }
     return false;
+}
+
+
+void VM::configureStackLimits(size_t stackSize, size_t callFrameLimit)
+{
+    if (stackSize == 0 || callFrameLimit == 0)
+        throw std::invalid_argument("Stack size and call frame limit must be greater than zero.");
+
+    configuredStackLimit.store(stackSize, std::memory_order_relaxed);
+    configuredCallFrameLimit.store(callFrameLimit, std::memory_order_relaxed);
+
+    if (vmConstructed.load(std::memory_order_acquire)) {
+        VM::instance().setStackLimits(stackSize, callFrameLimit);
+    }
+}
+
+
+void VM::setStackLimits(size_t stackSize, size_t callFrameLimitValue)
+{
+    if (stackSize == 0 || callFrameLimitValue == 0)
+        throw std::invalid_argument("Stack size and call frame limit must be greater than zero.");
+
+    stackLimit = stackSize;
+    callFrameLimit = callFrameLimitValue;
 }
 
 
@@ -244,6 +277,9 @@ VM::VM()
     : lineMode(false)
     , cacheModeSetting(CacheMode::Normal)
 {
+    stackLimit = configuredStackLimit.load(std::memory_order_relaxed);
+    callFrameLimit = configuredCallFrameLimit.load(std::memory_order_relaxed);
+
     SimpleMarkSweepGC::instance().setVM(this);
 
     assert(sizeof(Value) == sizeof(uint64_t)); // ensure Value is 64bit
@@ -345,6 +381,8 @@ VM::VM()
         conditionalInterruptClosure = Value::closureVal(fn);
         globals.storeGlobal(toUnicodeString("__conditional_interrupt"), conditionalInterruptClosure);
     }
+
+    vmConstructed.store(true, std::memory_order_release);
 
     //CallSpec::testParamPositions();
     //Value::testPrimitiveValues();
@@ -743,7 +781,7 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
         assert(argCount == asFunction(closure->function)->arity);
     }
 
-    if (thread->frames.size() > MaxCallFrames) {
+    if (thread->frames.size() > callFrameLimit) {
         reportStackOverflow();
         return false;
     }
@@ -777,7 +815,7 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
             numDefaultValueFrames--;
         }
 
-        if (thread->frames.size() > MaxCallFrames) {
+        if (thread->frames.size() > callFrameLimit) {
             reportStackOverflow();
             return false;
         }
@@ -4451,11 +4489,11 @@ void VM::resetStack()
 {
     if (!thread) return;
     thread->stack.clear();
-    thread->stack.resize(MaxStack);
+    thread->stack.resize(stackLimit);
     thread->stackTop = thread->stack.begin();
 
     thread->frames.clear();
-    thread->frames.reserve(MaxCallFrames);
+    thread->frames.reserve(callFrameLimit);
     thread->frameStart = false;
     thread->openUpvalues.clear();
 }
@@ -4695,8 +4733,8 @@ void VM::reportStackOverflow()
 
     std::string message {
         "Stack overflow (call frames: " + std::to_string(frameCount) + "/" +
-        std::to_string(MaxCallFrames) + ", stack depth: " +
-        std::to_string(stackDepth) + "/" + std::to_string(MaxStack) + ")."
+        std::to_string(callFrameLimit) + ", stack depth: " +
+        std::to_string(stackDepth) + "/" + std::to_string(stackLimit) + ")."
     };
 
     runtimeError(message);
