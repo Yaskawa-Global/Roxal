@@ -171,6 +171,7 @@ public:
 
 
     const int MaxStack = 1024;
+    const size_t MaxCallFrames = 128;
     typedef std::vector<Value> ValueStack;
 
     inline void push(const Value& value) { thread->push(value); }
@@ -308,6 +309,7 @@ public:
     void concatenate();
 
     void runtimeError(const std::string& format, ...);
+    void reportStackOverflow();
 
 
 

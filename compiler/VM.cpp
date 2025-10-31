@@ -736,8 +736,8 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
         assert(argCount == asFunction(closure->function)->arity);
     }
 
-    if (thread->frames.size() > 128) {
-        runtimeError("Stack overflow.");
+    if (thread->frames.size() > MaxCallFrames) {
+        reportStackOverflow();
         return false;
     }
 
@@ -770,8 +770,8 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
             numDefaultValueFrames--;
         }
 
-        if (thread->frames.size() > 128) {
-            runtimeError("Stack overflow.");
+        if (thread->frames.size() > MaxCallFrames) {
+            reportStackOverflow();
             return false;
         }
     }
@@ -4037,7 +4037,7 @@ void VM::resetStack()
     thread->stackTop = thread->stack.begin();
 
     thread->frames.clear();
-    thread->frames.reserve(128);
+    thread->frames.reserve(MaxCallFrames);
     thread->frameStart = false;
     thread->openUpvalues.clear();
 }
@@ -4264,6 +4264,24 @@ void VM::concatenate()
     pop();
     pop();
     push( Value::stringVal(combined) );
+}
+
+
+void VM::reportStackOverflow()
+{
+    size_t frameCount = thread ? thread->frames.size() : 0;
+    size_t stackDepth = 0;
+    if (thread) {
+        stackDepth = static_cast<size_t>(thread->stackTop - thread->stack.begin());
+    }
+
+    std::string message {
+        "Stack overflow (call frames: " + std::to_string(frameCount) + "/" +
+        std::to_string(MaxCallFrames) + ", stack depth: " +
+        std::to_string(stackDepth) + "/" + std::to_string(MaxStack) + ")."
+    };
+
+    runtimeError(message);
 }
 
 
