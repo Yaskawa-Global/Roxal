@@ -1,12 +1,14 @@
 var e:event
 
+type E event
+
 func f():
 
   type MyObject object:
 
     proc amethod(i :int):
 
-      on e:
+      on E:
         print('e occured within MyObject.amethod('+i+')')
 
       print('amethod '+i)
@@ -23,7 +25,7 @@ o.amethod(1)
 o2.amethod(2)
 
 print('emitting e')
-emit e()
+emit E()
 
 wait(us=1000)
 
@@ -33,7 +35,7 @@ o = nil
 wait(us=1000)
 
 print('emitting e')
-emit e()
+emit E()
 
 wait(us=1000)
 

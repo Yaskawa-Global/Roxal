@@ -1,6 +1,6 @@
 first handler
-<event event instance>
+<event E instance>
 re-emitting instance
 second handler
-<event event instance>
+<event E instance>
 done

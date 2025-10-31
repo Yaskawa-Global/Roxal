@@ -1,4 +1,4 @@
-var e:event
+type E event
 
 func f():
 
@@ -6,7 +6,7 @@ func f():
 
     proc act():
 
-      on e:
+      on E:
         print('e occured within MyActor.act')
 
       print('act')
@@ -21,7 +21,7 @@ print('calling act')
 a.act()
 
 print('emitting e')
-emit e()
+emit E()
 
 wait(us=1000)
 
@@ -31,7 +31,7 @@ a = nil
 wait(us=1000)
 
 print('emitting e')
-emit e()
+emit E()
 
 wait(us=1000)
 

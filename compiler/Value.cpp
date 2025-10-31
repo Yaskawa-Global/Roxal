@@ -1394,6 +1394,12 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
         }
     }
 
+    if (type == ValueType::Event) {
+        if (begin != end)
+            throw std::runtime_error("event constructor expects no arguments");
+        return Value::eventInstanceVal(Value::eventVal());
+    }
+
     if (begin == end) {
         if (type == ValueType::Signal)
             throw std::runtime_error("signal constructor expects frequency and optional initial value");

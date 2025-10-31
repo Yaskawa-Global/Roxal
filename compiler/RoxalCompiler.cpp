@@ -2232,6 +2232,18 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
 
     ast->acceptChildren(*this, results);
 
+    if (auto accessor = dynamic_ptr_cast<ast::UnaryOp>(ast->callable)) {
+        if (accessor->op == ast::UnaryOp::Accessor && accessor->member.has_value() &&
+            accessor->member.value() == toUnicodeString("emit")) {
+            auto originalCall = dynamic_ptr_cast<ast::Call>(accessor->arg);
+            if (originalCall != nullptr && originalCall->callable->type.has_value()) {
+                auto calleeType = originalCall->callable->type.value();
+                if (calleeType->builtin == type::BuiltinType::Event)
+                    error("Event instances are not callable; call the event type to create one.");
+            }
+        }
+    }
+
     // Restore current node to the call expression so the CALL opcode
     // emitted below uses the location of the call rather than that of
     // the final argument.
