@@ -245,7 +245,10 @@ std::any ASTGraphviz::visit(ptr<ast::VarDecl> ast)
     if (ast->initializer.has_value())
         addLink(name, stackPop());
 
-    nodes[name] = node(name,"VarDecl",toUTF8StdString(ast->name));
+    std::string label = toUTF8StdString(ast->name);
+    if (ast->isConst)
+        label = "const " + label;
+    nodes[name] = node(name,"VarDecl",label);
     stackPush(name);
     endVisit();
     return {};

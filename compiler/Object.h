@@ -17,6 +17,7 @@
 #include <mutex>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <core/common.h>
@@ -1198,6 +1199,7 @@ struct ObjObjectType : public ObjTypeSpec
         Value type;
         Value initialValue;
         ast::Access access { ast::Access::Public };
+        bool isConst { false };
         Value ownerType { Value::nilVal() }; // weak ref to owning type
         std::optional<icu::UnicodeString> ctype;
     };
@@ -1272,6 +1274,7 @@ struct ObjModuleType : public ObjTypeSpec
 
     // variables declared at runtime via VM OpCode::DefineModuleVar
     VariablesMap vars;
+    std::unordered_set<int32_t> constVars;
 
     void registerModuleAlias(const icu::UnicodeString& alias,
                              const icu::UnicodeString& moduleFullName);

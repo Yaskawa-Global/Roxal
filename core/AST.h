@@ -425,6 +425,7 @@ struct VarDecl : public Declaration {
     std::optional<ptr<Expression>> initializer;
     std::optional<std::variant<BuiltinType,icu::UnicodeString>> varType;
     Access access { Access::Public };
+    bool isConst { false };
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

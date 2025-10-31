@@ -85,6 +85,8 @@ tests = [
     'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_relative', 'ffi_toupper', 'ffi_primptr', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3', 'cstruct_byval', 'cstruct_array',
     'nested_cstruct', 'nested_cstruct_ptr', 'nested_cstruct_byval',
     'weakref', 'strongref', 'is_operator', 'stackdepth', 'modulevar2',
+    'const_basic', 'const_assign_err', 'const_nonliteral_err', 'const_missing_initializer_err',
+    'const_property', 'const_property_method_err', 'const_property_runtime_err', 'const_module_assign',
     'is_operator_type',
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
     'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle', 'gc_list_cycle', 'gc_liveness',

@@ -2095,6 +2095,8 @@ void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
         writeValue(out, prop.initialValue, ctx);
         uint8_t acc = static_cast<uint8_t>(prop.access);
         out.write(reinterpret_cast<char*>(&acc),1);
+        uint8_t isConst = prop.isConst ? 1 : 0;
+        out.write(reinterpret_cast<char*>(&isConst),1);
         uint8_t hasC = prop.ctype.has_value() ? 1 : 0;
         out.write(reinterpret_cast<char*>(&hasC),1);
         if(hasC) {
@@ -2159,6 +2161,7 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         Value ptype = readValue(in, ctx);
         Value init  = readValue(in, ctx);
         uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
+        uint8_t isConst; in.read(reinterpret_cast<char*>(&isConst),1);
         uint8_t hasC; in.read(reinterpret_cast<char*>(&hasC),1);
         std::optional<icu::UnicodeString> ct;
         if(hasC) {
@@ -2167,7 +2170,7 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             ct = icu::UnicodeString::fromUTF8(cts);
         }
         int32_t hash = uname.hashCode();
-        Property prop{uname, ptype, init, static_cast<ast::Access>(acc), Value::nilVal(), ct};
+        Property prop{uname, ptype, init, static_cast<ast::Access>(acc), isConst != 0, Value::nilVal(), ct};
         properties[hash] = prop;
         propertyOrder.push_back(hash);
     }
@@ -2345,9 +2348,12 @@ void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
         if (nameLen)
             out.write(varName.data(), nameLen);
 
+        int32_t nameHash = entry.first.hashCode();
         uint8_t flags = 0;
+        if (constVars.find(nameHash) != constVars.end())
+            flags |= 0x2;
         icu::UnicodeString aliasFullName;
-        auto aliasIt = aliasLookup.find(entry.first.hashCode());
+        auto aliasIt = aliasLookup.find(nameHash);
         if (aliasIt != aliasLookup.end()) {
             flags |= 0x1;
             aliasFullName = aliasIt->second;
@@ -2372,6 +2378,8 @@ void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
             if (aliasLen)
                 out.write(aliasFullUtf8.data(), aliasFullUtf8.size());
         }
+
+        writeValue(out, entry.second, ctx);
     }
 
     // Persist the cstruct annotation map so cached modules know which type
@@ -2444,6 +2452,7 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
     vars.clear();
     clearModuleAliases();
+    constVars.clear();
     uint32_t varCount = 0;
     in.read(reinterpret_cast<char*>(&varCount), 4);
     for (uint32_t i = 0; i < varCount; ++i) {
@@ -2453,10 +2462,11 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         if (nameLen)
             in.read(name.data(), nameLen);
         icu::UnicodeString varName = icu::UnicodeString::fromUTF8(name);
-        vars.store(varName, Value::nilVal(), true);
 
         uint8_t flags = 0;
         in.read(reinterpret_cast<char*>(&flags), 1);
+        if (flags & 0x2)
+            constVars.insert(varName.hashCode());
         if (flags & 0x1) {
             uint32_t aliasLen = 0;
             in.read(reinterpret_cast<char*>(&aliasLen), 4);
@@ -2470,6 +2480,9 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             // qualified module should be rebound to this slot.
             registerModuleAlias(varName, aliasFullName);
         }
+
+        Value stored = readValue(in, ctx);
+        vars.store(varName, stored, true);
     }
 
     // Rebuild the cstruct metadata so the VM can mark cached object types as

@@ -27,7 +27,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 9;
+constexpr std::uint32_t ModuleCacheVersion = 11;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -815,7 +815,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
             auto propName { prop->name };
             uint16_t propNameConstant = identifierConstant(propName);
-            asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name};
+        asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name, prop->isConst};
 
             if (prop->varType.has_value()) {
                 auto varType { prop->varType.value() };
@@ -949,7 +949,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         uint16_t propNameConstant = identifierConstant(propName);
 
         // record property name for implicit access within methods
-        asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name};
+        asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name, prop->isConst};
 
         // store @ctype annotation
         for(const auto& a : prop->annotations) {
@@ -1002,6 +1002,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         }
 
         emitByte(prop->access == Access::Private ? OpCode::ConstTrue : OpCode::ConstFalse);
+        emitByte(prop->isConst ? OpCode::ConstTrue : OpCode::ConstFalse);
 
         emitOpArgsBytes(OpCode::Property, propNameConstant, "property "+toUTF8StdString(propName));
 
@@ -1014,7 +1015,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         assert(func->name.has_value()); // methods must have names
         auto methodName { func->name.value() };
-        asTypeScope(typeScope())->propertyNames[methodName] = {func->access, ast->name};
+        asTypeScope(typeScope())->propertyNames[methodName] = {func->access, ast->name, /*isConst=*/false};
         uint16_t methodNameConstant = identifierConstant(methodName);
 
         func->accept(*this);
@@ -1134,6 +1135,27 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
             declType = std::get<BuiltinType>(ast->varType.value());
         else
             declType = std::get<icu::UnicodeString>(ast->varType.value());
+    }
+
+    if (ast->isConst) {
+        if (!ast->initializer.has_value())
+            error("Const declarations require an initializer.");
+
+        bool strictContext = asFuncScope(funcScope())->strict;
+        Value constValue = evaluateConstExpression(ast->initializer.value(), strictContext);
+        constValue = applyConstType(constValue, declType, strictContext);
+        if (constValue.isObj())
+            error("Const declarations are currently limited to builtin value types.");
+
+        declareConstant(ast->name, constValue, declType);
+
+        if (asFuncScope(funcScope())->scopeDepth == 0) {
+            uint16_t var = identifierConstant(ast->name);
+            emitConstant(constValue, toUTF8StdString(ast->name));
+            defineVariable(var, true);
+        }
+
+        return {};
     }
 
     declareVariable(ast->name, declType);
@@ -1907,16 +1929,16 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             OpCode getOp = OpCode::GetPropCheck;
             OpCode setOp = OpCode::SetPropCheck;
             if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
-                auto itType = typePropertyRegistry.find(asTypeScope(typeScope())->name);
-                if (itType != typePropertyRegistry.end()) {
-                    auto itMem = itType->second.find(accessor->member.value());
-                    if (itMem != itType->second.end()) {
-                        const auto& info = itMem->second;
-                        if (info.access == Access::Private && info.owner != asTypeScope(typeScope())->name)
-                            error("Cannot access private member '"+toUTF8StdString(accessor->member.value())+"'");
-                        getOp = OpCode::GetProp;
-                        setOp = OpCode::SetProp;
-                    }
+                auto typeScopePtr = asTypeScope(typeScope());
+                auto itMem = typeScopePtr->propertyNames.find(accessor->member.value());
+                if (itMem != typeScopePtr->propertyNames.end()) {
+                    const auto& info = itMem->second;
+                    if (info.access == Access::Private && info.owner != typeScopePtr->name)
+                        error("Cannot access private member '"+toUTF8StdString(accessor->member.value())+"'");
+                    if (info.isConst)
+                        error("Cannot assign to constant '"+toUTF8StdString(accessor->member.value())+"'");
+                    getOp = OpCode::GetProp;
+                    setOp = OpCode::SetProp;
                 }
             }
 
@@ -1987,15 +2009,15 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
         OpCode op = OpCode::SetPropCheck;
         if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
-            auto itType = typePropertyRegistry.find(asTypeScope(typeScope())->name);
-            if (itType != typePropertyRegistry.end()) {
-                auto itMem = itType->second.find(accessor->member.value());
-                if (itMem != itType->second.end()) {
-                    const auto& info = itMem->second;
-                    if (info.access == Access::Private && info.owner != asTypeScope(typeScope())->name)
-                        error("Cannot access private member '"+toUTF8StdString(accessor->member.value())+"'");
-                    op = OpCode::SetProp;
-                }
+            auto typeScopePtr = asTypeScope(typeScope());
+            auto itMem = typeScopePtr->propertyNames.find(accessor->member.value());
+            if (itMem != typeScopePtr->propertyNames.end()) {
+                const auto& info = itMem->second;
+                if (info.access == Access::Private && info.owner != typeScopePtr->name)
+                    error("Cannot access private member '"+toUTF8StdString(accessor->member.value())+"'");
+                if (info.isConst)
+                    error("Cannot assign to constant '"+toUTF8StdString(accessor->member.value())+"'");
+                op = OpCode::SetProp;
             }
         }
 
@@ -2057,6 +2079,13 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             }
             else if (isa<UnaryOp>(lhsElt) && as<UnaryOp>(lhsElt)->op==UnaryOp::Accessor) {
                 auto accessor = as<UnaryOp>(lhsElt);
+
+                if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope() && accessor->member.has_value()) {
+                    auto typeScopePtr = asTypeScope(typeScope());
+                    auto itMem = typeScopePtr->propertyNames.find(accessor->member.value());
+                if (itMem != typeScopePtr->propertyNames.end() && itMem->second.isConst)
+                    error("Cannot assign to constant '"+toUTF8StdString(accessor->member.value())+"'");
+                }
 
                 accessor->arg->accept(*this);
 
@@ -2825,6 +2854,7 @@ void RoxalCompiler::exitFuncScope()
 void RoxalCompiler::enterLocalScope()
 {
     asFuncScope(funcScope())->scopeDepth++;
+    asFuncScope(funcScope())->constBindings.emplace_back();
     #ifdef DEBUG_TRACE_SCOPES
     std::cout << "enterLocalScope() depth:" << asFuncScope(funcScope())->scopeDepth << std::endl;
     outputScopes();
@@ -2857,6 +2887,9 @@ void RoxalCompiler::exitLocalScope()
 
         locals.pop_back();
     }
+    auto& constBindings = asFuncScope(funcScope())->constBindings;
+    if (!constBindings.empty())
+        constBindings.pop_back();
 
     #ifdef DEBUG_TRACE_SCOPES
     std::cout << "exitLexicalScope()" << std::endl;
@@ -3299,18 +3332,73 @@ int16_t RoxalCompiler::resolveUpvalue(Scope scopeState, const icu::UnicodeString
 
 
 
+bool RoxalCompiler::constExistsInCurrentScope(const icu::UnicodeString& name) const
+{
+    for (auto it = lexicalScopes.crbegin(); it != lexicalScopes.crend(); ++it) {
+        if (!(*it)->isFuncOrModule())
+            continue;
+        auto func = dynamic_ptr_cast<FunctionScope>(*it);
+        if (!func)
+            continue;
+        if (func->constBindings.empty())
+            return false;
+        const auto& current = func->constBindings.back();
+        return current.find(name) != current.end();
+    }
+    return false;
+}
+
+bool RoxalCompiler::moduleConstExists(const icu::UnicodeString& name) const
+{
+    for (auto it = lexicalScopes.crbegin(); it != lexicalScopes.crend(); ++it) {
+        if ((*it)->scopeType != LexicalScope::ScopeType::Module)
+            continue;
+        auto module = dynamic_ptr_cast<ModuleScope>(*it);
+        if (!module)
+            continue;
+        return module->moduleConstLines.find(name) != module->moduleConstLines.end();
+    }
+    return false;
+}
+
+const RoxalCompiler::FunctionScope::ConstBinding* RoxalCompiler::lookupConstBinding(const icu::UnicodeString& name) const
+{
+    for (auto it = lexicalScopes.crbegin(); it != lexicalScopes.crend(); ++it) {
+        if (!(*it)->isFuncOrModule())
+            continue;
+        auto func = dynamic_ptr_cast<FunctionScope>(*it);
+        if (!func)
+            continue;
+        for (auto mapIt = func->constBindings.rbegin(); mapIt != func->constBindings.rend(); ++mapIt) {
+            auto found = mapIt->find(name);
+            if (found != mapIt->end())
+                return &found->second;
+        }
+    }
+    return nullptr;
+}
+
+
 void RoxalCompiler::declareVariable(const icu::UnicodeString& name, std::optional<VarTypeSpec> type)
 {
     if (asFuncScope(funcScope())->scopeDepth == 0) {
         auto module = asModuleScope(moduleScope());
-        auto it = module->moduleVarLines.find(name);
-        if (it != module->moduleVarLines.end()) {
-            error("A variable with this name already exists in this scope (previously declared at line " + std::to_string(it->second.line) + ").");
+        auto varIt = module->moduleVarLines.find(name);
+        if (varIt != module->moduleVarLines.end()) {
+            error("A variable with this name already exists in this scope (previously declared at line " + std::to_string(varIt->second.line) + ").");
+        }
+        auto constIt = module->moduleConstLines.find(name);
+        if (constIt != module->moduleConstLines.end()) {
+            error("A const with this name already exists in this scope (previously declared at line " + std::to_string(constIt->second.line) + ").");
         }
         module->moduleVarLines[name] = currentNode->interval.first;
         if (type.has_value())
             module->moduleVarTypes[name] = type.value();
         return;
+    }
+
+    if (constExistsInCurrentScope(name)) {
+        error("A const with this name already exists in this scope.");
     }
 
     // check there is no variable with the same name in this scope (an error)
@@ -3341,6 +3429,135 @@ std::optional<RoxalCompiler::VarTypeSpec> RoxalCompiler::localVarType(const icu:
     return {};
 }
 
+void RoxalCompiler::declareConstant(const icu::UnicodeString& name, const Value& value, std::optional<VarTypeSpec> type)
+{
+    auto func = asFuncScope(funcScope());
+    if (func->scopeDepth == 0) {
+        auto module = asModuleScope(moduleScope());
+
+        auto varIt = module->moduleVarLines.find(name);
+        if (varIt != module->moduleVarLines.end()) {
+            error("A variable with this name already exists in this scope (previously declared at line " + std::to_string(varIt->second.line) + ").");
+        }
+        auto constIt = module->moduleConstLines.find(name);
+        if (constIt != module->moduleConstLines.end()) {
+            error("A const with this name already exists in this scope (previously declared at line " + std::to_string(constIt->second.line) + ").");
+        }
+
+        ObjModuleType* moduleTypeObj = asModuleType(module->moduleType);
+        moduleTypeObj->constVars.insert(name.hashCode());
+
+        module->moduleConstLines[name] = currentNode->interval.first;
+        module->moduleVarLines[name] = currentNode->interval.first;
+        if (type.has_value())
+            module->moduleVarTypes[name] = type.value();
+    }
+    else {
+        if (constExistsInCurrentScope(name))
+            error("A const with this name already exists in this scope.");
+
+        auto& locals = func->locals;
+        for (auto li = locals.rbegin(); li != locals.rend(); ++li) {
+            if ((li->depth != -1) && (li->depth < func->scopeDepth))
+                break;
+            if (li->name == name)
+                error("A variable with this name already exists in this scope.");
+        }
+    }
+
+    auto& constMap = func->constBindings.back();
+    auto [it, inserted] = constMap.emplace(name, FunctionScope::ConstBinding{value, currentNode->interval.first});
+    if (!inserted)
+        error("A const with this name already exists in this scope.");
+}
+
+Value RoxalCompiler::applyConstType(Value value, std::optional<VarTypeSpec> type, bool strictContext)
+{
+    if (!type.has_value())
+        return value;
+
+    if (std::holds_alternative<type::BuiltinType>(*type)) {
+        auto builtin = std::get<type::BuiltinType>(*type);
+        ValueType vt = builtinToValueType(builtin);
+        if (vt == ValueType::String || vt == ValueType::Range || vt == ValueType::List ||
+            vt == ValueType::Dict || vt == ValueType::Vector || vt == ValueType::Matrix ||
+            vt == ValueType::Signal || vt == ValueType::Tensor || vt == ValueType::Orient || vt == ValueType::Event) {
+            error("Const declarations are currently limited to builtin value types.");
+        }
+        try {
+            return toType(vt, value, strictContext);
+        } catch (const std::exception& e) {
+            error(std::string("Unable to convert const initializer to declared type: ") + e.what());
+        }
+    }
+
+    error("Const declarations currently support only builtin types.");
+    return value; // unreachable, keeps compiler happy
+}
+
+Value RoxalCompiler::evaluateConstExpression(ptr<ast::Expression> expr, bool strictContext)
+{
+    if (!expr)
+        error("Const declarations require an initializer.");
+
+    if (isa<ast::Literal>(expr)) {
+        auto literal = as<ast::Literal>(expr);
+        switch (literal->literalType) {
+            case ast::Literal::Nil:
+                return Value::nilVal();
+            case ast::Literal::Bool: {
+                auto bl = as<ast::Bool>(expr);
+                return Value::boolVal(bl->value);
+            }
+            case ast::Literal::Num: {
+                auto num = as<ast::Num>(expr);
+                if (std::holds_alternative<double>(num->num))
+                    return Value::realVal(std::get<double>(num->num));
+                else
+                    return Value::intVal(std::get<int32_t>(num->num));
+            }
+            default:
+                error("Const initializers currently support only nil, bool, and numeric literals.");
+        }
+    }
+
+    if (auto unary = dynamic_ptr_cast<ast::UnaryOp>(expr)) {
+        auto operand = evaluateConstExpression(unary->arg, strictContext);
+        switch (unary->op) {
+            case ast::UnaryOp::Negate:
+                if (operand.isReal())
+                    return Value::realVal(-operand.asReal());
+                if (operand.isInt())
+                    return Value::intVal(-operand.asInt());
+                error("Unary '-' constant expressions require numeric operands.");
+                break;
+            case ast::UnaryOp::Not:
+                if (operand.isBool())
+                    return Value::boolVal(!operand.asBool());
+                error("Unary 'not' constant expressions require boolean operands.");
+                break;
+            case ast::UnaryOp::BitNot:
+                if (operand.isInt())
+                    return Value::intVal(~operand.asInt());
+                error("Unary '~' constant expressions require integer operands.");
+                break;
+            default:
+                break;
+        }
+        error("Unsupported unary operator in const initializer.");
+    }
+
+    if (auto variable = dynamic_ptr_cast<ast::Variable>(expr)) {
+        auto binding = lookupConstBinding(variable->name);
+        if (!binding)
+            error("Const initializer references an identifier that is not a const.");
+        return binding->value;
+    }
+
+    error("Const initializer must be a compile-time constant expression.");
+    return Value::nilVal(); // unreachable, suppress compiler warning
+}
+
 std::optional<RoxalCompiler::VarTypeSpec> RoxalCompiler::moduleVarType(const icu::UnicodeString& name)
 {
     auto module = asModuleScope(moduleScope());
@@ -3351,7 +3568,7 @@ std::optional<RoxalCompiler::VarTypeSpec> RoxalCompiler::moduleVarType(const icu
 }
 
 
-void RoxalCompiler::defineVariable(uint16_t moduleVar)
+void RoxalCompiler::defineVariable(uint16_t moduleVar, bool isConst)
 {
     // local variables are already on the stack
     if (asFuncScope(funcScope())->scopeDepth > 0) {
@@ -3361,7 +3578,7 @@ void RoxalCompiler::defineVariable(uint16_t moduleVar)
     }
 
     // emit code to define named module scope variable at runtime
-    emitOpArgsBytes(OpCode::DefineModuleVar, moduleVar);
+    emitOpArgsBytes(isConst ? OpCode::DefineModuleConst : OpCode::DefineModuleVar, moduleVar);
 }
 
 
@@ -3369,6 +3586,17 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
 {
     //std::cout << (&(*state()) - &(*states.begin())) << " namedVariable(" << toUTF8StdString(name) << ")" << std::endl;
     //std::cout << toUTF8StdString(funcScope()->function->name) << " namedVariable(" << toUTF8StdString(name) << ")" << std::endl;
+
+    if (auto binding = lookupConstBinding(name)) {
+        if (assign) {
+            std::string message = "Cannot assign to constant '" + toUTF8StdString(name) + "'";
+            if (binding->line.line > 0)
+                message += " (declared at line " + std::to_string(binding->line.line) + ")";
+            error(message);
+        }
+        emitConstant(binding->value, toUTF8StdString(name));
+        return true;
+    }
 
     OpCode getOp, setOp;
     bool found = false;
@@ -3427,6 +3655,8 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
                 const auto& info = itMem->second;
                 if (info.access == Access::Private && info.owner != asTypeScope(typeScope())->name)
                     error("Cannot access private member '"+toUTF8StdString(name)+"'");
+                if (assign && info.isConst)
+                    error("Cannot assign to const property '"+toUTF8StdString(name)+"'");
                 // treat as property access
                 if (!assign) {
                     namedVariable(UnicodeString("this"), false);

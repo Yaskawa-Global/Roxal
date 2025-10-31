@@ -2044,11 +2044,14 @@ bool VM::isAccessAllowed(const Value& ownerType, ast::Access access)
 
 void VM::defineProperty(ObjString* name)
 {
+    int typeObjOffset = 4;
+    if (!isObjectType(peek(typeObjOffset)))
+        typeObjOffset = 3;
     #ifdef DEBUG_BUILD
-    if (!isObjectType(peek(3)))
+    if (!isObjectType(peek(typeObjOffset)))
         throw std::runtime_error("Can't create property without object or actor type on stack");
     #endif
-    ObjObjectType* objType = asObjectType(peek(3));
+    ObjObjectType* objType = asObjectType(peek(typeObjOffset));
     #ifdef DEBUG_BUILD
     if (objType->isInterface)
         throw std::runtime_error("Can't create property for an interface");
@@ -2057,9 +2060,13 @@ void VM::defineProperty(ObjString* name)
     if (objType->properties.contains(name->hash))
         throw std::runtime_error("Duplicate property '"+name->toStdString()+"' declared in type "+(objType->isActor?"actor":"object")+" "+toUTF8StdString(objType->name));
 
-    const Value& propertyType { peek(2) };
-    Value propertyInitial { peek(1) };
-    Value accessVal { peek(0) };
+    const Value& propertyType { peek(typeObjOffset - 1) };
+    Value propertyInitial { peek(typeObjOffset - 2) };
+    Value accessVal { peek(typeObjOffset - 3) };
+    Value constVal { Value::falseVal() };
+    bool hasConstFlag = (typeObjOffset == 4);
+    if (hasConstFlag)
+        constVal = peek(0);
 
     if (!propertyInitial.isNil()) {
         // if the property type is specified, convert the initial value (if given) to the declared propType
@@ -2072,8 +2079,9 @@ void VM::defineProperty(ObjString* name)
     }
 
     ast::Access access = (!accessVal.isNil() && accessVal.isBool() && accessVal.asBool()) ? ast::Access::Private : ast::Access::Public;
+    bool isConst = (!constVal.isNil() && constVal.isBool() && constVal.asBool());
     objType->properties[name->hash] = {name->s, propertyType, propertyInitial,
-                                      access, Value::objRef(objType).weakRef()};
+                                      access, isConst, Value::objRef(objType).weakRef()};
     objType->propertyOrder.push_back(name->hash);
 
     // check module annotations for ctype
@@ -2087,7 +2095,7 @@ void VM::defineProperty(ObjString* name)
                 objType->properties[name->hash].ctype = itProp->second;
         }
     }
-    popN(3);
+    popN(hasConstFlag ? 4 : 3);
 }
 
 
@@ -3099,19 +3107,21 @@ std::pair<InterpretResult,Value> VM::execute()
                     break;
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
-                    //std::cout << "setting prop " << toUTF8StdString(name->s) << " of " << toString(inst) << " to " << toString(peek(0)) << std::endl;
-
+                    ObjObjectType* t = asObjectType(objInst->instanceType);
+                    const auto& properties { t->properties };
+                    auto propertyIt = properties.find(name->hash);
+                    if (propertyIt != properties.end() && propertyIt->second.isConst) {
+                        runtimeError("Cannot assign to constant '" + toUTF8StdString(name->s) + "' of object type '" + toUTF8StdString(t->name) + "'");
+                        return errorReturn;
+                    }
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
                         // if type object specified the property type in the declaration,
                         //  convert the value to that type (if possible)
-                        ObjObjectType* t = asObjectType(objInst->instanceType);
-                        const auto& properties { t->properties };
-                        const auto& property = properties.find(name->hash);
-                        if (property != properties.end()) {
-                            const auto& prop { property->second };
+                        if (propertyIt != properties.end()) {
+                            const auto& prop { propertyIt->second };
                             if (!prop.type.isNil() && isTypeSpec(prop.type)) {
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
@@ -3133,16 +3143,19 @@ std::pair<InterpretResult,Value> VM::execute()
                     break;
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
-
+                    ObjObjectType* tA = asObjectType(actorInst->instanceType);
+                    const auto& properties { tA->properties };
+                    auto propertyIt = properties.find(name->hash);
+                    if (propertyIt != properties.end() && propertyIt->second.isConst) {
+                        runtimeError("Cannot assign to constant '" + toUTF8StdString(name->s) + "' of actor type '" + toUTF8StdString(tA->name) + "'");
+                        return errorReturn;
+                    }
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
-                        ObjObjectType* tA = asObjectType(actorInst->instanceType);
-                        const auto& properties { tA->properties };
-                        const auto& property = properties.find(name->hash);
-                        if (property != properties.end()) {
-                            const auto& prop { property->second };
+                        if (propertyIt != properties.end()) {
+                            const auto& prop { propertyIt->second };
                             if (!prop.type.isNil() && isTypeSpec(prop.type)) {
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
@@ -3162,6 +3175,11 @@ std::pair<InterpretResult,Value> VM::execute()
                     break;
                 } else if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
+
+                    if (moduleType->constVars.find(name->hash) != moduleType->constVars.end()) {
+                        runtimeError("Cannot assign to module constant '" + toUTF8StdString(name->s) + "'");
+                        return errorReturn;
+                    }
 
                     auto& vars { moduleType->vars };
 
@@ -3228,15 +3246,19 @@ std::pair<InterpretResult,Value> VM::execute()
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjObjectType* t = asObjectType(objInst->instanceType);
+                    const auto& properties { t->properties };
+                    auto propertyIt = properties.find(name->hash);
+                    if (propertyIt != properties.end() && propertyIt->second.isConst) {
+                        runtimeError("Cannot assign to constant '" + toUTF8StdString(name->s) + "' of object type '" + toUTF8StdString(t->name) + "'");
+                        return errorReturn;
+                    }
 
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
-                        const auto& properties { t->properties };
-                        const auto& property = properties.find(name->hash);
-                        if (property != properties.end()) {
-                            const auto& prop { property->second };
+                        if (propertyIt != properties.end()) {
+                            const auto& prop { propertyIt->second };
                             if (!prop.type.isNil() && isTypeSpec(prop.type)) {
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
@@ -3250,7 +3272,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         }
                     }
 
-                    auto pit = t->properties.find(name->hash);
+                    auto pit = propertyIt;
                     ast::Access propAccess = ast::Access::Public;
                     Value ownerT = objInst->instanceType.weakRef();
                     if (pit != t->properties.end()) {
@@ -3269,15 +3291,19 @@ std::pair<InterpretResult,Value> VM::execute()
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
                     ObjObjectType* tA = asObjectType(actorInst->instanceType);
+                    const auto& properties { tA->properties };
+                    auto propertyIt = properties.find(name->hash);
+                    if (propertyIt != properties.end() && propertyIt->second.isConst) {
+                        runtimeError("Cannot assign to constant '" + toUTF8StdString(name->s) + "' of actor type '" + toUTF8StdString(tA->name) + "'");
+                        return errorReturn;
+                    }
 
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
-                        const auto& properties { tA->properties };
-                        const auto& property = properties.find(name->hash);
-                        if (property != properties.end()) {
-                            const auto& prop { property->second };
+                        if (propertyIt != properties.end()) {
+                            const auto& prop { propertyIt->second };
                             if (!prop.type.isNil() && isTypeSpec(prop.type)) {
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
@@ -3291,7 +3317,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         }
                     }
 
-                    auto pit = tA->properties.find(name->hash);
+                    auto pit = propertyIt;
                     ast::Access propAccess = ast::Access::Public;
                     Value ownerT = actorInst->instanceType.weakRef();
                     if (pit != tA->properties.end()) {
@@ -3309,6 +3335,11 @@ std::pair<InterpretResult,Value> VM::execute()
                     break;
                 } else if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
+
+                    if (moduleType->constVars.find(name->hash) != moduleType->constVars.end()) {
+                        runtimeError("Cannot assign to module constant '" + toUTF8StdString(name->s) + "'");
+                        return errorReturn;
+                    }
 
                     auto& vars { moduleType->vars };
 
@@ -3778,6 +3809,12 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
+            case OpCode::DefineModuleConst: {
+                ObjString* name = readString();
+                moduleType()->constVars.insert(name->hash);
+                moduleVars().store(name->hash, name->s,pop());
+                break;
+            }
             case OpCode::DefineModuleVar: {
                 ObjString* name = readString();
                 moduleVars().store(name->hash, name->s,pop());
@@ -3799,6 +3836,10 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::SetModuleVar: {
                 ObjString* name = readString();
+                if (moduleType()->constVars.find(name->hash) != moduleType()->constVars.end()) {
+                    runtimeError("Cannot assign to module constant '" + toUTF8StdString(name->s) + "'");
+                    return errorReturn;
+                }
                 auto& vars { moduleVars() };
                 // set new value, but leave it on stack (as assignment is an expression)
                 bool stored = vars.storeIfExists(name->hash, name->s,peek(0));
@@ -3819,6 +3860,11 @@ std::pair<InterpretResult,Value> VM::execute()
                 bool exists = vars.exists(name->hash);
                 if (!exists && !moduleScope) {
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
+                    return errorReturn;
+                }
+
+                if (moduleType()->constVars.find(name->hash) != moduleType()->constVars.end()) {
+                    runtimeError("Cannot assign to module constant '" + toUTF8StdString(name->s) + "'");
                     return errorReturn;
                 }
 

@@ -1,0 +1,4 @@
+type Example object:
+    const value = 5
+    func setValue():
+        this.value = 7

@@ -667,7 +667,7 @@ void VarDecl::acceptChildren(ASTVisitor& v, Anys& results)
 
 void VarDecl::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"VarDecl " << (access==Access::Private?"private ":"") << toUTF8StdString(name);
+    os << spaces(indent)+"VarDecl " << (access==Access::Private?"private ":"") << (isConst ? "const " : "") << toUTF8StdString(name);
     if (varType.has_value()) {
         if (std::holds_alternative<icu::UnicodeString>(varType.value()))
             os << " :" << toUTF8StdString(std::get<icu::UnicodeString>(varType.value()));

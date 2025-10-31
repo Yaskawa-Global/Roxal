@@ -1,0 +1,2 @@
+.*const_missing_initializer_err\.rox:1:0: error: const declarations require an initializer.*
+

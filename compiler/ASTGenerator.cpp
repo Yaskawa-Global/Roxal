@@ -802,6 +802,7 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
     ptr<VarDecl> vardecl = make_ptr<VarDecl>();
     setSourceInfo(vardecl,context);
     vardecl->name = ident;
+    vardecl->isConst = (context->CONST() != nullptr);
 
     if (context->annotation().size() > 0) {
 
@@ -1270,6 +1271,7 @@ std::any ASTGenerator::visitProperty(RoxalParser::PropertyContext *context)
     ptr<VarDecl> varDecl = make_ptr<VarDecl>();
 
     varDecl->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
+    varDecl->isConst = (context->CONST() != nullptr);
 
     varDecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText());
     if (context->annotation().size() > 0) {

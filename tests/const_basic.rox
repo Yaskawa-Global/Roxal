@@ -1,0 +1,20 @@
+const moduleInt = 21
+const moduleNeg = -moduleInt
+const moduleBool = not false
+const moduleNil = nil
+const moduleByte: int = 3.0
+
+proc show():
+    const localBase = moduleInt
+    const localNeg = -localBase
+    print(moduleInt)
+    print(moduleNeg)
+    print(localBase)
+    print(localNeg)
+    print(moduleBool)
+    print(moduleNil)
+    print(moduleByte)
+
+show()
+print(moduleByte)
+

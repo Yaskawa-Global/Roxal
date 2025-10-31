@@ -64,6 +64,7 @@ enum class OpCode {
     EventExtend,
     Extend,
     DefineModuleVar,
+    DefineModuleConst,
     GetModuleVar,
     SetModuleVar,
     SetNewModuleVar,

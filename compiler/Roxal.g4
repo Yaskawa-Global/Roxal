@@ -129,7 +129,7 @@ finally_clause
 
 
 var_decl // FIXME: use ident_opt_type
- : annotation* VAR IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)?
+ : annotation* (VAR | CONST) IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)?
  ;
 
 ident_opt_type
@@ -203,7 +203,7 @@ method
  ;
 
 property
- : annotation* PRIVATE? VAR IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)? NEWLINE
+ : annotation* PRIVATE? (VAR | CONST) IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)? NEWLINE
  ;
 
 enum_label
@@ -418,6 +418,7 @@ dict
 
 TYPE: 'type';
 VAR : 'var';
+CONST : 'const';
 PRIVATE: 'private';
 LET : 'let';
 FUNC: 'func';
