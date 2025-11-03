@@ -3651,12 +3651,24 @@ unique_ptr<Obj, UnreleasedObj> ObjectInstance::clone() const
 
 
 
-ActorInstance::ActorInstance(const Value& objectType)
+ActorInstance::ActorInstance(ActorInstance::UninitializedTag)
 {
     type = ObjType::Actor;
+    instanceType = Value::nilVal();
+}
+
+ActorInstance::ActorInstance(const Value& objectType)
+    : ActorInstance(UninitializedTag{})
+{
+    initialize(objectType);
+}
+
+void ActorInstance::initialize(const Value& objectType)
+{
     debug_assert_msg(isObjectType(objectType) && asObjectType(objectType)->isActor,
                      "ActorInstance created with actor type");
     instanceType = objectType.strongRef();
+    properties.clear();
 
     // initialize instance properties from actor type definition
     ObjObjectType* ot = asObjectType(objectType);
@@ -3765,17 +3777,28 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
 }
 
 
+unique_ptr<ActorInstance, UnreleasedObj> roxal::newActorInstance(ActorInstance::UninitializedTag tag)
+{
+    #ifdef DEBUG_BUILD
+    return newObj<ActorInstance>(std::string(__func__), __FILE__, __LINE__, tag);
+    #else
+    return newObj<ActorInstance>(tag);
+    #endif
+}
+
 unique_ptr<ActorInstance, UnreleasedObj> roxal::newActorInstance(const Value& objectType)
 {
     #ifdef DEBUG_BUILD
     debug_assert_msg(isObjectType(objectType) && asObjectType(objectType)->typeValue == ValueType::Actor,
                      "newActorInstance called with actor type");
-    return newObj<ActorInstance>(std::string(__func__) +
-                                 toUTF8StdString(asObjectType(objectType)->name),
-                                 __FILE__, __LINE__, objectType);
+    auto actor = newObj<ActorInstance>(std::string(__func__) +
+                                       toUTF8StdString(asObjectType(objectType)->name),
+                                       __FILE__, __LINE__, ActorInstance::UninitializedTag{});
     #else
-    return newObj<ActorInstance>(objectType);
+    auto actor = newObj<ActorInstance>(ActorInstance::UninitializedTag{});
     #endif
+    actor->initialize(objectType);
+    return actor;
 }
 
 ObjBoundMethod::ObjBoundMethod(const Value& instance, const Value& closure)

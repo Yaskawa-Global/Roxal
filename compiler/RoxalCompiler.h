@@ -262,6 +262,7 @@ protected:
         icu::UnicodeString superTypeName;
 
         bool hasSuperType;
+        bool isActor { false };
         struct MemberInfo {
             ast::Access access { ast::Access::Public };
             icu::UnicodeString owner;

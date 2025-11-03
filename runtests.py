@@ -87,6 +87,7 @@ tests = [
     'weakref', 'strongref', 'is_operator', 'stackdepth', 'modulevar2',
     'const_basic', 'const_assign_err', 'const_nonliteral_err', 'const_missing_initializer_err',
     'const_property', 'const_property_method_err', 'const_property_runtime_err', 'const_module_assign',
+    'actor_module_const', 'actor_module_var_err',
     'is_operator_type',
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
     'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle', 'gc_list_cycle', 'gc_liveness',

@@ -1349,8 +1349,13 @@ unique_ptr<ObjectInstance, UnreleasedObj> newObjectInstance(const Value& objectT
 
 struct ActorInstance : public Obj
 {
+    struct UninitializedTag {};
+
+    ActorInstance(UninitializedTag);
     ActorInstance(const Value& objectType);
     virtual ~ActorInstance();
+
+    void initialize(const Value& objectType);
 
     Value instanceType;
     std::unordered_map<int32_t, Value> properties;
@@ -1392,6 +1397,7 @@ inline bool isActorInstance(const Value& v) { return isObjType(v, ObjType::Actor
 inline ActorInstance* asActorInstance(const Value& v) { return static_cast<ActorInstance*>(v.asObj()); }
 
 unique_ptr<ActorInstance, UnreleasedObj> newActorInstance(const Value& objectType);
+unique_ptr<ActorInstance, UnreleasedObj> newActorInstance(ActorInstance::UninitializedTag);
 
 
 

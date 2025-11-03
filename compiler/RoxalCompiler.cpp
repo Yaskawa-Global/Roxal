@@ -879,6 +879,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     }
 
     enterTypeScope(ast->name);
+    asTypeScope(typeScope())->isActor = isActor;
 
     // inherit property registry from super type if available
     if (ast->extends.has_value()) {
@@ -3636,7 +3637,16 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
         arg = identifierConstant(name);
         getOp = OpCode::GetModuleVar;
         auto module = asModuleScope(moduleScope());
-        bool exists = module->moduleVarLines.find(name) != module->moduleVarLines.end();
+        auto moduleVarIt = module->moduleVarLines.find(name);
+        bool exists = moduleVarIt != module->moduleVarLines.end();
+        bool isModuleConst = module->moduleConstLines.find(name) != module->moduleConstLines.end();
+
+        bool inActorMethod = inTypeScope() && asTypeScope(typeScope())->isActor &&
+                             (asFuncScope(funcScope())->functionType == FunctionType::Method ||
+                              asFuncScope(funcScope())->functionType == FunctionType::Initializer);
+        if (inActorMethod && exists && !isModuleConst) {
+            error("Actor methods cannot access module variable '"+toUTF8StdString(name)+"'; use a module constant instead.");
+        }
         if (asFuncScope(funcScope())->functionType != FunctionType::Module || exists)
             setOp = OpCode::SetModuleVar;
         else

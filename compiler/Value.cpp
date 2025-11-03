@@ -2566,7 +2566,8 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             debug_assert_msg(!t->isActor, "Expected object type for deserialization");
             Value objVal = Value::objectInstanceVal(typeVal);
             ObjectInstance* obj = asObjectInstance(objVal);
-            if(useCtx) ctx->idToObj[id] = obj;
+            if (useCtx)
+                ctx->idToObj[id] = obj;
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
             obj->properties.clear();
             for(uint32_t i=0;i<count;i++) {
@@ -2583,12 +2584,18 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                 if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown actor ref id");
                 return Value::objRef(it->second);
             }
+
+            auto actorHolder = newActorInstance(ActorInstance::UninitializedTag{});
+            ActorInstance* obj = actorHolder.get();
+            Value objVal = Value::objVal(std::move(actorHolder));
+            if(useCtx) {
+                ctx->idToObj[id] = obj;
+            }
+
             Value typeVal = readValue(in, ctx);
             ObjObjectType* t = asObjectType(typeVal);
             debug_assert_msg(t->isActor, "Expected actor type for deserialization");
-            Value objVal = Value::actorInstanceVal(typeVal);
-            ActorInstance* obj = asActorInstance(objVal);
-            if(useCtx) ctx->idToObj[id] = obj;
+            obj->initialize(typeVal);
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
             obj->properties.clear();
             for(uint32_t i=0;i<count;i++) {
