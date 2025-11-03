@@ -2044,12 +2044,21 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
 {
     visitStart();
 
-    if (context->LTRUE())
-        return typeValue(ptr<Bool>(make_ptr<Bool>(true)));
-    else if (context->LFALSE())
-        return typeValue(ptr<Bool>(make_ptr<Bool>(false)));
-    else if (context->LNIL())
-        return typeValue(ptr<Literal>(make_ptr<Literal>()));
+    if (context->LTRUE()) {
+        ptr<Bool> literal = make_ptr<Bool>(true);
+        setSourceInfo(literal, context->LTRUE());
+        return typeValue(literal);
+    }
+    else if (context->LFALSE()) {
+        ptr<Bool> literal = make_ptr<Bool>(false);
+        setSourceInfo(literal, context->LFALSE());
+        return typeValue(literal);
+    }
+    else if (context->LNIL()) {
+        ptr<Literal> literal = make_ptr<Literal>();
+        setSourceInfo(literal, context->LNIL());
+        return typeValue(literal);
+    }
     else if (context->THIS()) {
         ptr<Variable> var = make_ptr<Variable>("this");
         setSourceInfo(var, context);

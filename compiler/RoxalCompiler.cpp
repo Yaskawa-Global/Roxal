@@ -174,20 +174,13 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
         } catch (std::logic_error& e) {
             compileError(e.what());
 
-            while (!lexicalScopes.empty() && (*scope())->isFunc() && !(*scope())->isModule()) {
-                auto fs = asFuncScope(funcScope());
-                ObjFunction* f = asFunction(fs->function);
+            while (!lexicalScopes.empty() && (*scope())->isFunc() && !(*scope())->isModule())
                 exitFuncScope();
-                if (f != nullptr)
-                    delObj(f);
-            }
 
             while (inTypeScope())
                 exitTypeScope();
 
-            ObjFunction* modFunc = asFunction(asModuleScope(moduleScope())->function);
             exitModuleScope();
-            delObj(modFunc);
 
             clearCompileContext();
 
@@ -195,20 +188,13 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
         } catch (std::exception& e) {
             compileError(e.what());
 
-            while (!lexicalScopes.empty() && (*scope())->isFunc() && !(*scope())->isModule()) {
-                auto fs = asFuncScope(funcScope());
-                ObjFunction* f = asFunction(fs->function);
+            while (!lexicalScopes.empty() && (*scope())->isFunc() && !(*scope())->isModule())
                 exitFuncScope();
-                if (f != nullptr)
-                    delObj(f);
-            }
 
             while (inTypeScope())
                 exitTypeScope();
 
-            ObjFunction* modFunc = asFunction(asModuleScope(moduleScope())->function);
             exitModuleScope();
-            delObj(modFunc);
 
             clearCompileContext();
 
@@ -795,6 +781,11 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         emitOpArgsBytes(OpCode::EventType, typeNameConstant);
         defineVariable(typeNameConstant);
 
+        auto moduleScopePtr = asModuleScope(moduleScope());
+        ObjModuleType* moduleTypeObj = asModuleType(moduleScopePtr->moduleType);
+        moduleScopePtr->moduleConstLines[ast->name] = currentNode->interval.first;
+        moduleTypeObj->constVars.insert(ast->name.hashCode());
+
         if (ast->extends.has_value()) {
             asTypeScope(typeScope())->hasSuperType = true;
             asTypeScope(typeScope())->superTypeName = ast->extends.value();
@@ -904,6 +895,11 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     else if (isEnumeration) emitOpArgsBytes(OpCode::EnumerationType, typeNameConstant);
     else emitOpArgsBytes(OpCode::ObjectType, typeNameConstant);
     defineVariable(typeNameConstant);
+
+    auto moduleScopePtr = asModuleScope(moduleScope());
+    ObjModuleType* moduleTypeObj = asModuleType(moduleScopePtr->moduleType);
+    moduleScopePtr->moduleConstLines[ast->name] = currentNode->interval.first;
+    moduleTypeObj->constVars.insert(ast->name.hashCode());
 
 
     // handle extension (inheritance)
@@ -3033,6 +3029,8 @@ static std::string linePos(ptr<AST> node)
 
 void RoxalCompiler::error(const std::string& message)
 {
+    if (!currentNode)
+        throw std::logic_error(message);
     throw std::logic_error(linePos(currentNode) + " - " + message);
 }
 
