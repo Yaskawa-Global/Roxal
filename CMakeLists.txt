@@ -12,6 +12,17 @@ option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
 
 
 option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
+option(ROXAL_ENABLE_COMPUTED_GOTO_DISPATCH "Use computed goto VM dispatch when supported" ON)
+
+set(ROXAL_COMPUTED_GOTO_DISPATCH_ENABLED OFF)
+if(ROXAL_ENABLE_COMPUTED_GOTO_DISPATCH)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        set(ROXAL_COMPUTED_GOTO_DISPATCH_ENABLED ON)
+        message(STATUS "ROXAL: enabling computed goto opcode dispatch")
+    else()
+        message(WARNING "ROXAL: computed goto dispatch requested but not supported by ${CMAKE_CXX_COMPILER_ID}; using switch dispatch instead")
+    endif()
+endif()
 
 
 add_compile_definitions(
@@ -208,6 +219,7 @@ target_compile_options(roxalcore PRIVATE
 target_compile_definitions(roxalcore PRIVATE
     $<$<CONFIG:DEBUG>:DEBUG_BUILD>
     $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
+    $<$<BOOL:${ROXAL_COMPUTED_GOTO_DISPATCH_ENABLED}>:ROXAL_COMPUTED_GOTO_DISPATCH>
 )
 
 
@@ -221,6 +233,7 @@ if(ROXAL_BUILD_MAIN)
     target_compile_definitions(roxal PRIVATE
         $<$<CONFIG:DEBUG>:DEBUG_BUILD>
         $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
+        $<$<BOOL:${ROXAL_COMPUTED_GOTO_DISPATCH_ENABLED}>:ROXAL_COMPUTED_GOTO_DISPATCH>
     )
 
     add_test(NAME RoxalSourceTests
