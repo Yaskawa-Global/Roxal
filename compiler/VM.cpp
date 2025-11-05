@@ -2462,6 +2462,134 @@ std::pair<InterpretResult,Value> VM::execute()
 
     auto errorReturn = std::make_pair(InterpretResult::RuntimeError,Value::nilVal());
 
+    size_t opcodeIndexCache = 0;
+
+#if defined(ROXAL_COMPUTED_GOTO_DISPATCH)
+#define VM_FOR_EACH_OPCODE(OP) \
+    OP(Nop) \
+    OP(Constant) \
+    OP(ConstNil) \
+    OP(ConstTrue) \
+    OP(ConstFalse) \
+    OP(ConstInt0) \
+    OP(ConstInt1) \
+    OP(Equal) \
+    OP(Is) \
+    OP(Greater) \
+    OP(Less) \
+    OP(Add) \
+    OP(Subtract) \
+    OP(Multiply) \
+    OP(Divide) \
+    OP(Modulo) \
+    OP(Negate) \
+    OP(And) \
+    OP(Or) \
+    OP(BitAnd) \
+    OP(BitOr) \
+    OP(BitXor) \
+    OP(BitNot) \
+    OP(Pop) \
+    OP(PopN) \
+    OP(Dup) \
+    OP(DupBelow) \
+    OP(Swap) \
+    OP(JumpIfFalse) \
+    OP(JumpIfTrue) \
+    OP(Jump) \
+    OP(Loop) \
+    OP(Call) \
+    OP(Index) \
+    OP(SetIndex) \
+    OP(Invoke) \
+    OP(Closure) \
+    OP(CloseUpvalue) \
+    OP(Return) \
+    OP(ReturnStore) \
+    OP(ObjectType) \
+    OP(ActorType) \
+    OP(InterfaceType) \
+    OP(EnumerationType) \
+    OP(EventType) \
+    OP(Property) \
+    OP(Method) \
+    OP(EnumLabel) \
+    OP(EventPayload) \
+    OP(EventExtend) \
+    OP(Extend) \
+    OP(DefineModuleVar) \
+    OP(DefineModuleConst) \
+    OP(GetModuleVar) \
+    OP(SetModuleVar) \
+    OP(SetNewModuleVar) \
+    OP(ImportModuleVars) \
+    OP(GetUpvalue) \
+    OP(SetUpvalue) \
+    OP(GetLocal) \
+    OP(SetLocal) \
+    OP(SetProp) \
+    OP(GetProp) \
+    OP(SetPropCheck) \
+    OP(GetPropCheck) \
+    OP(GetSuper) \
+    OP(NewRange) \
+    OP(NewList) \
+    OP(NewDict) \
+    OP(NewVector) \
+    OP(NewMatrix) \
+    OP(IfDictToKeys) \
+    OP(IfDictToItems) \
+    OP(ToType) \
+    OP(ToTypeStrict) \
+    OP(ToTypeSpec) \
+    OP(ToTypeSpecStrict) \
+    OP(EventOn) \
+    OP(EventOff) \
+    OP(SetupExcept) \
+    OP(EndExcept) \
+    OP(Throw) \
+    OP(CopyInto) \
+
+    static void* const dispatchTable[] = {
+#define VM_DISPATCH_TABLE_ENTRY(name) &&op_##name,
+        VM_FOR_EACH_OPCODE(VM_DISPATCH_TABLE_ENTRY)
+#undef VM_DISPATCH_TABLE_ENTRY
+        &&op_Default
+    };
+#endif
+
+#if defined(ROXAL_COMPUTED_GOTO_DISPATCH)
+#define VM_DISPATCH_CASE(name) op_##name
+#define VM_DISPATCH_DEFAULT op_Default
+#define VM_DISPATCH_NEXT() goto postInstructionDispatch
+#define VM_DISPATCH_JUMP() goto *dispatchTable[opcodeIndexCache]
+#else
+#define VM_DISPATCH_CASE(name) case OpCode::name
+#define VM_DISPATCH_DEFAULT default
+#define VM_DISPATCH_NEXT() break
+#define VM_DISPATCH_JUMP() goto dispatchSwitch
+#endif
+
+// Fetch the next instruction OpCode from the Chunk. If it has the DoubleByteArg flag set,
+// clear it and note the OpCode expects two bytes for its 'argument'.
+#define VM_FETCH_INSTRUCTION() \
+    do { \
+        singleByteArg = true; \
+        instructionByte = readByte(); \
+        if ((instructionByte & DoubleByteArg) == 0) { \
+            instruction = OpCode(instructionByte); \
+        } else { \
+            instruction = OpCode(instructionByte & ~DoubleByteArg); \
+            singleByteArg = false; \
+        } \
+        opcodeIndexCache = static_cast<size_t>(instruction); \
+        if (opcodeIndexCache >= static_cast<size_t>(OpCode::_Last)) { \
+            instruction = OpCode::_Last; \
+            opcodeIndexCache = static_cast<size_t>(OpCode::_Last); \
+        } \
+    } while(false)
+
+
 
     //
     //  main dispatch loop
@@ -2549,55 +2677,45 @@ std::pair<InterpretResult,Value> VM::execute()
 
 
         }
-
-
-        // Fetch the next instruction OpCode from the Chunk
-        //  If it has the DoubleByteArg flag set, clear it and note the OpCode
-        //  expects two bytes for its 'argument'
-        singleByteArg = true; // common case
-        instructionByte = readByte();
-        if ((instructionByte & DoubleByteArg) == 0)
-            instruction = OpCode(instructionByte);
-        else {
-            instruction = OpCode(instructionByte & ~DoubleByteArg);
-            singleByteArg = false; // expects 2 bytes of argument
-        }
+        VM_FETCH_INSTRUCTION();
 
         #ifdef DEBUG_BUILD
         if (opcodeProfilingEnabled.load(std::memory_order_relaxed)) {
-            size_t opcodeIndex = static_cast<size_t>(instruction);
-            if (opcodeIndex < opcodeProfileCounts.size())
-                opcodeProfileCounts[opcodeIndex].fetch_add(1, std::memory_order_relaxed);
+            if (opcodeIndexCache < opcodeProfileCounts.size())
+                opcodeProfileCounts[opcodeIndexCache].fetch_add(1, std::memory_order_relaxed);
         }
         #endif
 
         thread->frameStart = false;
 
-        // TODO: consider if using gcc/clang extension will help performance:
-        //   https://stackoverflow.com/questions/8019849/labels-as-values-vs-switch-statement
-        switch(instruction) {
-            case OpCode::Constant: {
+        VM_DISPATCH_JUMP();
+
+#if !defined(ROXAL_COMPUTED_GOTO_DISPATCH)
+dispatchSwitch:
+        switch (instruction) {
+#endif
+            VM_DISPATCH_CASE(Constant): {
                 Value constant = readConstant();
                 push(constant);
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::ConstTrue: {
+            VM_DISPATCH_CASE(ConstTrue): {
                 push(Value::trueVal());
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::ConstFalse: {
+            VM_DISPATCH_CASE(ConstFalse): {
                 push(Value::falseVal());
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::ConstInt0: {
+            VM_DISPATCH_CASE(ConstInt0): {
                 push(Value::intVal(0));
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::ConstInt1: {
+            VM_DISPATCH_CASE(ConstInt1): {
                 push(Value::intVal(1));
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::GetProp: {
+            VM_DISPATCH_CASE(GetProp): {
                 Value& inst { peek(0) };
                 ObjString* name = readString();
 
@@ -2613,7 +2731,7 @@ std::pair<InterpretResult,Value> VM::execute()
                             Value result = (this->*(propInfo.getter))(inst);
                             pop();
                             push(result);
-                            break;
+                            VM_DISPATCH_NEXT();
                         }
                     }
 
@@ -2628,7 +2746,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                                              methodInfo.declFunction) };
                             pop();
                             push(bm);
-                            break;
+                            VM_DISPATCH_NEXT();
                         }
                     }
 
@@ -2656,7 +2774,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         Value result = eventInst->payload[index];
                         pop();
                         push(result);
-                        break;
+                        VM_DISPATCH_NEXT();
                     }
 
                     auto mit = builtinMethods.find(inst.type());
@@ -2669,7 +2787,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                                                 methodInfo.declFunction) };
                             pop();
                             push(bound);
-                            break;
+                            VM_DISPATCH_NEXT();
                         }
                     }
 
@@ -2696,7 +2814,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         }
                         pop();
                         push(result);
-                        break;
+                        VM_DISPATCH_NEXT();
                     } else {
                         runtimeError("KeyError: key '" + toString(key) + "' not found in dict.");
                         return errorReturn;
@@ -2708,13 +2826,13 @@ std::pair<InterpretResult,Value> VM::execute()
                     if (it != objInst->properties.end()) { // exists
                         pop();
                         push(it->second);
-                        break;
+                        VM_DISPATCH_NEXT();
                     }
                     else { // no
                         // check if it is a method name
                         auto br = bindMethod(asObjectType(objInst->instanceType), name);
                         if (br == BindResult::Bound)
-                            break;
+                            VM_DISPATCH_NEXT();
                         if (br == BindResult::Private)
                             return errorReturn;
 
@@ -2727,11 +2845,11 @@ std::pair<InterpretResult,Value> VM::execute()
                     if (it != actorInst->properties.end()) {
                         pop();
                         push(it->second);
-                        break;
+                        VM_DISPATCH_NEXT();
                     } else {
                         auto br = bindMethod(asObjectType(actorInst->instanceType), name);
                         if (br == BindResult::Bound)
-                            break;
+                            VM_DISPATCH_NEXT();
                         if (br == BindResult::Private)
                             return errorReturn;
 
@@ -2748,7 +2866,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                                                           methodInfo.declFunction) };
                                 pop();
                                 push(boundNative);
-                                break;
+                                VM_DISPATCH_NEXT();
                             }
                         }
 
@@ -2764,7 +2882,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     if (it != enumObjType->enumLabelValues.end()) { // exists
                         pop();
                         push(it->second.second);
-                        break;
+                        VM_DISPATCH_NEXT();
                     }
 
                     runtimeError("Undefined enum label '"+toUTF8StdString(name->s)+"' for enum type '"+toUTF8StdString(enumObjType->name)+"'.");
@@ -2778,7 +2896,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         Value value = optValue.value();
                         pop();
                         push(value);
-                        break;
+                        VM_DISPATCH_NEXT();
                     }
                     else {
                         runtimeError("Undefined variable '"+name->toStdString()+"'");
@@ -2799,7 +2917,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                                              methodInfo.declFunction) };
                             pop();
                             push(bm);
-                            break;
+                            VM_DISPATCH_NEXT();
                         }
                     }
                     // Check builtin properties
@@ -2811,7 +2929,7 @@ std::pair<InterpretResult,Value> VM::execute()
                             Value result = (this->*(propInfo.getter))(inst);
                             pop();
                             push(result);
-                            break;
+                            VM_DISPATCH_NEXT();
                         }
                     }
                 }
@@ -2823,9 +2941,9 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
 #endif
                 return errorReturn;
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::GetPropCheck: {
+            VM_DISPATCH_CASE(GetPropCheck): {
                 Value& inst { peek(0) };
                 ObjString* name = readString();
 
@@ -2841,7 +2959,7 @@ std::pair<InterpretResult,Value> VM::execute()
                             Value result = (this->*(propInfo.getter))(inst);
                             pop();
                             push(result);
-                            break;
+                            VM_DISPATCH_NEXT();
                         }
                     }
 
@@ -2856,7 +2974,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                                              methodInfo.declFunction) };
                             pop();
                             push(bm);
-                            break;
+                            VM_DISPATCH_NEXT();
                         }
                     }
 
@@ -2884,7 +3002,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         Value result = eventInst->payload[index];
                         pop();
                         push(result);
-                        break;
+                        VM_DISPATCH_NEXT();
                     }
 
                     auto mit = builtinMethods.find(inst.type());
@@ -2897,7 +3015,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                                                 methodInfo.declFunction) };
                             pop();
                             push(bound);
-                            break;
+                            VM_DISPATCH_NEXT();
                         }
                     }
 
@@ -2923,7 +3041,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         }
                         pop();
                         push(result);
-                        break;
+                        VM_DISPATCH_NEXT();
                     } else {
                         runtimeError("KeyError: key '" + toString(key) + "' not found in dict.");
                         return errorReturn;
@@ -2946,11 +3064,11 @@ std::pair<InterpretResult,Value> VM::execute()
                         }
                         pop();
                         push(it->second);
-                        break;
+                        VM_DISPATCH_NEXT();
                     } else {
                         auto br = bindMethod(t, name);
                         if (br == BindResult::Bound)
-                            break;
+                            VM_DISPATCH_NEXT();
                         if (br == BindResult::Private)
                             return errorReturn;
 
@@ -2975,11 +3093,11 @@ std::pair<InterpretResult,Value> VM::execute()
                         }
                         pop();
                         push(it->second);
-                        break;
+                        VM_DISPATCH_NEXT();
                     } else {
                         auto br = bindMethod(t, name);
                         if (br == BindResult::Bound)
-                            break;
+                            VM_DISPATCH_NEXT();
                         if (br == BindResult::Private)
                             return errorReturn;
 
@@ -2996,7 +3114,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                                                           methodInfo.declFunction) };
                                 pop();
                                 push(boundNative);
-                                break;
+                                VM_DISPATCH_NEXT();
                             }
                         }
 
@@ -3010,7 +3128,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     if (it != enumObjType->enumLabelValues.end()) {
                         pop();
                         push(it->second.second);
-                        break;
+                        VM_DISPATCH_NEXT();
                     }
 
                     runtimeError("Undefined enum label '"+toUTF8StdString(name->s)+"' for enum type '"+toUTF8StdString(enumObjType->name)+"'.");
@@ -3023,7 +3141,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         Value value = optValue.value();
                         pop();
                         push(value);
-                        break;
+                        VM_DISPATCH_NEXT();
                     } else {
                         runtimeError("Undefined variable '"+name->toStdString()+"'");
                         return errorReturn;
@@ -3043,7 +3161,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                                              methodInfo.declFunction) };
                             pop();
                             push(bm);
-                            break;
+                            VM_DISPATCH_NEXT();
                         }
                     }
                     // Check builtin properties
@@ -3055,16 +3173,16 @@ std::pair<InterpretResult,Value> VM::execute()
                             Value result = (this->*(propInfo.getter))(inst);
                             pop();
                             push(result);
-                            break;
+                            VM_DISPATCH_NEXT();
                         }
                     }
                 }
 
                 runtimeError("Only object and actor instances have methods and only object, actor, and dictionary instances have properties (string keys only).");
                 return errorReturn;
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::SetProp: {
+            VM_DISPATCH_CASE(SetProp): {
                 Value& inst { peek(1) };
                 ObjString* name = readString();
 
@@ -3083,7 +3201,7 @@ std::pair<InterpretResult,Value> VM::execute()
                             (this->*(propInfo.setter))(inst, value);
                             popN(2);
                             push(value);
-                            break;
+                            VM_DISPATCH_NEXT();
                         }
                     }
 
@@ -3104,7 +3222,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     dict->store(key, value);
                     popN(2);
                     push(value);
-                    break;
+                    VM_DISPATCH_NEXT();
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjObjectType* t = asObjectType(objInst->instanceType);
@@ -3140,7 +3258,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     objInst->properties[name->hash] = value;
                     popN(2); // pop original value & instance
                     push(value); // value (possibly converted)
-                    break;
+                    VM_DISPATCH_NEXT();
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
                     ObjObjectType* tA = asObjectType(actorInst->instanceType);
@@ -3172,7 +3290,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     actorInst->properties[name->hash] = value;
                     popN(2);
                     push(value);
-                    break;
+                    VM_DISPATCH_NEXT();
                 } else if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
 
@@ -3197,13 +3315,13 @@ std::pair<InterpretResult,Value> VM::execute()
                         runtimeError("Declaring new module variables in another module ('"+toUTF8StdString(moduleType->name)+"') is not allowed.");
                         return errorReturn;
                     }
-                    break;
+                    VM_DISPATCH_NEXT();
                 }
                 runtimeError("Only object, actor, and dictionary instances have properties (string keys only).");
                 return errorReturn;
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::SetPropCheck: {
+            VM_DISPATCH_CASE(SetPropCheck): {
                 Value& inst { peek(1) };
                 ObjString* name = readString();
                 if (isSignal(inst)) {
@@ -3221,7 +3339,7 @@ std::pair<InterpretResult,Value> VM::execute()
                             (this->*(propInfo.setter))(inst, value);
                             popN(2);
                             push(value);
-                            break;
+                            VM_DISPATCH_NEXT();
                         }
                     }
 
@@ -3242,7 +3360,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     dict->store(Value::objRef(name), value);
                     popN(2);
                     push(value);
-                    break;
+                    VM_DISPATCH_NEXT();
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjObjectType* t = asObjectType(objInst->instanceType);
@@ -3287,7 +3405,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     objInst->properties[name->hash] = value;
                     popN(2);
                     push(value);
-                    break;
+                    VM_DISPATCH_NEXT();
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
                     ObjObjectType* tA = asObjectType(actorInst->instanceType);
@@ -3332,7 +3450,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     actorInst->properties[name->hash] = value;
                     popN(2);
                     push(value);
-                    break;
+                    VM_DISPATCH_NEXT();
                 } else if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
 
@@ -3353,13 +3471,13 @@ std::pair<InterpretResult,Value> VM::execute()
                         runtimeError("Declaring new module variables in another module ('"+toUTF8StdString(moduleType->name)+"') is not allowed.");
                         return errorReturn;
                     }
-                    break;
+                    VM_DISPATCH_NEXT();
                 }
                 runtimeError("Only object, actor, and dictionary instances have properties (string keys only).");
                 return errorReturn;
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::GetSuper: {
+            VM_DISPATCH_CASE(GetSuper): {
                 ObjString* name = readString();
                 #ifdef DEBUG_BUILD
                 if (!isTypeSpec(peek(0)) && !isObjectType(peek(0)))
@@ -3371,9 +3489,9 @@ std::pair<InterpretResult,Value> VM::execute()
                 if (br != BindResult::Bound)
                     return std::make_pair(InterpretResult::RuntimeError,Value::nilVal());
 
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Equal: {
+            VM_DISPATCH_CASE(Equal): {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
 
@@ -3383,17 +3501,17 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Is: {
+            VM_DISPATCH_CASE(Is): {
                 Value b = pop();
                 Value a = pop();
                 a.resolve();
                 b.resolve();
                 push(Value::boolVal(a.is(b, frame->strict)));
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Greater: {
+            VM_DISPATCH_CASE(Greater): {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
 
@@ -3403,9 +3521,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Less: {
+            VM_DISPATCH_CASE(Less): {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
 
@@ -3415,9 +3533,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Add: {
+            VM_DISPATCH_CASE(Add): {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
 
@@ -3431,9 +3549,9 @@ std::pair<InterpretResult,Value> VM::execute()
                         return errorReturn;
                     }
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Subtract: {
+            VM_DISPATCH_CASE(Subtract): {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
 
@@ -3443,9 +3561,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Multiply: {
+            VM_DISPATCH_CASE(Multiply): {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
 
@@ -3455,9 +3573,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Divide: {
+            VM_DISPATCH_CASE(Divide): {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
 
@@ -3467,9 +3585,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Negate: {
+            VM_DISPATCH_CASE(Negate): {
                 Value& operand { peek(0) };
                 operand.resolveFuture();
 
@@ -3479,9 +3597,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Modulo: {
+            VM_DISPATCH_CASE(Modulo): {
                 // TODO: support decimal
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
@@ -3492,9 +3610,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::And: {
+            VM_DISPATCH_CASE(And): {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
                 if (!peek(0).isBool() && !isSignal(peek(0))) {
@@ -3511,9 +3629,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Or: {
+            VM_DISPATCH_CASE(Or): {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
                 if (!peek(0).isBool() && !isSignal(peek(0))) {
@@ -3530,9 +3648,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::BitAnd: {
+            VM_DISPATCH_CASE(BitAnd): {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
                 try {
@@ -3541,9 +3659,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::BitOr: {
+            VM_DISPATCH_CASE(BitOr): {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
                 try {
@@ -3552,9 +3670,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::BitXor: {
+            VM_DISPATCH_CASE(BitXor): {
                 peek(0).resolveFuture();
                 peek(1).resolveFuture();
                 try {
@@ -3563,9 +3681,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::BitNot: {
+            VM_DISPATCH_CASE(BitNot): {
                 Value& operand { peek(0) };
                 operand.resolveFuture();
                 try {
@@ -3574,33 +3692,33 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Pop: {
+            VM_DISPATCH_CASE(Pop): {
                 pop();
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::PopN: {
+            VM_DISPATCH_CASE(PopN): {
                 uint8_t count = readByte();
                 for(auto i=0; i<count; i++)
                     pop();
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Dup: {
+            VM_DISPATCH_CASE(Dup): {
                 auto value = peek(0);
                 push(value);
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::DupBelow: {
+            VM_DISPATCH_CASE(DupBelow): {
                 auto value = peek(1);
                 push(value);
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Swap: {
+            VM_DISPATCH_CASE(Swap): {
                 std::swap(peek(0), peek(1));
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::CopyInto: {
+            VM_DISPATCH_CASE(CopyInto): {
                 Value rhs = pop();
                 Value lhs = pop();
                 try {
@@ -3610,59 +3728,59 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
                 push(lhs);
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::JumpIfFalse: {
+            VM_DISPATCH_CASE(JumpIfFalse): {
                 uint16_t jumpDist = readShort();
                 peek(0).resolve();
                 if (isFalsey(peek(0)))
                     frame->ip += jumpDist;
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::JumpIfTrue: {
+            VM_DISPATCH_CASE(JumpIfTrue): {
                 uint16_t jumpDist = readShort();
                 peek(0).resolve();
                 if (isTruthy(peek(0)))
                     frame->ip += jumpDist;
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Jump: {
+            VM_DISPATCH_CASE(Jump): {
                 uint16_t jumpDist = readShort();
                 frame->ip += jumpDist;
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Loop: {
+            VM_DISPATCH_CASE(Loop): {
                 uint16_t jumpDist = readShort();
                 frame->ip -= jumpDist;
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Call: {
+            VM_DISPATCH_CASE(Call): {
                 CallSpec callSpec{frame->ip};
                 Value& callee { peek(callSpec.argCount) };
                 callee.resolve();
                 if (!callValue(callee, callSpec))
                     return errorReturn;
                 frame = thread->frames.end()-1;
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Index: {
+            VM_DISPATCH_CASE(Index): {
                 uint8_t argCount = readByte();
                 peek(argCount).resolveFuture(); // don't resolve signals here
                 if (!indexValue(peek(argCount), argCount))
                     return errorReturn;
-                break;
+                VM_DISPATCH_NEXT();
             }
             // TODO: reimplement optimization to use Invoke as single step for object.method()
             //  instead of current two step push & call (see original Antlr visitor compiler impl)
-            case OpCode::Invoke: {
+            VM_DISPATCH_CASE(Invoke): {
                 ObjString* method = readString();
                 CallSpec callSpec{frame->ip};
                 if (!invoke(method, callSpec))
                     return errorReturn;
                 frame = thread->frames.end()-1;
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Closure: {
+            VM_DISPATCH_CASE(Closure): {
                 Value function = readConstant();
                 debug_assert_msg(isFunction(function), "Expected a function value for OpCode::Closure");
                 Value closure { Value::closureVal(function) };
@@ -3681,14 +3799,14 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     asClosure(closure)->upvalues[i] = upvalue;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::CloseUpvalue: {
+            VM_DISPATCH_CASE(CloseUpvalue): {
                 closeUpvalues(&(*(thread->stackTop -1)));
                 pop();
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Return: {
+            VM_DISPATCH_CASE(Return): {
 
                 try {
                     Value result = opReturn();
@@ -3728,9 +3846,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::ReturnStore: {
+            VM_DISPATCH_CASE(ReturnStore): {
 
                 try {
                     Value result = opReturn();
@@ -3770,13 +3888,13 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::ConstNil: {
+            VM_DISPATCH_CASE(ConstNil): {
                 push(Value::nilVal());
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::GetLocal: {
+            VM_DISPATCH_CASE(GetLocal): {
                 uint16_t slot = singleByteArg ? readByte() : readShort();
                 #ifdef DEBUG_BUILD
                 auto stackIndex = (frame->slots - &thread->stack[0]) + slot;
@@ -3784,9 +3902,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     throw std::runtime_error("Stack overflow access");
                 #endif
                 push(frame->slots[slot]);
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::SetLocal: {
+            VM_DISPATCH_CASE(SetLocal): {
                 uint16_t slot = singleByteArg ? readByte() : readShort();
                 #ifdef DEBUG_BUILD
                 auto stackIndex = (frame->slots - &thread->stack[0]) + slot;
@@ -3794,9 +3912,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     throw std::runtime_error("Stack overflow access");
                 #endif
                 frame->slots[slot] = peek(0);
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::SetIndex: {
+            VM_DISPATCH_CASE(SetIndex): {
                 uint8_t argCount = readByte();
                 peek(argCount).resolveFuture(); // don't resolve signals here
                 try {
@@ -3807,20 +3925,20 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::DefineModuleConst: {
+            VM_DISPATCH_CASE(DefineModuleConst): {
                 ObjString* name = readString();
                 moduleType()->constVars.insert(name->hash);
                 moduleVars().store(name->hash, name->s,pop());
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::DefineModuleVar: {
+            VM_DISPATCH_CASE(DefineModuleVar): {
                 ObjString* name = readString();
                 moduleVars().store(name->hash, name->s,pop());
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::GetModuleVar: {
+            VM_DISPATCH_CASE(GetModuleVar): {
                 ObjString* name = readString();
                 auto& vars { moduleVars() };
                 auto optValue { vars.load(name->hash) };
@@ -3832,9 +3950,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::SetModuleVar: {
+            VM_DISPATCH_CASE(SetModuleVar): {
                 ObjString* name = readString();
                 if (moduleType()->constVars.find(name->hash) != moduleType()->constVars.end()) {
                     runtimeError("Cannot assign to module constant '" + toUTF8StdString(name->s) + "'");
@@ -3847,9 +3965,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::SetNewModuleVar: {
+            VM_DISPATCH_CASE(SetNewModuleVar): {
                 ObjString* name = readString();
                 auto& vars { moduleVars() };
 
@@ -3870,19 +3988,19 @@ std::pair<InterpretResult,Value> VM::execute()
 
                 vars.store(name->hash, name->s,peek(0), /*overwrite=*/true);
 
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::GetUpvalue: {
+            VM_DISPATCH_CASE(GetUpvalue): {
                 uint16_t slot = singleByteArg ? readByte() : readShort();
                 push(*asUpvalue(asClosure(frame->closure)->upvalues[slot])->location);
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::SetUpvalue: {
+            VM_DISPATCH_CASE(SetUpvalue): {
                 uint16_t slot = singleByteArg ? readByte() : readShort();
                 *(asUpvalue(asClosure(frame->closure)->upvalues[slot])->location) = peek(0);
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::NewRange: {
+            VM_DISPATCH_CASE(NewRange): {
                 bool closed = ((readByte() & 1) > 0);
                 if (!peek(2).isNil() && !peek(2).isNumber())
                     runtimeError("The start bound of a range must be a number");
@@ -3893,9 +4011,9 @@ std::pair<InterpretResult,Value> VM::execute()
                 auto rangeVal = Value::rangeVal(peek(2),peek(1),peek(0),closed);
                 popN(3);
                 push(rangeVal);
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::NewList: {
+            VM_DISPATCH_CASE(NewList): {
                 int eltCount = readByte();
                 std::vector<Value> elts {};
                 elts.reserve(eltCount);
@@ -3904,9 +4022,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     elts.push_back(peek(eltCount-i-1));
                 for(int i=0; i<eltCount;i++) pop();
                 push(Value::listVal(elts));
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::NewDict: {
+            VM_DISPATCH_CASE(NewDict): {
                 int entryCount = readByte();
                 std::vector<std::pair<Value,Value>> entries {};
                 entries.reserve(entryCount);
@@ -3917,22 +4035,22 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 for(int i=0; i<entryCount*2;i++) pop();
                 push(Value::dictVal(entries));
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::NewVector: {
+            VM_DISPATCH_CASE(NewVector): {
                 int eltCount = readByte();
                 Eigen::VectorXd vals(eltCount);
                 for(int i=0; i<eltCount; i++)
                     vals[i] = toType(ValueType::Real, peek(eltCount-i-1), false).asReal();
                 for(int i=0; i<eltCount; i++) pop();
                 push(Value::vectorVal(vals));
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::NewMatrix: {
+            VM_DISPATCH_CASE(NewMatrix): {
                 int rowCount = readByte();
                 if (rowCount == 0) {
                     push(Value::matrixVal());
-                    break;
+                    VM_DISPATCH_NEXT();
                 }
                 if (!isVector(peek(rowCount-1))) {
                     runtimeError("matrix literal rows must be vectors");
@@ -3956,9 +4074,9 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 for(int i=0; i<rowCount; ++i) pop();
                 push(Value::matrixVal(mat));
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::IfDictToKeys: {
+            VM_DISPATCH_CASE(IfDictToKeys): {
                 Value& maybeDict = peek(0);
                 if (!isDict(maybeDict))
                     maybeDict.resolve();
@@ -3968,9 +4086,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     auto keys { asDict(d)->keys() };
                     push(Value::listVal(keys));
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::IfDictToItems: {
+            VM_DISPATCH_CASE(IfDictToItems): {
                 Value& maybeDict = peek(0);
                 if (!isDict(maybeDict))
                     maybeDict.resolve();
@@ -3987,9 +4105,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                     push(listItems);
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::ToType: {
+            VM_DISPATCH_CASE(ToType): {
                 uint8_t typeByte = readByte();
                 try {
                     peek(0) = toType(ValueType(typeByte), peek(0), /*strict=*/false);
@@ -3997,9 +4115,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::ToTypeStrict: {
+            VM_DISPATCH_CASE(ToTypeStrict): {
                 uint8_t typeByte = readByte();
                 try {
                     peek(0) = toType(ValueType(typeByte), peek(0), /*strict=*/true);
@@ -4007,9 +4125,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::ToTypeSpec: {
+            VM_DISPATCH_CASE(ToTypeSpec): {
                 Value typeSpec = pop();
                 try {
                     peek(0) = toType(typeSpec, peek(0), /*strict=*/false);
@@ -4017,9 +4135,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::ToTypeSpecStrict: {
+            VM_DISPATCH_CASE(ToTypeSpecStrict): {
                 Value typeSpec = pop();
                 try {
                     peek(0) = toType(typeSpec, peek(0), /*strict=*/true);
@@ -4027,9 +4145,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::EventOn: {
+            VM_DISPATCH_CASE(EventOn): {
                 uint8_t modeByte = readByte();
                 bool requireChangedKeyword = (modeByte == 1);
                 bool disallowSignalTargets = (modeByte == 2);
@@ -4069,9 +4187,9 @@ std::pair<InterpretResult,Value> VM::execute()
                 auto* closure = asClosure(closureVal);
                 closure->handlerThread = thread;
                 ev->subscribers.push_back(closureVal.weakRef());
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::EventOff: {
+            VM_DISPATCH_CASE(EventOff): {
                 Value closureVal = pop();
                 Value eventVal = pop();
                 if (!isClosure(closureVal) || !(isEventType(eventVal) || isSignal(eventVal))) {
@@ -4110,23 +4228,23 @@ std::pair<InterpretResult,Value> VM::execute()
                         ++it;
                 }
 
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::SetupExcept: {
+            VM_DISPATCH_CASE(SetupExcept): {
                 uint16_t off = readShort();
                 CallFrame::ExceptionHandler h;
                 h.handlerIp = frame->ip + off;
                 h.stackDepth = thread->stackTop - thread->stack.begin();
                 h.frameDepth = thread->frames.size();
                 frame->exceptionHandlers.push_back(h);
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::EndExcept: {
+            VM_DISPATCH_CASE(EndExcept): {
                 if (!frame->exceptionHandlers.empty())
                     frame->exceptionHandlers.pop_back();
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Throw: {
+            VM_DISPATCH_CASE(Throw): {
                 Value exc = pop();
                 if (!isException(exc))
                     exc = Value::exceptionVal(exc);
@@ -4149,15 +4267,15 @@ std::pair<InterpretResult,Value> VM::execute()
                         while (thread->stackTop - thread->stack.begin() > h.stackDepth)
                             pop();
                         push(exc);
-                        break;
+                        VM_DISPATCH_NEXT();
                     } else {
                         unwindFrame();
                     }
                 }
                 frame = thread->frames.end()-1;
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::ObjectType: {
+            VM_DISPATCH_CASE(ObjectType): {
                 ObjString* name = readString();
                 Value tv { Value::objectTypeVal(name->s, false) }; // ObjObjectType
                 if (!thread->frames.empty()) {
@@ -4171,9 +4289,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                 }
                 push(tv);
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::ActorType: {
+            VM_DISPATCH_CASE(ActorType): {
                 ObjString* name = readString();
                 Value tv { Value::objectTypeVal(name->s, true) }; // ObjObjectType
                 if (!thread->frames.empty()) {
@@ -4187,9 +4305,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                 }
                 push(tv);
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::InterfaceType: {
+            VM_DISPATCH_CASE(InterfaceType): {
                 // interface types are represented as object types (but are abstract - all abstract methods)
                 ObjString* name = readString();
                 Value tv { Value::objectTypeVal(name->s, false, true) };
@@ -4204,9 +4322,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                 }
                 push(tv);
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::EnumerationType: {
+            VM_DISPATCH_CASE(EnumerationType): {
                 ObjString* name = readString();
                 Value tv { Value::objectTypeVal(name->s, false, false, true) };
                 if (!thread->frames.empty()) {
@@ -4220,33 +4338,33 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                 }
                 push(tv);
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::EventType: {
+            VM_DISPATCH_CASE(EventType): {
                 ObjString* name = readString();
                 Value tv { Value::objVal(newEventTypeObj(name->s)) };
                 push(tv);
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Property: {
+            VM_DISPATCH_CASE(Property): {
                 try {
                     defineProperty(readString());
                 } catch (std::exception& e) {
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::EventPayload: {
+            VM_DISPATCH_CASE(EventPayload): {
                 try {
                     defineEventPayload(readString());
                 } catch (std::exception& e) {
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::EventExtend: {
+            VM_DISPATCH_CASE(EventExtend): {
                 try {
                     extendEventType();
                 } catch (std::exception& e) {
@@ -4254,27 +4372,27 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
                 pop();
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Method: {
+            VM_DISPATCH_CASE(Method): {
                 try {
                     defineMethod(readString());
                 } catch (std::exception& e) {
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::EnumLabel: {
+            VM_DISPATCH_CASE(EnumLabel): {
                 try {
                     defineEnumLabel(readString());
                 } catch (std::exception& e) {
                     runtimeError(e.what());
                     return errorReturn;
                 }
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Extend: {
+            VM_DISPATCH_CASE(Extend): {
                 if (!isObjectType(peek(1))) {
                     runtimeError("Super type to extend must be an object or actor type");
                     return errorReturn;
@@ -4295,9 +4413,9 @@ std::pair<InterpretResult,Value> VM::execute()
                                              superType->propertyOrder.begin(),
                                              superType->propertyOrder.end());
                 pop();
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::ImportModuleVars: {
+            VM_DISPATCH_CASE(ImportModuleVars): {
                 // given a list of var identifiers and two module types, copy the list of vars from
                 //  one module's vars to the other (copy the declarations, not deep copying values)
 
@@ -4347,18 +4465,20 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
 
                 popN(3);
-                break;
+                VM_DISPATCH_NEXT();
             }
-            case OpCode::Nop: {
-                break;
+            VM_DISPATCH_CASE(Nop): {
+                VM_DISPATCH_NEXT();
             }
-            default:
+            VM_DISPATCH_DEFAULT:
                 #ifdef DEBUG_BUILD
                 runtimeError("Invalid instruction "+std::to_string(int(instruction)));
                 #endif
                 return std::make_pair(InterpretResult::RuntimeError,Value::nilVal());
-                break;
+                VM_DISPATCH_NEXT();
+#if !defined(ROXAL_COMPUTED_GOTO_DISPATCH)
         }
+#endif
 
         postInstructionDispatch:
 
@@ -4400,6 +4520,15 @@ std::pair<InterpretResult,Value> VM::execute()
         }
 
     } // for
+
+#ifdef VM_FOR_EACH_OPCODE
+#undef VM_FOR_EACH_OPCODE
+#endif
+#undef VM_DISPATCH_CASE
+#undef VM_DISPATCH_DEFAULT
+#undef VM_DISPATCH_NEXT
+#undef VM_DISPATCH_JUMP
+#undef VM_FETCH_INSTRUCTION
 
     if (thread->execute_depth > 0) thread->execute_depth--;
     return std::make_pair(InterpretResult::OK, Value::nilVal());
