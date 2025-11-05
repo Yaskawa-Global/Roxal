@@ -1,0 +1,5 @@
+var shared = 0
+
+type Worker actor:
+    func run():
+        shared = 1
