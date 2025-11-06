@@ -89,6 +89,9 @@ public:
         return instance;
     }
 
+    static VM* current();
+    static void configureCacheMode(CacheMode mode);
+
     VM(VM const&) = delete;
     void operator=(VM const&) = delete;
 

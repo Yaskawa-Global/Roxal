@@ -297,9 +297,13 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
 
         ObjModuleType* module = asModuleType(strong);
         icu::UnicodeString qualified = moduleQualifiedName(module);
-        Value builtin = VM::instance().getBuiltinModule(qualified);
-        if (builtin.isNil())
-            builtin = VM::instance().getBuiltinModule(module->name);
+        VM* activeVm = VM::current();
+        Value builtin { Value::nilVal() };
+        if (activeVm) {
+            builtin = activeVm->getBuiltinModule(qualified);
+            if (builtin.isNil())
+                builtin = activeVm->getBuiltinModule(module->name);
+        }
         if (builtin.isNonNil())
             return builtin.strongRef();
 
@@ -545,11 +549,12 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     //  for the specified module
     ModuleInfo module = findImport(ast->packages);
     bool builtinModule = false;
+    VM* activeVm = VM::current();
 
     if (module.name.isEmpty()) {
         if (ast->packages.size() == 1) {
             icu::UnicodeString modName { ast->packages[0] };
-            if (VM::instance().getBuiltinModule(modName).isNonNil()) {
+            if (activeVm && activeVm->getBuiltinModule(modName).isNonNil()) {
                 module.name = modName;
                 builtinModule = true;
             }
@@ -591,7 +596,8 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 
     if (!imported) {  // import it
         if (builtinModule) {
-            importedModuleType = VM::instance().getBuiltinModule(module.name);
+            importedModuleType = activeVm ? activeVm->getBuiltinModule(module.name)
+                                          : Value::nilVal();
             importedModuleType = importedModuleType.strongRef();
             importedModules[module] = importedModuleType;
 

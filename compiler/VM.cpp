@@ -53,6 +53,8 @@ std::atomic<size_t> configuredCallFrameLimit{VM::DefaultMaxCallFrames};
 // Tracks whether VM::instance() has already materialized the singleton so
 // later configureStackLimits() calls can update it in-place.
 std::atomic<bool> vmConstructed{false};
+std::atomic<VM::CacheMode> configuredCacheMode{VM::CacheMode::Normal};
+VM* constructingVm{nullptr};
 
 struct BoundCallGuard {
     explicit BoundCallGuard(Thread* thread) : thread_(thread) {}
@@ -275,8 +277,9 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
 
 VM::VM()
     : lineMode(false)
-    , cacheModeSetting(CacheMode::Normal)
+    , cacheModeSetting(configuredCacheMode.load(std::memory_order_relaxed))
 {
+    constructingVm = this;
     stackLimit = configuredStackLimit.load(std::memory_order_relaxed);
     callFrameLimit = configuredCallFrameLimit.load(std::memory_order_relaxed);
 
@@ -382,11 +385,32 @@ VM::VM()
         globals.storeGlobal(toUnicodeString("__conditional_interrupt"), conditionalInterruptClosure);
     }
 
+    constructingVm = nullptr;
     vmConstructed.store(true, std::memory_order_release);
 
     //CallSpec::testParamPositions();
     //Value::testPrimitiveValues();
     //testObjectValues();
+}
+
+VM* VM::current()
+{
+    if (constructingVm)
+        return constructingVm;
+    if (vmConstructed.load(std::memory_order_acquire))
+        return &instance();
+    return nullptr;
+}
+
+void VM::configureCacheMode(CacheMode mode)
+{
+    configuredCacheMode.store(mode, std::memory_order_relaxed);
+    if (constructingVm) {
+        constructingVm->cacheModeSetting = mode;
+        return;
+    }
+    if (vmConstructed.load(std::memory_order_acquire))
+        VM::instance().setCacheMode(mode);
 }
 
 
@@ -5447,25 +5471,81 @@ Value VM::getBuiltinModule(const icu::UnicodeString& name)
 void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
 {
     debug_assert_msg(isModuleType(moduleType),"is ObjModuleType");
-    std::ifstream in(path);
-    if (!in.is_open()) {
-        std::string alt = "../" + path;
-        in.open(alt);
-        if (!in.is_open()) {
-            runtimeError("Cannot open builtin module script: " + path + " or " + alt);
-            return;
-        }
-    }
-
     RoxalCompiler compiler;
     compiler.setOutputBytecodeDisassembly(false);
     compiler.setCacheReadEnabled(cacheReadsEnabled());
     compiler.setCacheWriteEnabled(cacheWritesEnabled());
     compiler.setModulePaths(modulePaths);
 
-    Value fn = compiler.compile(in, path, moduleType);
+    std::string alternatePath = "../" + path;
+    std::string compilePath = path;
+    std::filesystem::path cacheSourcePath;
+    bool haveCacheSource = false;
+
+    auto resolveCandidate = [&](const std::string& candidate) -> bool {
+        std::error_code ec;
+        std::filesystem::path candidatePath(candidate);
+        if (!std::filesystem::exists(candidatePath, ec) || ec)
+            return false;
+
+        std::filesystem::path absolutePath = std::filesystem::absolute(candidatePath, ec);
+        if (ec)
+            absolutePath = candidatePath;
+
+        compilePath = absolutePath.string();
+        cacheSourcePath = absolutePath;
+        haveCacheSource = true;
+
+        std::filesystem::path canonicalPath = std::filesystem::canonical(absolutePath, ec);
+        if (!ec) {
+            cacheSourcePath = canonicalPath;
+            compilePath = canonicalPath.string();
+        }
+
+        return true;
+    };
+
+    if (!resolveCandidate(path)) {
+        if (!resolveCandidate(alternatePath)) {
+            runtimeError("Cannot open builtin module script: " + path + " or " + alternatePath);
+            return;
+        }
+    }
+
+    Value fn { Value::nilVal() };
+    bool loadedFromCache = false;
+
+    if (haveCacheSource) {
+        Value cached = compiler.loadFileCache(cacheSourcePath);
+        if (cached.isNonNil()) {
+            fn = cached;
+            loadedFromCache = true;
+        }
+    }
+
+    if (!loadedFromCache) {
+        std::ifstream in(compilePath);
+        if (!in.is_open() && haveCacheSource)
+            in.open(cacheSourcePath.string());
+        if (!in.is_open()) {
+            runtimeError("Cannot open builtin module script: " + path + " or " + alternatePath);
+            return;
+        }
+
+        std::string sourceName = haveCacheSource ? cacheSourcePath.string() : compilePath;
+        fn = compiler.compile(in, sourceName, moduleType);
+        if (fn.isNil())
+            return;
+
+        if (haveCacheSource)
+            compiler.storeFileCache(cacheSourcePath, fn);
+    }
+
     if (fn.isNil())
         return;
+
+    if (isFunction(fn))
+        asFunction(fn)->moduleType = moduleType.weakRef();
 
     Value closure { Value::closureVal(fn) };
     ptr<Thread> t = make_ptr<Thread>();

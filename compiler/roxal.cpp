@@ -423,6 +423,7 @@ int main(int argc, const char* argv[])
     }
 
     if (vmap.count("execute")) {
+        VM::configureCacheMode(cacheMode);
         VM::instance().setCacheMode(cacheMode);
         bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
         InterpretResult res =
@@ -434,6 +435,7 @@ int main(int argc, const char* argv[])
             return 1;
     }
     else if (vmap.count("input-file") == 0) {
+        VM::configureCacheMode(cacheMode);
         VM& vm = VM::instance();
         vm.setCacheMode(cacheMode);
         vm.appendModulePaths(modulePaths);
@@ -452,6 +454,7 @@ int main(int argc, const char* argv[])
                 generateAST(filename, true, vmap["astgraph"].as<std::vector<std::string>>().at(0));
             else {
                 bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
+                VM::configureCacheMode(cacheMode);
                 VM::instance().setCacheMode(cacheMode);
                 InterpretResult res =
                     runFile(filename, modulePaths, outputBytecodeDisassembly);
