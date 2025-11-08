@@ -4,11 +4,13 @@
 #include <unordered_set>
 #include <sstream>
 #include <algorithm>
+#include <limits>
 #include <iomanip>
 #include <iostream>
 #include <dlfcn.h>
 #include <future>
 #include <vector>
+#include <utility>
 #include <core/AST.h>
 
 #include <core/types.h>
@@ -231,7 +233,8 @@ ValueType Obj::valueType() const
         case ObjType::Matrix: return ValueType::Matrix;
         case ObjType::Signal: return ValueType::Signal;
         case ObjType::File: return ValueType::Object;
-        case ObjType::Event: return ValueType::Event;
+        case ObjType::EventType: return ValueType::Event;
+        case ObjType::EventInstance: return ValueType::Object;
         case ObjType::Function: return ValueType::Function;
         case ObjType::Closure: return ValueType::Closure;
         case ObjType::Upvalue: return ValueType::Upvalue;
@@ -1413,46 +1416,212 @@ void ObjSignal::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     double freq; in.read(reinterpret_cast<char*>(&freq),8);
     Value v = readValue(in, ctx);
     signal = df::Signal::newSignal(freq, v, n);
-    changeEvent = Value::nilVal();
+    changeEventType = Value::nilVal();
     type = ObjType::Signal;
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjEvent::clone() const {
-    // events currently have no user-mutable state; share reference
-    return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjEvent*>(this));
-}
-void ObjEvent::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
+ObjEventType::ObjEventType(const icu::UnicodeString& typeName)
+    : name(typeName)
+    , superType(Value::nilVal())
 {
-    uint8_t tag = static_cast<uint8_t>(ObjType::Event);
-    out.write(reinterpret_cast<char*>(&tag),1);
-    uint32_t count = subscribers.size();
-    out.write(reinterpret_cast<char*>(&count),4);
-    for(const auto& s : subscribers)
-        writeValue(out, s, ctx);
+    type = ObjType::EventType;
 }
 
-void ObjEvent::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
+unique_ptr<Obj, UnreleasedObj> ObjEventType::clone() const {
+    // event type definitions are immutable once created; share reference
+    return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjEventType*>(this));
+}
+
+void ObjEventType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
-    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
-    if(tag != static_cast<uint8_t>(ObjType::Event))
-        throw std::runtime_error("ObjEvent::read mismatched tag");
-    uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
+    uint8_t tag = static_cast<uint8_t>(ObjType::EventType);
+    out.write(reinterpret_cast<char*>(&tag), 1);
+
+    std::string n; name.toUTF8String(n);
+    uint32_t len = n.size();
+    out.write(reinterpret_cast<char*>(&len), 4);
+    if (len > 0) out.write(n.data(), len);
+
+    writeValue(out, superType, ctx);
+
+    uint32_t propCount = payloadProperties.size();
+    out.write(reinterpret_cast<char*>(&propCount), 4);
+    for (const auto& prop : payloadProperties) {
+        std::string pn; prop.name.toUTF8String(pn);
+        uint32_t plen = pn.size();
+        out.write(reinterpret_cast<char*>(&plen), 4);
+        if (plen > 0) out.write(pn.data(), plen);
+        writeValue(out, prop.type, ctx);
+        writeValue(out, prop.initialValue, ctx);
+    }
+
+    uint32_t subCount = subscribers.size();
+    out.write(reinterpret_cast<char*>(&subCount), 4);
+    for (const auto& subscriber : subscribers) {
+        writeValue(out, subscriber, ctx);
+    }
+}
+
+void ObjEventType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag), 1);
+    if (tag != static_cast<uint8_t>(ObjType::EventType))
+        throw std::runtime_error("ObjEventType::read mismatched tag");
+
+    uint32_t len; in.read(reinterpret_cast<char*>(&len), 4);
+    std::string ns(len, '\0');
+    if (len > 0) in.read(ns.data(), len);
+    name = icu::UnicodeString::fromUTF8(ns);
+
+    superType = readValue(in, ctx);
+
+    payloadProperties.clear();
+    propertyLookup.clear();
+
+    uint32_t propCount; in.read(reinterpret_cast<char*>(&propCount), 4);
+    for (uint32_t i = 0; i < propCount; ++i) {
+        uint32_t plen; in.read(reinterpret_cast<char*>(&plen), 4);
+        std::string pn(plen, '\0');
+        if (plen > 0) in.read(pn.data(), plen);
+        icu::UnicodeString propName = icu::UnicodeString::fromUTF8(pn);
+
+        Value typeValue = readValue(in, ctx);
+        Value initial = readValue(in, ctx);
+
+        payloadProperties.push_back({ propName, typeValue, initial });
+        propertyLookup[propName.hashCode()] = payloadProperties.size() - 1;
+    }
+
+    uint32_t subCount; in.read(reinterpret_cast<char*>(&subCount), 4);
     subscribers.clear();
-    for(uint32_t i=0;i<count;i++)
+    subscribers.reserve(subCount);
+    for (uint32_t i = 0; i < subCount; ++i) {
         subscribers.push_back(readValue(in, ctx));
-    type = ObjType::Event;
+    }
+
+    type = ObjType::EventType;
 }
 
-void ObjEvent::trace(ValueVisitor& visitor) const
+void ObjEventType::trace(ValueVisitor& visitor) const
 {
+    visitor.visit(superType);
+    for (const auto& prop : payloadProperties) {
+        visitor.visit(prop.type);
+        visitor.visit(prop.initialValue);
+    }
     for (const auto& subscriber : subscribers) {
         visitor.visit(subscriber);
     }
 }
 
-void ObjEvent::dropReferences()
+void ObjEventType::dropReferences()
 {
+    superType = Value::nilVal();
+    for (auto& prop : payloadProperties) {
+        prop.type = Value::nilVal();
+        prop.initialValue = Value::nilVal();
+    }
     subscribers.clear();
+}
+
+std::vector<ObjEventType::PayloadPropertyView> ObjEventType::orderedPayloadProperties() const
+{
+    std::vector<PayloadPropertyView> result;
+    result.reserve(payloadProperties.size());
+    for (size_t i = 0; i < payloadProperties.size(); ++i) {
+        const auto& prop = payloadProperties[i];
+        int32_t hash = prop.name.hashCode();
+        result.push_back({i, &prop, static_cast<uint16_t>(hash & 0x7fff)});
+    }
+    return result;
+}
+
+std::optional<ObjEventType::PayloadPropertyView>
+ObjEventType::findPayloadPropertyByHash15(uint16_t hash15, bool& ambiguous) const
+{
+    ambiguous = false;
+    const PayloadProperty* match = nullptr;
+    size_t matchIndex = 0;
+    int32_t matchHash = 0;
+    for (size_t i = 0; i < payloadProperties.size(); ++i) {
+        const auto& prop = payloadProperties[i];
+        int32_t propHash = prop.name.hashCode();
+        if (static_cast<uint16_t>(propHash & 0x7fff) != hash15)
+            continue;
+        if (match != nullptr) {
+            ambiguous = true;
+            return std::nullopt;
+        }
+        match = &prop;
+        matchIndex = i;
+        matchHash = propHash;
+    }
+    if (match == nullptr)
+        return std::nullopt;
+    return PayloadPropertyView{matchIndex, match, static_cast<uint16_t>(matchHash & 0x7fff)};
+}
+
+ObjEventInstance::ObjEventInstance(const Value& eventType)
+    : typeHandle(eventType)
+{
+    type = ObjType::EventInstance;
+    if (isEventType(eventType)) {
+        ObjEventType* typeObj = asEventType(eventType);
+        payload.reserve(typeObj->payloadProperties.size());
+        for (const auto& prop : typeObj->payloadProperties) {
+            payload.push_back(prop.initialValue);
+        }
+    }
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjEventInstance::clone() const {
+    // event instances are immutable snapshots; share reference
+    return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjEventInstance*>(this));
+}
+
+void ObjEventInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
+{
+    uint8_t tag = static_cast<uint8_t>(ObjType::EventInstance);
+    out.write(reinterpret_cast<char*>(&tag), 1);
+    writeValue(out, typeHandle, ctx);
+
+    uint32_t count = payload.size();
+    out.write(reinterpret_cast<char*>(&count), 4);
+    for (const auto& value : payload) {
+        writeValue(out, value, ctx);
+    }
+}
+
+void ObjEventInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag), 1);
+    if (tag != static_cast<uint8_t>(ObjType::EventInstance))
+        throw std::runtime_error("ObjEventInstance::read mismatched tag");
+
+    typeHandle = readValue(in, ctx);
+
+    uint32_t count; in.read(reinterpret_cast<char*>(&count), 4);
+    payload.clear();
+    payload.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        payload.push_back(readValue(in, ctx));
+    }
+
+    type = ObjType::EventInstance;
+}
+
+void ObjEventInstance::trace(ValueVisitor& visitor) const
+{
+    visitor.visit(typeHandle);
+    for (const auto& value : payload) {
+        visitor.visit(value);
+    }
+}
+
+void ObjEventInstance::dropReferences()
+{
+    typeHandle = Value::nilVal();
+    payload.clear();
 }
 
 unique_ptr<Obj, UnreleasedObj> ObjLibrary::clone() const {
@@ -1926,6 +2095,8 @@ void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
         writeValue(out, prop.initialValue, ctx);
         uint8_t acc = static_cast<uint8_t>(prop.access);
         out.write(reinterpret_cast<char*>(&acc),1);
+        uint8_t isConst = prop.isConst ? 1 : 0;
+        out.write(reinterpret_cast<char*>(&isConst),1);
         uint8_t hasC = prop.ctype.has_value() ? 1 : 0;
         out.write(reinterpret_cast<char*>(&hasC),1);
         if(hasC) {
@@ -1990,6 +2161,7 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         Value ptype = readValue(in, ctx);
         Value init  = readValue(in, ctx);
         uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
+        uint8_t isConst; in.read(reinterpret_cast<char*>(&isConst),1);
         uint8_t hasC; in.read(reinterpret_cast<char*>(&hasC),1);
         std::optional<icu::UnicodeString> ct;
         if(hasC) {
@@ -1998,7 +2170,7 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             ct = icu::UnicodeString::fromUTF8(cts);
         }
         int32_t hash = uname.hashCode();
-        Property prop{uname, ptype, init, static_cast<ast::Access>(acc), Value::nilVal(), ct};
+        Property prop{uname, ptype, init, static_cast<ast::Access>(acc), isConst != 0, Value::nilVal(), ct};
         properties[hash] = prop;
         propertyOrder.push_back(hash);
     }
@@ -2072,6 +2244,51 @@ void ObjObjectType::dropReferences()
         entry.second.second = Value::nilVal();
     }
 }
+
+std::vector<ObjObjectType::PublicPropertyView> ObjObjectType::orderedPublicProperties() const
+{
+    std::vector<PublicPropertyView> result;
+    result.reserve(propertyOrder.size());
+    for (int32_t hash : propertyOrder) {
+        auto it = properties.find(hash);
+        if (it == properties.end())
+            continue;
+        const Property& prop = it->second;
+        if (prop.access != ast::Access::Public)
+            continue;
+        int32_t key = prop.name.hashCode();
+        result.push_back({key, &prop, static_cast<uint16_t>(key & 0x7fff)});
+    }
+    return result;
+}
+
+std::optional<ObjObjectType::PublicPropertyView>
+ObjObjectType::findPublicPropertyByHash15(uint16_t hash15, bool& ambiguous) const
+{
+    ambiguous = false;
+    const Property* match = nullptr;
+    int32_t key = 0;
+    for (int32_t hash : propertyOrder) {
+        auto it = properties.find(hash);
+        if (it == properties.end())
+            continue;
+        const Property& prop = it->second;
+        if (prop.access != ast::Access::Public)
+            continue;
+        int32_t propKey = prop.name.hashCode();
+        if (static_cast<uint16_t>(propKey & 0x7fff) != hash15)
+            continue;
+        if (match != nullptr) {
+            ambiguous = true;
+            return std::nullopt;
+        }
+        match = &prop;
+        key = propKey;
+    }
+    if (match == nullptr)
+        return std::nullopt;
+    return PublicPropertyView{key, match, static_cast<uint16_t>(key & 0x7fff)};
+}
 unique_ptr<Obj, UnreleasedObj> ObjPackageType::clone() const {
     // package types contain no mutable state; share the reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjPackageType*>(this));
@@ -2131,9 +2348,12 @@ void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
         if (nameLen)
             out.write(varName.data(), nameLen);
 
+        int32_t nameHash = entry.first.hashCode();
         uint8_t flags = 0;
+        if (constVars.find(nameHash) != constVars.end())
+            flags |= 0x2;
         icu::UnicodeString aliasFullName;
-        auto aliasIt = aliasLookup.find(entry.first.hashCode());
+        auto aliasIt = aliasLookup.find(nameHash);
         if (aliasIt != aliasLookup.end()) {
             flags |= 0x1;
             aliasFullName = aliasIt->second;
@@ -2158,6 +2378,8 @@ void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
             if (aliasLen)
                 out.write(aliasFullUtf8.data(), aliasFullUtf8.size());
         }
+
+        writeValue(out, entry.second, ctx);
     }
 
     // Persist the cstruct annotation map so cached modules know which type
@@ -2230,6 +2452,7 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
     vars.clear();
     clearModuleAliases();
+    constVars.clear();
     uint32_t varCount = 0;
     in.read(reinterpret_cast<char*>(&varCount), 4);
     for (uint32_t i = 0; i < varCount; ++i) {
@@ -2239,10 +2462,11 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         if (nameLen)
             in.read(name.data(), nameLen);
         icu::UnicodeString varName = icu::UnicodeString::fromUTF8(name);
-        vars.store(varName, Value::nilVal(), true);
 
         uint8_t flags = 0;
         in.read(reinterpret_cast<char*>(&flags), 1);
+        if (flags & 0x2)
+            constVars.insert(varName.hashCode());
         if (flags & 0x1) {
             uint32_t aliasLen = 0;
             in.read(reinterpret_cast<char*>(&aliasLen), 4);
@@ -2256,6 +2480,9 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             // qualified module should be rebound to this slot.
             registerModuleAlias(varName, aliasFullName);
         }
+
+        Value stored = readValue(in, ctx);
+        vars.store(varName, stored, true);
     }
 
     // Rebuild the cstruct metadata so the VM can mark cached object types as
@@ -2538,7 +2765,7 @@ void ObjMatrix::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 }
 
 ObjSignal::ObjSignal(ptr<df::Signal> s)
-    : signal(s), engine(nullptr), changeEvent(Value::nilVal())
+    : signal(s), engine(nullptr), changeEventType(Value::nilVal())
 {
     type = ObjType::Signal;
     if (signal) {
@@ -2559,28 +2786,92 @@ ObjSignal::~ObjSignal()
 
 void ObjSignal::trace(ValueVisitor& visitor) const
 {
-    visitor.visit(changeEvent);
+    visitor.visit(changeEventType);
+    if (signal)
+        signal->trace(visitor);
 }
 
 void ObjSignal::dropReferences()
 {
-    changeEvent = Value::nilVal();
+    changeEventType = Value::nilVal();
 }
 
-ObjEvent* ObjSignal::ensureChangeEvent()
+// Lazily create the shared SignalChanged event type and register the callback
+// responsible for emitting instances when the signal's value changes.
+ObjEventType* ObjSignal::ensureChangeEventType()
 {
-    if (!changeEvent.isNil())
-        return asEvent(changeEvent);
+    if (!changeEventType.isNil())
+        return asEventType(changeEventType);
 
-    changeEvent = Value::eventVal();
-    Value eventWeak = changeEvent.weakRef();
-    signal->addValueChangedCallback([eventWeak](TimePoint t, ptr<df::Signal>, const Value&){
+    auto eventType = newEventTypeObj(toUnicodeString("SignalChanged"));
+    ObjEventType* typeObj = eventType.get();
+
+    ObjEventType::PayloadProperty valueProp { toUnicodeString("value"), Value::nilVal(), Value::nilVal() };
+    ObjObjectType* spanType = sysTimeSpanType();
+    bool useSpan = spanType != nullptr;
+    ObjEventType::PayloadProperty timeProp { toUnicodeString("timestamp"), Value::nilVal(), Value::nilVal() };
+    if (useSpan) {
+        timeProp.type = Value::objRef(spanType);
+        timeProp.initialValue = sysNewTimeSpan(0);
+    } else {
+        timeProp.type = Value::typeSpecVal(ValueType::Int);
+        timeProp.initialValue = Value::intVal(0);
+    }
+    ObjEventType::PayloadProperty tickProp { toUnicodeString("tick"),
+                                             Value::typeSpecVal(ValueType::Int),
+                                             Value::intVal(0) };
+    typeObj->payloadProperties.push_back(valueProp);
+    typeObj->propertyLookup[valueProp.name.hashCode()] = 0;
+    typeObj->payloadProperties.push_back(timeProp);
+    typeObj->propertyLookup[timeProp.name.hashCode()] = 1;
+    typeObj->payloadProperties.push_back(tickProp);
+    typeObj->propertyLookup[tickProp.name.hashCode()] = 2;
+
+    changeEventType = Value::objVal(std::move(eventType));
+    Value eventWeak = changeEventType.weakRef();
+    // Register a signal callback that creates a fresh event instance for
+    // each change and dispatches it to subscribed handlers.
+    signal->addValueChangedCallback([eventWeak, useSpan](TimePoint t, ptr<df::Signal> sig, const Value& sample){
         if (!eventWeak.isAlive())
             return;
-        ObjEvent* ev = asEvent(eventWeak);
-        scheduleEventHandlers(eventWeak, ev, t);
+        ObjEventType* ev = asEventType(eventWeak);
+        Value eventTypeStrong = Value::objRef(ev);
+        std::vector<Value> payload;
+        payload.reserve(ev->payloadProperties.size());
+        // First payload slot carries the current signal sample.
+        payload.push_back(sample);
+        if (useSpan) {
+            // Emit the elapsed steady-clock time since engine start as a
+            // TimeSpan instance when the sys module is available.
+            payload.push_back(sysNewTimeSpan(t.microSecs()));
+        } else {
+            payload.push_back(Value::intVal(static_cast<int32_t>(t.microSecs())));
+        }
+        // Track the discrete tick associated with this change. Prefer the
+        // signal's own period when available, otherwise fall back to the
+        // engine's global tick counter.
+        int64_t tickIndex = 0;
+        if (sig && sig->period() != TimeDuration::zero()) {
+            auto periodMicros = sig->period().microSecs();
+            if (periodMicros > 0)
+                tickIndex = t.microSecs() / periodMicros;
+        } else if (auto engine = df::DataflowEngine::instance(false)) {
+            tickIndex = static_cast<int64_t>(engine->currentTickNumber());
+        }
+        tickIndex = std::clamp(tickIndex,
+                               static_cast<int64_t>(std::numeric_limits<int32_t>::min()),
+                               static_cast<int64_t>(std::numeric_limits<int32_t>::max()));
+        payload.push_back(Value::intVal(static_cast<int32_t>(tickIndex)));
+        // Package the change information into a new event instance and invoke
+        // every subscribed handler for this occurrence.
+        Value instance = Value::eventInstanceVal(eventTypeStrong, std::move(payload));
+        // Deliver change notifications immediately while preserving the
+        // original logical timestamp inside the payload. This keeps callbacks
+        // responsive even when the dataflow engine's tick time is ahead of the
+        // VM thread's wall clock (for example when ticks are advanced manually).
+        scheduleEventHandlers(eventWeak, ev, instance, TimePoint::currentTime());
     });
-    return asEvent(changeEvent);
+    return asEventType(changeEventType);
 }
 
 unique_ptr<ObjSignal, UnreleasedObj> roxal::newSignalObj(ptr<df::Signal> s)
@@ -2603,19 +2894,53 @@ std::string roxal::objSignalToString(const ObjSignal* os)
     }
 }
 
-unique_ptr<ObjEvent, UnreleasedObj> roxal::newEventObj()
+unique_ptr<ObjEventType, UnreleasedObj> roxal::newEventTypeObj(const icu::UnicodeString& name,
+                                                               Value superType)
 {
     #ifdef DEBUG_BUILD
-    return newObj<ObjEvent>(__func__, __FILE__, __LINE__);
+    auto eventType = newObj<ObjEventType>(__func__, __FILE__, __LINE__, name);
     #else
-    return newObj<ObjEvent>();
+    auto eventType = newObj<ObjEventType>(name);
     #endif
+    eventType->superType = superType;
+    return eventType;
 }
 
-std::string roxal::objEventToString(const ObjEvent* ev)
+unique_ptr<ObjEventInstance, UnreleasedObj> roxal::newEventInstanceObj(const Value& eventType,
+                                                                       std::vector<Value> payload)
 {
-    (void)ev;
-    return std::string("<event>");
+    #ifdef DEBUG_BUILD
+    auto instance = newObj<ObjEventInstance>(__func__, __FILE__, __LINE__, eventType);
+    #else
+    auto instance = newObj<ObjEventInstance>(eventType);
+    #endif
+    if (!payload.empty())
+        instance->payload = std::move(payload);
+    return instance;
+}
+
+std::string roxal::objEventTypeToString(const ObjEventType* ev)
+{
+    if (!ev)
+        return std::string("<event>");
+    std::string name;
+    ev->name.toUTF8String(name);
+    if (name.empty() || name == "event")
+        return std::string("<event>");
+    return std::string("<event ") + name + ">";
+}
+
+std::string roxal::objEventInstanceToString(const ObjEventInstance* ev)
+{
+    if (!ev)
+        return std::string("<event instance>");
+    std::string typeName;
+    if (ev->typeHandle.isAlive() && isEventType(ev->typeHandle)) {
+        asEventType(ev->typeHandle)->name.toUTF8String(typeName);
+    }
+    if (typeName.empty())
+        typeName = "event";
+    return std::string("<event ") + typeName + " instance>";
 }
 
 
@@ -3057,8 +3382,11 @@ std::string roxal::objToString(const Value& v)
         case ObjType::File: {
             return objFileToString(asFile(v));
         }
-        case ObjType::Event: {
-            return objEventToString(asEvent(v));
+        case ObjType::EventType: {
+            return objEventTypeToString(asEventType(v));
+        }
+        case ObjType::EventInstance: {
+            return objEventInstanceToString(asEventInstance(v));
         }
         case ObjType::Library: {
             return objLibraryToString(asLibrary(v));
@@ -3323,12 +3651,24 @@ unique_ptr<Obj, UnreleasedObj> ObjectInstance::clone() const
 
 
 
-ActorInstance::ActorInstance(const Value& objectType)
+ActorInstance::ActorInstance(ActorInstance::UninitializedTag)
 {
     type = ObjType::Actor;
+    instanceType = Value::nilVal();
+}
+
+ActorInstance::ActorInstance(const Value& objectType)
+    : ActorInstance(UninitializedTag{})
+{
+    initialize(objectType);
+}
+
+void ActorInstance::initialize(const Value& objectType)
+{
     debug_assert_msg(isObjectType(objectType) && asObjectType(objectType)->isActor,
                      "ActorInstance created with actor type");
     instanceType = objectType.strongRef();
+    properties.clear();
 
     // initialize instance properties from actor type definition
     ObjObjectType* ot = asObjectType(objectType);
@@ -3437,17 +3777,28 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
 }
 
 
+unique_ptr<ActorInstance, UnreleasedObj> roxal::newActorInstance(ActorInstance::UninitializedTag tag)
+{
+    #ifdef DEBUG_BUILD
+    return newObj<ActorInstance>(std::string(__func__), __FILE__, __LINE__, tag);
+    #else
+    return newObj<ActorInstance>(tag);
+    #endif
+}
+
 unique_ptr<ActorInstance, UnreleasedObj> roxal::newActorInstance(const Value& objectType)
 {
     #ifdef DEBUG_BUILD
     debug_assert_msg(isObjectType(objectType) && asObjectType(objectType)->typeValue == ValueType::Actor,
                      "newActorInstance called with actor type");
-    return newObj<ActorInstance>(std::string(__func__) +
-                                 toUTF8StdString(asObjectType(objectType)->name),
-                                 __FILE__, __LINE__, objectType);
+    auto actor = newObj<ActorInstance>(std::string(__func__) +
+                                       toUTF8StdString(asObjectType(objectType)->name),
+                                       __FILE__, __LINE__, ActorInstance::UninitializedTag{});
     #else
-    return newObj<ActorInstance>(objectType);
+    auto actor = newObj<ActorInstance>(ActorInstance::UninitializedTag{});
     #endif
+    actor->initialize(objectType);
+    return actor;
 }
 
 ObjBoundMethod::ObjBoundMethod(const Value& instance, const Value& closure)
@@ -3521,7 +3872,8 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::Matrix: return "matrix";
     case ObjType::Signal: return "signal";
     case ObjType::File: return "file";
-    case ObjType::Event: return "event";
+    case ObjType::EventType: return "event";
+    case ObjType::EventInstance: return "event";
     case ObjType::Library: return "library";
     case ObjType::ForeignPtr: return "foreignptr";
     case ObjType::Exception: return "exception";

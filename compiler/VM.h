@@ -135,6 +135,8 @@ public:
     bool isAccessAllowed(const Value& ownerType, ast::Access access);
 
     void defineProperty(ObjString* name);
+    void defineEventPayload(ObjString* name);
+    void extendEventType();
     void defineMethod(ObjString* name);
     void defineEnumLabel(ObjString* name);
     void defineNative(const std::string& name, NativeFn function,
@@ -174,7 +176,13 @@ public:
     InterpretResult joinAllThreads(uint64_t skipId = 0);
 
 
-    const int MaxStack = 1024;
+    static constexpr size_t DefaultMaxStack = 1024;
+    static constexpr size_t DefaultMaxCallFrames = 128;
+
+    static void configureStackLimits(size_t stackSize, size_t callFrameLimit);
+    void setStackLimits(size_t stackSize, size_t callFrameLimit);
+    size_t maxStackSize() const { return stackLimit; }
+    size_t maxCallFrameCount() const { return callFrameLimit; }
     typedef std::vector<Value> ValueStack;
 
     inline void push(const Value& value) { thread->push(value); }
@@ -195,6 +203,9 @@ public:
 protected:
     VM();
     ~VM();
+
+    size_t stackLimit { DefaultMaxStack };
+    size_t callFrameLimit { DefaultMaxCallFrames };
 
     void ensureDataflowEngineStopped();
 
@@ -312,6 +323,7 @@ public:
     void concatenate();
 
     void runtimeError(const std::string& format, ...);
+    void reportStackOverflow();
 
 
 
@@ -422,5 +434,5 @@ private:
 }
 
 namespace roxal {
-void scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when);
+void scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value eventInstance, TimePoint when);
 }

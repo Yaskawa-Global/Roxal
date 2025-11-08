@@ -231,11 +231,18 @@ protected:
             UnicodeString localName { (funcType==FunctionType::Method || funcType==FunctionType::Initializer) ?
                                         "this" : "" };
             locals.push_back(Local(localName,0));
+            constBindings.emplace_back();
         }
 
         std::vector<Local> locals;
         std::vector<Upvalue> upvalues;
         int scopeDepth;
+
+        struct ConstBinding {
+            Value value;
+            ast::LinePos line;
+        };
+        std::vector<std::unordered_map<icu::UnicodeString, ConstBinding>> constBindings;
 
         Value           function; // ObjFunction
         FunctionType    functionType;
@@ -255,9 +262,11 @@ protected:
         icu::UnicodeString superTypeName;
 
         bool hasSuperType;
+        bool isActor { false };
         struct MemberInfo {
             ast::Access access { ast::Access::Public };
             icu::UnicodeString owner;
+            bool isConst { false };
         };
         std::unordered_map<icu::UnicodeString, MemberInfo> propertyNames;
     };
@@ -288,9 +297,13 @@ protected:
             // create a new ObjModuleType in which module vars are held
           if (existing.isNonNil()) {
               moduleType = existing;
-              auto names = asModuleType(existing)->vars.variableNames();
-              for (const auto& n : names)
-                  moduleVarLines[n] = ast::LinePos{};
+              ObjModuleType* existingModule = asModuleType(existing);
+              auto snapshot = existingModule->vars.snapshot();
+              for (const auto& entry : snapshot) {
+                  moduleVarLines[entry.first] = ast::LinePos{};
+                  if (existingModule->constVars.find(entry.first.hashCode()) != existingModule->constVars.end())
+                      moduleConstLines[entry.first] = ast::LinePos{};
+              }
           }
           else {
               moduleType = Value::objVal(newModuleTypeObj(moduleName_));
@@ -309,6 +322,7 @@ protected:
         Value moduleType;  // ObjModuleType
         std::unordered_map<icu::UnicodeString, VarTypeSpec> moduleVarTypes;
         std::unordered_map<icu::UnicodeString, ast::LinePos> moduleVarLines;
+        std::unordered_map<icu::UnicodeString, ast::LinePos> moduleConstLines;
     };
 
     ptr<ModuleScope> asModuleScope(Scope s) const { return dynamic_ptr_cast<ModuleScope>(*s); }
@@ -380,12 +394,18 @@ protected:
     int addUpvalue(Scope scopeState, uint8_t index, bool isLocal);
     int16_t resolveUpvalue(Scope scopeState, const icu::UnicodeString& name);
     void declareVariable(const icu::UnicodeString& name, std::optional<VarTypeSpec> type = std::nullopt);
-    void defineVariable(uint16_t moduleVar = 0); // moduleVar unused if defining a local
+    void declareConstant(const icu::UnicodeString& name, const Value& value, std::optional<VarTypeSpec> type = std::nullopt);
+    void defineVariable(uint16_t moduleVar = 0, bool isConst = false); // moduleVar unused if defining a local
     bool namedVariable(const icu::UnicodeString& name, bool assign=false);
     void namedModuleVariable(const icu::UnicodeString& name, bool assign=false);
 
     std::optional<VarTypeSpec> localVarType(const icu::UnicodeString& name);
     std::optional<VarTypeSpec> moduleVarType(const icu::UnicodeString& name);
+    const FunctionScope::ConstBinding* lookupConstBinding(const icu::UnicodeString& name) const;
+    bool constExistsInCurrentScope(const icu::UnicodeString& name) const;
+    bool moduleConstExists(const icu::UnicodeString& name) const;
+    Value evaluateConstExpression(ptr<ast::Expression> expr, bool strictContext);
+    Value applyConstType(Value value, std::optional<VarTypeSpec> type, bool strictContext);
 
 };
 

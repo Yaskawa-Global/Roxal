@@ -363,6 +363,8 @@ struct OnStatement : public Statement {
     OnStatement() : Statement(StmtType::On) {}
 
     ptr<ast::Expression> trigger;
+    std::optional<icu::UnicodeString> binding;
+    bool requiresSignalChange { false };
     ptr<ast::Suite> body;
 
     virtual std::any accept(ASTVisitor& v);
@@ -423,6 +425,7 @@ struct VarDecl : public Declaration {
     std::optional<ptr<Expression>> initializer;
     std::optional<std::variant<BuiltinType,icu::UnicodeString>> varType;
     Access access { Access::Public };
+    bool isConst { false };
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -473,7 +476,7 @@ struct Parameter : public AST {
 struct TypeDecl : public Declaration {
     TypeDecl() : Declaration(DeclType::Type) {}
 
-    enum Kind { Object, Actor, Interface, Enumeration };
+    enum Kind { Object, Actor, Interface, Enumeration, Event };
     Kind kind;
 
     icu::UnicodeString name;

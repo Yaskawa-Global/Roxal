@@ -1,0 +1,13 @@
+import math
+
+var sig = math._vecSignal
+
+print(vector(sig.value))
+
+math._setVecSignal([1.0 2.0 3.0])
+wait(ms=120)
+print(vector(sig.value))
+
+math._setVecSignal([4.5 5.5 6.5])
+wait(ms=120)
+print(vector(sig.value))

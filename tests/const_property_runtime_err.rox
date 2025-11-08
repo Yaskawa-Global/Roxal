@@ -1,0 +1,6 @@
+type Example object:
+    const value = 5
+
+var e = Example()
+print(e.value)
+e.value = 10

@@ -1,20 +1,20 @@
 
 func f():
-  var e :event
+  type Local event
 
-  on e:
+  on Local:
     print('e occured')
 
-  return e
+  return Local
 
-e = f()
+eventType = f()
 
-emit e
+emit eventType()
 
 // release e
-e = nil
+eventType = nil
 
-print(e)
+print(eventType)
 
 // should be no events or handlers leaking as e is no longer referenceable
 

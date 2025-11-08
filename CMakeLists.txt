@@ -108,6 +108,7 @@ set(COMPILER_SOURCES
     compiler/ASTGenerator.cpp
     compiler/ASTGraphviz.cpp
     compiler/Chunk.cpp
+    compiler/BuiltinModule.cpp
     compiler/Object.cpp
     compiler/FFI.cpp
     compiler/RoxalCompiler.cpp

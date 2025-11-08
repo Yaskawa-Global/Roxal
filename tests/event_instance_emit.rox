@@ -1,0 +1,23 @@
+type E event
+var captured = nil
+
+func handler(evt):
+  if captured == nil:
+    print('first handler')
+    print(evt)
+    captured = evt
+  else:
+    print('second handler')
+    print(evt)
+
+E.on(handler)
+
+emit E()
+wait(us=1000)
+
+if captured != nil:
+  print('re-emitting instance')
+  captured.emit()
+  wait(us=1000)
+
+print('done')

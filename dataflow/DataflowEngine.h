@@ -44,6 +44,7 @@ public:
     void setExecutionScheme(ExecutionScheme scheme) { m_executionScheme = scheme; }
 
     TimeDuration tickPeriod() const;
+    uint64_t currentTickNumber() const;
 
     // Run the engine
     void run(); // call tick() forever

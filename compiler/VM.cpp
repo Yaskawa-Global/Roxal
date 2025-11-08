@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <map>
 #include <unordered_set>
+#include <unordered_map>
 #include <system_error>
 #include <ffi.h>
 #include <dlfcn.h>
@@ -39,10 +40,19 @@
 #include <cstdio>
 #include <iostream>
 #include <stdexcept>
+#include <atomic>
 
 using namespace roxal;
 
 namespace {
+
+// Staging slots for CLI-provided limits. These are written before the VM
+// singleton exists and copied into the instance once it is constructed.
+std::atomic<size_t> configuredStackLimit{VM::DefaultMaxStack};
+std::atomic<size_t> configuredCallFrameLimit{VM::DefaultMaxCallFrames};
+// Tracks whether VM::instance() has already materialized the singleton so
+// later configureStackLimits() calls can update it in-place.
+std::atomic<bool> vmConstructed{false};
 
 struct BoundCallGuard {
     explicit BoundCallGuard(Thread* thread) : thread_(thread) {}
@@ -117,6 +127,30 @@ static bool isExceptionType(ObjObjectType* type)
         type = asObjectType(type->superType);
     }
     return false;
+}
+
+
+void VM::configureStackLimits(size_t stackSize, size_t callFrameLimit)
+{
+    if (stackSize == 0 || callFrameLimit == 0)
+        throw std::invalid_argument("Stack size and call frame limit must be greater than zero.");
+
+    configuredStackLimit.store(stackSize, std::memory_order_relaxed);
+    configuredCallFrameLimit.store(callFrameLimit, std::memory_order_relaxed);
+
+    if (vmConstructed.load(std::memory_order_acquire)) {
+        VM::instance().setStackLimits(stackSize, callFrameLimit);
+    }
+}
+
+
+void VM::setStackLimits(size_t stackSize, size_t callFrameLimitValue)
+{
+    if (stackSize == 0 || callFrameLimitValue == 0)
+        throw std::invalid_argument("Stack size and call frame limit must be greater than zero.");
+
+    stackLimit = stackSize;
+    callFrameLimit = callFrameLimitValue;
 }
 
 
@@ -208,9 +242,12 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
     }
 }
 
-void roxal::scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when)
+void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value eventInstance, TimePoint when)
 {
-    Thread::PendingEvent pe; pe.when = when; pe.event = eventWeak;
+    Thread::PendingEvent baseEvent;
+    baseEvent.when = when;
+    baseEvent.eventType = eventWeak;
+    baseEvent.instance = eventInstance;
     for (auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
         Value handlerVal = *it;
         if (!handlerVal.isAlive()) {
@@ -224,7 +261,10 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEvent* ev, TimePoint when)
             it = ev->subscribers.erase(it);
             continue;
         }
-        handlerThread->pendingEvents.push(pe);
+        Thread::PendingEvent pending = baseEvent;
+        pending.sequence = handlerThread->nextPendingEventId.fetch_add(1, std::memory_order_relaxed);
+        handlerThread->pendingEvents.push(pending);
+        handlerThread->pendingEventCount.fetch_add(1, std::memory_order_release);
         handlerThread->wake();
         ++it;
     }
@@ -237,6 +277,9 @@ VM::VM()
     : lineMode(false)
     , cacheModeSetting(CacheMode::Normal)
 {
+    stackLimit = configuredStackLimit.load(std::memory_order_relaxed);
+    callFrameLimit = configuredCallFrameLimit.load(std::memory_order_relaxed);
+
     SimpleMarkSweepGC::instance().setVM(this);
 
     assert(sizeof(Value) == sizeof(uint64_t)); // ensure Value is 64bit
@@ -356,6 +399,8 @@ VM::VM()
         conditionalInterruptClosure = Value::closureVal(fn);
         globals.storeGlobal(toUnicodeString("__conditional_interrupt"), conditionalInterruptClosure);
     }
+
+    vmConstructed.store(true, std::memory_order_release);
 
     //CallSpec::testParamPositions();
     //Value::testPrimitiveValues();
@@ -754,8 +799,8 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
         assert(argCount == asFunction(closure->function)->arity);
     }
 
-    if (thread->frames.size() > 128) {
-        runtimeError("Stack overflow.");
+    if (thread->frames.size() > callFrameLimit) {
+        reportStackOverflow();
         return false;
     }
 
@@ -788,8 +833,8 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
             numDefaultValueFrames--;
         }
 
-        if (thread->frames.size() > 128) {
-            runtimeError("Stack overflow.");
+        if (thread->frames.size() > callFrameLimit) {
+            reportStackOverflow();
             return false;
         }
     }
@@ -927,6 +972,102 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     return true;
                 }
             }
+            case ObjType::EventType: {
+                ObjEventType* eventType = asEventType(callee);
+                size_t payloadCount = eventType->payloadProperties.size();
+                std::string eventName = toUTF8StdString(eventType->name);
+                bool strict = false;
+                if (!thread->frames.empty())
+                    strict = (thread->frames.end() - 1)->strict;
+
+                auto argBegin = thread->stackTop - callSpec.argCount;
+                std::vector<Value> payload(payloadCount);
+                std::vector<bool> assigned(payloadCount, false);
+                for (size_t i = 0; i < payloadCount; ++i)
+                    payload[i] = eventType->payloadProperties[i].initialValue;
+
+                auto orderedProps = eventType->orderedPayloadProperties();
+                auto assignValue = [&](const ObjEventType::PayloadPropertyView& entry, Value value) -> bool {
+                    if (assigned[entry.index]) {
+                        runtimeError("Multiple values provided for payload property '" +
+                                     toUTF8StdString(entry.property->name) +
+                                     "' when constructing event '" + eventName + "'.");
+                        return false;
+                    }
+                    const Value& typeSpec = entry.property->type;
+                    if (!value.isNil() && !typeSpec.isNil())
+                        value = toType(typeSpec, value, strict);
+                    assigned[entry.index] = true;
+                    payload[entry.index] = value;
+                    return true;
+                };
+
+                bool ok = true;
+                if (callSpec.allPositional) {
+                    if (callSpec.argCount > payloadCount) {
+                        runtimeError("Event '" + eventName + "' expects at most " +
+                                     std::to_string(payloadCount) + " argument" +
+                                     (payloadCount == 1 ? "" : "s") + " but " +
+                                     std::to_string(callSpec.argCount) + " were provided.");
+                        ok = false;
+                    } else {
+                        for (size_t i = 0; i < callSpec.argCount && ok; ++i) {
+                            if (!assignValue(orderedProps[i], *(argBegin + i)))
+                                ok = false;
+                        }
+                    }
+                } else {
+                    size_t positionalIndex = 0;
+                    for (size_t i = 0; i < callSpec.argCount && ok; ++i) {
+                        const auto& spec = callSpec.args[i];
+                        Value value = *(argBegin + i);
+                        if (spec.positional) {
+                            while (positionalIndex < orderedProps.size() &&
+                                   assigned[orderedProps[positionalIndex].index])
+                                ++positionalIndex;
+                            if (positionalIndex >= orderedProps.size()) {
+                                runtimeError("Too many positional arguments when constructing event '" +
+                                             eventName + "'.");
+                                ok = false;
+                                break;
+                            }
+                            if (!assignValue(orderedProps[positionalIndex], value)) {
+                                ok = false;
+                                break;
+                            }
+                            ++positionalIndex;
+                        } else {
+                            bool ambiguous = false;
+                            auto entry = eventType->findPayloadPropertyByHash15(
+                                static_cast<uint16_t>(spec.paramNameHash & 0x7fff), ambiguous);
+                            if (ambiguous) {
+                                runtimeError("Ambiguous named argument when constructing event '" +
+                                             eventName + "'; multiple payload properties share that name hash.");
+                                ok = false;
+                                break;
+                            }
+                            if (!entry.has_value()) {
+                                runtimeError("Unknown named argument when constructing event '" +
+                                             eventName + "'.");
+                                ok = false;
+                                break;
+                            }
+                            if (!assignValue(*entry, value)) {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (!ok)
+                    return false;
+
+                Value instance = Value::eventInstanceVal(Value::objRef(eventType), std::move(payload));
+                *(thread->stackTop - callSpec.argCount - 1) = instance;
+                popN(callSpec.argCount);
+                return true;
+            }
             case ObjType::Type: {
                 ObjTypeSpec* ts = asTypeSpec(callee);
                 if ((ts->typeValue == ValueType::Object) || (ts->typeValue == ValueType::Actor)) {
@@ -1043,8 +1184,123 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 objInst->properties[hash] = val;
                             }
                             pop();
+                        } else if (!type->isActor && initMethod == nullptr) {
+                            ObjectInstance* objInst = asObjectInstance(inst);
+
+                            std::vector<ObjObjectType::PublicPropertyView> publicProps =
+                                type->orderedPublicProperties();
+
+                            std::string typeName = toUTF8StdString(type->name);
+
+                            bool strictConv = false;
+                            if (thread->frames.size() >= 1)
+                                strictConv = (thread->frames.end()-1)->strict;
+
+                            auto argBegin = thread->stackTop - callSpec.argCount;
+
+                            std::unordered_map<int32_t, Value> assignedValues;
+                            assignedValues.reserve(callSpec.argCount);
+                            std::unordered_set<int32_t> assignedKeys;
+
+                            // Helper that enforces duplicate/named argument validation and performs
+                            // type conversion before storing the value for later assignment.
+                            auto assignValue = [&](const ObjObjectType::PublicPropertyView& entry, Value value) -> bool {
+                                if (assignedKeys.contains(entry.key)) {
+                                    runtimeError("Multiple values provided for property '" +
+                                                 toUTF8StdString(entry.property->name) +
+                                                 "' when constructing type '" + typeName + "'.");
+                                    return false;
+                                }
+                                if (!entry.property->type.isNil() && isTypeSpec(entry.property->type)) {
+                                    ObjTypeSpec* ts = asTypeSpec(entry.property->type);
+                                    if (ts->typeValue != ValueType::Nil) {
+                                        try {
+                                            value = toType(entry.property->type, value, strictConv);
+                                        } catch (std::exception& e) {
+                                            runtimeError(e.what());
+                                            return false;
+                                        }
+                                    }
+                                }
+                                assignedKeys.insert(entry.key);
+                                assignedValues.emplace(entry.key, value);
+                                return true;
+                            };
+
+                            bool ok = true;
+                            if (callSpec.allPositional) {
+                                // No named parameters were present, so the argument order follows the
+                                // order of declaration for public properties.
+                                if (callSpec.argCount > publicProps.size()) {
+                                    runtimeError("Type '" + typeName + "' constructor expects at most " +
+                                                 std::to_string(publicProps.size()) +
+                                                 " argument" + (publicProps.size() == 1 ? "" : "s") +
+                                                 " but " + std::to_string(callSpec.argCount) + " were provided.");
+                                    ok = false;
+                                } else {
+                                    for (size_t i = 0; i < callSpec.argCount && ok; ++i) {
+                                        if (!assignValue(publicProps[i], *(argBegin + i)))
+                                            ok = false;
+                                    }
+                                }
+                            } else {
+                                // When mixed positional/named arguments are present we need to skip
+                                // properties that already received a value via a named parameter.
+                                size_t positionalIndex = 0;
+                                for (size_t i = 0; i < callSpec.argCount && ok; ++i) {
+                                    const auto& spec = callSpec.args[i];
+                                    Value value = *(argBegin + i);
+                                    if (spec.positional) {
+                                        while (positionalIndex < publicProps.size() &&
+                                               assignedKeys.contains(publicProps[positionalIndex].key))
+                                            ++positionalIndex;
+                                        if (positionalIndex >= publicProps.size()) {
+                                            runtimeError("Too many positional arguments when constructing type '" +
+                                                         typeName + "'.");
+                                            ok = false;
+                                            break;
+                                        }
+                                        if (!assignValue(publicProps[positionalIndex], value)) {
+                                            ok = false;
+                                            break;
+                                        }
+                                        ++positionalIndex;
+                                    } else {
+                                        bool ambiguous = false;
+                                        auto entry = type->findPublicPropertyByHash15(
+                                            static_cast<uint16_t>(spec.paramNameHash & 0x7fff),
+                                            ambiguous);
+                                        if (ambiguous) {
+                                            runtimeError("Ambiguous named argument when constructing type '" +
+                                                         typeName +
+                                                         "'; multiple public properties share that name hash.");
+                                            ok = false;
+                                            break;
+                                        }
+                                        if (!entry.has_value()) {
+                                            runtimeError("Unknown named argument when constructing type '" +
+                                                         typeName + "'.");
+                                            ok = false;
+                                            break;
+                                        }
+                                        if (!assignValue(*entry, value)) {
+                                            ok = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!ok)
+                                return false;
+
+                            for (const auto& kv : assignedValues)
+                                objInst->properties[kv.first] = kv.second;
+
+                            popN(callSpec.argCount);
                         } else if (callSpec.argCount != 0) {
-                            runtimeError("Expected 0 arguments for type instantiation, provided "+std::to_string(callSpec.argCount));
+                            runtimeError("Expected 0 arguments for type instantiation, provided " +
+                                         std::to_string(callSpec.argCount));
                             return false;
                         }
                     }
@@ -1806,11 +2062,14 @@ bool VM::isAccessAllowed(const Value& ownerType, ast::Access access)
 
 void VM::defineProperty(ObjString* name)
 {
+    int typeObjOffset = 4;
+    if (!isObjectType(peek(typeObjOffset)))
+        typeObjOffset = 3;
     #ifdef DEBUG_BUILD
-    if (!isObjectType(peek(3)))
+    if (!isObjectType(peek(typeObjOffset)))
         throw std::runtime_error("Can't create property without object or actor type on stack");
     #endif
-    ObjObjectType* objType = asObjectType(peek(3));
+    ObjObjectType* objType = asObjectType(peek(typeObjOffset));
     #ifdef DEBUG_BUILD
     if (objType->isInterface)
         throw std::runtime_error("Can't create property for an interface");
@@ -1819,9 +2078,13 @@ void VM::defineProperty(ObjString* name)
     if (objType->properties.contains(name->hash))
         throw std::runtime_error("Duplicate property '"+name->toStdString()+"' declared in type "+(objType->isActor?"actor":"object")+" "+toUTF8StdString(objType->name));
 
-    const Value& propertyType { peek(2) };
-    Value propertyInitial { peek(1) };
-    Value accessVal { peek(0) };
+    const Value& propertyType { peek(typeObjOffset - 1) };
+    Value propertyInitial { peek(typeObjOffset - 2) };
+    Value accessVal { peek(typeObjOffset - 3) };
+    Value constVal { Value::falseVal() };
+    bool hasConstFlag = (typeObjOffset == 4);
+    if (hasConstFlag)
+        constVal = peek(0);
 
     if (!propertyInitial.isNil()) {
         // if the property type is specified, convert the initial value (if given) to the declared propType
@@ -1834,8 +2097,9 @@ void VM::defineProperty(ObjString* name)
     }
 
     ast::Access access = (!accessVal.isNil() && accessVal.isBool() && accessVal.asBool()) ? ast::Access::Private : ast::Access::Public;
+    bool isConst = (!constVal.isNil() && constVal.isBool() && constVal.asBool());
     objType->properties[name->hash] = {name->s, propertyType, propertyInitial,
-                                      access, Value::objRef(objType).weakRef()};
+                                      access, isConst, Value::objRef(objType).weakRef()};
     objType->propertyOrder.push_back(name->hash);
 
     // check module annotations for ctype
@@ -1849,7 +2113,64 @@ void VM::defineProperty(ObjString* name)
                 objType->properties[name->hash].ctype = itProp->second;
         }
     }
-    popN(3);
+    popN(hasConstFlag ? 4 : 3);
+}
+
+
+void VM::defineEventPayload(ObjString* name)
+{
+    #ifdef DEBUG_BUILD
+    if (!isEventType(peek(2)))
+        throw std::runtime_error("Can't declare event payload without event type on stack");
+    #endif
+
+    ObjEventType* eventType = asEventType(peek(2));
+
+    if (eventType->propertyLookup.contains(name->hash))
+        throw std::runtime_error("Duplicate event payload '" + name->toStdString() + "' declared in event '" + toUTF8StdString(eventType->name) + "'");
+
+    Value propertyType = peek(1);
+    Value initialValue = peek(0);
+
+    if (!initialValue.isNil() && !propertyType.isNil() && isTypeSpec(propertyType)) {
+        ObjTypeSpec* spec = asTypeSpec(propertyType);
+        if (spec->typeValue != ValueType::Nil) {
+            bool strict = false;
+            if (!thread->frames.empty())
+                strict = (thread->frames.end() - 1)->strict;
+            initialValue = toType(propertyType, initialValue, strict);
+        }
+    }
+
+    ObjEventType::PayloadProperty payload { name->s, propertyType, initialValue };
+    eventType->payloadProperties.push_back(payload);
+    eventType->propertyLookup[name->hash] = eventType->payloadProperties.size() - 1;
+
+    popN(2);
+}
+
+
+void VM::extendEventType()
+{
+    Value superVal = peek(1);
+    Value subVal = peek(0);
+
+    if (!isEventType(superVal) || !isEventType(subVal))
+        throw std::runtime_error("Event inheritance requires event types");
+
+    ObjEventType* superType = asEventType(superVal);
+    ObjEventType* subType = asEventType(subVal);
+
+    subType->superType = Value::objRef(superType);
+    subType->payloadProperties.clear();
+    subType->payloadProperties.reserve(superType->payloadProperties.size());
+    subType->propertyLookup.clear();
+
+    for (size_t i = 0; i < superType->payloadProperties.size(); ++i) {
+        const auto& prop = superType->payloadProperties[i];
+        subType->payloadProperties.push_back(prop);
+        subType->propertyLookup[prop.name.hashCode()] = i;
+    }
 }
 
 
@@ -2334,6 +2655,46 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
 
                 inst.resolve();
+                if (isEventInstance(inst)) {
+                    ObjEventInstance* eventInst = asEventInstance(inst);
+                    if (!eventInst->typeHandle.isAlive() || !isEventType(eventInst->typeHandle)) {
+                        runtimeError("Event instance is no longer associated with a live event type.");
+                        return errorReturn;
+                    }
+
+                    ObjEventType* type = asEventType(eventInst->typeHandle);
+                    auto pit = type->propertyLookup.find(name->hash);
+                    if (pit != type->propertyLookup.end()) {
+                        size_t index = pit->second;
+                        if (index >= eventInst->payload.size()) {
+                            runtimeError("Event instance payload is missing property '" + toUTF8StdString(name->s) + "'.");
+                            return errorReturn;
+                        }
+
+                        Value result = eventInst->payload[index];
+                        pop();
+                        push(result);
+                        break;
+                    }
+
+                    auto mit = builtinMethods.find(inst.type());
+                    if (mit != builtinMethods.end()) {
+                        auto methodIt = mit->second.find(name->hash);
+                        if (methodIt != mit->second.end()) {
+                            const BuiltinMethodInfo& methodInfo = methodIt->second;
+                            Value bound { Value::boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
+                                                                methodInfo.funcType, methodInfo.defaultValues,
+                                                                methodInfo.declFunction) };
+                            pop();
+                            push(bound);
+                            break;
+                        }
+                    }
+
+                    runtimeError("Undefined property '" + toUTF8StdString(name->s) + "' for event instance.");
+                    return errorReturn;
+                }
+
                 if (isDict(inst)) {
                     ObjDict* dict = asDict(inst);
                     Value key { Value::objRef(name) };
@@ -2474,6 +2835,11 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
 
                 runtimeError("Only object and actor instances have methods and only object, actor, and dictionary instances have properties (string keys only).");
+#ifdef DEBUG_BUILD
+                if (inst.isObj()) {
+                    std::cerr << "GetProp fallback objType=" << int(objType(inst)) << std::endl;
+                }
+#endif
                 return errorReturn;
                 break;
             }
@@ -2517,6 +2883,45 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
 
                 inst.resolve();
+                if (isEventInstance(inst)) {
+                    ObjEventInstance* eventInst = asEventInstance(inst);
+                    if (!eventInst->typeHandle.isAlive() || !isEventType(eventInst->typeHandle)) {
+                        runtimeError("Event instance is no longer associated with a live event type.");
+                        return errorReturn;
+                    }
+
+                    ObjEventType* type = asEventType(eventInst->typeHandle);
+                    auto pit = type->propertyLookup.find(name->hash);
+                    if (pit != type->propertyLookup.end()) {
+                        size_t index = pit->second;
+                        if (index >= eventInst->payload.size()) {
+                            runtimeError("Event instance payload is missing property '" + toUTF8StdString(name->s) + "'.");
+                            return errorReturn;
+                        }
+
+                        Value result = eventInst->payload[index];
+                        pop();
+                        push(result);
+                        break;
+                    }
+
+                    auto mit = builtinMethods.find(inst.type());
+                    if (mit != builtinMethods.end()) {
+                        auto methodIt = mit->second.find(name->hash);
+                        if (methodIt != mit->second.end()) {
+                            const BuiltinMethodInfo& methodInfo = methodIt->second;
+                            Value bound { Value::boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
+                                                                methodInfo.funcType, methodInfo.defaultValues,
+                                                                methodInfo.declFunction) };
+                            pop();
+                            push(bound);
+                            break;
+                        }
+                    }
+
+                    runtimeError("Undefined property '" + toUTF8StdString(name->s) + "' for event instance.");
+                    return errorReturn;
+                }
                 if (isDict(inst)) {
                     ObjDict* dict = asDict(inst);
                     Value key { Value::objRef(name) };
@@ -2704,6 +3109,11 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
+                if (isEventInstance(inst)) {
+                    runtimeError("Cannot assign to property '" + toUTF8StdString(name->s) + "' of event instance.");
+                    return errorReturn;
+                }
+
                 inst.resolve();
                 if (isDict(inst)) {
                     ObjDict* dict = asDict(inst);
@@ -2715,19 +3125,21 @@ std::pair<InterpretResult,Value> VM::execute()
                     break;
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
-                    //std::cout << "setting prop " << toUTF8StdString(name->s) << " of " << toString(inst) << " to " << toString(peek(0)) << std::endl;
-
+                    ObjObjectType* t = asObjectType(objInst->instanceType);
+                    const auto& properties { t->properties };
+                    auto propertyIt = properties.find(name->hash);
+                    if (propertyIt != properties.end() && propertyIt->second.isConst) {
+                        runtimeError("Cannot assign to constant '" + toUTF8StdString(name->s) + "' of object type '" + toUTF8StdString(t->name) + "'");
+                        return errorReturn;
+                    }
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
                         // if type object specified the property type in the declaration,
                         //  convert the value to that type (if possible)
-                        ObjObjectType* t = asObjectType(objInst->instanceType);
-                        const auto& properties { t->properties };
-                        const auto& property = properties.find(name->hash);
-                        if (property != properties.end()) {
-                            const auto& prop { property->second };
+                        if (propertyIt != properties.end()) {
+                            const auto& prop { propertyIt->second };
                             if (!prop.type.isNil() && isTypeSpec(prop.type)) {
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
@@ -2749,16 +3161,19 @@ std::pair<InterpretResult,Value> VM::execute()
                     break;
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
-
+                    ObjObjectType* tA = asObjectType(actorInst->instanceType);
+                    const auto& properties { tA->properties };
+                    auto propertyIt = properties.find(name->hash);
+                    if (propertyIt != properties.end() && propertyIt->second.isConst) {
+                        runtimeError("Cannot assign to constant '" + toUTF8StdString(name->s) + "' of actor type '" + toUTF8StdString(tA->name) + "'");
+                        return errorReturn;
+                    }
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
-                        ObjObjectType* tA = asObjectType(actorInst->instanceType);
-                        const auto& properties { tA->properties };
-                        const auto& property = properties.find(name->hash);
-                        if (property != properties.end()) {
-                            const auto& prop { property->second };
+                        if (propertyIt != properties.end()) {
+                            const auto& prop { propertyIt->second };
                             if (!prop.type.isNil() && isTypeSpec(prop.type)) {
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
@@ -2778,6 +3193,11 @@ std::pair<InterpretResult,Value> VM::execute()
                     break;
                 } else if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
+
+                    if (moduleType->constVars.find(name->hash) != moduleType->constVars.end()) {
+                        runtimeError("Cannot assign to module constant '" + toUTF8StdString(name->s) + "'");
+                        return errorReturn;
+                    }
 
                     auto& vars { moduleType->vars };
 
@@ -2828,6 +3248,10 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
 
                 inst.resolve();
+                if (isEventInstance(inst)) {
+                    runtimeError("Cannot assign to property '" + toUTF8StdString(name->s) + "' of event instance.");
+                    return errorReturn;
+                }
                 if (isDict(inst)) {
                     ObjDict* dict = asDict(inst);
 
@@ -2840,15 +3264,19 @@ std::pair<InterpretResult,Value> VM::execute()
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjObjectType* t = asObjectType(objInst->instanceType);
+                    const auto& properties { t->properties };
+                    auto propertyIt = properties.find(name->hash);
+                    if (propertyIt != properties.end() && propertyIt->second.isConst) {
+                        runtimeError("Cannot assign to constant '" + toUTF8StdString(name->s) + "' of object type '" + toUTF8StdString(t->name) + "'");
+                        return errorReturn;
+                    }
 
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
-                        const auto& properties { t->properties };
-                        const auto& property = properties.find(name->hash);
-                        if (property != properties.end()) {
-                            const auto& prop { property->second };
+                        if (propertyIt != properties.end()) {
+                            const auto& prop { propertyIt->second };
                             if (!prop.type.isNil() && isTypeSpec(prop.type)) {
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
@@ -2862,7 +3290,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         }
                     }
 
-                    auto pit = t->properties.find(name->hash);
+                    auto pit = propertyIt;
                     ast::Access propAccess = ast::Access::Public;
                     Value ownerT = objInst->instanceType.weakRef();
                     if (pit != t->properties.end()) {
@@ -2881,15 +3309,19 @@ std::pair<InterpretResult,Value> VM::execute()
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
                     ObjObjectType* tA = asObjectType(actorInst->instanceType);
+                    const auto& properties { tA->properties };
+                    auto propertyIt = properties.find(name->hash);
+                    if (propertyIt != properties.end() && propertyIt->second.isConst) {
+                        runtimeError("Cannot assign to constant '" + toUTF8StdString(name->s) + "' of actor type '" + toUTF8StdString(tA->name) + "'");
+                        return errorReturn;
+                    }
 
                     Value value { peek(0) };
 
                     if (!value.isNil()) {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
-                        const auto& properties { tA->properties };
-                        const auto& property = properties.find(name->hash);
-                        if (property != properties.end()) {
-                            const auto& prop { property->second };
+                        if (propertyIt != properties.end()) {
+                            const auto& prop { propertyIt->second };
                             if (!prop.type.isNil() && isTypeSpec(prop.type)) {
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
@@ -2903,7 +3335,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         }
                     }
 
-                    auto pit = tA->properties.find(name->hash);
+                    auto pit = propertyIt;
                     ast::Access propAccess = ast::Access::Public;
                     Value ownerT = actorInst->instanceType.weakRef();
                     if (pit != tA->properties.end()) {
@@ -2921,6 +3353,11 @@ std::pair<InterpretResult,Value> VM::execute()
                     break;
                 } else if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
+
+                    if (moduleType->constVars.find(name->hash) != moduleType->constVars.end()) {
+                        runtimeError("Cannot assign to module constant '" + toUTF8StdString(name->s) + "'");
+                        return errorReturn;
+                    }
 
                     auto& vars { moduleType->vars };
 
@@ -3390,6 +3827,12 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
+            case OpCode::DefineModuleConst: {
+                ObjString* name = readString();
+                moduleType()->constVars.insert(name->hash);
+                moduleVars().store(name->hash, name->s,pop());
+                break;
+            }
             case OpCode::DefineModuleVar: {
                 ObjString* name = readString();
                 moduleVars().store(name->hash, name->s,pop());
@@ -3411,6 +3854,10 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::SetModuleVar: {
                 ObjString* name = readString();
+                if (moduleType()->constVars.find(name->hash) != moduleType()->constVars.end()) {
+                    runtimeError("Cannot assign to module constant '" + toUTF8StdString(name->s) + "'");
+                    return errorReturn;
+                }
                 auto& vars { moduleVars() };
                 // set new value, but leave it on stack (as assignment is an expression)
                 bool stored = vars.storeIfExists(name->hash, name->s,peek(0));
@@ -3431,6 +3878,11 @@ std::pair<InterpretResult,Value> VM::execute()
                 bool exists = vars.exists(name->hash);
                 if (!exists && !moduleScope) {
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
+                    return errorReturn;
+                }
+
+                if (moduleType()->constVars.find(name->hash) != moduleType()->constVars.end()) {
+                    runtimeError("Cannot assign to module constant '" + toUTF8StdString(name->s) + "'");
                     return errorReturn;
                 }
 
@@ -3596,21 +4048,35 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::EventOn: {
+                uint8_t modeByte = readByte();
+                bool requireChangedKeyword = (modeByte == 1);
+                bool disallowSignalTargets = (modeByte == 2);
                 Value closureVal = pop();
                 Value eventVal = pop();
-                if (!isClosure(closureVal) || !(isEvent(eventVal) || isSignal(eventVal))) {
+                if (!isClosure(closureVal)) {
                     runtimeError("EVENT_ON expects event/signal and closure");
                     return errorReturn;
                 }
 
-                ObjEvent* ev = nullptr;
-                if (isEvent(eventVal)) {
-                    ev = asEvent(eventVal);
-                } else {
+                ObjEventType* ev = nullptr;
+                if (isSignal(eventVal)) {
+                    if (disallowSignalTargets) {
+                        runtimeError("signal handlers must use 'changed'");
+                        return errorReturn;
+                    }
                     ObjSignal* sigObj = asSignal(eventVal);
-                    ev = sigObj->ensureChangeEvent();
-                    eventVal = sigObj->changeEvent;
+                    ev = sigObj->ensureChangeEventType();
+                    eventVal = sigObj->changeEventType;
                     thread->eventToSignal[eventVal.weakRef()] = Value::objRef(sigObj);
+                } else if (isEventType(eventVal)) {
+                    if (requireChangedKeyword) {
+                        runtimeError("'changed' is only valid with signals");
+                        return errorReturn;
+                    }
+                    ev = asEventType(eventVal);
+                } else {
+                    runtimeError("EVENT_ON expects event/signal and closure");
+                    return errorReturn;
                 }
 
                 // record this handler on the current thread
@@ -3626,18 +4092,18 @@ std::pair<InterpretResult,Value> VM::execute()
             case OpCode::EventOff: {
                 Value closureVal = pop();
                 Value eventVal = pop();
-                if (!isClosure(closureVal) || !(isEvent(eventVal) || isSignal(eventVal))) {
+                if (!isClosure(closureVal) || !(isEventType(eventVal) || isSignal(eventVal))) {
                     runtimeError("EVENT_OFF expects event/signal and closure");
                     return errorReturn;
                 }
 
-                ObjEvent* ev = nullptr;
-                if (isEvent(eventVal)) {
-                    ev = asEvent(eventVal);
+                ObjEventType* ev = nullptr;
+                if (isEventType(eventVal)) {
+                    ev = asEventType(eventVal);
                 } else {
                     ObjSignal* sigObj = asSignal(eventVal);
-                    ev = sigObj->ensureChangeEvent();
-                    eventVal = sigObj->changeEvent;
+                    ev = sigObj->ensureChangeEventType();
+                    eventVal = sigObj->changeEventType;
                     thread->eventToSignal.erase(eventVal.weakRef());
                 }
 
@@ -3774,6 +4240,12 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(tv);
                 break;
             }
+            case OpCode::EventType: {
+                ObjString* name = readString();
+                Value tv { Value::objVal(newEventTypeObj(name->s)) };
+                push(tv);
+                break;
+            }
             case OpCode::Property: {
                 try {
                     defineProperty(readString());
@@ -3781,6 +4253,25 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError(e.what());
                     return errorReturn;
                 }
+                break;
+            }
+            case OpCode::EventPayload: {
+                try {
+                    defineEventPayload(readString());
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case OpCode::EventExtend: {
+                try {
+                    extendEventType();
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                pop();
                 break;
             }
             case OpCode::Method: {
@@ -3922,6 +4413,11 @@ std::pair<InterpretResult,Value> VM::execute()
         if (!processPendingEvents())
             return errorReturn;
 
+        // Refresh frame pointer after processing events, as nested execute() calls
+        // from event handlers may have modified the frame stack
+        if (!thread->frames.empty())
+            frame = thread->frames.end()-1;
+
         if (consumePendingObjectCleanup()) {
             freeObjects();
         }
@@ -3939,26 +4435,32 @@ bool VM::processPendingEvents()
 
     if (exitRequested.load()) return false;
 
-    if (thread->eventHandlers.empty()) return true;
+    if (thread->pendingEventCount.load(std::memory_order_acquire) == 0)
+        return true;
 
     Thread::PendingEvent tev;
 
     // Drop events that are no longer alive or have no handlers
     while(thread->pendingEvents.pop_if([&](const Thread::PendingEvent& e){
-                return !e.event.isAlive() ||
-                        thread->eventHandlers.count(e.event) == 0;
+                return !e.eventType.isAlive() ||
+                        thread->eventHandlers.count(e.eventType) == 0;
             }, tev)) {
-        thread->eventHandlers.erase(tev.event);
+        size_t previous = thread->pendingEventCount.fetch_sub(1, std::memory_order_acq_rel);
+        assert(previous > 0);
+        thread->eventHandlers.erase(tev.eventType);
     }
 
-    if (thread->eventHandlers.empty()) return true;
+    if (thread->pendingEventCount.load(std::memory_order_acquire) == 0)
+        return true;
 
     auto now = TimePoint::currentTime();
     if (thread->pendingEvents.pop_if([&](const Thread::PendingEvent& e){
-            return e.when <= now && e.event.isAlive() &&
-                    thread->eventHandlers.count(e.event) > 0;
+            return e.when <= now && e.eventType.isAlive() &&
+                    thread->eventHandlers.count(e.eventType) > 0;
         }, tev)) {
-        auto handlersIt = thread->eventHandlers.find(tev.event);
+        size_t previous = thread->pendingEventCount.fetch_sub(1, std::memory_order_acq_rel);
+        assert(previous > 0);
+        auto handlersIt = thread->eventHandlers.find(tev.eventType);
         if (handlersIt != thread->eventHandlers.end()) {
             for(const auto& handler : handlersIt->second) {
                 auto closureObj = asClosure(handler);
@@ -3970,7 +4472,7 @@ bool VM::processPendingEvents()
 
                 if (handler == conditionalInterruptClosure) {
                     bool raise = true;
-                    auto sigIt = thread->eventToSignal.find(tev.event);
+                    auto sigIt = thread->eventToSignal.find(tev.eventType);
                     if (sigIt != thread->eventToSignal.end()) {
                         Value sigVal = sigIt->second;
                         if (isSignal(sigVal)) {
@@ -3989,7 +4491,12 @@ bool VM::processPendingEvents()
                         raiseException(exc);
                     }
                 } else {
-                    auto result = callAndExec(closureObj, {});
+                    std::vector<Value> handlerArgs;
+                    if (closureObj->function.isNonNil() &&
+                        asFunction(closureObj->function)->arity > 0) {
+                        handlerArgs.push_back(tev.instance);
+                    }
+                    auto result = callAndExec(closureObj, handlerArgs);
                     assert(!thread->threadSleep);
 
                     if (result.first != InterpretResult::OK)
@@ -4051,11 +4558,11 @@ void VM::resetStack()
 {
     if (!thread) return;
     thread->stack.clear();
-    thread->stack.resize(MaxStack);
+    thread->stack.resize(stackLimit);
     thread->stackTop = thread->stack.begin();
 
     thread->frames.clear();
-    thread->frames.reserve(128);
+    thread->frames.reserve(callFrameLimit);
     thread->frameStart = false;
     thread->openUpvalues.clear();
 }
@@ -4285,6 +4792,24 @@ void VM::concatenate()
 }
 
 
+void VM::reportStackOverflow()
+{
+    size_t frameCount = thread ? thread->frames.size() : 0;
+    size_t stackDepth = 0;
+    if (thread) {
+        stackDepth = static_cast<size_t>(thread->stackTop - thread->stack.begin());
+    }
+
+    std::string message {
+        "Stack overflow (call frames: " + std::to_string(frameCount) + "/" +
+        std::to_string(callFrameLimit) + ", stack depth: " +
+        std::to_string(stackDepth) + "/" + std::to_string(stackLimit) + ")."
+    };
+
+    runtimeError(message);
+}
+
+
 void VM::runtimeError(const std::string& format, ...)
 {
     runtimeErrorFlag = true;
@@ -4417,6 +4942,7 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Signal, "set", std::mem_fn(&VM::signal_set_builtin));
 
     defineBuiltinMethod(ValueType::Event, "emit", std::mem_fn(&VM::event_emit_builtin), true);
+    defineBuiltinMethod(ValueType::Object, "emit", std::mem_fn(&VM::event_emit_builtin), true);
     defineBuiltinMethod(ValueType::Event, "on", std::mem_fn(&VM::event_on_builtin), true);
     defineBuiltinMethod(ValueType::Event, "off", std::mem_fn(&VM::event_off_builtin), true);
 
@@ -4559,29 +5085,58 @@ Value VM::captureStacktrace()
 
 Value VM::event_emit_builtin(ArgsView args)
 {
-    if (args.size() > 2 || !isEvent(args[0]))
-        throw std::invalid_argument("event.emit expects optional time argument in microseconds");
+    if (args.empty())
+        throw std::invalid_argument("event.emit expects an event receiver");
+
+    const Value& receiver = args[0];
+
+    auto parseTime = [](const Value& candidate) {
+        if (!candidate.isNumber())
+            throw std::invalid_argument("event.emit time argument must be numeric microseconds");
+        return TimePoint::microSecs(candidate.asInt());
+    };
 
     TimePoint when = TimePoint::currentTime();
-    if (args.size() == 2) {
-        if (!args[1].isNumber())
-            throw std::invalid_argument("event.emit time argument must be numeric microseconds");
-        when = TimePoint::microSecs(args[1].asInt());
+    Value eventType = Value::nilVal();
+    Value instance = Value::nilVal();
+    ObjEventType* ev = nullptr;
+
+    if (isEventType(receiver)) {
+        throw std::invalid_argument("event.emit expects an event instance; call the event type to create one");
+    } else if (isEventInstance(receiver)) {
+        if (args.size() > 2)
+            throw std::invalid_argument("event.emit expects optional time argument in microseconds");
+
+        ObjEventInstance* inst = asEventInstance(receiver);
+        if (!inst->typeHandle.isAlive() || !isEventType(inst->typeHandle))
+            return Value::nilVal();
+
+        eventType = inst->typeHandle;
+        ev = asEventType(eventType);
+
+        if (args.size() == 2)
+            when = parseTime(args[1]);
+
+        if (ev->subscribers.empty())
+            return Value::nilVal();
+
+        instance = receiver;
+    } else {
+        throw std::invalid_argument("event.emit expects an event instance receiver");
     }
 
-    Value eventWeak = args[0].weakRef();
-    ObjEvent* ev = asEvent(args[0]);
-    if (ev->subscribers.empty())
-        return Value::nilVal();
+    if (!ev)
+        ev = asEventType(eventType);
 
-    scheduleEventHandlers(eventWeak, ev, when);
+    Value eventWeak = eventType.weakRef();
+    scheduleEventHandlers(eventWeak, ev, instance, when);
 
     return Value::nilVal();
 }
 
 Value VM::event_on_builtin(ArgsView args)
 {
-    if (args.size() != 2 || !isEvent(args[0]) || !isClosure(args[1]))
+    if (args.size() != 2 || !isEventType(args[0]) || !isClosure(args[1]))
         throw std::invalid_argument("event.on expects event and closure argument");
 
     Value eventVal = args[0];
@@ -4590,8 +5145,13 @@ Value VM::event_on_builtin(ArgsView args)
     Value key = eventVal.weakRef();
     thread->eventHandlers[key].push_back(closureVal);
 
-    ObjEvent* ev = asEvent(eventVal);
+    ObjEventType* ev = asEventType(eventVal);
     ObjClosure* closure = asClosure(closureVal);
+    if (closure->function.isNonNil()) {
+        ObjFunction* fn = asFunction(closure->function);
+        if (fn->arity > 1)
+            throw std::invalid_argument("event handler must accept at most one argument");
+    }
     closure->handlerThread = thread;
     ev->subscribers.push_back(closureVal.weakRef());
 
@@ -4600,19 +5160,19 @@ Value VM::event_on_builtin(ArgsView args)
 
 Value VM::event_off_builtin(ArgsView args)
 {
-    if (args.size() != 2 || !(isEvent(args[0]) || isSignal(args[0])) || !isClosure(args[1]))
+    if (args.size() != 2 || !(isEventType(args[0]) || isSignal(args[0])) || !isClosure(args[1]))
         throw std::invalid_argument("event.off expects event/signal and closure argument");
 
     Value eventVal = args[0];
     Value closureVal = args[1];
 
-    ObjEvent* ev = nullptr;
-    if (isEvent(eventVal)) {
-        ev = asEvent(eventVal);
+    ObjEventType* ev = nullptr;
+    if (isEventType(eventVal)) {
+        ev = asEventType(eventVal);
     } else {
         ObjSignal* sigObj = asSignal(eventVal);
-        ev = sigObj->ensureChangeEvent();
-        eventVal = sigObj->changeEvent;
+        ev = sigObj->ensureChangeEventType();
+        eventVal = sigObj->changeEventType;
         thread->eventToSignal.erase(eventVal.weakRef());
     }
 

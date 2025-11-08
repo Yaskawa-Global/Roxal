@@ -1,0 +1,1 @@
+.*actor_module_var_err\.rox:5:17: error: Actor methods cannot access module variable 'shared'; use a module constant instead\..*

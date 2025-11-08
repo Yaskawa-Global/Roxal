@@ -1,0 +1,4 @@
+event a=1 b=2.2 s=hello
+event a=3 b=1.5 s=bye
+event a=10 b=1.5 s=world
+inst a=10 b=4.5 s=world

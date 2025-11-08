@@ -23,6 +23,7 @@
 #include <iomanip>
 #include <locale>
 #include <stdexcept>
+#include <future>
 
 using namespace roxal;
 
@@ -374,6 +375,17 @@ std::string roxal::sysTimeSpanDefaultString(ObjectInstance* inst)
     return defaultSpanString(inst);
 }
 
+Value roxal::sysNewTimeSpan(int64_t totalMicros)
+{
+    if (!gSysTimeSpanType)
+        throw std::runtime_error("sys.TimeSpan type not found");
+
+    Value typeValue = Value::objRef(gSysTimeSpanType);
+    Value span = Value::objectInstanceVal(typeValue);
+    assignSpan(asObjectInstance(span), totalMicros);
+    return span;
+}
+
 ModuleSys::ModuleSys()
 {
     moduleTypeValue = Value::objVal(newModuleTypeObj(toUnicodeString("sys")));
@@ -451,6 +463,7 @@ void ModuleSys::registerBuiltins(VM& vm)
             for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
             addSys("wait", [this](VM& vm, ArgsView a){ return wait_builtin(vm,a); }, t, defaults);
         }
+        addSys("is_ready", [this](VM& vm, ArgsView a){ return is_ready_builtin(vm,a); });
         addSys("fork", [this](VM& vm, ArgsView a){ return fork_builtin(vm,a); });
         addSys("join", [this](VM& vm, ArgsView a){ return join_builtin(vm,a); });
         {
@@ -659,7 +672,8 @@ Value ModuleSys::len_builtin(VM& vm, ArgsView args)
     if (args.size() != 1)
         throw std::invalid_argument("len expects single argument");
 
-    const Value& v (args[0]);
+    Value v (args[0]);
+    v.resolveFuture();
     int32_t len {1};
 
     switch (v.type()) {
@@ -791,6 +805,23 @@ Value ModuleSys::wait_builtin(VM& vm, ArgsView args)
     }
 
     return Value::nilVal();
+}
+
+Value ModuleSys::is_ready_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("is_ready expects 1 argument");
+
+    const Value& futValue = args[0];
+    if (!isFuture(futValue))
+        throw std::invalid_argument("is_ready expects a future argument");
+
+    ObjFuture* fut = asFuture(futValue);
+    if (!fut->future.valid())
+        return Value::falseVal();
+
+    auto status = fut->future.wait_for(std::chrono::microseconds(0));
+    return status == std::future_status::ready ? Value::trueVal() : Value::falseVal();
 }
 
 Value ModuleSys::fork_builtin(VM& vm, ArgsView args)
@@ -1703,7 +1734,7 @@ Value ModuleSys::typeof_native(VM& vm, ArgsView args)
         valueType = ValueType::Type;
     } else if (isSignal(val)) {
         valueType = ValueType::Signal;
-    } else if (isEvent(val)) {
+    } else if (isEventType(val)) {
         valueType = ValueType::Event;
     } else if (val.isObj()) {
         Obj* obj = val.asObj();

@@ -16,6 +16,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <utility>
 #include <cmath>
 #include <sstream>
 
@@ -174,7 +175,13 @@ Value Value::signalVal(roxal::ptr<df::Signal> s)
 
 Value Value::eventVal()
 {
-    return Value::objVal(newEventObj());
+    return Value::objVal(newEventTypeObj(toUnicodeString("event")));
+}
+
+Value Value::eventInstanceVal(const Value& eventType, std::vector<Value> payload)
+{
+    debug_assert_msg(isEventType(eventType), "Value is an ObjEventType");
+    return Value::objVal(newEventInstanceObj(eventType, std::move(payload)));
 }
 
 Value Value::libraryVal(void* handle)
@@ -1274,17 +1281,13 @@ Value roxal::toType(ValueType t, Value v, bool strict)
 
                 ObjectInstance* vObj = asObjectInstance(v);
                 ObjObjectType* vObjType = asObjectType(vObj->instanceType);
-                for(int32_t hash : vObjType->propertyOrder) {
-                    const auto& prop { vObjType->properties.at(hash) };
-                    if (prop.access != ast::Access::Public)
-                        continue;
-                    auto propName { Value::stringVal(prop.name) };
-                    auto propHash = asStringObj(propName)->hash;
+                for (const auto& entry : vObjType->orderedPublicProperties()) {
+                    auto propName { Value::stringVal(entry.property->name) };
                     #ifdef DEBUG_BUILD
-                    assert(vObj->properties.find(propHash) != vObj->properties.end());
+                    assert(vObj->properties.find(entry.key) != vObj->properties.end());
                     #endif
                     asDict(dictValue)->store(propName,
-                                             vObj->properties[propHash]);
+                                             vObj->properties[entry.key]);
                 }
                 return dictValue;
             }
@@ -1389,6 +1392,12 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 return sample;
             }
         }
+    }
+
+    if (type == ValueType::Event) {
+        if (begin != end)
+            throw std::runtime_error("event constructor expects no arguments");
+        return Value::eventInstanceVal(Value::eventVal());
     }
 
     if (begin == end) {
@@ -2557,7 +2566,8 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             debug_assert_msg(!t->isActor, "Expected object type for deserialization");
             Value objVal = Value::objectInstanceVal(typeVal);
             ObjectInstance* obj = asObjectInstance(objVal);
-            if(useCtx) ctx->idToObj[id] = obj;
+            if (useCtx)
+                ctx->idToObj[id] = obj;
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
             obj->properties.clear();
             for(uint32_t i=0;i<count;i++) {
@@ -2574,12 +2584,18 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                 if(it==ctx->idToObj.end()) throw std::runtime_error("Unknown actor ref id");
                 return Value::objRef(it->second);
             }
+
+            auto actorHolder = newActorInstance(ActorInstance::UninitializedTag{});
+            ActorInstance* obj = actorHolder.get();
+            Value objVal = Value::objVal(std::move(actorHolder));
+            if(useCtx) {
+                ctx->idToObj[id] = obj;
+            }
+
             Value typeVal = readValue(in, ctx);
             ObjObjectType* t = asObjectType(typeVal);
             debug_assert_msg(t->isActor, "Expected actor type for deserialization");
-            Value objVal = Value::actorInstanceVal(typeVal);
-            ActorInstance* obj = asActorInstance(objVal);
-            if(useCtx) ctx->idToObj[id] = obj;
+            obj->initialize(typeVal);
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
             obj->properties.clear();
             for(uint32_t i=0;i<count;i++) {

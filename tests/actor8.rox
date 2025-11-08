@@ -1,16 +1,17 @@
-// Ensure actor return value is cloned so later modifications by actor do not affect caller's copy
-
-var gl = []
-
 type A actor:
+  private var state = []
+
   func make():
-    gl = [0]
-    return gl
+    state = [0]
+    return clone(state)
 
   func change():
-    gl[0] = 1
+    state[0] = 1
     print('actor changed')
     return true
+
+  func snapshot():
+    return clone(state)
 
 var a = A()
 var l = a.make()
@@ -18,4 +19,4 @@ print(l)
 var fut = a.change()
 print(fut)
 print(l)
-print(gl)
+print(a.snapshot())

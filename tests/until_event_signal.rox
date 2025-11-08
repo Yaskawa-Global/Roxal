@@ -1,4 +1,4 @@
-var e :event
+type E event
 
 print('start')
 
@@ -8,17 +8,17 @@ proc take_a_while():
   print('take_a_while() exiting after 10')
 
 type MyWorker actor:
-  proc triggerEventAfterDelay(e :event, aftersecs :int):
+  proc triggerEventAfterDelay(aftersecs :int):
     wait(s=aftersecs)
-    emit e
+    emit E()
 
 worker = MyWorker()
 print('calling triggerEventAfterDelay')
-worker.triggerEventAfterDelay(e,5) // async (immediate return)
+worker.triggerEventAfterDelay(5) // async (immediate return)
 print(' returned')
 
 // this will execute take_a_while for ~5s until interrupted by e triggered by worker
-take_a_while() until e
+take_a_while() until E
 
 print('e occured')
 

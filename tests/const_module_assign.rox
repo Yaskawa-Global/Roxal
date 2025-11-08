@@ -1,0 +1,4 @@
+import const_module_helper
+
+print(const_module_helper.value)
+const_module_helper.value = 99

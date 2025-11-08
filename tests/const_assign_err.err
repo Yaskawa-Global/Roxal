@@ -1,0 +1,1 @@
+.*const_assign_err\.rox:3:8: error: Cannot assign to constant 'value' \(declared at line 1\).*

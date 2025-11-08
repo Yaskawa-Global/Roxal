@@ -19,6 +19,10 @@ proc wait(s:int=0, ms:int=0, us:int=0, ns:int=0, for=nil):
   """wait until the specified amount of time elapses and optionally await a future or list of futures afterwards"""
 
 @builtin
+func is_ready(future) -> bool:
+  """return true when future has produced its value without blocking"""
+
+@builtin
 func fork(fn) -> int:
   """run fn in a new thread and return its id"""
 

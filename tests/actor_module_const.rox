@@ -1,0 +1,5 @@
+const tick = 5
+
+type Worker actor:
+    func run():
+        var local = tick

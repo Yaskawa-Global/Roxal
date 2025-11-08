@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <string>
 #include <memory>
+#include <cstddef>
 
 #include <core/AST.h>
 #include "RoxalIndentationLexer.h"
@@ -293,6 +294,10 @@ int main(int argc, const char* argv[])
     const std::string gcOptionHelp =
         "set GC auto-trigger threshold in kilobytes (0 disables automatic collections, default " +
         std::to_string(defaultGcThresholdKb) + " KB)";
+    const std::string stackOptionHelp =
+        "set value stack capacity per thread (default " + std::to_string(VM::DefaultMaxStack) + ")";
+    const std::string frameOptionHelp =
+        "set maximum call frame depth per thread (default " + std::to_string(VM::DefaultMaxCallFrames) + ")";
 
     po::options_description desc("Allowed options");
     desc.add_options()
@@ -307,6 +312,8 @@ int main(int argc, const char* argv[])
         ("astgraph", po::value< std::vector<std::string> >(), "parse only and output GraphViz dot file")
         ("gc-threshold", po::value<long long>(), gcOptionHelp.c_str())
         ("nogc", "disable garbage collection")
+        ("stack-size", po::value<size_t>()->default_value(VM::DefaultMaxStack), stackOptionHelp.c_str())
+        ("max-call-frames", po::value<size_t>()->default_value(VM::DefaultMaxCallFrames), frameOptionHelp.c_str())
         #ifdef DEBUG_BUILD
         ("opcode-prof", "collect opcode execution frequencies in opcode_profile.json")
         #endif
@@ -340,6 +347,20 @@ int main(int argc, const char* argv[])
         std::cout << desc << std::endl;
         return 1;
     }
+
+    const size_t stackSizeLimit = vmap["stack-size"].as<size_t>();
+    if (stackSizeLimit == 0) {
+        std::cerr << "Error: --stack-size must be greater than zero" << std::endl;
+        return 1;
+    }
+
+    const size_t callFrameLimit = vmap["max-call-frames"].as<size_t>();
+    if (callFrameLimit == 0) {
+        std::cerr << "Error: --max-call-frames must be greater than zero" << std::endl;
+        return 1;
+    }
+
+    VM::configureStackLimits(stackSizeLimit, callFrameLimit);
 
     std::vector<std::string> modulePaths;
 

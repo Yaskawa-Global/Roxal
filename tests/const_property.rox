@@ -1,0 +1,9 @@
+type Example object:
+    const value = 5
+    private const secret = 7
+    func get():
+        return this.value
+
+var e = Example()
+print(e.value)
+print(e.get())

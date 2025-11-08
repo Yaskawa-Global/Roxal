@@ -1,0 +1,6 @@
+first handler
+<event E instance>
+re-emitting instance
+second handler
+<event E instance>
+done

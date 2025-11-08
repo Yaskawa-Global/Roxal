@@ -7,6 +7,10 @@
 #include <optional>
 #include <algorithm>
 
+namespace df {
+class Signal;
+}
+
 namespace roxal {
 
 class VM;
@@ -51,6 +55,18 @@ protected:
                     const std::string& methodName,
                     NativeFn fn,
                     std::vector<Value> defaults = {});
+
+    // Fetch a module-level source signal declared in the builtin .rox file.
+    // If \p required is false, returns nullptr when the signal cannot be found.
+    roxal::ptr<df::Signal> moduleSourceSignal(const std::string& name,
+                                              bool required = true);
+
+    // Convenience helpers for updating the value of a module-level source
+    // signal from native code, mirroring signal.set() semantics.
+    void setModuleSourceSignalValue(const std::string& name, const Value& value);
+    void setModuleSourceSignalValue(const roxal::ptr<df::Signal>& signal,
+                                    const Value& value,
+                                    const std::string& signalName = "");
 
     static void destroyModuleType(Value& moduleTypeValue);
 

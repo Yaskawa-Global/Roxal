@@ -694,6 +694,9 @@ std::any ASTGenerator::visitOn_stmt(RoxalParser::On_stmtContext *context)
     setSourceInfo(onStmt, context);
 
     onStmt->trigger = as<Expression>(visitExpression(context->expression()));
+    onStmt->requiresSignalChange = context->CHANGED() != nullptr;
+    if (context->IDENTIFIER())
+        onStmt->binding = UnicodeString::fromUTF8(context->IDENTIFIER()->getText());
     onStmt->body = as<Suite>(visitSuite(context->suite()));
 
     return typeValue(onStmt);
@@ -799,6 +802,7 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
     ptr<VarDecl> vardecl = make_ptr<VarDecl>();
     setSourceInfo(vardecl,context);
     vardecl->name = ident;
+    vardecl->isConst = (context->CONST() != nullptr);
 
     if (context->annotation().size() > 0) {
 
@@ -1031,100 +1035,169 @@ std::any ASTGenerator::visitSuite(RoxalParser::SuiteContext *context)
 }
 
 
-
 std::any ASTGenerator::visitType_decl(RoxalParser::Type_declContext *context)
 {
     visitStart();
 
-    ptr<TypeDecl> typedecl = make_ptr<TypeDecl>();
-    setSourceInfo(typedecl, context);
+    if (context->object_type_decl())
+        return visitObject_type_decl(context->object_type_decl());
+    if (context->enum_type_decl())
+        return visitEnum_type_decl(context->enum_type_decl());
+    if (context->event_type_decl())
+        return visitEvent_type_decl(context->event_type_decl());
 
-    bool isInterface = (context->INTERFACE() != nullptr);
-    bool isActor = (context->ACTOR() != nullptr);
-    bool isEnumeration = (context->ENUM() != nullptr);
-    bool isObject = (context->OBJECT() != nullptr);
-    if (isActor)
-        typedecl->kind = TypeDecl::Actor;
-    else if (isInterface)
-        typedecl->kind = TypeDecl::Interface;
-    else if (isEnumeration)
-        typedecl->kind = TypeDecl::Enumeration;
-    else if (isObject)
-        typedecl->kind = TypeDecl::Object;
+    throw std::runtime_error("Unexpected type_decl alternative");
+    visitEnd();
+}
 
-    size_t identIndex = 0;
-    typedecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
 
-    if (isInterface && context->IMPLEMENTS() != nullptr)
-        throw std::runtime_error("Interface "+toUTF8StdString(typedecl->name)+" cannot implement, use extends instead");
+std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContext *context)
+{
+    visitStart();
 
-    if (isEnumeration && context->IMPLEMENTS() != nullptr)
-        throw std::runtime_error("Enum "+toUTF8StdString(typedecl->name)+" cannot implement, use extends instead");
+        ptr<TypeDecl> typeDecl = make_ptr<TypeDecl>();
+        setSourceInfo(typeDecl, context);
 
-    if (context->annotation().size() > 0) {
+        bool isActor = (context->ACTOR() != nullptr);
+        bool isInterface = (context->INTERFACE() != nullptr);
+        if (isActor)
+            typeDecl->kind = TypeDecl::Actor;
+        else if (isInterface)
+            typeDecl->kind = TypeDecl::Interface;
+        else
+            typeDecl->kind = TypeDecl::Object;
 
-        for(size_t i=0; i< context->annotation().size();i++) {
-
-            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
-
+        for (auto* annotCtx : context->annotation()) {
+            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(annotCtx));
             ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
-
-        typedecl->annotations.push_back(annotation);
+            typeDecl->annotations.push_back(annotation);
         }
-    }
 
-    if (context->str()) {
-        auto strVal = as<Str>(visitStr(context->str()));
-        strVal->str = trim(strVal->str);
-        ptr<Annotation> annotation = make_ptr<Annotation>();
-        annotation->name = UnicodeString::fromUTF8("doc");
-        annotation->args.emplace_back(UnicodeString(), strVal);
-        typedecl->annotations.push_back(annotation);
-    }
+        size_t identIndex = 0;
+        typeDecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
 
-    if (context->EXTENDS()) {
-        typedecl->extends = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
-        if (isEnumeration) {
-            if (typedecl->extends != UnicodeString("byte") && typedecl->extends != UnicodeString("int"))
-                throw std::runtime_error("Enum(eration) "+toUTF8StdString(typedecl->name)+" can only extend byte or int");
+        if (context->EXTENDS()) {
+            if (identIndex >= context->IDENTIFIER().size())
+                throw std::runtime_error("type extends clause missing identifier");
+            typeDecl->extends = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
         }
-    }
 
-    while(identIndex < context->IDENTIFIER().size())
-        typedecl->implements.push_back(UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText()));
+        while (identIndex < context->IDENTIFIER().size())
+            typeDecl->implements.push_back(UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText()));
 
-    if (context->method().size() > 255) // TODO: revise
-        throw std::runtime_error("Too many methods for one actor or object type.");
+        if (isInterface && !typeDecl->implements.empty())
+            throw std::runtime_error("Interface "+toUTF8StdString(typeDecl->name)+" cannot implement, use extends instead");
 
-    for(size_t i=0; i<context->method().size(); i++) {
+        if (context->str()) {
+            auto strVal = as<Str>(visitStr(context->str()));
+            strVal->str = trim(strVal->str);
+            ptr<Annotation> annotation = make_ptr<Annotation>();
+            annotation->name = UnicodeString::fromUTF8("doc");
+            annotation->args.emplace_back(UnicodeString(), strVal);
+            typeDecl->annotations.push_back(annotation);
+        }
 
-        auto methodContext { context->method().at(i) };
+        if (context->method().size() > 255)
+            throw std::runtime_error("Too many methods for one actor or object type.");
 
-        auto func = visitMethod(methodContext);
+        for (auto* propertyContext : context->property()) {
+            auto varDecl = visitProperty(propertyContext);
+            typeDecl->properties.push_back(as<VarDecl>(varDecl));
+        }
 
-        typedecl->methods.push_back(as<Function>(func));
-    }
+        for (auto* methodContext : context->method()) {
+            auto func = visitMethod(methodContext);
+            typeDecl->methods.push_back(as<Function>(func));
+        }
 
-    for(size_t i=0; i<context->property().size(); i++) {
-        auto propertyContext { context->property().at(i) };
+    return typeValue(typeDecl);
 
-        auto varDecl = visitProperty(propertyContext);
+    visitEnd();
+}
 
-        typedecl->properties.push_back(as<VarDecl>(varDecl));
-    }
 
-    for(size_t i=0; i<context->enum_label().size(); i++) {
+std::any ASTGenerator::visitEnum_type_decl(RoxalParser::Enum_type_declContext *context)
+{
+    visitStart();
 
-        auto enumValueContext { context->enum_label().at(i) };
+        ptr<TypeDecl> typeDecl = make_ptr<TypeDecl>();
+        setSourceInfo(typeDecl, context);
+        typeDecl->kind = TypeDecl::Enumeration;
 
-        auto enumLabelExpr = anyas<std::pair<icu::UnicodeString,ptr<Expression>>>(visitEnum_label(enumValueContext));
+        for (auto* annotCtx : context->annotation()) {
+            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(annotCtx));
+            ptr<Annotation> annotation = make_ptr<Annotation>();
+            annotation->name = annotInfo->accessed;
+            annotation->args = *annotInfo->args;
+            typeDecl->annotations.push_back(annotation);
+        }
 
-        typedecl->enumLabels.push_back(enumLabelExpr);
-    }
+        size_t identIndex = 0;
+        typeDecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
 
-    return typeValue(typedecl);
+        if (context->EXTENDS()) {
+            if (identIndex >= context->IDENTIFIER().size())
+                throw std::runtime_error("enum extends clause missing identifier");
+            typeDecl->extends = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
+
+            if (typeDecl->extends != UnicodeString("byte") && typeDecl->extends != UnicodeString("int"))
+                throw std::runtime_error("Enum(eration) "+toUTF8StdString(typeDecl->name)+" can only extend byte or int");
+        }
+
+        for (auto* enumValueContext : context->enum_label()) {
+            auto enumLabelExpr = anyas<std::pair<icu::UnicodeString, ptr<Expression>>>(visitEnum_label(enumValueContext));
+            typeDecl->enumLabels.push_back(enumLabelExpr);
+        }
+
+        return typeValue(typeDecl);
+
+    visitEnd();
+}
+
+
+std::any ASTGenerator::visitEvent_type_decl(RoxalParser::Event_type_declContext *context)
+{
+    visitStart();
+
+        ptr<TypeDecl> typeDecl = make_ptr<TypeDecl>();
+        setSourceInfo(typeDecl, context);
+        typeDecl->kind = TypeDecl::Event;
+
+        for (auto* annotCtx : context->annotation()) {
+            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(annotCtx));
+            ptr<Annotation> annotation = make_ptr<Annotation>();
+            annotation->name = annotInfo->accessed;
+            annotation->args = *annotInfo->args;
+            typeDecl->annotations.push_back(annotation);
+        }
+
+        size_t identIndex = 0;
+        typeDecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
+
+        if (context->EXTENDS()) {
+            if (identIndex >= context->IDENTIFIER().size())
+                throw std::runtime_error("event extends clause missing identifier");
+            typeDecl->extends = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
+        }
+
+        if (context->str()) {
+            auto strVal = as<Str>(visitStr(context->str()));
+            strVal->str = trim(strVal->str);
+            ptr<Annotation> annotation = make_ptr<Annotation>();
+            annotation->name = UnicodeString::fromUTF8("doc");
+            annotation->args.emplace_back(UnicodeString(), strVal);
+            typeDecl->annotations.push_back(annotation);
+        }
+
+        for (auto* propertyContext : context->property()) {
+            auto varDecl = visitProperty(propertyContext);
+            typeDecl->properties.push_back(as<VarDecl>(varDecl));
+        }
+
+        return typeValue(typeDecl);
+
     visitEnd();
 }
 
@@ -1198,6 +1271,7 @@ std::any ASTGenerator::visitProperty(RoxalParser::PropertyContext *context)
     ptr<VarDecl> varDecl = make_ptr<VarDecl>();
 
     varDecl->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
+    varDecl->isConst = (context->CONST() != nullptr);
 
     varDecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText());
     if (context->annotation().size() > 0) {
@@ -1970,12 +2044,21 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
 {
     visitStart();
 
-    if (context->LTRUE())
-        return typeValue(ptr<Bool>(make_ptr<Bool>(true)));
-    else if (context->LFALSE())
-        return typeValue(ptr<Bool>(make_ptr<Bool>(false)));
-    else if (context->LNIL())
-        return typeValue(ptr<Literal>(make_ptr<Literal>()));
+    if (context->LTRUE()) {
+        ptr<Bool> literal = make_ptr<Bool>(true);
+        setSourceInfo(literal, context->LTRUE());
+        return typeValue(literal);
+    }
+    else if (context->LFALSE()) {
+        ptr<Bool> literal = make_ptr<Bool>(false);
+        setSourceInfo(literal, context->LFALSE());
+        return typeValue(literal);
+    }
+    else if (context->LNIL()) {
+        ptr<Literal> literal = make_ptr<Literal>();
+        setSourceInfo(literal, context->LNIL());
+        return typeValue(literal);
+    }
     else if (context->THIS()) {
         ptr<Variable> var = make_ptr<Variable>("this");
         setSourceInfo(var, context);

@@ -1,14 +1,14 @@
 
+type E event
+
 type MyActor actor:
 
-  private var e :event
-
   proc setup():
-    on e:
+    on E:
       print('e handled in MyActor')
 
   proc trigger():
-    emit e
+    emit E()
 
 
 a = MyActor()

@@ -1,15 +1,12 @@
-var g = false
-
 type A actor:
   func addone(n):
     wait(us=100000)
-    g = true
     return n+1
 
 var a = A()
 var n2 = a.addone(1)
-print(g) // shoud still be false since addone returns a future immediately
+print(is_ready(n2)) // should be false because actor work is outstanding
 
-print(n2) // should block then auto-convert n2 to return value 2 and print 2
-print(g)  // should now be true since addone completed
-
+var result = int(n2)
+print(result) // should print 2 after waiting for the actor
+print(is_ready(n2)) // future has resolved now

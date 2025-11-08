@@ -1,0 +1,5 @@
+type MyObj object:
+  var a :int
+  var b :real
+
+var o = MyObj(1, 2, 3)

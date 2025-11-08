@@ -430,21 +430,51 @@ finally:
 ## Events
 
 Events are useful for constructing responsive programs.  For robotics, this may be to respond to I/O, sensor data or other internal states of the program.
-A variable of type `event` can be declared to refer to a type of event that can be 'triggered' to occur as desired.
+
+Event *types* are declared similarly to object and actor types.  An event type describes the payload that will be attached to each occurrence of the event:
 
 ```php
-var e :event
+type ButtonPressed event:
+  var buttonId :int
 
-// declare an event 'handler' that will be triggered whenever e occurs
-//  (not executed here now - more like a func declaration)
-on e:
-  print('e occurred')
+on ButtonPressed as evt:
+  print('button '+evt.buttonId+' pressed')
 
-// some code in another thread (e.g. actor)
-emit e   // trigger the event e to occur
+emit ButtonPressed(buttonId=7)   // creates a fresh event instance and delivers it
+```
 
-// some time later in another place
-emit e   // triggered again
+Each `emit` call constructs a new event instance.  Instances are immutable snapshots: the handler receives the occurrence as `evt` above and can read the payload members.  Event types can inherit from other event types to reuse payload fields:
+
+```php
+type DeviceEvent event:
+  var deviceId :int
+
+type LowBattery event extends DeviceEvent:
+  var percentRemaining :real
+
+on LowBattery as evt:
+  print('device '+evt.deviceId+' low ('+evt.percentRemaining+'%)')
+
+emit LowBattery(deviceId=42, percentRemaining=12.5)
+```
+
+The builtin `event` type is still available for cases where no extra payload is required:
+
+```php
+var generic:event
+
+on generic:
+  print('generic event occurred')
+
+emit generic()
+```
+
+Event types also expose `.on` and `.off` helpers that mirror the statement form:
+
+```php
+var subscription = LowBattery.on(func (evt): print(evt.percentRemaining))
+LowBattery.emit(deviceId=1, percentRemaining=9.0)
+LowBattery.off(subscription)
 ```
 
 ## Signals
@@ -460,15 +490,15 @@ A single clock signal:
 
 c = clock(freq=10)  // an int signal that counts up from 0 at 10Hz (initially stopped)
 
-// register a signal change handler
-// (same as handlers for events, but trigger whenever the indicated signal value changes)
-on c:
-  print( int(c) )  // will print an int every .1s while the script runs
-                   // 'constructing' an int() from a signal samples the value at the time of evaluation
+// register a signal change handler (fires when the value changes)
+on c changed as evt:
+  print('tick='+evt.value)
 
 c.run()    // start the clock counting
 wait(s=1)  // keep the script running so we can see ~10 prints
 ```
+
+The `changed` keyword is required when watching a signal.  Supplying `as evt` binds the automatically-generated event instance that contains the sampled signal value (`evt.value`), a steady-clock duration since the engine started (`evt.timestamp`, a `sys.TimeSpan`), and the signal's own tick count (`evt.tick`).
 
 Transforming a some signals:
 ```php
@@ -480,8 +510,8 @@ s2 = signal(freq=10,initial_v)  //  (these won't change value unless set() is ca
 
 dp = s*s2    // vector dot product (real scalar signal)
 
-on dp: // print if dp changes
-  print('dp='+real(dp))
+on dp changed as evt: // print if dp changes
+  print('dp='+evt.value)
 
 // set the signals in motion
 s.run()
@@ -512,7 +542,7 @@ func take_a_while():
 type MyWorker actor:
   proc triggerEventAfterDelay(e :event, aftersecs :int):
     wait(s=aftersecs)
-    emit e
+    emit e()
 
 worker = MyWorker()
 worker.triggerEventAfterDelay(e,5) // async (immediate return)

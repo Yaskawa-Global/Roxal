@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <Eigen/Dense>
 
+#include "dataflow/Signal.h"
+
 using namespace roxal;
 
 ModuleMath::ModuleMath()
@@ -102,11 +104,16 @@ void ModuleMath::registerBuiltins(VM& vm)
     link("ones", [this](VM&, ArgsView a){ return math_ones_builtin(a); });
     link("dot", [this](VM&, ArgsView a){ return math_dot_builtin(a); });
     link("cross", [this](VM&, ArgsView a){ return math_cross_builtin(a); });
+    link("_setVecSignal", [this](VM& vm, ArgsView a){ return math_setVecSignal_builtin(vm,a); });
 
     // Link builtin Counter methods
     linkMethod("_Counter", "init", [this](VM&, ArgsView a){ return counter_init_builtin(a); });
     linkMethod("_Counter", "inc", [this](VM&, ArgsView a){ return counter_inc_builtin(a); });
     linkMethod("_Counter", "value", [this](VM&, ArgsView a){ return counter_value_builtin(a); }, {});
+
+    if (auto vecSignal = moduleSourceSignal("_vecSignal", false))
+        vecSignal->setInternal(true);
+
 }
 
 Value ModuleMath::math_identity_builtin(ArgsView args)
@@ -234,4 +241,14 @@ Value ModuleMath::counter_value_builtin(ArgsView args)
     auto counter = static_cast<Counter*>(asForeignPtr(inst->getProperty("_this"))->ptr);
 
     return Value::intVal(counter->value());
+}
+
+Value ModuleMath::math_setVecSignal_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 1 || !isVector(args[0]))
+        throw std::invalid_argument("math._setVecSignal expects a single vector argument");
+
+    setModuleSourceSignalValue("_vecSignal", args[0]);
+
+    return Value::nilVal();
 }

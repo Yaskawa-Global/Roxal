@@ -102,7 +102,7 @@ for_stmt
  ;
 
 on_stmt
- : ON expression ':' suite
+ : ON expression (CHANGED)? (AS IDENTIFIER)? ':' suite
  ;
 
 emit_stmt
@@ -129,7 +129,7 @@ finally_clause
 
 
 var_decl // FIXME: use ident_opt_type
- : annotation* VAR IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)?
+ : annotation* (VAR | CONST) IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)?
  ;
 
 ident_opt_type
@@ -165,13 +165,33 @@ suite
  ;
 
 type_decl
- : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE | ENUM)
-    // only enum can extend byte or int
-    (EXTENDS (IDENTIFIER | BYTE | INT))? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)?
+ : object_type_decl
+ | enum_type_decl
+ | event_type_decl
+ ;
+
+object_type_decl
+ : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE)
+    (EXTENDS IDENTIFIER)? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)?
     (   (':' NEWLINE INDENT (str NEWLINE)? (property|method)* DEDENT)
-      // for enums, allow mixture of comma & line seperated labels
-      | (':' NEWLINE INDENT (enum_label (NEWLINE|COMMA) )* DEDENT)
+      | NEWLINE
+    )
+ ;
+
+enum_type_decl
+ : annotation* TYPE IDENTIFIER ENUM
+    // only enum can extend byte or int
+    (EXTENDS (IDENTIFIER | BYTE | INT))?
+    // for enums, allow mixture of comma & line separated labels
+    (   (':' NEWLINE INDENT (enum_label (NEWLINE|COMMA) )* DEDENT)
       | (':' (enum_label COMMA)* enum_label NEWLINE)
+      | NEWLINE
+    )
+ ;
+
+event_type_decl
+ : annotation* TYPE IDENTIFIER EVENT (EXTENDS IDENTIFIER)?
+    (   (':' NEWLINE INDENT (str NEWLINE)? property* DEDENT)
       | NEWLINE
     )
  ;
@@ -183,7 +203,7 @@ method
  ;
 
 property
- : annotation* PRIVATE? VAR IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)? NEWLINE
+ : annotation* PRIVATE? (VAR | CONST) IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)? NEWLINE
  ;
 
 enum_label
@@ -398,6 +418,7 @@ dict
 
 TYPE: 'type';
 VAR : 'var';
+CONST : 'const';
 PRIVATE: 'private';
 LET : 'let';
 FUNC: 'func';
@@ -412,6 +433,7 @@ EXTENDS: 'extends';
 THIS: 'this';
 SUPER: 'super';
 IMPORT : 'import';
+CHANGED: 'changed';
 
 
 // Types

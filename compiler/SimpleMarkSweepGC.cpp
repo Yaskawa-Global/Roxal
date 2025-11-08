@@ -65,7 +65,8 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
 
     thread.pendingEvents.unsafeVisit([&visitor](const auto& pendingEvents) {
         for (const auto& pending : pendingEvents) {
-            visitStrongValue(visitor, pending.event);
+            visitStrongValue(visitor, pending.eventType);
+            visitStrongValue(visitor, pending.instance);
         }
     });
 
