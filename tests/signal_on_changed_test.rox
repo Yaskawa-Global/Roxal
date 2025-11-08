@@ -1,0 +1,65 @@
+// Test signal.on_changed() method
+
+// Test 1: Handler with event parameter
+print("Test 1: Handler with event parameter")
+var s1 = signal(10.0, 0)
+
+func handler1(evt):
+  print("s1 changed to: " + evt.value)
+
+s1.on_changed(handler1)
+
+s1.set(42)
+s1.set(100)
+s1.tick()
+wait(us=150000)
+
+// Test 2: Handler without event parameter (0 arguments)
+print("\nTest 2: Handler without event parameter")
+var s2 = clock(10)
+
+var count = 0
+func handler2():
+  count = count + 1
+  print("s2 changed (count: " + count + ")")
+
+s2.on_changed(handler2)
+
+s2.run()
+wait(us=250000)
+s2.stop()
+
+// Test 3: Multiple handlers on same signal
+print("\nTest 3: Multiple handlers on same signal")
+var s3 = signal(10.0, 0)
+
+func handlerA(evt):
+  print("Handler A: " + evt.value)
+
+func handlerB(evt):
+  print("Handler B: " + evt.value)
+
+s3.on_changed(handlerA)
+s3.on_changed(handlerB)
+
+s3.set(99)
+s3.tick()
+wait(us=150000)
+
+// Test 4: Clock signal with on_changed
+print("\nTest 4: Clock signal with on_changed")
+var clk = clock(20)
+
+var tick_count = 0
+func clock_handler():
+  tick_count = tick_count + 1
+  print("Clock ticked (count: " + tick_count + ")")
+
+clk.on_changed(clock_handler)
+
+clk.run()
+wait(us=200000)
+clk.stop()
+
+print("\nAll tests completed!")
+wait(ms=100)

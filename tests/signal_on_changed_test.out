@@ -1,0 +1,20 @@
+Test 1: Handler with event parameter
+s1 changed to: 42
+s1 changed to: 100
+
+Test 2: Handler without event parameter
+s2 changed (count: 1)
+s2 changed (count: 2)
+
+Test 3: Multiple handlers on same signal
+Handler A: 99
+Handler B: 99
+Handler A: 99
+Handler B: 99
+
+Test 4: Clock signal with on_changed
+Clock ticked (count: 1)
+Clock ticked (count: 2)
+Clock ticked (count: 3)
+
+All tests completed!

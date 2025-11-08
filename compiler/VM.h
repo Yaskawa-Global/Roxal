@@ -371,6 +371,7 @@ public:
     Value signal_tick_builtin(ArgsView args);
     Value signal_freq_builtin(ArgsView args);
     Value signal_set_builtin(ArgsView args);
+    Value signal_on_changed_builtin(ArgsView args);
 
 
     Value event_emit_builtin(ArgsView args);
