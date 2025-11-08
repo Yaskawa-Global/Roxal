@@ -44,7 +44,7 @@ tests = [
     'unicode', 'signal_clock', 'signal_add', 'signal_subtract', 'signal_multiply', 'signal_divide', 'signal_modulo',
     'signal_greater', 'signal_less', 'signal_equal', 'signal_history', 'signal_cycle', 'signal_cleanup',
     'signal_and', 'signal_or', 'signal_not', 'signal_band', 'signal_bor', 'signal_bxor', 'signal_bnot',
-    'signal_func_nocall', 'signal_func_exec', 'signal_index', 'signal_on_stmt', 'signal_on_threads', 'signal_on_in_method', 'on_expression',
+    'signal_func_nocall', 'signal_func_exec', 'signal_index', 'signal_on_stmt', 'signal_on_threads', 'on_expression', 'signal_on_in_method',
     'test_signal_value_property', 'test_signal_name_property', 'signal_named_param', 'construct_by_signal', 'signal_run_stop', 'signal_source', 'signal_default_err', 'signal_network1',
     'dataflow_clocktest1', 'multi_clock', 'clock_error', 'clock_name_param',
     'event1', 'event_on_stmt', 'event_emit_keyword', 'event_on_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4', 'event_instance_emit', 'event_payload', 'event_implicit_constructor', 'event_type_on',
