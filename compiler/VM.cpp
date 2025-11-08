@@ -4940,6 +4940,7 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Signal, "tick", std::mem_fn(&VM::signal_tick_builtin));
     defineBuiltinMethod(ValueType::Signal, "freq", std::mem_fn(&VM::signal_freq_builtin));
     defineBuiltinMethod(ValueType::Signal, "set", std::mem_fn(&VM::signal_set_builtin));
+    defineBuiltinMethod(ValueType::Signal, "on_changed", std::mem_fn(&VM::signal_on_changed_builtin), true);
 
     defineBuiltinMethod(ValueType::Event, "emit", std::mem_fn(&VM::event_emit_builtin), true);
     defineBuiltinMethod(ValueType::Object, "emit", std::mem_fn(&VM::event_emit_builtin), true);
@@ -5408,7 +5409,39 @@ Value VM::signal_set_builtin(ArgsView args)
     return Value::nilVal();
 }
 
+Value VM::signal_on_changed_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isSignal(args[0]) || !isClosure(args[1]))
+        throw std::invalid_argument("signal.on_changed expects signal and closure argument");
 
+    Value signalVal = args[0];
+    Value closureVal = args[1];
+
+    ObjSignal* sigObj = asSignal(signalVal);
+    ObjEventType* ev = sigObj->ensureChangeEventType();  // Lazy create SignalChanged event type
+    Value eventVal = sigObj->changeEventType;
+
+    // Register handler on current thread
+    Value key = eventVal.weakRef();
+    thread->eventHandlers[key].push_back(closureVal);
+
+    // Validate closure arity (0 or 1 arguments allowed)
+    ObjClosure* closure = asClosure(closureVal);
+    if (closure->function.isNonNil()) {
+        ObjFunction* fn = asFunction(closure->function);
+        if (fn->arity > 1)
+            throw std::invalid_argument("signal change handler must accept 0 or 1 arguments");
+    }
+
+    // Subscribe closure to event
+    closure->handlerThread = thread;
+    ev->subscribers.push_back(closureVal.weakRef());
+
+    // Track the signal for this event
+    thread->eventToSignal[eventVal.weakRef()] = Value::objRef(sigObj);
+
+    return Value::nilVal();
+}
 
 
 //
