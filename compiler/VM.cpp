@@ -251,20 +251,31 @@ VM::VM()
     thread = nullptr;
     initString = Value::stringVal(UnicodeString("init"));
 
-    registerBuiltinModule(make_ptr<ModuleMath>());
     registerBuiltinModule(make_ptr<ModuleSys>());
-#ifdef ROXAL_ENABLE_FILEIO
-    registerBuiltinModule(make_ptr<ModuleFileIO>());
-#endif
+    registerBuiltinModule(make_ptr<ModuleMath>());
+
+    #ifdef ROXAL_ENABLE_FILEIO
+        registerBuiltinModule(make_ptr<ModuleFileIO>());
+    #endif
+
+    #if ENABLE_UI
+        registerBuiltinModule(make_ptr<ModuleUI>());
+    #endif
 
     // Execute builtin module scripts to attach declarations and docs
     ptr<Thread> initThread = make_ptr<Thread>();
     thread = initThread;
-#ifdef ROXAL_ENABLE_FILEIO
-    executeBuiltinModuleScript("compiler/fileio.rox", getBuiltinModule(toUnicodeString("fileio")));
-#endif
-    executeBuiltinModuleScript("compiler/sys.rox", getBuiltinModule(toUnicodeString("sys")));
-    executeBuiltinModuleScript("compiler/math.rox", getBuiltinModule(toUnicodeString("math")));
+
+    executeBuiltinModuleScript("compiler/sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
+    executeBuiltinModuleScript("compiler/math.rox", getBuiltinModuleType(toUnicodeString("math")));
+
+    #ifdef ROXAL_ENABLE_FILEIO
+        executeBuiltinModuleScript("compiler/fileio.rox", getBuiltinModuleType(toUnicodeString("fileio")));
+    #endif
+
+    #if ENABLE_UI
+        executeBuiltinModuleScript("ui/ui.rox", getBuiltinModuleType(toUnicodeString("ui")));
+    #endif
 
     thread = nullptr;
 
@@ -298,18 +309,25 @@ VM::VM()
     asObjectType(programExType)->superType = exType;
     Value condIntType = Value::objVal(newObjectTypeObj(toUnicodeString("ConditionalInterrupt"), false));
     asObjectType(condIntType)->superType = exType;
-#ifdef ROXAL_ENABLE_FILEIO
-    Value fileIOExceptionTypeVal = Value::objectTypeVal(toUnicodeString("FileIOException"), false);
-    asObjectType(fileIOExceptionTypeVal)->superType = runtimeExType;
-#endif
+    #ifdef ROXAL_ENABLE_FILEIO
+        Value fileIOExceptionTypeVal = Value::objectTypeVal(toUnicodeString("FileIOException"), false);
+        asObjectType(fileIOExceptionTypeVal)->superType = runtimeExType;
+    #endif
+    #if ENABLE_UI
+        Value uiExceptionTypeVal = Value::objectTypeVal(toUnicodeString("UIException"), false);
+        asObjectType(uiExceptionTypeVal)->superType = runtimeExType;
+    #endif
 
     globals.storeGlobal(toUnicodeString("exception"), exType);
     globals.storeGlobal(toUnicodeString("RuntimeException"), runtimeExType);
     globals.storeGlobal(toUnicodeString("ProgramException"), programExType);
     globals.storeGlobal(toUnicodeString("ConditionalInterrupt"), condIntType);
-#ifdef ROXAL_ENABLE_FILEIO
-    globals.storeGlobal(toUnicodeString("FileIOException"), fileIOExceptionTypeVal);
-#endif
+    #ifdef ROXAL_ENABLE_FILEIO
+        globals.storeGlobal(toUnicodeString("FileIOException"), fileIOExceptionTypeVal);
+    #endif
+    #if ENABLE_UI
+        globals.storeGlobal(toUnicodeString("UIException"), uiExceptionTypeVal);
+    #endif
 
     defineBuiltinFunctions();
     defineBuiltinMethods();
@@ -4879,8 +4897,16 @@ Value VM::ffi_native(ArgsView args)
 }
 
 
+ptr<BuiltinModule> VM::getBuiltinModule(const icu::UnicodeString& name)
+{
+    for (auto& m : builtinModules) {
+        if (asModuleType(m->moduleType())->name == name)
+            return m;
+    }
+    return nullptr;
+}
 
-Value VM::getBuiltinModule(const icu::UnicodeString& name)
+Value VM::getBuiltinModuleType(const icu::UnicodeString& name)
 {
     for (auto& m : builtinModules) {
         if (asModuleType(m->moduleType())->name == name)

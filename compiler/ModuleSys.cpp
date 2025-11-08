@@ -414,6 +414,8 @@ Value ModuleSys::typeMethodDecl(const Value& typeValue, const std::string& metho
 
 void ModuleSys::registerBuiltins(VM& vm)
 {
+    setVM(vm);
+
     auto addSys = [&](const std::string& name, NativeFn fn,
                       ptr<type::Type> funcType = nullptr,
                       std::vector<Value> defaults = {}){

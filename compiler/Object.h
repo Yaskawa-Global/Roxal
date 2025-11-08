@@ -552,6 +552,16 @@ struct ObjDict : public Obj
         entries[key] = val; // insert or replace
     }
 
+    void erase(const Value& key) {
+        std::lock_guard<std::mutex> lock(m);
+        auto it = entries.find(key);
+        if (it != entries.end()) {
+            entries.erase(it);
+            // Remove key from m_keys vector
+            m_keys.erase(std::remove(m_keys.begin(), m_keys.end(), key), m_keys.end());
+        }
+    }
+
     void set(const ObjDict* other); // Shallow copy from other dict
 
     bool equals(const ObjDict* other) const;  // Deep equality comparison

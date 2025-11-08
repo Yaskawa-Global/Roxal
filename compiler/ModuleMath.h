@@ -16,11 +16,11 @@ public:
     inline Value moduleType() const { return moduleTypeValue; }
 
     // builtin function implementations
-    Value math_identity_builtin(VM& vm, ArgsView args);
-    Value math_zeros_builtin(VM& vm, ArgsView args);
-    Value math_ones_builtin(VM& vm, ArgsView args);
-    Value math_dot_builtin(VM& vm, ArgsView args);
-    Value math_cross_builtin(VM& vm, ArgsView args);
+    Value math_identity_builtin(ArgsView args);
+    Value math_zeros_builtin(ArgsView args);
+    Value math_ones_builtin(ArgsView args);
+    Value math_dot_builtin(ArgsView args);
+    Value math_cross_builtin(ArgsView args);
 
 
     // Example for implementing a builtin type (math.Counter) that wraps a C++ class
@@ -38,9 +38,9 @@ public:
 
 
     // builtin Counter methods
-    Value counter_init_builtin(VM& vm, ArgsView args);
-    Value counter_inc_builtin(VM& vm, ArgsView args);
-    Value counter_value_builtin(VM& vm, ArgsView args);
+    Value counter_init_builtin(ArgsView args);
+    Value counter_inc_builtin(ArgsView args);
+    Value counter_value_builtin(ArgsView args);
 
 
 

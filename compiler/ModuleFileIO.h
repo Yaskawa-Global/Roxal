@@ -16,26 +16,26 @@ public:
     inline Value moduleType() const { return moduleTypeValue; }
 
     // builtin function implementations
-    Value fileio_open_builtin(VM& vm, ArgsView args);
-    Value fileio_close_builtin(VM& vm, ArgsView args);
-    Value fileio_isopen_builtin(VM& vm, ArgsView args);
-    Value fileio_moredata_builtin(VM& vm, ArgsView args);
-    Value fileio_read_builtin(VM& vm, ArgsView args);
-    Value fileio_readline_builtin(VM& vm, ArgsView args);
-    Value fileio_readfile_builtin(VM& vm, ArgsView args);
-    Value fileio_write_builtin(VM& vm, ArgsView args);
-    Value fileio_flush_builtin(VM& vm, ArgsView args);
-    Value fileio_fileexists_builtin(VM& vm, ArgsView args);
-    Value fileio_deletefile_builtin(VM& vm, ArgsView args);
-    Value fileio_createdir_builtin(VM& vm, ArgsView args);
-    Value fileio_direxists_builtin(VM& vm, ArgsView args);
-    Value fileio_deletedir_builtin(VM& vm, ArgsView args);
-    Value fileio_filesize_builtin(VM& vm, ArgsView args);
-    Value fileio_abspathfile_builtin(VM& vm, ArgsView args);
-    Value fileio_pathdir_builtin(VM& vm, ArgsView args);
-    Value fileio_pathfile_builtin(VM& vm, ArgsView args);
-    Value fileio_fileext_builtin(VM& vm, ArgsView args);
-    Value fileio_filewoext_builtin(VM& vm, ArgsView args);
+    Value fileio_open_builtin(ArgsView args);
+    Value fileio_close_builtin(ArgsView args);
+    Value fileio_isopen_builtin(ArgsView args);
+    Value fileio_moredata_builtin(ArgsView args);
+    Value fileio_read_builtin(ArgsView args);
+    Value fileio_readline_builtin(ArgsView args);
+    Value fileio_readfile_builtin(ArgsView args);
+    Value fileio_write_builtin(ArgsView args);
+    Value fileio_flush_builtin(ArgsView args);
+    Value fileio_fileexists_builtin(ArgsView args);
+    Value fileio_deletefile_builtin(ArgsView args);
+    Value fileio_createdir_builtin(ArgsView args);
+    Value fileio_direxists_builtin(ArgsView args);
+    Value fileio_deletedir_builtin(ArgsView args);
+    Value fileio_filesize_builtin(ArgsView args);
+    Value fileio_abspathfile_builtin(ArgsView args);
+    Value fileio_pathdir_builtin(ArgsView args);
+    Value fileio_pathfile_builtin(ArgsView args);
+    Value fileio_fileext_builtin(ArgsView args);
+    Value fileio_filewoext_builtin(ArgsView args);
 
 private:
     Value moduleTypeValue; // ObjModuleType*

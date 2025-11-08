@@ -311,9 +311,9 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
 
         ObjModuleType* module = asModuleType(strong);
         icu::UnicodeString qualified = moduleQualifiedName(module);
-        Value builtin = VM::instance().getBuiltinModule(qualified);
+        Value builtin = VM::instance().getBuiltinModuleType(qualified);
         if (builtin.isNil())
-            builtin = VM::instance().getBuiltinModule(module->name);
+            builtin = VM::instance().getBuiltinModuleType(module->name);
         if (builtin.isNonNil())
             return builtin.strongRef();
 
@@ -560,22 +560,22 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     ModuleInfo module = findImport(ast->packages);
     bool builtinModule = false;
 
-    if (module.name.isEmpty()) {
-        if (ast->packages.size() == 1) {
-            icu::UnicodeString modName { ast->packages[0] };
-            if (VM::instance().getBuiltinModule(modName).isNonNil()) {
-                module.name = modName;
-                builtinModule = true;
-            }
+    // Check if this is a builtin module (even if a file also exists)
+    if (ast->packages.size() == 1) {
+        icu::UnicodeString modName { ast->packages[0] };
+        if (VM::instance().getBuiltinModuleType(modName).isNonNil()) {
+            module.name = modName;
+            builtinModule = true;
         }
-        if (!builtinModule) {
-            if (module.invalidFolder) {
-                error("import '"+toUTF8StdString(join(ast->packages,"."))+"' not found: folder lacks init.rox or a single .rox file");
-            } else {
-                error("import '"+toUTF8StdString(join(ast->packages,"."))+"' not found.");
-            }
-            return {};
+    }
+
+    if (!builtinModule && module.name.isEmpty()) {
+        if (module.invalidFolder) {
+            error("import '"+toUTF8StdString(join(ast->packages,"."))+"' not found: folder lacks init.rox or a single .rox file");
+        } else {
+            error("import '"+toUTF8StdString(join(ast->packages,"."))+"' not found.");
         }
+        return {};
     }
 
     std::string absoluteModuleFilePath;
@@ -605,7 +605,8 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 
     if (!imported) {  // import it
         if (builtinModule) {
-            importedModuleType = VM::instance().getBuiltinModule(module.name);
+            ptr<BuiltinModule> importedModule = VM::instance().getBuiltinModule(module.name);
+            importedModuleType = importedModule->moduleType();
             importedModuleType = importedModuleType.strongRef();
             importedModules[module] = importedModuleType;
 
@@ -622,6 +623,26 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
                 ObjModuleType* builtinType = asModuleType(importedModuleType);
                 if (builtinType->fullName.isEmpty())
                     builtinType->fullName = moduleFullName;
+
+                // Check if the builtin module has an _init() function and call it if so
+                // This allows builtin modules to perform native initialization when imported
+                auto initFnOpt = builtinType->vars.load(toUnicodeString("_init"));
+                if (initFnOpt.has_value() && isClosure(initFnOpt.value())) {
+                    // Emit code to call module._init()
+                    // The value is already a closure, so just load it as a constant and call it
+                    emitConstant(*initFnOpt, "_init closure");
+
+                    CallSpec callSpec {};
+                    callSpec.allPositional = true;
+                    callSpec.argCount = 0;
+                    auto bytes = callSpec.toBytes();
+                    assert(bytes.size()==1);
+                    emitBytes(OpCode::Call, bytes[0]);
+
+                    // Pop the return value (we don't need it)
+                    emitByte(OpCode::Pop);
+                }
+
             }
         } else {
             // compile or load it, emit code to execute it

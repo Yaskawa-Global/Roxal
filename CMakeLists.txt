@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.20)
 
 project(roxal VERSION 1.0 LANGUAGES CXX C)
 
@@ -12,6 +12,8 @@ option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
 
 
 option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
+
+option(ENABLE_UI "Build with UI support" ON)
 
 
 add_compile_definitions(
@@ -87,6 +89,8 @@ include_directories(${EIGEN3_INCLUDE_DIR})
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBFFI REQUIRED libffi)
 
+
+
 # Build the dataflow engine library
 add_subdirectory(dataflow)
 
@@ -121,6 +125,10 @@ list(APPEND COMPILER_SOURCES compiler/ModuleSys.cpp)
 
 if(ROXAL_ENABLE_FILEIO)
     list(APPEND COMPILER_SOURCES compiler/ModuleFileIO.cpp)
+endif()
+
+if(ENABLE_UI)
+    list(APPEND COMPILER_SOURCES ui/ModuleUI.cpp)
 endif()
 
 set(MAIN_SOURCE compiler/roxal.cpp)
@@ -183,6 +191,7 @@ set_target_properties(roxalcore PROPERTIES OUTPUT_NAME roxal)
 add_dependencies(roxalcore generate_parser)
 
 
+
 target_link_libraries(roxalcore
     PUBLIC
         antlr4-runtime
@@ -208,6 +217,39 @@ target_compile_definitions(roxalcore PRIVATE
     $<$<CONFIG:DEBUG>:DEBUG_BUILD>
     $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
 )
+
+
+if(ENABLE_UI)
+
+    list(APPEND COMPILER_SOURCES ui/ModuleUI.cpp)
+
+    set(LV_BUILD_CONF_PATH ${CMAKE_SOURCE_DIR}/ui/lv_conf.h CACHE STRING "" FORCE)
+    set(CONFIG_LV_BUILD_EXAMPLES ON CACHE BOOL "" FORCE)
+    set(CONFIG_LV_BUILD_DEMOS    ON CACHE BOOL "" FORCE)
+
+    # Prefer config packages (helps with vcpkg)
+    set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ON)
+    find_package(Freetype REQUIRED)
+
+    find_package(PNG REQUIRED)
+    find_package(ZLIB REQUIRED)
+
+    find_package(OpenGL REQUIRED)          # OpenGL::GL
+    find_package(GLEW REQUIRED)            # GLEW::GLEW  (via vcpkg)
+    find_package(glfw3 CONFIG REQUIRED)    # glfw (or glfw3::glfw depending on port)
+
+    add_subdirectory(../lvgl lvgl)
+
+    # Give FreeType headers/libs to the target that compiles code including them
+    target_link_libraries(lvgl PRIVATE Freetype::Freetype)
+
+    # Your library that uses LVGL
+    target_link_libraries(roxalcore PUBLIC lvgl PNG::PNG ZLIB::ZLIB OpenGL::GL GLEW::GLEW glfw)
+
+    target_compile_definitions(roxalcore PUBLIC ENABLE_UI=1)
+else()
+    target_compile_definitions(roxalcore PUBLIC ENABLE_UI=0)
+endif()
 
 
 if(ROXAL_BUILD_MAIN)
