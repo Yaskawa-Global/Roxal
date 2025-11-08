@@ -2359,8 +2359,21 @@ std::any ASTGenerator::visitStr(RoxalParser::StrContext *context)
             str->str = toUnicodeString(text).unescape();
             return typeValue(str);
         }
-        ptr<Expression> expr = parts[0];
-        for (size_t i = 1; i < parts.size(); ++i) {
+        // Ensure the first element is a string so concatenation works correctly
+        ptr<Expression> expr;
+        size_t startIdx;
+        if (auto str = dynamic_ptr_cast<Str>(parts[0])) {
+            expr = parts[0];
+            startIdx = 1;
+        } else {
+            // First part is not a string, start with empty string
+            ptr<Str> empty = make_ptr<Str>();
+            setSourceInfo(empty, context);
+            empty->str = toUnicodeString("").unescape();
+            expr = empty;
+            startIdx = 0;
+        }
+        for (size_t i = startIdx; i < parts.size(); ++i) {
             ptr<BinaryOp> add = make_ptr<BinaryOp>(BinaryOp::Add);
             setSourceInfo(add, context);
             add->lhs = expr;
