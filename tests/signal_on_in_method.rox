@@ -1,0 +1,25 @@
+
+const Freq = 2
+
+type Button object:
+
+  var clicked :signal = signal(Freq,false)
+
+  func onClicked(f) -> Button:
+    on clicked changed:
+      f(this)
+    return this
+
+  func clickTest():
+    clicked.set(true)
+
+
+func handleClicked(button):
+  print("button clicked now="+button.clicked)
+
+b = Button()
+b.onClicked(handleClicked)
+
+b.clickTest()
+
+wait(ms=200)

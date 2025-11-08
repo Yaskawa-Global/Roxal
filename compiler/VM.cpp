@@ -4395,6 +4395,11 @@ std::pair<InterpretResult,Value> VM::execute()
         if (!processPendingEvents())
             return errorReturn;
 
+        // Refresh frame pointer after processing events, as nested execute() calls
+        // from event handlers may have modified the frame stack
+        if (!thread->frames.empty())
+            frame = thread->frames.end()-1;
+
         if (consumePendingObjectCleanup()) {
             freeObjects();
         }
