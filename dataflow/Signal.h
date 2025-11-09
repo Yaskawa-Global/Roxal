@@ -66,6 +66,7 @@ public:
     TimeDuration period() const { return m_period; }
 
     bool isSourceSignal() const { return isSource; }
+    bool isClockSignal() const { return isClock; }
 
     // Get the last value of the signal
     Value lastValue() const;
