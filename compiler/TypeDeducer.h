@@ -23,6 +23,8 @@ class TypeDeducer : public ast::ASTVisitor
 public:
     TypeDeducer() {}
 
+    void setReplMode(bool repl) { replMode = repl; }
+
     virtual TraversalOrder traversalOrder() const;
 
     virtual std::any visit(ptr<ast::File> ast);
@@ -73,6 +75,9 @@ public:
 
 private:
     std::vector<ScopeInfo> scopes;
+    bool replMode { false };
+    bool replScopeInitialized { false };
+
     void pushScope(bool strict);
     void popScope();
     bool currentStrict() const;

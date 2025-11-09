@@ -10,6 +10,7 @@
 
 #include "Chunk.h"
 #include "Object.h"
+#include "TypeDeducer.h"
 
 
 namespace roxal {
@@ -110,6 +111,9 @@ protected:
     std::vector<std::string> modulePaths;
     bool cacheReadEnabled;
     bool cacheWriteEnabled;
+
+    // Persistent TypeDeducer for REPL mode to maintain type info across lines
+    ptr<TypeDeducer> replTypeDeducer;
 
     std::map<ModuleInfo,Value> importedModules;
 

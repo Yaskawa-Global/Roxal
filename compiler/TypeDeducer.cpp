@@ -70,9 +70,19 @@ std::any TypeDeducer::visit(ptr<ast::File> ast)
             strictContext = false;
     }
 
-    pushScope(strictContext); // module scope strictness can be overridden
-    ast->acceptChildren(*this, results);
-    popScope();
+    // In REPL mode, maintain persistent scope across lines
+    if (replMode) {
+        if (!replScopeInitialized) {
+            pushScope(strictContext);
+            replScopeInitialized = true;
+        }
+        ast->acceptChildren(*this, results);
+        // Don't pop scope in REPL mode - it persists across lines
+    } else {
+        pushScope(strictContext); // module scope strictness can be overridden
+        ast->acceptChildren(*this, results);
+        popScope();
+    }
     return results;
 }
 
