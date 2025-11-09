@@ -123,8 +123,17 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
         throw std::runtime_error("ASTGenerator root node is not a File");
 
     try {
-        TypeDeducer typeDeducer {};
-        typeDeducer.visit(as<File>(ast));
+        // In REPL mode, use a persistent TypeDeducer to maintain type info across lines
+        if (replModeFlag) {
+            if (!replTypeDeducer) {
+                replTypeDeducer = make_ptr<TypeDeducer>();
+                replTypeDeducer->setReplMode(true);
+            }
+            replTypeDeducer->visit(as<File>(ast));
+        } else {
+            TypeDeducer typeDeducer {};
+            typeDeducer.visit(as<File>(ast));
+        }
     } catch (std::exception& e) {
         compileError(e.what());
         clearCompileContext();
