@@ -41,6 +41,25 @@ ptr<Signal> Signal::newSourceSignal(double freq, Value initial, std::optional<st
     return s;
 }
 
+ptr<Signal> Signal::newClockSignalTemplate(double freq, std::optional<std::string> name)
+{
+    auto s = ptr<Signal>::from_raw(new Signal(freq, Value(0), name)); // direct new needed
+    s->isClock = true;
+    s->isSource = true;
+    s->clockCount = 0;
+    // NOT added to engine - this is a template for type member defaults
+    return s;
+}
+
+ptr<Signal> Signal::newSourceSignalTemplate(double freq, Value initial, std::optional<std::string> name)
+{
+    auto s = ptr<Signal>::from_raw(new Signal(freq, initial, name));
+    s->isClock = false;
+    s->isSource = true;
+    // NOT added to engine - this is a template for type member defaults
+    return s;
+}
+
 
 Signal::Signal(double freq, Value initial, std::optional<std::string> name)
     : m_frequency(freq), m_maxHistoryPeriods(2)

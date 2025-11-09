@@ -2076,6 +2076,22 @@ void VM::defineProperty(ObjString* name)
                 // TODO: implement & use a canConvertToType()
                 propertyInitial = toType(propertyType, propertyInitial, /*strict=*/false);
         }
+
+        // Replace signal with template signal (not added to engine) for type member defaults
+        // Note: the original signal was already added to engine during expression evaluation,
+        // but will be GC'd when no longer referenced. Template signals are never added to engine.
+        if (isSignal(propertyInitial)) {
+            auto sig = asSignal(propertyInitial)->signal;
+            ptr<df::Signal> templateSig;
+            if (sig->isClockSignal()) {
+                templateSig = df::Signal::newClockSignalTemplate(sig->frequency());
+            } else if (sig->isSourceSignal()) {
+                templateSig = df::Signal::newSourceSignalTemplate(sig->frequency(), sig->lastValue());
+            } else {
+                throw std::runtime_error("cannot use derived signals as member defaults");
+            }
+            propertyInitial = Value::signalVal(templateSig);
+        }
     }
 
     ast::Access access = (!accessVal.isNil() && accessVal.isBool() && accessVal.asBool()) ? ast::Access::Private : ast::Access::Public;
@@ -2122,6 +2138,11 @@ void VM::defineEventPayload(ObjString* name)
                 strict = (thread->frames.end() - 1)->strict;
             initialValue = toType(propertyType, initialValue, strict);
         }
+    }
+
+    // Events cannot have signal members (enforced at compile-time and runtime)
+    if (!initialValue.isNil() && isSignal(initialValue)) {
+        throw std::runtime_error("events cannot have signal members");
     }
 
     ObjEventType::PayloadProperty payload { name->s, propertyType, initialValue };

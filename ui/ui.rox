@@ -1,0 +1,54 @@
+//
+// Roxal builtin GUI toolkit
+//
+
+const FPS = 100
+
+@builtin
+type Window object:
+
+  var id :int
+  var title :string
+
+  @builtin
+  proc close():
+    """Close the window"""
+
+
+@builtin
+type Display object:
+
+  var id :int
+  var windows :dict // id : Window
+
+  @builtin
+  func create_window(width :int, height :int, title :string="", open :bool=false):
+    """create a new window (closed by default)"""
+
+
+@builtin
+type Widget object:
+  var x :signal = signal(FPS, 0)
+  var y :signal = signal(FPS, 0)
+  var width :signal = signal(FPS, 1)
+  var height :signal = signal(FPS, 1)
+
+@builtin
+type Button object extends Widget:
+  var label :signal = signal(FPS, '')
+
+
+
+
+
+
+
+
+
+
+@builtin
+func _init():
+  """native initialization function called when module is imported"""
+
+// automatically populated on import
+var displays :list = []
