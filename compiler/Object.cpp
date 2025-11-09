@@ -1569,7 +1569,16 @@ ObjEventInstance::ObjEventInstance(const Value& eventType)
         ObjEventType* typeObj = asEventType(eventType);
         payload.reserve(typeObj->payloadProperties.size());
         for (const auto& prop : typeObj->payloadProperties) {
-            payload.push_back(prop.initialValue);
+            auto propInitialValue = prop.initialValue;
+            // Clone reference types to avoid sharing between instances
+            if (!propInitialValue.isPrimitive()) {
+                // Events should not have signal members
+                if (isSignal(propInitialValue)) {
+                    throw std::runtime_error("events cannot have signal members");
+                }
+                propInitialValue = propInitialValue.clone();
+            }
+            payload.push_back(propInitialValue);
         }
     }
 }
@@ -3583,6 +3592,30 @@ ObjectInstance::ObjectInstance(const Value& objectType)
     for(const auto& property : ot->properties) {
         const auto& prop { property.second };
         auto propInitialvalue { prop.initialValue };
+        // Clone reference types to avoid sharing between instances
+        if (!propInitialvalue.isPrimitive()) {
+            // Special handling for signals - only clone clocks and source signals
+            if (isSignal(propInitialvalue)) {
+                auto sig = asSignal(propInitialvalue)->signal;
+                if (!sig) {
+                    throw std::runtime_error("cannot clone null signal");
+                }
+                if (sig->isClockSignal()) {
+                    // Create new independent clock with same frequency
+                    auto newSig = df::Signal::newClockSignal(sig->frequency());
+                    propInitialvalue = Value::signalVal(newSig);
+                } else if (sig->isSourceSignal()) {
+                    // Create new independent source signal with same frequency/initial value
+                    auto newSig = df::Signal::newSourceSignal(sig->frequency(), sig->lastValue());
+                    propInitialvalue = Value::signalVal(newSig);
+                } else {
+                    // Derived signals cannot be used as member defaults
+                    throw std::runtime_error("cannot use derived signals as member defaults");
+                }
+            } else {
+                propInitialvalue = propInitialvalue.clone();
+            }
+        }
         properties[prop.name.hashCode()] = propInitialvalue;
     }
 }
@@ -3675,6 +3708,30 @@ void ActorInstance::initialize(const Value& objectType)
     for(const auto& property : ot->properties) {
         const auto& prop { property.second };
         auto propInitialvalue { prop.initialValue };
+        // Clone reference types to avoid sharing between instances
+        if (!propInitialvalue.isPrimitive()) {
+            // Special handling for signals - only clone clocks and source signals
+            if (isSignal(propInitialvalue)) {
+                auto sig = asSignal(propInitialvalue)->signal;
+                if (!sig) {
+                    throw std::runtime_error("cannot clone null signal");
+                }
+                if (sig->isClockSignal()) {
+                    // Create new independent clock with same frequency
+                    auto newSig = df::Signal::newClockSignal(sig->frequency());
+                    propInitialvalue = Value::signalVal(newSig);
+                } else if (sig->isSourceSignal()) {
+                    // Create new independent source signal with same frequency/initial value
+                    auto newSig = df::Signal::newSourceSignal(sig->frequency(), sig->lastValue());
+                    propInitialvalue = Value::signalVal(newSig);
+                } else {
+                    // Derived signals cannot be used as member defaults
+                    throw std::runtime_error("cannot use derived signals as member defaults");
+                }
+            } else {
+                propInitialvalue = propInitialvalue.clone();
+            }
+        }
         properties[prop.name.hashCode()] = propInitialvalue;
     }
 }

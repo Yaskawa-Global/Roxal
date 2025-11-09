@@ -821,6 +821,9 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                 auto varType { prop->varType.value() };
                 if (std::holds_alternative<BuiltinType>(varType)) {
                     auto builtinType { std::get<BuiltinType>(varType) };
+                    // Events cannot have signal members
+                    if (builtinType == BuiltinType::Signal)
+                        error("Event payload member '" + toUTF8StdString(propName) + "' cannot be typed as signal");
                     Value typeValue { Value::typeSpecVal(builtinToValueType(builtinType)) };
                     emitConstant(typeValue, "event payload " + toUTF8StdString(propName) + " type");
                 } else {
