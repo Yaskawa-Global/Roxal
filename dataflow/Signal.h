@@ -27,6 +27,11 @@ public:
     static ptr<Signal> newSourceSignal(double freq, Value initial = Value(),
                                       std::optional<std::string> name = {});
 
+    // Template signal creation (not added to engine) - for use as type member default initializers
+    static ptr<Signal> newClockSignalTemplate(double freq, std::optional<std::string> name = {});
+    static ptr<Signal> newSourceSignalTemplate(double freq, Value initial = Value(),
+                                               std::optional<std::string> name = {});
+
     const std::string& name() const { return m_name; }
 
     ptr<Signal> rename(const std::string& newName) { m_name = newName; return ptr_from_this(); }
