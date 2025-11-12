@@ -7,42 +7,42 @@ var empty_dir = base + '/empty_dir'
 var nested_dir = base + '/nested'
 var nested_child = nested_dir + '/child.txt'
 
-if fileio.dirExists(base):
-  fileio.deleteDir(base, true)
+if fileio.dir_exists(base):
+  fileio.delete_dir(base, true)
 
-print(fileio.createDir(base))
-print(fileio.dirExists(base))
-print(fileio.createDir(nested_dir + '/deep', true))
-print(fileio.dirExists(nested_dir))
+print(fileio.create_dir(base))
+print(fileio.dir_exists(base))
+print(fileio.create_dir(nested_dir + '/deep', true))
+print(fileio.dir_exists(nested_dir))
 
 var handle = fileio.open(file_path, true)
 fileio.write(handle, 'alpha')
 fileio.close(handle)
 
-print(fileio.createDir(file_path))
+print(fileio.create_dir(file_path))
 
-fileio.createDir(empty_dir)
-fileio.createDir(nested_dir)
+fileio.create_dir(empty_dir)
+fileio.create_dir(nested_dir)
 
 var nested_handle = fileio.open(nested_child, true)
 fileio.write(nested_handle, 'child')
 fileio.close(nested_handle)
 
-print(fileio.fileExists(file_path))
-print(fileio.deleteFile(file_path))
-print(fileio.fileExists(file_path))
-print(fileio.deleteFile(file_path))
-print(fileio.deleteFile(missing_file))
+print(fileio.file_exists(file_path))
+print(fileio.delete_file(file_path))
+print(fileio.file_exists(file_path))
+print(fileio.delete_file(file_path))
+print(fileio.delete_file(missing_file))
 
-print(fileio.dirExists(empty_dir))
-print(fileio.deleteDir(empty_dir, false))
-print(fileio.dirExists(empty_dir))
-print(fileio.deleteDir(empty_dir, false))
+print(fileio.dir_exists(empty_dir))
+print(fileio.delete_dir(empty_dir, false))
+print(fileio.dir_exists(empty_dir))
+print(fileio.delete_dir(empty_dir, false))
 
-print(fileio.deleteDir(nested_dir, false))
-print(fileio.dirExists(nested_dir))
-print(fileio.deleteDir(nested_dir, true))
-print(fileio.dirExists(nested_dir))
-print(fileio.deleteDir(nested_dir, true))
+print(fileio.delete_dir(nested_dir, false))
+print(fileio.dir_exists(nested_dir))
+print(fileio.delete_dir(nested_dir, true))
+print(fileio.dir_exists(nested_dir))
+print(fileio.delete_dir(nested_dir, true))
 
-fileio.deleteDir(base, true)
+fileio.delete_dir(base, true)

@@ -1,4 +1,4 @@
 import fileio
 
-print(fileio.readFile('../tests/testfile.txt', 'binary'))
+print(fileio.read_file('../tests/testfile.txt', 'binary'))
 

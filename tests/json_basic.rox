@@ -1,7 +1,7 @@
 var data = {'a':1, 'b':[true, nil, 3.5]}
-var s = toJson(data, false)
+var s = to_json(data, false)
 print(s)
-var d2 = fromJson(s)
+var d2 = from_json(s)
 print(d2['a'])
 print(d2['b'][0])
 print(len(d2['b']))
