@@ -664,14 +664,14 @@ public:
       { return load(name.hashCode()); }
 
 
-    bool existsModule(int32_t nameHash) const
+    bool isModuleVar(int32_t nameHash) const
     {
         std::lock_guard<std::mutex> lock(varsLock);
         return vars.find(nameHash) != vars.end();
     }
 
-    bool existsModule(const icu::UnicodeString& name) const
-      { return existsModule(name.hashCode()); }
+    bool isModuleVar(const icu::UnicodeString& name) const
+      { return isModuleVar(name.hashCode()); }
 
 
     // store value as var
@@ -730,16 +730,31 @@ public:
         globals.insert({name.hashCode(), std::make_pair(name, monitored)});
     }
 
+    // ensure there is a change signal for a module or global variable
     Value ensureSignal(int32_t nameHash, const icu::UnicodeString& name,
                        const std::string& signalName)
     {
-        std::lock_guard<std::mutex> lock(varsLock);
-        auto it = vars.find(nameHash);
-        if (it == vars.end())
-            return Value::nilVal();
-        if (it->second.first.isEmpty())
-            it->second.first = name;
-        return it->second.second.ensureSignal(signalName);
+        {
+            std::lock_guard<std::mutex> lock(varsLock);
+            auto it = vars.find(nameHash);
+            if (it != vars.end()) {
+                if (it->second.first.isEmpty())
+                    it->second.first = name;
+                return it->second.second.ensureSignal(signalName);
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(globalsLock);
+            auto it = globals.find(nameHash);
+            if (it != globals.end()) {
+                if (it->second.first.isEmpty())
+                    it->second.first = name;
+                return it->second.second.ensureSignal(signalName);
+            }
+        }
+
+        return Value::nilVal();
     }
 
     Value ensureSignal(const icu::UnicodeString& name, const std::string& signalName)

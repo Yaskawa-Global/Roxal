@@ -3864,18 +3864,23 @@ std::pair<InterpretResult,Value> VM::execute()
             case OpCode::GetModuleVarSignal: {
                 ObjString* name = readString();
                 auto& vars { moduleVars() };
-                if (!vars.existsModule(name->hash)) {
+                auto optValue { vars.load(name->hash) };
+                if (!optValue.has_value()) {
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
                     return errorReturn;
                 }
-                auto optValue { vars.load(name->hash) };
-                Value value = optValue.has_value() ? optValue.value() : Value::nilVal();
+
+                Value value = optValue.value();
                 if (isSignal(value)) {
                     push(value);
                     break;
                 }
 
                 Value signal = vars.ensureSignal(name->hash, name->s, name->toStdString());
+                if (signal.isNil()) {
+                    runtimeError("Cannot monitor variable '" + name->toStdString() + "'");
+                    return errorReturn;
+                }
                 push(signal);
                 break;
             }
