@@ -3609,7 +3609,7 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
 
     if (auto binding = lookupConstBinding(name)) {
         if (asSignal)
-            error("'changed' is only supported for module variables");
+            error("'changed' requires a module variable binding; use a signal expression instead");
         if (assign) {
             std::string message = "Cannot assign to constant '" + toUTF8StdString(name) + "'";
             if (binding->line.line > 0)
@@ -3627,7 +3627,7 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
     int16_t localArg = resolveLocal(funcScope(),name);
     if (localArg != -1) { // found
         if (asSignal)
-            error("'changed' is only supported for module variables");
+            error("'changed' requires a module variable binding; use a signal expression instead");
         found = true;
         arg = localArg;
         getOp = OpCode::GetLocal;
@@ -3650,7 +3650,7 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
     int16_t upValueArg;
     if (!found && ((upValueArg = resolveUpvalue(funcScope(),name)) != -1)) {
         if (asSignal)
-            error("'changed' is only supported for module variables");
+            error("'changed' requires a module variable binding; use a signal expression instead");
         found = true;
         arg = upValueArg;
         getOp = OpCode::GetUpvalue;
@@ -3709,7 +3709,7 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
     if (!assign) {
         if (asSignal) {
             if (getOp != OpCode::GetModuleVar)
-                error("'changed' is only supported for module variables");
+                error("'changed' requires a module variable binding; use a signal expression instead");
             emitOpArgsBytes(OpCode::GetModuleVarSignal, arg, toUTF8StdString(name));
         } else {
             emitOpArgsBytes(getOp, arg, toUTF8StdString(name));
