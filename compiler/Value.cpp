@@ -38,6 +38,43 @@ namespace roxal {
 using namespace roxal;
 
 
+VariablesMap::MonitoredValue::MonitoredValue()
+    : value(Value::nilVal()), signal(Value::nilVal())
+{
+}
+
+Value VariablesMap::MonitoredValue::ensureSignal(const std::string& signalName)
+{
+    if (!signal.isNil())
+        return signal;
+
+    std::string name = signalName.empty() ? std::string("variable") : signalName;
+    auto sig = df::Signal::newSourceSignalTemplate(1000.0, value, name);
+    sig->setInternal(true);
+    signal = Value::signalVal(sig);
+    return signal;
+}
+
+bool VariablesMap::MonitoredValue::assign(const Value& newValue)
+{
+    if (value.isObj() && newValue.isObj()) {
+        if (value.asObj() == newValue.asObj())
+            return false;
+    } else if (value.equals(newValue)) {
+        return false;
+    }
+
+    value = newValue;
+
+    if (!signal.isNil() && isSignal(signal)) {
+        ObjSignal* sigObj = asSignal(signal);
+        if (sigObj && sigObj->signal)
+            sigObj->signal->set(newValue);
+    }
+
+    return true;
+}
+
 template<class D>
 Value::Value(unique_ptr<Obj, D> o)
 {

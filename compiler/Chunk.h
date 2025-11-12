@@ -66,6 +66,7 @@ enum class OpCode {
     DefineModuleVar,
     DefineModuleConst,
     GetModuleVar,
+    GetModuleVarSignal,
     SetModuleVar,
     SetNewModuleVar,
     ImportModuleVars,

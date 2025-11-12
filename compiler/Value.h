@@ -9,6 +9,7 @@
 #include <cassert>
 #include <ostream>
 #include <istream>
+#include <string>
 
 #include <core/common.h>
 #include <core/memory.h>
@@ -568,6 +569,27 @@ class VariablesMap
 public:
     VariablesMap() {}
 
+    struct MonitoredValue {
+        MonitoredValue();
+
+        /// Returns true if a change signal has been created.
+        bool hasSignal() const { return !signal.isNil(); }
+
+        /// Ensure a monitoring signal exists for this value and return it.
+        /// The provided name is used when creating the underlying signal.
+        Value ensureSignal(const std::string& signalName);
+
+        /// Assign a new value, notifying listeners if the value actually changed.
+        /// @return true if the stored value changed.
+        bool assign(const Value& newValue);
+
+        /// Reset the stored signal handle.
+        void clearSignal() { signal = Value::nilVal(); }
+
+        Value value;
+        Value signal;
+    };
+
     typedef std::pair<icu::UnicodeString, Value> NameValue;
 
     void clearGlobals()
@@ -623,7 +645,7 @@ public:
 
             auto it = vars.find(nameHash);
             if (it != vars.end())
-                return it->second.second;
+                return it->second.second.value;
         }
 
         // try globals
@@ -632,7 +654,7 @@ public:
 
             auto it = globals.find(nameHash);
             if (it != globals.end())
-                return it->second.second;
+                return it->second.second.value;
         }
         return {};
     }
@@ -648,14 +670,18 @@ public:
     bool store(int32_t nameHash, const icu::UnicodeString& name, const Value& value, bool overwrite=false)
     {
         std::lock_guard<std::mutex> lock(varsLock);
-        if (overwrite)
-            vars.insert_or_assign(nameHash, std::make_pair(name,value));
-        else {
-            auto it = vars.find(nameHash);
-            if (it != vars.end())
+        auto it = vars.find(nameHash);
+        if (it != vars.end()) {
+            if (!overwrite)
                 return false;
-            vars.insert({nameHash, std::make_pair(name,value)});
+            it->second.first = name;
+            it->second.second.assign(value);
+            return true;
         }
+
+        MonitoredValue monitored;
+        monitored.value = value;
+        vars.insert({nameHash, std::make_pair(name, monitored)});
         return true;
     }
 
@@ -673,7 +699,7 @@ public:
         auto it = vars.find(nameHash);
         if (it == vars.end())
             return false;
-        it->second.second = value;
+        it->second.second.assign(value);
         return true;
     }
 
@@ -682,7 +708,33 @@ public:
     void storeGlobal(const icu::UnicodeString& name, const Value& value)
     {
         std::lock_guard<std::mutex> lock(globalsLock);
-        globals.insert_or_assign(name.hashCode(), std::make_pair(name,value));
+        auto it = globals.find(name.hashCode());
+        if (it != globals.end()) {
+            it->second.first = name;
+            it->second.second.assign(value);
+            return;
+        }
+
+        MonitoredValue monitored;
+        monitored.value = value;
+        globals.insert({name.hashCode(), std::make_pair(name, monitored)});
+    }
+
+    Value ensureSignal(int32_t nameHash, const icu::UnicodeString& name,
+                       const std::string& signalName)
+    {
+        std::lock_guard<std::mutex> lock(varsLock);
+        auto it = vars.find(nameHash);
+        if (it == vars.end())
+            return Value::nilVal();
+        if (it->second.first.isEmpty())
+            it->second.first = name;
+        return it->second.second.ensureSignal(signalName);
+    }
+
+    Value ensureSignal(const icu::UnicodeString& name, const std::string& signalName)
+    {
+        return ensureSignal(name.hashCode(), name, signalName);
     }
 
     // iterate over each module var and call f (with const).  globals not considered.
@@ -691,7 +743,7 @@ public:
         std::lock_guard<std::mutex> lock(varsLock);
         for(const auto& entry : vars) {
             try {
-                f(entry.second);
+                f(NameValue(entry.second.first, entry.second.second.value));
             }
             catch (...) {}
         }
@@ -703,7 +755,7 @@ public:
         std::vector<NameValue> copy;
         copy.reserve(vars.size());
         for (const auto& entry : vars) {
-            copy.push_back(entry.second);
+            copy.emplace_back(entry.second.first, entry.second.second.value);
         }
         return copy;
     }
@@ -714,7 +766,7 @@ public:
         std::vector<NameValue> copy;
         copy.reserve(globals.size());
         for (const auto& entry : globals) {
-            copy.push_back(entry.second);
+            copy.emplace_back(entry.second.first, entry.second.second.value);
         }
         return copy;
     }
@@ -756,7 +808,7 @@ public:
 protected:
     // map from name ObjString.hash to <name, value> pair
     // TODO: use something other than UnicodeString?? (ObjString* or Value??)
-    typedef std::unordered_map<int32_t, NameValue> VarsMap;
+    typedef std::unordered_map<int32_t, std::pair<icu::UnicodeString, MonitoredValue>> VarsMap;
 
     mutable std::mutex varsLock;
     VarsMap vars;

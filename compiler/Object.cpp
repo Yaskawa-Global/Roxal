@@ -2534,15 +2534,18 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 void ObjModuleType::trace(ValueVisitor& visitor) const
 {
     vars.unsafeForEachModuleVar([&visitor](const auto& nameValue) {
-        visitor.visit(nameValue.second);
+        visitor.visit(nameValue.second.value);
+        if (nameValue.second.hasSignal())
+            visitor.visit(nameValue.second.signal);
     });
 }
 
 void ObjModuleType::dropReferences()
 {
     vars.unsafeForEachModuleVar([](auto& nameValue) {
-        Value& value = nameValue.second;
-        value = Value::nilVal();
+        nameValue.second.value = Value::nilVal();
+        if (nameValue.second.hasSignal())
+            nameValue.second.clearSignal();
     });
     vars.clear();
     clearModuleAliases();

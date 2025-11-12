@@ -602,7 +602,7 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
     if (globals.size() > 0) {
         std::cout << std::endl << "== globals ==" << std::endl;
         for(const auto& global : globals.get())
-            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second) << std::endl;
+            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second.value) << std::endl;
     }
     #endif
 
@@ -661,7 +661,7 @@ InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
     if (globals.size() > 0) {
         std::cout << std::endl << "== globals ==" << std::endl;
         for(const auto& global : globals.get())
-            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second) << std::endl;
+            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second.value) << std::endl;
     }
     #endif
 
@@ -2096,8 +2096,14 @@ void VM::defineProperty(ObjString* name)
 
     ast::Access access = (!accessVal.isNil() && accessVal.isBool() && accessVal.asBool()) ? ast::Access::Private : ast::Access::Public;
     bool isConst = (!constVal.isNil() && constVal.isBool() && constVal.asBool());
-    objType->properties[name->hash] = {name->s, propertyType, propertyInitial,
-                                      access, isConst, Value::objRef(objType).weakRef()};
+    ObjObjectType::Property property{};
+    property.name = name->s;
+    property.type = propertyType;
+    property.initialValue = propertyInitial;
+    property.access = access;
+    property.isConst = isConst;
+    property.ownerType = Value::objRef(objType).weakRef();
+    objType->properties[name->hash] = property;
     objType->propertyOrder.push_back(name->hash);
 
     // check module annotations for ctype
@@ -3853,6 +3859,17 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
                     return errorReturn;
                 }
+                break;
+            }
+            case OpCode::GetModuleVarSignal: {
+                ObjString* name = readString();
+                auto& vars { moduleVars() };
+                Value signal = vars.ensureSignal(name->hash, name->s, name->toStdString());
+                if (signal.isNil()) {
+                    runtimeError("Undefined variable '"+name->toStdString()+"'");
+                    return errorReturn;
+                }
+                push(signal);
                 break;
             }
             case OpCode::SetModuleVar: {
