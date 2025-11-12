@@ -664,6 +664,16 @@ public:
       { return load(name.hashCode()); }
 
 
+    bool existsModule(int32_t nameHash) const
+    {
+        std::lock_guard<std::mutex> lock(varsLock);
+        return vars.find(nameHash) != vars.end();
+    }
+
+    bool existsModule(const icu::UnicodeString& name) const
+      { return existsModule(name.hashCode()); }
+
+
     // store value as var
     //  (module vars only, can't update global builtins)
     // return: was stored (e.g. if exists and overwrite=false, returns false)

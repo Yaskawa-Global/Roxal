@@ -3692,8 +3692,6 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
                     error("Cannot access private member '"+toUTF8StdString(name)+"'");
                 if (assign && info.isConst)
                     error("Cannot assign to const property '"+toUTF8StdString(name)+"'");
-                if (asSignal)
-                    error("'changed' is only supported for module variables");
                 // treat as property access
                 if (!assign) {
                     namedVariable(UnicodeString("this"), false);
