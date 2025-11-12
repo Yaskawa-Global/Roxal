@@ -1,11 +1,11 @@
 import fileio
 
-print(fileio.readFile('../tests/testfile.txt'))
+print(fileio.read_file('../tests/testfile.txt'))
 var h = fileio.open('../tests/testfile.txt')
-print(fileio.isOpen(h))
-print(fileio.readLine(h))
-print(fileio.moreData(h))
-print(fileio.readLine(h))
-print(fileio.moreData(h))
+print(fileio.is_open(h))
+print(fileio.read_line(h))
+print(fileio.more_data(h))
+print(fileio.read_line(h))
+print(fileio.more_data(h))
 fileio.close(h)
-print(fileio.isOpen(h))
+print(fileio.is_open(h))
