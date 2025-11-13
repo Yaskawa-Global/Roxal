@@ -400,7 +400,7 @@ protected:
     void declareVariable(const icu::UnicodeString& name, std::optional<VarTypeSpec> type = std::nullopt);
     void declareConstant(const icu::UnicodeString& name, const Value& value, std::optional<VarTypeSpec> type = std::nullopt);
     void defineVariable(uint16_t moduleVar = 0, bool isConst = false); // moduleVar unused if defining a local
-    bool namedVariable(const icu::UnicodeString& name, bool assign=false);
+    bool namedVariable(const icu::UnicodeString& name, bool assign=false, bool asSignal=false);
     void namedModuleVariable(const icu::UnicodeString& name, bool assign=false);
 
     std::optional<VarTypeSpec> localVarType(const icu::UnicodeString& name);

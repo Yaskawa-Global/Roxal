@@ -1,0 +1,19 @@
+var x = 1
+
+on x changed:
+  print("handler:" + x)
+
+print("assign 2")
+x = 2
+wait(us=20000)
+
+print("assign same")
+x = 2
+wait(us=20000)
+
+print("assign 3")
+x = 3
+wait(us=20000)
+
+print("done")
+wait(us=20000)

@@ -342,6 +342,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("DEFINE_MODULE_VAR", offset, doubleByteArg);
         case OpCode::GetModuleVar:
             return constantInstruction("GET_MODULE_VAR", offset, doubleByteArg);
+        case OpCode::GetModuleVarSignal:
+            return constantInstruction("GET_MODULE_VAR_SIGNAL", offset, doubleByteArg);
         case OpCode::SetModuleVar:
             return constantInstruction("SET_MODULE_VAR", offset, doubleByteArg);
         case OpCode::SetNewModuleVar:
@@ -352,6 +354,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return argInstruction("GET_LOCAL", offset, doubleByteArg);
         case OpCode::SetLocal:
             return argInstruction("SET_LOCAL", offset, doubleByteArg);
+        case OpCode::GetPropSignal:
+            return constantInstruction("GET_PROP_SIGNAL", offset, doubleByteArg);
         case OpCode::GetUpvalue:
             return argInstruction("GET_UPVALUE", offset, doubleByteArg);
         case OpCode::SetUpvalue:

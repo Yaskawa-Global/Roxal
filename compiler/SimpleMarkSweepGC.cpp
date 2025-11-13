@@ -469,10 +469,14 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
     }
 
     vm.globals.unsafeForEachModuleVar([&visitor](const auto& entry) {
-        visitStrongValue(visitor, entry.second);
+        visitStrongValue(visitor, entry.second.value);
+        if (entry.second.hasSignal())
+            visitStrongValue(visitor, entry.second.signal);
     });
     vm.globals.unsafeForEachGlobal([&visitor](const auto& entry) {
-        visitStrongValue(visitor, entry.second);
+        visitStrongValue(visitor, entry.second.value);
+        if (entry.second.hasSignal())
+            visitStrongValue(visitor, entry.second.signal);
     });
 
     visitStrongValue(visitor, vm.dataflowEngineActor);

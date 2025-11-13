@@ -935,7 +935,7 @@ void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& pro
             if (it == inst->properties.end())
                 throw std::runtime_error("instance missing property in nested struct");
             try {
-                marshalProperty(it->second, subProp, ptrSize, buffer, offset, nestedAlign, stringStore, ctx);
+                marshalProperty(it->second.value, subProp, ptrSize, buffer, offset, nestedAlign, stringStore, ctx);
             } catch (const std::runtime_error& e) {
                 throw std::runtime_error("Error marshalling nested struct property '" + toUTF8StdString(subProp.name) + "' of type " + toString(subProp.type) + ": " + e.what());
             }
@@ -1099,7 +1099,7 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
         for (int32_t h : t->propertyOrder) {
             const auto& subProp = t->properties.at(h);
             Value subVal = unmarshalProperty(subProp, ptrSize, bytes, len, offset, nestedAlign, ctx);
-            inst->properties[subProp.name.hashCode()] = subVal;
+            inst->properties[subProp.name.hashCode()].assign(subVal);
         }
         size_t finalPad = (nestedAlign - ((offset - startOffset) % nestedAlign)) % nestedAlign;
         if (offset + finalPad > len)
@@ -1178,7 +1178,7 @@ std::vector<uint8_t> roxal::objectToCStruct(ObjectInstance* instance, std::vecto
         if (it == instance->properties.end())
             throw std::runtime_error("instance missing property in objectToCStruct");
         try {
-            marshalProperty(it->second, prop, ptrSize, buffer, offset, structAlign, stringStore, ctx);
+            marshalProperty(it->second.value, prop, ptrSize, buffer, offset, structAlign, stringStore, ctx);
         } catch (const std::exception& e) {
             throw std::runtime_error("Error marshalling type '"+toUTF8StdString(type->name)+"': " + e.what());
         }
@@ -1211,7 +1211,7 @@ Value roxal::objectFromCStruct(const Value& type, const void* data, size_t len)
     for (int32_t hash : objType->propertyOrder) {
         const auto& prop = objType->properties.at(hash);
         Value val = unmarshalProperty(prop, ptrSize, bytes, len, offset, structAlign, nullptr);
-        inst->properties[prop.name.hashCode()] = val;
+        inst->properties[prop.name.hashCode()].assign(val);
     }
 
     size_t finalPad = (structAlign - (offset % structAlign)) % structAlign;
@@ -1239,7 +1239,7 @@ void roxal::updateObjectFromCStruct(ObjectInstance* instance, const void* data, 
     for (int32_t hash : type->propertyOrder) {
         const auto& prop = type->properties.at(hash);
         Value val = unmarshalProperty(prop, ptrSize, bytes, len, offset, structAlign, ctx);
-        instance->properties[prop.name.hashCode()] = val;
+        instance->properties[prop.name.hashCode()].assign(val);
     }
 
     size_t finalPad = (structAlign - (offset % structAlign)) % structAlign;

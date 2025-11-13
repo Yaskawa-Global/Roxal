@@ -1,0 +1,6 @@
+assign 2
+handler:2
+assign same
+assign 3
+handler:3
+done
