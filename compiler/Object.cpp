@@ -3890,10 +3890,10 @@ bool roxal::objsEqual(const Value& l, const Value& r)
             if (ls == rs) // identical object
                 return true;
 
-            // Trust hash.  Possible different strings with has collision will
-            //  compare as equal (low probability)
+            // Trust hash.  Possible different strings with hash collisions will
+            // compare as equal (low probability).
             // TODO: consider doing full char comparison for equality if hashes match
-            return asStringObj(l)->hash == asStringObj(l)->hash;
+            return ls->hash == rs->hash;
             // if (ls->s.length() != rs->s.length())
             //     return false;
             // return ls->s == rs->s;
