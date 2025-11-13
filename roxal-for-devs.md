@@ -30,7 +30,7 @@ Value types:
 Reference types:
   * `string` - Unicode (UTF-8) (literals are interned)
     * Single quoted `'like this'` or double quoted `"like this"`
-    * With double quotes, {variable} interpolations are substituted (`"myalue={myvalue}"`)
+    * With double quotes, `{}` placeholders interpolate identifiers, dotted properties, and indexes using identifiers, numeric literals, or single-quoted string literals. Multiple comma-separated indices are allowed (for example `"lookup={record['name']}"` or `"matrix element={mat[row, 2]}"`).
   * `list` - [list, of, values] - heterogeneous
   * `dict` - {key:value,key2:value2} - heterogeneous (hash, map)
     * insertion order preserved
