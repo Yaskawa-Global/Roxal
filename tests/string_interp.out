@@ -7,3 +7,6 @@ Box letters has beta
 chosen=gamma
 literal index=gamma
 from method=Box letters has alpha
+dict lookup=letters
+matrix direct=4
+matrix vars=5

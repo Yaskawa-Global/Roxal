@@ -23,6 +23,7 @@ type Box object:
 
 var box = Box("letters", [Item("alpha"), Item("beta"), Item("gamma")])
 var idx = 2
+var col = 1
 
 print("label={box.label}")
 print("first item={box.items[0].name}")
@@ -30,3 +31,10 @@ print(box.describe(1))
 print("chosen={box.items[idx].name}")
 print("literal index={box.items[2].name}")
 print("from method={box.describe(0)}")
+var metadata = { 'owner': 'clerk', 'tags': { 'primary': 'letters' } }
+var mat = matrix([[1, 2, 3], [4, 5, 6]])
+var row = 1
+
+print("dict lookup={metadata['tags']['primary']}")
+print("matrix direct={mat[1, 0]}")
+print("matrix vars={mat[row, col]}")

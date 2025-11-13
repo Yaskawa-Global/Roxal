@@ -152,6 +152,59 @@ ptr<Expression> ASTGenerator::parseInterpolationExpression(const std::string& te
         return num;
     };
 
+    auto parseStringLiteral = [&]() -> ptr<Expression> {
+        skipWhitespace();
+        if (pos >= trimmed.size() || trimmed[pos] != '\'')
+            throw std::runtime_error("Invalid string literal in string interpolation expression: " + text);
+        ++pos; // skip opening quote
+
+        std::string buffer;
+        bool closed = false;
+        while (pos < trimmed.size()) {
+            char ch = trimmed[pos++];
+            if (ch == '\\') {
+                if (pos >= trimmed.size())
+                    throw std::runtime_error("Invalid escape in string interpolation expression: " + text);
+                char escaped = trimmed[pos++];
+                buffer.push_back('\\');
+                buffer.push_back(escaped);
+            } else if (ch == '\'') {
+                closed = true;
+                break;
+            } else {
+                buffer.push_back(ch);
+            }
+        }
+
+        if (!closed)
+            throw std::runtime_error("Unterminated string literal in string interpolation expression: " + text);
+
+        ptr<Str> str = make_ptr<Str>();
+        setSourceInfo(str, context);
+        str->str = toUnicodeString(buffer).unescape();
+        return str;
+    };
+
+    auto parseIndexArgument = [&]() -> ptr<Expression> {
+        skipWhitespace();
+        if (pos >= trimmed.size())
+            throw std::runtime_error("Missing index expression in string interpolation expression: " + text);
+
+        unsigned char peek = static_cast<unsigned char>(trimmed[pos]);
+        if (std::isalpha(peek) || peek == '_') {
+            std::string ident = parseIdentifier();
+            ptr<Variable> idxVar = make_ptr<Variable>(toUnicodeString(ident));
+            setSourceInfo(idxVar, context);
+            return idxVar;
+        }
+        if (peek == '\'')
+            return parseStringLiteral();
+        if (std::isdigit(peek) || peek == '-' || peek == '+')
+            return parseNumericLiteral();
+
+        throw std::runtime_error("Invalid index expression in string interpolation expression: " + text);
+    };
+
     std::string baseIdent = parseIdentifier();
     skipWhitespace();
 
@@ -177,27 +230,28 @@ ptr<Expression> ASTGenerator::parseInterpolationExpression(const std::string& te
             skipWhitespace();
             if (pos >= trimmed.size())
                 throw std::runtime_error("Unterminated index in string interpolation expression: " + text);
-
-            ptr<Expression> indexExpr;
-            unsigned char peek = static_cast<unsigned char>(trimmed[pos]);
-            if (std::isalpha(peek) || peek == '_') {
-                std::string ident = parseIdentifier();
-                ptr<Variable> idxVar = make_ptr<Variable>(toUnicodeString(ident));
-                setSourceInfo(idxVar, context);
-                indexExpr = idxVar;
-            } else {
-                indexExpr = parseNumericLiteral();
-            }
-
-            skipWhitespace();
-            if (pos >= trimmed.size() || trimmed[pos] != ']')
-                throw std::runtime_error("Unterminated index in string interpolation expression: " + text);
-            ++pos;
-
             ptr<Index> idxExpr = make_ptr<Index>();
             setSourceInfo(idxExpr, context);
             idxExpr->indexable = current;
-            idxExpr->args.push_back(indexExpr);
+
+            while (true) {
+                ptr<Expression> indexExpr = parseIndexArgument();
+                idxExpr->args.push_back(indexExpr);
+
+                skipWhitespace();
+                if (pos >= trimmed.size())
+                    throw std::runtime_error("Unterminated index in string interpolation expression: " + text);
+                if (trimmed[pos] == ',') {
+                    ++pos;
+                    continue;
+                }
+                if (trimmed[pos] == ']') {
+                    ++pos;
+                    break;
+                }
+                throw std::runtime_error("Invalid index separator in string interpolation expression: " + text);
+            }
+
             current = idxExpr;
         } else {
             throw std::runtime_error("Invalid token in string interpolation expression: " + text);
