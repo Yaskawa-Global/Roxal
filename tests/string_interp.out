@@ -1,3 +1,9 @@
 Hi, I'm glad to meet you
 glad to meet you.
 {s}
+label=letters
+first item=alpha
+Box letters has beta
+chosen=gamma
+literal index=gamma
+from method=Box letters has alpha

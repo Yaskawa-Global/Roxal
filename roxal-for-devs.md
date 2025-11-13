@@ -30,7 +30,7 @@ Value types:
 Reference types:
   * `string` - Unicode (UTF-8) (literals are interned)
     * Single quoted `'like this'` or double quoted `"like this"`
-    * With double quotes, {variable} interpolations are substituted (`"myalue={myvalue}"`)
+    * With double quotes, `{}` placeholders interpolate identifiers, dotted properties, and simple indexes (for example `"value={config.item[1].name}"`)
   * `list` - [list, of, values] - heterogeneous
   * `dict` - {key:value,key2:value2} - heterogeneous (hash, map)
     * insertion order preserved

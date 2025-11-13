@@ -7,3 +7,26 @@ print("{s}{s2}") // 'glad to meet you.'
 
 print('{s}') // {s}
 
+type Item object:
+   var name
+   proc init(n):
+     this.name = n
+
+type Box object:
+   var label
+   var items
+   proc init(label, items):
+     this.label = label
+     this.items = items
+   func describe(index):
+     return "Box {this.label} has {this.items[index].name}"
+
+var box = Box("letters", [Item("alpha"), Item("beta"), Item("gamma")])
+var idx = 2
+
+print("label={box.label}")
+print("first item={box.items[0].name}")
+print(box.describe(1))
+print("chosen={box.items[idx].name}")
+print("literal index={box.items[2].name}")
+print("from method={box.describe(0)}")
