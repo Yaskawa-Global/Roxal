@@ -1,0 +1,10 @@
+var s = "hello"
+
+on s changed:
+  print("handler:" + s)
+
+s = "there"
+wait(us=20000)
+
+s = "again"
+wait(us=20000)
