@@ -86,6 +86,14 @@ public:
     // graphviz .dot file format string of network (optionally with signal values shown)
     std::string graphDot(const std::string& title, std::map<std::string,Value> signalValues = {}) const;
 
+    struct IslandDebugInfo {
+        TimeDuration tickPeriod { TimeDuration::zero() };
+        std::vector<std::string> signals;
+        bool eventDrivenOnly { false };
+    };
+
+    std::vector<IslandDebugInfo> islandDebugSnapshot();
+
     // remove a signal or func from the engine
     void removeSignal(const ptr<Signal>& signal, bool force = false);
     void removeFunc(ptr<FuncNode> func);
@@ -163,11 +171,20 @@ private:
 
     void precomputeFuncPeriods();
 
+    struct NetworkIsland {
+        std::vector<ptr<Signal>> signals;
+        std::vector<ptr<FuncNode>> funcs;
+        std::map<TimeDuration, std::vector<ptr<FuncNode>>> executionOrders;
+        TimeDuration tickPeriod { TimeDuration::zero() };
+    };
+
+    std::vector<NetworkIsland> m_networkIslands;
+
+    void computeNetworkIslands();
+
     // For precomputed execution orders
     typedef std::map<ptr<FuncNode>, std::set<ptr<FuncNode>>> DependencyGraph;
-    std::map<TimeDuration, std::vector<ptr<FuncNode>>> precomputedExecutionOrders;
-
-    void precomputeExecutionOrders();
+    void precomputeExecutionOrders(NetworkIsland& island);
 
     bool topologicalSort(
         const DependencyGraph& depGraph,
@@ -180,10 +197,13 @@ private:
 
     // execute functions whose inputs are available, without advancing time
     void evaluateNetwork(TimePoint evaluationTime);
+    void evaluateIsland(const NetworkIsland& island, TimePoint evaluationTime);
+    void refreshDerivedSignals(const NetworkIsland& island, TimePoint time);
 
     // call processFunctionExecuteEvent() for each func,
     //  in the order they appear in precomputedExecutionOrders for their interval (LCM if input signal periods)
-    void executeFunctionsInOrder(const std::vector<ptr<FuncNode>>& funcsToExecute);
+    void executeFunctionsInOrder(const std::vector<ptr<FuncNode>>& funcsToExecute,
+                                 const std::map<TimeDuration, std::vector<ptr<FuncNode>>>& executionOrders);
 
     // longest period which divides all periods (GCD)
     //  e.g. 4,6,12 -> 2
@@ -200,6 +220,8 @@ private:
 
     friend class Signal;
     friend class FuncNode;
+
+    void processEventDrivenSignalUpdate(ptr<Signal> signal, TimePoint timestamp);
 };
 
 

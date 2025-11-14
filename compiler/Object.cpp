@@ -2846,12 +2846,19 @@ ObjEventType* ObjSignal::ensureChangeEventType()
     ObjEventType::PayloadProperty tickProp { toUnicodeString("tick"),
                                              Value::typeSpecVal(ValueType::Int),
                                              Value::intVal(0) };
-    typeObj->payloadProperties.push_back(valueProp);
-    typeObj->propertyLookup[valueProp.name.hashCode()] = 0;
-    typeObj->payloadProperties.push_back(timeProp);
-    typeObj->propertyLookup[timeProp.name.hashCode()] = 1;
-    typeObj->payloadProperties.push_back(tickProp);
-    typeObj->propertyLookup[tickProp.name.hashCode()] = 2;
+    auto appendProperty = [&](const ObjEventType::PayloadProperty& property) {
+        typeObj->payloadProperties.push_back(property);
+        typeObj->propertyLookup[property.name.hashCode()] = typeObj->payloadProperties.size() - 1;
+    };
+
+    appendProperty(valueProp);
+    appendProperty(timeProp);
+    appendProperty(tickProp);
+
+    ObjEventType::PayloadProperty signalProp { toUnicodeString("source_signal"),
+                                               Value::typeSpecVal(ValueType::Signal),
+                                               Value::nilVal() };
+    appendProperty(signalProp);
 
     changeEventType = Value::objVal(std::move(eventType));
     Value eventWeak = changeEventType.weakRef();
@@ -2888,6 +2895,8 @@ ObjEventType* ObjSignal::ensureChangeEventType()
                                static_cast<int64_t>(std::numeric_limits<int32_t>::min()),
                                static_cast<int64_t>(std::numeric_limits<int32_t>::max()));
         payload.push_back(Value::intVal(static_cast<int32_t>(tickIndex)));
+        payload.push_back(Value::signalVal(sig));
+
         // Package the change information into a new event instance and invoke
         // every subscribed handler for this occurrence.
         Value instance = Value::eventInstanceVal(eventTypeStrong, std::move(payload));

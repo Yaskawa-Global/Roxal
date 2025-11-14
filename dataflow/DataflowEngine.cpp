@@ -9,6 +9,8 @@
 #include <thread>
 #include <iostream>
 #include <string.h>
+#include <deque>
+#include <algorithm>
 
 using namespace df;
 
@@ -301,7 +303,7 @@ void DataflowEngine::clear()
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     signalConsumers.clear();
-    precomputedExecutionOrders.clear();
+    m_networkIslands.clear();
     signalWrapperRefs.clear();
     signals.clear();
     funcs.clear();
@@ -468,6 +470,9 @@ void DataflowEngine::tick(bool waitForTickStart)
 
     for(const auto& signal : signals) {
         if (signal->isSourceSignal()) {
+            if (signal->period() == TimeDuration::zero())
+                continue;
+
             // should this source tick now?
             if ((m_tickStart % signal->period()) == TimeDuration::zero()) { // yes
 
@@ -494,21 +499,6 @@ void DataflowEngine::tick(bool waitForTickStart)
         }
     }
 
-    for(const auto& signal : signals) {
-        if (signal->isDerived) {
-            auto src = signal->baseSignal.lock();
-            if (src) {
-                try {
-                    Value val = src->valueAtIndex(signal->baseIndex);
-                    signal->setValueAt(m_tickStart, val);
-                } catch(...) {
-                    signal->setValueAt(m_tickStart, Value());
-                }
-                updateSignalConsumerInputAvailability(signal, m_tickStart);
-            }
-        }
-    }
-
     evaluateNetwork(m_tickStart);
 
     #if 0
@@ -529,58 +519,105 @@ void DataflowEngine::tick(bool waitForTickStart)
 }
 
 
-void DataflowEngine::evaluateNetwork(TimePoint evaluationTime)
+void DataflowEngine::refreshDerivedSignals(const NetworkIsland& island, TimePoint time)
 {
-    // pass over the network executing funcs whose inputs are available, until
-    //  there are no more functions that can be executed
+    for (const auto& signal : island.signals) {
+        if (!signal->isDerived)
+            continue;
+
+        auto src = signal->baseSignal.lock();
+        if (!src)
+            continue;
+
+        Value val;
+        try {
+            if (src->period() == TimeDuration::zero() && signal->baseIndex != 0)
+                val = src->lastValue();
+            else
+                val = src->valueAtIndex(signal->baseIndex);
+        } catch (...) {
+            val = Value();
+        }
+
+        signal->setValueAt(time, val);
+        updateSignalConsumerInputAvailability(signal, time);
+    }
+}
+
+void DataflowEngine::evaluateIsland(const NetworkIsland& island, TimePoint evaluationTime)
+{
+    if (island.funcs.empty())
+        return;
+
+    refreshDerivedSignals(island, evaluationTime);
+
     uint64_t functionsExecuted;
     int32_t iterations = 0;
-    bool funcsEmpty = true;
+
+    do {
+        functionsExecuted = 0;
+
+        auto executeFuncIfinputsAvailable = [&](const ptr<FuncNode>& func) {
+
+            if (func->inputsAvailableAt(evaluationTime)) {
+                if (func->conditionallyExecute(evaluationTime)) {
+                    functionsExecuted++;
+
+                    for(auto& output : func->m_outputs)
+                        updateSignalConsumerInputAvailability(output.signal, evaluationTime);
+                }
+            }
+        };
+
+        for(const auto& periodFuncs : island.executionOrders) {
+            const auto& funcsForPeriod { periodFuncs.second };
+            for(auto func : funcsForPeriod) {
+                executeFuncIfinputsAvailable(func);
+            }
+        }
+
+        iterations++;
+        if (iterations > island.funcs.size()*100)
+            throw std::runtime_error("DataflowEngine: func execution didn't terminate - check for signal dependency cycles");
+
+    } while (functionsExecuted > 0);
+}
+
+void DataflowEngine::evaluateNetwork(TimePoint evaluationTime)
+{
+    std::vector<NetworkIsland> islandsCopy;
     {
         std::lock_guard<std::recursive_mutex> lock(m_mutex);
-        funcsEmpty = funcs.empty();
+        islandsCopy = m_networkIslands;
     }
 
-    if (!funcs.empty())
-        do {
-            functionsExecuted = 0;
+    for (const auto& island : islandsCopy)
+        evaluateIsland(island, evaluationTime);
+}
 
-            // although we can iterate over the funcs in any order, it is more likely they'll
-            //  be ready to execute if they're executed in their dependency order, since each that is executed
-            //  will produce the inputs of the next one tested for readiness
-            // So, loop over the funcs grouped from shortest to longest period and in dependency order for each group
+void DataflowEngine::processEventDrivenSignalUpdate(ptr<Signal> signal, TimePoint timestamp)
+{
+    if (m_networkModified)
+        buildNetworkCacheData();
 
-            auto executeFuncIfinputsAvailable = [&](const ptr<FuncNode>& func) {
+    NetworkIsland islandSnapshot;
+    bool found = false;
 
-                if (func->inputsAvailableAt(evaluationTime)) {
-                    if (func->conditionallyExecute(evaluationTime)) {
-                        functionsExecuted++;
-
-                        // update the consumer input availability
-                        for(auto& output : func->m_outputs)
-                            updateSignalConsumerInputAvailability(output.signal, evaluationTime);
-                    }
-                }
-            };
-
-            // take a copy to avoid holding the lock while executing functions (expensive!)
-            std::map<TimeDuration, std::vector<ptr<FuncNode>>> precomputedExecutionOrdersCopy;
-            {
-                std::lock_guard<std::recursive_mutex> lock(m_mutex);
-                precomputedExecutionOrdersCopy = precomputedExecutionOrders;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        for (const auto& island : m_networkIslands) {
+            if (std::find(island.signals.begin(), island.signals.end(), signal) != island.signals.end()) {
+                islandSnapshot = island;
+                found = true;
+                break;
             }
-            for(const auto& periodFuncs : precomputedExecutionOrdersCopy) {
-                auto& funcs { periodFuncs.second };
-                for(auto func : funcs) {
-                    executeFuncIfinputsAvailable(func);
-                }
-            }
+        }
+    }
 
-            iterations++;
-            if (iterations > funcs.size()*100) // FIXME: need to account for fact that loopPeriod may be much shorter than longest func exec period, fudge for now
-                throw std::runtime_error("DataflowEngine: func execution didn't terminate - check for signal dependency cycles");
+    if (!found)
+        return;
 
-        } while (functionsExecuted > 0);
+    evaluateIsland(islandSnapshot, timestamp);
 }
 
 
@@ -641,20 +678,132 @@ void DataflowEngine::precomputeFuncPeriods()
 }
 
 
-void DataflowEngine::precomputeExecutionOrders()
+void DataflowEngine::computeNetworkIslands()
 {
-    precomputeFuncPeriods();
+    m_networkIslands.clear();
 
-    precomputedExecutionOrders.clear();
+    std::map<ptr<Signal>, std::vector<ptr<FuncNode>>> signalProducers;
+    for (const auto& funcPair : funcs) {
+        const auto& func = funcPair.second;
+        for (const auto& output : func->m_outputs) {
+            signalProducers[output.signal].push_back(func);
+        }
+    }
+
+    std::map<ptr<Signal>, bool> visitedSignals;
+    std::map<ptr<FuncNode>, bool> visitedFuncs;
+
+    auto enqueueSignal = [&](std::deque<ptr<Signal>>& queue, const ptr<Signal>& signal) {
+        if (!signal)
+            return;
+        if (visitedSignals[signal])
+            return;
+        queue.push_back(signal);
+    };
+
+    auto enqueueFunc = [&](std::deque<ptr<FuncNode>>& queue, const ptr<FuncNode>& func) {
+        if (!func)
+            return;
+        if (visitedFuncs[func])
+            return;
+        queue.push_back(func);
+    };
+
+    auto processQueues = [&](NetworkIsland& island,
+                             std::deque<ptr<Signal>>& signalQueue,
+                             std::deque<ptr<FuncNode>>& funcQueue) {
+        while (!signalQueue.empty() || !funcQueue.empty()) {
+            if (!signalQueue.empty()) {
+                auto currentSignal = signalQueue.front();
+                signalQueue.pop_front();
+                if (!currentSignal || visitedSignals[currentSignal])
+                    continue;
+
+                visitedSignals[currentSignal] = true;
+                island.signals.push_back(currentSignal);
+
+                auto consumersIt = signalConsumers.find(currentSignal);
+                if (consumersIt != signalConsumers.end()) {
+                    for (const auto& consumer : consumersIt->second)
+                        enqueueFunc(funcQueue, consumer.func);
+                }
+
+                auto producersIt = signalProducers.find(currentSignal);
+                if (producersIt != signalProducers.end()) {
+                    for (const auto& producer : producersIt->second)
+                        enqueueFunc(funcQueue, producer);
+                }
+
+                if (currentSignal->isDerived) {
+                    auto base = currentSignal->baseSignal.lock();
+                    if (base)
+                        enqueueSignal(signalQueue, base);
+                }
+
+                continue;
+            }
+
+            auto currentFunc = funcQueue.front();
+            funcQueue.pop_front();
+            if (!currentFunc || visitedFuncs[currentFunc])
+                continue;
+
+            visitedFuncs[currentFunc] = true;
+            island.funcs.push_back(currentFunc);
+
+            for (const auto& input : currentFunc->m_inputs)
+                enqueueSignal(signalQueue, input.signal);
+
+            for (const auto& output : currentFunc->m_outputs)
+                enqueueSignal(signalQueue, output.signal);
+        }
+    };
+
+    std::deque<ptr<Signal>> signalQueue;
+    std::deque<ptr<FuncNode>> funcQueue;
+
+    for (const auto& signal : signals) {
+        if (visitedSignals[signal])
+            continue;
+
+        NetworkIsland island;
+        signalQueue.clear();
+        funcQueue.clear();
+        enqueueSignal(signalQueue, signal);
+        processQueues(island, signalQueue, funcQueue);
+
+        if (!island.signals.empty() || !island.funcs.empty())
+            m_networkIslands.push_back(std::move(island));
+    }
+
+    for (const auto& funcPair : funcs) {
+        auto func = funcPair.second;
+        if (visitedFuncs[func])
+            continue;
+
+        NetworkIsland island;
+        signalQueue.clear();
+        funcQueue.clear();
+        enqueueFunc(funcQueue, func);
+        processQueues(island, signalQueue, funcQueue);
+
+        if (!island.signals.empty() || !island.funcs.empty())
+            m_networkIslands.push_back(std::move(island));
+    }
+}
+
+void DataflowEngine::precomputeExecutionOrders(NetworkIsland& island)
+{
+    island.executionOrders.clear();
+
+    if (island.funcs.empty())
+        return;
 
     // Map from execution intervals to functions
     std::map<TimeDuration, std::vector<ptr<FuncNode>>> executionGroups;
 
     // group orderings by execution interval
-    for (const auto& funcPair : funcs) {
-        ptr<FuncNode> func = funcPair.second;
-
-        // Add the function to the execution group corresponding to its interval
+    for (const auto& func : island.funcs) {
         executionGroups[func->m_period].push_back(func);
     }
 
@@ -695,14 +844,14 @@ void DataflowEngine::precomputeExecutionOrders()
         }
 
         // Store the precomputed execution order for this interval
-        precomputedExecutionOrders[interval] = sortedFuncs;
+        island.executionOrders[interval] = sortedFuncs;
     }
 
     #if 0 //defined(DEBUG_ENGINE)
     std::cout << "Execution Groups Dump:" << std::endl;
     std::cout << "=====================" << std::endl;
 
-    for (const auto& groupPair : executionGroups) {
+    for (const auto& groupPair : island.executionOrders) {
         TimeDuration interval = groupPair.first;
         const std::vector<ptr<FuncNode>>& funcsInGroup = groupPair.second;
 
@@ -713,19 +862,19 @@ void DataflowEngine::precomputeExecutionOrders()
             std::cout << "  - " << func->name() << std::endl;
 
             std::cout << "    Inputs:" << std::endl;
-            for (const auto& input : func->inputs) {
+            for (const auto& input : func->m_inputs) {
                 std::cout << "      " << input.name << " (Signal: " << input.signal->name()
                         << ", Latency: " << input.latency.microSecs() << " microseconds)" << std::endl;
             }
 
             std::cout << "    Outputs:" << std::endl;
-            for (const auto& output : func->outputs) {
+            for (const auto& output : func->m_outputs) {
                 std::cout << "      " << output.name << " (Signal: " << output.signal->name() << ")" << std::endl;
             }
         }
 
         std::cout << "Precomputed Execution Order:" << std::endl;
-        for (const auto& func : precomputedExecutionOrders[interval]) {
+        for (const auto& func : island.executionOrders[interval]) {
             std::cout << "  " << func->name() << std::endl;
         }
 
@@ -793,7 +942,9 @@ void DataflowEngine::updateSignalConsumerInputAvailability(ptr<Signal> signal, T
 }
 
 
-void DataflowEngine::executeFunctionsInOrder(const std::vector<ptr<FuncNode>>& funcsToExecute) {
+void DataflowEngine::executeFunctionsInOrder(
+    const std::vector<ptr<FuncNode>>& funcsToExecute,
+    const std::map<TimeDuration, std::vector<ptr<FuncNode>>>& executionOrders) {
     if (funcsToExecute.empty()) return;
 
     // Determine the interval for these functions
@@ -806,7 +957,11 @@ void DataflowEngine::executeFunctionsInOrder(const std::vector<ptr<FuncNode>>& f
     #endif
 
     // Retrieve the precomputed execution order
-    const auto& precomputedOrder = precomputedExecutionOrders[interval];
+    auto it = executionOrders.find(interval);
+    if (it == executionOrders.end())
+        return;
+
+    const auto& precomputedOrder = it->second;
     #if 0
     std::cout << "DataflowEngine::executeFunctionsInOrder precomputedOrder.size=" << precomputedOrder.size() << "  funcsToExecute.size=" << funcsToExecute.size()<< std::endl;//!!!
     Names funcNamesToExecute;
@@ -944,24 +1099,34 @@ void DataflowEngine::buildNetworkCacheData()
     std::cout << "Rebuilding network cached data" << std::endl;
     #endif
 
-    // first, find the LCM of all source signal periods - we have to run the network at this rate
-    std::set<TimeDuration> sourcePeriods {};
-    for(const auto& signal : signals) {
-        if (signal->isSourceSignal()) {
-            if (signal->period() == TimeDuration::zero())
-                throw std::runtime_error("Signal " + signal->name() + " has zero period");
-            sourcePeriods.insert(signal->period());
-        }
-    }
-    m_tickPeriod = longestDividingPeriod(sourcePeriods);
-    #if 0
-    std::cout << "Loop period: " << m_tickPeriod.humanString() << std::endl;
-    #endif
-
+    // Build consumer map and compute connected components for the current network
     buildSignalConsumers();
+    computeNetworkIslands();
 
-    // Precompute execution orders before starting the loop
-    precomputeExecutionOrders();
+    // Ensure function periods are available before computing execution order
+    precomputeFuncPeriods();
+
+    std::set<TimeDuration> globalSourcePeriods {};
+
+    for (auto& island : m_networkIslands) {
+        std::set<TimeDuration> islandSourcePeriods {};
+
+        for (const auto& signal : island.signals) {
+            if (!signal->isSourceSignal())
+                continue;
+
+            if (signal->period() == TimeDuration::zero())
+                continue;
+
+            islandSourcePeriods.insert(signal->period());
+            globalSourcePeriods.insert(signal->period());
+        }
+
+        island.tickPeriod = longestDividingPeriod(islandSourcePeriods);
+        precomputeExecutionOrders(island);
+    }
+
+    m_tickPeriod = longestDividingPeriod(globalSourcePeriods);
 
     m_tickNumber = 0;
     m_runStart = TimePoint::zero();
@@ -1128,4 +1293,43 @@ std::string DataflowEngine::graphDot(const std::string& title, std::map<std::str
 
     dot << "}\n";
     return dot.str();
+}
+
+
+std::vector<DataflowEngine::IslandDebugInfo> DataflowEngine::islandDebugSnapshot()
+{
+    if (m_networkModified)
+        buildNetworkCacheData();
+
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
+    std::vector<IslandDebugInfo> result;
+    result.reserve(m_networkIslands.size());
+
+    for (const auto& island : m_networkIslands) {
+        IslandDebugInfo info;
+        info.tickPeriod = island.tickPeriod;
+        info.eventDrivenOnly = true;
+        bool sawSignal = false;
+
+        for (const auto& signal : island.signals) {
+            if (!signal)
+                continue;
+
+            sawSignal = true;
+
+            if (!signal->isInternal())
+                info.signals.push_back(signal->name());
+
+            if (signal->period() > TimeDuration::zero())
+                info.eventDrivenOnly = false;
+        }
+
+        if (!sawSignal)
+            info.eventDrivenOnly = false;
+
+        result.push_back(std::move(info));
+    }
+
+    return result;
 }
