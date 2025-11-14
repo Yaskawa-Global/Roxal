@@ -294,8 +294,8 @@ VM::VM()
     thread = nullptr;
     initString = Value::stringVal(UnicodeString("init"));
 
-    registerBuiltinModule(make_ptr<ModuleMath>());
     registerBuiltinModule(make_ptr<ModuleSys>());
+    registerBuiltinModule(make_ptr<ModuleMath>());
 #ifdef ROXAL_ENABLE_FILEIO
     registerBuiltinModule(make_ptr<ModuleFileIO>());
 #endif
@@ -304,10 +304,10 @@ VM::VM()
     ptr<Thread> initThread = make_ptr<Thread>();
     thread = initThread;
 #ifdef ROXAL_ENABLE_FILEIO
-    executeBuiltinModuleScript("compiler/fileio.rox", getBuiltinModule(toUnicodeString("fileio")));
+    executeBuiltinModuleScript("compiler/fileio.rox", getBuiltinModuleType(toUnicodeString("fileio")));
 #endif
-    executeBuiltinModuleScript("compiler/sys.rox", getBuiltinModule(toUnicodeString("sys")));
-    executeBuiltinModuleScript("compiler/math.rox", getBuiltinModule(toUnicodeString("math")));
+    executeBuiltinModuleScript("compiler/sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
+    executeBuiltinModuleScript("compiler/math.rox", getBuiltinModuleType(toUnicodeString("math")));
 
     thread = nullptr;
 
@@ -5617,7 +5617,16 @@ Value VM::ffi_native(ArgsView args)
 
 
 
-Value VM::getBuiltinModule(const icu::UnicodeString& name)
+ptr<BuiltinModule> VM::getBuiltinModule(const icu::UnicodeString& name)
+{
+    for (auto& m : builtinModules) {
+        if (asModuleType(m->moduleType())->name == name)
+            return m;
+    }
+    return nullptr;
+}
+
+Value VM::getBuiltinModuleType(const icu::UnicodeString& name)
 {
     for (auto& m : builtinModules) {
         if (asModuleType(m->moduleType())->name == name)

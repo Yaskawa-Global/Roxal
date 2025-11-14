@@ -19,10 +19,19 @@ struct ObjModuleType;
 class BuiltinModule {
 public:
     virtual ~BuiltinModule() {};
+
+    // must call setVM(vm) then register builtin module funcs and methods
     virtual void registerBuiltins(VM& vm) = 0;
+
+    // called when code imports the module (via _init() builtin if declared in .rox file)
+    virtual void initialize() {};
+
     virtual Value moduleType() const = 0; // ObjModuleType
 
 protected:
+    // only valid after call to setVM() in registerBuiltins(VM&)
+    VM& vm() { return vm_.value().get(); }
+
     // Helper to construct function parameter type information. Parameter types
     // may be omitted (nullopt) for untyped parameters.
     static std::vector<type::Type::FuncType::ParamType>
@@ -60,7 +69,46 @@ protected:
                                     const std::string& signalName = "");
 
     static void destroyModuleType(Value& moduleTypeValue);
+
+    void setVM(VM& vm) { vm_ = vm; }
+
+
+    // helpers for instantiating & manipulating module object types
+
+    bool instanceOf(const Value& objInstance, const Value& objectType);
+
+
+private:
+    // reference to VM stored via setVM() (call in registerBuiltins())
+    std::optional<std::reference_wrapper<VM>> vm_;
 };
+
+
+inline bool BuiltinModule::instanceOf(const Value& objInstance, const Value& objectType)
+{
+    // ensure we have an object instance and an object type
+    if (!isObjectInstance(objInstance))
+        return false;
+    ObjectInstance* inst { asObjectInstance(objInstance) };
+    if (!inst) return false;
+
+    if (!isObjectType(objectType))
+        return false;
+    ObjObjectType* type { asObjectType(objectType) };
+    if (!type) return false;
+
+    // check the instance's type is the type or its super-type
+    //  (traversing up the inheretance heirarchy)
+    ObjObjectType* current = asObjectType(inst->instanceType);
+    while (current) {
+        if (current == type)
+            return true;
+        if (current->superType.isNil())
+            break;
+        current = asObjectType(current->superType);
+    }
+    return false;
+}
 
 inline std::vector<type::Type::FuncType::ParamType>
 BuiltinModule::constructParams(const std::vector<std::pair<std::string,
