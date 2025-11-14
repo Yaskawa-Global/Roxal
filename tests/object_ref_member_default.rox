@@ -1,0 +1,27 @@
+
+// reference member
+
+type Obj object:
+
+  var l :list = [1,2,3]
+
+o1 = Obj()
+o2 = Obj()
+
+o1.l[0] = 9
+print(o2.l) // [1,2,3]
+
+// reference default arg
+
+type Obj2 object:
+
+  var l :list
+
+  proc init(l_=[1,2,3]):
+    l = l_
+
+o3 = Obj2()
+o4 = Obj2()
+
+o3.l[0] = 9
+print(o4.l) // [1,2,3]
