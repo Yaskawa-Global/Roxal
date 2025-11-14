@@ -451,6 +451,14 @@ VM::~VM()
 
     initString = Value::nilVal();
 
+    for (auto& entry : builtinMethods) {
+        for (auto& method : entry.second) {
+            method.second.defaultValues.clear();
+            method.second.declFunction = Value::nilVal();
+        }
+    }
+    builtinMethods.clear();
+
     builtinModules.clear();
 
     conditionalInterruptClosure = Value::nilVal();
