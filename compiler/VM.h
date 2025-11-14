@@ -101,7 +101,8 @@ public:
     void enableOpcodeProfiling(std::string filePath = {});
     void writeOpcodeProfile();
 
-    Value getBuiltinModule(const icu::UnicodeString& name);
+    ptr<BuiltinModule> getBuiltinModule(const icu::UnicodeString& name);
+    Value getBuiltinModuleType(const icu::UnicodeString& name);
     std::optional<Value> loadGlobal(const icu::UnicodeString& name) { return globals.load(name); }
     void registerBuiltinModule(ptr<BuiltinModule> module);
 

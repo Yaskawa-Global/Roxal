@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <algorithm>
 
 #include <core/common.h>
 #include <core/AST.h>
@@ -556,6 +557,15 @@ struct ObjDict : public Obj
         if (entries.find(key) == entries.end()) // key exists?
             m_keys.push_back(key); // no, add to keys list
         entries[key] = val; // insert or replace
+    }
+
+    void erase(const Value& key) {
+        std::lock_guard<std::mutex> lock(m);
+        auto it = entries.find(key);
+        if (it != entries.end()) {
+            entries.erase(it);
+            m_keys.erase(std::remove(m_keys.begin(), m_keys.end(), key), m_keys.end());
+        }
     }
 
     void set(const ObjDict* other); // Shallow copy from other dict
