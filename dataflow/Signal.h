@@ -70,6 +70,8 @@ public:
     // Get the period of the signal based on its frequency
     TimeDuration period() const { return m_period; }
 
+    bool isEventDriven() const { return m_eventDriven; }
+
     bool isSourceSignal() const { return isSource; }
     bool isClockSignal() const { return isClock; }
 
@@ -110,6 +112,8 @@ protected:
 
     double m_frequency; // Frequency in Hz
     TimeDuration m_period;
+
+    bool m_eventDriven = false;
 
     bool isSource; // True if this is a source signal (e.g. constant at freq)
     bool isClock;  // True if this signal counts up at freq

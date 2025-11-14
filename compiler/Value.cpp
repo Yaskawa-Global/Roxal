@@ -49,7 +49,7 @@ Value VariablesMap::MonitoredValue::ensureSignal(const std::string& signalName)
         return signal;
 
     std::string name = signalName.empty() ? std::string("variable") : signalName;
-    auto sig = df::Signal::newSourceSignalTemplate(1000.0, value, name);
+    auto sig = df::Signal::newSourceSignal(0.0, value, name);
     sig->setInternal(true);
     signal = Value::signalVal(sig);
     return signal;

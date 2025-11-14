@@ -506,6 +506,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("_engine_stop", [this](VM& vm, ArgsView a){ return engine_stop_native(vm,a); });
         addSys("typeof", [this](VM& vm, ArgsView a){ return typeof_native(vm,a); });
         addSys("_df_graph", [this](VM& vm, ArgsView a){ return df_graph_native(vm,a); });
+        addSys("_df_islands", [this](VM& vm, ArgsView a){ return df_islands_native(vm,a); });
         addSys("_df_graphdot", [this](VM& vm, ArgsView a){ return df_graphdot_native(vm,a); });
         addSys("loadlib", [this](VM& vm, ArgsView a){ return loadlib_native(vm,a); });
 
@@ -1771,6 +1772,38 @@ Value ModuleSys::df_graph_native(VM& vm, ArgsView args)
     auto engine = df::DataflowEngine::instance();
     auto str = engine->graph();
     return Value::stringVal(toUnicodeString(str));
+}
+
+Value ModuleSys::df_islands_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 0)
+        throw std::invalid_argument("_df_islands has no arguments");
+
+    auto engine = df::DataflowEngine::instance();
+    auto snapshot = engine->islandDebugSnapshot();
+
+    Value islandsList = Value::listVal();
+    ObjList* islandsObj = asList(islandsList);
+
+    for (const auto& island : snapshot) {
+        Value dictVal = Value::dictVal();
+        ObjDict* dict = asDict(dictVal);
+
+        Value signalsList = Value::listVal();
+        ObjList* signalsObj = asList(signalsList);
+        for (const auto& name : island.signals)
+            signalsObj->append(Value::stringVal(toUnicodeString(name)));
+
+        dict->store(Value::stringVal(toUnicodeString("signals")), signalsList);
+        dict->store(Value::stringVal(toUnicodeString("tick_us")),
+                    Value::intVal(static_cast<int32_t>(island.tickPeriod.microSecs())));
+        dict->store(Value::stringVal(toUnicodeString("event_driven_only")),
+                    Value::boolVal(island.eventDrivenOnly));
+
+        islandsObj->append(dictVal);
+    }
+
+    return islandsList;
 }
 
 Value ModuleSys::df_graphdot_native(VM& vm, ArgsView args)

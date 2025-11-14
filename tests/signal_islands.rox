@@ -1,0 +1,48 @@
+c_fast = clock(10, "fast_clock")
+var fast_sum = c_fast + 1
+fast_sum.name = "fast_sum"
+
+c_slow = clock(4, "slow_clock")
+var slow_sum = c_slow * 2
+slow_sum.name = "slow_sum"
+
+var monitor = 0
+
+on monitor changed as evt:
+  if evt.source_signal.freq() == 0:
+    print("module signal freq=0")
+  else:
+    print("module signal freq=" + string(evt.source_signal.freq()))
+
+monitor = 1
+wait(us=20000)
+
+_dataflow.tick()
+wait(us=20000)
+
+var islands = _df_islands()
+
+var fast_tick = -1
+var slow_tick = -1
+var event_tick = -1
+
+for island in islands:
+  var tick = island["tick_us"]
+  var names = island["signals"]
+  var hasFast = false
+  var hasSlow = false
+  for name in names:
+    if name == "fast_clock" or name == "fast_sum":
+      hasFast = true
+    if name == "slow_clock" or name == "slow_sum":
+      hasSlow = true
+  if hasFast:
+    fast_tick = tick
+  if hasSlow:
+    slow_tick = tick
+  if island["event_driven_only"]:
+    event_tick = tick
+
+print("fast tick=" + string(fast_tick))
+print("slow tick=" + string(slow_tick))
+print("event-driven tick=" + string(event_tick))
