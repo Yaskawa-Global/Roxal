@@ -77,6 +77,8 @@ public:
 
     // Get the last value of the signal
     Value lastValue() const;
+    // Retrieve the timestamp of the most recent sample if available.
+    TimePoint latestSampleTime() const;
 
     // Value at a negative index relative to the most recent value
     //   index 0 -> last value

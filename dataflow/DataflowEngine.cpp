@@ -559,7 +559,6 @@ void DataflowEngine::evaluateIsland(const NetworkIsland& island, TimePoint evalu
         functionsExecuted = 0;
 
         auto executeFuncIfinputsAvailable = [&](const ptr<FuncNode>& func) {
-
             if (func->inputsAvailableAt(evaluationTime)) {
                 if (func->conditionallyExecute(evaluationTime)) {
                     functionsExecuted++;
@@ -602,7 +601,6 @@ TimePoint DataflowEngine::resolveEvaluationTime(const NetworkIsland& island, Tim
 {
     bool haveSamples = false;
     TimePoint maxEarliest = TimePoint::microSecs(std::numeric_limits<int64_t>::min());
-    TimePoint minLatest = TimePoint::microSecs(std::numeric_limits<int64_t>::max());
 
     for (const auto& signal : island.signals) {
         if (!signal)
@@ -614,26 +612,16 @@ TimePoint DataflowEngine::resolveEvaluationTime(const NetworkIsland& island, Tim
         haveSamples = true;
 
         TimePoint earliest = signal->values.begin()->first;
-        TimePoint latest = signal->values.rbegin()->first;
 
         if (earliest > maxEarliest)
             maxEarliest = earliest;
-
-        if (latest < minLatest)
-            minLatest = latest;
     }
 
     if (!haveSamples)
         return candidate;
 
-    if (maxEarliest > minLatest)
-        return maxEarliest;
-
     if (candidate < maxEarliest)
         return maxEarliest;
-
-    if (candidate > minLatest)
-        return minLatest;
 
     return candidate;
 }
@@ -677,6 +665,7 @@ void DataflowEngine::evaluate()
         if (signal->isSourceSignal()) {
             signal->evaluate(evalTime);
         }
+        updateSignalConsumerInputAvailability(signal, signal->latestSampleTime());
     }
 
     evaluateNetwork(evalTime);

@@ -122,7 +122,10 @@ void FuncNode::addInput(const std::string& name, ptr<Signal> signal, int index, 
     if (index > 0)
         throw std::invalid_argument("FuncNode '"+m_name+"' addInput() index must be 0 or negative (index=-1 -> previous period's value)");
 
-    InputPort inputPort = {name, signal, index, defaultValue, TimePoint()};
+    TimePoint available = TimePoint::zero();
+    if (signal)
+        available = signal->latestSampleTime();
+    InputPort inputPort = {name, signal, index, defaultValue, available};
     m_inputs.push_back(inputPort);
 }
 
@@ -299,17 +302,27 @@ void FuncNode::addToEngine()
 
 bool FuncNode::inputsAvailableAt(TimePoint time) const
 {
-    bool inputsAvailable = true;
     for (const auto& input : m_inputs) {
         TimeDuration latency = input.signal->period() * -input.index;
         auto timeNeeded = time - latency;
-        // input value isn't available if it isn't valid yet for the time we need it, or it is nil (never updated - at start of run) and has no default
-        if (((input.latestAvailableTime < timeNeeded) || input.signal->valueAt(timeNeeded).isNil()) && !input.defaultValue.has_value() ) {
-            inputsAvailable = false;
-            break;
+        auto availableTime = std::min(timeNeeded, input.signal->latestSampleTime());
+
+        bool hasDefault = input.defaultValue.has_value();
+        bool upToDate = input.latestAvailableTime >= availableTime;
+        bool hasValue = false;
+
+        try {
+            auto sample = input.signal->valueAt(availableTime);
+            hasValue = !sample.isNil();
+        } catch (...) {
+            hasValue = false;
+        }
+
+        if ((!upToDate || !hasValue) && !hasDefault) {
+            return false;
         }
     }
-    return inputsAvailable;
+    return true;
 }
 
 bool FuncNode::conditionallyExecute(TimePoint time)
@@ -327,14 +340,37 @@ bool FuncNode::conditionallyExecute(TimePoint time)
         TimeDuration latency = input.signal->period() * -input.index;
         auto inputTime = time - latency;
         auto inputValue = input.signal->valueIfAvailableAt(inputTime);
-        if (inputValue.has_value() || input.defaultValue.has_value()) {
-            if (inputValue.has_value() && !inputValue.value().isNil())
+        if (inputValue.has_value()) {
+            if (!inputValue.value().isNil()) {
                 inputValues.push_back(inputValue.value());
-            else
+            } else if (input.defaultValue.has_value()) {
                 inputValues.push_back(input.defaultValue.value());
+            } else {
+                auto fallbackTime = std::min(inputTime, input.signal->latestSampleTime());
+                auto fallback = input.signal->valueAt(fallbackTime);
+                inputValues.push_back(fallback);
+            }
+        } else {
+            auto fallbackTime = std::min(inputTime, input.signal->latestSampleTime());
+            if (fallbackTime < TimePoint::zero() && !input.defaultValue.has_value())
+                throw std::runtime_error("FuncNode '"+name()+"' signal '"+input.signal->name()+"' not available at time "+inputTime.humanString());
+
+            try {
+                auto fallback = input.signal->valueAt(fallbackTime);
+                if (!fallback.isNil()) {
+                    inputValues.push_back(fallback);
+                } else if (input.defaultValue.has_value()) {
+                    inputValues.push_back(input.defaultValue.value());
+                } else {
+                    throw std::runtime_error("FuncNode '"+name()+"' signal '"+input.signal->name()+"' not available at time "+inputTime.humanString());
+                }
+            } catch (...) {
+                if (input.defaultValue.has_value())
+                    inputValues.push_back(input.defaultValue.value());
+                else
+                    throw std::runtime_error("FuncNode '"+name()+"' signal '"+input.signal->name()+"' not available at time "+inputTime.humanString());
+            }
         }
-        else
-            throw std::runtime_error("FuncNode '"+name()+"' signal '"+input.signal->name()+"' not available at time "+inputTime.humanString());
     }
 
     // FIXME: if not pure, don't execute every time, just on our expected period (GCD)

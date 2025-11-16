@@ -277,6 +277,13 @@ Value Signal::lastValue() const
     return values.rbegin()->second;
 }
 
+TimePoint Signal::latestSampleTime() const
+{
+    if (values.empty())
+        return TimePoint::zero();
+    return values.rbegin()->first;
+}
+
 Value Signal::valueAtIndex(int index) const
 {
     if (index > 0)
