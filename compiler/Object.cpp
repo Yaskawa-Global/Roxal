@@ -2820,23 +2820,81 @@ void ObjSignal::trace(ValueVisitor& visitor) const
 void ObjSignal::dropReferences()
 {
     changeEventType = Value::nilVal();
+    changeEventSignal.reset();
+    changeEventUsesTimeSpan = false;
 }
 
 // Lazily create the shared SignalChanged event type and register the callback
 // responsible for emitting instances when the signal's value changes.
 ObjEventType* ObjSignal::ensureChangeEventType()
 {
-    if (!changeEventType.isNil())
-        return asEventType(changeEventType);
+    auto currentSignal = signal;
+    auto subscribeCallbacks = [&](const ptr<df::Signal>& target) {
+        if (!target)
+            return;
+        Value eventWeak = changeEventType.weakRef();
+        bool useSpan = changeEventUsesTimeSpan;
+        target->addValueChangedCallback([eventWeak, useSpan](TimePoint t, ptr<df::Signal> sig, const Value& sample){
+            if (!eventWeak.isAlive())
+                return;
+            ObjEventType* ev = asEventType(eventWeak);
+            Value eventTypeStrong = Value::objRef(ev);
+            std::vector<Value> payload;
+            payload.reserve(ev->payloadProperties.size());
+            // First payload slot carries the current signal sample.
+            payload.push_back(sample);
+            if (useSpan) {
+                // Emit the elapsed steady-clock time since engine start as a
+                // TimeSpan instance when the sys module is available.
+                payload.push_back(sysNewTimeSpan(t.microSecs()));
+            } else {
+                payload.push_back(Value::intVal(static_cast<int32_t>(t.microSecs())));
+            }
+            // Track the discrete tick associated with this change. Prefer the
+            // signal's own period when available, otherwise fall back to the
+            // engine's global tick counter.
+            int64_t tickIndex = 0;
+            if (sig && sig->period() != TimeDuration::zero()) {
+                auto periodMicros = sig->period().microSecs();
+                if (periodMicros > 0)
+                    tickIndex = t.microSecs() / periodMicros;
+            } else if (auto engine = df::DataflowEngine::instance(false)) {
+                tickIndex = static_cast<int64_t>(engine->currentTickNumber());
+            }
+            tickIndex = std::clamp(tickIndex,
+                                   static_cast<int64_t>(std::numeric_limits<int32_t>::min()),
+                                   static_cast<int64_t>(std::numeric_limits<int32_t>::max()));
+            payload.push_back(Value::intVal(static_cast<int32_t>(tickIndex)));
+            payload.push_back(Value::signalVal(sig));
+
+            // Package the change information into a new event instance and invoke
+            // every subscribed handler for this occurrence.
+            Value instance = Value::eventInstanceVal(eventTypeStrong, std::move(payload));
+            // Deliver change notifications immediately while preserving the
+            // original logical timestamp inside the payload. This keeps callbacks
+            // responsive even when the dataflow engine's tick time is ahead of the
+            // VM thread's wall clock (for example when ticks are advanced manually).
+            scheduleEventHandlers(eventWeak, ev, instance, TimePoint::currentTime());
+        });
+        changeEventSignal = target;
+    };
+
+    if (!changeEventType.isNil()) {
+        ObjEventType* existing = asEventType(changeEventType);
+        auto subscribed = changeEventSignal.lock();
+        if (currentSignal && currentSignal != subscribed)
+            subscribeCallbacks(currentSignal);
+        return existing;
+    }
 
     auto eventType = newEventTypeObj(toUnicodeString("SignalChanged"));
     ObjEventType* typeObj = eventType.get();
 
     ObjEventType::PayloadProperty valueProp { toUnicodeString("value"), Value::nilVal(), Value::nilVal() };
     ObjObjectType* spanType = sysTimeSpanType();
-    bool useSpan = spanType != nullptr;
+    changeEventUsesTimeSpan = spanType != nullptr;
     ObjEventType::PayloadProperty timeProp { toUnicodeString("timestamp"), Value::nilVal(), Value::nilVal() };
-    if (useSpan) {
+    if (changeEventUsesTimeSpan) {
         timeProp.type = Value::objRef(spanType);
         timeProp.initialValue = sysNewTimeSpan(0);
     } else {
@@ -2861,51 +2919,7 @@ ObjEventType* ObjSignal::ensureChangeEventType()
     appendProperty(signalProp);
 
     changeEventType = Value::objVal(std::move(eventType));
-    Value eventWeak = changeEventType.weakRef();
-    // Register a signal callback that creates a fresh event instance for
-    // each change and dispatches it to subscribed handlers.
-    signal->addValueChangedCallback([eventWeak, useSpan](TimePoint t, ptr<df::Signal> sig, const Value& sample){
-        if (!eventWeak.isAlive())
-            return;
-        ObjEventType* ev = asEventType(eventWeak);
-        Value eventTypeStrong = Value::objRef(ev);
-        std::vector<Value> payload;
-        payload.reserve(ev->payloadProperties.size());
-        // First payload slot carries the current signal sample.
-        payload.push_back(sample);
-        if (useSpan) {
-            // Emit the elapsed steady-clock time since engine start as a
-            // TimeSpan instance when the sys module is available.
-            payload.push_back(sysNewTimeSpan(t.microSecs()));
-        } else {
-            payload.push_back(Value::intVal(static_cast<int32_t>(t.microSecs())));
-        }
-        // Track the discrete tick associated with this change. Prefer the
-        // signal's own period when available, otherwise fall back to the
-        // engine's global tick counter.
-        int64_t tickIndex = 0;
-        if (sig && sig->period() != TimeDuration::zero()) {
-            auto periodMicros = sig->period().microSecs();
-            if (periodMicros > 0)
-                tickIndex = t.microSecs() / periodMicros;
-        } else if (auto engine = df::DataflowEngine::instance(false)) {
-            tickIndex = static_cast<int64_t>(engine->currentTickNumber());
-        }
-        tickIndex = std::clamp(tickIndex,
-                               static_cast<int64_t>(std::numeric_limits<int32_t>::min()),
-                               static_cast<int64_t>(std::numeric_limits<int32_t>::max()));
-        payload.push_back(Value::intVal(static_cast<int32_t>(tickIndex)));
-        payload.push_back(Value::signalVal(sig));
-
-        // Package the change information into a new event instance and invoke
-        // every subscribed handler for this occurrence.
-        Value instance = Value::eventInstanceVal(eventTypeStrong, std::move(payload));
-        // Deliver change notifications immediately while preserving the
-        // original logical timestamp inside the payload. This keeps callbacks
-        // responsive even when the dataflow engine's tick time is ahead of the
-        // VM thread's wall clock (for example when ticks are advanced manually).
-        scheduleEventHandlers(eventWeak, ev, instance, TimePoint::currentTime());
-    });
+    subscribeCallbacks(currentSignal);
     return asEventType(changeEventType);
 }
 

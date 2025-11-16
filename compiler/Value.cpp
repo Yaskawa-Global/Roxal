@@ -2036,6 +2036,9 @@ void roxal::copyInto(Value& lhs, const Value& rhs)
                         eng->registerSignalWrapper(rhsSig->signal);
 
                     lhsSig->signal = rhsSig->signal;
+
+                    if (!lhsSig->changeEventType.isNil())
+                        lhsSig->ensureChangeEventType();
                 }
             }
             break;

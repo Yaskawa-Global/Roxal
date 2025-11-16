@@ -276,14 +276,14 @@ void DataflowEngine::copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs)
     lhs->baseSignal = rhs->baseSignal;
     lhs->baseIndex = rhs->baseIndex;
 
-    // Update any derived signals that referenced rhs so they now reference lhs
+    // Update any derived signals that referenced lhs so they now reference rhs
     for (auto& sig : signals) {
         if (!sig->isDerived)
             continue;
 
         auto base = sig->baseSignal.lock();
-        if (base == rhs)
-            sig->baseSignal = lhs;
+        if (base == lhs)
+            sig->baseSignal = rhs;
     }
 
     // Update any functions that use rhs as an input to use lhs instead

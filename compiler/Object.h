@@ -694,6 +694,8 @@ struct ObjSignal : public Obj {
     df::DataflowEngine* engine;
     // Lazily initialized `SignalChanged` event type shared by all emissions.
     Value changeEventType;
+    weak_ptr<df::Signal> changeEventSignal;
+    bool changeEventUsesTimeSpan = false;
 
     unique_ptr<Obj, UnreleasedObj> clone() const override;
 

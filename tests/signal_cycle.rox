@@ -21,17 +21,6 @@ on out changed as evt:
 c.run()
 wait(ms=600)
 
-var i = 0
-while i < len(samples):
-  var j = i + 1
-  while j < len(samples):
-    if samples[j] < samples[i]:
-      var tmp = samples[i]
-      samples[i] = samples[j]
-      samples[j] = tmp
-    j = j + 1
-  i = i + 1
-
 var count = len(samples)
 if count > 4:
   count = 4
