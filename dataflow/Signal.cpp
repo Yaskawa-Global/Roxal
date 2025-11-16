@@ -3,6 +3,7 @@
 #include <numeric>
 #include <iterator>
 #include <cmath>
+#include <optional>
 
 #include "Signal.h"
 #include "DataflowEngine.h"
@@ -284,7 +285,7 @@ TimePoint Signal::latestSampleTime() const
     return values.rbegin()->first;
 }
 
-Value Signal::valueAtIndex(int index) const
+Value Signal::valueAtIndex(int index, std::optional<TimePoint> referenceTime) const
 {
     if (index > 0)
         throw std::invalid_argument("Signal index must be 0 or negative");
@@ -300,8 +301,8 @@ Value Signal::valueAtIndex(int index) const
 
     int stepsBack = -index;
 
-    TimePoint lastTime = values.rbegin()->first;
-    TimePoint t = lastTime - m_period * stepsBack;
+    TimePoint reference = referenceTime.value_or(values.rbegin()->first);
+    TimePoint t = reference - m_period * stepsBack;
     // If t predates the earliest recorded value, return the
     // initial value instead of throwing an exception.
     if (t < values.begin()->first)
@@ -323,7 +324,11 @@ ptr<Signal> Signal::indexedSignal(int index)
 
     Value initial;
     try {
-        initial = valueAtIndex(index);
+        auto engine = DataflowEngine::instance(false);
+        std::optional<TimePoint> currentTick = std::nullopt;
+        if (engine)
+            currentTick = engine->tickStart();
+        initial = valueAtIndex(index, currentTick);
     } catch(...) {
         initial = Value();
     }

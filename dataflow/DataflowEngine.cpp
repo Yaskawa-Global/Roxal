@@ -554,7 +554,7 @@ void DataflowEngine::refreshDerivedSignals(const NetworkIsland& island, TimePoin
             if (src->period() == TimeDuration::zero() && signal->baseIndex != 0)
                 val = src->lastValue();
             else
-                val = src->valueAtIndex(signal->baseIndex);
+                val = src->valueAtIndex(signal->baseIndex, time);
         } catch (...) {
             val = Value();
         }

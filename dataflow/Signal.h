@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <optional>
 
 #include "core/common.h"
 #include "core/TimePoint.h"
@@ -84,7 +85,7 @@ public:
     //   index 0 -> last value
     //   index -1 -> value from one period ago
     // Throws if index > 0 or history is insufficient
-    Value valueAtIndex(int index) const;
+    Value valueAtIndex(int index, std::optional<TimePoint> referenceTime = std::nullopt) const;
 
     // Return a new signal that is this signal delayed by -index periods
     //   index 0 -> this signal
