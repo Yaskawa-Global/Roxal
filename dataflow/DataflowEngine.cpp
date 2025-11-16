@@ -265,7 +265,9 @@ void DataflowEngine::copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs)
     lhs->m_maxHistoryPeriods = rhs->m_maxHistoryPeriods;
     lhs->running = rhs->running;
     lhs->tickPending = rhs->tickPending;
+    lhs->m_eventDriven = rhs->m_eventDriven;
 
+    auto previousValues = lhs->values;
     lhs->values = rhs->values;
     for(const auto& rhsCallback : rhs->valueChangedCallbacks)
         lhs->valueChangedCallbacks.push_back(rhsCallback);
@@ -274,13 +276,14 @@ void DataflowEngine::copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs)
     lhs->baseSignal = rhs->baseSignal;
     lhs->baseIndex = rhs->baseIndex;
 
-    // Update any derived signals that reference lhs so they reference rhs
+    // Update any derived signals that referenced rhs so they now reference lhs
     for (auto& sig : signals) {
-        if (sig->isDerived) {
-            auto base = sig->baseSignal.lock();
-            if (base == lhs)
-                sig->baseSignal = rhs;
-        }
+        if (!sig->isDerived)
+            continue;
+
+        auto base = sig->baseSignal.lock();
+        if (base == rhs)
+            sig->baseSignal = lhs;
     }
 
     // Update any functions that use rhs as an input to use lhs instead
@@ -292,9 +295,25 @@ void DataflowEngine::copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs)
         }
     }
 
-    // Copy the values from rhs to lhs
-    for (const auto& kv : rhs->values) {
-        lhs->setValueAt(kv.first, kv.second);
+    bool rhsHasConcreteSample = std::any_of(
+        rhs->values.begin(), rhs->values.end(),
+        [](const std::pair<const TimePoint, Value>& sample) {
+            return !sample.second.isNil();
+        });
+
+    bool earliestSampleIsNil = rhs->values.empty() || rhs->values.begin()->second.isNil();
+
+    if (rhsHasConcreteSample) {
+        for (const auto& kv : rhs->values)
+            lhs->setValueAt(kv.first, kv.second);
+
+        if (earliestSampleIsNil && !previousValues.empty()) {
+            auto fallback = previousValues.begin();
+            rhs->values[fallback->first] = fallback->second;
+        }
+    } else if (!previousValues.empty()) {
+        lhs->values = previousValues;
+        rhs->values = previousValues;
     }
 
     m_networkModified = true;

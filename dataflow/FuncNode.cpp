@@ -10,6 +10,49 @@
 
 using namespace df;
 
+namespace {
+
+std::optional<roxal::ValueType> valueTypeForBuiltin(roxal::type::BuiltinType builtin)
+{
+    using roxal::type::BuiltinType;
+    switch (builtin) {
+        case BuiltinType::Nil:   return roxal::ValueType::Nil;
+        case BuiltinType::Bool:  return roxal::ValueType::Bool;
+        case BuiltinType::Byte:  return roxal::ValueType::Byte;
+        case BuiltinType::Int:   return roxal::ValueType::Int;
+        case BuiltinType::Real:
+        case BuiltinType::Number: return roxal::ValueType::Real;
+        case BuiltinType::String: return roxal::ValueType::String;
+        case BuiltinType::Range:  return roxal::ValueType::Range;
+        case BuiltinType::List:   return roxal::ValueType::List;
+        case BuiltinType::Dict:   return roxal::ValueType::Dict;
+        case BuiltinType::Vector: return roxal::ValueType::Vector;
+        case BuiltinType::Matrix: return roxal::ValueType::Matrix;
+        case BuiltinType::Event:  return roxal::ValueType::Event;
+        case BuiltinType::Type:   return roxal::ValueType::Type;
+        default:
+            return std::nullopt;
+    }
+}
+
+std::optional<roxal::Value> defaultValueForReturnType(const ptr<roxal::type::Type>& typeSpec)
+{
+    if (!typeSpec)
+        return std::nullopt;
+
+    auto valueType = valueTypeForBuiltin(typeSpec->builtin);
+    if (!valueType.has_value())
+        return std::nullopt;
+
+    try {
+        return roxal::defaultValue(valueType.value());
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+}
+
 FuncNode::FuncNode(const std::string& name,
                    const roxal::Value& closure_,
                    const ConstArgMap& constArgs_,
@@ -31,6 +74,8 @@ FuncNode::FuncNode(const std::string& name,
                         m_outputNames.push_back("result" + std::to_string(i));
                 }
             }
+
+            initializeOutputDefaults(funcType.returnTypes);
 
             size_t sigIndex = 0;
             for (const auto& param : funcType.params) {
@@ -67,6 +112,9 @@ FuncNode::FuncNode(const std::string& name,
             m_operatorSignalsCalled = true;
         }
     }
+
+    if (m_outputDefaults.size() != outputNames().size())
+        initializeOutputDefaults(std::vector<ptr<roxal::type::Type>>{});
 }
 
 FuncNode::FuncNode(const std::string& name,
@@ -82,6 +130,7 @@ FuncNode::FuncNode(const std::string& name,
     m_outputNames = outputNames_;
     if (m_outputNames.empty())
         m_outputNames = {DataflowEngine::uniqueFuncName("result")};
+    initializeOutputDefaults(std::vector<ptr<roxal::type::Type>>{});
     paramNames = paramNames_;
     size_t sigIndex = 0;
     for(const auto& pname : paramNames) {
@@ -268,25 +317,44 @@ Signals FuncNode::operator()(const Signals& signals, const std::optional<ParamMa
 void FuncNode::createOutputSignals(double freq)
 {
     m_outputs.clear();
+    auto names = outputNames();
     if (!m_overrideOutputSignals.empty()) {
-        size_t count = std::min(m_overrideOutputSignals.size(), outputNames().size());
+        size_t count = std::min(m_overrideOutputSignals.size(), names.size());
         for(size_t i=0;i<count;++i) {
             auto sig = m_overrideOutputSignals[i];
             sig->setFrequency(freq);
-            addOutput(outputNames()[i], sig);
+            addOutput(names[i], sig);
         }
-        for(size_t i=count;i<outputNames().size();++i) {
-            auto outputSignal = Signal::newSignal(freq, roxal::Value(), outputNames()[i]);
-            addOutput(outputNames()[i], outputSignal);
+        for(size_t i=count;i<names.size();++i) {
+            auto outputSignal = Signal::newSignal(freq, initialValueForOutput(i), names[i]);
+            addOutput(names[i], outputSignal);
         }
         m_overrideOutputSignals.clear();
     } else {
         // create output signals(freq may be updated as inputs added)
-        for(auto& outName : outputNames()) {
-            auto outputSignal = Signal::newSignal(freq, roxal::Value(), outName);
-            addOutput(outName, outputSignal);
+        for(size_t i=0;i<names.size();++i) {
+            auto outputSignal = Signal::newSignal(freq, initialValueForOutput(i), names[i]);
+            addOutput(names[i], outputSignal);
         }
     }
+}
+
+void FuncNode::initializeOutputDefaults(const std::vector<ptr<roxal::type::Type>>& returnTypes)
+{
+    const auto count = outputNames().size();
+    m_outputDefaults.assign(count, std::nullopt);
+    for (size_t i = 0; i < count && i < returnTypes.size(); ++i) {
+        auto defaultValue = defaultValueForReturnType(returnTypes[i]);
+        if (defaultValue.has_value())
+            m_outputDefaults[i] = defaultValue;
+    }
+}
+
+roxal::Value FuncNode::initialValueForOutput(size_t index) const
+{
+    if (index < m_outputDefaults.size() && m_outputDefaults[index].has_value())
+        return m_outputDefaults[index].value();
+    return roxal::Value();
 }
 
 void FuncNode::updateOutputSignals(double freq)
