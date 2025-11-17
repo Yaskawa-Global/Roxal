@@ -20,6 +20,7 @@ parser.add_argument('--opcode-prof', action='store_true', help='Enable opcode pr
 parser.add_argument('--nocache', action='store_true', help='Disable reading and writing Roxal bytecode cache files')
 parser.add_argument('--nogc', action='store_true', help='Disable Roxal garbage collection during tests')
 parser.add_argument('--recompile', action='store_true', help='Force Roxal to recompile input scripts on each run')
+parser.add_argument('--build', action='store_true', help='Invoke cmake --build before running the tests')
 args = parser.parse_args()
 
 
@@ -128,6 +129,16 @@ roxalpath = 'build'
 roxal = './roxal'
 
 build_dir = os.path.join(project_root, roxalpath)
+
+if args.build:
+    jobs = os.cpu_count() or 4
+    build_cmd = ['cmake', '--build', build_dir, f'-j{jobs}']
+    print(f"Building Roxal ({' '.join(build_cmd)})...")
+    try:
+        subprocess.check_call(build_cmd)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(f"cmake build failed with exit code {exc.returncode}")
+
 if args.opcode_prof and not is_debug_build(build_dir):
     raise SystemExit("--opcode-prof requires a Debug build (configure CMake with -DCMAKE_BUILD_TYPE=Debug).")
 
