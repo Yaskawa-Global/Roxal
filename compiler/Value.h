@@ -188,13 +188,18 @@ public:
 
     //
     // Builtin reference type constructors
+
     template<class T, class D>
     static Value objVal(unique_ptr<T, D> o) {
         static_assert(std::is_base_of<Obj, T>::value, "T must be Obj or a subclass of Obj");
         unique_ptr<Obj, D> base(std::move(o));
         return Value(std::move(base));
     }
+    // Warning: do not use objRef(Obj*) to wrap a raw Obj* in a Value if it was extracted from
+    //  an existing Value using asObj() or helpers - this will lead to two independent Values managing the same Obj* and double-free errors.
+    //  Use strongRef() if needing a new Value from an existing weakRef() Value (it will return nilVal() if the object is gone).
     static Value objRef(Obj* o);
+
     static Value stringVal(const icu::UnicodeString& s); // ObjString
 
     static Value rangeVal();  // ObjRange
