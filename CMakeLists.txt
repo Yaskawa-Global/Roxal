@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(roxal VERSION 1.0 LANGUAGES CXX C)
+project(roxal VERSION 1.0.0 LANGUAGES CXX C)
+set(ROXAL_PRERELEASE "" CACHE STRING "SemVer prerelease label (e.g. alpha.1, rc.1)")
 
 enable_testing()
 
@@ -12,6 +13,19 @@ option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
 
 
 option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
+
+# Expose the project version and git hash to the codebase
+set(ROXAL_PROJECT_VERSION "${PROJECT_VERSION}")
+execute_process(
+    COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE ROXAL_GIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT ROXAL_GIT_HASH)
+    set(ROXAL_GIT_HASH "unknown")
+endif()
 
 
 add_compile_definitions(
@@ -208,6 +222,9 @@ target_compile_options(roxalcore PRIVATE
 target_compile_definitions(roxalcore PRIVATE
     $<$<CONFIG:DEBUG>:DEBUG_BUILD>
     $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
+    ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
+    ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
+    ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
 )
 
 
@@ -221,6 +238,9 @@ if(ROXAL_BUILD_MAIN)
     target_compile_definitions(roxal PRIVATE
         $<$<CONFIG:DEBUG>:DEBUG_BUILD>
         $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
+        ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
+        ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
+        ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
     )
 
     add_test(NAME RoxalSourceTests

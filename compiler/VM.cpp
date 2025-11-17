@@ -70,6 +70,41 @@ private:
 
 } // namespace
 
+std::string VM::versionString()
+{
+    std::string version =
+    #ifdef ROXAL_VERSION
+        ROXAL_VERSION;
+    #else
+        "unknown";
+    #endif
+
+    if (version.empty())
+        version = "unknown";
+
+    const std::string prerelease =
+#ifdef ROXAL_PRERELEASE
+        ROXAL_PRERELEASE;
+#else
+        "";
+#endif
+
+    std::string gitHash =
+#ifdef ROXAL_GIT_HASH
+        ROXAL_GIT_HASH;
+#else
+        "unknown";
+    #endif
+    if (gitHash.empty())
+        gitHash = "unknown";
+
+    std::string fullVersion = version;
+    if (!prerelease.empty())
+        fullVersion += "-" + prerelease;
+    fullVersion += "+" + gitHash;
+    return fullVersion;
+}
+
 static ValueType builtinToValueType(type::BuiltinType bt)
 {
     switch (bt) {

@@ -302,6 +302,7 @@ int main(int argc, const char* argv[])
     po::options_description desc("Allowed options");
     desc.add_options()
         ("help,h", "options help")
+        ("version,v", "print version information")
         ("input-file,f", po::value< std::vector<std::string> >(), "input .rox file to execute (run)")
         ("module-paths,p", po::value< std::vector<std::string> >(), "module search paths")
         ("execute,e", po::value<std::string>(), "execute code supplied as a string")
@@ -346,6 +347,11 @@ int main(int argc, const char* argv[])
     if (vmap.count("help")) {
         std::cout << desc << std::endl;
         return 1;
+    }
+
+    if (vmap.count("version")) {
+        std::cout << VM::versionString() << std::endl;
+        return 0;
     }
 
     const size_t stackSizeLimit = vmap["stack-size"].as<size_t>();

@@ -176,6 +176,8 @@ public:
     static constexpr size_t DefaultMaxStack = 1024;
     static constexpr size_t DefaultMaxCallFrames = 128;
 
+    static std::string versionString();
+
     static void configureStackLimits(size_t stackSize, size_t callFrameLimit);
     void setStackLimits(size_t stackSize, size_t callFrameLimit);
     size_t maxStackSize() const { return stackLimit; }
