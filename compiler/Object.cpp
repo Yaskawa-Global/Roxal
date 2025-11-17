@@ -2837,8 +2837,10 @@ ObjEventType* ObjSignal::ensureChangeEventType()
         target->addValueChangedCallback([eventWeak, useSpan](TimePoint t, ptr<df::Signal> sig, const Value& sample){
             if (!eventWeak.isAlive())
                 return;
-            ObjEventType* ev = asEventType(eventWeak);
-            Value eventTypeStrong = Value::objRef(ev);
+            Value eventTypeStrong = eventWeak.strongRef();
+            if (eventTypeStrong.isNil())
+                return;
+            ObjEventType* ev = asEventType(eventTypeStrong);
             std::vector<Value> payload;
             payload.reserve(ev->payloadProperties.size());
             // First payload slot carries the current signal sample.
