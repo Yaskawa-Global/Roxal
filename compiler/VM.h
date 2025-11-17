@@ -179,6 +179,7 @@ public:
     static std::string versionString();
 
     static void configureStackLimits(size_t stackSize, size_t callFrameLimit);
+    static void configureCacheMode(CacheMode mode);
     void setStackLimits(size_t stackSize, size_t callFrameLimit);
     size_t maxStackSize() const { return stackLimit; }
     size_t maxCallFrameCount() const { return callFrameLimit; }

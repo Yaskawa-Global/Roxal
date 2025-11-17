@@ -399,6 +399,8 @@ int main(int argc, const char* argv[])
     else if (forceRecompile)
         cacheMode = VM::CacheMode::Recompile;
 
+    VM::configureCacheMode(cacheMode);
+
     #ifdef DEBUG_BUILD
     if (vmap.count("opcode-prof")) {
         VM::instance().enableOpcodeProfiling();
