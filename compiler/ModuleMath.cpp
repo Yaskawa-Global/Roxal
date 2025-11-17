@@ -22,9 +22,10 @@ ModuleMath::~ModuleMath()
 
 void ModuleMath::registerBuiltins(VM& vm)
 {
+    setVM(vm);
 
     auto unary = [&](const std::string& name, double(*fn)(double)) {
-        link(name, [fn,name](VM& vm, ArgsView a)->Value{
+        link(name, [fn,name](VM&, ArgsView a)->Value{
             if (a.size() != 1)
                 throw std::invalid_argument("math." + name + " expects one argument");
             double x = toType(ValueType::Real, a[0], false).asReal();
@@ -33,7 +34,7 @@ void ModuleMath::registerBuiltins(VM& vm)
     };
 
     auto binary = [&](const std::string& name, double(*fn)(double,double)) {
-        link(name, [fn,name](VM& vm, ArgsView a)->Value{
+        link(name, [fn,name](VM&, ArgsView a)->Value{
             if (a.size() != 2)
                 throw std::invalid_argument("math." + name + " expects two arguments");
             double x = toType(ValueType::Real, a[0], false).asReal();
@@ -43,7 +44,7 @@ void ModuleMath::registerBuiltins(VM& vm)
     };
 
     auto ternary = [&](const std::string& name, double(*fn)(double,double,double)) {
-        link(name, [fn,name](VM& vm, ArgsView a)->Value{
+        link(name, [fn,name](VM&, ArgsView a)->Value{
             if (a.size() != 3)
                 throw std::invalid_argument("math." + name + " expects three arguments");
             double x = toType(ValueType::Real, a[0], false).asReal();
@@ -98,24 +99,24 @@ void ModuleMath::registerBuiltins(VM& vm)
     unary("rint", std::rint);
     unary("tgamma", std::tgamma);
 
-    link("identity", [this](VM& vm, ArgsView a){ return math_identity_builtin(vm,a); });
-    link("zeros", [this](VM& vm, ArgsView a){ return math_zeros_builtin(vm,a); });
-    link("ones", [this](VM& vm, ArgsView a){ return math_ones_builtin(vm,a); });
-    link("dot", [this](VM& vm, ArgsView a){ return math_dot_builtin(vm,a); });
-    link("cross", [this](VM& vm, ArgsView a){ return math_cross_builtin(vm,a); });
-    link("_setVecSignal", [this](VM& vm, ArgsView a){ return math_setVecSignal_builtin(vm,a); });
+    link("identity", [this](VM&, ArgsView a){ return math_identity_builtin(a); });
+    link("zeros", [this](VM&, ArgsView a){ return math_zeros_builtin(a); });
+    link("ones", [this](VM&, ArgsView a){ return math_ones_builtin(a); });
+    link("dot", [this](VM&, ArgsView a){ return math_dot_builtin(a); });
+    link("cross", [this](VM&, ArgsView a){ return math_cross_builtin(a); });
+    link("_setVecSignal", [this](VM&, ArgsView a){ return math_setVecSignal_builtin(a); });
 
     // Link builtin Counter methods
-    linkMethod("_Counter", "init", [this](VM& vm, ArgsView a){ return counter_init_builtin(vm,a); });
-    linkMethod("_Counter", "inc", [this](VM& vm, ArgsView a){ return counter_inc_builtin(vm,a); });
-    linkMethod("_Counter", "value", [this](VM& vm, ArgsView a){ return counter_value_builtin(vm,a); }, {});
+    linkMethod("_Counter", "init", [this](VM&, ArgsView a){ return counter_init_builtin(a); });
+    linkMethod("_Counter", "inc", [this](VM&, ArgsView a){ return counter_inc_builtin(a); });
+    linkMethod("_Counter", "value", [this](VM&, ArgsView a){ return counter_value_builtin(a); }, {});
 
     if (auto vecSignal = moduleSourceSignal("_vecSignal", false))
         vecSignal->setInternal(true);
 
 }
 
-Value ModuleMath::math_identity_builtin(VM& vm, ArgsView args)
+Value ModuleMath::math_identity_builtin(ArgsView args)
 {
     if (args.size() != 1 || !args[0].isNumber())
         throw std::invalid_argument("math.identity expects single integer size");
@@ -125,7 +126,7 @@ Value ModuleMath::math_identity_builtin(VM& vm, ArgsView args)
     return Value::matrixVal(m);
 }
 
-Value ModuleMath::math_zeros_builtin(VM& vm, ArgsView args)
+Value ModuleMath::math_zeros_builtin(ArgsView args)
 {
     if (args.size() != 2 || !args[0].isNumber() || !args[1].isNumber())
         throw std::invalid_argument("math.zeros expects two integer arguments");
@@ -136,7 +137,7 @@ Value ModuleMath::math_zeros_builtin(VM& vm, ArgsView args)
     return Value::matrixVal(m);
 }
 
-Value ModuleMath::math_ones_builtin(VM& vm, ArgsView args)
+Value ModuleMath::math_ones_builtin(ArgsView args)
 {
     if (args.size() != 2 || !args[0].isNumber() || !args[1].isNumber())
         throw std::invalid_argument("math.ones expects two integer arguments");
@@ -147,7 +148,7 @@ Value ModuleMath::math_ones_builtin(VM& vm, ArgsView args)
     return Value::matrixVal(m);
 }
 
-Value ModuleMath::math_dot_builtin(VM& vm, ArgsView args)
+Value ModuleMath::math_dot_builtin(ArgsView args)
 {
     if (args.size() != 2 || !isVector(args[0]) || !isVector(args[1]))
         throw std::invalid_argument("math.dot expects two vector arguments");
@@ -161,7 +162,7 @@ Value ModuleMath::math_dot_builtin(VM& vm, ArgsView args)
     return Value::realVal(d);
 }
 
-Value ModuleMath::math_cross_builtin(VM& vm, ArgsView args)
+Value ModuleMath::math_cross_builtin(ArgsView args)
 {
     if (args.size() != 2 || !isVector(args[0]) || !isVector(args[1]))
         throw std::invalid_argument("math.cross expects two vector arguments");
@@ -180,7 +181,7 @@ Value ModuleMath::math_cross_builtin(VM& vm, ArgsView args)
 
 // Example
 
-Value ModuleMath::counter_init_builtin(VM& vm, ArgsView args)
+Value ModuleMath::counter_init_builtin(ArgsView args)
 {
     if (args.size() != 2 || !isObjectInstance(args[0]))
         throw std::invalid_argument("Counter.init expects receiver and optional start int");
@@ -202,7 +203,7 @@ Value ModuleMath::counter_init_builtin(VM& vm, ArgsView args)
     return Value::nilVal();
 }
 
-Value ModuleMath::counter_inc_builtin(VM& vm, ArgsView args)
+Value ModuleMath::counter_inc_builtin(ArgsView args)
 {
     // Check for safety, but can probably assume all this is true as Roxal already checked the callSpec against the func type
     if (args.size() < 1 || args.size() > 2 || !isObjectInstance(args[0]))
@@ -227,7 +228,7 @@ Value ModuleMath::counter_inc_builtin(VM& vm, ArgsView args)
     return Value::intVal(counter->value());
 }
 
-Value ModuleMath::counter_value_builtin(VM& vm, ArgsView args)
+Value ModuleMath::counter_value_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isObjectInstance(args[0]))
         throw std::invalid_argument("Counter.value expects receiver");
@@ -242,7 +243,7 @@ Value ModuleMath::counter_value_builtin(VM& vm, ArgsView args)
     return Value::intVal(counter->value());
 }
 
-Value ModuleMath::math_setVecSignal_builtin(VM& vm, ArgsView args)
+Value ModuleMath::math_setVecSignal_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isVector(args[0]))
         throw std::invalid_argument("math._setVecSignal expects a single vector argument");

@@ -1754,6 +1754,11 @@ void ObjFunction::write(std::ostream& out, roxal::ptr<SerializationContext> ctx)
     }
 
     writeValue(out, moduleType, ctx);
+
+    // Serialize whether this function has a native implementation
+    // The pointer itself can't be serialized, but we need to know to re-link it
+    uint8_t hasNativeImpl = (nativeImpl != nullptr) ? 1 : 0;
+    out.write(reinterpret_cast<char*>(&hasNativeImpl), 1);
 }
 
 void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
@@ -1816,6 +1821,29 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     moduleType = readValue(in, ctx);
     if(!moduleType.isNil())
         moduleType = moduleType.weakRef();
+
+    // Read the native implementation flag
+    uint8_t hasNativeImpl = 0;
+    in.read(reinterpret_cast<char*>(&hasNativeImpl), 1);
+
+    // If this function had a native implementation, re-link it from the live builtin module
+    if (hasNativeImpl && chunk && !chunk->moduleName.isEmpty()) {
+        Value builtinModuleVal = VM::instance().getBuiltinModuleType(chunk->moduleName);
+        if (builtinModuleVal.isNonNil()) {
+            ObjModuleType* builtinModule = asModuleType(builtinModuleVal);
+            auto liveVarOpt = builtinModule->vars.load(name);
+            if (liveVarOpt.has_value() && isClosure(liveVarOpt.value())) {
+                ObjClosure* liveClosure = asClosure(liveVarOpt.value());
+                if (isFunction(liveClosure->function)) {
+                    ObjFunction* liveFunc = asFunction(liveClosure->function);
+                    if (liveFunc->nativeImpl) {
+                        nativeImpl = liveFunc->nativeImpl;
+                        nativeDefaults = liveFunc->nativeDefaults;
+                    }
+                }
+            }
+        }
+    }
 }
 
 void ObjFunction::trace(ValueVisitor& visitor) const
