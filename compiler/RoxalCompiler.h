@@ -15,6 +15,8 @@
 
 namespace roxal {
 
+class VM;
+
 
 
 class RoxalCompiler : public ast::ASTVisitor
@@ -35,6 +37,7 @@ public:
     void setReplMode(bool replMode);
     void setCacheReadEnabled(bool enabled);
     void setCacheWriteEnabled(bool enabled);
+    void setModuleResolverVM(VM* vm);
     bool replMode() const { return replModeFlag; }
 
     virtual TraversalOrder traversalOrder() const;
@@ -111,6 +114,7 @@ protected:
     std::vector<std::string> modulePaths;
     bool cacheReadEnabled;
     bool cacheWriteEnabled;
+    VM* moduleResolverVM;
 
     // Persistent TypeDeducer for REPL mode to maintain type info across lines
     ptr<TypeDeducer> replTypeDeducer;

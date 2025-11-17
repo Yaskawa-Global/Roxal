@@ -100,6 +100,7 @@ RoxalCompiler::RoxalCompiler()
     : outputBytecodeDisassembly(false)
     , cacheReadEnabled(true)
     , cacheWriteEnabled(true)
+    , moduleResolverVM(nullptr)
 {}
 
 
@@ -285,7 +286,34 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
     if (function.isNil() || !isFunction(function))
         return;
 
+    VM* resolverVM = moduleResolverVM;
+    if (resolverVM == nullptr)
+        resolverVM = &VM::instance();
+
     // Helpers --------------------------------------------------------------
+
+    auto mergeModuleTypes = [](ObjModuleType* target, ObjModuleType* source) {
+        if (target == nullptr || source == nullptr || target == source)
+            return;
+
+        if (!source->fullName.isEmpty())
+            target->fullName = source->fullName;
+        if (!source->sourcePath.isEmpty())
+            target->sourcePath = source->sourcePath;
+
+        target->vars.clear();
+        for (const auto& entry : source->vars.snapshot())
+            target->vars.store(entry, true);
+
+        target->constVars = source->constVars;
+
+        target->clearModuleAliases();
+        for (const auto& alias : source->moduleAliasSnapshot())
+            target->registerModuleAlias(alias.first, alias.second);
+
+        target->cstructArch = source->cstructArch;
+        target->propertyCTypes = source->propertyCTypes;
+    };
 
     auto toKey = [](const icu::UnicodeString& value) {
         std::string result;
@@ -306,11 +334,13 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
 
         ObjModuleType* module = asModuleType(strong);
         icu::UnicodeString qualified = moduleQualifiedName(module);
-        Value builtin = VM::instance().getBuiltinModuleType(qualified);
+        Value builtin = resolverVM->getBuiltinModuleType(qualified);
         if (builtin.isNil())
-            builtin = VM::instance().getBuiltinModuleType(module->name);
-        if (builtin.isNonNil())
+            builtin = resolverVM->getBuiltinModuleType(module->name);
+        if (builtin.isNonNil()) {
+            mergeModuleTypes(asModuleType(builtin), module);
             return builtin.strongRef();
+        }
 
         return strong;
     };
@@ -344,7 +374,9 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         if (!isModuleType(fn->moduleType) || fn->chunk == nullptr)
             continue;
 
-        ObjModuleType* moduleType = asModuleType(fn->moduleType);
+        Value fnModuleValue = canonicalizeModuleValue(fn->moduleType);
+        fn->moduleType = fnModuleValue.weakRef();
+        ObjModuleType* moduleType = asModuleType(fnModuleValue);
 
         std::unordered_set<int32_t> importHashes;
         AliasList imports;
@@ -502,6 +534,11 @@ void RoxalCompiler::setCacheReadEnabled(bool enabled)
 void RoxalCompiler::setCacheWriteEnabled(bool enabled)
 {
     cacheWriteEnabled = enabled;
+}
+
+void RoxalCompiler::setModuleResolverVM(VM* vm)
+{
+    moduleResolverVM = vm;
 }
 
 

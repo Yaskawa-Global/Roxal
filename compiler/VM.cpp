@@ -53,6 +53,7 @@ std::atomic<size_t> configuredCallFrameLimit{VM::DefaultMaxCallFrames};
 // Tracks whether VM::instance() has already materialized the singleton so
 // later configureStackLimits() calls can update it in-place.
 std::atomic<bool> vmConstructed{false};
+std::atomic<VM::CacheMode> configuredCacheMode{VM::CacheMode::Normal};
 
 struct BoundCallGuard {
     explicit BoundCallGuard(Thread* thread) : thread_(thread) {}
@@ -140,6 +141,16 @@ void VM::configureStackLimits(size_t stackSize, size_t callFrameLimit)
 
     if (vmConstructed.load(std::memory_order_acquire)) {
         VM::instance().setStackLimits(stackSize, callFrameLimit);
+    }
+}
+
+
+void VM::configureCacheMode(CacheMode mode)
+{
+    configuredCacheMode.store(mode, std::memory_order_relaxed);
+
+    if (vmConstructed.load(std::memory_order_acquire)) {
+        VM::instance().setCacheMode(mode);
     }
 }
 
@@ -279,6 +290,7 @@ VM::VM()
 {
     stackLimit = configuredStackLimit.load(std::memory_order_relaxed);
     callFrameLimit = configuredCallFrameLimit.load(std::memory_order_relaxed);
+    cacheModeSetting = configuredCacheMode.load(std::memory_order_relaxed);
 
     SimpleMarkSweepGC::instance().setVM(this);
 
@@ -548,6 +560,7 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
         compiler.setCacheReadEnabled(cacheReadsEnabled());
         compiler.setCacheWriteEnabled(cacheWritesEnabled());
         compiler.setModulePaths(modulePaths);
+        compiler.setModuleResolverVM(this);
 
         std::filesystem::path cacheSourcePath;
         if (!name.empty()) {
@@ -633,6 +646,7 @@ InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
     compiler.setCacheWriteEnabled(cacheWritesEnabled());
     compiler.setModulePaths(modulePaths);
     compiler.setReplMode(replMode);
+    compiler.setModuleResolverVM(this);
 
     try {
         function = compiler.compile(linestream, "cli", replModule);
@@ -5646,14 +5660,24 @@ Value VM::getBuiltinModuleType(const icu::UnicodeString& name)
 void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
 {
     debug_assert_msg(isModuleType(moduleType),"is ObjModuleType");
-    std::ifstream in(path);
+    std::string openedPath = path;
+    std::string altPath = "../" + path;
+    std::ifstream in(openedPath);
     if (!in.is_open()) {
-        std::string alt = "../" + path;
-        in.open(alt);
+        in.clear();
+        openedPath = altPath;
+        in.open(openedPath);
         if (!in.is_open()) {
-            runtimeError("Cannot open builtin module script: " + path + " or " + alt);
+            runtimeError("Cannot open builtin module script: " + path + " or " + altPath);
             return;
         }
+    }
+
+    std::filesystem::path cacheSourcePath;
+    try {
+        cacheSourcePath = std::filesystem::canonical(std::filesystem::absolute(openedPath));
+    } catch (...) {
+        cacheSourcePath.clear();
     }
 
     RoxalCompiler compiler;
@@ -5661,8 +5685,24 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
     compiler.setCacheReadEnabled(cacheReadsEnabled());
     compiler.setCacheWriteEnabled(cacheWritesEnabled());
     compiler.setModulePaths(modulePaths);
+    compiler.setModuleResolverVM(this);
 
-    Value fn = compiler.compile(in, path, moduleType);
+    Value fn { Value::nilVal() };
+    bool loadedFromCache = false;
+    if (!cacheSourcePath.empty()) {
+        Value cached = compiler.loadFileCache(cacheSourcePath);
+        if (cached.isNonNil()) {
+            fn = cached;
+            loadedFromCache = true;
+        }
+    }
+
+    if (!loadedFromCache) {
+        fn = compiler.compile(in, openedPath, moduleType);
+        if (!fn.isNil() && !cacheSourcePath.empty())
+            compiler.storeFileCache(cacheSourcePath, fn);
+    }
+
     if (fn.isNil())
         return;
 
