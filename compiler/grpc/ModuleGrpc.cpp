@@ -104,42 +104,66 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
         Value serviceTypeVal = makeServiceType(svc.name);
         ObjObjectType* svcType = asObjectType(serviceTypeVal);
 
-        // init(addr:string="127.0.0.1:50051")
-        addNativeMethod(svcType, "init", [this](VM&, ArgsView args) -> Value {
-            if (args.size() < 1 || !isObjectInstance(args[0]))
-                throw std::invalid_argument("init expects service instance");
+    // init(addr:string="127.0.0.1:50051")
+    addNativeMethod(svcType, "init", [this](VM&, ArgsView args) -> Value {
+        if (args.size() < 1 || !isObjectInstance(args[0]))
+            throw std::invalid_argument("init expects service instance");
+        ObjectInstance* self = asObjectInstance(args[0]);
+        Value addrVal = Value::stringVal(toUnicodeString(this->targetAddress));
+        if (args.size() >= 2) {
+            if (!isString(args[1]))
+                throw std::invalid_argument("init address must be string");
+            addrVal = args[1];
+        }
+        self->setProperty("__addr", addrVal);
+        // create per-instance connector
+        std::string addr = toUTF8StdString(asStringObj(addrVal)->s);
+        std::shared_ptr<grpc::Channel>* ch = new std::shared_ptr<grpc::Channel>(
+            grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
+        ACUCommunicator* comm = new ACUCommunicator(*ch, this->adapter.get());
+        Value fpCh = Value::foreignPtrVal(ch);
+        Value fpComm = Value::foreignPtrVal(comm);
+        asForeignPtr(fpCh)->registerCleanup([](void* p){ delete static_cast<std::shared_ptr<grpc::Channel>*>(p); });
+        asForeignPtr(fpComm)->registerCleanup([](void* p){ delete static_cast<ACUCommunicator*>(p); });
+        self->setProperty("__channel", fpCh);
+        self->setProperty("__connector", fpComm);
+        return Value::nilVal();
+    });
+
+    for (const auto& method : svc.methods) {
+        addNativeMethod(svcType, method, [this, method](VM&, ArgsView args) -> Value {
+            if (args.size() != 2 || !isObjectInstance(args[0]))
+                throw std::invalid_argument(method + " expects receiver and request");
             ObjectInstance* self = asObjectInstance(args[0]);
-            if (args.size() >= 2) {
-                if (!isString(args[1]))
-                    throw std::invalid_argument("init address must be string");
-                self->setProperty("__addr", args[1]);
-            } else {
-                self->setProperty("__addr", Value::stringVal(toUnicodeString(this->targetAddress)));
-            }
-            return Value::nilVal();
-        });
+            if (!isObjectInstance(args[1]))
+                throw std::invalid_argument(method + " expects request object instance");
 
-        for (const auto& method : svc.methods) {
-            addNativeMethod(svcType, method, [this, method](VM&, ArgsView args) -> Value {
-                if (args.size() != 2 || !isObjectInstance(args[0]))
-                    throw std::invalid_argument(method + " expects receiver and request");
-                ObjectInstance* self = asObjectInstance(args[0]);
-                if (!isObjectInstance(args[1]))
-                    throw std::invalid_argument(method + " expects request object instance");
+            // reuse connector if available, else create and store
+            Value connVal = self->getProperty("__connector");
+            ACUCommunicator* comm = nullptr;
+            if (isForeignPtr(connVal))
+                comm = static_cast<ACUCommunicator*>(asForeignPtr(connVal)->ptr);
 
+            if (!comm) {
                 Value addrVal = self->getProperty("__addr");
                 std::string addr = targetAddress;
                 if (isString(addrVal))
                     addr = toUTF8StdString(asStringObj(addrVal)->s);
+                std::shared_ptr<grpc::Channel>* ch = new std::shared_ptr<grpc::Channel>(
+                    grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
+                comm = new ACUCommunicator(*ch, this->adapter.get());
+                Value fpCh = Value::foreignPtrVal(ch);
+                Value fpComm = Value::foreignPtrVal(comm);
+                asForeignPtr(fpCh)->registerCleanup([](void* p){ delete static_cast<std::shared_ptr<grpc::Channel>*>(p); });
+                asForeignPtr(fpComm)->registerCleanup([](void* p){ delete static_cast<ACUCommunicator*>(p); });
+                self->setProperty("__channel", fpCh);
+                self->setProperty("__connector", fpComm);
+            }
 
-                auto localAdapter = adapter.get();
-                std::shared_ptr<grpc::Channel> ch = grpc::CreateChannel(addr, grpc::InsecureChannelCredentials());
-                ACUCommunicator comm(ch, localAdapter);
-
-                ArgsView reqArgs(args.data + 1, args.size() - 1);
-                return comm.call(method, reqArgs);
-            });
-        }
+            ArgsView reqArgs(args.data + 1, args.size() - 1);
+            return comm->call(method, reqArgs);
+        });
+    }
 
         mod->vars.store(svcType->name, serviceTypeVal, true);
     }
@@ -180,6 +204,25 @@ Value ModuleGrpc::makeServiceType(const std::string& serviceName)
     int32_t hash = prop.name.hashCode();
     type->properties.emplace(hash, prop);
     type->propertyOrder.push_back(hash);
+
+    // connector slot
+    ObjObjectType::Property propConn;
+    propConn.name = toUnicodeString("__connector");
+    propConn.type = Value::typeSpecVal(ValueType::Nil);
+    propConn.initialValue = Value::nilVal();
+    propConn.ownerType = typeVal;
+    int32_t hconn = propConn.name.hashCode();
+    type->properties.emplace(hconn, propConn);
+    type->propertyOrder.push_back(hconn);
+
+    ObjObjectType::Property propCh;
+    propCh.name = toUnicodeString("__channel");
+    propCh.type = Value::typeSpecVal(ValueType::Nil);
+    propCh.initialValue = Value::nilVal();
+    propCh.ownerType = typeVal;
+    int32_t hch = propCh.name.hashCode();
+    type->properties.emplace(hch, propCh);
+    type->propertyOrder.push_back(hch);
 
     return typeVal;
 }
