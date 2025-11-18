@@ -13,6 +13,7 @@ option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
 
 
 option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
+option(ROXAL_ENABLE_GRPC "Enable experimental gRPC/protobuf import support" OFF)
 
 # Expose the project version and git hash to the codebase
 set(ROXAL_PROJECT_VERSION "${PROJECT_VERSION}")
@@ -95,6 +96,11 @@ find_package( Eigen3 REQUIRED )
 set(EIGEN3_INCLUDE_DIR "/usr/local/include/eigen3/")
 include_directories(${EIGEN3_INCLUDE_DIR})
 
+if(ROXAL_ENABLE_GRPC)
+    find_package(Protobuf REQUIRED) # use module or config
+    find_package(gRPC CONFIG REQUIRED)
+endif()
+
 # Detect libffi via pkg-config so that include and library paths
 # are recorded explicitly and the build fails clearly if libffi is
 # missing.
@@ -136,6 +142,14 @@ list(APPEND COMPILER_SOURCES compiler/ModuleSys.cpp)
 
 if(ROXAL_ENABLE_FILEIO)
     list(APPEND COMPILER_SOURCES compiler/ModuleFileIO.cpp)
+endif()
+if(ROXAL_ENABLE_GRPC)
+    list(APPEND COMPILER_SOURCES
+        compiler/ClientCall.cpp
+        compiler/Connector.cpp
+        compiler/ProtoAdapter.cpp
+        compiler/ModuleGrpc.cpp
+    )
 endif()
 
 set(MAIN_SOURCE compiler/roxal.cpp)
@@ -209,6 +223,8 @@ target_link_libraries(roxalcore
         dataflow
         dl
         ${LIBFFI_LIBRARIES}
+        $<$<BOOL:${ROXAL_ENABLE_GRPC}>:protobuf::libprotobuf>
+        $<$<BOOL:${ROXAL_ENABLE_GRPC}>:gRPC::grpc++>
 )
 
 
@@ -222,6 +238,7 @@ target_compile_options(roxalcore PRIVATE
 target_compile_definitions(roxalcore PRIVATE
     $<$<CONFIG:DEBUG>:DEBUG_BUILD>
     $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
+    $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
     ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
     ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
     ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
@@ -238,6 +255,7 @@ if(ROXAL_BUILD_MAIN)
     target_compile_definitions(roxal PRIVATE
         $<$<CONFIG:DEBUG>:DEBUG_BUILD>
         $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
+        $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
         ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
         ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
         ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"

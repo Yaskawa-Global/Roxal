@@ -1,0 +1,23 @@
+// Manual sample requiring ROXAL_ENABLE_GRPC build and a server for compiler/protos/arithematic.proto
+// gRPC integration predates module imports; use the builtin _import helper
+// to register generated types and stubs. Defaults to 0.0.0.0:50051.
+// Optional: override the default target if your server is bound elsewhere
+_set_target("127.0.0.1:50051")
+
+_import("compiler/protos/arithematic.proto")
+
+// Types are registered globally by name (no package prefix)
+var req = NumRequest()
+req.arg1 = 10
+req.arg2 = 7
+
+// The generated stubs are exposed as _Add/_Subtract/etc. (also as grpc._Add if you prefer)
+var sum = _Add(req)
+var diff = _Subtract(req)
+var prod = _Multiply(req)
+var quot = _Divide(req)
+
+print(sum.ans)   // expected 17
+print(diff.ans)  // expected 3
+print(prod.ans)  // expected 70
+print(quot.ans)  // expected 1

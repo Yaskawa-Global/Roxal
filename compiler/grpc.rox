@@ -1,0 +1,7 @@
+@builtin
+func import_proto(proto_path:string, target:string=nil):
+  """Import a .proto file and register generated message types and RPC stubs"""
+
+@builtin
+proc set_target(address:string):
+  """Update the default gRPC target address used for generated stubs"""

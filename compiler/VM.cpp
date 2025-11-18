@@ -31,6 +31,9 @@
 #include "FFI.h"
 #include "ModuleMath.h"
 #include "ModuleSys.h"
+#ifdef ROXAL_ENABLE_GRPC
+#include "ModuleGrpc.h"
+#endif
 #include "SimpleMarkSweepGC.h"
 #include <Eigen/Dense>
 #include <core/types.h>
@@ -346,12 +349,18 @@ VM::VM()
 #ifdef ROXAL_ENABLE_FILEIO
     registerBuiltinModule(make_ptr<ModuleFileIO>());
 #endif
+#ifdef ROXAL_ENABLE_GRPC
+    registerBuiltinModule(make_ptr<ModuleGrpc>());
+#endif
 
     // Execute builtin module scripts to attach declarations and docs
     ptr<Thread> initThread = make_ptr<Thread>();
     thread = initThread;
 #ifdef ROXAL_ENABLE_FILEIO
     executeBuiltinModuleScript("compiler/fileio.rox", getBuiltinModuleType(toUnicodeString("fileio")));
+#endif
+#ifdef ROXAL_ENABLE_GRPC
+    executeBuiltinModuleScript("compiler/grpc.rox", getBuiltinModuleType(toUnicodeString("grpc")));
 #endif
     executeBuiltinModuleScript("compiler/sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
     executeBuiltinModuleScript("compiler/math.rox", getBuiltinModuleType(toUnicodeString("math")));

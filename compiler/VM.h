@@ -75,6 +75,9 @@ public:
     friend class Thread;
     friend class ModuleSys;
     friend class SimpleMarkSweepGC;
+#ifdef ROXAL_ENABLE_GRPC
+    friend class ModuleGrpc;
+#endif
 
     enum class CacheMode {
         Normal,
