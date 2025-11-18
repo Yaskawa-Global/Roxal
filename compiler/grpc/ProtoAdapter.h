@@ -32,7 +32,12 @@ namespace roxal {
         std::string getFormattedMethodName(const std::string& methodName) const;
         std::string getMessageNameFromMethod(const std::string& methodName, bool isRequest);
 
-        std::vector<std::string> addServices(const std::string& protoFile);
+            struct ServiceInfo {
+                std::string name;
+                std::vector<std::string> methods;
+            };
+
+            std::vector<ServiceInfo> addServices(const std::string& protoFile);
         std::vector<Value> allocateObjects(const std::string& protoFile);
 
         std::string generateProtocRequest(const std::string& methodName, const Value& arg);

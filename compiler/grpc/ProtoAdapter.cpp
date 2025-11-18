@@ -214,7 +214,7 @@ std::vector<Value> ProtoAdapter::allocateObjects(const std::string& protoFile)
 }
 
 
-std::vector<std::string> ProtoAdapter::addServices(const std::string& protoFile)
+std::vector<ProtoAdapter::ServiceInfo> ProtoAdapter::addServices(const std::string& protoFile)
 {
     std::filesystem::path p(protoFile);
     if (p.has_parent_path())
@@ -225,23 +225,25 @@ std::vector<std::string> ProtoAdapter::addServices(const std::string& protoFile)
         importName = p.filename().string();
 
     auto* file_desc = m_importer->Import(importName);
-    std::vector<std::string> methods;
+    std::vector<ServiceInfo> services;
 
     if (!file_desc) {
         logError("Unable to import proto file: " + protoFile);
-        return methods;
+        return services;
     }
 
     for (int i = 0; i < file_desc->service_count(); i++) {
         auto* service = file_desc->service(i);
         m_serviceList.push_back(service);
-
+        ServiceInfo info;
+        info.name = service->name();
         for (int j = 0; j < service->method_count(); j++) {
-            methods.push_back(service->method(j)->name());
+            info.methods.push_back(service->method(j)->name());
         }
+        services.push_back(std::move(info));
     }
 
-    return methods;
+    return services;
 }
 
 

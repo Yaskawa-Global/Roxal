@@ -145,10 +145,10 @@ if(ROXAL_ENABLE_FILEIO)
 endif()
 if(ROXAL_ENABLE_GRPC)
     list(APPEND COMPILER_SOURCES
-        compiler/ClientCall.cpp
-        compiler/Connector.cpp
-        compiler/ProtoAdapter.cpp
-        compiler/ModuleGrpc.cpp
+        compiler/grpc/ClientCall.cpp
+        compiler/grpc/Connector.cpp
+        compiler/grpc/ProtoAdapter.cpp
+        compiler/grpc/ModuleGrpc.cpp
     )
 endif()
 
@@ -193,6 +193,8 @@ include_directories(${CMAKE_HOME_DIRECTORY})
 include_directories(
     ${ANTLR4_ROOT}/include/antlr4-runtime
     compiler/cpp-gen
+    ${CMAKE_SOURCE_DIR}/compiler
+    ${CMAKE_SOURCE_DIR}/compiler/grpc
 )
 
 link_directories(
