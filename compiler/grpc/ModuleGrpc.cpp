@@ -104,48 +104,52 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
         Value serviceTypeVal = makeServiceType(svc.name);
         ObjObjectType* svcType = asObjectType(serviceTypeVal);
 
-    // init(addr:string="127.0.0.1:50051")
-    addNativeMethod(svcType, "init", [this](VM&, ArgsView args) -> Value {
-        if (args.size() < 1 || !isObjectInstance(args[0]))
-            throw std::invalid_argument("init expects service instance");
-        ObjectInstance* self = asObjectInstance(args[0]);
-        Value addrVal = Value::stringVal(toUnicodeString(this->targetAddress));
-        if (args.size() >= 2) {
-            if (!isString(args[1]))
-                throw std::invalid_argument("init address must be string");
-            addrVal = args[1];
-        }
-        self->setProperty("__addr", addrVal);
-        // create per-instance connector
-        std::string addr = toUTF8StdString(asStringObj(addrVal)->s);
-        std::shared_ptr<grpc::Channel>* ch = new std::shared_ptr<grpc::Channel>(
-            grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
-        ACUCommunicator* comm = new ACUCommunicator(*ch, this->adapter.get());
-        Value fpCh = Value::foreignPtrVal(ch);
-        Value fpComm = Value::foreignPtrVal(comm);
-        asForeignPtr(fpCh)->registerCleanup([](void* p){ delete static_cast<std::shared_ptr<grpc::Channel>*>(p); });
-        asForeignPtr(fpComm)->registerCleanup([](void* p){ delete static_cast<ACUCommunicator*>(p); });
-        self->setProperty("__channel", fpCh);
-        self->setProperty("__connector", fpComm);
-        return Value::nilVal();
-    });
+        // init(addr:string="127.0.0.1:50051")
+        addNativeMethod(svcType, "init", [this](VM&, ArgsView args) -> Value {
+            if (args.size() < 1 || !isActorInstance(args[0]))
+                throw std::invalid_argument("init expects service instance");
+            ActorInstance* self = asActorInstance(args[0]);
+            Value addrVal = Value::stringVal(toUnicodeString(this->targetAddress));
+            if (args.size() >= 2) {
+                if (!isString(args[1]))
+                    throw std::invalid_argument("init address must be string");
+                addrVal = args[1];
+            }
+            auto setProp = [&](const icu::UnicodeString& name, const Value& v) {
+                auto& slot = self->properties[name.hashCode()];
+                slot.assign(v);
+            };
+            setProp(toUnicodeString("__addr"), addrVal);
+            // create per-instance connector
+            std::string addr = toUTF8StdString(asStringObj(addrVal)->s);
+            std::shared_ptr<grpc::Channel>* ch = new std::shared_ptr<grpc::Channel>(
+                grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
+            ACUCommunicator* comm = new ACUCommunicator(*ch, this->adapter.get());
+            Value fpCh = Value::foreignPtrVal(ch);
+            Value fpComm = Value::foreignPtrVal(comm);
+            asForeignPtr(fpCh)->registerCleanup([](void* p){ delete static_cast<std::shared_ptr<grpc::Channel>*>(p); });
+            asForeignPtr(fpComm)->registerCleanup([](void* p){ delete static_cast<ACUCommunicator*>(p); });
+            setProp(toUnicodeString("__channel"), fpCh);
+            setProp(toUnicodeString("__connector"), fpComm);
+            return Value::nilVal();
+        }, 1);
 
-    for (const auto& method : svc.methods) {
-        addNativeMethod(svcType, method, [this, method](VM&, ArgsView args) -> Value {
-            if (args.size() != 2 || !isObjectInstance(args[0]))
+        for (const auto& method : svc.methods) {
+            addNativeMethod(svcType, method, [this, method](VM&, ArgsView args) -> Value {
+            if (args.size() != 2 || !isActorInstance(args[0]))
                 throw std::invalid_argument(method + " expects receiver and request");
-            ObjectInstance* self = asObjectInstance(args[0]);
+            ActorInstance* self = asActorInstance(args[0]);
             if (!isObjectInstance(args[1]))
                 throw std::invalid_argument(method + " expects request object instance");
 
             // reuse connector if available, else create and store
-            Value connVal = self->getProperty("__connector");
+            Value connVal = self->properties[toUnicodeString("__connector").hashCode()].value;
             ACUCommunicator* comm = nullptr;
             if (isForeignPtr(connVal))
                 comm = static_cast<ACUCommunicator*>(asForeignPtr(connVal)->ptr);
 
             if (!comm) {
-                Value addrVal = self->getProperty("__addr");
+                Value addrVal = self->properties[toUnicodeString("__addr").hashCode()].value;
                 std::string addr = targetAddress;
                 if (isString(addrVal))
                     addr = toUTF8StdString(asStringObj(addrVal)->s);
@@ -156,21 +160,24 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                 Value fpComm = Value::foreignPtrVal(comm);
                 asForeignPtr(fpCh)->registerCleanup([](void* p){ delete static_cast<std::shared_ptr<grpc::Channel>*>(p); });
                 asForeignPtr(fpComm)->registerCleanup([](void* p){ delete static_cast<ACUCommunicator*>(p); });
-                self->setProperty("__channel", fpCh);
-                self->setProperty("__connector", fpComm);
+                self->properties[toUnicodeString("__channel").hashCode()].assign(fpCh);
+                self->properties[toUnicodeString("__connector").hashCode()].assign(fpComm);
             }
 
             ArgsView reqArgs(args.data + 1, args.size() - 1);
             return comm->call(method, reqArgs);
-        });
-    }
+        }, 1);
+        }
 
         mod->vars.store(svcType->name, serviceTypeVal, true);
     }
 }
 
 #ifdef ROXAL_ENABLE_GRPC
-void ModuleGrpc::addNativeMethod(ObjObjectType* type, const std::string& name, NativeFn fn)
+void ModuleGrpc::addNativeMethod(ObjObjectType* type,
+                                 const std::string& name,
+                                 NativeFn fn,
+                                 size_t paramCount)
 {
     Value fnVal = Value::objVal(newFunctionObj(toUnicodeString(name),
                                                toUnicodeString(""),
@@ -181,6 +188,12 @@ void ModuleGrpc::addNativeMethod(ObjObjectType* type, const std::string& name, N
     of->ownerType = Value::objRef(type);
     of->fnType = FunctionType::Method;
     of->access = ast::Access::Public;
+    of->arity = static_cast<int>(paramCount);
+    ptr<type::Type> t = make_ptr<type::Type>(type::BuiltinType::Func);
+    t->func = type::Type::FuncType();
+    t->func->isProc = false;
+    t->func->params.resize(paramCount);
+    of->funcType = t;
 
     Value closure = Value::closureVal(fnVal);
     ObjObjectType::Method m;
@@ -193,7 +206,7 @@ void ModuleGrpc::addNativeMethod(ObjObjectType* type, const std::string& name, N
 
 Value ModuleGrpc::makeServiceType(const std::string& serviceName)
 {
-    Value typeVal = Value::objectTypeVal(toUnicodeString(serviceName), false);
+    Value typeVal = Value::objectTypeVal(toUnicodeString(serviceName), true);
     ObjObjectType* type = asObjectType(typeVal);
 
     ObjObjectType::Property prop;

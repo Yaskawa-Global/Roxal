@@ -29,7 +29,10 @@ private:
     void registerGeneratedTypes(Value moduleVal, const std::vector<Value>& types);
     void registerServices(Value moduleVal, const std::vector<ProtoAdapter::ServiceInfo>& services);
     Value makeServiceType(const std::string& serviceName);
-    void addNativeMethod(ObjObjectType* type, const std::string& name, NativeFn fn);
+    void addNativeMethod(ObjObjectType* type,
+                         const std::string& name,
+                         NativeFn fn,
+                         size_t paramCount = 0);
 
     Value moduleTypeValue; // ObjModuleType*
     std::string targetAddress;
