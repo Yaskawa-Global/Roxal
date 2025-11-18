@@ -14,15 +14,15 @@
 using namespace roxal;
 
 ModuleGrpc::ModuleGrpc()
-    : targetAddress("0.0.0.0:50051")
+    : targetAddress("127.0.0.1:50051")
 {
-    moduleTypeValue = Value::objVal(newModuleTypeObj(toUnicodeString("grpc")));
-    ObjModuleType::allModules.push_back(moduleTypeValue);
+    moduleTypeValue = Value::nilVal(); // not exposed as builtin module
 }
 
 ModuleGrpc::~ModuleGrpc()
 {
-    destroyModuleType(moduleTypeValue);
+    if (!moduleTypeValue.isNil())
+        destroyModuleType(moduleTypeValue);
 }
 
 void ModuleGrpc::ensureConnector()
@@ -40,90 +40,75 @@ void ModuleGrpc::ensureConnector()
 void ModuleGrpc::registerBuiltins(VM& vm)
 {
     setVM(vm);
-
-    // Wire up native implementations for the builtin functions declared in compiler/grpc.rox
-    link("import_proto", [this](VM& v, ArgsView a){ return import_proto_builtin(v, a); });
-    link("set_target", [this](VM& v, ArgsView a){ return set_target_builtin(v, a); });
-
-    // Legacy convenience alias matching the original branch.
-    if (!vm.loadGlobal(toUnicodeString("_import")).has_value()) {
-        vm.defineNative("_import", [this](VM& v, ArgsView a){ return import_proto_builtin(v, a); });
-    }
-    if (!vm.loadGlobal(toUnicodeString("_set_target")).has_value()) {
-        vm.defineNative("_set_target", [this](VM& v, ArgsView a){ return set_target_builtin(v, a); });
-    }
 }
 
-Value ModuleGrpc::set_target_builtin(VM&, ArgsView args)
+void ModuleGrpc::setTarget(const std::string& addr)
 {
-    if (args.size() != 1 || !isString(args[0]))
-        throw std::invalid_argument("grpc.set_target expects a single address string");
-
-    targetAddress = toUTF8StdString(asStringObj(args[0])->s);
+    targetAddress = addr;
     channel.reset();
     connector.reset();
     ensureConnector();
-    return Value::nilVal();
 }
 
-Value ModuleGrpc::import_proto_builtin(VM&, ArgsView args)
+Value ModuleGrpc::importProto(const std::string& protoFilename)
 {
-    if (args.size() < 1 || args.size() > 2 || !isString(args[0]))
-        throw std::invalid_argument("grpc.import_proto expects proto path string and optional address string");
-
-    std::string protoFilename = toUTF8StdString(asStringObj(args[0])->s);
     if (!std::filesystem::exists(std::filesystem::path(protoFilename)))
-        throw std::invalid_argument("grpc.import_proto - proto file '"+protoFilename+"' not found.");
-
-    if (args.size() == 2) {
-        if (!isString(args[1]))
-            throw std::invalid_argument("grpc.import_proto address must be a string");
-        targetAddress = toUTF8StdString(asStringObj(args[1])->s);
-        channel.reset();
-        connector.reset();
-    }
+        throw std::invalid_argument("gRPC import - proto file '"+protoFilename+"' not found.");
 
     ensureConnector();
 
+    std::filesystem::path pp(protoFilename);
+    std::string moduleName = pp.stem().string();
+    Value moduleVal = getOrCreateModule(moduleName);
+
     auto types = adapter->allocateObjects(protoFilename);
-    registerGeneratedTypes(types);
+    registerGeneratedTypes(moduleVal, types);
 
     auto methods = adapter->addServices(protoFilename);
-    registerServices(methods);
+    registerServices(moduleVal, methods);
 
-    return Value::nilVal();
+    return moduleVal;
 }
 
-void ModuleGrpc::registerGeneratedTypes(const std::vector<Value>& types)
+Value ModuleGrpc::getOrCreateModule(const std::string& name)
 {
-    ObjModuleType* mod = asModuleType(moduleTypeValue);
+    auto it = protoModules.find(name);
+    if (it != protoModules.end())
+        return it->second;
+
+    Value moduleVal = Value::moduleTypeVal(toUnicodeString(name));
+    ObjModuleType::allModules.push_back(moduleVal);
+    protoModules[name] = moduleVal;
+    // make available as global
+    vm().globals.storeGlobal(toUnicodeString(name), moduleVal);
+    return moduleVal;
+}
+
+void ModuleGrpc::registerGeneratedTypes(Value moduleVal, const std::vector<Value>& types)
+{
+    ObjModuleType* mod = asModuleType(moduleVal);
     for (const auto& typeVal : types) {
         if (!isObjectType(typeVal))
             continue;
 
         ObjObjectType* type = asObjectType(typeVal);
         mod->vars.store(type->name, typeVal, true);
-
-        // Also expose as global so existing scripts can use the bare name.
-        vm().globals.storeGlobal(type->name, typeVal);
     }
 }
 
-void ModuleGrpc::registerServices(const std::vector<std::string>& methods)
+void ModuleGrpc::registerServices(Value moduleVal, const std::vector<std::string>& methods)
 {
-    ObjModuleType* mod = asModuleType(moduleTypeValue);
+    ObjModuleType* mod = asModuleType(moduleVal);
     for (const auto& method : methods) {
         auto nativeFcn = [this, method](VM&, ArgsView a) {
             ensureConnector();
             return connector->call(method, a);
         };
-        std::string name = "_" + method;
+        std::string name = method;
         icu::UnicodeString uname = toUnicodeString(name);
 
         Value funcVal = Value::nativeVal(nativeFcn);
         mod->vars.store(uname, funcVal, true);
-        if (!vm().loadGlobal(uname).has_value())
-            vm().defineNative(name, nativeFcn);
     }
 }
 

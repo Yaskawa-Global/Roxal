@@ -19,6 +19,9 @@
 #ifdef ROXAL_ENABLE_FILEIO
 #include "ModuleFileIO.h"
 #endif
+#ifdef ROXAL_ENABLE_GRPC
+#include "ModuleGrpc.h"
+#endif
 #include <ffi.h>
 #include <vector>
 
@@ -108,6 +111,9 @@ public:
     Value getBuiltinModuleType(const icu::UnicodeString& name);
     std::optional<Value> loadGlobal(const icu::UnicodeString& name) { return globals.load(name); }
     void registerBuiltinModule(ptr<BuiltinModule> module);
+#ifdef ROXAL_ENABLE_GRPC
+    Value importProtoModule(const std::string& path);
+#endif
 
     InterpretResult interpret(std::istream& source, const std::string& sourceName);
     InterpretResult interpretLine(std::istream& linestream, bool replMode=true);
@@ -264,6 +270,9 @@ protected:
 
     // builtin modules
     std::vector<ptr<BuiltinModule>> builtinModules;
+#ifdef ROXAL_ENABLE_GRPC
+    ModuleGrpc* grpcModule { nullptr };
+#endif
 
     // builtin dataflow engine actor
     ptr<df::DataflowEngine> dataflowEngine;

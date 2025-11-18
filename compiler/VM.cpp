@@ -359,9 +359,6 @@ VM::VM()
 #ifdef ROXAL_ENABLE_FILEIO
     executeBuiltinModuleScript("compiler/fileio.rox", getBuiltinModuleType(toUnicodeString("fileio")));
 #endif
-#ifdef ROXAL_ENABLE_GRPC
-    executeBuiltinModuleScript("compiler/grpc.rox", getBuiltinModuleType(toUnicodeString("grpc")));
-#endif
     executeBuiltinModuleScript("compiler/sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
     executeBuiltinModuleScript("compiler/math.rox", getBuiltinModuleType(toUnicodeString("math")));
 
@@ -5760,8 +5757,23 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
 
 void VM::registerBuiltinModule(ptr<BuiltinModule> module)
 {
+    #ifdef ROXAL_ENABLE_GRPC
+    if (!grpcModule) {
+        if (auto gm = dynamic_ptr_cast<ModuleGrpc>(module))
+            grpcModule = gm.get();
+    }
+    #endif
     builtinModules.push_back(module);
 }
+
+#ifdef ROXAL_ENABLE_GRPC
+Value VM::importProtoModule(const std::string& path)
+{
+    if (!grpcModule)
+        throw std::runtime_error("gRPC module not initialized");
+    return grpcModule->importProto(path);
+}
+#endif
 
 void VM::dumpStackTraces()
 {

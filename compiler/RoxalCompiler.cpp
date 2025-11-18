@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <fstream>
 #include <functional>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -405,14 +406,18 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
                 if (isModuleType(moduleTypeValue)) {
                     Value moduleValue = canonicalizeModuleValue(moduleTypeValue);
                     asFunction(constant)->moduleType = moduleValue.weakRef();
-                    ObjModuleType* imported = asModuleType(moduleValue);
-                    canonicalModules[toKey(moduleQualifiedName(imported))] = moduleValue.strongRef();
+                    if (isModuleType(moduleValue)) {
+                        ObjModuleType* imported = asModuleType(moduleValue);
+                        canonicalModules[toKey(moduleQualifiedName(imported))] = moduleValue.strongRef();
+                    }
                 }
             } else if (isModuleType(constant)) {
                 Value moduleValue = canonicalizeModuleValue(constant);
                 constant = moduleValue;
-                ObjModuleType* imported = asModuleType(moduleValue);
-                canonicalModules[toKey(moduleQualifiedName(imported))] = moduleValue.strongRef();
+                if (isModuleType(moduleValue)) {
+                    ObjModuleType* imported = asModuleType(moduleValue);
+                    canonicalModules[toKey(moduleQualifiedName(imported))] = moduleValue.strongRef();
+                }
             }
         }
 
@@ -677,6 +682,18 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
                     emitByte(OpCode::Pop);
                 }
             }
+        } else if (module.isProto) {
+            try {
+#ifdef ROXAL_ENABLE_GRPC
+                importedModuleType = VM::instance().importProtoModule(absoluteModuleFilePath);
+                importedModules[module] = importedModuleType;
+#else
+                throw std::runtime_error("proto import requires ROXAL_ENABLE_GRPC");
+#endif
+            } catch (std::exception& e) {
+                error(e.what());
+                return {};
+            }
         } else {
             // compile or load it, emit code to execute it
             Value function { Value::nilVal() }; // ObjFunction
@@ -743,10 +760,25 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     const auto& importingModuleType = asFunction(asFuncScope(funcScope())->function)->moduleType;
     auto& importingModuleVars = asModuleType(importingModuleType)->vars;
 
+    std::vector<icu::UnicodeString> importComponents;
+    if (module.isProto) {
+        // split packagePath on '/'
+        std::string pkg = toUTF8StdString(module.packagePath);
+        std::stringstream ss(pkg);
+        std::string item;
+        while (std::getline(ss, item, '/')) {
+            if (!item.empty())
+                importComponents.push_back(toUnicodeString(item));
+        }
+        importComponents.push_back(module.name);
+    } else {
+        importComponents = ast->packages;
+    }
+
     Value parentModuleVal { Value::nilVal() };
     icu::UnicodeString packagePath;
-    for(size_t i=0; i+1 < ast->packages.size(); ++i) {
-        icu::UnicodeString pkgName { ast->packages[i] };
+    for(size_t i=0; i+1 < importComponents.size(); ++i) {
+        icu::UnicodeString pkgName { importComponents[i] };
         ModuleInfo pkgInfo;
         pkgInfo.modulePathRoot = module.modulePathRoot;
         pkgInfo.packagePath = packagePath;
@@ -790,7 +822,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     }
 
     // For non-nested imports expose the module directly in the importing module
-    if (ast->packages.size() == 1) {
+    if (importComponents.size() <= 1) {
         icu::UnicodeString moduleName { module.name };
         importingModuleVars.store(moduleName, importedModuleType);
         ObjModuleType* importingModule = asModuleType(importingModuleType);
@@ -2602,6 +2634,8 @@ std::any RoxalCompiler::visit(ptr<ast::Dict> ast)
 
 RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::UnicodeString>& components) const
 {
+    bool endsWithProtoExt = components.size() >= 2 && (components.back() == toUnicodeString("proto"));
+
     // search the module paths (as package component roots)
     //  for the specified module
     std::vector<std::filesystem::path> candidatePaths; // paths that match the prefix, thus far
@@ -2621,23 +2655,38 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
     // for each component of the import
     while (importComponentIndex < components.size()) {
         bool isLastComponent = (importComponentIndex == components.size()-1);
+        bool isFinalProtoComponent = endsWithProtoExt && (importComponentIndex == components.size()-2);
 
         // filter for the paths from the candidates thus far that match upto the current component
         std::vector<std::filesystem::path> newCandidatePaths {};
         for (const auto& modulePath : candidatePaths) {
-            // list of folders and files in modulePath
-            for (const auto& entry : std::filesystem::directory_iterator(modulePath)) {
-                //std::cout << "considering " << entry.path() << " from module path" << modulePath << std::endl;
-                auto entryName = toUnicodeString(entry.path().filename().string());
-                if (entry.is_directory()) { // package
-                    if (entryName == components.at(importComponentIndex))
-                        newCandidatePaths.push_back(entry.path());
+            try {
+                if (!std::filesystem::is_directory(modulePath)) {
+                    if (isLastComponent)
+                        newCandidatePaths.push_back(modulePath);
+                    continue;
                 }
-                else if (isLastComponent && (entryName == components.at(importComponentIndex)+".rox")) {
-                    //std::cout << "found: " << entry.path() << std::endl;
-                    newCandidatePaths.push_back(entry.path());
-                    break; // found the module, no need to search further
+                // list of folders and files in modulePath
+                for (const auto& entry : std::filesystem::directory_iterator(modulePath)) {
+                    auto entryName = toUnicodeString(entry.path().filename().string());
+                    if (entry.is_directory()) {
+                        if (entryName == components.at(importComponentIndex))
+                            newCandidatePaths.push_back(entry.path());
+                    } else {
+                        bool matchRox = isLastComponent && (entryName == components.at(importComponentIndex)+".rox");
+                        bool matchProto = false;
+                        if (isFinalProtoComponent && components.size() >= 2) {
+                            // match <basename>.proto where basename is penultimate component
+                            matchProto = (entryName == components.at(importComponentIndex)+".proto");
+                        }
+                        if (matchRox || matchProto) {
+                            newCandidatePaths.push_back(entry.path());
+                            break; // found the module, no need to search further
+                        }
+                    }
                 }
+            } catch (...) {
+                // ignore invalid paths
             }
         }
         candidatePaths = newCandidatePaths;
@@ -2658,6 +2707,7 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
     auto path { candidatePaths.at(0) }; // take first (if multiple)
     ModuleInfo module {};
     module.isPackage = std::filesystem::is_directory(path);
+    module.isProto = (!module.isPackage && path.extension() == ".proto");
     module.name = toUnicodeString(path.stem().string());
 
     module.filename = path.filename().string();
@@ -2683,9 +2733,14 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
         }
     }
 
-    // join components except the last to build packagePath
+    // join components to build packagePath (exclude file component)
     icu::UnicodeString pkgPath;
-    for (size_t i=0; i+1 < components.size(); ++i) {
+    size_t limit = components.size();
+    if (endsWithProtoExt && limit >= 2)
+        limit -= 2; // drop basename and 'proto'
+    else if (limit > 0)
+        limit -= 1; // drop module name
+    for (size_t i=0; i < limit; ++i) {
         if (i>0) pkgPath += "/";
         pkgPath += components[i];
     }
@@ -2707,6 +2762,10 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
     try {
         module.resolvedPath = std::filesystem::canonical(path);
         module.cachePath = moduleCachePathFor(module.resolvedPath);
+        if (module.isProto) {
+            module.cacheValid = false;
+            module.cachePath.clear();
+        }
 
         if (cacheReadEnabled && !module.cachePath.empty() && std::filesystem::exists(module.cachePath)) {
             auto sourceTime = std::filesystem::last_write_time(module.resolvedPath);
@@ -2724,6 +2783,9 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
 
 Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module) const
 {
+    if (module.isProto)
+        return Value::nilVal();
+
     if (!cacheReadEnabled || module.cachePath.empty())
         return Value::nilVal();
 

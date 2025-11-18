@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 namespace roxal {
 
@@ -19,20 +20,21 @@ public:
 
     inline Value moduleType() const override { return moduleTypeValue; }
 
-    // builtin function implementations
-    Value import_proto_builtin(VM& vm, ArgsView args);
-    Value set_target_builtin(VM& vm, ArgsView args);
+    Value importProto(const std::string& protoPath);
+    void setTarget(const std::string& addr);
 
 private:
     void ensureConnector();
-    void registerGeneratedTypes(const std::vector<Value>& types);
-    void registerServices(const std::vector<std::string>& methods);
+    Value getOrCreateModule(const std::string& name);
+    void registerGeneratedTypes(Value moduleVal, const std::vector<Value>& types);
+    void registerServices(Value moduleVal, const std::vector<std::string>& methods);
 
     Value moduleTypeValue; // ObjModuleType*
     std::string targetAddress;
     std::shared_ptr<grpc::Channel> channel;
     std::unique_ptr<ProtoAdapter> adapter;
     std::unique_ptr<ACUCommunicator> connector;
+    std::unordered_map<std::string, Value> protoModules; // name -> ObjModuleType
 };
 
 }
