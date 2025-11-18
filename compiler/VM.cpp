@@ -5683,7 +5683,10 @@ Value VM::ffi_native(ArgsView args)
 ptr<BuiltinModule> VM::getBuiltinModule(const icu::UnicodeString& name)
 {
     for (auto& m : builtinModules) {
-        if (asModuleType(m->moduleType())->name == name)
+        Value mt = m->moduleType();
+        if (mt.isNil() || !isModuleType(mt))
+            continue; // helper-only modules (e.g., grpc) do not expose a module type
+        if (asModuleType(mt)->name == name)
             return m;
     }
     return nullptr;
@@ -5692,8 +5695,11 @@ ptr<BuiltinModule> VM::getBuiltinModule(const icu::UnicodeString& name)
 Value VM::getBuiltinModuleType(const icu::UnicodeString& name)
 {
     for (auto& m : builtinModules) {
-        if (asModuleType(m->moduleType())->name == name)
-            return m->moduleType();
+        Value mt = m->moduleType();
+        if (mt.isNil() || !isModuleType(mt))
+            continue;
+        if (asModuleType(mt)->name == name)
+            return mt;
     }
     return Value::nilVal();
 }
