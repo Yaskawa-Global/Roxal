@@ -8,6 +8,7 @@
 #include <cctype>
 #include <grpcpp/create_channel.h>
 #include <grpcpp/security/credentials.h>
+#include <grpcpp/channel.h>
 
 #include <filesystem>
 #include <stdexcept>
@@ -130,30 +131,79 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
         Value serviceTypeVal = makeServiceType(svc.name);
         ObjObjectType* svcType = asObjectType(serviceTypeVal);
 
-        // init(addr:string="127.0.0.1:50051")
+        // init(addr:string="127.0.0.1:50051", opts:dict={})
         std::vector<std::optional<type::Type::FuncType::ParamType>> initParams;
         initParams.emplace_back(type::Type::FuncType::ParamType(toUnicodeString("addr")));
         initParams.back()->type = make_ptr<type::Type>(type::BuiltinType::String);
+        type::Type::FuncType::ParamType optParam(toUnicodeString("opts"));
+        optParam.type = make_ptr<type::Type>(type::BuiltinType::Dict);
+        optParam.hasDefault = true;
+        initParams.emplace_back(optParam);
 
         addNativeMethod(svcType, "init", [this](VM&, ArgsView args) -> Value {
             if (args.size() < 1 || !isActorInstance(args[0]))
                 throw std::invalid_argument("init expects service instance");
             ActorInstance* self = asActorInstance(args[0]);
-            Value addrVal = Value::stringVal(toUnicodeString(this->targetAddress));
-            if (args.size() >= 2) {
-                if (!isString(args[1]))
-                    throw std::invalid_argument("init address must be string");
-                addrVal = args[1];
-            }
+
             auto setProp = [&](const icu::UnicodeString& name, const Value& v) {
                 auto& slot = self->properties[name.hashCode()];
                 slot.assign(v);
             };
+
+            Value addrVal = Value::stringVal(toUnicodeString(this->targetAddress));
+            Value optsVal = Value::nilVal();
+            if (args.size() >= 2 && !args[1].isNil()) {
+                if (!isString(args[1]))
+                    throw std::invalid_argument("init address must be string");
+                addrVal = args[1];
+            }
+            if (args.size() >= 3 && !args[2].isNil()) {
+                if (!isDict(args[2]))
+                    throw std::invalid_argument("init opts must be dict");
+                optsVal = args[2];
+            }
             setProp(toUnicodeString("__addr"), addrVal);
+
+            grpc::ChannelArguments chanArgs;
+            std::optional<int64_t> timeoutMs;
+            bool hasChanArgs = false;
+            auto applyOpts = [&](ObjDict* dict) {
+                for (const auto& kv : dict->items()) {
+                    if (!isString(kv.first))
+                        continue;
+                    std::string key = toUTF8StdString(asStringObj(kv.first)->s);
+                    const Value& val = kv.second;
+                    if (key == "addr" && isString(val)) {
+                        addrVal = val;
+                    } else if (key == "timeout_ms" && val.isNumber()) {
+                        timeoutMs = val.asInt();
+                    } else if (key == "keepalive_time_ms" && val.isNumber()) {
+                        chanArgs.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, val.asInt());
+                        hasChanArgs = true;
+                    } else if (key == "keepalive_timeout_ms" && val.isNumber()) {
+                        chanArgs.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, val.asInt());
+                        hasChanArgs = true;
+                    } else if (key == "max_receive_message_length" && val.isNumber()) {
+                        chanArgs.SetInt(GRPC_ARG_MAX_RECEIVE_MESSAGE_LENGTH, val.asInt());
+                        hasChanArgs = true;
+                    } else if (key == "max_send_message_length" && val.isNumber()) {
+                        chanArgs.SetInt(GRPC_ARG_MAX_SEND_MESSAGE_LENGTH, val.asInt());
+                        hasChanArgs = true;
+                    } else if (key == "user_agent" && isString(val)) {
+                        chanArgs.SetString("grpc.primary_user_agent", toUTF8StdString(asStringObj(val)->s));
+                        hasChanArgs = true;
+                    }
+                }
+            };
+            if (!optsVal.isNil())
+                applyOpts(asDict(optsVal));
+
             // create per-instance connector
             std::string addr = toUTF8StdString(asStringObj(addrVal)->s);
             std::shared_ptr<grpc::Channel>* ch = new std::shared_ptr<grpc::Channel>(
-                grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
+                hasChanArgs
+                    ? grpc::CreateCustomChannel(addr, grpc::InsecureChannelCredentials(), chanArgs)
+                    : grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
             ACUCommunicator* comm = new ACUCommunicator(*ch, this->adapter.get());
             Value fpCh = Value::foreignPtrVal(ch);
             Value fpComm = Value::foreignPtrVal(comm);
@@ -161,6 +211,8 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
             asForeignPtr(fpComm)->registerCleanup([](void* p){ delete static_cast<ACUCommunicator*>(p); });
             setProp(toUnicodeString("__channel"), fpCh);
             setProp(toUnicodeString("__connector"), fpComm);
+            if (timeoutMs.has_value())
+                setProp(toUnicodeString("__timeout_ms"), Value::intVal(static_cast<int64_t>(timeoutMs.value())));
             return Value::nilVal();
         }, 1, initParams);
 
@@ -218,7 +270,14 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
             }
 
             ArgsView reqArgs(args.data + 1, args.size() - 1);
-            return comm->call(method.name, reqArgs);
+            Value timeoutVal = self->properties[toUnicodeString("__timeout_ms").hashCode()].value;
+            std::optional<std::chrono::milliseconds> timeout;
+            if (timeoutVal.isNumber()) {
+                int64_t ms = timeoutVal.asInt();
+                if (ms > 0)
+                    timeout = std::chrono::milliseconds(ms);
+            }
+            return comm->call(method.name, reqArgs, timeout);
         }, 1, mparams, returns);
         }
 
@@ -287,6 +346,15 @@ Value ModuleGrpc::makeServiceType(const std::string& serviceName)
     int32_t hconn = propConn.name.hashCode();
     type->properties.emplace(hconn, propConn);
     type->propertyOrder.push_back(hconn);
+
+    ObjObjectType::Property propTimeout;
+    propTimeout.name = toUnicodeString("__timeout_ms");
+    propTimeout.type = Value::typeSpecVal(ValueType::Int);
+    propTimeout.initialValue = Value::intVal(-1);
+    propTimeout.ownerType = typeVal;
+    int32_t htimeout = propTimeout.name.hashCode();
+    type->properties.emplace(htimeout, propTimeout);
+    type->propertyOrder.push_back(htimeout);
 
     ObjObjectType::Property propCh;
     propCh.name = toUnicodeString("__channel");

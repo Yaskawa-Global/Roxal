@@ -14,7 +14,9 @@ ACUCommunicator::ACUCommunicator(std::shared_ptr<grpc::Channel> channel, ProtoAd
     m_adapter = adapter;
 }
 
-Value ACUCommunicator::call(const std::string& methodName, ArgsView args)
+Value ACUCommunicator::call(const std::string& methodName,
+                            ArgsView args,
+                            std::optional<std::chrono::milliseconds> timeout)
 {
     if (!m_adapter || !m_caller)
         throw std::runtime_error("gRPC connector is not initialized");
@@ -26,8 +28,11 @@ Value ACUCommunicator::call(const std::string& methodName, ArgsView args)
     std::string response;
 
     grpc::Status status = m_caller->Call(m_adapter->getFormattedMethodName(methodName),
-                                        request,
-                                        response);
+                                         request,
+                                         response,
+                                         nullptr,
+                                         nullptr,
+                                         timeout);
 
     if (!status.ok())
         throw std::runtime_error("gRPC call '" + methodName + "' failed: " + status.error_message());

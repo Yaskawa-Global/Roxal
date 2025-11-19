@@ -5,6 +5,8 @@
 #include <grpcpp/channel.h>
 #include <string>
 #include <memory>
+#include <chrono>
+#include <optional>
 
 #include "ArgsView.h"
 #include "Value.h"
@@ -16,7 +18,9 @@ namespace roxal {
 class Connector {
 public:
     virtual ~Connector() = default;
-    virtual Value call(const std::string& methodName, ArgsView args) = 0;
+    virtual Value call(const std::string& methodName,
+                       ArgsView args,
+                       std::optional<std::chrono::milliseconds> timeout = std::nullopt) = 0;
 
 protected:
     std::unique_ptr<ClientCall> m_caller;
@@ -28,7 +32,9 @@ class ACUCommunicator : public Connector
 {
 public:
     ACUCommunicator(std::shared_ptr<grpc::Channel> channel, ProtoAdapter* adapter);
-    Value call(const std::string& methodName, ArgsView args) override;
+    Value call(const std::string& methodName,
+               ArgsView args,
+               std::optional<std::chrono::milliseconds> timeout = std::nullopt) override;
 };
 
 } // namespace roxal

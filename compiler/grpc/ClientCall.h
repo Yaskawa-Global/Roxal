@@ -28,7 +28,8 @@ public:
                       const std::string& request,
                       std::string& response,
                       OutgoingMetaData* initialMetaData = nullptr,
-                      IncomingMetaData* server_trailing_data = nullptr);
+                      IncomingMetaData* server_trailing_data = nullptr,
+                      std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
 private:
     std::unique_ptr<grpc::GenericStub> m_stub;

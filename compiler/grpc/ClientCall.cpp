@@ -2,6 +2,7 @@
 
 #include "ClientCall.h"
 #include <stdexcept>
+#include <chrono>
 
 namespace {
 void* tag(intptr_t t)
@@ -26,12 +27,16 @@ grpc::Status ClientCall::Call(const std::string& methodName,
                               const std::string& request,
                               std::string& response,
                               OutgoingMetaData* metadata,
-                              IncomingMetaData* server_trailing)
+                              IncomingMetaData* server_trailing,
+                              std::optional<std::chrono::milliseconds> timeout)
 {
     grpc::ClientContext ctx;
     if (metadata) {
         for (const auto& entry : *metadata)
             ctx.AddMetadata(entry.first, entry.second);
+    }
+    if (timeout.has_value()) {
+        ctx.set_deadline(std::chrono::system_clock::now() + timeout.value());
     }
 
     grpc_slice raw = grpc::SliceFromCopiedString(request);
