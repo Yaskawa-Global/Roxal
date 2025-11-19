@@ -13,6 +13,7 @@
 #include <unordered_set>
 #include <vector>
 #include <memory>
+#include <mutex>
 
 #include "Value.h"
 #include "Object.h"
@@ -33,12 +34,20 @@ namespace roxal {
         std::string getMessageNameFromMethod(const std::string& methodName, bool isRequest);
 
             struct ServiceInfo {
+                struct Method {
+                    std::string name;
+                    std::string inputTypeFullName;
+                    std::string outputTypeFullName;
+                };
                 std::string name;
-                std::vector<std::string> methods;
+                std::string package;
+                std::vector<Method> methods;
             };
 
             std::vector<ServiceInfo> addServices(const std::string& protoFile);
         std::vector<Value> allocateObjects(const std::string& protoFile);
+        std::string packageName() const { return m_lastPackage; }
+        Value declForFullName(const std::string& fullName) const;
 
         std::string generateProtocRequest(const std::string& methodName, const Value& arg);
         void generateProtocSubRequest(google::protobuf::Message* msg, ObjectInstance* instance);
@@ -59,8 +68,11 @@ namespace roxal {
         std::unique_ptr<google::protobuf::compiler::Importer> m_importer;
         std::unique_ptr<google::protobuf::DynamicMessageFactory> m_dynfactory;
         std::vector<const google::protobuf::ServiceDescriptor*> m_serviceList;
-        std::unordered_map<int32_t, Value> m_decls;
+        std::unordered_map<std::string, Value> m_declByFullName;
+        std::unordered_map<std::string, Value> m_declByShortName;
         std::unordered_set<std::string> m_searchPaths;
+        std::string m_lastPackage;
+        mutable std::mutex m_mutex;
 
         std::string canonicalPath(const std::string& path) const;
         void logError(const std::string& errormsg) const;

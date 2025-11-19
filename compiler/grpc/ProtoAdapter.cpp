@@ -58,6 +58,7 @@ std::string ProtoAdapter::canonicalPath(const std::string& path) const
 
 void ProtoAdapter::addProtoSearchPath(const std::string& path)
 {
+    std::lock_guard<std::mutex> lk(m_mutex);
     if (path.empty())
         return;
 
@@ -72,6 +73,7 @@ void ProtoAdapter::addProtoSearchPath(const std::string& path)
 
 std::string ProtoAdapter::getFullMethodName(const std::string& methodName) const
 {
+    std::lock_guard<std::mutex> lk(m_mutex);
     for (const auto* service : m_serviceList) {
         if (!service) continue;
         for (int j = 0; j < service->method_count(); j++) {
@@ -88,6 +90,7 @@ std::string ProtoAdapter::getFullMethodName(const std::string& methodName) const
 
 std::string ProtoAdapter::getFullMessageName(const std::string& message) const
 {
+    std::lock_guard<std::mutex> lk(m_mutex);
     for (const auto* service : m_serviceList) {
         if (!service) continue;
         const auto* fileDesc = service->file();
@@ -118,6 +121,7 @@ std::string ProtoAdapter::getFormattedMethodName(const std::string& methodName) 
 
 std::string ProtoAdapter::getMessageNameFromMethod(const std::string& methodName, bool isRequest)
 {
+    std::lock_guard<std::mutex> lk(m_mutex);
     std::string fullName = getFullMethodName(methodName);
     const DescriptorPool* pool = m_importer->pool();
 
@@ -138,6 +142,8 @@ std::vector<Value> ProtoAdapter::allocateObjects(const std::string& protoFile)
     if (p.has_parent_path())
         addProtoSearchPath(p.parent_path().string());
 
+    std::lock_guard<std::mutex> lk(m_mutex);
+
     std::string importName = protoFile;
     if (!p.parent_path().empty())
         importName = p.filename().string();
@@ -149,6 +155,8 @@ std::vector<Value> ProtoAdapter::allocateObjects(const std::string& protoFile)
         logError("Unable to import proto file: " + protoFile);
         return objects;
     }
+
+    m_lastPackage = file_desc->package();
 
     for (int i = 0; i < file_desc->message_type_count(); i++) {
         const Descriptor* msgDesc = file_desc->message_type(i);
@@ -206,7 +214,8 @@ std::vector<Value> ProtoAdapter::allocateObjects(const std::string& protoFile)
             obj->propertyOrder.push_back(hash);
         }
 
-        m_decls.emplace(obj->name.hashCode(), declVal);
+        m_declByFullName.emplace(msgDesc->full_name(), declVal);
+        m_declByShortName.emplace(msgDesc->name(), declVal);
         objects.push_back(declVal);
     }
 
@@ -220,6 +229,8 @@ std::vector<ProtoAdapter::ServiceInfo> ProtoAdapter::addServices(const std::stri
     if (p.has_parent_path())
         addProtoSearchPath(p.parent_path().string());
 
+    std::lock_guard<std::mutex> lk(m_mutex);
+
     std::string importName = protoFile;
     if (!p.parent_path().empty())
         importName = p.filename().string();
@@ -232,13 +243,21 @@ std::vector<ProtoAdapter::ServiceInfo> ProtoAdapter::addServices(const std::stri
         return services;
     }
 
+    m_lastPackage = file_desc->package();
+
     for (int i = 0; i < file_desc->service_count(); i++) {
         auto* service = file_desc->service(i);
         m_serviceList.push_back(service);
         ServiceInfo info;
         info.name = service->name();
+        info.package = file_desc->package();
         for (int j = 0; j < service->method_count(); j++) {
-            info.methods.push_back(service->method(j)->name());
+            auto* methodDesc = service->method(j);
+            ServiceInfo::Method m;
+            m.name = methodDesc->name();
+            m.inputTypeFullName = methodDesc->input_type()->full_name();
+            m.outputTypeFullName = methodDesc->output_type()->full_name();
+            info.methods.push_back(std::move(m));
         }
         services.push_back(std::move(info));
     }
@@ -250,6 +269,7 @@ std::vector<ProtoAdapter::ServiceInfo> ProtoAdapter::addServices(const std::stri
 std::string ProtoAdapter::generateProtocRequest(const std::string& methodName, const Value& arg)
 {
     std::string message = getMessageNameFromMethod(methodName, true);
+    std::lock_guard<std::mutex> lk(m_mutex);
     auto* desc = m_importer->pool()->FindMessageTypeByName(message);
     if (!desc)
         throw std::runtime_error("generateProtocRequest() - unknown request type for " + methodName);
@@ -411,6 +431,7 @@ void ProtoAdapter::buildRepeatedReqField(Message* msg, const FieldDescriptor* fi
 Value ProtoAdapter::generateRoxalResponse(const std::string& methodName, const std::string& response)
 {
     std::string message = getMessageNameFromMethod(methodName, false);
+    std::lock_guard<std::mutex> lk(m_mutex);
     auto* desc = m_importer->pool()->FindMessageTypeByName(message);
     if (!desc) {
         logError("Could not find response descriptor for " + methodName);
@@ -424,11 +445,11 @@ Value ProtoAdapter::generateRoxalResponse(const std::string& methodName, const s
         return Value::nilVal();
     }
 
-    auto declIt = m_decls.find(toUnicodeString(desc->name()).hashCode());
-    if (declIt == m_decls.end())
-        throw std::runtime_error("No declaration for message type " + desc->name());
+    Value declVal = declForFullName(desc->full_name());
+    if (declVal.isNil())
+        throw std::runtime_error("No declaration for message type " + desc->full_name());
 
-    Value instanceVal = Value::objectInstanceVal(declIt->second);
+    Value instanceVal = Value::objectInstanceVal(declVal);
     ObjectInstance* instance = asObjectInstance(instanceVal);
 
     generateSubResponse(*msg, instance);
@@ -498,13 +519,13 @@ void ProtoAdapter::buildRespField(const Message& msg, const FieldDescriptor* fie
 
         case FieldDescriptor::CPPTYPE_MESSAGE:
         {
-            auto declIt = m_decls.find(toUnicodeString(field->message_type()->name()).hashCode());
-            if (declIt == m_decls.end()) {
+            Value declVal = declForFullName(field->message_type()->full_name());
+            if (declVal.isNil()) {
                 roxField.assign(Value::nilVal());
                 break;
             }
 
-            Value instVal = Value::objectInstanceVal(declIt->second);
+            Value instVal = Value::objectInstanceVal(declVal);
             generateSubResponse(refl->GetMessage(msg, field), asObjectInstance(instVal));
             roxField.assign(instVal);
         }
@@ -592,14 +613,14 @@ void ProtoAdapter::buildRepeatedRespField(const Message& msg, const FieldDescrip
 
         case FieldDescriptor::CPPTYPE_MESSAGE:
         {
-            auto declIt = m_decls.find(toUnicodeString(field->message_type()->name()).hashCode());
-            if (declIt == m_decls.end()) {
+            Value declVal = declForFullName(field->message_type()->full_name());
+            if (declVal.isNil()) {
                 objField.assign(Value::nilVal());
                 return;
             }
 
             for (int i = 0; i < refl->FieldSize(msg, field); i++) {
-                Value instVal = Value::objectInstanceVal(declIt->second);
+                Value instVal = Value::objectInstanceVal(declVal);
                 generateSubResponse(refl->GetRepeatedMessage(msg, field, i), asObjectInstance(instVal));
                 list->elts.push_back(instVal);
             }
@@ -620,11 +641,29 @@ void ProtoAdapter::buildRepeatedRespField(const Message& msg, const FieldDescrip
 
 bool ProtoAdapter::nameMatch(const std::string& fullName, const std::string& name) const
 {
-    if (name.size() > fullName.size())
-        return false;
+    if (fullName == name)
+        return true;
+    auto pos = fullName.find_last_of('.');
+    if (pos != std::string::npos) {
+        std::string shortName = fullName.substr(pos + 1);
+        return shortName == name;
+    }
+    return false;
+}
 
-    return fullName.compare(fullName.size() - name.size(),
-                            name.size(), name) == 0;
+Value ProtoAdapter::declForFullName(const std::string& fullName) const
+{
+    auto it = m_declByFullName.find(fullName);
+    if (it != m_declByFullName.end())
+        return it->second;
+    auto pos = fullName.find_last_of('.');
+    if (pos != std::string::npos) {
+        std::string shortName = fullName.substr(pos + 1);
+        auto sit = m_declByShortName.find(shortName);
+        if (sit != m_declByShortName.end())
+            return sit->second;
+    }
+    return Value::nilVal();
 }
 
 

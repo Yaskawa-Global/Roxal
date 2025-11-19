@@ -5,6 +5,7 @@
 #include "BuiltinModule.h"
 #include "Connector.h"
 
+#include <optional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -32,7 +33,9 @@ private:
     void addNativeMethod(ObjObjectType* type,
                          const std::string& name,
                          NativeFn fn,
-                         size_t paramCount = 0);
+                         size_t paramCount = 0,
+                         const std::vector<std::optional<type::Type::FuncType::ParamType>>& params = {},
+                         const std::vector<ptr<type::Type>>& returnTypes = {});
 
     Value moduleTypeValue; // ObjModuleType*
     std::string targetAddress;
