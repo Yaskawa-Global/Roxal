@@ -72,7 +72,7 @@ namespace roxal {
         std::unordered_map<std::string, Value> m_declByShortName;
         std::unordered_set<std::string> m_searchPaths;
         std::string m_lastPackage;
-        mutable std::mutex m_mutex;
+        mutable std::recursive_mutex m_mutex;
 
         std::string canonicalPath(const std::string& path) const;
         void logError(const std::string& errormsg) const;

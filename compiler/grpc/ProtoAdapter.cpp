@@ -58,7 +58,7 @@ std::string ProtoAdapter::canonicalPath(const std::string& path) const
 
 void ProtoAdapter::addProtoSearchPath(const std::string& path)
 {
-    std::lock_guard<std::mutex> lk(m_mutex);
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
     if (path.empty())
         return;
 
@@ -73,7 +73,7 @@ void ProtoAdapter::addProtoSearchPath(const std::string& path)
 
 std::string ProtoAdapter::getFullMethodName(const std::string& methodName) const
 {
-    std::lock_guard<std::mutex> lk(m_mutex);
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
     for (const auto* service : m_serviceList) {
         if (!service) continue;
         for (int j = 0; j < service->method_count(); j++) {
@@ -90,7 +90,7 @@ std::string ProtoAdapter::getFullMethodName(const std::string& methodName) const
 
 std::string ProtoAdapter::getFullMessageName(const std::string& message) const
 {
-    std::lock_guard<std::mutex> lk(m_mutex);
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
     for (const auto* service : m_serviceList) {
         if (!service) continue;
         const auto* fileDesc = service->file();
@@ -121,7 +121,7 @@ std::string ProtoAdapter::getFormattedMethodName(const std::string& methodName) 
 
 std::string ProtoAdapter::getMessageNameFromMethod(const std::string& methodName, bool isRequest)
 {
-    std::lock_guard<std::mutex> lk(m_mutex);
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
     std::string fullName = getFullMethodName(methodName);
     const DescriptorPool* pool = m_importer->pool();
 
@@ -142,7 +142,7 @@ std::vector<Value> ProtoAdapter::allocateObjects(const std::string& protoFile)
     if (p.has_parent_path())
         addProtoSearchPath(p.parent_path().string());
 
-    std::lock_guard<std::mutex> lk(m_mutex);
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
 
     std::string importName = protoFile;
     if (!p.parent_path().empty())
@@ -229,7 +229,7 @@ std::vector<ProtoAdapter::ServiceInfo> ProtoAdapter::addServices(const std::stri
     if (p.has_parent_path())
         addProtoSearchPath(p.parent_path().string());
 
-    std::lock_guard<std::mutex> lk(m_mutex);
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
 
     std::string importName = protoFile;
     if (!p.parent_path().empty())
@@ -269,7 +269,7 @@ std::vector<ProtoAdapter::ServiceInfo> ProtoAdapter::addServices(const std::stri
 std::string ProtoAdapter::generateProtocRequest(const std::string& methodName, const Value& arg)
 {
     std::string message = getMessageNameFromMethod(methodName, true);
-    std::lock_guard<std::mutex> lk(m_mutex);
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
     auto* desc = m_importer->pool()->FindMessageTypeByName(message);
     if (!desc)
         throw std::runtime_error("generateProtocRequest() - unknown request type for " + methodName);
@@ -431,7 +431,7 @@ void ProtoAdapter::buildRepeatedReqField(Message* msg, const FieldDescriptor* fi
 Value ProtoAdapter::generateRoxalResponse(const std::string& methodName, const std::string& response)
 {
     std::string message = getMessageNameFromMethod(methodName, false);
-    std::lock_guard<std::mutex> lk(m_mutex);
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
     auto* desc = m_importer->pool()->FindMessageTypeByName(message);
     if (!desc) {
         logError("Could not find response descriptor for " + methodName);

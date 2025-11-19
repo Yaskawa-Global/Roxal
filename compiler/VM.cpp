@@ -106,6 +106,7 @@ std::string VM::versionString()
     if (!prerelease.empty())
         fullVersion += "-" + prerelease;
     fullVersion += "+" + gitHash;
+
     return fullVersion;
 }
 

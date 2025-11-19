@@ -11,6 +11,7 @@
 #include <string>
 #include <memory>
 #include <cstddef>
+#include <iomanip>
 
 #include <core/AST.h>
 #include "RoxalIndentationLexer.h"
@@ -77,6 +78,31 @@ static std::string lstrip(const std::string& s)
 static std::string trimws(const std::string& s)
 {
     return rstrip(lstrip(s));
+}
+
+static std::string buildDate()
+{
+    // __DATE__ format: "Mmm dd yyyy"
+    const char* raw = __DATE__;
+    std::string monthStr(raw, 3);
+    std::string dayStr(raw + 4, 2);
+    std::string yearStr(raw + 7, 4);
+
+    static const char* months[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                                   "Jul","Aug","Sep","Oct","Nov","Dec"};
+    int month = 1;
+    for (int i = 0; i < 12; ++i) {
+        if (monthStr == months[i]) {
+            month = i + 1;
+            break;
+        }
+    }
+    int day = std::stoi(trimws(dayStr));
+
+    std::ostringstream oss;
+    oss << yearStr << "-" << std::setfill('0') << std::setw(2) << month
+        << "-" << std::setw(2) << day;
+    return oss.str();
 }
 
 static int repl()
@@ -350,7 +376,23 @@ int main(int argc, const char* argv[])
     }
 
     if (vmap.count("version")) {
-        std::cout << VM::versionString() << std::endl;
+        std::cout << VM::versionString() << " " << buildDate();
+        std::vector<std::string> features;
+        #ifdef ROXAL_ENABLE_FILEIO
+            features.push_back("fileio");
+        #endif
+        #ifdef ROXAL_ENABLE_GRPC
+            features.push_back("grpc");
+        #endif
+        if (!features.empty()) {
+            std::cout << " [";
+            for (size_t i = 0; i < features.size(); ++i) {
+                if (i > 0) std::cout << ",";
+                std::cout << features[i];
+            }
+            std::cout << "]";
+        }
+        std::cout << std::endl;
         return 0;
     }
 
