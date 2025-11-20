@@ -3,7 +3,15 @@ hello
 child
 [1, 2]
 1
-[1, 2]
+[COLOR_RED, COLOR_BLUE]
+<type type>
+<type enum>
+COLOR_GREEN
+<type enum>
+<type enum>
+true
 []
 []
 []
+COLOR_UNSPECIFIED
+<type enum>

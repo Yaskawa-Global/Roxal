@@ -131,7 +131,7 @@ void ModuleGrpc::registerGeneratedTypes(Value moduleVal, const std::vector<Value
 {
     ObjModuleType* mod = asModuleType(moduleVal);
     for (const auto& typeVal : types) {
-        if (!isObjectType(typeVal))
+        if (!isObjectType(typeVal) && !isEnumType(typeVal))
             continue;
 
         ObjObjectType* type = asObjectType(typeVal);

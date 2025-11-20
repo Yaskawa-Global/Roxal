@@ -63,6 +63,9 @@ namespace roxal {
         bool nameMatch(const std::string& fullName, const std::string& name) const;
 
     private:
+        ObjObjectType* enumTypeFromDescriptor(const google::protobuf::EnumDescriptor* enumDesc) const;
+        Value enumValueFromNumber(const google::protobuf::EnumDescriptor* enumDesc, int number) const;
+
         google::protobuf::compiler::DiskSourceTree m_sourceTree;
         std::unique_ptr<ErrorPrinter> m_errorPrinter;
         std::unique_ptr<google::protobuf::compiler::Importer> m_importer;

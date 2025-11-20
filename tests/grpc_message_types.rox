@@ -3,11 +3,12 @@ import roxal_examples.proto.*
 var msg = Everything(
     f64=1.25,
     text="hello",
+    color=Color.COLOR_GREEN,
     nest=Nested(note="child", count=42),
     tags=["alpha", "beta"],
     coords=[1, 2],
     notes=[Nested(note="n1", count=1)],
-    palette=[1, 2]
+    palette=[Color.COLOR_RED, Color.COLOR_BLUE]
 )
 
 print(typeof(msg))
@@ -16,8 +17,16 @@ print(msg.nest.note)
 print(msg.coords)
 print(msg.notes[0].count)
 print(msg.palette)
+print(typeof(Color))
+print(typeof(Color.COLOR_RED))
+print(msg.color)
+print(typeof(msg.color))
+print(typeof(msg.palette[0]))
+print(Color.COLOR_BLUE == msg.palette[1])
 
 var empty = Everything()
 print(empty.tags)
 print(empty.coords)
 print(empty.notes)
+print(empty.color)
+print(typeof(empty.color))

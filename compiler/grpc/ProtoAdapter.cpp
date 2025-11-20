@@ -8,6 +8,7 @@
 #include <memory>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 using namespace google::protobuf;
@@ -158,8 +159,46 @@ std::vector<Value> ProtoAdapter::allocateObjects(const std::string& protoFile)
 
     m_lastPackage = file_desc->package();
 
+    auto registerEnum = [&](const EnumDescriptor* enumDesc) {
+        if (!enumDesc)
+            return;
+
+        Value declVal = Value::objectTypeVal(toUnicodeString(enumDesc->name()), false, false, true);
+        ObjObjectType* enumObj = asObjectType(declVal);
+
+        for (int v = 0; v < enumDesc->value_count(); ++v) {
+            const auto* valueDesc = enumDesc->value(v);
+            icu::UnicodeString labelName = toUnicodeString(valueDesc->name());
+            int number = valueDesc->number();
+            if (number < std::numeric_limits<int16_t>::min() || number > std::numeric_limits<int16_t>::max()) {
+                throw std::runtime_error("Enum value '" + valueDesc->name() + "' in " + enumDesc->full_name() +
+                                         " is out of range for Roxal enums.");
+            }
+            Value enumValue = Value::enumVal(static_cast<int16_t>(number), enumObj->enumTypeId);
+            enumObj->enumLabelValues[labelName.hashCode()] = std::make_pair(labelName, enumValue);
+        }
+
+        m_declByFullName.emplace(enumDesc->full_name(), declVal);
+        m_declByShortName.emplace(enumDesc->name(), declVal);
+        objects.push_back(declVal);
+    };
+
+    std::function<void(const Descriptor*)> registerNestedEnums = [&](const Descriptor* desc) {
+        if (!desc)
+            return;
+        for (int e = 0; e < desc->enum_type_count(); ++e)
+            registerEnum(desc->enum_type(e));
+        for (int nested = 0; nested < desc->nested_type_count(); ++nested)
+            registerNestedEnums(desc->nested_type(nested));
+    };
+
+    for (int e = 0; e < file_desc->enum_type_count(); ++e)
+        registerEnum(file_desc->enum_type(e));
+
     for (int i = 0; i < file_desc->message_type_count(); i++) {
         const Descriptor* msgDesc = file_desc->message_type(i);
+        registerNestedEnums(msgDesc);
+
         Value declVal = Value::objectTypeVal(toUnicodeString(msgDesc->name()), false);
         ObjObjectType* obj = asObjectType(declVal);
 
@@ -185,9 +224,24 @@ std::vector<Value> ProtoAdapter::allocateObjects(const std::string& protoFile)
                 case FieldDescriptor::CPPTYPE_INT32:
                 case FieldDescriptor::CPPTYPE_INT64:
                 case FieldDescriptor::CPPTYPE_ENUM:
-                    prop.type = Value::typeSpecVal(ValueType::Int);
-                    def = defaultValue(ValueType::Int);
+                {
+                    if (field->cpp_type() == FieldDescriptor::CPPTYPE_ENUM) {
+                        Value enumDecl = declForFullName(field->enum_type()->full_name());
+                        if (!enumDecl.isNil() && isEnumType(enumDecl)) {
+                            prop.type = enumDecl;
+                            const EnumValueDescriptor* defaultDesc = field->default_value_enum();
+                            int defaultNumber = defaultDesc ? defaultDesc->number() : 0;
+                            def = enumValueFromNumber(field->enum_type(), defaultNumber);
+                        } else {
+                            prop.type = Value::typeSpecVal(ValueType::Enum);
+                            def = defaultValue(ValueType::Int);
+                        }
+                    } else {
+                        prop.type = Value::typeSpecVal(ValueType::Int);
+                        def = defaultValue(ValueType::Int);
+                    }
                     break;
+                }
                 case FieldDescriptor::CPPTYPE_MESSAGE:
                     prop.type = Value::nilVal();
                     def = defaultValue(ValueType::Nil);
@@ -318,9 +372,11 @@ void ProtoAdapter::buildReqField(Message* msg, const FieldDescriptor* field, Val
             refl->SetDouble(msg, field, v.asReal());
             break;
 
-        case FieldDescriptor::CPPTYPE_ENUM:
-            refl->SetEnumValue(msg, field, v.asInt());
+        case FieldDescriptor::CPPTYPE_ENUM: {
+            int enumValue = v.isEnum() ? static_cast<int>(v.asEnum()) : v.asInt();
+            refl->SetEnumValue(msg, field, enumValue);
             break;
+        }
 
         case FieldDescriptor::CPPTYPE_FLOAT:
             refl->SetFloat(msg, field, v.asReal());
@@ -382,9 +438,11 @@ void ProtoAdapter::buildRepeatedReqField(Message* msg, const FieldDescriptor* fi
                 refl->AddDouble(msg, field, val.asReal());
                 break;
 
-            case FieldDescriptor::CPPTYPE_ENUM:
-                refl->AddEnumValue(msg, field, val.asInt());
+            case FieldDescriptor::CPPTYPE_ENUM: {
+                int enumValue = val.isEnum() ? static_cast<int>(val.asEnum()) : val.asInt();
+                refl->AddEnumValue(msg, field, enumValue);
                 break;
+            }
 
             case FieldDescriptor::CPPTYPE_FLOAT:
                 refl->AddFloat(msg, field, val.asReal());
@@ -510,8 +568,11 @@ void ProtoAdapter::buildRespField(const Message& msg, const FieldDescriptor* fie
             break;
 
         case FieldDescriptor::CPPTYPE_ENUM:
-            roxField.assign(Value::intVal(refl->GetEnumValue(msg, field)));
-            break;
+        {
+            int enumNumber = refl->GetEnumValue(msg, field);
+            roxField.assign(enumValueFromNumber(field->enum_type(), enumNumber));
+        }
+        break;
 
         case FieldDescriptor::CPPTYPE_STRING:
             roxField.assign(Value::stringVal(toUnicodeString(refl->GetString(msg, field))));
@@ -585,8 +646,10 @@ void ProtoAdapter::buildRepeatedRespField(const Message& msg, const FieldDescrip
 
         case FieldDescriptor::CPPTYPE_ENUM:
         {
-            for (int i = 0; i < refl->FieldSize(msg, field); i++)
-                list->elts.push_back(Value::intVal(refl->GetRepeatedEnumValue(msg, field, i)));
+            for (int i = 0; i < refl->FieldSize(msg, field); i++) {
+                int enumNumber = refl->GetRepeatedEnumValue(msg, field, i);
+                list->elts.push_back(enumValueFromNumber(field->enum_type(), enumNumber));
+            }
         }
         break;
 
@@ -636,6 +699,36 @@ void ProtoAdapter::buildRepeatedRespField(const Message& msg, const FieldDescrip
     }
 
     objField.assign(listVal);
+}
+
+ObjObjectType* ProtoAdapter::enumTypeFromDescriptor(const EnumDescriptor* enumDesc) const
+{
+    if (!enumDesc)
+        return nullptr;
+
+    Value declVal = declForFullName(enumDesc->full_name());
+    if (declVal.isNil() || !isEnumType(declVal))
+        return nullptr;
+
+    return asObjectType(declVal);
+}
+
+Value ProtoAdapter::enumValueFromNumber(const EnumDescriptor* enumDesc, int number) const
+{
+    if (!enumDesc)
+        return Value::intVal(number);
+
+    ObjObjectType* enumType = enumTypeFromDescriptor(enumDesc);
+    if (!enumType)
+        return Value::intVal(number);
+
+    if (number < std::numeric_limits<int16_t>::min() ||
+        number > std::numeric_limits<int16_t>::max()) {
+        throw std::runtime_error(
+            "Enum value out of range when constructing '" + enumDesc->full_name() + "'");
+    }
+
+    return Value::enumVal(static_cast<int16_t>(number), enumType->enumTypeId);
 }
 
 
