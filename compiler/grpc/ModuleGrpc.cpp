@@ -9,6 +9,7 @@
 #include <grpcpp/create_channel.h>
 #include <grpcpp/security/credentials.h>
 #include <grpcpp/channel.h>
+#include <grpcpp/support/status_code_enum.h>
 
 #include <filesystem>
 #include <stdexcept>
@@ -16,10 +17,33 @@
 
 using namespace roxal;
 
+namespace {
+bool isApplicationStatus(grpc::StatusCode code)
+{
+    switch (code) {
+        case grpc::StatusCode::INVALID_ARGUMENT:
+        case grpc::StatusCode::FAILED_PRECONDITION:
+        case grpc::StatusCode::OUT_OF_RANGE:
+        case grpc::StatusCode::PERMISSION_DENIED:
+        case grpc::StatusCode::UNAUTHENTICATED:
+        case grpc::StatusCode::ALREADY_EXISTS:
+        case grpc::StatusCode::NOT_FOUND:
+        case grpc::StatusCode::ABORTED:
+        case grpc::StatusCode::DATA_LOSS:
+        case grpc::StatusCode::RESOURCE_EXHAUSTED:
+        case grpc::StatusCode::UNKNOWN:
+            return true;
+        default:
+            return false;
+    }
+}
+}
+
 ModuleGrpc::ModuleGrpc()
     : targetAddress("127.0.0.1:50051")
 {
-    moduleTypeValue = Value::nilVal(); // not exposed as builtin module
+    moduleTypeValue = Value::objVal(newModuleTypeObj(toUnicodeString("grpc")));
+    ObjModuleType::allModules.push_back(moduleTypeValue);
 }
 
 ModuleGrpc::~ModuleGrpc()
@@ -214,7 +238,7 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
             if (timeoutMs.has_value())
                 setProp(toUnicodeString("__timeout_ms"), Value::intVal(static_cast<int64_t>(timeoutMs.value())));
             return Value::nilVal();
-        }, 1, initParams);
+        }, initParams.size(), initParams);
 
         // close(): release connector/channel
         addNativeMethod(svcType, "close", [](VM&, ArgsView args) -> Value {
@@ -240,7 +264,7 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
             std::vector<ptr<type::Type>> returns;
             returns.push_back(makeObjTypeMeta(method.outputTypeFullName));
 
-            addNativeMethod(svcType, method.name, [this, method](VM&, ArgsView args) -> Value {
+            addNativeMethod(svcType, method.name, [this, method](VM& vm, ArgsView args) -> Value {
             if (args.size() != 2 || !isActorInstance(args[0]))
                 throw std::invalid_argument(method.name + " expects receiver and request");
             ActorInstance* self = asActorInstance(args[0]);
@@ -277,7 +301,35 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                 if (ms > 0)
                     timeout = std::chrono::milliseconds(ms);
             }
-            return comm->call(method.name, reqArgs, timeout);
+            try {
+                return comm->call(method.name, reqArgs, timeout);
+            } catch (const GrpcStatusError& ge) {
+                const bool isAppStatus = isApplicationStatus(ge.code());
+                const char* typeName = isAppStatus ? "ProgramException" : "RuntimeException";
+                auto exTypeOpt = vm.loadGlobal(toUnicodeString(typeName));
+                Value exType = exTypeOpt.has_value() ? exTypeOpt.value() : Value::nilVal();
+                Value msg = Value::stringVal(toUnicodeString(std::string(ge.what())));
+                Value detail = Value::dictVal();
+                ObjDict* dict = asDict(detail);
+                dict->store(Value::stringVal(toUnicodeString("grpc_status_code")),
+                            Value::intVal(static_cast<int64_t>(ge.code())));
+                dict->store(Value::stringVal(toUnicodeString("grpc_status_name")),
+                            Value::stringVal(toUnicodeString(grpcStatusCodeName(ge.code()))));
+                dict->store(Value::stringVal(toUnicodeString("grpc_method")),
+                            Value::stringVal(toUnicodeString(ge.method())));
+                dict->store(Value::stringVal(toUnicodeString("grpc_status_message")),
+                            Value::stringVal(toUnicodeString(ge.grpcMessage())));
+                dict->store(Value::stringVal(toUnicodeString("grpc_application_error")),
+                            Value::boolVal(isAppStatus));
+                Value exc = Value::exceptionVal(msg, exType, Value::nilVal(), detail);
+                return exc;
+            } catch (const std::exception& e) {
+                auto exTypeOpt = vm.loadGlobal(toUnicodeString("RuntimeException"));
+                Value exType = exTypeOpt.has_value() ? exTypeOpt.value() : Value::nilVal();
+                Value msg = Value::stringVal(toUnicodeString(std::string(e.what())));
+                Value exc = Value::exceptionVal(msg, exType);
+                return exc;
+            }
         }, 1, mparams, returns);
         }
 
@@ -295,7 +347,7 @@ void ModuleGrpc::addNativeMethod(ObjObjectType* type,
 {
     Value fnVal = Value::objVal(newFunctionObj(toUnicodeString(name),
                                                toUnicodeString(""),
-                                               toUnicodeString(""),
+                                               toUnicodeString("grpc"),
                                                toUnicodeString("grpc")));
     ObjFunction* of = asFunction(fnVal);
     of->nativeImpl = fn;

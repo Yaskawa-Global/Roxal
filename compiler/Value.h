@@ -231,7 +231,10 @@ public:
 
     static Value fileVal(roxal::ptr<std::fstream> f, bool binary = false); // ObjFile
 
-    static Value exceptionVal(Value message = Value::nilVal(), Value exType = Value::nilVal(), Value stackTrace = Value::nilVal()); // ObjException
+    static Value exceptionVal(Value message = Value::nilVal(),
+                              Value exType = Value::nilVal(),
+                              Value stackTrace = Value::nilVal(),
+                              Value detail = Value::nilVal()); // ObjException
 
     static Value functionVal(const icu::UnicodeString& name,
                              const icu::UnicodeString& packageName,

@@ -236,9 +236,9 @@ Value Value::fileVal(roxal::ptr<std::fstream> f, bool binary)
     return Value::objVal(newFileObj(f, binary));
 }
 
-Value Value::exceptionVal(Value message, Value exType, Value stackTrace)
+Value Value::exceptionVal(Value message, Value exType, Value stackTrace, Value detail)
 {
-    return Value::objVal(newExceptionObj(message, exType, stackTrace));
+    return Value::objVal(newExceptionObj(message, exType, stackTrace, detail));
 }
 
 Value Value::functionVal(const icu::UnicodeString& name,
@@ -1209,8 +1209,14 @@ void Value::resolveFuture()
         }
     }
 
-    if (fut->future.wait_for(std::chrono::microseconds(0)) == std::future_status::ready)
-        *this = fut->asValue();
+    if (fut->future.wait_for(std::chrono::microseconds(0)) == std::future_status::ready) {
+        Value resolved = fut->asValue();
+        if (isException(resolved)) {
+            vm.raiseException(resolved);
+            return;
+        }
+        *this = resolved;
+    }
 }
 
 void Value::resolveSignal()

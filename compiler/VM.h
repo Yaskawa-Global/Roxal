@@ -399,6 +399,8 @@ public:
 
     Value captureStacktrace();
 
+    bool resolveValue(Value& value);
+
 
 
     // Native functions
@@ -422,6 +424,7 @@ public:
     void  signal_name_setter(Value& receiver, Value value);
     Value exception_stacktrace_getter(Value& receiver);
     Value exception_stacktrace_string_getter(Value& receiver);
+    Value exception_detail_getter(Value& receiver);
 
     Value loadlib_native(ArgsView args);
     Value ffi_native(ArgsView args);

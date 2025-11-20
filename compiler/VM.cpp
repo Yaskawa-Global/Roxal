@@ -953,7 +953,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 if (isSignal(arg))
                     sigArgs.push_back(asSignal(arg)->signal);
                 else {
-                    arg.resolve();
+                    if (!resolveValue(arg))
+                        return false;
                     constArgs[pname] = arg;
                 }
             }
@@ -1192,12 +1193,28 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 *(thread->stackTop - 1) = inst; // native init returns instance
                             return ok;
                         } else {
+                        bool isNativeInit = initFuncObj != nullptr && initFuncObj->nativeImpl;
+                        Value calleeVal;
+                        if (isNativeInit) {
+                            NativeFn fn = initFuncObj->nativeImpl;
+                            calleeVal = Value::boundNativeVal(inst, fn,
+                                                              initFuncObj->funcType.has_value() &&
+                                                                  initFuncObj->funcType.value()->func.has_value()
+                                                                  ? initFuncObj->funcType.value()->func->isProc
+                                                                  : false,
+                                                              initFuncObj->funcType.has_value()
+                                                                  ? initFuncObj->funcType.value()
+                                                                  : nullptr,
+                                                              initFuncObj->nativeDefaults,
+                                                              Value::objRef(initFuncObj));
+                        } else {
                             auto boundInit = newBoundMethodObj(inst, initMethod->closure);
-                            Value calleeVal = Value::objVal(std::move(boundInit));
-                            ActorInstance* actorInst = asActorInstance(inst);
-                            actorInst->queueCall(calleeVal, callSpec, &(*thread->stackTop));
-                            popN(callSpec.argCount); // remove init args
+                            calleeVal = Value::objVal(std::move(boundInit));
                         }
+                        ActorInstance* actorInst = asActorInstance(inst);
+                        actorInst->queueCall(calleeVal, callSpec, &(*thread->stackTop));
+                        popN(callSpec.argCount); // remove init args
+                    }
                     } else {
                         if (dictArg) {
                             ObjDict* argDict = asDict(peek(0));
@@ -1895,7 +1912,10 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                 ObjList* list = asList(indexable);
                 Value index = pop();
                 try {
-                    if (isRange(index) && !isList(value)) value.resolve();
+                    if (isRange(index) && !isList(value)) {
+                        if (!resolveValue(value))
+                            return false;
+                    }
                     list->setIndex(index, value);
                     pop(); // discard indexable
                 } catch (std::exception& e) {
@@ -1912,7 +1932,10 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                 ObjVector* vec = asVector(indexable);
                 Value index = pop();
                 try {
-                    if (isRange(index) && !isVector(value)) value.resolve();
+                    if (isRange(index) && !isVector(value)) {
+                        if (!resolveValue(value))
+                            return false;
+                    }
                     vec->setIndex(index, value);
                     pop(); // discard indexable
                 } catch (std::exception& e) {
@@ -1926,7 +1949,10 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                     ObjMatrix* mat = asMatrix(indexable);
                     Value r = pop();
                     try {
-                        if (isRange(r) && !isMatrix(value)) value.resolve();
+                        if (isRange(r) && !isMatrix(value)) {
+                            if (!resolveValue(value))
+                                return false;
+                        }
                         mat->setIndex(r, value);
                         pop();
                     } catch (std::exception& e) {
@@ -1939,7 +1965,10 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                     Value col = pop();
                     Value row = pop();
                     try {
-                        if ((isRange(row) || isRange(col)) && !isMatrix(value)) value.resolve();
+                        if ((isRange(row) || isRange(col)) && !isMatrix(value)) {
+                            if (!resolveValue(value))
+                                return false;
+                        }
                         mat->setIndex(row, col, value);
                         pop();
                     } catch (std::exception& e) {
@@ -2692,7 +2721,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 Value& inst { peek(0) };
                 ObjString* name = readString();
 
-                inst.resolve();
+                if (!resolveValue(inst))
+                    return errorReturn;
 
                 std::string signalName = toUTF8StdString(name->s);
 
@@ -2821,7 +2851,8 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                inst.resolve();
+                if (!resolveValue(inst))
+                    return errorReturn;
                 if (isEventInstance(inst)) {
                     ObjEventInstance* eventInst = asEventInstance(inst);
                     if (!eventInst->typeHandle.isAlive() || !isEventType(eventInst->typeHandle)) {
@@ -3049,7 +3080,8 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                inst.resolve();
+                if (!resolveValue(inst))
+                    return errorReturn;
                 if (isEventInstance(inst)) {
                     ObjEventInstance* eventInst = asEventInstance(inst);
                     if (!eventInst->typeHandle.isAlive() || !isEventType(eventInst->typeHandle)) {
@@ -3281,7 +3313,8 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                inst.resolve();
+                if (!resolveValue(inst))
+                    return errorReturn;
                 if (isDict(inst)) {
                     ObjDict* dict = asDict(inst);
                     Value value { peek(0) };
@@ -3414,7 +3447,8 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                inst.resolve();
+                if (!resolveValue(inst))
+                    return errorReturn;
                 if (isEventInstance(inst)) {
                     runtimeError("Cannot assign to property '" + toUTF8StdString(name->s) + "' of event instance.");
                     return errorReturn;
@@ -3573,8 +3607,8 @@ std::pair<InterpretResult,Value> VM::execute()
             case OpCode::Is: {
                 Value b = pop();
                 Value a = pop();
-                a.resolve();
-                b.resolve();
+                if (!resolveValue(a) || !resolveValue(b))
+                    return errorReturn;
                 push(Value::boolVal(a.is(b, frame->strict)));
                 break;
             }
@@ -3799,14 +3833,16 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::JumpIfFalse: {
                 uint16_t jumpDist = readShort();
-                peek(0).resolve();
+                if (!resolveValue(peek(0)))
+                    return errorReturn;
                 if (isFalsey(peek(0)))
                     frame->ip += jumpDist;
                 break;
             }
             case OpCode::JumpIfTrue: {
                 uint16_t jumpDist = readShort();
-                peek(0).resolve();
+                if (!resolveValue(peek(0)))
+                    return errorReturn;
                 if (isTruthy(peek(0)))
                     frame->ip += jumpDist;
                 break;
@@ -3824,7 +3860,8 @@ std::pair<InterpretResult,Value> VM::execute()
             case OpCode::Call: {
                 CallSpec callSpec{frame->ip};
                 Value& callee { peek(callSpec.argCount) };
-                callee.resolve();
+                if (!resolveValue(callee))
+                    return errorReturn;
                 if (!callValue(callee, callSpec))
                     return errorReturn;
                 frame = thread->frames.end()-1;
@@ -4168,8 +4205,10 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::IfDictToKeys: {
                 Value& maybeDict = peek(0);
-                if (!isDict(maybeDict))
-                    maybeDict.resolve();
+                if (!isDict(maybeDict)) {
+                    if (!resolveValue(maybeDict))
+                        return errorReturn;
+                }
                 if (isDict(maybeDict)) {
                     Value d { maybeDict };
                     pop();
@@ -4180,8 +4219,10 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::IfDictToItems: {
                 Value& maybeDict = peek(0);
-                if (!isDict(maybeDict))
-                    maybeDict.resolve();
+                if (!isDict(maybeDict)) {
+                    if (!resolveValue(maybeDict))
+                        return errorReturn;
+                }
                 if (isDict(maybeDict)) {
                     Value d { maybeDict };
                     pop();
@@ -4594,9 +4635,11 @@ std::pair<InterpretResult,Value> VM::execute()
             if (isList(waitTarget)) {
                 ObjList* list = asList(waitTarget);
                 for (auto& element : list->elts.get())
-                    element.resolve();
+                    if (!resolveValue(element))
+                        return errorReturn;
             } else if (isFuture(waitTarget)) {
-                waitTarget.resolve();
+                if (!resolveValue(waitTarget))
+                    return errorReturn;
             }
         }
 
@@ -5164,6 +5207,7 @@ void VM::defineBuiltinProperties()
                          &VM::signal_name_setter);
     defineBuiltinProperty(ValueType::Object, "stackTrace", &VM::exception_stacktrace_getter);
     defineBuiltinProperty(ValueType::Object, "stackTraceString", &VM::exception_stacktrace_string_getter);
+    defineBuiltinProperty(ValueType::Object, "detail", &VM::exception_detail_getter);
 }
 
 void VM::defineBuiltinProperty(ValueType type, const std::string& name, NativePropertyGetter getter, NativePropertySetter setter)
@@ -5240,6 +5284,20 @@ Value VM::exception_stacktrace_string_getter(Value& receiver)
     return Value::stringVal(toUnicodeString(out));
 }
 
+Value VM::exception_detail_getter(Value& receiver)
+{
+#ifdef DEBUG_BUILD
+    if (!isException(receiver))
+        throw std::invalid_argument("exception.detail property on non-exception");
+#endif
+    if (!isException(receiver)) {
+        runtimeError("Undefined property 'detail'");
+        return Value::nilVal();
+    }
+    ObjException* ex = asException(receiver);
+    return ex->detail;
+}
+
 Value VM::captureStacktrace()
 {
     Value framesList { Value::listVal() };
@@ -5272,6 +5330,12 @@ Value VM::captureStacktrace()
     }
 
     return framesList;
+}
+
+bool VM::resolveValue(Value& value)
+{
+    value.resolve();
+    return !runtimeErrorFlag.load();
 }
 
 Value VM::event_emit_builtin(ArgsView args)

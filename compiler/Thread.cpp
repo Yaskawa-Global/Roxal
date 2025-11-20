@@ -267,7 +267,7 @@ void Thread::act(Value actorInstance)
                     if (resultPair.first == InterpretResult::OK) {
                         if (callInfo.returnPromise != nullptr) {
                             Value ret = resultPair.second;
-                            if (!ret.isPrimitive())
+                            if (!ret.isPrimitive() && !isException(ret))
                                 ret = ret.clone();
                             callInfo.returnPromise->set_value(ret);
                             if (!callInfo.returnFuture.isNil()) {
@@ -320,7 +320,7 @@ void Thread::act(Value actorInstance)
                         popN(callInfo.callSpec.argCount);
 
                         if (callInfo.returnPromise != nullptr) {
-                            if (!ret.isPrimitive())
+                            if (!ret.isPrimitive() && !isException(ret))
                                 ret = ret.clone();
                             // On failure, resolve to nil to avoid broken promises.
                             callInfo.returnPromise->set_value(ok ? ret : Value::nilVal());

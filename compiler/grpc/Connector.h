@@ -7,6 +7,7 @@
 #include <memory>
 #include <chrono>
 #include <optional>
+#include <stdexcept>
 
 #include "ArgsView.h"
 #include "Value.h"
@@ -26,6 +27,21 @@ protected:
     std::unique_ptr<ClientCall> m_caller;
     ProtoAdapter* m_adapter { nullptr };
 };
+
+class GrpcStatusError : public std::runtime_error {
+public:
+    GrpcStatusError(const std::string& method,
+                    const grpc::Status& status);
+    grpc::StatusCode code() const noexcept { return statusCode; }
+    const std::string& method() const noexcept { return methodName; }
+    const std::string& grpcMessage() const noexcept { return statusMessage; }
+private:
+    grpc::StatusCode statusCode;
+    std::string methodName;
+    std::string statusMessage;
+};
+
+const char* grpcStatusCodeName(grpc::StatusCode code);
 
 
 class ACUCommunicator : public Connector

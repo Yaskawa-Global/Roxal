@@ -877,14 +877,24 @@ std::string objFileToString(const ObjFile* f);
 
 struct ObjException : public Obj {
     ObjException() { type = ObjType::Exception; }
-    ObjException(Value msg, Value exType = Value::nilVal(), Value st = Value::nilVal())
-        : message(msg), exType(exType), stackTrace(st) { type = ObjType::Exception; }
+    ObjException(Value msg,
+                 Value exType = Value::nilVal(),
+                 Value st = Value::nilVal(),
+                 Value detail = Value::nilVal())
+        : message(msg)
+        , exType(exType)
+        , stackTrace(st)
+        , detail(detail)
+    {
+        type = ObjType::Exception;
+    }
     virtual ~ObjException() {}
 
     Value message;
     Value exType; // object type of the exception
 
     Value stackTrace; // list of stack frames when raised
+    Value detail;     // auxiliary data provided by native code
 
     unique_ptr<Obj, UnreleasedObj> clone() const override;
 
@@ -898,7 +908,10 @@ struct ObjException : public Obj {
 inline bool isException(const Value& v) { return isObjType(v, ObjType::Exception); }
 inline ObjException* asException(const Value& v) { return static_cast<ObjException*>(v.asObj()); }
 
-unique_ptr<ObjException, UnreleasedObj> newExceptionObj(Value message = Value::nilVal(), Value exType = Value::nilVal(), Value stackTrace = Value::nilVal());
+unique_ptr<ObjException, UnreleasedObj> newExceptionObj(Value message = Value::nilVal(),
+                                                        Value exType = Value::nilVal(),
+                                                        Value stackTrace = Value::nilVal(),
+                                                        Value detail = Value::nilVal());
 std::string objExceptionToString(const ObjException* ex);
 std::string objExceptionStackTraceToString(const ObjException* ex);
 std::string stackTraceToString(Value frames);

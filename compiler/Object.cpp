@@ -1673,6 +1673,7 @@ void ObjException::write(std::ostream& out, roxal::ptr<SerializationContext> ctx
     writeValue(out, message, ctx);
     writeValue(out, exType, ctx);
     writeValue(out, stackTrace, ctx);
+    writeValue(out, detail, ctx);
 }
 
 void ObjException::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
@@ -1683,6 +1684,7 @@ void ObjException::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     message = readValue(in, ctx);
     exType = readValue(in, ctx);
     stackTrace = readValue(in, ctx);
+    detail = readValue(in, ctx);
     type = ObjType::Exception;
 }
 
@@ -1691,6 +1693,7 @@ void ObjException::trace(ValueVisitor& visitor) const
     visitor.visit(message);
     visitor.visit(exType);
     visitor.visit(stackTrace);
+    visitor.visit(detail);
 }
 
 void ObjException::dropReferences()
@@ -1698,6 +1701,7 @@ void ObjException::dropReferences()
     message = Value::nilVal();
     exType = Value::nilVal();
     stackTrace = Value::nilVal();
+    detail = Value::nilVal();
 }
 unique_ptr<Obj, UnreleasedObj> ObjFunction::clone() const {
     // function objects are immutable; share the reference
@@ -1842,6 +1846,11 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
                     }
                 }
             }
+        }
+        if (nativeImpl == nullptr) {
+            throw std::runtime_error("Unable to relink native function '" +
+                                     toUTF8StdString(name) + "' for module '" +
+                                     toUTF8StdString(chunk->moduleName) + "'");
         }
     }
 }
@@ -3081,12 +3090,15 @@ std::string roxal::objFileToString(const ObjFile* f)
     return oss.str();
 }
 
-unique_ptr<ObjException, UnreleasedObj> roxal::newExceptionObj(Value message, Value exType, Value stackTrace)
+unique_ptr<ObjException, UnreleasedObj> roxal::newExceptionObj(Value message,
+                                                               Value exType,
+                                                               Value stackTrace,
+                                                               Value detail)
 {
     #ifdef DEBUG_BUILD
-    return newObj<ObjException>(__func__, __FILE__, __LINE__, message, exType, stackTrace);
+    return newObj<ObjException>(__func__, __FILE__, __LINE__, message, exType, stackTrace, detail);
     #else
-    return newObj<ObjException>(message, exType, stackTrace);
+    return newObj<ObjException>(message, exType, stackTrace, detail);
     #endif
 }
 
@@ -3741,27 +3753,10 @@ unique_ptr<Obj, UnreleasedObj> ObjectInstance::clone() const
         auto& targetSlot = newobj->properties[index];
         targetSlot.clearSignal();
 
-        if (value.isPrimitive()) {
-            targetSlot.value = value;
-        }
-        else if (isString(value)) {
-            targetSlot.value = value;
-        }
-        else if (isObjectInstance(value)) {
-            auto propcopy = asObjectInstance(value)->clone();
-            targetSlot.value = Value::objVal(std::move(propcopy));
-        }
-        else if (isActorInstance(value)) {
-            throw std::runtime_error("clone of type actor unsuported");
-        }
-        else if (isList(value)) {
-            assert(false); // unimplemented
-        }
-        // TODO: add explicit handling of internal types like closure, future, function etc (just shallow copy)
-        //       add explicit deep copying of builtin ref types like list and dict
-        else {
-            targetSlot.value = value; // shallow copy
-        }
+        if (isActorInstance(value))
+            throw std::runtime_error("clone of type actor unsupported");
+
+        targetSlot.value = value.clone();
 
     }
 
@@ -3920,6 +3915,16 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
     Value futureReturn {}; // nil by default
     if (!callInfo.returnFuture.isNil())
         futureReturn = callInfo.returnFuture;
+#ifdef DEBUG_BUILD
+    else {
+        if (isBoundMethod(callee)) {
+            auto fn = asFunction(asClosure(asBoundMethod(callee)->method)->function);
+            std::string name;
+            fn->name.toUTF8String(name);
+            std::cerr << "queueCall: no future created for method '" << name << "'" << std::endl;
+        }
+    }
+#endif
 
     return futureReturn;
 }

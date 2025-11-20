@@ -13,7 +13,7 @@ option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
 
 
 option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
-option(ROXAL_ENABLE_GRPC "Enable experimental gRPC/protobuf import support" OFF)
+option(ROXAL_ENABLE_GRPC "Enable gRPC/protobuf import support" OFF)
 
 # Expose the project version and git hash to the codebase
 set(ROXAL_PROJECT_VERSION "${PROJECT_VERSION}")
