@@ -256,20 +256,72 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
         }, 0);
 
         for (const auto& method : svc.methods) {
+            Value requestTypeVal = adapter->declForFullName(method.inputTypeFullName);
+            if (requestTypeVal.isNil() || !isObjectType(requestTypeVal))
+                throw std::runtime_error("Unknown request type for gRPC method " + method.name);
+            ObjObjectType* requestType = asObjectType(requestTypeVal);
+
+            std::vector<int32_t> fieldHashes;
+            fieldHashes.reserve(requestType->propertyOrder.size());
+
             std::vector<std::optional<type::Type::FuncType::ParamType>> mparams;
-            type::Type::FuncType::ParamType p(toUnicodeString("req"));
-            p.type = makeObjTypeMeta(method.inputTypeFullName);
-            mparams.emplace_back(p);
+            std::vector<Value> paramDefaults;
+
+            type::Type::FuncType::ParamType requestParam(toUnicodeString("request"));
+            requestParam.type = makeObjTypeMeta(method.inputTypeFullName);
+            requestParam.hasDefault = true;
+            mparams.emplace_back(requestParam);
+            paramDefaults.push_back(Value::nilVal());
+
+            for (int32_t hash : requestType->propertyOrder) {
+                auto pit = requestType->properties.find(hash);
+                if (pit == requestType->properties.end())
+                    continue;
+                const auto& prop = pit->second;
+                type::Type::FuncType::ParamType fieldParam(prop.name);
+                fieldParam.hasDefault = true;
+                mparams.emplace_back(fieldParam);
+                paramDefaults.push_back(Value::nilVal());
+                fieldHashes.push_back(hash);
+            }
 
             std::vector<ptr<type::Type>> returns;
             returns.push_back(makeObjTypeMeta(method.outputTypeFullName));
 
-            addNativeMethod(svcType, method.name, [this, method](VM& vm, ArgsView args) -> Value {
-            if (args.size() != 2 || !isActorInstance(args[0]))
-                throw std::invalid_argument(method.name + " expects receiver and request");
+            addNativeMethod(svcType, method.name,
+                [this, method, requestTypeVal, requestType, fieldHashes](VM& vm, ArgsView args) -> Value {
+            size_t expectedArgs = fieldHashes.size() + 2;
+            if (args.size() < 2 || args.size() > expectedArgs || !isActorInstance(args[0]))
+                throw std::invalid_argument(method.name + " expects receiver plus parameters");
             ActorInstance* self = asActorInstance(args[0]);
-            if (!isObjectInstance(args[1]))
-                throw std::invalid_argument(method.name + " expects request object instance");
+            Value requestArg = args[1];
+            Value requestValue;
+            if (!requestArg.isNil()) {
+                if (!isObjectInstance(requestArg))
+                    throw std::invalid_argument(method.name + " expects request object instance");
+                ObjectInstance* inst = asObjectInstance(requestArg);
+                if (!inst->instanceType.is(requestTypeVal))
+                    throw std::invalid_argument(method.name + " expects request of type " +
+                                                toUTF8StdString(asObjectType(requestTypeVal)->name));
+                requestValue = requestArg;
+            } else {
+                requestValue = Value::objectInstanceVal(requestTypeVal);
+                ObjectInstance* inst = asObjectInstance(requestValue);
+                size_t providedFields = args.size() - 2;
+                for (size_t i = 0; i < fieldHashes.size(); ++i) {
+                    Value argVal = (i < providedFields) ? args[2 + i] : Value::nilVal();
+                    if (argVal.isNil())
+                        continue;
+                    auto propIt = requestType->properties.find(fieldHashes[i]);
+                    Value coerced = argVal;
+                    if (propIt != requestType->properties.end()) {
+                        const auto& prop = propIt->second;
+                        if (!prop.type.isNil())
+                            coerced = toType(prop.type, argVal, false);
+                    }
+                    inst->properties[fieldHashes[i]].assign(coerced);
+                }
+            }
 
             // reuse connector if available, else create and store
             Value connVal = self->properties[toUnicodeString("__connector").hashCode()].value;
@@ -293,7 +345,6 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                 self->properties[toUnicodeString("__connector").hashCode()].assign(fpComm);
             }
 
-            ArgsView reqArgs(args.data + 1, args.size() - 1);
             Value timeoutVal = self->properties[toUnicodeString("__timeout_ms").hashCode()].value;
             std::optional<std::chrono::milliseconds> timeout;
             if (timeoutVal.isNumber()) {
@@ -301,6 +352,8 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                 if (ms > 0)
                     timeout = std::chrono::milliseconds(ms);
             }
+            Value reqStorage[1] = { requestValue };
+            ArgsView reqArgs(reqStorage, 1);
             try {
                 return comm->call(method.name, reqArgs, timeout);
             } catch (const GrpcStatusError& ge) {
@@ -330,7 +383,7 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                 Value exc = Value::exceptionVal(msg, exType);
                 return exc;
             }
-        }, 1, mparams, returns);
+        }, mparams.size(), mparams, returns, paramDefaults);
         }
 
         mod->vars.store(svcType->name, serviceTypeVal, true);
@@ -343,7 +396,8 @@ void ModuleGrpc::addNativeMethod(ObjObjectType* type,
                                  NativeFn fn,
                                  size_t paramCount,
                                  const std::vector<std::optional<type::Type::FuncType::ParamType>>& params,
-                                 const std::vector<ptr<type::Type>>& returnTypes)
+                                 const std::vector<ptr<type::Type>>& returnTypes,
+                                 const std::vector<Value>& defaultValues)
 {
     Value fnVal = Value::objVal(newFunctionObj(toUnicodeString(name),
                                                toUnicodeString(""),
@@ -365,6 +419,7 @@ void ModuleGrpc::addNativeMethod(ObjObjectType* type,
     if (!returnTypes.empty())
         t->func->returnTypes = returnTypes;
     of->funcType = t;
+    of->nativeDefaults = defaultValues;
 
     Value closure = Value::closureVal(fnVal);
     ObjObjectType::Method m;

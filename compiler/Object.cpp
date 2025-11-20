@@ -3906,6 +3906,35 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
             std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
             callInfo.returnFuture = Value::objVal(newFutureObj(sf));
         }
+
+        // Convert arguments into parameter order so actor thread receives a complete list.
+        bool needsNormalization = callSpec.namedArgs();
+
+        if (needsNormalization && bound->funcType && bound->funcType->func.has_value()) {
+            auto& funcInfo = bound->funcType->func.value();
+            std::vector<Value> originalArgs = callInfo.args;
+            std::vector<Value> normalized;
+            normalized.reserve(funcInfo.params.size());
+
+            std::vector<int8_t> positions = callSpec.paramPositions(bound->funcType, false);
+            for (size_t pi = 0; pi < funcInfo.params.size(); ++pi) {
+                Value arg = Value::nilVal();
+                if (pi < positions.size()) {
+                    int pos = positions[pi];
+                    if (pos >= 0 && static_cast<size_t>(pos) < originalArgs.size())
+                        arg = originalArgs[pos];
+                }
+                if (arg.isNil() && pi < bound->defaultValues.size())
+                    arg = bound->defaultValues[pi];
+                if (!arg.isPrimitive())
+                    arg = arg.clone();
+                normalized.push_back(arg);
+            }
+
+            std::reverse(normalized.begin(), normalized.end());
+            callInfo.args = std::move(normalized);
+            callInfo.callSpec = CallSpec(static_cast<uint16_t>(callInfo.args.size()));
+        }
     }
 
     callQueue.push(callInfo);

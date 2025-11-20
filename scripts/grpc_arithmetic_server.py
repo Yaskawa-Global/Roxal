@@ -76,7 +76,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run arithmetic gRPC server for Roxal sample.")
     parser.add_argument(
         "--proto",
-        default=os.path.join(os.path.dirname(__file__), "..", "compiler", "protos", "arithematic.proto"),
+        default=os.path.join(os.path.dirname(__file__), "..", "compiler", "grpc", "protos", "arithematic.proto"),
         help="Path to arithematic.proto",
     )
     parser.add_argument("--address", default="0.0.0.0:50051", help="Listen address")

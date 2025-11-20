@@ -35,7 +35,8 @@ private:
                          NativeFn fn,
                          size_t paramCount = 0,
                          const std::vector<std::optional<type::Type::FuncType::ParamType>>& params = {},
-                         const std::vector<ptr<type::Type>>& returnTypes = {});
+                         const std::vector<ptr<type::Type>>& returnTypes = {},
+                         const std::vector<Value>& defaultValues = {});
 
     Value moduleTypeValue; // ObjModuleType*
     std::string targetAddress;

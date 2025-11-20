@@ -607,7 +607,17 @@ Each proto `service` is emitted as a Roxal actor type. Actor instances expose:
 * `init(addr="127.0.0.1:50051", opts=dict)` to configure the target endpoint and optional channel arguments (`timeout_ms`, keep-alive settings, max message sizes, etc.).
 * One method per RPC. Invoking `svc.SomeRpc(req)` queues the call on the actor thread and returns a future that resolves to the RPC response. If the gRPC status is not `OK`, the future raises a Roxal `RuntimeException` (or `ProgramException` for application-level status codes) whose `detail` dict captures the gRPC status code/name/message.
 
-Because services and messages live in the proto package module, you can import and use them just like any other Roxal code.
+RPC methods accept flattened parameters that mirror the request message fields, plus an optional `request` parameter. All of the field parameters default to `nil`, so you can call an RPC with only the fields you care about:
+
+```php
+var svc = EverythingService()
+var resp = svc.Echo(payload=Everything(text="hi"))
+// or reuse an existing request:
+var req = EchoRequest(payload=Everything())
+resp = svc.Echo(request=req)
+```
+
+If `request` is provided, the per-field parameters are ignored. Under the hood the method constructs a fresh request instance, populates the fields you specified, and sends it across gRPC. Because services and messages live in the proto package module, you can import and use them just like any other Roxal code.
 
 
 
