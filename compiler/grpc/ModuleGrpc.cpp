@@ -77,6 +77,17 @@ void ModuleGrpc::setTarget(const std::string& addr)
     ensureConnector();
 }
 
+void ModuleGrpc::addProtoPath(const std::string& path)
+{
+    if (path.empty())
+        return;
+
+    if (!adapter)
+        adapter = std::make_unique<ProtoAdapter>(path);
+    else
+        adapter->addProtoSearchPath(path);
+}
+
 Value ModuleGrpc::importProto(const std::string& protoFilename)
 {
     if (!std::filesystem::exists(std::filesystem::path(protoFilename)))

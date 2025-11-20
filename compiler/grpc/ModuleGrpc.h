@@ -23,6 +23,7 @@ public:
 
     Value importProto(const std::string& protoPath);
     void setTarget(const std::string& addr);
+    void addProtoPath(const std::string& path);
 
 private:
     void ensureConnector();

@@ -567,8 +567,13 @@ void VM::appendModulePaths(const std::vector<std::string>& modulePaths)
     // insert into modulePaths, except if already present
 
     for (const std::string& path : modulePaths) {
-        if (std::find(this->modulePaths.begin(), this->modulePaths.end(), path) == this->modulePaths.end())
+        if (std::find(this->modulePaths.begin(), this->modulePaths.end(), path) == this->modulePaths.end()) {
             this->modulePaths.push_back(path);
+#ifdef ROXAL_ENABLE_GRPC
+            if (grpcModule)
+                grpcModule->addProtoPath(path);
+#endif
+        }
     }
 }
 
