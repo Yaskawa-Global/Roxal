@@ -170,6 +170,7 @@ print( f(1) )   // "a is 1 and b is 3"
 print( f(b=7, a=2) ) // // "a is 2 and b is 7"
 ```
 
+
 ## Operators
 
 The operators +, -, \*, / and % work how you'd expect on builtin numeric types.  Vectors and Matrices also support +, - and \*, performing matrix multiplication, vector*matrix multiplication and dot products (two vectors).
@@ -559,6 +560,53 @@ c.run()
 take_a_while() until c > 20
 
 ```
+
+
+## Advanced: Using gRPC Protos
+
+When Roxal is built with `ROXAL_ENABLE_GRPC=ON`, you can import Protocol Buffer schemas at runtime. Supply the directory containing your `.proto` files with `-p` (or set `ROXALPATH`) when running scripts:
+
+```bash
+./roxal -p compiler/grpc/protos my_grpc_script.rox
+```
+
+### Importing a proto
+
+```php
+import roxal_examples.proto.*
+
+var req = EchoRequest(payload=Everything(text="hi"))
+var svc = EverythingService("127.0.0.1:50051")
+var reply = svc.Echo(req)
+print(reply.payload.text)
+```
+
+`import packagename.proto.*` exposes the generated message types, enums, and services inside a module named for the proto `package` (or the filename stem if none is declared).
+
+### Type mapping
+
+| Protobuf type                     | Roxal type                    |
+|-----------------------------------|-------------------------------|
+| `double`, `float`                 | `real`                        |
+| `int32`, `sint32`, `uint32`, etc. | `int`                         |
+| `bool`                            | `bool`                        |
+| `string`                          | `string`                      |
+| `bytes`                           | `string` (raw UTF-8)          |
+| `enum`                            | `int` (label value)           |
+| `message Foo`                     | object type `Foo`             |
+| `repeated T`                      | `list` of the mapped `T` type |
+
+Nested messages become nested Roxal object types, so you can treat them like any other object—read or assign fields, pass them to functions, or store them in collections.
+
+### Services as actors
+
+Each proto `service` is emitted as a Roxal actor type. Actor instances expose:
+
+* `init(addr="127.0.0.1:50051", opts=dict)` to configure the target endpoint and optional channel arguments (`timeout_ms`, keep-alive settings, max message sizes, etc.).
+* One method per RPC. Invoking `svc.SomeRpc(req)` queues the call on the actor thread and returns a future that resolves to the RPC response. If the gRPC status is not `OK`, the future raises a Roxal `RuntimeException` (or `ProgramException` for application-level status codes) whose `detail` dict captures the gRPC status code/name/message.
+
+Because services and messages live in the proto package module, you can import and use them just like any other Roxal code.
+
 
 
 ## Builtin Modules & Functions

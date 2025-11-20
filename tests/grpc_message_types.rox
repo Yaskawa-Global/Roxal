@@ -1,0 +1,23 @@
+import roxal_examples.proto.*
+
+var msg = Everything(
+    f64=1.25,
+    text="hello",
+    nest=Nested(note="child", count=42),
+    tags=["alpha", "beta"],
+    coords=[1, 2],
+    notes=[Nested(note="n1", count=1)],
+    palette=[1, 2]
+)
+
+print(typeof(msg))
+print(msg.text)
+print(msg.nest.note)
+print(msg.coords)
+print(msg.notes[0].count)
+print(msg.palette)
+
+var empty = Everything()
+print(empty.tags)
+print(empty.coords)
+print(empty.notes)

@@ -114,10 +114,11 @@ tests = [
     'property_count', 'cmdline_execute', 'repl_run', 'invalid_option', 'fileio_basic', 'fileio_binary',
     'fileio_read_binary', 'fileio_write_binary', 'fileio_actor_write', 'fileio_delete', 'fileio_extra',
     'help_doc', 'help_time_wall_now', 'help_time_wall_now_instance', 'docstring_func',
-    'builtin_object_methods', 'math_counter_signal', 'print_flush', 'grpc_runtime_error'
+    'builtin_object_methods', 'math_counter_signal', 'print_flush',
+    'grpc_message_types', 'grpc_service_actor', 'grpc_runtime_error'
 ]
 
-grpc_tests = ['grpc_runtime_error']
+grpc_tests = ['grpc_message_types', 'grpc_service_actor', 'grpc_runtime_error']
 fileio_tests = [
     'fileio_basic', 'fileio_binary', 'fileio_read_binary', 'fileio_write_binary',
     'fileio_actor_write', 'fileio_delete', 'fileio_extra'

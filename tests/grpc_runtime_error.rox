@@ -1,0 +1,10 @@
+import roxal_examples.proto.*
+
+// Exercise RuntimeException path for transport-level failures by forcing
+// a call to an address with no gRPC server listening.
+var svc = EverythingService("127.0.0.1:59999", { 'timeout_ms': 50 })
+var req = EchoRequest(payload=Everything())
+
+// This should raise a RuntimeException inside the actor.
+var reply = svc.Echo(req)
+print(reply.status)
