@@ -2666,6 +2666,9 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
                         newCandidatePaths.push_back(modulePath);
                     continue;
                 }
+                std::filesystem::path protoCandidate;
+                bool hasProtoCandidate = false;
+                bool matchedFile = false;
                 // list of folders and files in modulePath
                 for (const auto& entry : std::filesystem::directory_iterator(modulePath)) {
                     auto entryName = toUnicodeString(entry.path().filename().string());
@@ -2678,13 +2681,22 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
                         if (isFinalProtoComponent && components.size() >= 2) {
                             // match <basename>.proto where basename is penultimate component
                             matchProto = (entryName == components.at(importComponentIndex)+".proto");
+                        } else if (isLastComponent && !endsWithProtoExt) {
+                            matchProto = (entryName == components.at(importComponentIndex)+".proto");
                         }
-                        if (matchRox || matchProto) {
+                        if (matchRox) {
                             newCandidatePaths.push_back(entry.path());
-                            break; // found the module, no need to search further
+                            matchedFile = true;
+                            break; // prefer .rox if present
+                        }
+                        if (matchProto) {
+                            protoCandidate = entry.path();
+                            hasProtoCandidate = true;
                         }
                     }
                 }
+                if (!matchedFile && hasProtoCandidate)
+                    newCandidatePaths.push_back(protoCandidate);
             } catch (...) {
                 // ignore invalid paths
             }

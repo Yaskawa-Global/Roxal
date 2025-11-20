@@ -1,4 +1,4 @@
-import roxal_examples.proto.*
+import roxal_examples.*
 
 // Exercise RuntimeException path for transport-level failures by forcing
 // a call to an address with no gRPC server listening.

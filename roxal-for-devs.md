@@ -573,7 +573,7 @@ When Roxal is built with `ROXAL_ENABLE_GRPC=ON`, you can import Protocol Buffer 
 ### Importing a proto
 
 ```php
-import roxal_examples.proto.*
+import roxal_examples.*
 
 var req = EchoRequest(payload=Everything(text="hi"))
 var svc = EverythingService("127.0.0.1:50051")
@@ -581,7 +581,7 @@ var reply = svc.Echo(req)
 print(reply.payload.text)
 ```
 
-`import packagename.proto.*` exposes the generated message types, enums, and services inside a module named for the proto `package` (or the filename stem if none is declared).
+`import packagename.*` exposes the generated message types, enums, and services inside a module named for the proto `package` (or the filename stem if none is declared). The older `packagename.proto.*` form still works for backward compatibility.
 
 ### Type mapping
 
@@ -592,11 +592,13 @@ print(reply.payload.text)
 | `bool`                            | `bool`                        |
 | `string`                          | `string`                      |
 | `bytes`                           | `string` (raw UTF-8)          |
-| `enum`                            | `int` (label value)           |
+| `enum`                            | Roxal `enum` type             |
 | `message Foo`                     | object type `Foo`             |
 | `repeated T`                      | `list` of the mapped `T` type |
 
 Nested messages become nested Roxal object types, so you can treat them like any other object—read or assign fields, pass them to functions, or store them in collections.
+
+Proto enums are emitted as real Roxal enum types, so you can refer to labels such as `Color.COLOR_RED` directly, compare them, or pass them wherever an enum is expected.
 
 ### Services as actors
 

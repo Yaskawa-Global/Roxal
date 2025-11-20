@@ -1,4 +1,4 @@
-import roxal_examples.proto.*
+import roxal_examples.*
 
 var msg = Everything(
     f64=1.25,

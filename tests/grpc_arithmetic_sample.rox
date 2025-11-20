@@ -1,4 +1,4 @@
-import arithematic.proto.*
+import arithematic.*
 // Manual sample requiring ROXAL_ENABLE_GRPC build and a server for compiler/grpc/protos/arithematic.proto
 
 // Types live in the imported module; import* pulls them into scope
