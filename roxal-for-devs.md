@@ -619,6 +619,8 @@ resp = svc.Echo(request=req)
 
 If `request` is provided, the per-field parameters are ignored. Under the hood the method constructs a fresh request instance, populates the fields you specified, and sends it across gRPC. Because services and messages live in the proto package module, you can import and use them just like any other Roxal code.
 
+Responses are flattened in the opposite direction when possible: if the RPC’s response message has exactly one field, the future resolves to the field value instead of the wrapper object. If the response message is empty (has no fields) the future resolves to `nil`, allowing callers to `wait` on the RPC even though there is no payload. Responses with multiple fields continue to return the full response object.
+
 
 
 ## Builtin Modules & Functions
