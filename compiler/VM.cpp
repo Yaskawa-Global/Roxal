@@ -675,7 +675,6 @@ InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
     runtimeErrorFlag = false;
 
     static RoxalCompiler compiler {};
-    static Value replModule { Value::nilVal() };
     compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
     compiler.setCacheReadEnabled(cacheReadsEnabled());
     compiler.setCacheWriteEnabled(cacheWritesEnabled());
@@ -684,7 +683,7 @@ InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
     compiler.setModuleResolverVM(this);
 
     try {
-        function = compiler.compile(linestream, "cli", replModule);
+        function = compiler.compile(linestream, "cli", replModuleValue);
 
     } catch (std::exception& e) {
         return InterpretResult::CompileError;
@@ -693,8 +692,8 @@ InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
     if (function.isNil())
         return InterpretResult::CompileError;
 
-    if (replModule.isNil())
-        replModule = asFunction(function)->moduleType.strongRef();
+    if (replModuleValue.isNil())
+        replModuleValue = asFunction(function)->moduleType.strongRef();
 
     lineMode = true;
     lineStream = &linestream;
@@ -723,6 +722,13 @@ InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
     #endif
 
     return result;
+}
+
+ObjModuleType* VM::replModuleType() const
+{
+    if (replModuleValue.isNil())
+        return nullptr;
+    return asModuleType(replModuleValue);
 }
 
 thread_local ptr<Thread> VM::thread;

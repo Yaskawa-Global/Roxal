@@ -11,6 +11,10 @@
 #include <string>
 #include <memory>
 #include <cstddef>
+#include <optional>
+#include <algorithm>
+#include <iostream>
+#include <vector>
 
 #include <core/AST.h>
 #include "RoxalIndentationLexer.h"
@@ -22,6 +26,7 @@
 #include "VM.h"
 #include "Error.h"
 #include "SimpleMarkSweepGC.h"
+#include "Object.h"
 
 
 extern "C" {
