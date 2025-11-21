@@ -271,6 +271,7 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
             if (requestTypeVal.isNil() || !isObjectType(requestTypeVal))
                 throw std::runtime_error("Unknown request type for gRPC method " + method.name);
             ObjObjectType* requestType = asObjectType(requestTypeVal);
+            Value requestTypeWeak = requestTypeVal.weakRef();
 
             std::vector<int32_t> fieldHashes;
             fieldHashes.reserve(requestType->propertyOrder.size());
@@ -300,101 +301,105 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
             returns.push_back(makeObjTypeMeta(method.outputTypeFullName));
 
             addNativeMethod(svcType, method.name,
-                [this, method, requestTypeVal, requestType, fieldHashes](VM& vm, ArgsView args) -> Value {
-            size_t expectedArgs = fieldHashes.size() + 2;
-            if (args.size() < 2 || args.size() > expectedArgs || !isActorInstance(args[0]))
-                throw std::invalid_argument(method.name + " expects receiver plus parameters");
-            ActorInstance* self = asActorInstance(args[0]);
-            Value requestArg = args[1];
-            Value requestValue;
-            if (!requestArg.isNil()) {
-                if (!isObjectInstance(requestArg))
-                    throw std::invalid_argument(method.name + " expects request object instance");
-                ObjectInstance* inst = asObjectInstance(requestArg);
-                if (!inst->instanceType.is(requestTypeVal))
-                    throw std::invalid_argument(method.name + " expects request of type " +
-                                                toUTF8StdString(asObjectType(requestTypeVal)->name));
-                requestValue = requestArg;
-            } else {
-                requestValue = Value::objectInstanceVal(requestTypeVal);
-                ObjectInstance* inst = asObjectInstance(requestValue);
-                size_t providedFields = args.size() - 2;
-                for (size_t i = 0; i < fieldHashes.size(); ++i) {
-                    Value argVal = (i < providedFields) ? args[2 + i] : Value::nilVal();
-                    if (argVal.isNil())
-                        continue;
-                    auto propIt = requestType->properties.find(fieldHashes[i]);
-                    Value coerced = argVal;
-                    if (propIt != requestType->properties.end()) {
-                        const auto& prop = propIt->second;
-                        if (!prop.type.isNil())
-                            coerced = toType(prop.type, argVal, false);
+                [this, method, requestTypeWeak, fieldHashes](VM& vm, ArgsView args) -> Value {
+                    Value requestTypeVal = requestTypeWeak.strongRef();
+                    if (requestTypeVal.isNil())
+                        throw std::runtime_error("gRPC request type unavailable for method " + method.name);
+                    ObjObjectType* requestType = asObjectType(requestTypeVal);
+                    size_t expectedArgs = fieldHashes.size() + 2;
+                    if (args.size() < 2 || args.size() > expectedArgs || !isActorInstance(args[0]))
+                        throw std::invalid_argument(method.name + " expects receiver plus parameters");
+                    ActorInstance* self = asActorInstance(args[0]);
+                    Value requestArg = args[1];
+                    Value requestValue;
+                    if (!requestArg.isNil()) {
+                        if (!isObjectInstance(requestArg))
+                            throw std::invalid_argument(method.name + " expects request object instance");
+                        ObjectInstance* inst = asObjectInstance(requestArg);
+                        if (!inst->instanceType.is(requestTypeVal))
+                            throw std::invalid_argument(method.name + " expects request of type " +
+                                                        toUTF8StdString(asObjectType(requestTypeVal)->name));
+                        requestValue = requestArg;
+                    } else {
+                        requestValue = Value::objectInstanceVal(requestTypeVal);
+                        ObjectInstance* inst = asObjectInstance(requestValue);
+                        size_t providedFields = args.size() - 2;
+                        for (size_t i = 0; i < fieldHashes.size(); ++i) {
+                            Value argVal = (i < providedFields) ? args[2 + i] : Value::nilVal();
+                            if (argVal.isNil())
+                                continue;
+                            auto propIt = requestType->properties.find(fieldHashes[i]);
+                            Value coerced = argVal;
+                            if (propIt != requestType->properties.end()) {
+                                const auto& prop = propIt->second;
+                                if (!prop.type.isNil())
+                                    coerced = toType(prop.type, argVal, false);
+                            }
+                            inst->properties[fieldHashes[i]].assign(coerced);
+                        }
                     }
-                    inst->properties[fieldHashes[i]].assign(coerced);
-                }
-            }
 
-            // reuse connector if available, else create and store
-            Value connVal = self->properties[toUnicodeString("__connector").hashCode()].value;
-            ACUCommunicator* comm = nullptr;
-            if (isForeignPtr(connVal))
-                comm = static_cast<ACUCommunicator*>(asForeignPtr(connVal)->ptr);
+                    // reuse connector if available, else create and store
+                    Value connVal = self->properties[toUnicodeString("__connector").hashCode()].value;
+                    ACUCommunicator* comm = nullptr;
+                    if (isForeignPtr(connVal))
+                        comm = static_cast<ACUCommunicator*>(asForeignPtr(connVal)->ptr);
 
-            if (!comm) {
-                Value addrVal = self->properties[toUnicodeString("__addr").hashCode()].value;
-                std::string addr = targetAddress;
-                if (isString(addrVal))
-                    addr = toUTF8StdString(asStringObj(addrVal)->s);
-                std::shared_ptr<grpc::Channel>* ch = new std::shared_ptr<grpc::Channel>(
-                    grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
-                comm = new ACUCommunicator(*ch, this->adapter.get());
-                Value fpCh = Value::foreignPtrVal(ch);
-                Value fpComm = Value::foreignPtrVal(comm);
-                asForeignPtr(fpCh)->registerCleanup([](void* p){ delete static_cast<std::shared_ptr<grpc::Channel>*>(p); });
-                asForeignPtr(fpComm)->registerCleanup([](void* p){ delete static_cast<ACUCommunicator*>(p); });
-                self->properties[toUnicodeString("__channel").hashCode()].assign(fpCh);
-                self->properties[toUnicodeString("__connector").hashCode()].assign(fpComm);
-            }
+                    if (!comm) {
+                        Value addrVal = self->properties[toUnicodeString("__addr").hashCode()].value;
+                        std::string addr = targetAddress;
+                        if (isString(addrVal))
+                            addr = toUTF8StdString(asStringObj(addrVal)->s);
+                        std::shared_ptr<grpc::Channel>* ch = new std::shared_ptr<grpc::Channel>(
+                            grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
+                        comm = new ACUCommunicator(*ch, this->adapter.get());
+                        Value fpCh = Value::foreignPtrVal(ch);
+                        Value fpComm = Value::foreignPtrVal(comm);
+                        asForeignPtr(fpCh)->registerCleanup([](void* p){ delete static_cast<std::shared_ptr<grpc::Channel>*>(p); });
+                        asForeignPtr(fpComm)->registerCleanup([](void* p){ delete static_cast<ACUCommunicator*>(p); });
+                        self->properties[toUnicodeString("__channel").hashCode()].assign(fpCh);
+                        self->properties[toUnicodeString("__connector").hashCode()].assign(fpComm);
+                    }
 
-            Value timeoutVal = self->properties[toUnicodeString("__timeout_ms").hashCode()].value;
-            std::optional<std::chrono::milliseconds> timeout;
-            if (timeoutVal.isNumber()) {
-                int64_t ms = timeoutVal.asInt();
-                if (ms > 0)
-                    timeout = std::chrono::milliseconds(ms);
-            }
-            Value reqStorage[1] = { requestValue };
-            ArgsView reqArgs(reqStorage, 1);
-            try {
-                return comm->call(method.name, reqArgs, timeout);
-            } catch (const GrpcStatusError& ge) {
-                const bool isAppStatus = isApplicationStatus(ge.code());
-                const char* typeName = isAppStatus ? "ProgramException" : "RuntimeException";
-                auto exTypeOpt = vm.loadGlobal(toUnicodeString(typeName));
-                Value exType = exTypeOpt.has_value() ? exTypeOpt.value() : Value::nilVal();
-                Value msg = Value::stringVal(toUnicodeString(std::string(ge.what())));
-                Value detail = Value::dictVal();
-                ObjDict* dict = asDict(detail);
-                dict->store(Value::stringVal(toUnicodeString("grpc_status_code")),
-                            Value::intVal(static_cast<int64_t>(ge.code())));
-                dict->store(Value::stringVal(toUnicodeString("grpc_status_name")),
-                            Value::stringVal(toUnicodeString(grpcStatusCodeName(ge.code()))));
-                dict->store(Value::stringVal(toUnicodeString("grpc_method")),
-                            Value::stringVal(toUnicodeString(ge.method())));
-                dict->store(Value::stringVal(toUnicodeString("grpc_status_message")),
-                            Value::stringVal(toUnicodeString(ge.grpcMessage())));
-                dict->store(Value::stringVal(toUnicodeString("grpc_application_error")),
-                            Value::boolVal(isAppStatus));
-                Value exc = Value::exceptionVal(msg, exType, Value::nilVal(), detail);
-                return exc;
-            } catch (const std::exception& e) {
-                auto exTypeOpt = vm.loadGlobal(toUnicodeString("RuntimeException"));
-                Value exType = exTypeOpt.has_value() ? exTypeOpt.value() : Value::nilVal();
-                Value msg = Value::stringVal(toUnicodeString(std::string(e.what())));
-                Value exc = Value::exceptionVal(msg, exType);
-                return exc;
-            }
-        }, mparams.size(), mparams, returns, paramDefaults);
+                    Value timeoutVal = self->properties[toUnicodeString("__timeout_ms").hashCode()].value;
+                    std::optional<std::chrono::milliseconds> timeout;
+                    if (timeoutVal.isNumber()) {
+                        int64_t ms = timeoutVal.asInt();
+                        if (ms > 0)
+                            timeout = std::chrono::milliseconds(ms);
+                    }
+                    Value reqStorage[1] = { requestValue };
+                    ArgsView reqArgs(reqStorage, 1);
+                    try {
+                        return comm->call(method.name, reqArgs, timeout);
+                    } catch (const GrpcStatusError& ge) {
+                        const bool isAppStatus = isApplicationStatus(ge.code());
+                        const char* typeName = isAppStatus ? "ProgramException" : "RuntimeException";
+                        auto exTypeOpt = vm.loadGlobal(toUnicodeString(typeName));
+                        Value exType = exTypeOpt.has_value() ? exTypeOpt.value() : Value::nilVal();
+                        Value msg = Value::stringVal(toUnicodeString(std::string(ge.what())));
+                        Value detail = Value::dictVal();
+                        ObjDict* dict = asDict(detail);
+                        dict->store(Value::stringVal(toUnicodeString("grpc_status_code")),
+                                    Value::intVal(static_cast<int64_t>(ge.code())));
+                        dict->store(Value::stringVal(toUnicodeString("grpc_status_name")),
+                                    Value::stringVal(toUnicodeString(grpcStatusCodeName(ge.code()))));
+                        dict->store(Value::stringVal(toUnicodeString("grpc_method")),
+                                    Value::stringVal(toUnicodeString(ge.method())));
+                        dict->store(Value::stringVal(toUnicodeString("grpc_status_message")),
+                                    Value::stringVal(toUnicodeString(ge.grpcMessage())));
+                        dict->store(Value::stringVal(toUnicodeString("grpc_application_error")),
+                                    Value::boolVal(isAppStatus));
+                        Value exc = Value::exceptionVal(msg, exType, Value::nilVal(), detail);
+                        return exc;
+                    } catch (const std::exception& e) {
+                        auto exTypeOpt = vm.loadGlobal(toUnicodeString("RuntimeException"));
+                        Value exType = exTypeOpt.has_value() ? exTypeOpt.value() : Value::nilVal();
+                        Value msg = Value::stringVal(toUnicodeString(std::string(e.what())));
+                        Value exc = Value::exceptionVal(msg, exType);
+                        return exc;
+                    }
+                }, mparams.size(), mparams, returns, paramDefaults);
         }
 
         mod->vars.store(svcType->name, serviceTypeVal, true);

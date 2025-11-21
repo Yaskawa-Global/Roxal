@@ -259,6 +259,21 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                       const Value& receiver,
                       const Value& declFunction)
 {
+    Thread* currentThread = thread.get();
+    auto stackDepthBefore = thread ? static_cast<size_t>(thread->stackTop - thread->stack.begin()) : 0;
+    auto frameDepthBefore = thread ? thread->frames.size() : 0;
+    struct NativeCallGuard {
+        Thread* t;
+        explicit NativeCallGuard(Thread* thread) : t(thread) {
+            if (t)
+                t->nativeCallDepth++;
+        }
+        ~NativeCallGuard() {
+            if (t)
+                t->nativeCallDepth--;
+        }
+    } nativeCallGuard(currentThread);
+
     try {
         if (funcType) {
             size_t paramCount = funcType->func.value().params.size() + (includeReceiver ? 1 : 0);
@@ -275,6 +290,16 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
             size_t actual = marshalArgs(funcType, defaults, callSpec, buf, includeReceiver, receiver, paramDefaults);
             ArgsView view{buf, actual};
             Value result { fn(*this, view) };
+            bool unwound = false;
+            if (thread) {
+                auto stackDepthAfter = static_cast<size_t>(thread->stackTop - thread->stack.begin());
+                auto frameDepthAfter = thread->frames.size();
+                unwound = stackDepthAfter < stackDepthBefore || frameDepthAfter < frameDepthBefore;
+            }
+            if (currentThread && (currentThread->exceptionJumpPending.load(std::memory_order_relaxed) || unwound)) {
+                currentThread->exceptionJumpPending.store(false, std::memory_order_relaxed);
+                return true;
+            }
             *(thread->stackTop - callSpec.argCount - 1) = result;
             popN(callSpec.argCount);
             return true;
@@ -282,6 +307,16 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
             Value* base = &(*thread->stackTop) - callSpec.argCount - (includeReceiver ? 1 : 0);
             ArgsView view{base, static_cast<size_t>(callSpec.argCount + (includeReceiver ? 1 : 0))};
             Value result { fn(*this, view) };
+            bool unwound = false;
+            if (thread) {
+                auto stackDepthAfter = static_cast<size_t>(thread->stackTop - thread->stack.begin());
+                auto frameDepthAfter = thread->frames.size();
+                unwound = stackDepthAfter < stackDepthBefore || frameDepthAfter < frameDepthBefore;
+            }
+            if (currentThread && (currentThread->exceptionJumpPending.load(std::memory_order_relaxed) || unwound)) {
+                currentThread->exceptionJumpPending.store(false, std::memory_order_relaxed);
+                return true;
+            }
             *(thread->stackTop - callSpec.argCount - 1) = result;
             popN(callSpec.argCount);
             return true;
@@ -521,12 +556,12 @@ VM::~VM()
         dataflowEngine->clear();
 
 
-    // Release REPL thread resources before reporting potential leaks
-    replThread.reset();
-
     // Release the main thread before final garbage collection so any
     // objects referenced through its stacks and handlers can be reclaimed
     thread.reset();
+
+    // Release REPL thread resources before reporting potential leaks
+    replThread.reset();
 
     // Flush any reference-counted objects before performing a final tracing
     // collection so we do not enqueue the same object twice.
@@ -733,6 +768,8 @@ InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
             std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second.value) << std::endl;
     }
     #endif
+
+    thread.reset();
 
     return result;
 }
@@ -3598,8 +3635,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Equal: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([&](Value a, Value b) -> Value { return equal(a, b, frame->strict); });
@@ -3618,8 +3655,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Greater: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value a, Value b) -> Value { return greater(a,b); });
@@ -3630,8 +3667,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Less: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value a, Value b) -> Value { return less(a,b); });
@@ -3642,8 +3679,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Add: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
 
                 if (isString(peek(1))) {
                     concatenate();
@@ -3658,8 +3695,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Subtract: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value l, Value r) -> Value { return subtract(l, r); });
@@ -3670,8 +3707,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Multiply: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value l, Value r) -> Value { return multiply(l, r); });
@@ -3682,8 +3719,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Divide: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value l, Value r) -> Value { return divide(l, r); });
@@ -3695,7 +3732,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::Negate: {
                 Value& operand { peek(0) };
-                operand.resolveFuture();
+                if (!operand.resolveFuture())
+                    goto postInstructionDispatch;
 
                 try {
                     push(negate(pop()));
@@ -3707,8 +3745,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::Modulo: {
                 // TODO: support decimal
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value a, Value b) -> Value { return mod(a,b); });
@@ -3719,8 +3757,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::And: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
                 if (!peek(0).isBool() && !isSignal(peek(0))) {
                     runtimeError("Operand of 'and' must be a bool");
                     return errorReturn;
@@ -3738,8 +3776,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Or: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
                 if (!peek(0).isBool() && !isSignal(peek(0))) {
                     runtimeError("Operand of 'or' must be a bool");
                     return errorReturn;
@@ -3757,8 +3795,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::BitAnd: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
                 try {
                     binaryOp([](Value a, Value b) -> Value { return band(a,b); });
                 } catch (std::exception& e) {
@@ -3768,8 +3806,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::BitOr: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
                 try {
                     binaryOp([](Value a, Value b) -> Value { return bor(a,b); });
                 } catch (std::exception& e) {
@@ -3779,8 +3817,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::BitXor: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
                 try {
                     binaryOp([](Value a, Value b) -> Value { return bxor(a,b); });
                 } catch (std::exception& e) {
@@ -3791,7 +3829,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::BitNot: {
                 Value& operand { peek(0) };
-                operand.resolveFuture();
+                if (!operand.resolveFuture())
+                    goto postInstructionDispatch;
                 try {
                     push(bnot(pop()));
                 } catch (std::exception& e) {
@@ -3874,7 +3913,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::Index: {
                 uint8_t argCount = readByte();
-                peek(argCount).resolveFuture(); // don't resolve signals here
+                if (!peek(argCount).resolveFuture()) // don't resolve signals here
+                    goto postInstructionDispatch;
                 if (!indexValue(peek(argCount), argCount))
                     return errorReturn;
                 break;
@@ -4025,7 +4065,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::SetIndex: {
                 uint8_t argCount = readByte();
-                peek(argCount).resolveFuture(); // don't resolve signals here
+                if (!peek(argCount).resolveFuture()) // don't resolve signals here
+                    goto postInstructionDispatch;
                 try {
                     Value& indexable { peek(argCount) };
                     Value& value { peek(argCount+1) };
@@ -4766,6 +4807,9 @@ void VM::raiseException(Value exc)
     ObjException* exObj = asException(exc);
     if (exObj->stackTrace.isNil())
         exObj->stackTrace = captureStacktrace();
+
+    if (thread && thread->nativeCallDepth > 0)
+        thread->exceptionJumpPending.store(true, std::memory_order_relaxed);
 
     while (true) {
         if (thread->frames.empty()) {

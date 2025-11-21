@@ -448,8 +448,9 @@ public:
     }
 
 
-    // @brief if is ObjFuture, block waiting for value (and replace this with value)
-    void resolveFuture();
+    // @brief if this Value wraps a future, block until it resolves and replace with the result.
+    // @return false if resolving raised a Roxal exception (handled or not).
+    bool resolveFuture();
     void resolveSignal();
     void resolve();
 
