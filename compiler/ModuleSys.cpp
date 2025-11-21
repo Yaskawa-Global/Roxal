@@ -10,6 +10,8 @@
 #include "dataflow/Signal.h"
 #include "dataflow/DataflowEngine.h"
 #include "FFI.h"
+#include "Introspection.h"
+#include "CallableInfo.h"
 #include <sstream>
 #include <time.h>
 #include <cmath>
@@ -111,6 +113,48 @@ TimeKind parseKind(const std::string& kind)
     if (lower == "steady")
         return TimeKind::Steady;
     throw std::invalid_argument("unknown time kind '" + kind + "'");
+}
+
+std::string moduleDisplayName(ObjModuleType* module)
+{
+    if (!module || module->name.isEmpty())
+        return "<anonymous>";
+    return toUTF8StdString(module->name);
+}
+
+std::string describeTypeKind(const ObjObjectType* type)
+{
+    if (!type)
+        return "type";
+    if (type->isActor)
+        return "actor";
+    if (type->isInterface)
+        return "interface";
+    if (type->isEnumeration)
+        return "enum";
+    return "object";
+}
+
+std::string moduleHelpString(ObjModuleType* module)
+{
+    std::ostringstream out;
+    out << "module " << moduleDisplayName(module) << "\n";
+    out << formatSymbolEntries(collectModuleEntries(module), 2);
+    return out.str();
+}
+
+std::string typeHelpString(ObjObjectType* type, bool isInstance = false)
+{
+    std::ostringstream out;
+    out << "type " << toUTF8StdString(type->name) << " " << describeTypeKind(type);
+    if (isInstance)
+        out << " instance";
+    out << "\n";
+    out << "Properties:\n";
+    out << formatSymbolEntries(collectPropertyEntries(type), 2, 100, "<none>");
+    out << "Methods:\n";
+    out << formatSymbolEntries(collectMethodEntries(type), 2, 100, "<none>");
+    return out.str();
 }
 
 #ifdef _WIN32
@@ -699,65 +743,50 @@ Value ModuleSys::len_builtin(VM& vm, ArgsView args)
 
 Value ModuleSys::help_builtin(VM& vm, ArgsView args)
 {
+    if (args.size() == 0) {
+        ObjModuleType* module = vm.moduleType();
+        auto entries = collectModuleEntries(module);
+        std::string listing = formatSymbolEntries(entries, 0, 100, "<no symbols>");
+        return Value::stringVal(toUnicodeString(listing));
+    }
+
     if (args.size() != 1)
-        throw std::invalid_argument("help expects single callable argument");
+        throw std::invalid_argument("help expects zero or one argument");
 
     Value target = args[0];
-    ObjFunction* fn = nullptr;
-    ptr<type::Type> fnType = nullptr;
-    std::vector<ptr<ast::Annotation>> annots;
 
-    if (isClosure(target)) {
-        ObjClosure* c = asClosure(target);
-        fn = asFunction(c->function);
-    } else if (isFunction(target)) {
-        fn = asFunction(target);
-    } else if (isBoundMethod(target)) {
-        fn = asFunction(asClosure(asBoundMethod(target)->method)->function);
-    } else if (isBoundNative(target)) {
-        ObjBoundNative* bound = asBoundNative(target);
-        fnType = bound->funcType;
-        if (bound->declFunction.isNonNil() && isFunction(bound->declFunction))
-            fn = asFunction(bound->declFunction);
-    } else if (isNative(target)) {
-        fnType = asNative(target)->funcType;
-    } else {
-        throw std::invalid_argument("help expects a function or closure");
-    }
-
-    if (fn && fn->funcType.has_value())
-        fnType = fn->funcType.value();
-
-    if (fn)
-        annots = fn->annotations;
-
-    std::string sig;
-    if (fnType)
-        sig = fnType->toString();
-
-    std::string doc;
-    if (fn && !fn->doc.isEmpty())
-        fn->doc.toUTF8String(doc);
-    else
-        for (const auto& a : annots) {
-            if (toUTF8StdString(a->name) == "doc") {
-                for (size_t i=0; i<a->args.size(); ++i) {
-                    auto expr = a->args[i].second;
-                    if (auto s = dynamic_ptr_cast<ast::Str>(expr)) {
-                        if (!doc.empty()) doc += "\n";
-                        std::string t; s->str.toUTF8String(t);
-                        doc += t;
-                    }
-                }
-            }
+    if (isCallableValue(target)) {
+        CallableInfo info = describeCallable(target);
+        std::string result = info.signature.value_or("");
+        if (!info.doc.empty()) {
+            if (!result.empty())
+                result += "\n";
+            result += info.doc;
         }
-
-    if (!doc.empty()) {
-        sig += "\n";
-        sig += doc;
+        return Value::stringVal(toUnicodeString(result));
     }
 
-    return Value::stringVal(toUnicodeString(sig));
+    if (isModuleType(target)) {
+        return Value::stringVal(toUnicodeString(moduleHelpString(asModuleType(target))));
+    }
+
+    bool isInstance = false;
+    if (isObjectInstance(target)) {
+        target = asObjectInstance(target)->instanceType;
+        isInstance = true;
+    } else if (isActorInstance(target)) {
+        target = asActorInstance(target)->instanceType;
+        isInstance = true;
+    }
+
+    if (isObjectType(target)) {
+        return Value::stringVal(toUnicodeString(typeHelpString(asObjectType(target), isInstance)));
+    }
+
+    SymbolEntry entry;
+    entry.type = describeValueType(target, &entry.doc);
+    std::string formatted = formatSymbolEntries(std::vector<SymbolEntry>{entry}, 0);
+    return Value::stringVal(toUnicodeString(formatted));
 }
 
 Value ModuleSys::clone_builtin(VM& vm, ArgsView args)

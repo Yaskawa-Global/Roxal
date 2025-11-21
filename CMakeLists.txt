@@ -124,6 +124,8 @@ set(COMPILER_SOURCES
     compiler/ASTGenerator.cpp
     compiler/ASTGraphviz.cpp
     compiler/Chunk.cpp
+    compiler/CallableInfo.cpp
+    compiler/Introspection.cpp
     compiler/BuiltinModule.cpp
     compiler/Object.cpp
     compiler/FFI.cpp

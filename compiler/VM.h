@@ -280,11 +280,13 @@ protected:
     ptr<Thread> dataflowEngineThread;
 
     Value conditionalInterruptClosure {}; // ObjClosure
+    Value replModuleValue { Value::nilVal() }; // ObjModuleType
 
 
 
 public:
     Value getConditionalInterruptClosure() const { return conditionalInterruptClosure; } // ObjClosure
+    ObjModuleType* replModuleType() const;
 
 
     Value initString; // ObjString "init"
