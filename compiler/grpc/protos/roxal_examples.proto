@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package roxal_examples;
+
+// Enum with explicit values to test enum mapping.
+enum Color {
+  COLOR_UNSPECIFIED = 0;
+  COLOR_RED = 1;
+  COLOR_GREEN = 2;
+  COLOR_BLUE = 3;
+}
+
+// Nested message to test nesting and message-valued fields.
+message Nested {
+  string note = 1;
+  int64  count = 2;
+}
+
+// Message touching most scalar types, repeated fields, maps, and bytes.
+message Everything {
+  // Scalars
+  double f64   = 1;
+  float  f32   = 2;
+  int32  i32   = 3;
+  int64  i64   = 4;
+  uint32 u32   = 5;
+  uint64 u64   = 6;
+  sint32 si32  = 7;
+  sint64 si64  = 8;
+  fixed32 fx32 = 9;
+  fixed64 fx64 = 10;
+  sfixed32 sfx32 = 11;
+  sfixed64 sfx64 = 12;
+  bool flag   = 13;
+  string text = 14;
+  bytes data  = 15;
+
+  // Enums and nested messages
+  Color color = 16;
+  Nested nest = 17;
+
+  // Repeated scalars / messages / enums
+  repeated string tags = 20;
+  repeated int32 coords = 21;
+  repeated Nested notes = 22;
+  repeated Color palette = 23;
+
+  // Maps
+  map<string, int32> attrs = 30;
+  map<string, Nested> named = 31;
+}
+
+message EchoRequest {
+  Everything payload = 1;
+}
+
+message EchoResponse {
+  Everything payload = 1;
+  string status = 2;
+}
+
+message StatusRequest {
+  string message = 1;
+}
+
+message StatusResponse {
+  string status = 1;
+}
+
+message PingRequest {}
+
+message PingResponse {}
+
+// Service without streaming to exercise stub generation and type mapping.
+service EverythingService {
+  rpc Echo(EchoRequest) returns (EchoResponse);
+  rpc Reverse(EchoRequest) returns (EchoResponse);
+  rpc Status(StatusRequest) returns (StatusResponse);
+  rpc Ping(PingRequest) returns (PingResponse);
+}

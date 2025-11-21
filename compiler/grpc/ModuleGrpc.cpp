@@ -297,15 +297,25 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                 fieldHashes.push_back(hash);
             }
 
+            Value responseTypeVal = adapter->declForFullName(method.outputTypeFullName);
+            if (responseTypeVal.isNil() || !isObjectType(responseTypeVal))
+                throw std::runtime_error("Unknown response type for gRPC method " + method.name);
+            ObjObjectType* responseType = asObjectType(responseTypeVal);
+            Value responseTypeWeak = responseTypeVal.weakRef();
+
             std::vector<ptr<type::Type>> returns;
             returns.push_back(makeObjTypeMeta(method.outputTypeFullName));
 
             addNativeMethod(svcType, method.name,
-                [this, method, requestTypeWeak, fieldHashes](VM& vm, ArgsView args) -> Value {
+                [this, method, requestTypeWeak, responseTypeWeak, fieldHashes](VM& vm, ArgsView args) -> Value {
                     Value requestTypeVal = requestTypeWeak.strongRef();
                     if (requestTypeVal.isNil())
                         throw std::runtime_error("gRPC request type unavailable for method " + method.name);
                     ObjObjectType* requestType = asObjectType(requestTypeVal);
+                    Value responseTypeVal = responseTypeWeak.strongRef();
+                    if (responseTypeVal.isNil())
+                        throw std::runtime_error("gRPC response type unavailable for method " + method.name);
+                    ObjObjectType* responseType = asObjectType(responseTypeVal);
                     size_t expectedArgs = fieldHashes.size() + 2;
                     if (args.size() < 2 || args.size() > expectedArgs || !isActorInstance(args[0]))
                         throw std::invalid_argument(method.name + " expects receiver plus parameters");
@@ -370,8 +380,9 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                     }
                     Value reqStorage[1] = { requestValue };
                     ArgsView reqArgs(reqStorage, 1);
+                    Value resp;
                     try {
-                        return comm->call(method.name, reqArgs, timeout);
+                        resp = comm->call(method.name, reqArgs, timeout);
                     } catch (const GrpcStatusError& ge) {
                         const bool isAppStatus = isApplicationStatus(ge.code());
                         const char* typeName = isAppStatus ? "ProgramException" : "RuntimeException";
@@ -399,6 +410,23 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                         Value exc = Value::exceptionVal(msg, exType);
                         return exc;
                     }
+                    auto flattenResponse = [&](const Value& respVal) -> Value {
+                        if (!isObjectInstance(respVal))
+                            return respVal;
+                        auto respInst = asObjectInstance(respVal);
+                        size_t responseFieldCount = responseType->propertyOrder.size();
+                        if (responseFieldCount == 0)
+                            return Value::nilVal();
+                        if (responseFieldCount == 1) {
+                            int32_t hash = responseType->propertyOrder.front();
+                            auto it = respInst->properties.find(hash);
+                            if (it != respInst->properties.end())
+                                return it->second.value;
+                            return Value::nilVal();
+                        }
+                        return respVal;
+                    };
+                    return flattenResponse(resp);
                 }, mparams.size(), mparams, returns, paramDefaults);
         }
 
