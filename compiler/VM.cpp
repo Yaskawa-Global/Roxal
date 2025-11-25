@@ -9,6 +9,7 @@
 #include <sstream>
 #include <algorithm>
 #include <filesystem>
+#include <mutex>
 #include <vector>
 #include <map>
 #include <unordered_set>
@@ -62,6 +63,16 @@ std::atomic<size_t> configuredCallFrameLimit{VM::DefaultMaxCallFrames};
 // later configureStackLimits() calls can update it in-place.
 std::atomic<bool> vmConstructed{false};
 std::atomic<VM::CacheMode> configuredCacheMode{VM::CacheMode::Normal};
+std::mutex configuredModulePathsMutex;
+std::vector<std::string> configuredModulePaths;
+
+void appendUnique(std::vector<std::string>& target, const std::vector<std::string>& additions)
+{
+    for (const auto& path : additions) {
+        if (std::find(target.begin(), target.end(), path) == target.end())
+            target.push_back(path);
+    }
+}
 
 struct BoundCallGuard {
     explicit BoundCallGuard(Thread* thread) : thread_(thread) {}
@@ -265,6 +276,16 @@ void VM::configureCacheMode(CacheMode mode)
     }
 }
 
+void VM::configureModulePaths(const std::vector<std::string>& modulePaths)
+{
+    std::lock_guard<std::mutex> lock(configuredModulePathsMutex);
+    appendUnique(configuredModulePaths, modulePaths);
+
+    if (vmConstructed.load(std::memory_order_acquire)) {
+        VM::instance().appendModulePaths(modulePaths);
+    }
+}
+
 
 void VM::setStackLimits(size_t stackSize, size_t callFrameLimitValue)
 {
@@ -454,13 +475,19 @@ VM::VM()
 
     registerBuiltinModule(make_ptr<ModuleSys>());
     registerBuiltinModule(make_ptr<ModuleMath>());
-#ifdef ROXAL_ENABLE_FILEIO
+    #ifdef ROXAL_ENABLE_FILEIO
     registerBuiltinModule(make_ptr<ModuleFileIO>());
-#endif
-#ifdef ROXAL_ENABLE_GRPC
+    #endif
+    #ifdef ROXAL_ENABLE_GRPC
     registerBuiltinModule(make_ptr<ModuleGrpc>());
-#endif
+    #endif
 
+    std::vector<std::string> stagedModulePaths;
+    {
+        std::lock_guard<std::mutex> lock(configuredModulePathsMutex);
+        stagedModulePaths = configuredModulePaths;
+    }
+    appendModulePaths(stagedModulePaths);
     appendModulePaths(VM::defaultModuleSearchPaths());
 
     // Execute builtin module scripts to attach declarations and docs
@@ -678,10 +705,10 @@ void VM::appendModulePaths(const std::vector<std::string>& modulePaths)
     for (const std::string& path : modulePaths) {
         if (std::find(this->modulePaths.begin(), this->modulePaths.end(), path) == this->modulePaths.end()) {
             this->modulePaths.push_back(path);
-#ifdef ROXAL_ENABLE_GRPC
+            #ifdef ROXAL_ENABLE_GRPC
             if (grpcModule)
                 grpcModule->addProtoPath(path);
-#endif
+            #endif
         }
     }
 }
@@ -6003,6 +6030,9 @@ void VM::registerBuiltinModule(ptr<BuiltinModule> module)
     }
     #endif
     builtinModules.push_back(module);
+    if (module) {
+        appendModulePaths(module->additionalModulePaths());
+    }
 }
 
 #ifdef ROXAL_ENABLE_GRPC

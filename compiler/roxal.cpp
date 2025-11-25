@@ -443,6 +443,8 @@ int main(int argc, const char* argv[])
             modulePaths.push_back(defaultPath);
     }
 
+    VM::configureModulePaths(modulePaths);
+
     const bool disableCache = vmap.count("nocache") > 0;
     const bool forceRecompile = (!disableCache) && vmap.count("recompile") > 0;
     VM::CacheMode cacheMode = VM::CacheMode::Normal;
