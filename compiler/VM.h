@@ -186,6 +186,8 @@ public:
     static constexpr size_t DefaultMaxCallFrames = 128;
 
     static std::string versionString();
+    static std::filesystem::path executablePath();
+    static std::vector<std::string> defaultModuleSearchPaths();
 
     static void configureStackLimits(size_t stackSize, size_t callFrameLimit);
     static void configureCacheMode(CacheMode mode);

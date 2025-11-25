@@ -438,6 +438,11 @@ int main(int argc, const char* argv[])
         modulePaths.insert(modulePaths.end(), cliPaths.begin(), cliPaths.end());
     }
 
+    for (const auto& defaultPath : VM::defaultModuleSearchPaths()) {
+        if (std::find(modulePaths.begin(), modulePaths.end(), defaultPath) == modulePaths.end())
+            modulePaths.push_back(defaultPath);
+    }
+
     const bool disableCache = vmap.count("nocache") > 0;
     const bool forceRecompile = (!disableCache) && vmap.count("recompile") > 0;
     VM::CacheMode cacheMode = VM::CacheMode::Normal;

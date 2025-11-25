@@ -7,11 +7,16 @@
 #include <memory>
 #include <iomanip>
 #include <sstream>
+#include <algorithm>
 #include <filesystem>
+#include <vector>
 #include <map>
 #include <unordered_set>
 #include <unordered_map>
 #include <system_error>
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 #include <ffi.h>
 #include <dlfcn.h>
 
@@ -72,7 +77,74 @@ private:
     Thread* thread_;
 };
 
+std::filesystem::path resolveExecutablePath()
+{
+#if defined(_WIN32)
+    std::wstring buffer(MAX_PATH, L'\0');
+    for (;;) {
+        DWORD len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (len == 0)
+            return {};
+        if (len < buffer.size()) {
+            buffer.resize(len);
+            break;
+        }
+        buffer.resize(buffer.size() * 2);
+    }
+    std::error_code ec;
+    auto canonical = std::filesystem::weakly_canonical(std::filesystem::path(buffer), ec);
+    if (!ec)
+        return canonical;
+    return std::filesystem::path(buffer);
+#else
+    std::error_code ec;
+    auto link = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (ec)
+        return {};
+    std::error_code canonEc;
+    auto canonical = std::filesystem::weakly_canonical(link, canonEc);
+    if (!canonEc)
+        return canonical;
+    return link;
+#endif
+}
+
 } // namespace
+
+std::filesystem::path VM::executablePath()
+{
+    return resolveExecutablePath();
+}
+
+std::vector<std::string> VM::defaultModuleSearchPaths()
+{
+    std::vector<std::string> defaults;
+    const auto exePath = resolveExecutablePath();
+    if (exePath.empty())
+        return defaults;
+
+    const auto exeDir = exePath.parent_path();
+
+    auto addIfDir = [&](const std::filesystem::path& candidate) {
+        if (candidate.empty())
+            return;
+        std::error_code ec;
+        auto normalized = std::filesystem::weakly_canonical(candidate, ec);
+        const auto& resolved = ec ? candidate : normalized;
+        ec.clear();
+        if (!std::filesystem::is_directory(resolved, ec) || ec)
+            return;
+        auto pathStr = resolved.string();
+        if (std::find(defaults.begin(), defaults.end(), pathStr) == defaults.end())
+            defaults.push_back(pathStr);
+    };
+
+    addIfDir(exeDir / ".." / "share" / "roxal");
+    addIfDir(exeDir / ".." / "modules");
+    addIfDir(exeDir / "modules");
+
+    return defaults;
+}
 
 std::string VM::versionString()
 {
@@ -389,14 +461,16 @@ VM::VM()
     registerBuiltinModule(make_ptr<ModuleGrpc>());
 #endif
 
+    appendModulePaths(VM::defaultModuleSearchPaths());
+
     // Execute builtin module scripts to attach declarations and docs
     ptr<Thread> initThread = make_ptr<Thread>();
     thread = initThread;
 #ifdef ROXAL_ENABLE_FILEIO
-    executeBuiltinModuleScript("compiler/fileio.rox", getBuiltinModuleType(toUnicodeString("fileio")));
+    executeBuiltinModuleScript("fileio.rox", getBuiltinModuleType(toUnicodeString("fileio")));
 #endif
-    executeBuiltinModuleScript("compiler/sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
-    executeBuiltinModuleScript("compiler/math.rox", getBuiltinModuleType(toUnicodeString("math")));
+    executeBuiltinModuleScript("sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
+    executeBuiltinModuleScript("math.rox", getBuiltinModuleType(toUnicodeString("math")));
 
     thread = nullptr;
 
@@ -5827,17 +5901,56 @@ Value VM::getBuiltinModuleType(const icu::UnicodeString& name)
 void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
 {
     debug_assert_msg(isModuleType(moduleType),"is ObjModuleType");
-    std::string openedPath = path;
-    std::string altPath = "../" + path;
-    std::ifstream in(openedPath);
-    if (!in.is_open()) {
-        in.clear();
-        openedPath = altPath;
-        in.open(openedPath);
-        if (!in.is_open()) {
-            runtimeError("Cannot open builtin module script: " + path + " or " + altPath);
+    std::filesystem::path openedPath;
+    std::ifstream in;
+
+    std::vector<std::string> searchRoots = modulePaths;
+    for (const auto& candidate : VM::defaultModuleSearchPaths()) {
+        if (std::find(searchRoots.begin(), searchRoots.end(), candidate) == searchRoots.end())
+            searchRoots.push_back(candidate);
+    }
+
+    std::filesystem::path requested(path);
+    std::vector<std::filesystem::path> candidates;
+    auto addCandidate = [&](const std::filesystem::path& candidate) {
+        if (candidate.empty())
             return;
+        if (std::find(candidates.begin(), candidates.end(), candidate) != candidates.end())
+            return;
+        candidates.push_back(candidate);
+    };
+
+    if (requested.is_absolute()) {
+        addCandidate(requested);
+    } else {
+        addCandidate(requested);
+        for (const auto& root : searchRoots)
+            addCandidate(std::filesystem::path(root) / requested);
+    }
+
+    for (const auto& candidate : candidates) {
+        std::ifstream candidateStream(candidate);
+        if (candidateStream.is_open()) {
+            in = std::move(candidateStream);
+            openedPath = candidate;
+            break;
         }
+    }
+
+    if (!in.is_open()) {
+        std::ostringstream oss;
+        oss << "Cannot open builtin module script '" << path << "'";
+        if (!candidates.empty()) {
+            oss << " (searched:";
+            bool first = true;
+            for (const auto& candidate : candidates) {
+                oss << (first ? " " : ", ") << candidate.string();
+                first = false;
+            }
+            oss << ")";
+        }
+        runtimeError(oss.str());
+        return;
     }
 
     std::filesystem::path cacheSourcePath;
@@ -5865,7 +5978,7 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
     }
 
     if (!loadedFromCache) {
-        fn = compiler.compile(in, openedPath, moduleType);
+        fn = compiler.compile(in, openedPath.string(), moduleType);
         if (!fn.isNil() && !cacheSourcePath.empty())
             compiler.storeFileCache(cacheSourcePath, fn);
     }
