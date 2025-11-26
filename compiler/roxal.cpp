@@ -110,9 +110,36 @@ static std::string buildDate()
     return oss.str();
 }
 
+static std::optional<std::filesystem::path> replHistoryPath()
+{
+    // Resolve a per-user history file; absence of a home directory disables persistence silently.
+    const char* home = std::getenv("HOME");
+    const char* userProfile = std::getenv("USERPROFILE");
+    const char* homeDrive = std::getenv("HOMEDRIVE");
+    const char* homePath = std::getenv("HOMEPATH");
+
+    std::filesystem::path base;
+    if (home) {
+        base = home;
+    } else if (userProfile) {
+        base = userProfile;
+    } else if (homeDrive && homePath) {
+        base = std::filesystem::path(homeDrive) / homePath;
+    } else {
+        return std::nullopt;
+    }
+
+    return base / ".roxal_history";
+}
+
 static int repl()
 {
     linenoiseHistorySetMaxLen(1000);
+
+    const auto historyPath = replHistoryPath();
+    if (historyPath) {
+        linenoiseHistoryLoad(historyPath->string().c_str());
+    }
 
     std::stringstream stream;
     VM& vm { VM::instance() };
@@ -130,6 +157,9 @@ static int repl()
             break;
 
         linenoiseHistoryAdd(cline);
+        if (historyPath) {
+            linenoiseHistorySave(historyPath->string().c_str());
+        }
         std::string line(cline);
         linenoiseFree(cline);
 
