@@ -40,6 +40,9 @@
 #ifdef ROXAL_ENABLE_GRPC
 #include "ModuleGrpc.h"
 #endif
+#ifdef ROXAL_ENABLE_DDS
+#include "dds/ModuleDDS.h"
+#endif
 #include "SimpleMarkSweepGC.h"
 #include <Eigen/Dense>
 #include <core/types.h>
@@ -480,6 +483,9 @@ VM::VM()
     #endif
     #ifdef ROXAL_ENABLE_GRPC
     registerBuiltinModule(make_ptr<ModuleGrpc>());
+    #endif
+    #ifdef ROXAL_ENABLE_DDS
+    registerBuiltinModule(make_ptr<ModuleDDS>());
     #endif
 
     std::vector<std::string> stagedModulePaths;
@@ -6029,6 +6035,12 @@ void VM::registerBuiltinModule(ptr<BuiltinModule> module)
             grpcModule = gm.get();
     }
     #endif
+    #ifdef ROXAL_ENABLE_DDS
+    if (!ddsModule) {
+        if (auto dm = dynamic_ptr_cast<ModuleDDS>(module))
+            ddsModule = dm.get();
+    }
+    #endif
     builtinModules.push_back(module);
     if (module) {
         appendModulePaths(module->additionalModulePaths());
@@ -6041,6 +6053,14 @@ Value VM::importProtoModule(const std::string& path)
     if (!grpcModule)
         throw std::runtime_error("gRPC module not initialized");
     return grpcModule->importProto(path);
+}
+#endif
+#ifdef ROXAL_ENABLE_DDS
+Value VM::importIdlModule(const std::string& path)
+{
+    if (!ddsModule)
+        throw std::runtime_error("DDS module not initialized");
+    return ddsModule->importIdl(path);
 }
 #endif
 

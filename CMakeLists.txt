@@ -166,6 +166,12 @@ if(ROXAL_ENABLE_GRPC)
         compiler/grpc/ModuleGrpc.cpp
     )
 endif()
+if(ROXAL_ENABLE_DDS)
+    list(APPEND COMPILER_SOURCES
+        compiler/dds/DdsAdapter.cpp
+        compiler/dds/ModuleDDS.cpp
+    )
+endif()
 
 set(MAIN_SOURCE compiler/roxal.cpp)
 
@@ -210,6 +216,7 @@ include_directories(
     compiler/cpp-gen
     ${CMAKE_SOURCE_DIR}/compiler
     ${CMAKE_SOURCE_DIR}/compiler/grpc
+    ${CMAKE_SOURCE_DIR}/compiler/dds
 )
 
 link_directories(

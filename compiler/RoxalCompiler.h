@@ -90,6 +90,7 @@ public:
         std::filesystem::path cachePath;    // path to compiled cache (.roc)
         bool cacheValid{false};             // true if cache exists and is newer than source
         bool isProto{false};                // true if import refers to a .proto file
+        bool isIdl{false};                  // true if import refers to a .idl file
 
         // FIXME: make members protected, cache hashCode
 

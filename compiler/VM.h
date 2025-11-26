@@ -22,6 +22,9 @@
 #ifdef ROXAL_ENABLE_GRPC
 #include "ModuleGrpc.h"
 #endif
+#ifdef ROXAL_ENABLE_DDS
+#include "dds/ModuleDDS.h"
+#endif
 #include <ffi.h>
 #include <vector>
 
@@ -81,6 +84,9 @@ public:
 #ifdef ROXAL_ENABLE_GRPC
     friend class ModuleGrpc;
 #endif
+#ifdef ROXAL_ENABLE_DDS
+    friend class ModuleDDS;
+#endif
 
     enum class CacheMode {
         Normal,
@@ -113,6 +119,9 @@ public:
     void registerBuiltinModule(ptr<BuiltinModule> module);
 #ifdef ROXAL_ENABLE_GRPC
     Value importProtoModule(const std::string& path);
+#endif
+#ifdef ROXAL_ENABLE_DDS
+    Value importIdlModule(const std::string& path);
 #endif
 
     InterpretResult interpret(std::istream& source, const std::string& sourceName);
@@ -275,6 +284,9 @@ protected:
     std::vector<ptr<BuiltinModule>> builtinModules;
 #ifdef ROXAL_ENABLE_GRPC
     ModuleGrpc* grpcModule { nullptr };
+#endif
+#ifdef ROXAL_ENABLE_DDS
+    ModuleDDS* ddsModule { nullptr };
 #endif
 
     // builtin dataflow engine actor
