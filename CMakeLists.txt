@@ -112,6 +112,7 @@ if(ROXAL_ENABLE_DDS)
         list(APPEND CMAKE_PREFIX_PATH "${ROXAL_DDS_ROOT}")
     endif()
     find_package(CycloneDDS CONFIG REQUIRED)
+    include_directories(${CycloneDDS_INCLUDE_DIRS})
 endif()
 
 # Detect libffi via pkg-config so that include and library paths
@@ -250,6 +251,8 @@ target_link_libraries(roxalcore
         $<$<BOOL:${ROXAL_ENABLE_GRPC}>:protobuf::libprotobuf>
         $<$<BOOL:${ROXAL_ENABLE_GRPC}>:gRPC::grpc++>
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::ddsc>
+        $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::libidlc>
+        $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::idl>
 )
 
 

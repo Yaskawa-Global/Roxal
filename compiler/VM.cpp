@@ -504,6 +504,9 @@ VM::VM()
 #endif
     executeBuiltinModuleScript("sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
     executeBuiltinModuleScript("math.rox", getBuiltinModuleType(toUnicodeString("math")));
+#ifdef ROXAL_ENABLE_DDS
+    executeBuiltinModuleScript("dds.rox", getBuiltinModuleType(toUnicodeString("dds")));
+#endif
 
     thread = nullptr;
 

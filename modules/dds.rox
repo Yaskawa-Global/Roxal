@@ -1,0 +1,22 @@
+# Roxal built-in DDS module declarations
+# Functions are linked to native implementations in ModuleDDS.
+
+# Initialize native side (no-op placeholder).
+proc _init():
+  """Initialize DDS module"""
+
+@builtin
+func create_participant(domain_id:int=0, qos:dict=nil):
+  """Create a domain participant (default domain_id=0)."""
+
+@builtin
+func create_topic(participant, name:str, msg_type):
+  """Create a topic on the participant for the given IDL message type."""
+
+@builtin
+func create_writer(participant, topic, qos:dict=nil):
+  """Create a data writer for the topic."""
+
+@builtin
+func create_reader(participant, topic, qos:dict=nil):
+  """Create a data reader for the topic."""
