@@ -14,6 +14,8 @@ option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
 
 option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
 option(ROXAL_ENABLE_GRPC "Enable gRPC/protobuf import support" OFF)
+option(ROXAL_ENABLE_DDS "Enable CycloneDDS support" OFF)
+set(ROXAL_DDS_ROOT "/usr/share" CACHE PATH "CycloneDDS install prefix when ROXAL_ENABLE_DDS is ON")
 
 # Expose the project version and git hash to the codebase
 set(ROXAL_PROJECT_VERSION "${PROJECT_VERSION}")
@@ -99,6 +101,17 @@ include_directories(${EIGEN3_INCLUDE_DIR})
 if(ROXAL_ENABLE_GRPC)
     find_package(Protobuf REQUIRED) # use module or config
     find_package(gRPC CONFIG REQUIRED)
+endif()
+
+# CycloneDDS
+#   git clone https://github.com/eclipse-cyclonedds/cyclonedds and configure with
+#   cmake -Bbuild -D CMAKE_INSTALL_PREFIX=/usr/share
+#   then build and make install
+if(ROXAL_ENABLE_DDS)
+    if(ROXAL_DDS_ROOT)
+        list(APPEND CMAKE_PREFIX_PATH "${ROXAL_DDS_ROOT}")
+    endif()
+    find_package(CycloneDDS CONFIG REQUIRED)
 endif()
 
 # Detect libffi via pkg-config so that include and library paths
@@ -229,6 +242,7 @@ target_link_libraries(roxalcore
         ${LIBFFI_LIBRARIES}
         $<$<BOOL:${ROXAL_ENABLE_GRPC}>:protobuf::libprotobuf>
         $<$<BOOL:${ROXAL_ENABLE_GRPC}>:gRPC::grpc++>
+        $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::ddsc>
 )
 
 
@@ -243,6 +257,7 @@ target_compile_definitions(roxalcore PRIVATE
     $<$<CONFIG:DEBUG>:DEBUG_BUILD>
     $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
     $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
+    $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
     ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
     ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
     ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
@@ -260,6 +275,7 @@ if(ROXAL_BUILD_MAIN)
         $<$<CONFIG:DEBUG>:DEBUG_BUILD>
         $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
         $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
+        $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
         ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
         ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
         ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
