@@ -137,7 +137,8 @@ static CompletionContext analyzeCompletionContext(const std::string& buffer)
 
 static void addCompletions(linenoiseCompletions* lc,
                            const std::vector<std::string>& names,
-                           const std::string& prefix)
+                           const std::string& prefix,
+                           const std::string& stem)
 {
     std::unordered_set<std::string> seen {};
     for (const auto& name : names) {
@@ -145,7 +146,7 @@ static void addCompletions(linenoiseCompletions* lc,
             continue;
         if (!seen.insert(name).second)
             continue;
-        linenoiseAddCompletion(lc, name.c_str());
+        linenoiseAddCompletion(lc, (stem + name).c_str());
     }
 }
 
@@ -158,15 +159,17 @@ static std::vector<std::string> moduleSymbolNames(ObjModuleType* module)
     const auto vars = module->vars.snapshot();
     names.reserve(vars.size());
     for (const auto& entry : vars) {
-        if (!entry.first.isEmpty())
-            names.push_back(toUTF8StdString(entry.first));
+        const std::string name = toUTF8StdString(entry.first);
+        if (!name.empty() && name.front() != '_')
+            names.push_back(name);
     }
 
     // Include builtin globals so common helpers remain discoverable.
     const auto globals = module->vars.snapshotGlobals();
     for (const auto& entry : globals) {
-        if (!entry.first.isEmpty())
-            names.push_back(toUTF8StdString(entry.first));
+        const std::string name = toUTF8StdString(entry.first);
+        if (!name.empty() && name.front() != '_')
+            names.push_back(name);
     }
 
     return names;
@@ -212,12 +215,18 @@ static std::vector<std::string> memberNamesForValue(const Value& value)
 
     const auto properties = collectPropertyEntries(type);
     names.reserve(properties.size());
-    for (const auto& property : properties)
+    for (const auto& property : properties) {
+        if (!property.name.empty() && property.name.front() == '_')
+            continue;
         names.push_back(property.name);
+    }
 
     const auto methods = collectMethodEntries(type);
-    for (const auto& method : methods)
+    for (const auto& method : methods) {
+        if (!method.name.empty() && method.name.front() == '_')
+            continue;
         names.push_back(method.name);
+    }
 
     return names;
 }
@@ -237,7 +246,7 @@ static void replCompletionCallback(const char* buffer, linenoiseCompletions* lc)
             return;
 
         if (context.kind == CompletionKind::ModuleSymbol) {
-            addCompletions(lc, moduleSymbolNames(module), context.prefix);
+            addCompletions(lc, moduleSymbolNames(module), context.prefix, "");
             return;
         }
 
@@ -245,7 +254,12 @@ static void replCompletionCallback(const char* buffer, linenoiseCompletions* lc)
             const auto symbol = lookupModuleSymbol(module, context.owner);
             if (!symbol.has_value())
                 return;
-            addCompletions(lc, memberNamesForValue(symbol.value()), context.prefix);
+            // Linenoise replaces the current token with the provided suggestion, so
+            // surface member names with the owner stem preserved. Method names stay
+            // bare (no appended parentheses) to mirror common REPL conventions and
+            // avoid introducing side effects while navigating suggestions.
+            const std::string stem = context.owner + ".";
+            addCompletions(lc, memberNamesForValue(symbol.value()), context.prefix, stem);
         }
     } catch (...) {
         // Suppress completion exceptions to avoid interrupting the REPL.
