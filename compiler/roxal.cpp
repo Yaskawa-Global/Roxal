@@ -16,8 +16,12 @@
 #include <algorithm>
 #include <iostream>
 #include <vector>
+#include <unordered_set>
+#include <cctype>
+#include <iterator>
 
 #include <core/AST.h>
+#include "core/common.h"
 #include "RoxalIndentationLexer.h"
 #include "ASTGenerator.h"
 #include "TypeDeducer.h"
@@ -28,6 +32,7 @@
 #include "Error.h"
 #include "SimpleMarkSweepGC.h"
 #include "Object.h"
+#include "Introspection.h"
 
 
 extern "C" {
@@ -47,6 +52,204 @@ static void sigint_handler(int)
     }
     std::signal(SIGINT, SIG_DFL);
     std::raise(SIGINT);
+}
+
+
+enum class CompletionKind {
+    None,
+    ModuleSymbol,
+    MemberSymbol
+};
+
+struct CompletionContext {
+    CompletionKind kind { CompletionKind::None };
+    std::string owner;
+    std::string prefix;
+};
+
+static bool isIdentifierStart(char ch)
+{
+    return std::isalpha(static_cast<unsigned char>(ch)) || ch == '_';
+}
+
+static bool isIdentifierPart(char ch)
+{
+    return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_';
+}
+
+static bool isIdentifier(const std::string& candidate)
+{
+    if (candidate.empty() || !isIdentifierStart(candidate.front()))
+        return false;
+    return std::all_of(std::next(candidate.begin()), candidate.end(), isIdentifierPart);
+}
+
+static CompletionContext analyzeCompletionContext(const std::string& buffer)
+{
+    CompletionContext context {};
+
+    // Work only with the content after the last newline; the REPL feeds one line at a time.
+    const size_t lineStart = buffer.find_last_of('\n');
+    const size_t sliceStart = lineStart == std::string::npos ? 0 : lineStart + 1;
+    std::string line = buffer.substr(sliceStart);
+
+    // Ignore trailing whitespace so "foo<space><tab>" still sees the last token.
+    while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back())))
+        line.pop_back();
+
+    if (line.empty()) {
+        context.kind = CompletionKind::ModuleSymbol;
+        return context;
+    }
+
+    auto isTokenChar = [](char ch) {
+        return isIdentifierPart(ch) || ch == '.';
+    };
+
+    size_t tokenStart = line.size();
+    while (tokenStart > 0 && isTokenChar(line[tokenStart - 1]))
+        --tokenStart;
+
+    const std::string token = line.substr(tokenStart);
+    if (token.empty()) {
+        context.kind = CompletionKind::ModuleSymbol;
+        return context;
+    }
+
+    const size_t dot = token.rfind('.');
+    if (dot != std::string::npos) {
+        const std::string owner = token.substr(0, dot);
+        const std::string memberPrefix = token.substr(dot + 1);
+        if (isIdentifier(owner)) {
+            context.kind = CompletionKind::MemberSymbol;
+            context.owner = owner;
+            context.prefix = memberPrefix;
+        }
+        return context;
+    }
+
+    if (isIdentifier(token)) {
+        context.kind = CompletionKind::ModuleSymbol;
+        context.prefix = token;
+    }
+    return context;
+}
+
+static void addCompletions(linenoiseCompletions* lc,
+                           const std::vector<std::string>& names,
+                           const std::string& prefix)
+{
+    std::unordered_set<std::string> seen {};
+    for (const auto& name : names) {
+        if (!prefix.empty() && name.rfind(prefix, 0) != 0)
+            continue;
+        if (!seen.insert(name).second)
+            continue;
+        linenoiseAddCompletion(lc, name.c_str());
+    }
+}
+
+static std::vector<std::string> moduleSymbolNames(ObjModuleType* module)
+{
+    std::vector<std::string> names;
+    if (!module)
+        return names;
+
+    const auto vars = module->vars.snapshot();
+    names.reserve(vars.size());
+    for (const auto& entry : vars) {
+        if (!entry.first.isEmpty())
+            names.push_back(toUTF8StdString(entry.first));
+    }
+
+    // Include builtin globals so common helpers remain discoverable.
+    const auto globals = module->vars.snapshotGlobals();
+    for (const auto& entry : globals) {
+        if (!entry.first.isEmpty())
+            names.push_back(toUTF8StdString(entry.first));
+    }
+
+    return names;
+}
+
+static std::optional<Value> lookupModuleSymbol(ObjModuleType* module, const std::string& name)
+{
+    if (!module)
+        return std::nullopt;
+
+    const auto vars = module->vars.snapshot();
+    for (const auto& entry : vars) {
+        if (toUTF8StdString(entry.first) == name)
+            return entry.second;
+    }
+
+    const auto globals = module->vars.snapshotGlobals();
+    for (const auto& entry : globals) {
+        if (toUTF8StdString(entry.first) == name)
+            return entry.second;
+    }
+
+    return std::nullopt;
+}
+
+static ObjObjectType* resolveObjectType(const Value& value)
+{
+    if (isObjectInstance(value))
+        return asObjectType(asObjectInstance(value)->instanceType);
+    if (isActorInstance(value))
+        return asObjectType(asActorInstance(value)->instanceType);
+    if (isObjectType(value))
+        return asObjectType(value);
+    return nullptr;
+}
+
+static std::vector<std::string> memberNamesForValue(const Value& value)
+{
+    std::vector<std::string> names;
+    ObjObjectType* type = resolveObjectType(value);
+    if (!type)
+        return names;
+
+    const auto properties = collectPropertyEntries(type);
+    names.reserve(properties.size());
+    for (const auto& property : properties)
+        names.push_back(property.name);
+
+    const auto methods = collectMethodEntries(type);
+    for (const auto& method : methods)
+        names.push_back(method.name);
+
+    return names;
+}
+
+static void replCompletionCallback(const char* buffer, linenoiseCompletions* lc)
+{
+    if (!buffer || !lc)
+        return;
+
+    try {
+        const CompletionContext context = analyzeCompletionContext(buffer);
+        if (context.kind == CompletionKind::None)
+            return;
+
+        ObjModuleType* module = VM::instance().replModuleType();
+        if (!module)
+            return;
+
+        if (context.kind == CompletionKind::ModuleSymbol) {
+            addCompletions(lc, moduleSymbolNames(module), context.prefix);
+            return;
+        }
+
+        if (context.kind == CompletionKind::MemberSymbol) {
+            const auto symbol = lookupModuleSymbol(module, context.owner);
+            if (!symbol.has_value())
+                return;
+            addCompletions(lc, memberNamesForValue(symbol.value()), context.prefix);
+        }
+    } catch (...) {
+        // Suppress completion exceptions to avoid interrupting the REPL.
+    }
 }
 
 
@@ -135,6 +338,9 @@ static std::optional<std::filesystem::path> replHistoryPath()
 static int repl()
 {
     linenoiseHistorySetMaxLen(1000);
+
+    // Register a lightweight completion hook to surface module and member symbols.
+    linenoiseSetCompletionCallback(replCompletionCallback);
 
     const auto historyPath = replHistoryPath();
     if (historyPath) {
