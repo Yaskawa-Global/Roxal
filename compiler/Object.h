@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <algorithm>
 
 #include <core/common.h>
 #include <core/AST.h>
@@ -1329,7 +1330,7 @@ struct ObjectInstance : public Obj
     virtual ~ObjectInstance();
 
     Value instanceType;
-    std::unordered_map<int32_t, Value> properties;
+    std::unordered_map<int32_t, VariablesMap::MonitoredValue> properties;
 
     // convenience methods for property access (e.g. for builtin method implementations)
     Value getProperty(const icu::UnicodeString& name) const;
@@ -1338,6 +1339,10 @@ struct ObjectInstance : public Obj
     void setProperty(const icu::UnicodeString& name, Value value);
     void setProperty(const std::string& name, Value value) { setProperty(toUnicodeString(name), value); }
     void setProperty(const char* name, Value value) { setProperty(toUnicodeString(name), value); }
+
+    Value ensurePropertySignal(int32_t nameHash, const std::string& signalName);
+    Value ensurePropertySignal(const icu::UnicodeString& name, const std::string& signalName)
+      { return ensurePropertySignal(name.hashCode(), signalName); }
 
     unique_ptr<Obj, UnreleasedObj> clone() const override;
 
@@ -1368,7 +1373,9 @@ struct ActorInstance : public Obj
     void initialize(const Value& objectType);
 
     Value instanceType;
-    std::unordered_map<int32_t, Value> properties;
+    std::unordered_map<int32_t, VariablesMap::MonitoredValue> properties;
+
+    Value ensurePropertySignal(int32_t nameHash, const std::string& signalName);
 
     // returns Value of ObjFuture or nil
     Value queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop);

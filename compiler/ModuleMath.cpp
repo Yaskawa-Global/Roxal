@@ -104,7 +104,7 @@ void ModuleMath::registerBuiltins(VM& vm)
     link("ones", [this](VM&, ArgsView a){ return math_ones_builtin(a); });
     link("dot", [this](VM&, ArgsView a){ return math_dot_builtin(a); });
     link("cross", [this](VM&, ArgsView a){ return math_cross_builtin(a); });
-    link("_setVecSignal", [this](VM& vm, ArgsView a){ return math_setVecSignal_builtin(vm,a); });
+    link("_setVecSignal", [this](VM&, ArgsView a){ return math_setVecSignal_builtin(a); });
 
     // Link builtin Counter methods
     linkMethod("_Counter", "init", [this](VM&, ArgsView a){ return counter_init_builtin(a); });
@@ -243,7 +243,7 @@ Value ModuleMath::counter_value_builtin(ArgsView args)
     return Value::intVal(counter->value());
 }
 
-Value ModuleMath::math_setVecSignal_builtin(VM& vm, ArgsView args)
+Value ModuleMath::math_setVecSignal_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isVector(args[0]))
         throw std::invalid_argument("math._setVecSignal expects a single vector argument");

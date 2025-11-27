@@ -2562,15 +2562,18 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 void ObjModuleType::trace(ValueVisitor& visitor) const
 {
     vars.unsafeForEachModuleVar([&visitor](const auto& nameValue) {
-        visitor.visit(nameValue.second);
+        visitor.visit(nameValue.second.value);
+        if (nameValue.second.hasSignal())
+            visitor.visit(nameValue.second.signal);
     });
 }
 
 void ObjModuleType::dropReferences()
 {
     vars.unsafeForEachModuleVar([](auto& nameValue) {
-        Value& value = nameValue.second;
-        value = Value::nilVal();
+        nameValue.second.value = Value::nilVal();
+        if (nameValue.second.hasSignal())
+            nameValue.second.clearSignal();
     });
     vars.clear();
     clearModuleAliases();
@@ -2618,7 +2621,7 @@ void ObjectInstance::write(std::ostream& out, roxal::ptr<SerializationContext> c
     for(const auto& kv : properties) {
         int32_t h = kv.first;
         out.write(reinterpret_cast<char*>(&h),4);
-        writeValue(out, kv.second, ctx);
+        writeValue(out, kv.second.value, ctx);
     }
 }
 
@@ -2632,7 +2635,9 @@ void ObjectInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx
     for(uint32_t i=0;i<count;i++) {
         int32_t h; in.read(reinterpret_cast<char*>(&h),4);
         Value v = readValue(in, ctx);
-        properties[h] = v;
+        auto& slot = properties[h];
+        slot.clearSignal();
+        slot.value = v;
     }
 }
 
@@ -2640,7 +2645,8 @@ void ObjectInstance::trace(ValueVisitor& visitor) const
 {
     visitor.visit(instanceType);
     for (const auto& entry : properties) {
-        visitor.visit(entry.second);
+        visitor.visit(entry.second.value);
+        visitor.visit(entry.second.signal);
     }
 }
 
@@ -2648,7 +2654,8 @@ void ObjectInstance::dropReferences()
 {
     instanceType = Value::nilVal();
     for (auto& entry : properties) {
-        entry.second = Value::nilVal();
+        entry.second.value = Value::nilVal();
+        entry.second.signal = Value::nilVal();
     }
     properties.clear();
 }
@@ -2750,7 +2757,7 @@ void ActorInstance::write(std::ostream& out, roxal::ptr<SerializationContext> ct
     for(const auto& kv : properties) {
         int32_t h = kv.first;
         out.write(reinterpret_cast<char*>(&h),4);
-        writeValue(out, kv.second, ctx);
+        writeValue(out, kv.second.value, ctx);
     }
 }
 
@@ -2763,7 +2770,9 @@ void ActorInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     for(uint32_t i=0;i<count;i++) {
         int32_t h; in.read(reinterpret_cast<char*>(&h),4);
         Value v = readValue(in, ctx);
-        properties[h] = v;
+        auto& slot = properties[h];
+        slot.clearSignal();
+        slot.value = v;
     }
     ptr<Thread> newThread = make_ptr<Thread>();
     // Keep the thread alive by registering it with the VM. Without this the
@@ -2773,6 +2782,14 @@ void ActorInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     VM::instance().registerThread(newThread);
     thread = newThread;
     newThread->act(Value::objRef(this));
+}
+
+Value ActorInstance::ensurePropertySignal(int32_t nameHash, const std::string& signalName)
+{
+    auto it = properties.find(nameHash);
+    if (it == properties.end())
+        return Value::nilVal();
+    return it->second.ensureSignal(signalName);
 }
 
 void ObjMatrix::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -3644,7 +3661,10 @@ ObjectInstance::ObjectInstance(const Value& objectType)
                 propInitialvalue = propInitialvalue.clone();
             }
         }
-        properties[prop.name.hashCode()] = propInitialvalue;
+        auto hash = prop.name.hashCode();
+        auto& slot = properties[hash];
+        slot.clearSignal();
+        slot.value = propInitialvalue;
     }
 }
 
@@ -3654,13 +3674,21 @@ Value ObjectInstance::getProperty(const icu::UnicodeString& name) const
 {
     auto it = properties.find(name.hashCode());
     if (it != properties.end())
-        return it->second;
+        return it->second.value;
     return Value::nilVal();
 }
 
 void ObjectInstance::setProperty(const icu::UnicodeString& name, Value value)
 {
-    properties[name.hashCode()] = value;
+    properties[name.hashCode()].assign(value);
+}
+
+Value ObjectInstance::ensurePropertySignal(int32_t nameHash, const std::string& signalName)
+{
+    auto it = properties.find(nameHash);
+    if (it == properties.end())
+        return Value::nilVal();
+    return it->second.ensureSignal(signalName);
 }
 
 
@@ -3682,16 +3710,21 @@ unique_ptr<Obj, UnreleasedObj> ObjectInstance::clone() const
 
     for(const auto& index_value : properties) {
         const auto index { index_value.first };
-        const auto& value { index_value.second };
+        const auto& slot { index_value.second };
+        const Value& value { slot.value };
 
-        if (value.isPrimitive())
-            newobj->properties[index] = value;
+        auto& targetSlot = newobj->properties[index];
+        targetSlot.clearSignal();
+
+        if (value.isPrimitive()) {
+            targetSlot.value = value;
+        }
         else if (isString(value)) {
-            newobj->properties[index] = value;
+            targetSlot.value = value;
         }
         else if (isObjectInstance(value)) {
             auto propcopy = asObjectInstance(value)->clone();
-            newobj->properties[index] = Value::objVal(std::move(propcopy));
+            targetSlot.value = Value::objVal(std::move(propcopy));
         }
         else if (isActorInstance(value)) {
             throw std::runtime_error("clone of type actor unsuported");
@@ -3702,7 +3735,7 @@ unique_ptr<Obj, UnreleasedObj> ObjectInstance::clone() const
         // TODO: add explicit handling of internal types like closure, future, function etc (just shallow copy)
         //       add explicit deep copying of builtin ref types like list and dict
         else {
-            newobj->properties[index] = value; // shallow copy
+            targetSlot.value = value; // shallow copy
         }
 
     }
@@ -3760,7 +3793,10 @@ void ActorInstance::initialize(const Value& objectType)
                 propInitialvalue = propInitialvalue.clone();
             }
         }
-        properties[prop.name.hashCode()] = propInitialvalue;
+        auto hash = prop.name.hashCode();
+        auto& slot = properties[hash];
+        slot.clearSignal();
+        slot.value = propInitialvalue;
     }
 }
 
@@ -3776,7 +3812,8 @@ void ActorInstance::trace(ValueVisitor& visitor) const
 {
     visitor.visit(instanceType);
     for (const auto& entry : properties) {
-        visitor.visit(entry.second);
+        visitor.visit(entry.second.value);
+        visitor.visit(entry.second.signal);
     }
     callQueue.forEach([&visitor](const MethodCallInfo& info) {
         visitor.visit(info.callee);
@@ -3791,7 +3828,8 @@ void ActorInstance::dropReferences()
 {
     instanceType = Value::nilVal();
     for (auto& entry : properties) {
-        entry.second = Value::nilVal();
+        entry.second.value = Value::nilVal();
+        entry.second.signal = Value::nilVal();
     }
     properties.clear();
     while (!callQueue.empty()) {
@@ -3915,10 +3953,10 @@ bool roxal::objsEqual(const Value& l, const Value& r)
             if (ls == rs) // identical object
                 return true;
 
-            // Trust hash.  Possible different strings with has collision will
-            //  compare as equal (low probability)
+            // Trust hash.  Possible different strings with hash collisions will
+            // compare as equal (low probability).
             // TODO: consider doing full char comparison for equality if hashes match
-            return asStringObj(l)->hash == asStringObj(l)->hash;
+            return ls->hash == rs->hash;
             // if (ls->s.length() != rs->s.length())
             //     return false;
             // return ls->s == rs->s;

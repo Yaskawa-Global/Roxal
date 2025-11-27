@@ -1,0 +1,12 @@
+type Obj object:
+  var mymembervar :int = 1
+
+  func mymemberfunc():
+    on mymembervar changed:
+      var value = this.mymembervar
+      print("mymembervar now {value}")
+
+var o = Obj()
+o.mymemberfunc()
+o.mymembervar = 2
+wait(ms=200)

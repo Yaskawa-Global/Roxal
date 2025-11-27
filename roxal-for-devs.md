@@ -30,7 +30,7 @@ Value types:
 Reference types:
   * `string` - Unicode (UTF-8) (literals are interned)
     * Single quoted `'like this'` or double quoted `"like this"`
-    * With double quotes, {variable} interpolations are substituted (`"myalue={myvalue}"`)
+    * With double quotes, `{}` placeholders interpolate identifiers, dotted properties, and indexes using identifiers, numeric literals, or single-quoted string literals. Multiple comma-separated indices are allowed (for example `"lookup={record['name']}"` or `"matrix element={mat[row, 2]}"`).
   * `list` - [list, of, values] - heterogeneous
   * `dict` - {key:value,key2:value2} - heterogeneous (hash, map)
     * insertion order preserved
@@ -576,8 +576,8 @@ The functions in the sys module are always globally available (- as if `import s
 * `stacktrace()` - return the current call stack as a list
 * `serialize(value, protocol='default')` - serialize `value` using protocol
 * `deserialize(bytes, protocol='default')` - deserialize bytes using protocol
-* `toJson(value, indent=true)` - convert value to a JSON string
-* `fromJson(json)` - parse JSON string into a value
+* `to_json(value, indent=true)` - convert value to a JSON string
+* `from_json(json)` - parse JSON string into a value
 * `Time` - timestamp object; use `Time.wall_now(tz='local')`, `Time.steady_now()`, or `Time.parse(...)` to construct and call instance methods like `format(...)`, `components(...)`, `diff(other)`, `seconds()`, and `microseconds()`
 * `TimeSpan` - duration object; construct via `TimeSpan(...)` or `TimeSpan.from_fields(...)`, query parts with `split()`, `seconds()`, `microseconds()`, and totals such as `total_seconds()` or `human()`
 * `clock(freq)` - create a clock signal at `freq`
@@ -661,21 +661,21 @@ Use `import fileio` or `import fileio.*`.  See `fileio.sys`.
 
 * `open(path, append=false, write=false, format='text')` - open a file and return handle (write access is enabled automatically when `append` is true)
 * `close(file)` - close a file handle
-* `isOpen(file)` - true if handle is open
-* `moreData(file)` - true if more data can be read
+* `is_open(file)` - true if handle is open
+* `more_data(file)` - true if more data can be read
 * `read(file)` - read available data from file
-* `readLine(file)` - read a line of text
-* `readFile(path, format='text')` - read entire file
+* `read_line(file)` - read a line of text
+* `read_file(path, format='text')` - read entire file
 * `write(file, data)` - write data to file
 * `flush(file)` - flush buffered writes to the underlying file
-* `fileExists(path)` - true if file exists
-* `dirExists(path)` - true if directory exists
-* `createDir(path, recurse=false)` - create a directory (optionally creating parents)
-* `fileSize(path)` - size of file in bytes
-* `absoluteFilePath(path)` - absolute path of file
-* `pathDirectory(path)` - directory portion of path
-* `pathFile(path)` - file name portion of path
-* `fileExtension(path)` - extension of path
-* `fileWithoutExtension(path)` - path without the extension
-* `deleteFile(path)` - delete a file, returning true if it existed
-* `deleteDir(path, recurse=false)` - delete a directory, optionally recursively
+* `file_exists(path)` - true if file exists
+* `dir_exists(path)` - true if directory exists
+* `create_dir(path, recurse=false)` - create a directory (optionally creating parents)
+* `file_size(path)` - size of file in bytes
+* `absolute_file_path(path)` - absolute path of file
+* `path_directory(path)` - directory portion of path
+* `path_file(path)` - file name portion of path
+* `file_extension(path)` - extension of path
+* `file_without_extension(path)` - path without the extension
+* `delete_file(path)` - delete a file, returning true if it existed
+* `delete_dir(path, recurse=false)` - delete a directory, optionally recursively

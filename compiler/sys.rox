@@ -71,11 +71,11 @@ func deserialize(bytes:list, protocol:string='default'):
   """deserialize list of bytes using protocol"""
 
 @builtin
-func toJson(value, indent:bool=true) -> string:
+func to_json(value, indent:bool=true) -> string:
   """convert value to JSON string; pretty if indent is true"""
 
 @builtin
-func fromJson(json:string):
+func from_json(json:string):
   """parse JSON string into a value"""
 
 @builtin
@@ -94,7 +94,7 @@ type Time object:
     """return 'wall' or 'steady' depending on the underlying clock"""
 
   @builtin
-  func isSteady() -> bool:
+  func is_steady() -> bool:
     """return true when this time tracks the steady clock"""
 
   @builtin

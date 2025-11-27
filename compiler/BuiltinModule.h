@@ -110,8 +110,6 @@ inline bool BuiltinModule::instanceOf(const Value& objInstance, const Value& obj
     return false;
 }
 
-
-
 inline std::vector<type::Type::FuncType::ParamType>
 BuiltinModule::constructParams(const std::vector<std::pair<std::string,
                                                 std::optional<type::BuiltinType>>>& infos,

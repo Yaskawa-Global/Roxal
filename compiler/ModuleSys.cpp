@@ -487,8 +487,8 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("gc_config", [this](VM& vm, ArgsView a){ return gc_config_builtin(vm,a); });
         addSys("serialize", [this](VM& vm, ArgsView a){ return serialize_builtin(vm,a); });
         addSys("deserialize", [this](VM& vm, ArgsView a){ return deserialize_builtin(vm,a); });
-        addSys("toJson", [this](VM& vm, ArgsView a){ return toJson_builtin(vm,a); });
-        addSys("fromJson", [this](VM& vm, ArgsView a){ return fromJson_builtin(vm,a); });
+        addSys("to_json", [this](VM& vm, ArgsView a){ return to_json_builtin(vm,a); });
+        addSys("from_json", [this](VM& vm, ArgsView a){ return from_json_builtin(vm,a); });
     }
 
     if (!vm.loadGlobal(toUnicodeString("_clock")).has_value()) {
@@ -537,7 +537,7 @@ void ModuleSys::registerBuiltins(VM& vm)
     };
     linkMethod("Time", "init", [this](VM& vm, ArgsView a){ return time_init_native(vm,a); }, timeInitDefaults);
     linkMethod("Time", "kind", [this](VM& vm, ArgsView a){ return time_kind_native(vm,a); });
-    linkMethod("Time", "isSteady", [this](VM& vm, ArgsView a){ return time_is_steady_native(vm,a); });
+    linkMethod("Time", "is_steady", [this](VM& vm, ArgsView a){ return time_is_steady_native(vm,a); });
     linkMethod("Time", "seconds", [this](VM& vm, ArgsView a){ return time_seconds_native(vm,a); });
     linkMethod("Time", "microseconds", [this](VM& vm, ArgsView a){ return time_micros_native(vm,a); });
     linkMethod("Time", "diff", [this](VM& vm, ArgsView a){ return time_diff_native(vm,a); });
@@ -1130,7 +1130,7 @@ static json11::Json valueToJson(const Value& v) {
         default:
             if(isObjectInstance(v) || isActorInstance(v))
                 return valueToJson(toType(ValueType::Dict, v, false));
-            throw std::runtime_error("unsupported type for toJson");
+            throw std::runtime_error("unsupported type for to_json");
     }
 }
 
@@ -1177,10 +1177,10 @@ static void dumpJsonPretty(const json11::Json& j, std::string& out, int indent=0
     }
 }
 
-Value ModuleSys::toJson_builtin(VM& vm, ArgsView args)
+Value ModuleSys::to_json_builtin(VM& vm, ArgsView args)
 {
     if(args.size() < 1 || args.size() > 2)
-        throw std::invalid_argument("toJson expects value and optional indent bool");
+        throw std::invalid_argument("to_json expects value and optional indent bool");
 
     bool indent = true;
     if(args.size() == 2)
@@ -1224,10 +1224,10 @@ static Value jsonToValue(const json11::Json& j) {
     return Value::nilVal();
 }
 
-Value ModuleSys::fromJson_builtin(VM& vm, ArgsView args)
+Value ModuleSys::from_json_builtin(VM& vm, ArgsView args)
 {
     if(args.size() != 1 || !isString(args[0]))
-        throw std::invalid_argument("fromJson expects json string");
+        throw std::invalid_argument("from_json expects json string");
 
     std::string s = toUTF8StdString(asStringObj(args[0])->s);
     std::string err;
@@ -1285,9 +1285,9 @@ Value ModuleSys::time_kind_native(VM& vm, ArgsView args)
 Value ModuleSys::time_is_steady_native(VM& vm, ArgsView args)
 {
     if (args.size() != 1)
-        throw std::invalid_argument("Time.isSteady expects no arguments");
+        throw std::invalid_argument("Time.is_steady expects no arguments");
 
-    ObjectInstance* inst = requireInstance(args[0], timeTypeObj, "Time.isSteady", "Time");
+    ObjectInstance* inst = requireInstance(args[0], timeTypeObj, "Time.is_steady", "Time");
     return timeIsSteady(inst) ? Value::trueVal() : Value::falseVal();
 }
 

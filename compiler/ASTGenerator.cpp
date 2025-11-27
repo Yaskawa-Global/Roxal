@@ -5,6 +5,7 @@
 #include "ASTGenerator.h"
 
 #include <boost/algorithm/string/replace.hpp>
+#include <cctype>
 
 #include <core/common.h>
 #include <core/AST.h>
@@ -75,6 +76,193 @@ void ASTGenerator::setSourceInfo(ptr<AST> ast, antlr4::tree::TerminalNode* termi
     #ifdef DEBUG_BUILD
     ast->fullSource = stringInterval(*source,ast->interval.first.line, ast->interval.first.pos, ast->interval.second.line, ast->interval.second.pos);
     #endif
+}
+
+
+ptr<Expression> ASTGenerator::parseInterpolationExpression(const std::string& text, antlr4::ParserRuleContext* context)
+{
+    std::string trimmed = trim(text);
+    if (trimmed.empty())
+        throw std::runtime_error("Empty string interpolation expression");
+
+    size_t pos = 0;
+    auto skipWhitespace = [&]() {
+        while (pos < trimmed.size() && std::isspace(static_cast<unsigned char>(trimmed[pos])))
+            ++pos;
+    };
+
+    auto parseIdentifier = [&]() -> std::string {
+        skipWhitespace();
+        if (pos >= trimmed.size())
+            throw std::runtime_error("Incomplete identifier in string interpolation expression: " + text);
+        size_t start = pos;
+        unsigned char ch = static_cast<unsigned char>(trimmed[pos]);
+        if (!(std::isalpha(ch) || ch == '_'))
+            throw std::runtime_error("Invalid identifier in string interpolation expression: " + text);
+        ++pos;
+        while (pos < trimmed.size()) {
+            unsigned char next = static_cast<unsigned char>(trimmed[pos]);
+            if (std::isalnum(next) || next == '_')
+                ++pos;
+            else
+                break;
+        }
+        return trimmed.substr(start, pos - start);
+    };
+
+    auto parseNumericLiteral = [&]() -> ptr<Expression> {
+        skipWhitespace();
+        size_t start = pos;
+        if (pos < trimmed.size() && (trimmed[pos] == '-' || trimmed[pos] == '+'))
+            ++pos;
+        bool hasDigits = false;
+        bool hasDot = false;
+        while (pos < trimmed.size()) {
+            unsigned char ch = static_cast<unsigned char>(trimmed[pos]);
+            if (std::isdigit(ch)) {
+                hasDigits = true;
+                ++pos;
+            } else if (trimmed[pos] == '.' && !hasDot) {
+                hasDot = true;
+                ++pos;
+            } else {
+                break;
+            }
+        }
+        if (!hasDigits)
+            throw std::runtime_error("Invalid numeric literal in string interpolation expression: " + text);
+
+        std::string numberText = trimmed.substr(start, pos - start);
+        ptr<Num> num = make_ptr<Num>();
+        setSourceInfo(num, context);
+        try {
+            if (hasDot) {
+                num->num = std::stod(numberText);
+            } else {
+                long long value = std::stoll(numberText);
+                if ((value > std::numeric_limits<int32_t>::max()) || (value < std::numeric_limits<int32_t>::min()))
+                    throw std::runtime_error("Numeric literal out of range in string interpolation expression: " + numberText);
+                num->num = static_cast<int32_t>(value);
+            }
+        } catch (const std::invalid_argument&) {
+            throw std::runtime_error("Invalid numeric literal in string interpolation expression: " + numberText);
+        } catch (const std::out_of_range&) {
+            throw std::runtime_error("Invalid numeric literal in string interpolation expression: " + numberText);
+        }
+        return num;
+    };
+
+    auto parseStringLiteral = [&]() -> ptr<Expression> {
+        skipWhitespace();
+        if (pos >= trimmed.size() || trimmed[pos] != '\'')
+            throw std::runtime_error("Invalid string literal in string interpolation expression: " + text);
+        ++pos; // skip opening quote
+
+        std::string buffer;
+        bool closed = false;
+        while (pos < trimmed.size()) {
+            char ch = trimmed[pos++];
+            if (ch == '\\') {
+                if (pos >= trimmed.size())
+                    throw std::runtime_error("Invalid escape in string interpolation expression: " + text);
+                char escaped = trimmed[pos++];
+                buffer.push_back('\\');
+                buffer.push_back(escaped);
+            } else if (ch == '\'') {
+                closed = true;
+                break;
+            } else {
+                buffer.push_back(ch);
+            }
+        }
+
+        if (!closed)
+            throw std::runtime_error("Unterminated string literal in string interpolation expression: " + text);
+
+        ptr<Str> str = make_ptr<Str>();
+        setSourceInfo(str, context);
+        str->str = toUnicodeString(buffer).unescape();
+        return str;
+    };
+
+    auto parseIndexArgument = [&]() -> ptr<Expression> {
+        skipWhitespace();
+        if (pos >= trimmed.size())
+            throw std::runtime_error("Missing index expression in string interpolation expression: " + text);
+
+        unsigned char peek = static_cast<unsigned char>(trimmed[pos]);
+        if (std::isalpha(peek) || peek == '_') {
+            std::string ident = parseIdentifier();
+            ptr<Variable> idxVar = make_ptr<Variable>(toUnicodeString(ident));
+            setSourceInfo(idxVar, context);
+            return idxVar;
+        }
+        if (peek == '\'')
+            return parseStringLiteral();
+        if (std::isdigit(peek) || peek == '-' || peek == '+')
+            return parseNumericLiteral();
+
+        throw std::runtime_error("Invalid index expression in string interpolation expression: " + text);
+    };
+
+    std::string baseIdent = parseIdentifier();
+    skipWhitespace();
+
+    ptr<Variable> baseVar = make_ptr<Variable>(toUnicodeString(baseIdent));
+    setSourceInfo(baseVar, context);
+    ptr<Expression> current = baseVar;
+
+    while (true) {
+        skipWhitespace();
+        if (pos >= trimmed.size())
+            break;
+        char next = trimmed[pos];
+        if (next == '.') {
+            ++pos;
+            std::string member = parseIdentifier();
+            ptr<UnaryOp> access = make_ptr<UnaryOp>(UnaryOp::Accessor);
+            setSourceInfo(access, context);
+            access->arg = current;
+            access->member = toUnicodeString(member);
+            current = access;
+        } else if (next == '[') {
+            ++pos;
+            skipWhitespace();
+            if (pos >= trimmed.size())
+                throw std::runtime_error("Unterminated index in string interpolation expression: " + text);
+            ptr<Index> idxExpr = make_ptr<Index>();
+            setSourceInfo(idxExpr, context);
+            idxExpr->indexable = current;
+
+            while (true) {
+                ptr<Expression> indexExpr = parseIndexArgument();
+                idxExpr->args.push_back(indexExpr);
+
+                skipWhitespace();
+                if (pos >= trimmed.size())
+                    throw std::runtime_error("Unterminated index in string interpolation expression: " + text);
+                if (trimmed[pos] == ',') {
+                    ++pos;
+                    continue;
+                }
+                if (trimmed[pos] == ']') {
+                    ++pos;
+                    break;
+                }
+                throw std::runtime_error("Invalid index separator in string interpolation expression: " + text);
+            }
+
+            current = idxExpr;
+        } else {
+            throw std::runtime_error("Invalid token in string interpolation expression: " + text);
+        }
+    }
+
+    skipWhitespace();
+    if (pos != trimmed.size())
+        throw std::runtime_error("Invalid string interpolation expression: " + text);
+
+    return current;
 }
 
 
@@ -2341,10 +2529,9 @@ std::any ASTGenerator::visitStr(RoxalParser::StrContext *context)
                 s->str = toUnicodeString(text.substr(pos, open - pos)).unescape();
                 parts.push_back(s);
             }
-            auto ident = text.substr(open + 1, close - open - 1);
-            ptr<Variable> var = make_ptr<Variable>(toUnicodeString(ident));
-            setSourceInfo(var, context);
-            parts.push_back(var);
+            auto placeholder = text.substr(open + 1, close - open - 1);
+            ptr<Expression> exprPart = parseInterpolationExpression(placeholder, context);
+            parts.push_back(exprPart);
             pos = close + 1;
         }
         if (pos < text.size()) {

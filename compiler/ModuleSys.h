@@ -39,8 +39,8 @@ public:
     Value gc_config_builtin(VM& vm, ArgsView args);
     Value serialize_builtin(VM& vm, ArgsView args);
     Value deserialize_builtin(VM& vm, ArgsView args);
-    Value toJson_builtin(VM& vm, ArgsView args);
-    Value fromJson_builtin(VM& vm, ArgsView args);
+    Value to_json_builtin(VM& vm, ArgsView args);
+    Value from_json_builtin(VM& vm, ArgsView args);
 
     // Time type natives
     Value time_init_native(VM& vm, ArgsView args);

@@ -469,6 +469,14 @@ VM::~VM()
 
     initString = Value::nilVal();
 
+    for (auto& entry : builtinMethods) {
+        for (auto& method : entry.second) {
+            method.second.defaultValues.clear();
+            method.second.declFunction = Value::nilVal();
+        }
+    }
+    builtinMethods.clear();
+
     builtinModules.clear();
 
     conditionalInterruptClosure = Value::nilVal();
@@ -620,7 +628,7 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
     if (globals.size() > 0) {
         std::cout << std::endl << "== globals ==" << std::endl;
         for(const auto& global : globals.get())
-            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second) << std::endl;
+            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second.value) << std::endl;
     }
     #endif
 
@@ -679,7 +687,7 @@ InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
     if (globals.size() > 0) {
         std::cout << std::endl << "== globals ==" << std::endl;
         for(const auto& global : globals.get())
-            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second) << std::endl;
+            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second.value) << std::endl;
     }
     #endif
 
@@ -1181,7 +1189,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                         }
                                     }
                                 }
-                                objInst->properties[hash] = val;
+                                objInst->properties[hash].assign(val);
                             }
                             pop();
                         } else if (!type->isActor && initMethod == nullptr) {
@@ -1295,7 +1303,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 return false;
 
                             for (const auto& kv : assignedValues)
-                                objInst->properties[kv.first] = kv.second;
+                                objInst->properties[kv.first].assign(kv.second);
 
                             popN(callSpec.argCount);
                         } else if (callSpec.argCount != 0) {
@@ -1552,7 +1560,7 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
         // check to ensure name isn't a prop with a func in it
         auto it = instance->properties.find(name->hash);
         if (it != instance->properties.end()) { // it is a prop
-            Value value { it->second };
+            Value value { it->second.value };
             *(thread->stackTop - callSpec.argCount - 1) = value;
             return callValue(value, callSpec);
         }
@@ -1565,7 +1573,7 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
         // check to ensure name isn't a prop with a func in it
         auto propIt = instance->properties.find(name->hash);
         if (propIt != instance->properties.end()) { // it is a prop
-            Value value { propIt->second };
+            Value value { propIt->second.value };
             *(thread->stackTop - callSpec.argCount - 1) = value;
             return callValue(value, callSpec);
         }
@@ -2114,8 +2122,14 @@ void VM::defineProperty(ObjString* name)
 
     ast::Access access = (!accessVal.isNil() && accessVal.isBool() && accessVal.asBool()) ? ast::Access::Private : ast::Access::Public;
     bool isConst = (!constVal.isNil() && constVal.isBool() && constVal.asBool());
-    objType->properties[name->hash] = {name->s, propertyType, propertyInitial,
-                                      access, isConst, Value::objRef(objType).weakRef()};
+    ObjObjectType::Property property{};
+    property.name = name->s;
+    property.type = propertyType;
+    property.initialValue = propertyInitial;
+    property.access = access;
+    property.isConst = isConst;
+    property.ownerType = Value::objRef(objType).weakRef();
+    objType->properties[name->hash] = property;
     objType->propertyOrder.push_back(name->hash);
 
     // check module annotations for ctype
@@ -2636,6 +2650,100 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(Value::intVal(1));
                 break;
             }
+            case OpCode::GetPropSignal: {
+                Value& inst { peek(0) };
+                ObjString* name = readString();
+
+                inst.resolve();
+
+                std::string signalName = toUTF8StdString(name->s);
+
+                if (isObjectInstance(inst)) {
+                    ObjectInstance* objInst = asObjectInstance(inst);
+                    ObjObjectType* type = asObjectType(objInst->instanceType);
+                    auto it = objInst->properties.find(name->hash);
+                    if (it != objInst->properties.end()) {
+                        ast::Access propAccess = ast::Access::Public;
+                        Value ownerT = objInst->instanceType.weakRef();
+                        auto pit = type->properties.find(name->hash);
+                        if (pit != type->properties.end()) {
+                            propAccess = pit->second.access;
+                            ownerT = pit->second.ownerType;
+                        }
+                        if (!isAccessAllowed(ownerT, propAccess)) {
+                            runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+                            return errorReturn;
+                        }
+
+                        Value result = it->second.value;
+                        if (!isSignal(result))
+                            result = objInst->ensurePropertySignal(name->hash, signalName);
+                        pop();
+                        push(result);
+                        break;
+                    }
+
+                    auto br = bindMethod(type, name);
+                    if (br == BindResult::Bound) {
+                        runtimeError("'changed' requires a property when using object member access.");
+                        return errorReturn;
+                    }
+                    if (br == BindResult::Private)
+                        return errorReturn;
+
+                    runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(type->name)+"'.");
+                    return errorReturn;
+                } else if (isActorInstance(inst)) {
+                    ActorInstance* actorInst = asActorInstance(inst);
+                    ObjObjectType* type = asObjectType(actorInst->instanceType);
+                    auto it = actorInst->properties.find(name->hash);
+                    if (it != actorInst->properties.end()) {
+                        ast::Access propAccess = ast::Access::Public;
+                        Value ownerT = actorInst->instanceType.weakRef();
+                        auto pit = type->properties.find(name->hash);
+                        if (pit != type->properties.end()) {
+                            propAccess = pit->second.access;
+                            ownerT = pit->second.ownerType;
+                        }
+                        if (!isAccessAllowed(ownerT, propAccess)) {
+                            runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+                            return errorReturn;
+                        }
+
+                        Value result = it->second.value;
+                        if (!isSignal(result))
+                            result = actorInst->ensurePropertySignal(name->hash, signalName);
+                        pop();
+                        push(result);
+                        break;
+                    }
+
+                    auto br = bindMethod(type, name);
+                    if (br == BindResult::Bound) {
+                        runtimeError("'changed' requires a property when using object member access.");
+                        return errorReturn;
+                    }
+                    if (br == BindResult::Private)
+                        return errorReturn;
+
+                    // Check builtin methods (actors, vectors, matrices, etc.)
+                    auto vt = inst.type();
+                    auto mit = builtinMethods.find(vt);
+                    if (mit != builtinMethods.end()) {
+                        auto methodIt = mit->second.find(name->hash);
+                        if (methodIt != mit->second.end()) {
+                            runtimeError("'changed' requires a property when using object member access.");
+                            return errorReturn;
+                        }
+                    }
+
+                    runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(type->name)+"'.");
+                    return errorReturn;
+                }
+
+                runtimeError("Only object and actor instances have properties (string keys only).");
+                return errorReturn;
+            }
             case OpCode::GetProp: {
                 Value& inst { peek(0) };
                 ObjString* name = readString();
@@ -2746,7 +2854,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     auto it = objInst->properties.find(name->hash);
                     if (it != objInst->properties.end()) { // exists
                         pop();
-                        push(it->second);
+                        push(it->second.value);
                         break;
                     }
                     else { // no
@@ -2765,7 +2873,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     auto it = actorInst->properties.find(name->hash);
                     if (it != actorInst->properties.end()) {
                         pop();
-                        push(it->second);
+                        push(it->second.value);
                         break;
                     } else {
                         auto br = bindMethod(asObjectType(actorInst->instanceType), name);
@@ -2984,7 +3092,7 @@ std::pair<InterpretResult,Value> VM::execute()
                             return errorReturn;
                         }
                         pop();
-                        push(it->second);
+                        push(it->second.value);
                         break;
                     } else {
                         auto br = bindMethod(t, name);
@@ -3013,7 +3121,7 @@ std::pair<InterpretResult,Value> VM::execute()
                             return errorReturn;
                         }
                         pop();
-                        push(it->second);
+                        push(it->second.value);
                         break;
                     } else {
                         auto br = bindMethod(t, name);
@@ -3176,7 +3284,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
 
 
-                    objInst->properties[name->hash] = value;
+                    objInst->properties[name->hash].assign(value);
                     popN(2); // pop original value & instance
                     push(value); // value (possibly converted)
                     break;
@@ -3208,7 +3316,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         }
                     }
 
-                    actorInst->properties[name->hash] = value;
+                    actorInst->properties[name->hash].assign(value);
                     popN(2);
                     push(value);
                     break;
@@ -3323,7 +3431,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         return errorReturn;
                     }
 
-                    objInst->properties[name->hash] = value;
+                    objInst->properties[name->hash].assign(value);
                     popN(2);
                     push(value);
                     break;
@@ -3368,7 +3476,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         return errorReturn;
                     }
 
-                    actorInst->properties[name->hash] = value;
+                    actorInst->properties[name->hash].assign(value);
                     popN(2);
                     push(value);
                     break;
@@ -3871,6 +3979,29 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
                     return errorReturn;
                 }
+                break;
+            }
+            case OpCode::GetModuleVarSignal: {
+                ObjString* name = readString();
+                auto& vars { moduleVars() };
+                auto optValue { vars.load(name->hash) };
+                if (!optValue.has_value()) {
+                    runtimeError("Undefined variable '"+name->toStdString()+"'");
+                    return errorReturn;
+                }
+
+                Value value = optValue.value();
+                if (isSignal(value)) {
+                    push(value);
+                    break;
+                }
+
+                Value signal = vars.ensureSignal(name->hash, name->s, name->toStdString());
+                if (signal.isNil()) {
+                    runtimeError("Cannot monitor variable '" + name->toStdString() + "'");
+                    return errorReturn;
+                }
+                push(signal);
                 break;
             }
             case OpCode::SetModuleVar: {

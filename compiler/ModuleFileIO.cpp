@@ -26,25 +26,63 @@ void ModuleFileIO::registerBuiltins(VM& vm)
     setVM(vm);
     {
         link("open", [this](VM&, ArgsView a){ return fileio_open_builtin(a); });
+    }
+    {
         link("close", [this](VM&, ArgsView a){ return fileio_close_builtin(a); });
+    }
+    {
         link("flush", [this](VM&, ArgsView a){ return fileio_flush_builtin(a); });
-        link("isOpen", [this](VM&, ArgsView a){ return fileio_isopen_builtin(a); });
-        link("moreData", [this](VM&, ArgsView a){ return fileio_moredata_builtin(a); });
+    }
+    {
+        link("is_open", [this](VM&, ArgsView a){ return fileio_is_open_builtin(a); });
+    }
+    {
+        link("more_data", [this](VM&, ArgsView a){ return fileio_more_data_builtin(a); });
+    }
+    {
         link("read", [this](VM&, ArgsView a){ return fileio_read_builtin(a); });
-        link("readLine", [this](VM&, ArgsView a){ return fileio_readline_builtin(a); });
-        link("readFile", [this](VM&, ArgsView a){ return fileio_readfile_builtin(a); });
+    }
+    {
+        link("read_line", [this](VM&, ArgsView a){ return fileio_read_line_builtin(a); });
+    }
+    {
+        link("read_file", [this](VM&, ArgsView a){ return fileio_read_file_builtin(a); });
+    }
+    {
         link("write", [this](VM&, ArgsView a){ return fileio_write_builtin(a); });
-        link("fileExists", [this](VM&, ArgsView a){ return fileio_fileexists_builtin(a); });
-        link("deleteFile", [this](VM&, ArgsView a){ return fileio_deletefile_builtin(a); });
-        link("createDir", [this](VM&, ArgsView a){ return fileio_createdir_builtin(a); });
-        link("dirExists", [this](VM&, ArgsView a){ return fileio_direxists_builtin(a); });
-        link("deleteDir", [this](VM&, ArgsView a){ return fileio_deletedir_builtin(a); });
-        link("fileSize", [this](VM&, ArgsView a){ return fileio_filesize_builtin(a); });
-        link("absoluteFilePath", [this](VM&, ArgsView a){ return fileio_abspathfile_builtin(a); });
-        link("pathDirectory", [this](VM&, ArgsView a){ return fileio_pathdir_builtin(a); });
-        link("pathFile", [this](VM&, ArgsView a){ return fileio_pathfile_builtin(a); });
-        link("fileExtension", [this](VM&, ArgsView a){ return fileio_fileext_builtin(a); });
-        link("fileWithoutExtension", [this](VM&, ArgsView a){ return fileio_filewoext_builtin(a); });
+    }
+    {
+        link("file_exists", [this](VM&, ArgsView a){ return fileio_file_exists_builtin(a); });
+    }
+    {
+        link("delete_file", [this](VM&, ArgsView a){ return fileio_delete_file_builtin(a); });
+    }
+    {
+        link("create_dir", [this](VM&, ArgsView a){ return fileio_create_dir_builtin(a); });
+    }
+    {
+        link("dir_exists", [this](VM&, ArgsView a){ return fileio_dir_exists_builtin(a); });
+    }
+    {
+        link("delete_dir", [this](VM&, ArgsView a){ return fileio_delete_dir_builtin(a); });
+    }
+    {
+        link("file_size", [this](VM&, ArgsView a){ return fileio_file_size_builtin(a); });
+    }
+    {
+        link("absolute_file_path", [this](VM&, ArgsView a){ return fileio_absolute_file_path_builtin(a); });
+    }
+    {
+        link("path_directory", [this](VM&, ArgsView a){ return fileio_path_directory_builtin(a); });
+    }
+    {
+        link("path_file", [this](VM&, ArgsView a){ return fileio_path_file_builtin(a); });
+    }
+    {
+        link("file_extension", [this](VM&, ArgsView a){ return fileio_file_extension_builtin(a); });
+    }
+    {
+        link("file_without_extension", [this](VM&, ArgsView a){ return fileio_file_without_extension_builtin(a); });
     }
 }
 
@@ -120,19 +158,19 @@ Value ModuleFileIO::fileio_close_builtin(ArgsView args)
     return Value::nilVal();
 }
 
-Value ModuleFileIO::fileio_isopen_builtin(ArgsView args)
+Value ModuleFileIO::fileio_is_open_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isFile(args[0]))
-        throw std::invalid_argument("fileio.isOpen expects file handle");
+        throw std::invalid_argument("fileio.is_open expects file handle");
     ObjFile* f = asFile(args[0]);
     std::lock_guard<std::mutex> lock(f->mutex);
     return f->file && f->file->is_open() ? Value::trueVal() : Value::falseVal();
 }
 
-Value ModuleFileIO::fileio_moredata_builtin(ArgsView args)
+Value ModuleFileIO::fileio_more_data_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isFile(args[0]))
-        throw std::invalid_argument("fileio.moreData expects file handle");
+        throw std::invalid_argument("fileio.more_data expects file handle");
     ObjFile* f = asFile(args[0]);
     std::lock_guard<std::mutex> lock(f->mutex);
     if (!f->file || !f->file->is_open()) return Value::falseVal();
@@ -161,16 +199,16 @@ Value ModuleFileIO::fileio_read_builtin(ArgsView args)
     return Value::stringVal(toUnicodeString(s));
 }
 
-Value ModuleFileIO::fileio_readline_builtin(ArgsView args)
+Value ModuleFileIO::fileio_read_line_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isFile(args[0]))
-        throw std::invalid_argument("fileio.readLine expects file handle");
+        throw std::invalid_argument("fileio.read_line expects file handle");
     ObjFile* f = asFile(args[0]);
     std::lock_guard<std::mutex> lock(f->mutex);
     if (!f->file || !f->file->is_open()) return Value::nilVal();
     if (f->binary) {
         Value exType = vm().loadGlobal(toUnicodeString("FileIOException")).value();
-        Value msg = Value::stringVal(toUnicodeString("readLine requires text mode"));
+        Value msg = Value::stringVal(toUnicodeString("read_line requires text mode"));
         Value exc = Value::exceptionVal(msg, exType);
         vm().raiseException(exc);
         return Value::nilVal();
@@ -181,21 +219,21 @@ Value ModuleFileIO::fileio_readline_builtin(ArgsView args)
     return Value::stringVal(toUnicodeString(line));
 }
 
-Value ModuleFileIO::fileio_readfile_builtin(ArgsView args)
+Value ModuleFileIO::fileio_read_file_builtin(ArgsView args)
 {
     if (args.size() < 1 || args.size() > 2 || !isString(args[0]))
-        throw std::invalid_argument("fileio.readFile expects path string and optional format");
+        throw std::invalid_argument("fileio.read_file expects path string and optional format");
     std::string format = "text";
     if (args.size() == 2) {
         if (!isString(args[1]))
-            throw std::invalid_argument("fileio.readFile format must be 'text' or 'binary'");
+            throw std::invalid_argument("fileio.read_file format must be 'text' or 'binary'");
         format = toUTF8StdString(asStringObj(args[1])->s);
     }
     std::ios_base::openmode mode = std::ios::in;
     if (format == "binary")
         mode |= std::ios::binary;
     else if (format != "text")
-        throw std::invalid_argument("fileio.readFile format must be 'text' or 'binary'");
+        throw std::invalid_argument("fileio.read_file format must be 'text' or 'binary'");
     std::filesystem::path path = std::filesystem::path(toUTF8StdString(asStringObj(args[0])->s));
     std::ifstream in(path, mode);
     if (!in.is_open()) {
@@ -262,18 +300,18 @@ Value ModuleFileIO::fileio_flush_builtin(ArgsView args)
     return f->file->good() ? Value::trueVal() : Value::falseVal();
 }
 
-Value ModuleFileIO::fileio_fileexists_builtin(ArgsView args)
+Value ModuleFileIO::fileio_file_exists_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
-        throw std::invalid_argument("fileio.fileExists expects path string");
+        throw std::invalid_argument("fileio.file_exists expects path string");
     std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     return std::filesystem::exists(p) && std::filesystem::is_regular_file(p) ? Value::trueVal() : Value::falseVal();
 }
 
-Value ModuleFileIO::fileio_deletefile_builtin(ArgsView args)
+Value ModuleFileIO::fileio_delete_file_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
-        throw std::invalid_argument("fileio.deleteFile expects path string");
+        throw std::invalid_argument("fileio.delete_file expects path string");
     std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     std::error_code ec;
     if (!std::filesystem::exists(p, ec))
@@ -289,10 +327,10 @@ Value ModuleFileIO::fileio_deletefile_builtin(ArgsView args)
     return removed ? Value::trueVal() : Value::falseVal();
 }
 
-Value ModuleFileIO::fileio_createdir_builtin(ArgsView args)
+Value ModuleFileIO::fileio_create_dir_builtin(ArgsView args)
 {
     if (args.size() < 1 || args.size() > 2 || !isString(args[0]))
-        throw std::invalid_argument("fileio.createDir expects path string and optional recurse bool");
+        throw std::invalid_argument("fileio.create_dir expects path string and optional recurse bool");
     bool recurse = false;
     if (args.size() == 2)
         recurse = args[1].asBool();
@@ -315,18 +353,18 @@ Value ModuleFileIO::fileio_createdir_builtin(ArgsView args)
     return Value::trueVal();
 }
 
-Value ModuleFileIO::fileio_direxists_builtin(ArgsView args)
+Value ModuleFileIO::fileio_dir_exists_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
-        throw std::invalid_argument("fileio.dirExists expects path string");
+        throw std::invalid_argument("fileio.dir_exists expects path string");
     std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     return std::filesystem::exists(p) && std::filesystem::is_directory(p) ? Value::trueVal() : Value::falseVal();
 }
 
-Value ModuleFileIO::fileio_deletedir_builtin(ArgsView args)
+Value ModuleFileIO::fileio_delete_dir_builtin(ArgsView args)
 {
     if (args.size() < 1 || args.size() > 2 || !isString(args[0]))
-        throw std::invalid_argument("fileio.deleteDir expects path string and optional recurse bool");
+        throw std::invalid_argument("fileio.delete_dir expects path string and optional recurse bool");
     bool recurse = false;
     if (args.size() == 2)
         recurse = args[1].asBool();
@@ -352,55 +390,55 @@ Value ModuleFileIO::fileio_deletedir_builtin(ArgsView args)
     return removed ? Value::trueVal() : Value::falseVal();
 }
 
-Value ModuleFileIO::fileio_filesize_builtin(ArgsView args)
+Value ModuleFileIO::fileio_file_size_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
-        throw std::invalid_argument("fileio.fileSize expects path string");
+        throw std::invalid_argument("fileio.file_size expects path string");
     std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     if (!std::filesystem::exists(p) || !std::filesystem::is_regular_file(p))
         return Value::intVal(0);
     return Value::intVal(static_cast<int32_t>(std::filesystem::file_size(p)));
 }
 
-Value ModuleFileIO::fileio_abspathfile_builtin(ArgsView args)
+Value ModuleFileIO::fileio_absolute_file_path_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
-        throw std::invalid_argument("fileio.absoluteFilePath expects path string");
+        throw std::invalid_argument("fileio.absolute_file_path expects path string");
     std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     auto abs = std::filesystem::absolute(p);
     return Value::stringVal(toUnicodeString(abs.string()));
 }
 
-Value ModuleFileIO::fileio_pathdir_builtin(ArgsView args)
+Value ModuleFileIO::fileio_path_directory_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
-        throw std::invalid_argument("fileio.pathDirectory expects path string");
+        throw std::invalid_argument("fileio.path_directory expects path string");
     std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     return Value::stringVal(toUnicodeString(p.parent_path().string()));
 }
 
-Value ModuleFileIO::fileio_pathfile_builtin(ArgsView args)
+Value ModuleFileIO::fileio_path_file_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
-        throw std::invalid_argument("fileio.pathFile expects path string");
+        throw std::invalid_argument("fileio.path_file expects path string");
     std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     return Value::stringVal(toUnicodeString(p.filename().string()));
 }
 
-Value ModuleFileIO::fileio_fileext_builtin(ArgsView args)
+Value ModuleFileIO::fileio_file_extension_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
-        throw std::invalid_argument("fileio.fileExtension expects path string");
+        throw std::invalid_argument("fileio.file_extension expects path string");
     std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     auto ext = p.extension().string();
     if (!ext.empty() && ext[0] == '.') ext.erase(0,1);
     return Value::stringVal(toUnicodeString(ext));
 }
 
-Value ModuleFileIO::fileio_filewoext_builtin(ArgsView args)
+Value ModuleFileIO::fileio_file_without_extension_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
-        throw std::invalid_argument("fileio.fileWithoutExtension expects path string");
+        throw std::invalid_argument("fileio.file_without_extension expects path string");
     std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     return Value::stringVal(toUnicodeString(p.replace_extension().string()));
 }

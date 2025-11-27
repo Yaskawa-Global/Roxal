@@ -27,7 +27,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 12;
+constexpr std::uint32_t ModuleCacheVersion = 14;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -601,6 +601,8 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     if (!imported) {  // import it
         if (builtinModule) {
             ptr<BuiltinModule> importedModule = VM::instance().getBuiltinModule(module.name);
+            if (!importedModule)
+                throw std::runtime_error("builtin module '" + toUTF8StdString(module.name) + "' not registered");
             importedModuleType = importedModule->moduleType();
             importedModuleType = importedModuleType.strongRef();
             importedModules[module] = importedModuleType;
@@ -637,7 +639,6 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
                     // Pop the return value (we don't need it)
                     emitByte(OpCode::Pop);
                 }
-
             }
         } else {
             // compile or load it, emit code to execute it
@@ -1546,8 +1547,17 @@ std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
 {
     currentNode = ast;
 
-    // push trigger expression
-    ast->trigger->accept(*this);
+    bool emittedTrigger = false;
+    if (ast->requiresSignalChange) {
+        if (auto variable = dynamic_ptr_cast<ast::Variable>(ast->trigger)) {
+            currentNode = variable;
+            emittedTrigger = namedVariable(variable->name, /*assign=*/false, /*asSignal=*/true);
+            currentNode = ast;
+        }
+    }
+
+    if (!emittedTrigger)
+        ast->trigger->accept(*this);
 
     // compile handler body as closure proc
     ptr<type::Type> funcType = make_ptr<type::Type>(BuiltinType::Func);
@@ -3614,12 +3624,14 @@ void RoxalCompiler::defineVariable(uint16_t moduleVar, bool isConst)
 }
 
 
-bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
+bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, bool asSignal)
 {
     //std::cout << (&(*state()) - &(*states.begin())) << " namedVariable(" << toUTF8StdString(name) << ")" << std::endl;
     //std::cout << toUTF8StdString(funcScope()->function->name) << " namedVariable(" << toUTF8StdString(name) << ")" << std::endl;
 
     if (auto binding = lookupConstBinding(name)) {
+        if (asSignal)
+            error("'changed' requires a module variable binding; use a signal expression instead");
         if (assign) {
             std::string message = "Cannot assign to constant '" + toUTF8StdString(name) + "'";
             if (binding->line.line > 0)
@@ -3636,6 +3648,8 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
     uint16_t arg;
     int16_t localArg = resolveLocal(funcScope(),name);
     if (localArg != -1) { // found
+        if (asSignal)
+            error("'changed' requires a module variable binding; use a signal expression instead");
         found = true;
         arg = localArg;
         getOp = OpCode::GetLocal;
@@ -3657,6 +3671,8 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
 
     int16_t upValueArg;
     if (!found && ((upValueArg = resolveUpvalue(funcScope(),name)) != -1)) {
+        if (asSignal)
+            error("'changed' requires a module variable binding; use a signal expression instead");
         found = true;
         arg = upValueArg;
         getOp = OpCode::GetUpvalue;
@@ -3701,7 +3717,10 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
                 // treat as property access
                 if (!assign) {
                     namedVariable(UnicodeString("this"), false);
-                    emitOpArgsBytes(OpCode::GetProp, arg);
+                    if (asSignal)
+                        emitOpArgsBytes(OpCode::GetPropSignal, arg, toUTF8StdString(name));
+                    else
+                        emitOpArgsBytes(OpCode::GetProp, arg);
                 } else {
                     namedVariable(UnicodeString("this"), false);
                     emitByte(OpCode::Swap);
@@ -3712,8 +3731,15 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign)
         }
     }
 
-    if (!assign)
-        emitOpArgsBytes(getOp, arg, toUTF8StdString(name));
+    if (!assign) {
+        if (asSignal) {
+            if (getOp != OpCode::GetModuleVar)
+                error("'changed' requires a module variable binding; use a signal expression instead");
+            emitOpArgsBytes(OpCode::GetModuleVarSignal, arg, toUTF8StdString(name));
+        } else {
+            emitOpArgsBytes(getOp, arg, toUTF8StdString(name));
+        }
+    }
     else
         emitOpArgsBytes(setOp, arg, toUTF8StdString(name));
 
