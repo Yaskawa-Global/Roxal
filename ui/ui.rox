@@ -28,14 +28,14 @@ type Display object:
 
 @builtin
 type Widget object:
-  var x :signal = signal(FPS, 0)
-  var y :signal = signal(FPS, 0)
-  var width :signal = signal(FPS, 1)
-  var height :signal = signal(FPS, 1)
+  var x :int
+  var y :int
+  var width :int
+  var height :int
 
 @builtin
 type Button object extends Widget:
-  var label :signal = signal(FPS, '')
+  var label :string
 
 
 

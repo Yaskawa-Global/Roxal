@@ -499,14 +499,11 @@ VM::VM()
     // Execute builtin module scripts to attach declarations and docs
     ptr<Thread> initThread = make_ptr<Thread>();
     thread = initThread;
-
-    executeBuiltinModuleScript("compiler/sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
-    executeBuiltinModuleScript("compiler/math.rox", getBuiltinModuleType(toUnicodeString("math")));
-    #ifdef ROXAL_ENABLE_FILEIO
-        executeBuiltinModuleScript("fileio.rox", getBuiltinModuleType(toUnicodeString("fileio")));
-    #endif
     executeBuiltinModuleScript("sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
     executeBuiltinModuleScript("math.rox", getBuiltinModuleType(toUnicodeString("math")));
+#ifdef ROXAL_ENABLE_FILEIO
+    executeBuiltinModuleScript("fileio.rox", getBuiltinModuleType(toUnicodeString("fileio")));
+#endif
 
     #if ENABLE_UI
         executeBuiltinModuleScript("ui/ui.rox", getBuiltinModuleType(toUnicodeString("ui")));
