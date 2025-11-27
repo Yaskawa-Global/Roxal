@@ -10,6 +10,10 @@
 #include <functional>
 #include <memory>
 
+namespace roxal::type {
+    struct Type;
+}
+
 namespace df {
 
 typedef std::vector<std::string> Names;
@@ -132,8 +136,12 @@ protected:
 private:
     Names m_inputNames;
     std::vector<ptr<Signal>> m_overrideOutputSignals;
+    std::vector<std::optional<roxal::Value>> m_outputDefaults;
 
     friend class DataflowEngine;
+
+    void initializeOutputDefaults(const std::vector<ptr<roxal::type::Type>>& returnTypes);
+    roxal::Value initialValueForOutput(size_t index) const;
 };
 
 }

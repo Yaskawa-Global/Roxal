@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package arithematic;
+
+message NumRequest {
+  double arg1 = 1;
+  double arg2 = 2;
+}
+
+message NumResponse {
+  double ans = 1;
+}
+
+service Arithematic {
+  rpc Add (NumRequest) returns (NumResponse);
+  rpc Subtract(NumRequest) returns (NumResponse);
+  rpc Multiply(NumRequest) returns (NumResponse);
+  rpc Divide(NumRequest) returns (NumResponse);
+}

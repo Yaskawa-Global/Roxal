@@ -1,0 +1,4 @@
+module signal freq=0
+fast tick=100000
+slow tick=250000
+event-driven tick=0

@@ -6,6 +6,8 @@
 #include <core/types.h>
 #include <optional>
 #include <algorithm>
+#include <string>
+#include <vector>
 
 namespace df {
 class Signal;
@@ -27,6 +29,7 @@ public:
     virtual void initialize() {};
 
     virtual Value moduleType() const = 0; // ObjModuleType
+    virtual std::vector<std::string> additionalModulePaths() const { return {}; }
 
 protected:
     // only valid after call to setVM() in registerBuiltins(VM&)

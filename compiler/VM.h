@@ -17,11 +17,15 @@
 #include "Thread.h"
 #include "BuiltinModule.h"
 #ifdef ROXAL_ENABLE_FILEIO
-#include "ModuleFileIO.h"
+    #include "ModuleFileIO.h"
+#endif
+#ifdef ROXAL_ENABLE_GRPC
+    #include "ModuleGrpc.h"
 #endif
 #if ENABLE_UI
-#include "ui/ModuleUI.h"
+    #include "ui/ModuleUI.h"
 #endif
+
 #include <ffi.h>
 #include <vector>
 
@@ -78,6 +82,9 @@ public:
     friend class Thread;
     friend class ModuleSys;
     friend class SimpleMarkSweepGC;
+    #ifdef ROXAL_ENABLE_GRPC
+    friend class ModuleGrpc;
+    #endif
 
     enum class CacheMode {
         Normal,
@@ -108,6 +115,9 @@ public:
     Value getBuiltinModuleType(const icu::UnicodeString& name);
     std::optional<Value> loadGlobal(const icu::UnicodeString& name) { return globals.load(name); }
     void registerBuiltinModule(ptr<BuiltinModule> module);
+#ifdef ROXAL_ENABLE_GRPC
+    Value importProtoModule(const std::string& path);
+#endif
 
     InterpretResult interpret(std::istream& source, const std::string& sourceName);
     InterpretResult interpretLine(std::istream& linestream, bool replMode=true);
@@ -179,7 +189,13 @@ public:
     static constexpr size_t DefaultMaxStack = 1024;
     static constexpr size_t DefaultMaxCallFrames = 128;
 
+    static std::string versionString();
+    static std::filesystem::path executablePath();
+    static std::vector<std::string> defaultModuleSearchPaths();
+    static void configureModulePaths(const std::vector<std::string>& modulePaths);
+
     static void configureStackLimits(size_t stackSize, size_t callFrameLimit);
+    static void configureCacheMode(CacheMode mode);
     void setStackLimits(size_t stackSize, size_t callFrameLimit);
     size_t maxStackSize() const { return stackLimit; }
     size_t maxCallFrameCount() const { return callFrameLimit; }
@@ -261,6 +277,9 @@ protected:
 
     // builtin modules
     std::vector<ptr<BuiltinModule>> builtinModules;
+#ifdef ROXAL_ENABLE_GRPC
+    ModuleGrpc* grpcModule { nullptr };
+#endif
 
     // builtin dataflow engine actor
     ptr<df::DataflowEngine> dataflowEngine;
@@ -268,11 +287,13 @@ protected:
     ptr<Thread> dataflowEngineThread;
 
     Value conditionalInterruptClosure {}; // ObjClosure
+    Value replModuleValue { Value::nilVal() }; // ObjModuleType
 
 
 
 public:
     Value getConditionalInterruptClosure() const { return conditionalInterruptClosure; } // ObjClosure
+    ObjModuleType* replModuleType() const;
 
 
     Value initString; // ObjString "init"
@@ -387,6 +408,8 @@ public:
 
     Value captureStacktrace();
 
+    bool resolveValue(Value& value);
+
 
 
     // Native functions
@@ -410,6 +433,7 @@ public:
     void  signal_name_setter(Value& receiver, Value value);
     Value exception_stacktrace_getter(Value& receiver);
     Value exception_stacktrace_string_getter(Value& receiver);
+    Value exception_detail_getter(Value& receiver);
 
     Value loadlib_native(ArgsView args);
     Value ffi_native(ArgsView args);

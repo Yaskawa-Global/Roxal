@@ -1,0 +1,46 @@
+import roxal_examples.*
+
+// Requires scripts/grpc_everything_server.py running against compiler/grpc/protos/roxal_examples.proto
+var svc = EverythingService("127.0.0.1:50051", { 'timeout_ms': 5000 })
+
+var payload = Everything(
+    f64=1.5, f32=2.5,
+    i32=100, i64=200,
+    u32=300, u64=400,
+    si32=-500, si64=-600,
+    fx32=700, fx64=800,
+    sfx32=-900, sfx64=-1000,
+    flag=true,
+    text="hello-grpc",
+    data="xyz",
+    color=Color.COLOR_RED,
+    nest=Nested(note="client-nest", count=5),
+    tags=["alpha", "beta"],
+    coords=[1, 2, 3],
+    notes=[Nested(note="note1", count=1)],
+    palette=[Color.COLOR_GREEN]
+)
+
+var echo = svc.Echo(payload=payload)
+print(echo.status)
+print(echo.payload.text)
+print(echo.payload.nest.count)
+print(echo.payload.tags)
+print(echo.payload.coords)
+print(echo.payload.data)
+
+var req = EchoRequest(payload=payload)
+var rev = svc.Reverse(request=req)
+print(rev.status)
+print(rev.payload.text)
+print(rev.payload.tags)
+print(rev.payload.data)
+
+var statusMsg = svc.Status(message="client-request")
+print(statusMsg)
+
+var statusDefault = svc.Status()
+print(statusDefault)
+
+var pingReply = svc.Ping()
+print(pingReply)

@@ -10,6 +10,49 @@
 
 using namespace df;
 
+namespace {
+
+std::optional<roxal::ValueType> valueTypeForBuiltin(roxal::type::BuiltinType builtin)
+{
+    using roxal::type::BuiltinType;
+    switch (builtin) {
+        case BuiltinType::Nil:   return roxal::ValueType::Nil;
+        case BuiltinType::Bool:  return roxal::ValueType::Bool;
+        case BuiltinType::Byte:  return roxal::ValueType::Byte;
+        case BuiltinType::Int:   return roxal::ValueType::Int;
+        case BuiltinType::Real:
+        case BuiltinType::Number: return roxal::ValueType::Real;
+        case BuiltinType::String: return roxal::ValueType::String;
+        case BuiltinType::Range:  return roxal::ValueType::Range;
+        case BuiltinType::List:   return roxal::ValueType::List;
+        case BuiltinType::Dict:   return roxal::ValueType::Dict;
+        case BuiltinType::Vector: return roxal::ValueType::Vector;
+        case BuiltinType::Matrix: return roxal::ValueType::Matrix;
+        case BuiltinType::Event:  return roxal::ValueType::Event;
+        case BuiltinType::Type:   return roxal::ValueType::Type;
+        default:
+            return std::nullopt;
+    }
+}
+
+std::optional<roxal::Value> defaultValueForReturnType(const ptr<roxal::type::Type>& typeSpec)
+{
+    if (!typeSpec)
+        return std::nullopt;
+
+    auto valueType = valueTypeForBuiltin(typeSpec->builtin);
+    if (!valueType.has_value())
+        return std::nullopt;
+
+    try {
+        return roxal::defaultValue(valueType.value());
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+}
+
 FuncNode::FuncNode(const std::string& name,
                    const roxal::Value& closure_,
                    const ConstArgMap& constArgs_,
@@ -31,6 +74,8 @@ FuncNode::FuncNode(const std::string& name,
                         m_outputNames.push_back("result" + std::to_string(i));
                 }
             }
+
+            initializeOutputDefaults(funcType.returnTypes);
 
             size_t sigIndex = 0;
             for (const auto& param : funcType.params) {
@@ -67,6 +112,9 @@ FuncNode::FuncNode(const std::string& name,
             m_operatorSignalsCalled = true;
         }
     }
+
+    if (m_outputDefaults.size() != outputNames().size())
+        initializeOutputDefaults(std::vector<ptr<roxal::type::Type>>{});
 }
 
 FuncNode::FuncNode(const std::string& name,
@@ -82,6 +130,7 @@ FuncNode::FuncNode(const std::string& name,
     m_outputNames = outputNames_;
     if (m_outputNames.empty())
         m_outputNames = {DataflowEngine::uniqueFuncName("result")};
+    initializeOutputDefaults(std::vector<ptr<roxal::type::Type>>{});
     paramNames = paramNames_;
     size_t sigIndex = 0;
     for(const auto& pname : paramNames) {
@@ -122,7 +171,10 @@ void FuncNode::addInput(const std::string& name, ptr<Signal> signal, int index, 
     if (index > 0)
         throw std::invalid_argument("FuncNode '"+m_name+"' addInput() index must be 0 or negative (index=-1 -> previous period's value)");
 
-    InputPort inputPort = {name, signal, index, defaultValue, TimePoint()};
+    TimePoint available = TimePoint::zero();
+    if (signal)
+        available = signal->latestSampleTime();
+    InputPort inputPort = {name, signal, index, defaultValue, available};
     m_inputs.push_back(inputPort);
 }
 
@@ -265,25 +317,44 @@ Signals FuncNode::operator()(const Signals& signals, const std::optional<ParamMa
 void FuncNode::createOutputSignals(double freq)
 {
     m_outputs.clear();
+    auto names = outputNames();
     if (!m_overrideOutputSignals.empty()) {
-        size_t count = std::min(m_overrideOutputSignals.size(), outputNames().size());
+        size_t count = std::min(m_overrideOutputSignals.size(), names.size());
         for(size_t i=0;i<count;++i) {
             auto sig = m_overrideOutputSignals[i];
             sig->setFrequency(freq);
-            addOutput(outputNames()[i], sig);
+            addOutput(names[i], sig);
         }
-        for(size_t i=count;i<outputNames().size();++i) {
-            auto outputSignal = Signal::newSignal(freq, roxal::Value(), outputNames()[i]);
-            addOutput(outputNames()[i], outputSignal);
+        for(size_t i=count;i<names.size();++i) {
+            auto outputSignal = Signal::newSignal(freq, initialValueForOutput(i), names[i]);
+            addOutput(names[i], outputSignal);
         }
         m_overrideOutputSignals.clear();
     } else {
         // create output signals(freq may be updated as inputs added)
-        for(auto& outName : outputNames()) {
-            auto outputSignal = Signal::newSignal(freq, roxal::Value(), outName);
-            addOutput(outName, outputSignal);
+        for(size_t i=0;i<names.size();++i) {
+            auto outputSignal = Signal::newSignal(freq, initialValueForOutput(i), names[i]);
+            addOutput(names[i], outputSignal);
         }
     }
+}
+
+void FuncNode::initializeOutputDefaults(const std::vector<ptr<roxal::type::Type>>& returnTypes)
+{
+    const auto count = outputNames().size();
+    m_outputDefaults.assign(count, std::nullopt);
+    for (size_t i = 0; i < count && i < returnTypes.size(); ++i) {
+        auto defaultValue = defaultValueForReturnType(returnTypes[i]);
+        if (defaultValue.has_value())
+            m_outputDefaults[i] = defaultValue;
+    }
+}
+
+roxal::Value FuncNode::initialValueForOutput(size_t index) const
+{
+    if (index < m_outputDefaults.size() && m_outputDefaults[index].has_value())
+        return m_outputDefaults[index].value();
+    return roxal::Value();
 }
 
 void FuncNode::updateOutputSignals(double freq)
@@ -299,17 +370,27 @@ void FuncNode::addToEngine()
 
 bool FuncNode::inputsAvailableAt(TimePoint time) const
 {
-    bool inputsAvailable = true;
     for (const auto& input : m_inputs) {
         TimeDuration latency = input.signal->period() * -input.index;
         auto timeNeeded = time - latency;
-        // input value isn't available if it isn't valid yet for the time we need it, or it is nil (never updated - at start of run) and has no default
-        if (((input.latestAvailableTime < timeNeeded) || input.signal->valueAt(timeNeeded).isNil()) && !input.defaultValue.has_value() ) {
-            inputsAvailable = false;
-            break;
+        auto availableTime = std::min(timeNeeded, input.signal->latestSampleTime());
+
+        bool hasDefault = input.defaultValue.has_value();
+        bool upToDate = input.latestAvailableTime >= availableTime;
+        bool hasValue = false;
+
+        try {
+            auto sample = input.signal->valueAt(availableTime);
+            hasValue = !sample.isNil();
+        } catch (...) {
+            hasValue = false;
+        }
+
+        if ((!upToDate || !hasValue) && !hasDefault) {
+            return false;
         }
     }
-    return inputsAvailable;
+    return true;
 }
 
 bool FuncNode::conditionallyExecute(TimePoint time)
@@ -327,14 +408,37 @@ bool FuncNode::conditionallyExecute(TimePoint time)
         TimeDuration latency = input.signal->period() * -input.index;
         auto inputTime = time - latency;
         auto inputValue = input.signal->valueIfAvailableAt(inputTime);
-        if (inputValue.has_value() || input.defaultValue.has_value()) {
-            if (inputValue.has_value() && !inputValue.value().isNil())
+        if (inputValue.has_value()) {
+            if (!inputValue.value().isNil()) {
                 inputValues.push_back(inputValue.value());
-            else
+            } else if (input.defaultValue.has_value()) {
                 inputValues.push_back(input.defaultValue.value());
+            } else {
+                auto fallbackTime = std::min(inputTime, input.signal->latestSampleTime());
+                auto fallback = input.signal->valueAt(fallbackTime);
+                inputValues.push_back(fallback);
+            }
+        } else {
+            auto fallbackTime = std::min(inputTime, input.signal->latestSampleTime());
+            if (fallbackTime < TimePoint::zero() && !input.defaultValue.has_value())
+                throw std::runtime_error("FuncNode '"+name()+"' signal '"+input.signal->name()+"' not available at time "+inputTime.humanString());
+
+            try {
+                auto fallback = input.signal->valueAt(fallbackTime);
+                if (!fallback.isNil()) {
+                    inputValues.push_back(fallback);
+                } else if (input.defaultValue.has_value()) {
+                    inputValues.push_back(input.defaultValue.value());
+                } else {
+                    throw std::runtime_error("FuncNode '"+name()+"' signal '"+input.signal->name()+"' not available at time "+inputTime.humanString());
+                }
+            } catch (...) {
+                if (input.defaultValue.has_value())
+                    inputValues.push_back(input.defaultValue.value());
+                else
+                    throw std::runtime_error("FuncNode '"+name()+"' signal '"+input.signal->name()+"' not available at time "+inputTime.humanString());
+            }
         }
-        else
-            throw std::runtime_error("FuncNode '"+name()+"' signal '"+input.signal->name()+"' not available at time "+inputTime.humanString());
     }
 
     // FIXME: if not pure, don't execute every time, just on our expected period (GCD)

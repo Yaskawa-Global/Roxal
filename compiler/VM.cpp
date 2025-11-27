@@ -7,11 +7,17 @@
 #include <memory>
 #include <iomanip>
 #include <sstream>
+#include <algorithm>
 #include <filesystem>
+#include <mutex>
+#include <vector>
 #include <map>
 #include <unordered_set>
 #include <unordered_map>
 #include <system_error>
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 #include <ffi.h>
 #include <dlfcn.h>
 
@@ -31,6 +37,9 @@
 #include "FFI.h"
 #include "ModuleMath.h"
 #include "ModuleSys.h"
+#ifdef ROXAL_ENABLE_GRPC
+#include "ModuleGrpc.h"
+#endif
 #include "SimpleMarkSweepGC.h"
 #include <Eigen/Dense>
 #include <core/types.h>
@@ -53,6 +62,17 @@ std::atomic<size_t> configuredCallFrameLimit{VM::DefaultMaxCallFrames};
 // Tracks whether VM::instance() has already materialized the singleton so
 // later configureStackLimits() calls can update it in-place.
 std::atomic<bool> vmConstructed{false};
+std::atomic<VM::CacheMode> configuredCacheMode{VM::CacheMode::Normal};
+std::mutex configuredModulePathsMutex;
+std::vector<std::string> configuredModulePaths;
+
+void appendUnique(std::vector<std::string>& target, const std::vector<std::string>& additions)
+{
+    for (const auto& path : additions) {
+        if (std::find(target.begin(), target.end(), path) == target.end())
+            target.push_back(path);
+    }
+}
 
 struct BoundCallGuard {
     explicit BoundCallGuard(Thread* thread) : thread_(thread) {}
@@ -68,7 +88,110 @@ private:
     Thread* thread_;
 };
 
+std::filesystem::path resolveExecutablePath()
+{
+#if defined(_WIN32)
+    std::wstring buffer(MAX_PATH, L'\0');
+    for (;;) {
+        DWORD len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (len == 0)
+            return {};
+        if (len < buffer.size()) {
+            buffer.resize(len);
+            break;
+        }
+        buffer.resize(buffer.size() * 2);
+    }
+    std::error_code ec;
+    auto canonical = std::filesystem::weakly_canonical(std::filesystem::path(buffer), ec);
+    if (!ec)
+        return canonical;
+    return std::filesystem::path(buffer);
+#else
+    std::error_code ec;
+    auto link = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (ec)
+        return {};
+    std::error_code canonEc;
+    auto canonical = std::filesystem::weakly_canonical(link, canonEc);
+    if (!canonEc)
+        return canonical;
+    return link;
+#endif
+}
+
 } // namespace
+
+std::filesystem::path VM::executablePath()
+{
+    return resolveExecutablePath();
+}
+
+std::vector<std::string> VM::defaultModuleSearchPaths()
+{
+    std::vector<std::string> defaults;
+    const auto exePath = resolveExecutablePath();
+    if (exePath.empty())
+        return defaults;
+
+    const auto exeDir = exePath.parent_path();
+
+    auto addIfDir = [&](const std::filesystem::path& candidate) {
+        if (candidate.empty())
+            return;
+        std::error_code ec;
+        auto normalized = std::filesystem::weakly_canonical(candidate, ec);
+        const auto& resolved = ec ? candidate : normalized;
+        ec.clear();
+        if (!std::filesystem::is_directory(resolved, ec) || ec)
+            return;
+        auto pathStr = resolved.string();
+        if (std::find(defaults.begin(), defaults.end(), pathStr) == defaults.end())
+            defaults.push_back(pathStr);
+    };
+
+    addIfDir(exeDir / ".." / "share" / "roxal");
+    addIfDir(exeDir / ".." / "modules");
+    addIfDir(exeDir / "modules");
+
+    return defaults;
+}
+
+std::string VM::versionString()
+{
+    std::string version =
+    #ifdef ROXAL_VERSION
+        ROXAL_VERSION;
+    #else
+        "unknown";
+    #endif
+
+    if (version.empty())
+        version = "unknown";
+
+    const std::string prerelease =
+#ifdef ROXAL_PRERELEASE
+        ROXAL_PRERELEASE;
+#else
+        "";
+#endif
+
+    std::string gitHash =
+#ifdef ROXAL_GIT_HASH
+        ROXAL_GIT_HASH;
+#else
+        "unknown";
+    #endif
+    if (gitHash.empty())
+        gitHash = "unknown";
+
+    std::string fullVersion = version;
+    if (!prerelease.empty())
+        fullVersion += "-" + prerelease;
+    fullVersion += "+" + gitHash;
+
+    return fullVersion;
+}
 
 static ValueType builtinToValueType(type::BuiltinType bt)
 {
@@ -144,6 +267,26 @@ void VM::configureStackLimits(size_t stackSize, size_t callFrameLimit)
 }
 
 
+void VM::configureCacheMode(CacheMode mode)
+{
+    configuredCacheMode.store(mode, std::memory_order_relaxed);
+
+    if (vmConstructed.load(std::memory_order_acquire)) {
+        VM::instance().setCacheMode(mode);
+    }
+}
+
+void VM::configureModulePaths(const std::vector<std::string>& modulePaths)
+{
+    std::lock_guard<std::mutex> lock(configuredModulePathsMutex);
+    appendUnique(configuredModulePaths, modulePaths);
+
+    if (vmConstructed.load(std::memory_order_acquire)) {
+        VM::instance().appendModulePaths(modulePaths);
+    }
+}
+
+
 void VM::setStackLimits(size_t stackSize, size_t callFrameLimitValue)
 {
     if (stackSize == 0 || callFrameLimitValue == 0)
@@ -209,6 +352,21 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                       const Value& receiver,
                       const Value& declFunction)
 {
+    Thread* currentThread = thread.get();
+    auto stackDepthBefore = thread ? static_cast<size_t>(thread->stackTop - thread->stack.begin()) : 0;
+    auto frameDepthBefore = thread ? thread->frames.size() : 0;
+    struct NativeCallGuard {
+        Thread* t;
+        explicit NativeCallGuard(Thread* thread) : t(thread) {
+            if (t)
+                t->nativeCallDepth++;
+        }
+        ~NativeCallGuard() {
+            if (t)
+                t->nativeCallDepth--;
+        }
+    } nativeCallGuard(currentThread);
+
     try {
         if (funcType) {
             size_t paramCount = funcType->func.value().params.size() + (includeReceiver ? 1 : 0);
@@ -225,6 +383,16 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
             size_t actual = marshalArgs(funcType, defaults, callSpec, buf, includeReceiver, receiver, paramDefaults);
             ArgsView view{buf, actual};
             Value result { fn(*this, view) };
+            bool unwound = false;
+            if (thread) {
+                auto stackDepthAfter = static_cast<size_t>(thread->stackTop - thread->stack.begin());
+                auto frameDepthAfter = thread->frames.size();
+                unwound = stackDepthAfter < stackDepthBefore || frameDepthAfter < frameDepthBefore;
+            }
+            if (currentThread && (currentThread->exceptionJumpPending.load(std::memory_order_relaxed) || unwound)) {
+                currentThread->exceptionJumpPending.store(false, std::memory_order_relaxed);
+                return true;
+            }
             *(thread->stackTop - callSpec.argCount - 1) = result;
             popN(callSpec.argCount);
             return true;
@@ -232,6 +400,16 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
             Value* base = &(*thread->stackTop) - callSpec.argCount - (includeReceiver ? 1 : 0);
             ArgsView view{base, static_cast<size_t>(callSpec.argCount + (includeReceiver ? 1 : 0))};
             Value result { fn(*this, view) };
+            bool unwound = false;
+            if (thread) {
+                auto stackDepthAfter = static_cast<size_t>(thread->stackTop - thread->stack.begin());
+                auto frameDepthAfter = thread->frames.size();
+                unwound = stackDepthAfter < stackDepthBefore || frameDepthAfter < frameDepthBefore;
+            }
+            if (currentThread && (currentThread->exceptionJumpPending.load(std::memory_order_relaxed) || unwound)) {
+                currentThread->exceptionJumpPending.store(false, std::memory_order_relaxed);
+                return true;
+            }
             *(thread->stackTop - callSpec.argCount - 1) = result;
             popN(callSpec.argCount);
             return true;
@@ -279,6 +457,7 @@ VM::VM()
 {
     stackLimit = configuredStackLimit.load(std::memory_order_relaxed);
     callFrameLimit = configuredCallFrameLimit.load(std::memory_order_relaxed);
+    cacheModeSetting = configuredCacheMode.load(std::memory_order_relaxed);
 
     SimpleMarkSweepGC::instance().setVM(this);
 
@@ -301,9 +480,21 @@ VM::VM()
         registerBuiltinModule(make_ptr<ModuleFileIO>());
     #endif
 
+    #ifdef ROXAL_ENABLE_GRPC
+    registerBuiltinModule(make_ptr<ModuleGrpc>());
+    #endif
+
     #if ENABLE_UI
         registerBuiltinModule(make_ptr<ModuleUI>());
     #endif
+
+    std::vector<std::string> stagedModulePaths;
+    {
+        std::lock_guard<std::mutex> lock(configuredModulePathsMutex);
+        stagedModulePaths = configuredModulePaths;
+    }
+    appendModulePaths(stagedModulePaths);
+    appendModulePaths(VM::defaultModuleSearchPaths());
 
     // Execute builtin module scripts to attach declarations and docs
     ptr<Thread> initThread = make_ptr<Thread>();
@@ -311,10 +502,11 @@ VM::VM()
 
     executeBuiltinModuleScript("compiler/sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
     executeBuiltinModuleScript("compiler/math.rox", getBuiltinModuleType(toUnicodeString("math")));
-
     #ifdef ROXAL_ENABLE_FILEIO
-        executeBuiltinModuleScript("compiler/fileio.rox", getBuiltinModuleType(toUnicodeString("fileio")));
+        executeBuiltinModuleScript("fileio.rox", getBuiltinModuleType(toUnicodeString("fileio")));
     #endif
+    executeBuiltinModuleScript("sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
+    executeBuiltinModuleScript("math.rox", getBuiltinModuleType(toUnicodeString("math")));
 
     #if ENABLE_UI
         executeBuiltinModuleScript("ui/ui.rox", getBuiltinModuleType(toUnicodeString("ui")));
@@ -485,12 +677,12 @@ VM::~VM()
         dataflowEngine->clear();
 
 
-    // Release REPL thread resources before reporting potential leaks
-    replThread.reset();
-
     // Release the main thread before final garbage collection so any
     // objects referenced through its stacks and handlers can be reclaimed
     thread.reset();
+
+    // Release REPL thread resources before reporting potential leaks
+    replThread.reset();
 
     // Flush any reference-counted objects before performing a final tracing
     // collection so we do not enqueue the same object twice.
@@ -531,8 +723,13 @@ void VM::appendModulePaths(const std::vector<std::string>& modulePaths)
     // insert into modulePaths, except if already present
 
     for (const std::string& path : modulePaths) {
-        if (std::find(this->modulePaths.begin(), this->modulePaths.end(), path) == this->modulePaths.end())
+        if (std::find(this->modulePaths.begin(), this->modulePaths.end(), path) == this->modulePaths.end()) {
             this->modulePaths.push_back(path);
+            #ifdef ROXAL_ENABLE_GRPC
+            if (grpcModule)
+                grpcModule->addProtoPath(path);
+            #endif
+        }
     }
 }
 
@@ -566,6 +763,7 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
         compiler.setCacheReadEnabled(cacheReadsEnabled());
         compiler.setCacheWriteEnabled(cacheWritesEnabled());
         compiler.setModulePaths(modulePaths);
+        compiler.setModuleResolverVM(this);
 
         std::filesystem::path cacheSourcePath;
         if (!name.empty()) {
@@ -645,15 +843,15 @@ InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
     runtimeErrorFlag = false;
 
     static RoxalCompiler compiler {};
-    static Value replModule { Value::nilVal() };
     compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
     compiler.setCacheReadEnabled(cacheReadsEnabled());
     compiler.setCacheWriteEnabled(cacheWritesEnabled());
     compiler.setModulePaths(modulePaths);
     compiler.setReplMode(replMode);
+    compiler.setModuleResolverVM(this);
 
     try {
-        function = compiler.compile(linestream, "cli", replModule);
+        function = compiler.compile(linestream, "cli", replModuleValue);
 
     } catch (std::exception& e) {
         return InterpretResult::CompileError;
@@ -662,8 +860,8 @@ InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
     if (function.isNil())
         return InterpretResult::CompileError;
 
-    if (replModule.isNil())
-        replModule = asFunction(function)->moduleType.strongRef();
+    if (replModuleValue.isNil())
+        replModuleValue = asFunction(function)->moduleType.strongRef();
 
     lineMode = true;
     lineStream = &linestream;
@@ -691,7 +889,16 @@ InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
     }
     #endif
 
+    thread.reset();
+
     return result;
+}
+
+ObjModuleType* VM::replModuleType() const
+{
+    if (replModuleValue.isNil())
+        return nullptr;
+    return asModuleType(replModuleValue);
 }
 
 thread_local ptr<Thread> VM::thread;
@@ -915,7 +1122,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 if (isSignal(arg))
                     sigArgs.push_back(asSignal(arg)->signal);
                 else {
-                    arg.resolve();
+                    if (!resolveValue(arg))
+                        return false;
                     constArgs[pname] = arg;
                 }
             }
@@ -1154,12 +1362,28 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 *(thread->stackTop - 1) = inst; // native init returns instance
                             return ok;
                         } else {
+                        bool isNativeInit = initFuncObj != nullptr && initFuncObj->nativeImpl;
+                        Value calleeVal;
+                        if (isNativeInit) {
+                            NativeFn fn = initFuncObj->nativeImpl;
+                            calleeVal = Value::boundNativeVal(inst, fn,
+                                                              initFuncObj->funcType.has_value() &&
+                                                                  initFuncObj->funcType.value()->func.has_value()
+                                                                  ? initFuncObj->funcType.value()->func->isProc
+                                                                  : false,
+                                                              initFuncObj->funcType.has_value()
+                                                                  ? initFuncObj->funcType.value()
+                                                                  : nullptr,
+                                                              initFuncObj->nativeDefaults,
+                                                              Value::objRef(initFuncObj));
+                        } else {
                             auto boundInit = newBoundMethodObj(inst, initMethod->closure);
-                            Value calleeVal = Value::objVal(std::move(boundInit));
-                            ActorInstance* actorInst = asActorInstance(inst);
-                            actorInst->queueCall(calleeVal, callSpec, &(*thread->stackTop));
-                            popN(callSpec.argCount); // remove init args
+                            calleeVal = Value::objVal(std::move(boundInit));
                         }
+                        ActorInstance* actorInst = asActorInstance(inst);
+                        actorInst->queueCall(calleeVal, callSpec, &(*thread->stackTop));
+                        popN(callSpec.argCount); // remove init args
+                    }
                     } else {
                         if (dictArg) {
                             ObjDict* argDict = asDict(peek(0));
@@ -1857,7 +2081,10 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                 ObjList* list = asList(indexable);
                 Value index = pop();
                 try {
-                    if (isRange(index) && !isList(value)) value.resolve();
+                    if (isRange(index) && !isList(value)) {
+                        if (!resolveValue(value))
+                            return false;
+                    }
                     list->setIndex(index, value);
                     pop(); // discard indexable
                 } catch (std::exception& e) {
@@ -1874,7 +2101,10 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                 ObjVector* vec = asVector(indexable);
                 Value index = pop();
                 try {
-                    if (isRange(index) && !isVector(value)) value.resolve();
+                    if (isRange(index) && !isVector(value)) {
+                        if (!resolveValue(value))
+                            return false;
+                    }
                     vec->setIndex(index, value);
                     pop(); // discard indexable
                 } catch (std::exception& e) {
@@ -1888,7 +2118,10 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                     ObjMatrix* mat = asMatrix(indexable);
                     Value r = pop();
                     try {
-                        if (isRange(r) && !isMatrix(value)) value.resolve();
+                        if (isRange(r) && !isMatrix(value)) {
+                            if (!resolveValue(value))
+                                return false;
+                        }
                         mat->setIndex(r, value);
                         pop();
                     } catch (std::exception& e) {
@@ -1901,7 +2134,10 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                     Value col = pop();
                     Value row = pop();
                     try {
-                        if ((isRange(row) || isRange(col)) && !isMatrix(value)) value.resolve();
+                        if ((isRange(row) || isRange(col)) && !isMatrix(value)) {
+                            if (!resolveValue(value))
+                                return false;
+                        }
                         mat->setIndex(row, col, value);
                         pop();
                     } catch (std::exception& e) {
@@ -2654,7 +2890,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 Value& inst { peek(0) };
                 ObjString* name = readString();
 
-                inst.resolve();
+                if (!resolveValue(inst))
+                    return errorReturn;
 
                 std::string signalName = toUTF8StdString(name->s);
 
@@ -2783,7 +3020,8 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                inst.resolve();
+                if (!resolveValue(inst))
+                    return errorReturn;
                 if (isEventInstance(inst)) {
                     ObjEventInstance* eventInst = asEventInstance(inst);
                     if (!eventInst->typeHandle.isAlive() || !isEventType(eventInst->typeHandle)) {
@@ -3011,7 +3249,8 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                inst.resolve();
+                if (!resolveValue(inst))
+                    return errorReturn;
                 if (isEventInstance(inst)) {
                     ObjEventInstance* eventInst = asEventInstance(inst);
                     if (!eventInst->typeHandle.isAlive() || !isEventType(eventInst->typeHandle)) {
@@ -3243,7 +3482,8 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                inst.resolve();
+                if (!resolveValue(inst))
+                    return errorReturn;
                 if (isDict(inst)) {
                     ObjDict* dict = asDict(inst);
                     Value value { peek(0) };
@@ -3376,7 +3616,8 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                inst.resolve();
+                if (!resolveValue(inst))
+                    return errorReturn;
                 if (isEventInstance(inst)) {
                     runtimeError("Cannot assign to property '" + toUTF8StdString(name->s) + "' of event instance.");
                     return errorReturn;
@@ -3521,8 +3762,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Equal: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([&](Value a, Value b) -> Value { return equal(a, b, frame->strict); });
@@ -3535,14 +3776,14 @@ std::pair<InterpretResult,Value> VM::execute()
             case OpCode::Is: {
                 Value b = pop();
                 Value a = pop();
-                a.resolve();
-                b.resolve();
+                if (!resolveValue(a) || !resolveValue(b))
+                    return errorReturn;
                 push(Value::boolVal(a.is(b, frame->strict)));
                 break;
             }
             case OpCode::Greater: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value a, Value b) -> Value { return greater(a,b); });
@@ -3553,8 +3794,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Less: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value a, Value b) -> Value { return less(a,b); });
@@ -3565,8 +3806,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Add: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
 
                 if (isString(peek(1))) {
                     concatenate();
@@ -3581,8 +3822,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Subtract: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value l, Value r) -> Value { return subtract(l, r); });
@@ -3593,8 +3834,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Multiply: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value l, Value r) -> Value { return multiply(l, r); });
@@ -3605,8 +3846,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Divide: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value l, Value r) -> Value { return divide(l, r); });
@@ -3618,7 +3859,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::Negate: {
                 Value& operand { peek(0) };
-                operand.resolveFuture();
+                if (!operand.resolveFuture())
+                    goto postInstructionDispatch;
 
                 try {
                     push(negate(pop()));
@@ -3630,8 +3872,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::Modulo: {
                 // TODO: support decimal
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value a, Value b) -> Value { return mod(a,b); });
@@ -3642,8 +3884,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::And: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
                 if (!peek(0).isBool() && !isSignal(peek(0))) {
                     runtimeError("Operand of 'and' must be a bool");
                     return errorReturn;
@@ -3661,8 +3903,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Or: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
                 if (!peek(0).isBool() && !isSignal(peek(0))) {
                     runtimeError("Operand of 'or' must be a bool");
                     return errorReturn;
@@ -3680,8 +3922,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::BitAnd: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
                 try {
                     binaryOp([](Value a, Value b) -> Value { return band(a,b); });
                 } catch (std::exception& e) {
@@ -3691,8 +3933,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::BitOr: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
                 try {
                     binaryOp([](Value a, Value b) -> Value { return bor(a,b); });
                 } catch (std::exception& e) {
@@ -3702,8 +3944,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::BitXor: {
-                peek(0).resolveFuture();
-                peek(1).resolveFuture();
+                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                    goto postInstructionDispatch;
                 try {
                     binaryOp([](Value a, Value b) -> Value { return bxor(a,b); });
                 } catch (std::exception& e) {
@@ -3714,7 +3956,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::BitNot: {
                 Value& operand { peek(0) };
-                operand.resolveFuture();
+                if (!operand.resolveFuture())
+                    goto postInstructionDispatch;
                 try {
                     push(bnot(pop()));
                 } catch (std::exception& e) {
@@ -3761,14 +4004,16 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::JumpIfFalse: {
                 uint16_t jumpDist = readShort();
-                peek(0).resolve();
+                if (!resolveValue(peek(0)))
+                    return errorReturn;
                 if (isFalsey(peek(0)))
                     frame->ip += jumpDist;
                 break;
             }
             case OpCode::JumpIfTrue: {
                 uint16_t jumpDist = readShort();
-                peek(0).resolve();
+                if (!resolveValue(peek(0)))
+                    return errorReturn;
                 if (isTruthy(peek(0)))
                     frame->ip += jumpDist;
                 break;
@@ -3786,7 +4031,8 @@ std::pair<InterpretResult,Value> VM::execute()
             case OpCode::Call: {
                 CallSpec callSpec{frame->ip};
                 Value& callee { peek(callSpec.argCount) };
-                callee.resolve();
+                if (!resolveValue(callee))
+                    return errorReturn;
                 if (!callValue(callee, callSpec))
                     return errorReturn;
                 frame = thread->frames.end()-1;
@@ -3794,7 +4040,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::Index: {
                 uint8_t argCount = readByte();
-                peek(argCount).resolveFuture(); // don't resolve signals here
+                if (!peek(argCount).resolveFuture()) // don't resolve signals here
+                    goto postInstructionDispatch;
                 if (!indexValue(peek(argCount), argCount))
                     return errorReturn;
                 break;
@@ -3945,7 +4192,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::SetIndex: {
                 uint8_t argCount = readByte();
-                peek(argCount).resolveFuture(); // don't resolve signals here
+                if (!peek(argCount).resolveFuture()) // don't resolve signals here
+                    goto postInstructionDispatch;
                 try {
                     Value& indexable { peek(argCount) };
                     Value& value { peek(argCount+1) };
@@ -4130,8 +4378,10 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::IfDictToKeys: {
                 Value& maybeDict = peek(0);
-                if (!isDict(maybeDict))
-                    maybeDict.resolve();
+                if (!isDict(maybeDict)) {
+                    if (!resolveValue(maybeDict))
+                        return errorReturn;
+                }
                 if (isDict(maybeDict)) {
                     Value d { maybeDict };
                     pop();
@@ -4142,8 +4392,10 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::IfDictToItems: {
                 Value& maybeDict = peek(0);
-                if (!isDict(maybeDict))
-                    maybeDict.resolve();
+                if (!isDict(maybeDict)) {
+                    if (!resolveValue(maybeDict))
+                        return errorReturn;
+                }
                 if (isDict(maybeDict)) {
                     Value d { maybeDict };
                     pop();
@@ -4556,9 +4808,11 @@ std::pair<InterpretResult,Value> VM::execute()
             if (isList(waitTarget)) {
                 ObjList* list = asList(waitTarget);
                 for (auto& element : list->elts.get())
-                    element.resolve();
+                    if (!resolveValue(element))
+                        return errorReturn;
             } else if (isFuture(waitTarget)) {
-                waitTarget.resolve();
+                if (!resolveValue(waitTarget))
+                    return errorReturn;
             }
         }
 
@@ -4680,6 +4934,9 @@ void VM::raiseException(Value exc)
     ObjException* exObj = asException(exc);
     if (exObj->stackTrace.isNil())
         exObj->stackTrace = captureStacktrace();
+
+    if (thread && thread->nativeCallDepth > 0)
+        thread->exceptionJumpPending.store(true, std::memory_order_relaxed);
 
     while (true) {
         if (thread->frames.empty()) {
@@ -5126,6 +5383,7 @@ void VM::defineBuiltinProperties()
                          &VM::signal_name_setter);
     defineBuiltinProperty(ValueType::Object, "stackTrace", &VM::exception_stacktrace_getter);
     defineBuiltinProperty(ValueType::Object, "stackTraceString", &VM::exception_stacktrace_string_getter);
+    defineBuiltinProperty(ValueType::Object, "detail", &VM::exception_detail_getter);
 }
 
 void VM::defineBuiltinProperty(ValueType type, const std::string& name, NativePropertyGetter getter, NativePropertySetter setter)
@@ -5202,6 +5460,20 @@ Value VM::exception_stacktrace_string_getter(Value& receiver)
     return Value::stringVal(toUnicodeString(out));
 }
 
+Value VM::exception_detail_getter(Value& receiver)
+{
+#ifdef DEBUG_BUILD
+    if (!isException(receiver))
+        throw std::invalid_argument("exception.detail property on non-exception");
+#endif
+    if (!isException(receiver)) {
+        runtimeError("Undefined property 'detail'");
+        return Value::nilVal();
+    }
+    ObjException* ex = asException(receiver);
+    return ex->detail;
+}
+
 Value VM::captureStacktrace()
 {
     Value framesList { Value::listVal() };
@@ -5234,6 +5506,12 @@ Value VM::captureStacktrace()
     }
 
     return framesList;
+}
+
+bool VM::resolveValue(Value& value)
+{
+    value.resolve();
+    return !runtimeErrorFlag.load();
 }
 
 Value VM::event_emit_builtin(ArgsView args)
@@ -5645,7 +5923,10 @@ Value VM::ffi_native(ArgsView args)
 ptr<BuiltinModule> VM::getBuiltinModule(const icu::UnicodeString& name)
 {
     for (auto& m : builtinModules) {
-        if (asModuleType(m->moduleType())->name == name)
+        Value mt = m->moduleType();
+        if (mt.isNil() || !isModuleType(mt))
+            continue; // helper-only modules (e.g., grpc) do not expose a module type
+        if (asModuleType(mt)->name == name)
             return m;
     }
     return nullptr;
@@ -5654,8 +5935,11 @@ ptr<BuiltinModule> VM::getBuiltinModule(const icu::UnicodeString& name)
 Value VM::getBuiltinModuleType(const icu::UnicodeString& name)
 {
     for (auto& m : builtinModules) {
-        if (asModuleType(m->moduleType())->name == name)
-            return m->moduleType();
+        Value mt = m->moduleType();
+        if (mt.isNil() || !isModuleType(mt))
+            continue;
+        if (asModuleType(mt)->name == name)
+            return mt;
     }
     return Value::nilVal();
 }
@@ -5663,14 +5947,63 @@ Value VM::getBuiltinModuleType(const icu::UnicodeString& name)
 void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
 {
     debug_assert_msg(isModuleType(moduleType),"is ObjModuleType");
-    std::ifstream in(path);
-    if (!in.is_open()) {
-        std::string alt = "../" + path;
-        in.open(alt);
-        if (!in.is_open()) {
-            runtimeError("Cannot open builtin module script: " + path + " or " + alt);
+    std::filesystem::path openedPath;
+    std::ifstream in;
+
+    std::vector<std::string> searchRoots = modulePaths;
+    for (const auto& candidate : VM::defaultModuleSearchPaths()) {
+        if (std::find(searchRoots.begin(), searchRoots.end(), candidate) == searchRoots.end())
+            searchRoots.push_back(candidate);
+    }
+
+    std::filesystem::path requested(path);
+    std::vector<std::filesystem::path> candidates;
+    auto addCandidate = [&](const std::filesystem::path& candidate) {
+        if (candidate.empty())
             return;
+        if (std::find(candidates.begin(), candidates.end(), candidate) != candidates.end())
+            return;
+        candidates.push_back(candidate);
+    };
+
+    if (requested.is_absolute()) {
+        addCandidate(requested);
+    } else {
+        addCandidate(requested);
+        for (const auto& root : searchRoots)
+            addCandidate(std::filesystem::path(root) / requested);
+    }
+
+    for (const auto& candidate : candidates) {
+        std::ifstream candidateStream(candidate);
+        if (candidateStream.is_open()) {
+            in = std::move(candidateStream);
+            openedPath = candidate;
+            break;
         }
+    }
+
+    if (!in.is_open()) {
+        std::ostringstream oss;
+        oss << "Cannot open builtin module script '" << path << "'";
+        if (!candidates.empty()) {
+            oss << " (searched:";
+            bool first = true;
+            for (const auto& candidate : candidates) {
+                oss << (first ? " " : ", ") << candidate.string();
+                first = false;
+            }
+            oss << ")";
+        }
+        runtimeError(oss.str());
+        return;
+    }
+
+    std::filesystem::path cacheSourcePath;
+    try {
+        cacheSourcePath = std::filesystem::canonical(std::filesystem::absolute(openedPath));
+    } catch (...) {
+        cacheSourcePath.clear();
     }
 
     RoxalCompiler compiler;
@@ -5678,8 +6011,24 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
     compiler.setCacheReadEnabled(cacheReadsEnabled());
     compiler.setCacheWriteEnabled(cacheWritesEnabled());
     compiler.setModulePaths(modulePaths);
+    compiler.setModuleResolverVM(this);
 
-    Value fn = compiler.compile(in, path, moduleType);
+    Value fn { Value::nilVal() };
+    bool loadedFromCache = false;
+    if (!cacheSourcePath.empty()) {
+        Value cached = compiler.loadFileCache(cacheSourcePath);
+        if (cached.isNonNil()) {
+            fn = cached;
+            loadedFromCache = true;
+        }
+    }
+
+    if (!loadedFromCache) {
+        fn = compiler.compile(in, openedPath.string(), moduleType);
+        if (!fn.isNil() && !cacheSourcePath.empty())
+            compiler.storeFileCache(cacheSourcePath, fn);
+    }
+
     if (fn.isNil())
         return;
 
@@ -5693,8 +6042,26 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
 
 void VM::registerBuiltinModule(ptr<BuiltinModule> module)
 {
+    #ifdef ROXAL_ENABLE_GRPC
+    if (!grpcModule) {
+        if (auto gm = dynamic_ptr_cast<ModuleGrpc>(module))
+            grpcModule = gm.get();
+    }
+    #endif
     builtinModules.push_back(module);
+    if (module) {
+        appendModulePaths(module->additionalModulePaths());
+    }
 }
+
+#ifdef ROXAL_ENABLE_GRPC
+Value VM::importProtoModule(const std::string& path)
+{
+    if (!grpcModule)
+        throw std::runtime_error("gRPC module not initialized");
+    return grpcModule->importProto(path);
+}
+#endif
 
 void VM::dumpStackTraces()
 {

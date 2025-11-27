@@ -264,35 +264,35 @@ void Thread::act(Value actorInstance)
                         auto resultPair = vm.execute();
                         result = resultPair.first;
 
-                        if (resultPair.first == InterpretResult::OK) {
-                            if (callInfo.returnPromise != nullptr) {
-                                Value ret = resultPair.second;
-                                if (!ret.isPrimitive())
-                                    ret = ret.clone();
-                                callInfo.returnPromise->set_value(ret);
-                                if (!callInfo.returnFuture.isNil()) {
-                                    asFuture(callInfo.returnFuture)->wakeWaiters();
-                                    callInfo.returnFuture = Value::nilVal();
-                                }
+                    if (resultPair.first == InterpretResult::OK) {
+                        if (callInfo.returnPromise != nullptr) {
+                            Value ret = resultPair.second;
+                            if (!ret.isPrimitive() && !isException(ret))
+                                ret = ret.clone();
+                            callInfo.returnPromise->set_value(ret);
+                            if (!callInfo.returnFuture.isNil()) {
+                                asFuture(callInfo.returnFuture)->wakeWaiters();
+                                callInfo.returnFuture = Value::nilVal();
                             }
-                        } else {
-                            if (callInfo.returnPromise != nullptr) {
-                                callInfo.returnPromise->set_value(Value::nilVal());
-                                if (!callInfo.returnFuture.isNil()) {
-                                    asFuture(callInfo.returnFuture)->wakeWaiters();
-                                    callInfo.returnFuture = Value::nilVal();
-                                }
-                            }
-                            quit = true;
-                            // reset stack before breaking
-                            {
-                                auto diff = this->stackTop - (this->stack.begin()+1);
-                                if (diff > 0) popN(size_t(diff));
-                                this->stack[0] = this->actorInstance;
-                            }
-                            currentActorCall = Value::nilVal();
-                            break;
                         }
+                    } else {
+                        if (callInfo.returnPromise != nullptr) {
+                            callInfo.returnPromise->set_value(Value::nilVal());
+                            if (!callInfo.returnFuture.isNil()) {
+                                asFuture(callInfo.returnFuture)->wakeWaiters();
+                                callInfo.returnFuture = Value::nilVal();
+                            }
+                        }
+                        quit = true;
+                        // reset stack before breaking
+                        {
+                            auto diff = this->stackTop - (this->stack.begin()+1);
+                            if (diff > 0) popN(size_t(diff));
+                            this->stack[0] = this->actorInstance;
+                        }
+                        currentActorCall = Value::nilVal();
+                        break;
+                    }
 
                         {
                             auto diff = this->stackTop - (this->stack.begin()+1);
@@ -308,10 +308,27 @@ void Thread::act(Value actorInstance)
 
                         NativeFn native = bn->function;
                         ArgsView view{&(*vm.thread->stackTop) - callInfo.callSpec.argCount - 1,
-                                    static_cast<size_t>(callInfo.callSpec.argCount + 1)};
-                        native(vm, view);
+                                      static_cast<size_t>(callInfo.callSpec.argCount + 1)};
+                        Value ret{};
+                        bool ok = true;
+                        try {
+                            ret = native(vm, view);
+                        } catch (std::exception& e) {
+                            ok = false;
+                        }
 
                         popN(callInfo.callSpec.argCount);
+
+                        if (callInfo.returnPromise != nullptr) {
+                            if (!ret.isPrimitive() && !isException(ret))
+                                ret = ret.clone();
+                            // On failure, resolve to nil to avoid broken promises.
+                            callInfo.returnPromise->set_value(ok ? ret : Value::nilVal());
+                            if (!callInfo.returnFuture.isNil()) {
+                                asFuture(callInfo.returnFuture)->wakeWaiters();
+                                callInfo.returnFuture = Value::nilVal();
+                            }
+                        }
                     }
 
                     // restore weak actor reference for next iteration

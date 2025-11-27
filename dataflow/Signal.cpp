@@ -3,6 +3,7 @@
 #include <numeric>
 #include <iterator>
 #include <cmath>
+#include <optional>
 
 #include "Signal.h"
 #include "DataflowEngine.h"
@@ -65,15 +66,22 @@ Signal::Signal(double freq, Value initial, std::optional<std::string> name)
     : m_frequency(freq), m_maxHistoryPeriods(2)
 {
     m_name = name.value_or("source_signal");
-    assert(freq > 0.0);
-    double period_us = 1000000.0 / m_frequency;
-    double period_round = std::round(period_us);
-    if (period_us < 1.0 || std::fabs(period_us - period_round) > 1e-9) {
-        throw std::invalid_argument(
-            "clock frequency " + std::to_string(freq) +
-            " not representable as whole microseconds");
+
+    if (freq <= 0.0) {
+        m_eventDriven = true;
+        m_frequency = 0.0;
+        m_period = TimeDuration::zero();
+    } else {
+        double period_us = 1000000.0 / m_frequency;
+        double period_round = std::round(period_us);
+        if (period_us < 1.0 || std::fabs(period_us - period_round) > 1e-9) {
+            throw std::invalid_argument(
+                "clock frequency " + std::to_string(freq) +
+                " not representable as whole microseconds");
+        }
+        m_period = TimeDuration::microSecs(static_cast<int64_t>(period_round));
     }
-    m_period = TimeDuration::microSecs(static_cast<int64_t>(period_round));
+
     values[TimePoint::zero()] = initial;
 }
 
@@ -117,6 +125,10 @@ void Signal::trace(roxal::ValueVisitor& visitor) const
 
 void Signal::setFrequency(double freq)
 {
+    if (freq <= 0.0)
+        throw std::invalid_argument("Signal frequency must be positive");
+
+    m_eventDriven = false;
     m_frequency = freq;
     double period_us = 1000000.0 / m_frequency;
     double period_round = std::round(period_us);
@@ -177,14 +189,18 @@ Value Signal::valueAt(TimePoint t) const
 
 void Signal::setValueAt(TimePoint t, const Value& v)
 {
-    auto tickStart = DataflowEngine::instance()->tickStart();
-    auto age = t - tickStart;
+    auto engine = DataflowEngine::instance();
+    auto tickStart = engine->tickStart();
+
+    if (!m_eventDriven) {
+        auto age = t - tickStart;
 #ifdef DEBUG_BUILD
-    if (t >= tickStart && (age % m_period != TimeDuration::zero())) {
-        std::cout << "setValueAt Signal " + name() + " for time " + t.humanString() +
-            " not a multiple of period " + m_period.humanString() << std::endl;
-    }
+        if (t >= tickStart && (age % m_period != TimeDuration::zero())) {
+            std::cout << "setValueAt Signal " + name() + " for time " + t.humanString() +
+                " not a multiple of period " + m_period.humanString() << std::endl;
+        }
 #endif
+    }
 
     assert(!values.empty());
     bool valueChanged = (lastValueBefore(t) != v);
@@ -199,10 +215,22 @@ void Signal::setValueAt(TimePoint t, const Value& v)
 
     if (valueChanged)
         invokeValueChangedCallbacks(t, v);
+
+    if (m_eventDriven) {
+        engine->updateSignalConsumerInputAvailability(ptr_from_this(), t);
+        if (isSource && !isDerived)
+            engine->processEventDrivenSignalUpdate(ptr_from_this(), t);
+    }
 }
 
 void Signal::set(const Value& v)
 {
+    if (m_eventDriven) {
+        TimePoint now = TimePoint::currentTime();
+        setValueAt(now, v);
+        return;
+    }
+
     TimePoint t = DataflowEngine::instance()->tickStart();
 
     // Update the value at the next tick boundary for this signal. This avoids
@@ -250,7 +278,14 @@ Value Signal::lastValue() const
     return values.rbegin()->second;
 }
 
-Value Signal::valueAtIndex(int index) const
+TimePoint Signal::latestSampleTime() const
+{
+    if (values.empty())
+        return TimePoint::zero();
+    return values.rbegin()->first;
+}
+
+Value Signal::valueAtIndex(int index, std::optional<TimePoint> referenceTime) const
 {
     if (index > 0)
         throw std::invalid_argument("Signal index must be 0 or negative");
@@ -258,10 +293,16 @@ Value Signal::valueAtIndex(int index) const
     if (values.empty())
         throw std::runtime_error("Signal has no values.");
 
+    if (m_eventDriven) {
+        if (index == 0)
+            return lastValue();
+        throw std::invalid_argument("Event-driven signals do not support history indices");
+    }
+
     int stepsBack = -index;
 
-    TimePoint lastTime = values.rbegin()->first;
-    TimePoint t = lastTime - m_period * stepsBack;
+    TimePoint reference = referenceTime.value_or(values.rbegin()->first);
+    TimePoint t = reference - m_period * stepsBack;
     // If t predates the earliest recorded value, return the
     // initial value instead of throwing an exception.
     if (t < values.begin()->first)
@@ -278,9 +319,16 @@ ptr<Signal> Signal::indexedSignal(int index)
     if (index == 0)
         return ptr_from_this();
 
+    if (m_eventDriven)
+        throw std::invalid_argument("Event-driven signals do not support delayed indices");
+
     Value initial;
     try {
-        initial = valueAtIndex(index);
+        auto engine = DataflowEngine::instance(false);
+        std::optional<TimePoint> currentTick = std::nullopt;
+        if (engine)
+            currentTick = engine->tickStart();
+        initial = valueAtIndex(index, currentTick);
     } catch(...) {
         initial = Value();
     }
@@ -295,6 +343,7 @@ ptr<Signal> Signal::indexedSignal(int index)
     newSig->isDerived = true;
     newSig->baseSignal = ptr_from_this();
     newSig->baseIndex = index;
+    newSig->m_eventDriven = m_eventDriven;
     newSig->setInternal(isInternal());
     newSig->setMaxHistoryPeriods(std::max(m_maxHistoryPeriods, -index + 1));
     DataflowEngine::instance()->addSignal(newSig);

@@ -22,7 +22,8 @@ class Thread
   : public enable_ptr_from_this<Thread> {
 public:
     Thread()
-      : threadSleep(false), osthread(nullptr), state(State::Constructed), execute_depth(0) {
+      : threadSleep(false), osthread(nullptr), state(State::Constructed), execute_depth(0),
+        exceptionJumpPending(false), nativeCallDepth(0) {
         thisid = nextId.fetch_add(1);
         actor = false;
         quit = false;
@@ -132,6 +133,9 @@ public:
     // Future supplied to sys.wait(for=...) that should be awaited after
     // any requested sleep completes.
     Value pendingWaitFor { Value::nilVal() };
+
+    std::atomic_bool exceptionJumpPending;
+    int nativeCallDepth;
 
 private:
     ptr<std::thread> osthread;

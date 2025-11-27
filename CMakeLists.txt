@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(roxal VERSION 1.0 LANGUAGES CXX C)
+project(roxal VERSION 1.0.0 LANGUAGES CXX C)
+set(ROXAL_PRERELEASE "" CACHE STRING "SemVer prerelease label (e.g. alpha.1, rc.1)")
 
 enable_testing()
 
@@ -12,6 +13,20 @@ option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
 
 
 option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
+option(ROXAL_ENABLE_GRPC "Enable gRPC/protobuf import support" OFF)
+
+# Expose the project version and git hash to the codebase
+set(ROXAL_PROJECT_VERSION "${PROJECT_VERSION}")
+execute_process(
+    COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE ROXAL_GIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT ROXAL_GIT_HASH)
+    set(ROXAL_GIT_HASH "unknown")
+endif()
 
 option(ENABLE_UI "Build with UI support" ON)
 
@@ -83,6 +98,11 @@ find_package( Eigen3 REQUIRED )
 set(EIGEN3_INCLUDE_DIR "/usr/local/include/eigen3/")
 include_directories(${EIGEN3_INCLUDE_DIR})
 
+if(ROXAL_ENABLE_GRPC)
+    find_package(Protobuf REQUIRED) # use module or config
+    find_package(gRPC CONFIG REQUIRED)
+endif()
+
 # Detect libffi via pkg-config so that include and library paths
 # are recorded explicitly and the build fails clearly if libffi is
 # missing.
@@ -108,6 +128,8 @@ set(COMPILER_SOURCES
     compiler/ASTGenerator.cpp
     compiler/ASTGraphviz.cpp
     compiler/Chunk.cpp
+    compiler/CallableInfo.cpp
+    compiler/Introspection.cpp
     compiler/BuiltinModule.cpp
     compiler/Object.cpp
     compiler/FFI.cpp
@@ -126,6 +148,14 @@ list(APPEND COMPILER_SOURCES compiler/ModuleSys.cpp)
 
 if(ROXAL_ENABLE_FILEIO)
     list(APPEND COMPILER_SOURCES compiler/ModuleFileIO.cpp)
+endif()
+if(ROXAL_ENABLE_GRPC)
+    list(APPEND COMPILER_SOURCES
+        compiler/grpc/ClientCall.cpp
+        compiler/grpc/Connector.cpp
+        compiler/grpc/ProtoAdapter.cpp
+        compiler/grpc/ModuleGrpc.cpp
+    )
 endif()
 
 if(ENABLE_UI)
@@ -173,6 +203,8 @@ include_directories(${CMAKE_HOME_DIRECTORY})
 include_directories(
     ${ANTLR4_ROOT}/include/antlr4-runtime
     compiler/cpp-gen
+    ${CMAKE_SOURCE_DIR}/compiler
+    ${CMAKE_SOURCE_DIR}/compiler/grpc
 )
 
 link_directories(
@@ -204,6 +236,8 @@ target_link_libraries(roxalcore
         dataflow
         dl
         ${LIBFFI_LIBRARIES}
+        $<$<BOOL:${ROXAL_ENABLE_GRPC}>:protobuf::libprotobuf>
+        $<$<BOOL:${ROXAL_ENABLE_GRPC}>:gRPC::grpc++>
 )
 
 
@@ -217,6 +251,10 @@ target_compile_options(roxalcore PRIVATE
 target_compile_definitions(roxalcore PRIVATE
     $<$<CONFIG:DEBUG>:DEBUG_BUILD>
     $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
+    $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
+    ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
+    ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
+    ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
 )
 
 
@@ -263,6 +301,10 @@ if(ROXAL_BUILD_MAIN)
     target_compile_definitions(roxal PRIVATE
         $<$<CONFIG:DEBUG>:DEBUG_BUILD>
         $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
+        $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
+        ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
+        ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
+        ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
     )
 
     add_test(NAME RoxalSourceTests

@@ -80,6 +80,7 @@ public:
     Value engine_stop_native(VM& vm, ArgsView args);
     Value typeof_native(VM& vm, ArgsView args);
     Value df_graph_native(VM& vm, ArgsView args);
+    Value df_islands_native(VM& vm, ArgsView args);
     Value df_graphdot_native(VM& vm, ArgsView args);
     Value loadlib_native(VM& vm, ArgsView args);
 

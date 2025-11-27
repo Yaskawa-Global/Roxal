@@ -49,7 +49,7 @@ Value VariablesMap::MonitoredValue::ensureSignal(const std::string& signalName)
         return signal;
 
     std::string name = signalName.empty() ? std::string("variable") : signalName;
-    auto sig = df::Signal::newSourceSignalTemplate(1000.0, value, name);
+    auto sig = df::Signal::newSourceSignal(0.0, value, name);
     sig->setInternal(true);
     signal = Value::signalVal(sig);
     return signal;
@@ -236,9 +236,9 @@ Value Value::fileVal(roxal::ptr<std::fstream> f, bool binary)
     return Value::objVal(newFileObj(f, binary));
 }
 
-Value Value::exceptionVal(Value message, Value exType, Value stackTrace)
+Value Value::exceptionVal(Value message, Value exType, Value stackTrace, Value detail)
 {
-    return Value::objVal(newExceptionObj(message, exType, stackTrace));
+    return Value::objVal(newExceptionObj(message, exType, stackTrace, detail));
 }
 
 Value Value::functionVal(const icu::UnicodeString& name,
@@ -1179,10 +1179,10 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
 
 
 
-void Value::resolveFuture()
+bool Value::resolveFuture()
 {
     if (!isFuture(*this))
-        return;
+        return true;
 
     ObjFuture* fut = asFuture(*this);
     auto& vm { VM::instance() };
@@ -1209,8 +1209,16 @@ void Value::resolveFuture()
         }
     }
 
-    if (fut->future.wait_for(std::chrono::microseconds(0)) == std::future_status::ready)
-        *this = fut->asValue();
+    if (fut->future.wait_for(std::chrono::microseconds(0)) == std::future_status::ready) {
+        Value resolved = fut->asValue();
+        *this = resolved;
+        if (isException(resolved)) {
+            vm.raiseException(resolved);
+            return false;
+        }
+    }
+
+    return true;
 }
 
 void Value::resolveSignal()
@@ -1221,7 +1229,8 @@ void Value::resolveSignal()
 
 void Value::resolve()
 {
-    resolveFuture();
+    if (!resolveFuture())
+        return;
     resolveSignal();
 }
 
@@ -1351,7 +1360,8 @@ Value roxal::toType(const Value& typeSpec, Value v, bool strict)
             std::function<Value(Value)> convertEnum = [&](Value source) -> Value {
                 if (isFuture(source)) {
                     Value resolved { source };
-                    resolved.resolveFuture();
+                    if (!resolved.resolveFuture())
+                        return resolved;
                     return convertEnum(resolved);
                 }
 
@@ -2036,6 +2046,9 @@ void roxal::copyInto(Value& lhs, const Value& rhs)
                         eng->registerSignalWrapper(rhsSig->signal);
 
                     lhsSig->signal = rhsSig->signal;
+
+                    if (!lhsSig->changeEventType.isNil())
+                        lhsSig->ensureChangeEventType();
                 }
             }
             break;
@@ -2345,7 +2358,8 @@ void roxal::writeValue(std::ostream& out, const Value& v, roxal::ptr<Serializati
 
     if (isFuture(v)) {
         Value resolved = v;
-        resolved.resolveFuture();
+        if (!resolved.resolveFuture())
+            return;
         writeValue(out, resolved, ctx);
         return;
     }

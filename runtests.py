@@ -5,6 +5,7 @@ import subprocess
 import argparse
 import re
 import time
+from typing import Set
 
 # Maximum time in seconds to allow each test to run
 TEST_TIMEOUT_SECS = 5
@@ -20,7 +21,24 @@ parser.add_argument('--opcode-prof', action='store_true', help='Enable opcode pr
 parser.add_argument('--nocache', action='store_true', help='Disable reading and writing Roxal bytecode cache files')
 parser.add_argument('--nogc', action='store_true', help='Disable Roxal garbage collection during tests')
 parser.add_argument('--recompile', action='store_true', help='Force Roxal to recompile input scripts on each run')
+parser.add_argument('--build', action='store_true', help='Invoke cmake --build before running the tests')
 args = parser.parse_args()
+
+
+def detect_features(roxal_binary: str) -> Set[str]:
+    """Return feature tags reported by `roxal --version`."""
+    try:
+        proc = subprocess.run([roxal_binary, '--version'],
+                              capture_output=True, text=True, check=False)
+    except Exception:
+        return set()
+    if proc.returncode != 0:
+        return set()
+    match = re.search(r'\[([^\]]*)\]', proc.stdout)
+    if not match:
+        return set()
+    entries = [fragment.strip() for fragment in match.group(1).split(',')]
+    return {entry for entry in entries if entry}
 
 
 def is_debug_build(build_dir: str) -> bool:
@@ -46,6 +64,7 @@ tests = [
     'signal_and', 'signal_or', 'signal_not', 'signal_band', 'signal_bor', 'signal_bxor', 'signal_bnot',
     'signal_func_nocall', 'signal_func_exec', 'signal_index', 'signal_on_stmt', 'signal_on_threads', 'on_expression', 'signal_on_in_method', 'signal_on_changed_test', 'module_var_on_changed', 'module_var_on_changed_string', 'object_member_on_changed',
     'test_signal_value_property', 'test_signal_name_property', 'signal_named_param', 'construct_by_signal', 'signal_run_stop', 'signal_source', 'signal_default_err', 'signal_network1',
+    'signal_islands',
     'dataflow_clocktest1', 'multi_clock', 'clock_error', 'clock_name_param',
     'event1', 'event_on_stmt', 'event_emit_keyword', 'event_on_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4', 'event_instance_emit', 'event_payload', 'event_implicit_constructor', 'event_type_on',
     'event_in_sleep', 'event_in_sleep2',
@@ -95,7 +114,14 @@ tests = [
     'property_count', 'cmdline_execute', 'repl_run', 'invalid_option', 'fileio_basic', 'fileio_binary',
     'fileio_read_binary', 'fileio_write_binary', 'fileio_actor_write', 'fileio_delete', 'fileio_extra',
     'help_doc', 'help_time_wall_now', 'help_time_wall_now_instance', 'docstring_func',
-    'builtin_object_methods', 'math_counter_signal', 'print_flush'
+    'builtin_object_methods', 'math_counter_signal', 'print_flush',
+    'grpc_message_types', 'grpc_service_actor', 'grpc_runtime_error'
+]
+
+grpc_tests = ['grpc_message_types', 'grpc_service_actor', 'grpc_runtime_error']
+fileio_tests = [
+    'fileio_basic', 'fileio_binary', 'fileio_read_binary', 'fileio_write_binary',
+    'fileio_actor_write', 'fileio_delete', 'fileio_extra'
 ]
 
 long_running_tests = [
@@ -127,6 +153,16 @@ roxalpath = 'build'
 roxal = './roxal'
 
 build_dir = os.path.join(project_root, roxalpath)
+
+if args.build:
+    jobs = os.cpu_count() or 4
+    build_cmd = ['cmake', '--build', build_dir, f'-j{jobs}']
+    print(f"Building Roxal ({' '.join(build_cmd)})...")
+    try:
+        subprocess.check_call(build_cmd)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(f"cmake build failed with exit code {exc.returncode}")
+
 if args.opcode_prof and not is_debug_build(build_dir):
     raise SystemExit("--opcode-prof requires a Debug build (configure CMake with -DCMAKE_BUILD_TYPE=Debug).")
 
@@ -156,6 +192,16 @@ failed_count = 0
 
 cwd = os.getcwd()
 os.chdir(os.path.join(project_root, roxalpath))
+
+features = detect_features(roxal)
+has_grpc = 'grpc' in features
+has_fileio = 'fileio' in features
+if not has_grpc and any(test in tests for test in grpc_tests):
+    print("Skipping gRPC tests (feature not enabled).")
+    tests = [t for t in tests if t not in grpc_tests]
+if not has_fileio and any(test in tests for test in fileio_tests):
+    print("Skipping fileio tests (feature not enabled).")
+    tests = [t for t in tests if t not in fileio_tests]
 
 env_base = os.environ.copy()
 env_base['ROXALPATH'] = test_dir
@@ -195,6 +241,9 @@ try:
             input_data = f"run {rel_script}\nquit\n".encode()
         if test == 'invalid_option':
             cmd = [roxal, '--bogus']
+        if test.startswith('grpc_'):
+            proto_path = os.path.join('..', 'compiler', 'grpc', 'protos')
+            cmd = [cmd[0], '-p', proto_path, *cmd[1:]]
 
         if args.opcode_prof and '--opcode-prof' not in cmd:
             cmd = [cmd[0], '--opcode-prof', *cmd[1:]]

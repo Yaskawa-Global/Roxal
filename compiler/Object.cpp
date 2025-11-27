@@ -1673,6 +1673,7 @@ void ObjException::write(std::ostream& out, roxal::ptr<SerializationContext> ctx
     writeValue(out, message, ctx);
     writeValue(out, exType, ctx);
     writeValue(out, stackTrace, ctx);
+    writeValue(out, detail, ctx);
 }
 
 void ObjException::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
@@ -1683,6 +1684,7 @@ void ObjException::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     message = readValue(in, ctx);
     exType = readValue(in, ctx);
     stackTrace = readValue(in, ctx);
+    detail = readValue(in, ctx);
     type = ObjType::Exception;
 }
 
@@ -1691,6 +1693,7 @@ void ObjException::trace(ValueVisitor& visitor) const
     visitor.visit(message);
     visitor.visit(exType);
     visitor.visit(stackTrace);
+    visitor.visit(detail);
 }
 
 void ObjException::dropReferences()
@@ -1698,6 +1701,7 @@ void ObjException::dropReferences()
     message = Value::nilVal();
     exType = Value::nilVal();
     stackTrace = Value::nilVal();
+    detail = Value::nilVal();
 }
 unique_ptr<Obj, UnreleasedObj> ObjFunction::clone() const {
     // function objects are immutable; share the reference
@@ -1842,6 +1846,11 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
                     }
                 }
             }
+        }
+        if (nativeImpl == nullptr) {
+            throw std::runtime_error("Unable to relink native function '" +
+                                     toUTF8StdString(name) + "' for module '" +
+                                     toUTF8StdString(chunk->moduleName) + "'");
         }
     }
 }
@@ -2848,23 +2857,83 @@ void ObjSignal::trace(ValueVisitor& visitor) const
 void ObjSignal::dropReferences()
 {
     changeEventType = Value::nilVal();
+    changeEventSignal.reset();
+    changeEventUsesTimeSpan = false;
 }
 
 // Lazily create the shared SignalChanged event type and register the callback
 // responsible for emitting instances when the signal's value changes.
 ObjEventType* ObjSignal::ensureChangeEventType()
 {
-    if (!changeEventType.isNil())
-        return asEventType(changeEventType);
+    auto currentSignal = signal;
+    auto subscribeCallbacks = [&](const ptr<df::Signal>& target) {
+        if (!target)
+            return;
+        Value eventWeak = changeEventType.weakRef();
+        bool useSpan = changeEventUsesTimeSpan;
+        target->addValueChangedCallback([eventWeak, useSpan](TimePoint t, ptr<df::Signal> sig, const Value& sample){
+            if (!eventWeak.isAlive())
+                return;
+            Value eventTypeStrong = eventWeak.strongRef();
+            if (eventTypeStrong.isNil())
+                return;
+            ObjEventType* ev = asEventType(eventTypeStrong);
+            std::vector<Value> payload;
+            payload.reserve(ev->payloadProperties.size());
+            // First payload slot carries the current signal sample.
+            payload.push_back(sample);
+            if (useSpan) {
+                // Emit the elapsed steady-clock time since engine start as a
+                // TimeSpan instance when the sys module is available.
+                payload.push_back(sysNewTimeSpan(t.microSecs()));
+            } else {
+                payload.push_back(Value::intVal(static_cast<int32_t>(t.microSecs())));
+            }
+            // Track the discrete tick associated with this change. Prefer the
+            // signal's own period when available, otherwise fall back to the
+            // engine's global tick counter.
+            int64_t tickIndex = 0;
+            if (sig && sig->period() != TimeDuration::zero()) {
+                auto periodMicros = sig->period().microSecs();
+                if (periodMicros > 0)
+                    tickIndex = t.microSecs() / periodMicros;
+            } else if (auto engine = df::DataflowEngine::instance(false)) {
+                tickIndex = static_cast<int64_t>(engine->currentTickNumber());
+            }
+            tickIndex = std::clamp(tickIndex,
+                                   static_cast<int64_t>(std::numeric_limits<int32_t>::min()),
+                                   static_cast<int64_t>(std::numeric_limits<int32_t>::max()));
+            payload.push_back(Value::intVal(static_cast<int32_t>(tickIndex)));
+            payload.push_back(Value::signalVal(sig));
+
+            // Package the change information into a new event instance and invoke
+            // every subscribed handler for this occurrence.
+            Value instance = Value::eventInstanceVal(eventTypeStrong, std::move(payload));
+            // Deliver change notifications immediately while preserving the
+            // original logical timestamp inside the payload. This keeps callbacks
+            // responsive even when the dataflow engine's tick time is ahead of the
+            // VM thread's wall clock (for example when ticks are advanced manually).
+            scheduleEventHandlers(eventWeak, ev, instance, TimePoint::currentTime());
+        });
+        changeEventSignal = target;
+    };
+
+    if (!changeEventType.isNil()) {
+        ObjEventType* existing = asEventType(changeEventType);
+        auto subscribed = changeEventSignal.lock();
+        if (currentSignal && currentSignal != subscribed)
+            subscribeCallbacks(currentSignal);
+        return existing;
+    }
 
     auto eventType = newEventTypeObj(toUnicodeString("SignalChanged"));
     ObjEventType* typeObj = eventType.get();
 
     ObjEventType::PayloadProperty valueProp { toUnicodeString("value"), Value::nilVal(), Value::nilVal() };
     ObjObjectType* spanType = sysTimeSpanType();
-    bool useSpan = spanType != nullptr;
+    changeEventUsesTimeSpan = spanType != nullptr;
     ObjEventType::PayloadProperty timeProp { toUnicodeString("timestamp"), Value::nilVal(), Value::nilVal() };
-    if (useSpan) {
+    if (changeEventUsesTimeSpan) {
         timeProp.type = Value::objRef(spanType);
         timeProp.initialValue = sysNewTimeSpan(0);
     } else {
@@ -2874,57 +2943,22 @@ ObjEventType* ObjSignal::ensureChangeEventType()
     ObjEventType::PayloadProperty tickProp { toUnicodeString("tick"),
                                              Value::typeSpecVal(ValueType::Int),
                                              Value::intVal(0) };
-    typeObj->payloadProperties.push_back(valueProp);
-    typeObj->propertyLookup[valueProp.name.hashCode()] = 0;
-    typeObj->payloadProperties.push_back(timeProp);
-    typeObj->propertyLookup[timeProp.name.hashCode()] = 1;
-    typeObj->payloadProperties.push_back(tickProp);
-    typeObj->propertyLookup[tickProp.name.hashCode()] = 2;
+    auto appendProperty = [&](const ObjEventType::PayloadProperty& property) {
+        typeObj->payloadProperties.push_back(property);
+        typeObj->propertyLookup[property.name.hashCode()] = typeObj->payloadProperties.size() - 1;
+    };
+
+    appendProperty(valueProp);
+    appendProperty(timeProp);
+    appendProperty(tickProp);
+
+    ObjEventType::PayloadProperty signalProp { toUnicodeString("source_signal"),
+                                               Value::typeSpecVal(ValueType::Signal),
+                                               Value::nilVal() };
+    appendProperty(signalProp);
 
     changeEventType = Value::objVal(std::move(eventType));
-    Value eventWeak = changeEventType.weakRef();
-    // Register a signal callback that creates a fresh event instance for
-    // each change and dispatches it to subscribed handlers.
-    signal->addValueChangedCallback([eventWeak, useSpan](TimePoint t, ptr<df::Signal> sig, const Value& sample){
-        if (!eventWeak.isAlive())
-            return;
-        ObjEventType* ev = asEventType(eventWeak);
-        Value eventTypeStrong = Value::objRef(ev);
-        std::vector<Value> payload;
-        payload.reserve(ev->payloadProperties.size());
-        // First payload slot carries the current signal sample.
-        payload.push_back(sample);
-        if (useSpan) {
-            // Emit the elapsed steady-clock time since engine start as a
-            // TimeSpan instance when the sys module is available.
-            payload.push_back(sysNewTimeSpan(t.microSecs()));
-        } else {
-            payload.push_back(Value::intVal(static_cast<int32_t>(t.microSecs())));
-        }
-        // Track the discrete tick associated with this change. Prefer the
-        // signal's own period when available, otherwise fall back to the
-        // engine's global tick counter.
-        int64_t tickIndex = 0;
-        if (sig && sig->period() != TimeDuration::zero()) {
-            auto periodMicros = sig->period().microSecs();
-            if (periodMicros > 0)
-                tickIndex = t.microSecs() / periodMicros;
-        } else if (auto engine = df::DataflowEngine::instance(false)) {
-            tickIndex = static_cast<int64_t>(engine->currentTickNumber());
-        }
-        tickIndex = std::clamp(tickIndex,
-                               static_cast<int64_t>(std::numeric_limits<int32_t>::min()),
-                               static_cast<int64_t>(std::numeric_limits<int32_t>::max()));
-        payload.push_back(Value::intVal(static_cast<int32_t>(tickIndex)));
-        // Package the change information into a new event instance and invoke
-        // every subscribed handler for this occurrence.
-        Value instance = Value::eventInstanceVal(eventTypeStrong, std::move(payload));
-        // Deliver change notifications immediately while preserving the
-        // original logical timestamp inside the payload. This keeps callbacks
-        // responsive even when the dataflow engine's tick time is ahead of the
-        // VM thread's wall clock (for example when ticks are advanced manually).
-        scheduleEventHandlers(eventWeak, ev, instance, TimePoint::currentTime());
-    });
+    subscribeCallbacks(currentSignal);
     return asEventType(changeEventType);
 }
 
@@ -3056,12 +3090,15 @@ std::string roxal::objFileToString(const ObjFile* f)
     return oss.str();
 }
 
-unique_ptr<ObjException, UnreleasedObj> roxal::newExceptionObj(Value message, Value exType, Value stackTrace)
+unique_ptr<ObjException, UnreleasedObj> roxal::newExceptionObj(Value message,
+                                                               Value exType,
+                                                               Value stackTrace,
+                                                               Value detail)
 {
     #ifdef DEBUG_BUILD
-    return newObj<ObjException>(__func__, __FILE__, __LINE__, message, exType, stackTrace);
+    return newObj<ObjException>(__func__, __FILE__, __LINE__, message, exType, stackTrace, detail);
     #else
-    return newObj<ObjException>(message, exType, stackTrace);
+    return newObj<ObjException>(message, exType, stackTrace, detail);
     #endif
 }
 
@@ -3716,27 +3753,10 @@ unique_ptr<Obj, UnreleasedObj> ObjectInstance::clone() const
         auto& targetSlot = newobj->properties[index];
         targetSlot.clearSignal();
 
-        if (value.isPrimitive()) {
-            targetSlot.value = value;
-        }
-        else if (isString(value)) {
-            targetSlot.value = value;
-        }
-        else if (isObjectInstance(value)) {
-            auto propcopy = asObjectInstance(value)->clone();
-            targetSlot.value = Value::objVal(std::move(propcopy));
-        }
-        else if (isActorInstance(value)) {
-            throw std::runtime_error("clone of type actor unsuported");
-        }
-        else if (isList(value)) {
-            assert(false); // unimplemented
-        }
-        // TODO: add explicit handling of internal types like closure, future, function etc (just shallow copy)
-        //       add explicit deep copying of builtin ref types like list and dict
-        else {
-            targetSlot.value = value; // shallow copy
-        }
+        if (isActorInstance(value))
+            throw std::runtime_error("clone of type actor unsupported");
+
+        targetSlot.value = value.clone();
 
     }
 
@@ -3886,6 +3906,35 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
             std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
             callInfo.returnFuture = Value::objVal(newFutureObj(sf));
         }
+
+        // Convert arguments into parameter order so actor thread receives a complete list.
+        bool needsNormalization = callSpec.namedArgs();
+
+        if (needsNormalization && bound->funcType && bound->funcType->func.has_value()) {
+            auto& funcInfo = bound->funcType->func.value();
+            std::vector<Value> originalArgs = callInfo.args;
+            std::vector<Value> normalized;
+            normalized.reserve(funcInfo.params.size());
+
+            std::vector<int8_t> positions = callSpec.paramPositions(bound->funcType, false);
+            for (size_t pi = 0; pi < funcInfo.params.size(); ++pi) {
+                Value arg = Value::nilVal();
+                if (pi < positions.size()) {
+                    int pos = positions[pi];
+                    if (pos >= 0 && static_cast<size_t>(pos) < originalArgs.size())
+                        arg = originalArgs[pos];
+                }
+                if (arg.isNil() && pi < bound->defaultValues.size())
+                    arg = bound->defaultValues[pi];
+                if (!arg.isPrimitive())
+                    arg = arg.clone();
+                normalized.push_back(arg);
+            }
+
+            std::reverse(normalized.begin(), normalized.end());
+            callInfo.args = std::move(normalized);
+            callInfo.callSpec = CallSpec(static_cast<uint16_t>(callInfo.args.size()));
+        }
     }
 
     callQueue.push(callInfo);
@@ -3895,6 +3944,16 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
     Value futureReturn {}; // nil by default
     if (!callInfo.returnFuture.isNil())
         futureReturn = callInfo.returnFuture;
+#ifdef DEBUG_BUILD
+    else {
+        if (isBoundMethod(callee)) {
+            auto fn = asFunction(asClosure(asBoundMethod(callee)->method)->function);
+            std::string name;
+            fn->name.toUTF8String(name);
+            std::cerr << "queueCall: no future created for method '" << name << "'" << std::endl;
+        }
+    }
+#endif
 
     return futureReturn;
 }

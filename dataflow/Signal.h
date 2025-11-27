@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <optional>
 
 #include "core/common.h"
 #include "core/TimePoint.h"
@@ -70,17 +71,21 @@ public:
     // Get the period of the signal based on its frequency
     TimeDuration period() const { return m_period; }
 
+    bool isEventDriven() const { return m_eventDriven; }
+
     bool isSourceSignal() const { return isSource; }
     bool isClockSignal() const { return isClock; }
 
     // Get the last value of the signal
     Value lastValue() const;
+    // Retrieve the timestamp of the most recent sample if available.
+    TimePoint latestSampleTime() const;
 
     // Value at a negative index relative to the most recent value
     //   index 0 -> last value
     //   index -1 -> value from one period ago
     // Throws if index > 0 or history is insufficient
-    Value valueAtIndex(int index) const;
+    Value valueAtIndex(int index, std::optional<TimePoint> referenceTime = std::nullopt) const;
 
     // Return a new signal that is this signal delayed by -index periods
     //   index 0 -> this signal
@@ -110,6 +115,8 @@ protected:
 
     double m_frequency; // Frequency in Hz
     TimeDuration m_period;
+
+    bool m_eventDriven = false;
 
     bool isSource; // True if this is a source signal (e.g. constant at freq)
     bool isClock;  // True if this signal counts up at freq

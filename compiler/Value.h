@@ -188,13 +188,18 @@ public:
 
     //
     // Builtin reference type constructors
+
     template<class T, class D>
     static Value objVal(unique_ptr<T, D> o) {
         static_assert(std::is_base_of<Obj, T>::value, "T must be Obj or a subclass of Obj");
         unique_ptr<Obj, D> base(std::move(o));
         return Value(std::move(base));
     }
+    // Warning: do not use objRef(Obj*) to wrap a raw Obj* in a Value if it was extracted from
+    //  an existing Value using asObj() or helpers - this will lead to two independent Values managing the same Obj* and double-free errors.
+    //  Use strongRef() if needing a new Value from an existing weakRef() Value (it will return nilVal() if the object is gone).
     static Value objRef(Obj* o);
+
     static Value stringVal(const icu::UnicodeString& s); // ObjString
 
     static Value rangeVal();  // ObjRange
@@ -226,7 +231,10 @@ public:
 
     static Value fileVal(roxal::ptr<std::fstream> f, bool binary = false); // ObjFile
 
-    static Value exceptionVal(Value message = Value::nilVal(), Value exType = Value::nilVal(), Value stackTrace = Value::nilVal()); // ObjException
+    static Value exceptionVal(Value message = Value::nilVal(),
+                              Value exType = Value::nilVal(),
+                              Value stackTrace = Value::nilVal(),
+                              Value detail = Value::nilVal()); // ObjException
 
     static Value functionVal(const icu::UnicodeString& name,
                              const icu::UnicodeString& packageName,
@@ -440,8 +448,9 @@ public:
     }
 
 
-    // @brief if is ObjFuture, block waiting for value (and replace this with value)
-    void resolveFuture();
+    // @brief if this Value wraps a future, block until it resolves and replace with the result.
+    // @return false if resolving raised a Roxal exception (handled or not).
+    bool resolveFuture();
     void resolveSignal();
     void resolve();
 
