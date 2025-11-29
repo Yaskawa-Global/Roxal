@@ -139,6 +139,57 @@ Value ModuleUI::newUIObj(const Value& typeObj)
 }
 
 
+void ModuleUI::callInit(const Value& instance, const Value& typeObj)
+{
+    if (!isObjectType(typeObj) || !isObjectInstance(instance))
+        return;
+
+    ObjObjectType* type = asObjectType(typeObj);
+
+    // Look up the init method (searching up the inheritance hierarchy)
+    ObjObjectType* tInit = type;
+    const ObjObjectType::Method* initMethod = nullptr;
+    ObjString* initString = asStringObj(Value::stringVal(UnicodeString("init")));
+
+    while (tInit != nullptr && initMethod == nullptr) {
+        auto it = tInit->methods.find(initString->hash);
+        if (it != tInit->methods.end())
+            initMethod = &it->second;
+        else
+            tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
+    }
+
+    // If init() exists, call it
+    if (initMethod != nullptr) {
+        auto initClosureObj = asClosure(initMethod->closure);
+
+        // For methods, we need to push the instance at the callee position (not as an argument)
+        // so that slots[0] in the call frame will be 'this'.
+        // We can't use callAndExec directly because it pushes the closure at the callee position.
+
+        // Push the instance at the callee position (where the closure normally goes)
+        vm().thread->push(instance);
+
+        // Call the closure with 0 arguments (init takes no explicit parameters)
+        CallSpec callSpec(0);
+        if (!vm().call(initClosureObj, callSpec)) {
+            // Call setup failed - clean up the stack
+            vm().thread->pop();
+            return;
+        }
+
+        // Execute the init method
+        auto result = vm().execute();
+
+        // Check for errors
+        if (result.first != InterpretResult::OK) {
+            // An error occurred during init execution
+            // The VM will have already handled the error reporting
+            return;
+        }
+    }
+}
+
 
 Value ModuleUI::display_create_window(ArgsView args)
 {
@@ -228,6 +279,9 @@ Value ModuleUI::display_create_window(ArgsView args)
         lv_display_set_default(lv_display);
 
     display_windowsDict->store(Value::intVal(texture_id),window);
+
+    // Call init() constructor if it exists
+    callInit(window, windowType);
 
     return window;
 }

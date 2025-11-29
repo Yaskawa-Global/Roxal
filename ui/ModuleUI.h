@@ -46,6 +46,9 @@ private:
     // raise a UIException with the given message within the VM
     void raiseException(const icu::UnicodeString& message);
 
+    // Helper to call init() constructor on a newly created instance (if it exists)
+    void callInit(const Value& instance, const Value& typeObj);
+
     std::once_flag glfwInitializedFlag;
     std::atomic<bool> glfwInitialized{false};
     std::atomic<bool> lvglInitialized{false};

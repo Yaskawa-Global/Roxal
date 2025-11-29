@@ -85,6 +85,9 @@ public:
     #ifdef ROXAL_ENABLE_GRPC
     friend class ModuleGrpc;
     #endif
+    #if ENABLE_UI
+    friend class ModuleUI;
+    #endif
 
     enum class CacheMode {
         Normal,
