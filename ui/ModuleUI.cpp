@@ -41,6 +41,8 @@ void ModuleUI::registerBuiltins(VM& vm)
     linkMethod("Display", "create_window", [this](VM& vm, ArgsView a){ return display_create_window(a); });
 
     linkMethod("Window", "close", [this](VM& vm, ArgsView a){ window_close(a); return Value::nilVal(); });
+    linkMethod("Window", "open", [this](VM& vm, ArgsView a){ window_open(a); return Value::nilVal(); });
+    linkMethod("Window", "on_title_changed", [this](VM& vm, ArgsView a){ window_on_title_changed(a); return Value::nilVal(); });
 
     displayType = uiType("Display").weakRef();
     windowType = uiType("Window").weakRef();
@@ -206,10 +208,19 @@ Value ModuleUI::display_create_window(ArgsView args)
     Value width { args[1] };
     Value height { args[2] };
     Value title { args[3] };
+    Value open { args[4] };
     if (!width.isNumber() || !height.isNumber())
         throw std::runtime_error("width & height must be numeric");
 
+    // Set window visibility hint before creating the window to prevent flash
+    if (open.isBool() && !open.asBool()) {
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    }
+
     lv_opengles_window_t* lv_window = lv_opengles_glfw_window_create(width.asInt(), height.asInt(), true);
+
+    // Reset visibility hint to default for future windows
+    glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
     if (!lv_window) {
         LV_LOG_ERROR("Failed to create OpenGL ES window");
         raiseException("Unable to create window (lv_opengles_glfw)");
@@ -342,5 +353,61 @@ void ModuleUI::window_close(ArgsView args)
         auto display_windowsDict = asDict(display_windows);
 
         display_windowsDict->erase(Value::intVal(texture_id));
+    }
+}
+
+
+void ModuleUI::window_open(ArgsView args)
+{
+    debug_assert_msg(instanceOf(args[0], windowType), "instance is Window");
+    Value& window { args[0] };
+    auto windowInst { asObjectInstance(window) };
+
+    // Get the lvgl window
+    Value lv_window_val = windowInst->getProperty("_lv_window");
+    if (lv_window_val.isNil())
+        return; // Window has been closed
+
+    auto lv_window = (lv_opengles_window_t*)(asForeignPtr(lv_window_val)->ptr);
+    if (!lv_window)
+        return;
+
+    // Get the GLFW window
+    GLFWwindow* glfw_window = (GLFWwindow*)lv_opengles_glfw_window_get_glfw_window(lv_window);
+    if (!glfw_window)
+        return;
+
+    // Show the window
+    glfwShowWindow(glfw_window);
+}
+
+
+void ModuleUI::window_on_title_changed(ArgsView args)
+{
+    debug_assert_msg(instanceOf(args[0], windowType), "instance is Window");
+    Value& window { args[0] };
+    Value& title { args[1] };
+
+    auto windowInst { asObjectInstance(window) };
+
+    // Get the lvgl window
+    Value lv_window_val = windowInst->getProperty("_lv_window");
+    if (lv_window_val.isNil())
+        return; // Window has been closed
+
+    auto lv_window = (lv_opengles_window_t*)(asForeignPtr(lv_window_val)->ptr);
+    if (!lv_window)
+        return;
+
+    // Get the GLFW window
+    GLFWwindow* glfw_window = (GLFWwindow*)lv_opengles_glfw_window_get_glfw_window(lv_window);
+    if (!glfw_window)
+        return;
+
+    // Convert title to std::string and set it
+    std::string titleStr;
+    if (isString(title)) {
+        asUString(title).toUTF8String(titleStr);
+        glfwSetWindowTitle(glfw_window, titleStr.c_str());
     }
 }

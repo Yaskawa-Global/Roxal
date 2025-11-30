@@ -35,6 +35,8 @@ ModuleUI();
     Value display_create_window(ArgsView args);
 
     void window_close(ArgsView args);
+    void window_open(ArgsView args);
+    void window_on_title_changed(ArgsView args);
 
 protected:
     Value displayType;

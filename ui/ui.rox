@@ -10,9 +10,26 @@ type Window object:
   var id :int
   var title :string
 
+
   @builtin
   proc close():
     """Close the window"""
+
+  @builtin
+  proc open():
+    """Open (show) the window"""
+
+
+  // implementation
+
+  proc init():
+    on title changed as evt:
+      this.on_title_changed(evt.value)
+
+  @builtin
+  private proc on_title_changed(title :string):
+    """Update the window title in the native UI"""
+
 
 
 @builtin
