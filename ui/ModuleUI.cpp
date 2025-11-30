@@ -44,6 +44,7 @@ void ModuleUI::registerBuiltins(VM& vm)
     linkMethod("Window", "open", [this](VM& vm, ArgsView a){ window_open(a); return Value::nilVal(); });
     linkMethod("Window", "on_title_changed", [this](VM& vm, ArgsView a){ window_on_title_changed(a); return Value::nilVal(); });
     linkMethod("Window", "on_position_changed", [this](VM& vm, ArgsView a){ window_on_position_changed(a); return Value::nilVal(); });
+    linkMethod("Window", "on_size_changed", [this](VM& vm, ArgsView a){ window_on_size_changed(a); return Value::nilVal(); });
 
     displayType = uiType("Display").weakRef();
     windowType = uiType("Window").weakRef();
@@ -286,6 +287,10 @@ Value ModuleUI::display_create_window(ArgsView args)
     windowInst->setProperty("x", Value::intVal(pos_x));
     windowInst->setProperty("y", Value::intVal(pos_y));
 
+    // Set initial window size
+    windowInst->setProperty("width", width);
+    windowInst->setProperty("height", height);
+
     windowInst->setProperty("_display", display.weakRef()); // back ref to Display from Window
 
     // Add to ui.Display's windows list
@@ -453,5 +458,35 @@ void ModuleUI::window_on_position_changed(ArgsView args)
 
     if (x_val.isNumber() && y_val.isNumber()) {
         glfwSetWindowPos(glfw_window, x_val.asInt(), y_val.asInt());
+    }
+}
+
+
+void ModuleUI::window_on_size_changed(ArgsView args)
+{
+    debug_assert_msg(instanceOf(args[0], windowType), "instance is Window");
+    Value& window { args[0] };
+    auto windowInst { asObjectInstance(window) };
+
+    // Get the lvgl window
+    Value lv_window_val = windowInst->getProperty("_lv_window");
+    if (lv_window_val.isNil())
+        return; // Window has been closed
+
+    auto lv_window = (lv_opengles_window_t*)(asForeignPtr(lv_window_val)->ptr);
+    if (!lv_window)
+        return;
+
+    // Get the GLFW window
+    GLFWwindow* glfw_window = (GLFWwindow*)lv_opengles_glfw_window_get_glfw_window(lv_window);
+    if (!glfw_window)
+        return;
+
+    // Get width and height from window properties
+    Value width_val = windowInst->getProperty("width");
+    Value height_val = windowInst->getProperty("height");
+
+    if (width_val.isNumber() && height_val.isNumber()) {
+        glfwSetWindowSize(glfw_window, width_val.asInt(), height_val.asInt());
     }
 }

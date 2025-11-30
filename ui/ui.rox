@@ -11,6 +11,8 @@ type Window object:
   var title :string
   var x :int
   var y :int
+  var width :int
+  var height :int
 
 
   @builtin
@@ -34,6 +36,12 @@ type Window object:
     on y changed:
       this.on_position_changed()
 
+    on width changed:
+      this.on_size_changed()
+
+    on height changed:
+      this.on_size_changed()
+
   @builtin
   private proc on_title_changed(title :string):
     """Update the window title in the native UI"""
@@ -41,6 +49,10 @@ type Window object:
   @builtin
   private proc on_position_changed():
     """Update the window position in the native UI"""
+
+  @builtin
+  private proc on_size_changed():
+    """Update the window size in the native UI"""
 
 
 
