@@ -43,6 +43,7 @@ void ModuleUI::registerBuiltins(VM& vm)
     linkMethod("Window", "close", [this](VM& vm, ArgsView a){ window_close(a); return Value::nilVal(); });
     linkMethod("Window", "open", [this](VM& vm, ArgsView a){ window_open(a); return Value::nilVal(); });
     linkMethod("Window", "on_title_changed", [this](VM& vm, ArgsView a){ window_on_title_changed(a); return Value::nilVal(); });
+    linkMethod("Window", "on_position_changed", [this](VM& vm, ArgsView a){ window_on_position_changed(a); return Value::nilVal(); });
 
     displayType = uiType("Display").weakRef();
     windowType = uiType("Window").weakRef();
@@ -279,6 +280,12 @@ Value ModuleUI::display_create_window(ArgsView args)
     }
     glfwSetWindowTitle(glfw_window, windowTitle.c_str());
 
+    // Get and set initial window position
+    int pos_x, pos_y;
+    glfwGetWindowPos(glfw_window, &pos_x, &pos_y);
+    windowInst->setProperty("x", Value::intVal(pos_x));
+    windowInst->setProperty("y", Value::intVal(pos_y));
+
     windowInst->setProperty("_display", display.weakRef()); // back ref to Display from Window
 
     // Add to ui.Display's windows list
@@ -377,6 +384,13 @@ void ModuleUI::window_open(ArgsView args)
     if (!glfw_window)
         return;
 
+    // Apply the window position before showing (ensures position is set even if window manager reset it)
+    Value x_val = windowInst->getProperty("x");
+    Value y_val = windowInst->getProperty("y");
+    if (x_val.isNumber() && y_val.isNumber()) {
+        glfwSetWindowPos(glfw_window, x_val.asInt(), y_val.asInt());
+    }
+
     // Show the window
     glfwShowWindow(glfw_window);
 }
@@ -409,5 +423,35 @@ void ModuleUI::window_on_title_changed(ArgsView args)
     if (isString(title)) {
         asUString(title).toUTF8String(titleStr);
         glfwSetWindowTitle(glfw_window, titleStr.c_str());
+    }
+}
+
+
+void ModuleUI::window_on_position_changed(ArgsView args)
+{
+    debug_assert_msg(instanceOf(args[0], windowType), "instance is Window");
+    Value& window { args[0] };
+    auto windowInst { asObjectInstance(window) };
+
+    // Get the lvgl window
+    Value lv_window_val = windowInst->getProperty("_lv_window");
+    if (lv_window_val.isNil())
+        return; // Window has been closed
+
+    auto lv_window = (lv_opengles_window_t*)(asForeignPtr(lv_window_val)->ptr);
+    if (!lv_window)
+        return;
+
+    // Get the GLFW window
+    GLFWwindow* glfw_window = (GLFWwindow*)lv_opengles_glfw_window_get_glfw_window(lv_window);
+    if (!glfw_window)
+        return;
+
+    // Get x and y from window properties
+    Value x_val = windowInst->getProperty("x");
+    Value y_val = windowInst->getProperty("y");
+
+    if (x_val.isNumber() && y_val.isNumber()) {
+        glfwSetWindowPos(glfw_window, x_val.asInt(), y_val.asInt());
     }
 }

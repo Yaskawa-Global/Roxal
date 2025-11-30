@@ -9,6 +9,8 @@ type Window object:
 
   var id :int
   var title :string
+  var x :int
+  var y :int
 
 
   @builtin
@@ -26,9 +28,19 @@ type Window object:
     on title changed as evt:
       this.on_title_changed(evt.value)
 
+    on x changed:
+      this.on_position_changed()
+
+    on y changed:
+      this.on_position_changed()
+
   @builtin
   private proc on_title_changed(title :string):
     """Update the window title in the native UI"""
+
+  @builtin
+  private proc on_position_changed():
+    """Update the window position in the native UI"""
 
 
 
