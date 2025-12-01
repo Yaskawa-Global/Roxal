@@ -1,0 +1,6 @@
+import roxal_examples.*
+
+var svc = EverythingService()
+print(typeof(svc))
+print(svc.Echo)
+print(svc.Reverse)
