@@ -4481,7 +4481,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     ObjSignal* sigObj = asSignal(eventVal);
                     ev = sigObj->ensureChangeEventType();
                     eventVal = sigObj->changeEventType;
-                    thread->eventToSignal[eventVal.weakRef()] = Value::objRef(sigObj);
+                    thread->eventToSignal[eventVal.weakRef()] = eventVal.weakRef();
                 } else if (isEventType(eventVal)) {
                     if (matchOnBecomes) {
                         runtimeError("'becomes' is only valid with signals");
@@ -4895,11 +4895,19 @@ bool VM::processPendingEvents()
                     auto sigIt = thread->eventToSignal.find(tev.eventType);
                     if (sigIt != thread->eventToSignal.end()) {
                         Value sigVal = sigIt->second;
-                        if (isSignal(sigVal)) {
-                            ObjSignal* sigObj = asSignal(sigVal);
-                            Value cur = sigObj->signal->lastValue();
-                            if (cur.isBool() && cur.asBool()) {
-                                raise = true;
+                        if (!sigVal.isAlive()) {
+                            thread->eventToSignal.erase(sigIt);
+                            raise = false;
+                        } else {
+                            Value sigStrong = sigVal.strongRef();
+                            if (!sigStrong.isNil() && isSignal(sigStrong)) {
+                                ObjSignal* sigObj = asSignal(sigStrong);
+                                Value cur = sigObj->signal->lastValue();
+                                if (cur.isBool() && cur.asBool()) {
+                                    raise = true;
+                                } else {
+                                    raise = false;
+                                }
                             } else {
                                 raise = false;
                             }
@@ -5882,7 +5890,7 @@ Value VM::signal_on_changed_builtin(ArgsView args)
     ev->subscribers.push_back(closureVal.weakRef());
 
     // Track the signal for this event
-    thread->eventToSignal[eventVal.weakRef()] = Value::objRef(sigObj);
+        thread->eventToSignal[eventVal.weakRef()] = eventVal.weakRef();
 
     return Value::nilVal();
 }
