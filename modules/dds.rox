@@ -6,7 +6,7 @@ proc _init():
   """Initialize DDS module"""
 
 @builtin
-func create_participant(domain_id:int=0, qos:dict=nil):
+func create_participant(domain_id:int=0, qos:dict={}):
   """Create a domain participant (default domain_id=0)."""
 
 @builtin
@@ -14,9 +14,21 @@ func create_topic(participant, name:str, msg_type):
   """Create a topic on the participant for the given IDL message type."""
 
 @builtin
-func create_writer(participant, topic, qos:dict=nil):
+func create_writer(participant, topic, qos:dict={}):
   """Create a data writer for the topic."""
 
 @builtin
-func create_reader(participant, topic, qos:dict=nil):
+func create_reader(participant, topic, qos:dict={}):
   """Create a data reader for the topic."""
+
+@builtin
+proc close(entity):
+  """Close a DDS entity (participant/topic/reader/writer)."""
+
+@builtin
+proc write(writer, msg):
+  """Publish a message on the writer's topic."""
+
+@builtin
+func read(reader):
+  """Take one sample from the reader's topic and return it (or nil if none available)."""

@@ -11,6 +11,35 @@
 
 namespace roxal {
 
+struct ObjObjectType;
+
+struct FieldType {
+    enum class Kind {
+        Int32, Bool, Float64, String, List, EnumRef, StructRef, Unsupported, Int64Pair
+    } kind { Kind::Unsupported };
+    std::string refName; // for enums/structs
+    std::shared_ptr<FieldType> element; // for sequences/lists
+    bool bounded{false};
+    uint32_t bound{0};
+};
+
+struct FieldInfo {
+    std::string name;
+    FieldType type;
+    bool isKey{false};
+    bool isOptional{false};
+};
+
+struct StructInfo {
+    std::string fullName;
+    std::vector<FieldInfo> fields;
+};
+
+struct EnumInfo {
+    std::string fullName;
+    std::vector<std::pair<std::string, int32_t>> values;
+};
+
 class DdsAdapter {
 public:
     DdsAdapter();
@@ -18,6 +47,14 @@ public:
 
     std::vector<Value> allocateTypes(const std::string& idlFile);
     std::string packageName() const { return lastPackage_; }
+    // Serialized XTypes type information and typemap for the last parsed IDL root.
+    const std::vector<unsigned char>& typeInfo() const { return typeInfo_; }
+    const std::vector<unsigned char>& typeMap() const { return typeMap_; }
+    const void* rootNode() const { return rootNode_; }
+    const void* parserState() const { return parserState_; }
+    std::string fullNameForType(const Value& v) const;
+    const StructInfo* findStruct(const std::string& fullName) const;
+    const EnumInfo* findEnum(const std::string& fullName) const;
 
 private:
     struct ParsedType {
@@ -26,6 +63,14 @@ private:
     };
 
     std::string lastPackage_;
+    std::vector<unsigned char> typeInfo_;
+    std::vector<unsigned char> typeMap_;
+    void* rootNode_{nullptr};
+    void* parserState_{nullptr};
+    std::unordered_map<const ObjObjectType*, std::string> fullNameByType_;
+    std::unordered_map<const ObjObjectType*, bool> isKeyByFieldType_;
+    std::unordered_map<std::string, StructInfo> structsByFullName_;
+    std::unordered_map<std::string, EnumInfo> enumsByFullName_;
 };
 
 } // namespace roxal
