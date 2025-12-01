@@ -1,0 +1,11 @@
+var s = signal(0, 0)
+
+when s becomes 3:
+  print("signal is 3")
+
+s.set(1)
+wait(us=5000)
+s.set(3)
+wait(us=5000)
+s.set(2)
+wait(us=5000)
