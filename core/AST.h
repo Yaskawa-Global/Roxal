@@ -34,7 +34,7 @@ class ReturnStatement;
 class IfStatement;
 class WhileStatement;
 class ForStatement;
-class OnStatement;
+class WhenStatement;
 class UntilStatement;
 class TryStatement;
 class RaiseStatement;
@@ -87,7 +87,7 @@ public:
     virtual std::any visit(ptr<IfStatement> ast) = 0;
     virtual std::any visit(ptr<WhileStatement> ast) = 0;
     virtual std::any visit(ptr<ForStatement> ast) = 0;
-    virtual std::any visit(ptr<OnStatement> ast) = 0;
+    virtual std::any visit(ptr<WhenStatement> ast) = 0;
     virtual std::any visit(ptr<UntilStatement> ast) = 0;
     virtual std::any visit(ptr<TryStatement> ast) = 0;
     virtual std::any visit(ptr<RaiseStatement> ast) = 0;
@@ -268,7 +268,7 @@ struct Statement : public AST {
         If,
         While,
         For,
-        On,
+        When,
         Until,
         Try,
         Raise
@@ -359,8 +359,8 @@ struct ForStatement : public Statement {
 };
 
 
-struct OnStatement : public Statement {
-    OnStatement() : Statement(StmtType::On) {}
+struct WhenStatement : public Statement {
+    WhenStatement() : Statement(StmtType::When) {}
 
     ptr<ast::Expression> trigger;
     std::optional<icu::UnicodeString> binding;

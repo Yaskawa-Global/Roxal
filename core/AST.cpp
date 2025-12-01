@@ -491,23 +491,23 @@ void ForStatement::acceptChildren(ASTVisitor& v, Anys& results)
 
 }
 
-std::any OnStatement::accept(ASTVisitor& v)
+std::any WhenStatement::accept(ASTVisitor& v)
 {
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(dynamic_ptr_cast<OnStatement>(ptr_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<WhenStatement>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(dynamic_ptr_cast<OnStatement>(ptr_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<WhenStatement>(ptr_from_this())) );
 
     return results;
 }
 
-void OnStatement::output(std::ostream& os, int indent) const
+void WhenStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"When" << std::endl;
     os << spaces(indent+1) << "trigger:" << std::endl;
@@ -519,7 +519,7 @@ void OnStatement::output(std::ostream& os, int indent) const
     body->output(os,indent+2);
 }
 
-void OnStatement::acceptChildren(ASTVisitor& v, Anys& results)
+void WhenStatement::acceptChildren(ASTVisitor& v, Anys& results)
 {
     results.push_back( trigger->accept(v) );
     results.push_back( body->accept(v) );

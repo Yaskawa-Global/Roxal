@@ -362,7 +362,7 @@ std::any ASTGraphviz::visit(ptr<ast::ForStatement> ast)
     return {};
 }
 
-std::any ASTGraphviz::visit(ptr<ast::OnStatement> ast)
+std::any ASTGraphviz::visit(ptr<ast::WhenStatement> ast)
 {
     startVisit();
     auto name { uname(ast) };

@@ -1612,7 +1612,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     return {};
 }
 
-std::any RoxalCompiler::visit(ptr<ast::OnStatement> ast)
+std::any RoxalCompiler::visit(ptr<ast::WhenStatement> ast)
 {
     currentNode = ast;
 

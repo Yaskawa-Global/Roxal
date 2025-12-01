@@ -40,7 +40,7 @@ public:
     virtual std::any visit(ptr<ast::IfStatement> ast);
     virtual std::any visit(ptr<ast::WhileStatement> ast);
     virtual std::any visit(ptr<ast::ForStatement> ast);
-    virtual std::any visit(ptr<ast::OnStatement> ast);
+    virtual std::any visit(ptr<ast::WhenStatement> ast);
     virtual std::any visit(ptr<ast::UntilStatement> ast);
     virtual std::any visit(ptr<ast::TryStatement> ast);
     virtual std::any visit(ptr<ast::RaiseStatement> ast);
