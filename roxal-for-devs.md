@@ -438,7 +438,7 @@ Event *types* are declared similarly to object and actor types.  An event type d
 type ButtonPressed event:
   var buttonId :int
 
-on ButtonPressed as evt:
+when ButtonPressed occurs as evt:
   print('button '+evt.buttonId+' pressed')
 
 emit ButtonPressed(buttonId=7)   // creates a fresh event instance and delivers it
@@ -453,7 +453,7 @@ type DeviceEvent event:
 type LowBattery event extends DeviceEvent:
   var percentRemaining :real
 
-on LowBattery as evt:
+when LowBattery occurs as evt:
   print('device '+evt.deviceId+' low ('+evt.percentRemaining+'%)')
 
 emit LowBattery(deviceId=42, percentRemaining=12.5)
@@ -464,7 +464,7 @@ The builtin `event` type is still available for cases where no extra payload is 
 ```php
 var generic:event
 
-on generic:
+when generic occurs:
   print('generic event occurred')
 
 emit generic()
@@ -492,14 +492,14 @@ A single clock signal:
 c = clock(freq=10)  // an int signal that counts up from 0 at 10Hz (initially stopped)
 
 // register a signal change handler (fires when the value changes)
-on c changed as evt:
+when c changes as evt:
   print('tick='+evt.value)
 
 c.run()    // start the clock counting
 wait(s=1)  // keep the script running so we can see ~10 prints
 ```
 
-The `changed` keyword is required when watching a signal.  Supplying `as evt` binds the automatically-generated event instance that contains the sampled signal value (`evt.value`), a steady-clock duration since the engine started (`evt.timestamp`, a `sys.TimeSpan`), and the signal's own tick count (`evt.tick`).
+The `changes` keyword is required when watching a signal.  Supplying `as evt` binds the automatically-generated event instance that contains the sampled signal value (`evt.value`), a steady-clock duration since the engine started (`evt.timestamp`, a `sys.TimeSpan`), and the signal's own tick count (`evt.tick`).
 
 Transforming a some signals:
 ```php
@@ -511,7 +511,7 @@ s2 = signal(freq=10,initial_v)  //  (these won't change value unless set() is ca
 
 dp = s*s2    // vector dot product (real scalar signal)
 
-on dp changed as evt: // print if dp changes
+when dp changes as evt: // print if dp changes
   print('dp='+evt.value)
 
 // set the signals in motion

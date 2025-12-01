@@ -369,13 +369,10 @@ std::any ASTGraphviz::visit(ptr<ast::OnStatement> ast)
 
     addLink(name, stackPop(), "body");
     addLink(name, stackPop(), "trigger");
-    std::string details;
-    if (ast->requiresSignalChange)
-        details = "changed";
+    std::string details = ast->requiresSignalChange ? "changes" : "occurs";
     if (ast->binding.has_value())
-        details = details.empty() ? toUTF8StdString(ast->binding.value())
-                                  : details + ":" + toUTF8StdString(ast->binding.value());
-    nodes[name] = node(name, "on", details);
+        details += ":" + toUTF8StdString(ast->binding.value());
+    nodes[name] = node(name, "when", details);
     stackPush(name);
 
     endVisit();

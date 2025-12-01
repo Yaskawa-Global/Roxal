@@ -6,7 +6,7 @@ type DerivedEvent event extends BaseEvent:
 
 var captured = nil
 
-on DerivedEvent as evt:
+when DerivedEvent occurs as evt:
   print('handler base='+evt.base)
   print('handler payload='+evt.payload)
   captured = evt

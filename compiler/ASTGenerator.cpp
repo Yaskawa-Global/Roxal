@@ -785,8 +785,8 @@ std::any ASTGenerator::visitCompound_stmt(RoxalParser::Compound_stmtContext *con
         return visitWhile_stmt(context->while_stmt());
     else if (context->for_stmt())
         return visitFor_stmt(context->for_stmt());
-    else if (context->on_stmt())
-        return visitOn_stmt(context->on_stmt());
+    else if (context->when_stmt())
+        return visitWhen_stmt(context->when_stmt());
     else if (context->emit_stmt())
         return visitEmit_stmt(context->emit_stmt());
     else if (context->try_stmt())
@@ -907,7 +907,7 @@ std::any ASTGenerator::visitFor_stmt(RoxalParser::For_stmtContext *context)
 }
 
 
-std::any ASTGenerator::visitOn_stmt(RoxalParser::On_stmtContext *context)
+std::any ASTGenerator::visitWhen_stmt(RoxalParser::When_stmtContext *context)
 {
     visitStart();
 
@@ -915,7 +915,7 @@ std::any ASTGenerator::visitOn_stmt(RoxalParser::On_stmtContext *context)
     setSourceInfo(onStmt, context);
 
     onStmt->trigger = as<Expression>(visitExpression(context->expression()));
-    onStmt->requiresSignalChange = context->CHANGED() != nullptr;
+    onStmt->requiresSignalChange = context->CHANGES() != nullptr;
     if (context->IDENTIFIER())
         onStmt->binding = UnicodeString::fromUTF8(context->IDENTIFIER()->getText());
     onStmt->body = as<Suite>(visitSuite(context->suite()));
@@ -2090,8 +2090,8 @@ std::any ASTGenerator::visitArgs_or_index_or_accessor(RoxalParser::Args_or_index
         UnicodeString ident;
         if (context->IDENTIFIER())
             ident = UnicodeString::fromUTF8(context->IDENTIFIER()->getText());
-        else if (context->ON())
-            ident = UnicodeString("on");
+        else if (context->WHEN())
+            ident = UnicodeString("when");
         else if (context->EMIT())
             ident = UnicodeString("emit");
         info->accessed = ident;

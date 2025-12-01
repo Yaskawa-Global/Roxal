@@ -65,7 +65,7 @@ compound_stmt
  | if_stmt
  | while_stmt
  | for_stmt
- | on_stmt
+ | when_stmt
  | emit_stmt
  | raise_stmt
  | try_stmt
@@ -100,9 +100,8 @@ for_stmt
        )
    IN expression ':' suite
  ;
-
-on_stmt
- : ON expression (CHANGED)? (AS IDENTIFIER)? ':' suite
+when_stmt
+ : WHEN expression (CHANGES | OCCURS) (AS IDENTIFIER)? ':' suite
  ;
 
 emit_stmt
@@ -306,10 +305,10 @@ call
 
 
 args_or_index_or_accessor
-  : '(' arguments? ')'
-  | '[' ranges ']'
-  | DOT (IDENTIFIER | ON | EMIT) ('(' arguments? ')')?
-  ;
+ : '(' arguments? ')'
+ | '[' ranges ']'
+ | DOT (IDENTIFIER | WHEN | EMIT) ('(' arguments? ')')?
+ ;
 
 ranges
   : range ( ',' range )*
@@ -340,7 +339,7 @@ argument
 identifier_word
  : IDENTIFIER
  | FOR
- | ON
+ | WHEN
  ;
 
 
@@ -423,7 +422,7 @@ PRIVATE: 'private';
 LET : 'let';
 FUNC: 'func';
 PROC: 'proc';
-ON: 'on';
+WHEN: 'when';
 EMIT: 'emit';
 RETURN: 'return';
 SCOPE: 'scope' ;
@@ -433,7 +432,8 @@ EXTENDS: 'extends';
 THIS: 'this';
 SUPER: 'super';
 IMPORT : 'import';
-CHANGED: 'changed';
+CHANGES: 'changes';
+OCCURS: 'occurs';
 
 
 // Types

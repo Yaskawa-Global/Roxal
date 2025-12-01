@@ -4,7 +4,7 @@ type E event
 type MyActor actor:
 
   proc setup():
-    on E:
+    when E occurs:
       print('e handled in MyActor')
 
   proc trigger():
@@ -20,4 +20,3 @@ a.trigger() // setup not called, so should be no hander
 wait(us=1000)
 
 a = nil
-

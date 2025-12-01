@@ -4,14 +4,14 @@ type E event
 type MyActor actor:
 
   proc setup():
-    on E:
+    when E occurs:
       print('e handled in MyActor')
 
 
 type MyOtherActor actor:
 
   proc setup():
-    on E:
+    when E occurs:
       wait(us=20000) // avoid colliding prints
       print('e handled in MyOtherActor')
 
@@ -37,4 +37,3 @@ oa = nil
 wait(us=10000)
 
 emit E() // should trigger none
-

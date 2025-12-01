@@ -2902,7 +2902,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     auto br = bindMethod(type, name);
                     if (br == BindResult::Bound) {
-                        runtimeError("'changed' requires a property when using object member access.");
+                        runtimeError("'changes' requires a property when using object member access.");
                         return errorReturn;
                     }
                     if (br == BindResult::Private)
@@ -2937,7 +2937,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     auto br = bindMethod(type, name);
                     if (br == BindResult::Bound) {
-                        runtimeError("'changed' requires a property when using object member access.");
+                        runtimeError("'changes' requires a property when using object member access.");
                         return errorReturn;
                     }
                     if (br == BindResult::Private)
@@ -2949,7 +2949,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     if (mit != builtinMethods.end()) {
                         auto methodIt = mit->second.find(name->hash);
                         if (methodIt != mit->second.end()) {
-                            runtimeError("'changed' requires a property when using object member access.");
+                            runtimeError("'changes' requires a property when using object member access.");
                             return errorReturn;
                         }
                     }
@@ -4433,7 +4433,7 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::EventOn: {
                 uint8_t modeByte = readByte();
-                bool requireChangedKeyword = (modeByte == 1);
+                bool requireChangesKeyword = (modeByte == 1);
                 bool disallowSignalTargets = (modeByte == 2);
                 Value closureVal = pop();
                 Value eventVal = pop();
@@ -4445,7 +4445,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 ObjEventType* ev = nullptr;
                 if (isSignal(eventVal)) {
                     if (disallowSignalTargets) {
-                        runtimeError("signal handlers must use 'changed'");
+                        runtimeError("signal handlers must use 'changes'");
                         return errorReturn;
                     }
                     ObjSignal* sigObj = asSignal(eventVal);
@@ -4453,8 +4453,8 @@ std::pair<InterpretResult,Value> VM::execute()
                     eventVal = sigObj->changeEventType;
                     thread->eventToSignal[eventVal.weakRef()] = Value::objRef(sigObj);
                 } else if (isEventType(eventVal)) {
-                    if (requireChangedKeyword) {
-                        runtimeError("'changed' is only valid with signals");
+                    if (requireChangesKeyword) {
+                        runtimeError("'changes' is only valid with signals");
                         return errorReturn;
                     }
                     ev = asEventType(eventVal);

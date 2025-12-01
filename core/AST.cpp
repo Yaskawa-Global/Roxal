@@ -509,11 +509,10 @@ std::any OnStatement::accept(ASTVisitor& v)
 
 void OnStatement::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"On" << std::endl;
+    os << spaces(indent)+"When" << std::endl;
     os << spaces(indent+1) << "trigger:" << std::endl;
     trigger->output(os, indent+2);
-    if (requiresSignalChange)
-        os << spaces(indent+1) << "requires-signal-change" << std::endl;
+    os << spaces(indent+1) << (requiresSignalChange ? "changes" : "occurs") << std::endl;
     if (binding.has_value())
         os << spaces(indent+1) << "binding: " << toUTF8StdString(binding.value()) << std::endl;
     os << spaces(indent+1) << "body:" << std::endl;
