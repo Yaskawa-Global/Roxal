@@ -8,7 +8,7 @@ func f():
 
     proc amethod(i :int):
 
-      on E:
+      when E occurs:
         print('e occured within MyObject.amethod('+i+')')
 
       print('amethod '+i)

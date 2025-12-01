@@ -6,7 +6,7 @@ type Button object:
   var clicked :signal = signal(Freq,false)
 
   func onClicked(callback) -> Button:
-    on clicked changed:
+    when clicked changes:
       callback(this)
     return this
 

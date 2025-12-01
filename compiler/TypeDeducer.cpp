@@ -287,7 +287,7 @@ std::any TypeDeducer::visit(ptr<ast::ForStatement> ast)
     return results;
 }
 
-std::any TypeDeducer::visit(ptr<ast::OnStatement> ast)
+std::any TypeDeducer::visit(ptr<ast::WhenStatement> ast)
 {
     ast::Anys results {};
     ast->acceptChildren(*this, results);

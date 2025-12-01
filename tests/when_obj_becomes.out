@@ -1,0 +1,6 @@
+setting o to new instance with m=1
+setting o to o3 (becomes expr value)
+o is o3
+setting o to new instance with m=3
+setting o to o3 (becomes expr value)
+o is o3

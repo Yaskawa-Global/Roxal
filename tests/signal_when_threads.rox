@@ -8,7 +8,7 @@ type A actor:
 a = A()
 wait(us=2000)
 
-on s changed as evt:
+when s changes as evt:
   print("main:"+evt.value)
   a.observe(evt.value)
 

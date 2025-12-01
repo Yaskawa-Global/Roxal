@@ -8,7 +8,7 @@ type EventConsumer actor:
 
   func handleEvents():
 
-    on E:
+    when E occurs:
       print('event e occured')
 
     print('handleEvents sleeping for .5s')

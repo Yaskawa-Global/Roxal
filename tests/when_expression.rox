@@ -1,7 +1,7 @@
 var s = clock(10)
 var signals = [s]
 
-on signals[0] changed as evt:
+when signals[0] changes as evt:
   print("tick="+evt.value)
 
 s.run()

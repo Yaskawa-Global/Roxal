@@ -8,7 +8,7 @@ slow_sum.name = "slow_sum"
 
 var monitor = 0
 
-on monitor changed as evt:
+when monitor changes as evt:
   if evt.source_signal.freq() == 0:
     print("module signal freq=0")
   else:

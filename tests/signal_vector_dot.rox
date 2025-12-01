@@ -6,7 +6,7 @@ s2 = signal(10,initial_v)  //  (these won't change value unless set() is called)
 
 dp = s*s2    // vector dot product (real scalar signal)
 
-on dp changed as evt: // print if dp changes
+when dp changes as evt: // print if dp changes
   print('dp='+evt.value, flush=true)
 
 // set the signals in motion
@@ -20,4 +20,3 @@ s2.set([2.0 1.0 0.5]) // handler above will print dp=6.5 on next 10Hz boundary
 
 wait(ms=200)  // don't exit until after next tick & handler runs
 print('done')
-

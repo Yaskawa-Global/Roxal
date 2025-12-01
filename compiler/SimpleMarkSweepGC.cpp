@@ -55,7 +55,11 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
 
     for (const auto& entry : thread.eventHandlers) {
         visitStrongValue(visitor, entry.first);
-        visitStrongValues(visitor, entry.second);
+        for (const auto& reg : entry.second) {
+            visitStrongValue(visitor, reg.closure);
+            if (reg.matchValue.has_value())
+                visitStrongValue(visitor, reg.matchValue.value());
+        }
     }
 
     for (const auto& entry : thread.eventToSignal) {

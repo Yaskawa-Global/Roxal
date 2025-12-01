@@ -491,38 +491,45 @@ void ForStatement::acceptChildren(ASTVisitor& v, Anys& results)
 
 }
 
-std::any OnStatement::accept(ASTVisitor& v)
+std::any WhenStatement::accept(ASTVisitor& v)
 {
     Anys results {};
 
     if (v.visitFirst())
-        results.push_back( v.visit(dynamic_ptr_cast<OnStatement>(ptr_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<WhenStatement>(ptr_from_this())) );
 
     if (v.visitChildren())
         acceptChildren(v, results);
 
     if (v.visitLast())
-        results.push_back( v.visit(dynamic_ptr_cast<OnStatement>(ptr_from_this())) );
+        results.push_back( v.visit(dynamic_ptr_cast<WhenStatement>(ptr_from_this())) );
 
     return results;
 }
 
-void OnStatement::output(std::ostream& os, int indent) const
+void WhenStatement::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"On" << std::endl;
+    os << spaces(indent)+"When" << std::endl;
     os << spaces(indent+1) << "trigger:" << std::endl;
     trigger->output(os, indent+2);
-    if (requiresSignalChange)
-        os << spaces(indent+1) << "requires-signal-change" << std::endl;
+    if (matchesBecomes) {
+        os << spaces(indent+1) << "becomes:" << std::endl;
+        if (becomes.has_value())
+            becomes.value()->output(os, indent+2);
+    } else {
+        os << spaces(indent+1) << (requiresSignalChange ? "changes" : "occurs") << std::endl;
+    }
     if (binding.has_value())
         os << spaces(indent+1) << "binding: " << toUTF8StdString(binding.value()) << std::endl;
     os << spaces(indent+1) << "body:" << std::endl;
     body->output(os,indent+2);
 }
 
-void OnStatement::acceptChildren(ASTVisitor& v, Anys& results)
+void WhenStatement::acceptChildren(ASTVisitor& v, Anys& results)
 {
     results.push_back( trigger->accept(v) );
+    if (becomes.has_value())
+        results.push_back( becomes.value()->accept(v) );
     results.push_back( body->accept(v) );
 }
 

@@ -1,0 +1,16 @@
+var x = 0
+
+when x becomes 2:
+  print("hit:"+x)
+
+x = 1
+wait(us=10000)
+
+x = 2
+wait(us=10000)
+
+x = 2
+wait(us=10000)
+
+x = 3
+wait(us=10000)

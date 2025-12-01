@@ -1,6 +1,6 @@
 var s = "hello"
 
-on s changed:
+when s changes:
   print("handler:" + s)
 
 s = "there"

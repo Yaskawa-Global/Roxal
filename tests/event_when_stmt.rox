@@ -1,5 +1,5 @@
 type E event
-on E:
+when E occurs:
   print('hello')
 
 emit E()
