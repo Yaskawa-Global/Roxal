@@ -368,8 +368,14 @@ std::any ASTGraphviz::visit(ptr<ast::WhenStatement> ast)
     auto name { uname(ast) };
 
     addLink(name, stackPop(), "body");
+    if (ast->matchesBecomes && ast->becomes.has_value())
+        addLink(name, stackPop(), "becomes");
     addLink(name, stackPop(), "trigger");
-    std::string details = ast->requiresSignalChange ? "changes" : "occurs";
+    std::string details;
+    if (ast->matchesBecomes)
+        details = "becomes";
+    else
+        details = ast->requiresSignalChange ? "changes" : "occurs";
     if (ast->binding.has_value())
         details += ":" + toUTF8StdString(ast->binding.value());
     nodes[name] = node(name, "when", details);

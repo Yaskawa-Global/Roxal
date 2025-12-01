@@ -499,7 +499,14 @@ c.run()    // start the clock counting
 wait(s=1)  // keep the script running so we can see ~10 prints
 ```
 
-The `changes` keyword is required when watching a signal.  Supplying `as evt` binds the automatically-generated event instance that contains the sampled signal value (`evt.value`), a steady-clock duration since the engine started (`evt.timestamp`, a `sys.TimeSpan`), and the signal's own tick count (`evt.tick`).
+Use `changes` to run a handler on any update. Supplying `as evt` binds the automatically-generated event instance that contains the sampled signal value (`evt.value`), a steady-clock duration since the engine started (`evt.timestamp`, a `sys.TimeSpan`), and the signal's own tick count (`evt.tick`). To fire only when a signal hits a specific value, use the `becomes` form:
+```php
+when c becomes 42:
+  print('answer arrived')
+
+when gripperOpen becomes true: // trigger on 'rising edge' only
+  print('gripper now open')
+```
 
 Transforming a some signals:
 ```php

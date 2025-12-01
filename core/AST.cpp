@@ -512,7 +512,13 @@ void WhenStatement::output(std::ostream& os, int indent) const
     os << spaces(indent)+"When" << std::endl;
     os << spaces(indent+1) << "trigger:" << std::endl;
     trigger->output(os, indent+2);
-    os << spaces(indent+1) << (requiresSignalChange ? "changes" : "occurs") << std::endl;
+    if (matchesBecomes) {
+        os << spaces(indent+1) << "becomes:" << std::endl;
+        if (becomes.has_value())
+            becomes.value()->output(os, indent+2);
+    } else {
+        os << spaces(indent+1) << (requiresSignalChange ? "changes" : "occurs") << std::endl;
+    }
     if (binding.has_value())
         os << spaces(indent+1) << "binding: " << toUTF8StdString(binding.value()) << std::endl;
     os << spaces(indent+1) << "body:" << std::endl;
@@ -522,6 +528,8 @@ void WhenStatement::output(std::ostream& os, int indent) const
 void WhenStatement::acceptChildren(ASTVisitor& v, Anys& results)
 {
     results.push_back( trigger->accept(v) );
+    if (becomes.has_value())
+        results.push_back( becomes.value()->accept(v) );
     results.push_back( body->accept(v) );
 }
 

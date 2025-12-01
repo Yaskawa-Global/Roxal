@@ -364,6 +364,8 @@ struct WhenStatement : public Statement {
 
     ptr<ast::Expression> trigger;
     std::optional<icu::UnicodeString> binding;
+    std::optional<ptr<ast::Expression>> becomes;
+    bool matchesBecomes { false };
     bool requiresSignalChange { false };
     ptr<ast::Suite> body;
 

@@ -1628,6 +1628,9 @@ std::any RoxalCompiler::visit(ptr<ast::WhenStatement> ast)
     if (!emittedTrigger)
         ast->trigger->accept(*this);
 
+    if (ast->matchesBecomes && ast->becomes.has_value())
+        ast->becomes.value()->accept(*this);
+
     // compile handler body as closure proc
     ptr<type::Type> funcType = make_ptr<type::Type>(BuiltinType::Func);
     funcType->func = type::Type::FuncType();
@@ -1661,7 +1664,7 @@ std::any RoxalCompiler::visit(ptr<ast::WhenStatement> ast)
         emitByte(fs->upvalues[i].index);
     }
 
-    uint8_t whenMode = ast->requiresSignalChange ? 1 : 2;
+    uint8_t whenMode = ast->matchesBecomes ? 3 : (ast->requiresSignalChange ? 1 : 2);
     emitOpArgsBytes(OpCode::EventOn, whenMode);
 
     return {};

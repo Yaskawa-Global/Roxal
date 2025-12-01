@@ -914,8 +914,11 @@ std::any ASTGenerator::visitWhen_stmt(RoxalParser::When_stmtContext *context)
     ptr<WhenStatement> whenStmt = make_ptr<WhenStatement>();
     setSourceInfo(whenStmt, context);
 
-    whenStmt->trigger = as<Expression>(visitExpression(context->expression()));
-    whenStmt->requiresSignalChange = context->CHANGES() != nullptr;
+    whenStmt->trigger = as<Expression>(visitExpression(context->expression(0)));
+    whenStmt->requiresSignalChange = context->CHANGES() != nullptr || context->BECOMES() != nullptr;
+    whenStmt->matchesBecomes = context->BECOMES() != nullptr;
+    if (context->BECOMES())
+        whenStmt->becomes = as<Expression>(visitExpression(context->expression(1)));
     if (context->IDENTIFIER())
         whenStmt->binding = UnicodeString::fromUTF8(context->IDENTIFIER()->getText());
     whenStmt->body = as<Suite>(visitSuite(context->suite()));
