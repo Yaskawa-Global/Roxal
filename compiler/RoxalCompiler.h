@@ -95,12 +95,19 @@ public:
         // FIXME: make members protected, cache hashCode
 
         int32_t hashCode() const {
-            return packagePath.hashCode() ^ name.hashCode() ^ (isPackage ? 1 : 0);
+            int32_t h = packagePath.hashCode() ^ name.hashCode() ^ (isPackage ? 1 : 0);
+            if (isProto) h ^= 0x10000;
+            if (isIdl) h ^= 0x20000;
+            return h;
         }
 
         bool operator==(const ModuleInfo& other) const {
             // considered the same module if same package path & name (irrespective of module root)
-            return hashCode() == other.hashCode();
+            return packagePath == other.packagePath &&
+                   name == other.name &&
+                   isPackage == other.isPackage &&
+                   isProto == other.isProto &&
+                   isIdl == other.isIdl;
         }
         bool operator<(const ModuleInfo& other) const {
             return hashCode() < other.hashCode();
@@ -116,6 +123,7 @@ protected:
     std::vector<std::string> modulePaths;
     bool cacheReadEnabled;
     bool cacheWriteEnabled;
+    bool currentModuleHasDynamicImport{false};
     VM* moduleResolverVM;
 
     // Persistent TypeDeducer for REPL mode to maintain type info across lines

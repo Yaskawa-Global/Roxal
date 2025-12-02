@@ -6,9 +6,10 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <dds/dds.h>
 #include <dds/ddsi/ddsi_typelib.h>
-#include <unordered_set>
+#include <mutex>
 
 #include "BuiltinModule.h"
 
@@ -59,7 +60,7 @@ private:
     void linkNativeFunctions();
     void registerNativeTypes();
     static void setProperty(ObjectInstance* obj, const icu::UnicodeString& name, const Value& v);
-    static Value makeHandleValue(dds_entity_t ent);
+    Value makeHandleValue(dds_entity_t ent);
     static std::string typeNameFromValue(const Value& v);
     static dds_entity_t entityFromValue(const Value& v, bool allowNil = false);
     std::shared_ptr<TopicSupport> buildDynamicTopic(Value participant, const std::string& topicName, const std::string& typeName);
@@ -78,6 +79,7 @@ private:
                           const dds_topic_descriptor_t* desc,
                           const void* sample,
                           Value typeVal);
+    void deleteEntityOnce(dds_entity_t ent);
 
     // native implementations
     static Value dds_create_participant(VM&, ArgsView args);

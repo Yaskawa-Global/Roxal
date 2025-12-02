@@ -22,6 +22,11 @@
 
 using namespace roxal;
 
+namespace {
+std::mutex gEntityMutex;
+std::unordered_set<dds_entity_t> gDeletedEntities;
+}
+
 ModuleDDS::ModuleDDS()
 {
     moduleTypeValue = Value::objVal(newModuleTypeObj(toUnicodeString("dds")));
@@ -214,11 +219,6 @@ void ModuleDDS::setProperty(ObjectInstance* obj, const icu::UnicodeString& name,
 Value ModuleDDS::makeHandleValue(dds_entity_t ent)
 {
     auto fp = newForeignPtrObj(reinterpret_cast<void*>(static_cast<intptr_t>(ent)));
-    fp->registerCleanup([](void* p){
-        dds_entity_t e = static_cast<dds_entity_t>(reinterpret_cast<intptr_t>(p));
-        if (e > 0)
-            dds_delete(e);
-    });
     return Value::objVal(std::move(fp));
 }
 
@@ -252,8 +252,8 @@ Value ModuleDDS::dds_create_participant(VM&, ArgsView args)
     dds_entity_t participant = ::dds_create_participant(domainId, nullptr, nullptr);
     if (participant < 0)
         throw std::runtime_error(std::string("dds_create_participant failed: ") + ::dds_strretcode(-participant));
-    Value handleVal = makeHandleValue(participant);
     ModuleDDS* self = VM::instance().ddsModule;
+    Value handleVal = self ? self->makeHandleValue(participant) : Value::nilVal();
     if (!self || self->participantType.isNil())
         return handleVal;
     Value inst = Value::objectInstanceVal(self->participantType);
@@ -483,7 +483,7 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
     support->typeinfo = std::shared_ptr<ddsi_typeinfo>(typeinfo, ddsi_typeinfo_free);
     support->typeName = typeName;
     support->entity = topic;
-    support->handle = makeHandleValue(topic);
+    support->handle = self ? self->makeHandleValue(topic) : Value::nilVal();
     return support;
 }
 
@@ -503,7 +503,7 @@ Value ModuleDDS::dds_create_writer(VM&, ArgsView args)
         dds_entity_t writer = ::dds_create_writer(participant, topicEnt, nullptr, nullptr);
         if (writer < 0)
             throw std::runtime_error(std::string("dds_create_writer failed: ") + dds_strretcode(-writer));
-        handleVal = makeHandleValue(writer);
+        handleVal = self->makeHandleValue(writer);
         if (topicSupport) {
             self->supportByEntity[writer] = topicSupport;
         }
@@ -542,7 +542,7 @@ Value ModuleDDS::dds_create_reader(VM&, ArgsView args)
         dds_entity_t reader = ::dds_create_reader(participant, topicEnt, nullptr, nullptr);
         if (reader < 0)
             throw std::runtime_error(std::string("dds_create_reader failed: ") + dds_strretcode(-reader));
-        handleVal = makeHandleValue(reader);
+        handleVal = self->makeHandleValue(reader);
         if (topicSupport) {
             self->supportByEntity[reader] = topicSupport;
         }
@@ -582,8 +582,10 @@ Value ModuleDDS::dds_close_entity(VM&, ArgsView args)
     }
     if (fp) {
         dds_entity_t e = static_cast<dds_entity_t>(reinterpret_cast<intptr_t>(fp->ptr));
-        if (e > 0)
-            dds_delete(e);
+        if (e > 0) {
+            if (ModuleDDS* self = VM::instance().ddsModule)
+                self->deleteEntityOnce(e);
+        }
         fp->ptr = nullptr;
         fp->registerCleanup(nullptr);
     }
@@ -1088,6 +1090,17 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
         }
     }
     return inst;
+}
+
+void ModuleDDS::deleteEntityOnce(dds_entity_t ent)
+{
+    if (ent <= 0)
+        return;
+    std::lock_guard<std::mutex> lock(gEntityMutex);
+    if (gDeletedEntities.find(ent) != gDeletedEntities.end())
+        return;
+    gDeletedEntities.insert(ent);
+    dds_delete(ent);
 }
 
 #endif // ROXAL_ENABLE_DDS

@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 15;
+constexpr std::uint32_t ModuleCacheVersion = 17;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -596,6 +596,8 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     //  for the specified module
     ModuleInfo module = findImport(ast->packages);
     bool builtinModule = false;
+    if (module.isProto || module.isIdl)
+        currentModuleHasDynamicImport = true;
 
     // Check if this is a builtin module (even if a file also exists)
     if (ast->packages.size() == 1) {
@@ -2852,6 +2854,14 @@ Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module) const
         if (!cacheStream || version != ModuleCacheVersion)
             return Value::nilVal();
 
+        uint8_t flags = 0;
+        cacheStream.read(reinterpret_cast<char*>(&flags), sizeof(flags));
+        if (!cacheStream)
+            return Value::nilVal();
+        bool cachedHasDynamicImport = (flags & 0x1) != 0;
+        if (cachedHasDynamicImport)
+            return Value::nilVal();
+
         auto ctx = ptr<SerializationContext>::from_raw(new SerializationContext());
         Value value = readValue(cacheStream, ctx);
         if (!isFunction(value))
@@ -2875,6 +2885,8 @@ void RoxalCompiler::storeModuleCache(const ModuleInfo& module, const Value& func
 
         cacheStream.write(ModuleCacheMagic, sizeof(ModuleCacheMagic));
         cacheStream.write(reinterpret_cast<const char*>(&ModuleCacheVersion), sizeof(ModuleCacheVersion));
+        uint8_t flags = currentModuleHasDynamicImport ? 0x1 : 0x0;
+        cacheStream.write(reinterpret_cast<const char*>(&flags), sizeof(flags));
 
         auto ctx = ptr<SerializationContext>::from_raw(new SerializationContext());
         writeValue(cacheStream, function, ctx);
