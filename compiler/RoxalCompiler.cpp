@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 17;
+constexpr std::uint32_t ModuleCacheVersion = 18;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -110,6 +110,8 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
                              Value existingModule)
 {
     Value function { Value::nilVal() };
+    currentModuleHasDynamicImport = false;
+    currentDynamicImports.clear();
 
     ptr<ast::AST> ast {};
     try {
@@ -302,15 +304,20 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         if (!source->sourcePath.isEmpty())
             target->sourcePath = source->sourcePath;
 
-        target->vars.clear();
-        for (const auto& entry : source->vars.snapshot())
-            target->vars.store(entry, true);
+        auto sourceVars = source->vars.snapshot();
+        if (!sourceVars.empty()) {
+            target->vars.clear();
+            for (const auto& entry : sourceVars)
+                target->vars.store(entry, true);
+            target->constVars = source->constVars;
+        }
 
-        target->constVars = source->constVars;
-
-        target->clearModuleAliases();
-        for (const auto& alias : source->moduleAliasSnapshot())
-            target->registerModuleAlias(alias.first, alias.second);
+        auto sourceAliases = source->moduleAliasSnapshot();
+        if (!sourceAliases.empty()) {
+            target->clearModuleAliases();
+            for (const auto& alias : sourceAliases)
+                target->registerModuleAlias(alias.first, alias.second);
+        }
 
         target->cstructArch = source->cstructArch;
         target->propertyCTypes = source->propertyCTypes;
@@ -341,6 +348,48 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         if (builtin.isNonNil()) {
             mergeModuleTypes(asModuleType(builtin), module);
             return builtin.strongRef();
+        }
+
+        // Prefer an existing global module with the same name
+        auto globalOpt = resolverVM->loadGlobal(module->name);
+        if (globalOpt.has_value() && isModuleType(globalOpt.value())) {
+            Value globalMod = globalOpt.value();
+            mergeModuleTypes(asModuleType(globalMod), module);
+            return globalMod.strongRef();
+        }
+
+        // Try to match an existing module by name/fullName (e.g., dynamically imported IDL/proto)
+        auto findExistingModule = [&](const icu::UnicodeString& name, const icu::UnicodeString& fullName) -> Value {
+            auto modules = ObjModuleType::allModules.get();
+            Value best { Value::nilVal() };
+            size_t bestVars = 0;
+            for (const auto& modVal : modules) {
+                if (!isModuleType(modVal))
+                    continue;
+                ObjModuleType* m = asModuleType(modVal);
+                if (m == module)
+                    continue;
+                auto varCount = m->vars.snapshot().size();
+                if (!fullName.isEmpty()) {
+                    if (m->fullName == fullName)
+                        if (varCount >= bestVars) {
+                            best = modVal.strongRef();
+                            bestVars = varCount;
+                        }
+                }
+                if (m->name == name)
+                    if (varCount >= bestVars) {
+                        best = modVal.strongRef();
+                        bestVars = varCount;
+                    }
+            }
+            return best;
+        };
+
+        Value existing = findExistingModule(module->name, qualified);
+        if (existing.isNonNil()) {
+            mergeModuleTypes(asModuleType(existing), module);
+            return existing.strongRef();
         }
 
         return strong;
@@ -441,17 +490,29 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
             if (canonicalIt != canonicalModules.end()) {
                 moduleValue = canonicalIt->second.strongRef();
             } else {
-                // Lazily create placeholder modules for missing entries so we
-                // can rebuild a consistent hierarchy (e.g. when a cached
-                // module references a package parent that was not serialized
-                // in the cache file).
-                int32_t dotIndex = fullName.lastIndexOf('.');
-                icu::UnicodeString localName = dotIndex >= 0 ? fullName.tempSubString(dotIndex + 1)
-                                                             : fullName;
-                moduleValue = Value::moduleTypeVal(localName);
-                ObjModuleType* created = asModuleType(moduleValue);
-                created->fullName = fullName;
-                ObjModuleType::allModules.push_back(moduleValue);
+                auto gExisting = resolverVM->loadGlobal(fullName);
+                if (!gExisting.has_value()) {
+                    int32_t dotIndexTmp = fullName.lastIndexOf('.');
+                    if (dotIndexTmp >= 0) {
+                        icu::UnicodeString local = fullName.tempSubString(dotIndexTmp + 1);
+                        gExisting = resolverVM->loadGlobal(local);
+                    }
+                }
+                if (gExisting.has_value() && isModuleType(gExisting.value())) {
+                    moduleValue = gExisting.value().strongRef();
+                } else {
+                    // Lazily create placeholder modules for missing entries so we
+                    // can rebuild a consistent hierarchy (e.g. when a cached
+                    // module references a package parent that was not serialized
+                    // in the cache file).
+                    int32_t dotIndex = fullName.lastIndexOf('.');
+                    icu::UnicodeString localName = dotIndex >= 0 ? fullName.tempSubString(dotIndex + 1)
+                                                                 : fullName;
+                    moduleValue = Value::moduleTypeVal(localName);
+                    ObjModuleType* created = asModuleType(moduleValue);
+                    created->fullName = fullName;
+                    ObjModuleType::allModules.push_back(moduleValue);
+                }
             }
 
             ObjModuleType* moduleType = asModuleType(moduleValue);
@@ -689,6 +750,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 #ifdef ROXAL_ENABLE_GRPC
                 importedModuleType = VM::instance().importProtoModule(absoluteModuleFilePath);
                 importedModules[module] = importedModuleType;
+                currentDynamicImports.push_back(absoluteModuleFilePath);
 #else
                 throw std::runtime_error("proto import requires ROXAL_ENABLE_GRPC");
 #endif
@@ -701,6 +763,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 #ifdef ROXAL_ENABLE_DDS
                 importedModuleType = VM::instance().importIdlModule(absoluteModuleFilePath);
                 importedModules[module] = importedModuleType;
+                currentDynamicImports.push_back(absoluteModuleFilePath);
 #else
                 throw std::runtime_error("IDL import requires ROXAL_ENABLE_DDS");
 #endif
@@ -2859,13 +2922,83 @@ Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module) const
         if (!cacheStream)
             return Value::nilVal();
         bool cachedHasDynamicImport = (flags & 0x1) != 0;
-        if (cachedHasDynamicImport)
-            return Value::nilVal();
+
+        std::vector<std::string> dynamicImports;
+        if (cachedHasDynamicImport) {
+            uint32_t count = 0;
+            cacheStream.read(reinterpret_cast<char*>(&count), sizeof(count));
+            for (uint32_t i = 0; i < count; ++i) {
+                uint32_t len = 0;
+                cacheStream.read(reinterpret_cast<char*>(&len), sizeof(len));
+                if (len == 0)
+                    continue;
+                std::string path(len, '\0');
+                cacheStream.read(path.data(), len);
+                dynamicImports.push_back(path);
+            }
+        }
 
         auto ctx = ptr<SerializationContext>::from_raw(new SerializationContext());
         Value value = readValue(cacheStream, ctx);
         if (!isFunction(value))
             return Value::nilVal();
+
+        // Re-import dynamic modules so module references can be reconciled
+        for (const auto& path : dynamicImports) {
+            try {
+                std::filesystem::path p(path);
+                auto ext = p.extension().string();
+                if (ext == ".idl") {
+#ifdef ROXAL_ENABLE_DDS
+                    VM::instance().importIdlModule(path);
+#endif
+                } else if (ext == ".proto") {
+#ifdef ROXAL_ENABLE_GRPC
+                    VM::instance().importProtoModule(path);
+#endif
+                }
+            } catch (...) {
+                // ignore failures; reconcile will still run with whatever is available
+            }
+        }
+
+        if (cachedHasDynamicImport) {
+            std::unordered_map<std::string, Value> importedGlobals;
+            for (const auto& path : dynamicImports) {
+                std::filesystem::path p(path);
+                std::string name = p.stem().string();
+                auto g = VM::instance().loadGlobal(toUnicodeString(name));
+                if (g.has_value() && isModuleType(g.value()))
+                    importedGlobals[name] = g.value().strongRef();
+            }
+
+            if (!importedGlobals.empty()) {
+                std::unordered_set<ObjFunction*> visited;
+                std::vector<ObjFunction*> stack;
+                auto enqueue = [&](const Value& fnVal) {
+                    if (!isFunction(fnVal))
+                        return;
+                    ObjFunction* f = asFunction(fnVal);
+                    if (visited.insert(f).second)
+                        stack.push_back(f);
+                };
+                enqueue(value);
+                while (!stack.empty()) {
+                    ObjFunction* f = stack.back();
+                    stack.pop_back();
+                    if (isModuleType(f->moduleType)) {
+                        ObjModuleType* mt = asModuleType(f->moduleType);
+                        for (const auto& entry : importedGlobals) {
+                            mt->vars.store(toUnicodeString(entry.first), entry.second, true);
+                        }
+                    }
+                    if (f->chunk) {
+                        for (auto& c : f->chunk->constants)
+                            enqueue(c);
+                    }
+                }
+            }
+        }
         reconcileModuleReferences(value);
         return value;
     } catch (...) {
@@ -2887,6 +3020,15 @@ void RoxalCompiler::storeModuleCache(const ModuleInfo& module, const Value& func
         cacheStream.write(reinterpret_cast<const char*>(&ModuleCacheVersion), sizeof(ModuleCacheVersion));
         uint8_t flags = currentModuleHasDynamicImport ? 0x1 : 0x0;
         cacheStream.write(reinterpret_cast<const char*>(&flags), sizeof(flags));
+        if (currentModuleHasDynamicImport) {
+            uint32_t count = static_cast<uint32_t>(currentDynamicImports.size());
+            cacheStream.write(reinterpret_cast<const char*>(&count), sizeof(count));
+            for (const auto& path : currentDynamicImports) {
+                uint32_t len = static_cast<uint32_t>(path.size());
+                cacheStream.write(reinterpret_cast<const char*>(&len), sizeof(len));
+                cacheStream.write(path.data(), len);
+            }
+        }
 
         auto ctx = ptr<SerializationContext>::from_raw(new SerializationContext());
         writeValue(cacheStream, function, ctx);

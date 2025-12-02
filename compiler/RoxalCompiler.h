@@ -124,6 +124,7 @@ protected:
     bool cacheReadEnabled;
     bool cacheWriteEnabled;
     bool currentModuleHasDynamicImport{false};
+    std::vector<std::string> currentDynamicImports;
     VM* moduleResolverVM;
 
     // Persistent TypeDeducer for REPL mode to maintain type info across lines
