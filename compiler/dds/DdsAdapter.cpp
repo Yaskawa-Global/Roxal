@@ -167,6 +167,7 @@ idl_retcode_t onEnum(const idl_pstate_t*, bool revisit, const idl_path_t*, const
     const char* name = idl_identifier(en);
     if (!name) return IDL_RETCODE_OK;
     info.fullName = joinScope(st->scope, name);
+    info.node = reinterpret_cast<const idl_node_t*>(en);
     int32_t current = 0;
     bool first = true;
     const idl_enumerator_t* enumerator = en->enumerators;
@@ -192,6 +193,7 @@ idl_retcode_t onStruct(const idl_pstate_t*, bool revisit, const idl_path_t*, con
     if (!name) return IDL_RETCODE_OK;
     StructInfo s;
     s.fullName = joinScope(st->scope, name);
+    s.node = reinterpret_cast<const idl_node_t*>(stNode);
 
     const idl_member_t* member = stNode->members;
     while (member) {
@@ -208,7 +210,8 @@ idl_retcode_t onStruct(const idl_pstate_t*, bool revisit, const idl_path_t*, con
             if (idl_is_array(decl) && ft.kind != FieldType::Kind::List)
                 ft.kind = FieldType::Kind::List;
             fi.type = ft;
-            fi.isKey = idl_is_topic_key(decl, false, nullptr, nullptr) == IDL_KEYTYPE_EXPLICIT || idl_is_topic_key(member, false, nullptr, nullptr) == IDL_KEYTYPE_EXPLICIT;
+            const idl_member_t* mnode = static_cast<const idl_member_t*>(member);
+            fi.isKey = mnode && mnode->key.value;
             fi.isOptional = idl_is_optional(reinterpret_cast<const idl_node_t*>(member));
             s.fields.push_back(std::move(fi));
             decl = static_cast<const idl_declarator_t*>(idl_next(decl));
@@ -302,6 +305,7 @@ std::vector<Value> DdsAdapter::allocateTypes(const std::string& idlFile)
 
     for (const auto& e : parsed.enums) {
         enumsByFullName_.emplace(e.fullName, e);
+        enumsByName_.emplace(shortName(e.fullName), e);
         Value declVal = Value::objectTypeVal(toUnicodeString(shortName(e.fullName)), false, false, true);
         ObjObjectType* enumObj = asObjectType(declVal);
         for (const auto& val : e.values) {
@@ -317,6 +321,7 @@ std::vector<Value> DdsAdapter::allocateTypes(const std::string& idlFile)
 
     for (const auto& s : parsed.structs) {
         structsByFullName_.emplace(s.fullName, s);
+        structsByName_.emplace(shortName(s.fullName), s);
         Value declVal = Value::objectTypeVal(toUnicodeString(shortName(s.fullName)), false);
         ObjObjectType* obj = asObjectType(declVal);
         structByName.emplace(s.fullName, obj);
@@ -375,13 +380,39 @@ std::string DdsAdapter::fullNameForType(const Value& v) const
 const StructInfo* DdsAdapter::findStruct(const std::string& fullName) const
 {
     auto it = structsByFullName_.find(fullName);
-    return it == structsByFullName_.end() ? nullptr : &it->second;
+    if (it != structsByFullName_.end())
+        return &it->second;
+    auto it2 = structsByName_.find(fullName);
+    return it2 == structsByName_.end() ? nullptr : &it2->second;
 }
 
 const EnumInfo* DdsAdapter::findEnum(const std::string& fullName) const
 {
     auto it = enumsByFullName_.find(fullName);
-    return it == enumsByFullName_.end() ? nullptr : &it->second;
+    if (it != enumsByFullName_.end())
+        return &it->second;
+    auto it2 = enumsByName_.find(fullName);
+    return it2 == enumsByName_.end() ? nullptr : &it2->second;
+}
+
+bool DdsAdapter::typeMetaFor(const std::string& fullName,
+                             std::vector<unsigned char>& outInfo,
+                             std::vector<unsigned char>& outMap) const
+{
+    const StructInfo* s = findStruct(fullName);
+    if (!s || !s->node || !parserState_)
+        return false;
+
+    idl_typeinfo_typemap_t tim{};
+    if (generate_type_meta_ser(reinterpret_cast<idl_pstate_t*>(parserState_),
+                               s->node,
+                               &tim) != IDL_RETCODE_OK)
+        return false;
+    outInfo.assign(tim.typeinfo, tim.typeinfo + tim.typeinfo_size);
+    outMap.assign(tim.typemap, tim.typemap + tim.typemap_size);
+    if (tim.typeinfo) free(tim.typeinfo);
+    if (tim.typemap) free(tim.typemap);
+    return true;
 }
 
 #endif // ROXAL_ENABLE_DDS

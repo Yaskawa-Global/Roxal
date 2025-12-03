@@ -32,3 +32,12 @@ proc write(writer, msg):
 @builtin
 func read(reader):
   """Take one sample from the reader's topic and return it (or nil if none available)."""
+
+# Signal helpers
+@builtin
+func create_writer_signal(writer, initial=nil):
+  """Create a source signal tied to a DDS writer; setting the signal publishes a sample."""
+
+@builtin
+func create_reader_signal(reader, initial=nil):
+  """Create a source signal tied to a DDS reader; signal updates when samples arrive."""

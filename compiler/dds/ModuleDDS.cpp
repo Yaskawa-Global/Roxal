@@ -6,9 +6,11 @@
 #include "Object.h"
 #include "Value.h"
 #include "VM.h"
+#include "dataflow/Signal.h"
 
 #include <dds/dds.h>
 #include <dds/ddsrt/types.h>
+#include <dds/ddsrt/heap.h>
 #include <dds/ddsc/dds_public_impl.h>
 #include <dds/ddsc/dds_public_alloc.h>
 #include <dds/ddsc/dds_opcodes.h>
@@ -19,6 +21,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <functional>
+#include <algorithm>
 
 using namespace roxal;
 
@@ -26,6 +29,8 @@ namespace {
 std::mutex gEntityMutex;
 std::unordered_set<dds_entity_t> gDeletedEntities;
 }
+
+static Value getFieldValue(const Value& msg, const std::string& name);
 
 ModuleDDS::ModuleDDS()
 {
@@ -35,6 +40,7 @@ ModuleDDS::ModuleDDS()
 
 ModuleDDS::~ModuleDDS()
 {
+    stopReaderThread();
     if (!moduleTypeValue.isNil())
         destroyModuleType(moduleTypeValue);
 }
@@ -206,6 +212,8 @@ void ModuleDDS::linkNativeFunctions()
     linkFn("close", &ModuleDDS::dds_close_entity);
     linkFn("write", &ModuleDDS::dds_write);
     linkFn("read", &ModuleDDS::dds_read);
+    linkFn("create_writer_signal", &ModuleDDS::dds_create_writer_signal);
+    linkFn("create_reader_signal", &ModuleDDS::dds_create_reader_signal);
 }
 
 void ModuleDDS::setProperty(ObjectInstance* obj, const icu::UnicodeString& name, const Value& v)
@@ -322,50 +330,145 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
     if (!structInfo)
         return nullptr;
 
-    auto shortName = [](const std::string& full) {
-        auto pos = full.rfind("::");
-        return pos == std::string::npos ? full : full.substr(pos + 2);
+    auto nameStorage = std::make_shared<std::vector<std::string>>();
+    auto keepName = [&](const std::string& n) -> const char* {
+        nameStorage->push_back(n);
+        return nameStorage->back().c_str();
     };
+
+    // Try using serialized typeinfo from adapter if available
+    std::vector<unsigned char> perInfo;
+    std::vector<unsigned char> perMap;
+    if (self->adapter->typeMetaFor(typeName, perInfo, perMap) && !perInfo.empty()) {
+        ddsi_typeinfo* ti = ddsi_typeinfo_deser(perInfo.data(),
+                                               static_cast<uint32_t>(perInfo.size()));
+        if (ti) {
+            dds_topic_descriptor_t* descOut = nullptr;
+            dds_return_t rc = dds_create_topic_descriptor(DDS_FIND_SCOPE_LOCAL_DOMAIN,
+                                                         participant,
+                                                         reinterpret_cast<const dds_typeinfo_t*>(ti),
+                                                         DDS_SECS(5),
+                                                         &descOut);
+            if (rc == DDS_RETCODE_OK && descOut) {
+                dds_entity_t topic = ::dds_create_topic(participant, descOut, topicName.c_str(), nullptr, nullptr);
+                if (topic > 0) {
+                    auto support = std::make_shared<TopicSupport>();
+                    support->descriptor = std::shared_ptr<dds_topic_descriptor_t>(descOut, dds_delete_topic_descriptor);
+                    support->typeinfo = std::shared_ptr<ddsi_typeinfo>(ti, ddsi_typeinfo_free);
+                    support->typeName = typeName;
+                    support->entity = topic;
+                    support->handle = self ? self->makeHandleValue(topic) : Value::nilVal();
+                    support->nameStorage = nameStorage;
+                    return support;
+                }
+                dds_delete_topic_descriptor(descOut);
+            }
+            ddsi_typeinfo_free(ti);
+        }
+    }
 
     std::unordered_map<std::string, dds_dynamic_type_t> enumTypes;
     std::unordered_map<std::string, dds_dynamic_type_t> structTypes;
     std::unordered_map<std::string, dds_dynamic_type_t> stringTypes;
 
+    auto canonicalStructName = [&](const std::string& name) -> std::string {
+        const auto* sInfo = self->adapter->findStruct(name);
+        return sInfo ? sInfo->fullName : name;
+    };
+    auto canonicalEnumName = [&](const std::string& name) -> std::string {
+        const auto* eInfo = self->adapter->findEnum(name);
+        return eInfo ? eInfo->fullName : name;
+    };
+
     std::function<dds_dynamic_type_spec_t(const FieldType&)> makeSpec;
     std::function<dds_dynamic_type_t(const std::string&)> makeStructType =
-        [&](const std::string& full) -> dds_dynamic_type_t {
+        [&](const std::string& requestedName) -> dds_dynamic_type_t {
+            std::string full = canonicalStructName(requestedName);
             auto it = structTypes.find(full);
             if (it != structTypes.end())
                 return it->second;
             const auto* sInfo = self->adapter->findStruct(full);
             dds_dynamic_type_descriptor_t sd{};
             sd.kind = DDS_DYNAMIC_STRUCTURE;
-            std::string sname = shortName(full);
-            sd.name = sname.c_str();
+            sd.name = keepName(full);
             dds_dynamic_type_t stype = dds_dynamic_type_create(participant, sd);
             if (stype.ret != DDS_RETCODE_OK || !sInfo) {
                 structTypes.emplace(full, stype);
                 return stype;
             }
+            dds_dynamic_type_set_extensibility(&stype, DDS_DYNAMIC_TYPE_EXT_APPENDABLE);
+            dds_dynamic_type_set_nested(&stype, false);
+            dds_dynamic_type_set_autoid(&stype, DDS_DYNAMIC_TYPE_AUTOID_SEQUENTIAL);
             uint32_t memberId = 0;
             for (const auto& field : sInfo->fields) {
                 auto spec = makeSpec(field.type);
                 dds_dynamic_member_descriptor_t mdesc{};
+                uint32_t thisId = memberId++;
                 if (spec.kind == DDS_DYNAMIC_TYPE_KIND_PRIMITIVE)
                     mdesc = DDS_DYNAMIC_MEMBER_PRIM(spec.type.primitive, field.name.c_str());
                 else
-                    mdesc = DDS_DYNAMIC_MEMBER_(spec, field.name.c_str(), DDS_DYNAMIC_MEMBER_ID_AUTO, DDS_DYNAMIC_MEMBER_INDEX_END);
+                    mdesc = DDS_DYNAMIC_MEMBER_(spec, field.name.c_str(), thisId, DDS_DYNAMIC_MEMBER_INDEX_END);
+                mdesc.id = thisId;
                 dds_return_t mrc = dds_dynamic_type_add_member(&stype, mdesc);
                 if (mrc != DDS_RETCODE_OK)
                     throw std::runtime_error("Failed to add member " + field.name + ": " + dds_strretcode(-mrc));
-                if (field.isKey)
-                    dds_dynamic_member_set_key(&stype, mdesc.id, true);
+                if (field.isKey) {
+                    dds_return_t krc = dds_dynamic_member_set_key(&stype, mdesc.id, true);
+                    if (krc != DDS_RETCODE_OK) {
+                        fprintf(stderr, "Failed to set key on %s.%s: %s\n",
+                                sInfo->fullName.c_str(), field.name.c_str(), dds_strretcode(-krc));
+                    }
+                }
                 if (field.isOptional)
                     dds_dynamic_member_set_optional(&stype, mdesc.id, true);
             }
             structTypes.emplace(full, stype);
             return stype;
         };
+
+    auto makeEnumType = [&](const std::string& name) -> dds_dynamic_type_t {
+        std::string enameCanonical = canonicalEnumName(name);
+        auto it = enumTypes.find(enameCanonical);
+        if (it != enumTypes.end())
+            return it->second;
+        const auto* einfo = self->adapter->findEnum(name);
+        dds_dynamic_type_descriptor_t edesc{};
+        edesc.kind = DDS_DYNAMIC_ENUMERATION;
+        std::string ename = enameCanonical.empty() ? std::string("enum") : enameCanonical;
+        edesc.name = keepName(ename);
+        dds_dynamic_type_t etype = dds_dynamic_type_create(participant, edesc);
+        if (etype.ret != DDS_RETCODE_OK) {
+            throw std::runtime_error("Failed to create enum type " + ename + ": " + dds_strretcode(-etype.ret));
+        }
+        if (etype.ret == DDS_RETCODE_OK && einfo) {
+            for (const auto& val : einfo->values) {
+                dds_dynamic_type_add_enum_literal(&etype, val.first.c_str(),
+                                                  DDS_DYNAMIC_ENUM_LITERAL_VALUE(val.second),
+                                                  false);
+            }
+        }
+        enumTypes.emplace(enameCanonical, etype);
+        return etype;
+    };
+
+    auto seqTypeName = [&](const FieldType& elem, bool bounded, uint32_t bound) {
+        std::string base;
+        switch (elem.kind) {
+            case FieldType::Kind::StructRef: base = canonicalStructName(elem.refName); break;
+            case FieldType::Kind::EnumRef: base = canonicalEnumName(elem.refName); break;
+            case FieldType::Kind::String: base = "string"; break;
+            case FieldType::Kind::Bool: base = "bool"; break;
+            case FieldType::Kind::Int32: base = "int32"; break;
+            case FieldType::Kind::Int64Pair: base = "int64pair"; break;
+            case FieldType::Kind::Float64: base = "float64"; break;
+            case FieldType::Kind::List: base = "list"; break;
+            default: base = "seq";
+        }
+        std::string name = "seq<" + base + ">";
+        if (bounded && bound > 0)
+            name += "[b" + std::to_string(bound) + "]";
+        return name;
+    };
 
     makeSpec =
         [&](const FieldType& ft) -> dds_dynamic_type_spec_t {
@@ -383,11 +486,13 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
                     } else {
                         dds_dynamic_type_descriptor_t sdesc{};
                         sdesc.kind = DDS_DYNAMIC_STRING8;
-                        sdesc.name = "_str";
+                        sdesc.name = keepName("_str");
                         st = dds_dynamic_type_create(participant, sdesc);
+                        if (st.ret != DDS_RETCODE_OK)
+                            throw std::runtime_error("Failed to build string type: " + std::string(dds_strretcode(-st.ret)));
                         stringTypes.emplace("string8", st);
                     }
-                    spec = DDS_DYNAMIC_TYPE_SPEC(st);
+                    spec = DDS_DYNAMIC_TYPE_SPEC(dds_dynamic_type_ref(&st));
                     break;
                 }
                 case FieldType::Kind::List: {
@@ -395,40 +500,30 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
                     seqDesc.kind = DDS_DYNAMIC_SEQUENCE;
                     seqDesc.element_type = ft.element ? makeSpec(*ft.element)
                                                       : dds_dynamic_type_spec_t{DDS_DYNAMIC_TYPE_KIND_PRIMITIVE, {.primitive = DDS_DYNAMIC_INT32}};
+                    if (ft.bounded) {
+                        static thread_local uint32_t boundsBuf[1];
+                        boundsBuf[0] = ft.bound;
+                        seqDesc.bounds = boundsBuf;
+                        seqDesc.num_bounds = 1;
+                    }
+                    std::string seqName = seqTypeName(ft.element ? *ft.element : FieldType{FieldType::Kind::Int32}, ft.bounded, ft.bound);
+                    seqDesc.name = keepName(seqName);
                     dds_dynamic_type_t seqType = dds_dynamic_type_create(participant, seqDesc);
                     if (seqType.ret != DDS_RETCODE_OK)
                         throw std::runtime_error("Failed to build sequence type: " + std::string(dds_strretcode(-seqType.ret)));
-                    spec = DDS_DYNAMIC_TYPE_SPEC(seqType);
+                    spec = DDS_DYNAMIC_TYPE_SPEC(dds_dynamic_type_ref(&seqType));
                     break;
                 }
                 case FieldType::Kind::EnumRef: {
-                    auto it = enumTypes.find(ft.refName);
-                    dds_dynamic_type_t etype;
-                    if (it != enumTypes.end()) {
-                        etype = it->second;
-                    } else {
-                        const auto* einfo = self->adapter->findEnum(ft.refName);
-                        dds_dynamic_type_descriptor_t edesc{};
-                        edesc.kind = DDS_DYNAMIC_ENUMERATION;
-                        std::string ename = shortName(ft.refName);
-                        edesc.name = ename.c_str();
-                        etype = dds_dynamic_type_create(participant, edesc);
-                        if (etype.ret == DDS_RETCODE_OK && einfo) {
-                            for (const auto& val : einfo->values) {
-                                dds_dynamic_type_add_enum_literal(&etype, val.first.c_str(),
-                                                                  DDS_DYNAMIC_ENUM_LITERAL_VALUE(val.second),
-                                                                  false);
-                            }
-                        }
-                        enumTypes.emplace(ft.refName, etype);
-                    }
-                    spec = DDS_DYNAMIC_TYPE_SPEC(etype);
+                    dds_dynamic_type_t etype = makeEnumType(ft.refName);
+                    spec = DDS_DYNAMIC_TYPE_SPEC(dds_dynamic_type_ref(&etype));
                     break;
                 }
                 case FieldType::Kind::StructRef: {
-                    dds_dynamic_type_t st = makeStructType(ft.refName);
+                    std::string snameCanonical = canonicalStructName(ft.refName);
+                    dds_dynamic_type_t st = makeStructType(snameCanonical);
                     if (st.ret == DDS_RETCODE_OK)
-                        spec = DDS_DYNAMIC_TYPE_SPEC(st);
+                        spec = DDS_DYNAMIC_TYPE_SPEC(dds_dynamic_type_ref(&st));
                     else {
                         spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE;
                         spec.type.primitive = DDS_DYNAMIC_STRING8;
@@ -453,7 +548,6 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
         dds_dynamic_type_unref(&dynType);
         throw std::runtime_error("dds_dynamic_type_register failed for " + typeName + ": " + dds_strretcode(-rc));
     }
-
     dds_topic_descriptor_t* descOut = nullptr;
     rc = dds_create_topic_descriptor(DDS_FIND_SCOPE_LOCAL_DOMAIN,
                                      participant,
@@ -465,7 +559,6 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
         dds_dynamic_type_unref(&dynType);
         throw std::runtime_error("dds_create_topic_descriptor failed for " + typeName + ": " + dds_strretcode(-rc));
     }
-
     dds_entity_t topic = ::dds_create_topic(participant, descOut, topicName.c_str(), nullptr, nullptr);
     for (auto& kv : enumTypes) dds_dynamic_type_unref(&kv.second);
     for (auto& kv : structTypes) dds_dynamic_type_unref(&kv.second);
@@ -484,6 +577,7 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
     support->typeName = typeName;
     support->entity = topic;
     support->handle = self ? self->makeHandleValue(topic) : Value::nilVal();
+    support->nameStorage = nameStorage;
     return support;
 }
 
@@ -654,6 +748,30 @@ Value ModuleDDS::dds_read(VM&, ArgsView args)
     return result;
 }
 
+Value ModuleDDS::dds_create_writer_signal(VM&, ArgsView args)
+{
+    if (args.size() < 1)
+        throw std::invalid_argument("dds.create_writer_signal(writer, initial=nil) expects writer");
+    Value writerVal = args[0];
+    Value initial = args.size() > 1 ? args[1] : Value::nilVal();
+    ModuleDDS* self = VM::instance().ddsModule;
+    if (!self)
+        return Value::nilVal();
+    return self->createWriterSignal(writerVal, initial);
+}
+
+Value ModuleDDS::dds_create_reader_signal(VM&, ArgsView args)
+{
+    if (args.size() < 1)
+        throw std::invalid_argument("dds.create_reader_signal(reader, initial=nil) expects reader");
+    Value readerVal = args[0];
+    Value initial = args.size() > 1 ? args[1] : Value::nilVal();
+    ModuleDDS* self = VM::instance().ddsModule;
+    if (!self)
+        return Value::nilVal();
+    return self->createReaderSignal(readerVal, initial);
+}
+
 dds_entity_t ModuleDDS::entityFromValue(const Value& v, bool allowNil)
 {
     if (isForeignPtr(v)) {
@@ -690,6 +808,99 @@ const StructInfo* ModuleDDS::findStructInfo(const std::string& typeName) const
     if (!adapter)
         return nullptr;
     return adapter->findStruct(typeName);
+}
+
+Value ModuleDDS::createWriterSignal(const Value& writerVal, const Value& initial)
+{
+    dds_entity_t writer = entityFromValue(writerVal, true);
+    if (writer <= 0)
+        throw std::invalid_argument("dds.create_writer_signal requires a valid writer");
+    auto support = lookupSupport(writerVal);
+    if (!support)
+        throw std::runtime_error("Writer has no associated topic support");
+    auto sigPtr = df::Signal::newSourceSignal(0.0);
+    Value sigVal = Value::signalVal(sigPtr);
+    if (!initial.isNil())
+        sigPtr->set(initial);
+    registerWriterSignal(sigVal, writerVal, writer, support->typeName);
+    return sigVal;
+}
+
+Value ModuleDDS::createReaderSignal(const Value& readerVal, const Value& initial)
+{
+    dds_entity_t reader = entityFromValue(readerVal, true);
+    if (reader <= 0)
+        throw std::invalid_argument("dds.create_reader_signal requires a valid reader");
+    auto support = lookupSupport(readerVal);
+    if (!support)
+        throw std::runtime_error("Reader has no associated topic support");
+    auto sigPtr = df::Signal::newSourceSignal(0.0);
+    Value sigVal = Value::signalVal(sigPtr);
+    if (!initial.isNil())
+        sigPtr->set(initial);
+    registerReaderSignal(sigVal, readerVal, reader, support->typeName);
+    startReaderThread();
+    return sigVal;
+}
+
+void ModuleDDS::registerWriterSignal(const Value& sigVal, const Value& writerVal, dds_entity_t writer, const std::string& typeName)
+{
+    auto support = lookupSupport(writerVal);
+    auto desc = support ? support->descriptor : nullptr;
+    std::lock_guard<std::mutex> lock(signalMutex);
+    writerSignals.push_back({sigVal.weakRef(), writer, typeName, desc});
+    if (isSignal(sigVal)) {
+        ObjSignal* objSig = asSignal(sigVal);
+        auto sig = objSig->signal;
+        std::shared_ptr<dds_topic_descriptor_t> descHold = desc;
+        sig->addValueChangedCallback([this, writer, typeName, descHold](TimePoint, ptr<df::Signal>, const Value& sampleVal){
+            if (writer <= 0)
+                return;
+            auto info = findStructInfo(typeName);
+            if (!info)
+                return;
+            Value typeVal = resolveTypeValue(typeName);
+            if (typeVal.isNil())
+                return;
+            const dds_topic_descriptor_t* descPtr = descHold ? descHold.get() : nullptr;
+            size_t sampleSize = descPtr ? descPtr->m_size : computeLayout(*info, *new std::vector<size_t>());
+            auto sample = std::unique_ptr<void, std::function<void(void*)>>(
+                dds_alloc(sampleSize),
+                [descPtr, sampleSize](void* p){
+                    if (p) {
+                        if (descPtr)
+                            dds_sample_free(p, descPtr, DDS_FREE_ALL);
+                        else
+                            dds_free(p);
+                    }
+                });
+            fillSampleFromValue(*info, descPtr, sample.get(), sampleVal);
+            dds_return_t rc = ::dds_write(writer, sample.get());
+            if (rc < 0) {
+                fprintf(stderr, "dds_write signal error: %s\n", dds_strretcode(-rc));
+            }
+        });
+    }
+}
+
+void ModuleDDS::registerReaderSignal(const Value& sigVal, const Value& readerVal, dds_entity_t reader, const std::string& typeName)
+{
+    auto support = lookupSupport(readerVal);
+    auto desc = support ? support->descriptor : nullptr;
+    std::lock_guard<std::mutex> lock(signalMutex);
+    readerSignals.push_back({sigVal.weakRef(), reader, typeName, desc});
+}
+
+void ModuleDDS::unregisterSignal(const Value& sigVal)
+{
+    std::lock_guard<std::mutex> lock(signalMutex);
+    auto prune = [&](std::vector<SignalBinding>& vec) {
+        vec.erase(std::remove_if(vec.begin(), vec.end(), [&](const SignalBinding& b){
+            return !b.signal.isAlive() || b.signal == sigVal || b.signal.strongRef() == sigVal;
+        }), vec.end());
+    };
+    prune(writerSignals);
+    prune(readerSignals);
 }
 
 static Value getFieldValue(const Value& msg, const std::string& name)
@@ -830,6 +1041,13 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
     std::vector<size_t> fallbackOffsets;
     size_t clearSize = desc ? desc->m_size : computeLayout(info, fallbackOffsets);
     std::memset(sample, 0, clearSize);
+    auto canonicalName = [&](const std::string& n) {
+        if (adapter) {
+            if (const StructInfo* si = adapter->findStruct(n))
+                return si->fullName;
+        }
+        return n;
+    };
 
     auto handleField = [&](size_t offset, const FieldInfo& field, const Value& fval) {
         char* target = static_cast<char*>(sample) + offset;
@@ -870,9 +1088,10 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
                 break;
             }
             case FieldType::Kind::StructRef: {
-                const StructInfo* subInfo = findStructInfo(field.type.refName);
+                std::string refName = canonicalName(field.type.refName);
+                const StructInfo* subInfo = findStructInfo(refName);
                 const dds_topic_descriptor_t* subDesc = nullptr;
-                auto supIt = supportByType.find(field.type.refName);
+                auto supIt = supportByType.find(refName);
                 if (supIt != supportByType.end())
                     subDesc = supIt->second ? supIt->second->descriptor.get() : nullptr;
                 if (subInfo)
@@ -922,9 +1141,10 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
                             break;
                         }
                         case FieldType::Kind::StructRef: {
-                            const StructInfo* subInfo = findStructInfo(field.type.element->refName);
+                            std::string refName = canonicalName(field.type.element->refName);
+                            const StructInfo* subInfo = findStructInfo(refName);
                             const dds_topic_descriptor_t* subDesc = nullptr;
-                            auto sup = supportByType.find(field.type.element->refName);
+                            auto sup = supportByType.find(refName);
                             if (sup != supportByType.end())
                                 subDesc = sup->second ? sup->second->descriptor.get() : nullptr;
                             if (subInfo)
@@ -943,20 +1163,11 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
     };
 
     if (desc && desc->m_ops) {
-        const uint32_t* ops = desc->m_ops;
-        size_t fieldIndex = 0;
-        for (size_t i = 0; i < desc->m_nops; ) {
-            uint32_t op = ops[i++];
-            if (DDS_OP(op) == DDS_OP_RTS)
-                break;
-            if (DDS_OP(op) != DDS_OP_ADR)
-                continue;
-            if (fieldIndex >= info.fields.size())
-                break;
-            uint32_t offset = ops[i++];
-            const FieldInfo& field = info.fields[fieldIndex++];
+        auto offsets = offsetsFor(info, desc);
+        for (size_t idx = 0; idx < offsets.size() && idx < info.fields.size(); ++idx) {
+            const FieldInfo& field = info.fields[idx];
             Value fval = getFieldValue(msg, field.name);
-            handleField(offset, field, fval);
+            handleField(offsets[idx], field, fval);
         }
     } else {
         std::vector<size_t> offsets;
@@ -976,6 +1187,13 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
     ObjectInstance* obj = isObjectInstance(inst) ? asObjectInstance(inst) : nullptr;
     if (!sample || !obj)
         return inst;
+    auto canonicalName = [&](const std::string& n) {
+        if (adapter) {
+            if (const StructInfo* si = adapter->findStruct(n))
+                return si->fullName;
+        }
+        return n;
+    };
 
     auto handleField = [&](size_t offset, const FieldInfo& field) {
         const char* src = static_cast<const char*>(sample) + offset;
@@ -1002,12 +1220,13 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
                 break;
             }
             case FieldType::Kind::StructRef: {
-                const StructInfo* subInfo = findStructInfo(field.type.refName);
+                std::string refName = canonicalName(field.type.refName);
+                const StructInfo* subInfo = findStructInfo(refName);
                 const dds_topic_descriptor_t* subDesc = nullptr;
-                auto sup = supportByType.find(field.type.refName);
+                auto sup = supportByType.find(refName);
                 if (sup != supportByType.end())
                     subDesc = sup->second ? sup->second->descriptor.get() : nullptr;
-                Value subtypeVal = resolveTypeValue(field.type.refName);
+                Value subtypeVal = resolveTypeValue(refName);
                 if (subInfo && !subtypeVal.isNil())
                     val = valueFromSample(*subInfo, subDesc, src, subtypeVal);
                 break;
@@ -1043,12 +1262,13 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
                                 break;
                             }
                             case FieldType::Kind::StructRef: {
-                                const StructInfo* subInfo = findStructInfo(field.type.element->refName);
+                                std::string refName = canonicalName(field.type.element->refName);
+                                const StructInfo* subInfo = findStructInfo(refName);
                                 const dds_topic_descriptor_t* subDesc = nullptr;
-                                auto sup = supportByType.find(field.type.element->refName);
+                                auto sup = supportByType.find(refName);
                                 if (sup != supportByType.end())
                                     subDesc = sup->second ? sup->second->descriptor.get() : nullptr;
-                                Value subtypeVal = resolveTypeValue(field.type.element->refName);
+                                Value subtypeVal = resolveTypeValue(refName);
                                 if (subInfo && !subtypeVal.isNil())
                                     ev = valueFromSample(*subInfo, subDesc, eptr, subtypeVal);
                                 break;
@@ -1069,18 +1289,9 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
     };
 
     if (desc && desc->m_ops) {
-        const uint32_t* ops = desc->m_ops;
-        size_t fieldIndex = 0;
-        for (size_t i = 0; i < desc->m_nops; ) {
-            uint32_t op = ops[i++];
-            if (DDS_OP(op) == DDS_OP_RTS)
-                break;
-            if (DDS_OP(op) != DDS_OP_ADR)
-                continue;
-            if (fieldIndex >= info.fields.size())
-                break;
-            uint32_t offset = ops[i++];
-            handleField(offset, info.fields[fieldIndex++]);
+        auto offsets = offsetsFor(info, desc);
+        for (size_t idx = 0; idx < offsets.size() && idx < info.fields.size(); ++idx) {
+            handleField(offsets[idx], info.fields[idx]);
         }
     } else {
         std::vector<size_t> offsets;
@@ -1101,6 +1312,74 @@ void ModuleDDS::deleteEntityOnce(dds_entity_t ent)
         return;
     gDeletedEntities.insert(ent);
     dds_delete(ent);
+}
+
+std::vector<size_t> ModuleDDS::offsetsFor(const StructInfo& info, const dds_topic_descriptor_t* desc) const
+{
+    (void)desc;
+    std::vector<size_t> offsets;
+    computeLayout(info, offsets);
+    return offsets;
+}
+
+void ModuleDDS::readerThreadLoop()
+{
+    while (readerThreadRunning.load()) {
+        std::vector<SignalBinding> readersCopy;
+        {
+            std::lock_guard<std::mutex> lock(signalMutex);
+            readersCopy = readerSignals;
+        }
+        for (const auto& binding : readersCopy) {
+            if (!binding.signal.isAlive())
+                continue;
+            dds_entity_t reader = binding.entity;
+            if (reader <= 0)
+                continue;
+            void* samples[1] = { nullptr };
+            dds_sample_info_t si;
+            std::memset(&si, 0, sizeof(si));
+            dds_return_t rc = ::dds_take(reader, samples, &si, 1, 1);
+            if (rc < 0) {
+                fprintf(stderr, "dds_take error: %s\n", dds_strretcode(-rc));
+                continue;
+            }
+            if (rc == 0)
+                continue;
+            if (si.valid_data && samples[0]) {
+                const StructInfo* info = findStructInfo(binding.typeName);
+                Value typeVal = resolveTypeValue(binding.typeName);
+                const dds_topic_descriptor_t* desc = binding.descriptor ? binding.descriptor.get() : nullptr;
+                if (info && typeVal.isNonNil()) {
+                    Value val = valueFromSample(*info, desc, samples[0], typeVal);
+                    Value sigStrong = binding.signal.strongRef();
+                    if (isSignal(sigStrong)) {
+                        ObjSignal* objSig = asSignal(sigStrong);
+                        objSig->signal->set(val);
+                    }
+                }
+            }
+            ::dds_return_loan(reader, samples, 1);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+}
+
+void ModuleDDS::startReaderThread()
+{
+    bool expected = false;
+    if (readerThreadRunning.compare_exchange_strong(expected, true)) {
+        readerThread = std::thread([this](){ readerThreadLoop(); });
+    }
+}
+
+void ModuleDDS::stopReaderThread()
+{
+    bool expected = true;
+    if (readerThreadRunning.compare_exchange_strong(expected, false)) {
+        if (readerThread.joinable())
+            readerThread.join();
+    }
 }
 
 #endif // ROXAL_ENABLE_DDS

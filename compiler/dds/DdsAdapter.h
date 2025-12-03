@@ -7,6 +7,10 @@
 #include <unordered_map>
 #include <optional>
 
+extern "C" {
+#include "idl/tree.h"
+}
+
 #include "Value.h"
 
 namespace roxal {
@@ -33,11 +37,13 @@ struct FieldInfo {
 struct StructInfo {
     std::string fullName;
     std::vector<FieldInfo> fields;
+    const idl_node_t* node{nullptr};
 };
 
 struct EnumInfo {
     std::string fullName;
     std::vector<std::pair<std::string, int32_t>> values;
+    const idl_node_t* node{nullptr};
 };
 
 class DdsAdapter {
@@ -55,6 +61,9 @@ public:
     std::string fullNameForType(const Value& v) const;
     const StructInfo* findStruct(const std::string& fullName) const;
     const EnumInfo* findEnum(const std::string& fullName) const;
+    bool typeMetaFor(const std::string& fullName,
+                     std::vector<unsigned char>& outInfo,
+                     std::vector<unsigned char>& outMap) const;
 
 private:
     struct ParsedType {
@@ -70,7 +79,9 @@ private:
     std::unordered_map<const ObjObjectType*, std::string> fullNameByType_;
     std::unordered_map<const ObjObjectType*, bool> isKeyByFieldType_;
     std::unordered_map<std::string, StructInfo> structsByFullName_;
+    std::unordered_map<std::string, StructInfo> structsByName_;
     std::unordered_map<std::string, EnumInfo> enumsByFullName_;
+    std::unordered_map<std::string, EnumInfo> enumsByName_;
 };
 
 } // namespace roxal

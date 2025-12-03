@@ -40,12 +40,14 @@ private:
         std::string typeName;
         dds_entity_t entity{0};
         Value handle;
+        std::shared_ptr<std::vector<std::string>> nameStorage;
     };
     std::unordered_map<std::string, std::shared_ptr<TopicSupport>> supportByType;
     std::unordered_map<dds_entity_t, std::shared_ptr<TopicSupport>> supportByEntity;
     mutable std::unordered_map<std::string, std::vector<size_t>> cachedOffsets;
     mutable std::unordered_map<std::string, size_t> cachedSizes;
     mutable std::unordered_set<std::string> computingLayouts;
+    std::vector<size_t> offsetsFor(const StructInfo& info, const dds_topic_descriptor_t* desc) const;
 
     Value getOrCreateModule(const std::string& name);
     void registerGeneratedTypes(Value moduleVal, const std::vector<Value>& types);
@@ -66,6 +68,8 @@ private:
     std::shared_ptr<TopicSupport> buildDynamicTopic(Value participant, const std::string& topicName, const std::string& typeName);
     static Value dds_write(VM&, ArgsView args);
     static Value dds_read(VM&, ArgsView args);
+    static Value dds_create_writer_signal(VM&, ArgsView args);
+    static Value dds_create_reader_signal(VM&, ArgsView args);
     std::shared_ptr<TopicSupport> lookupSupport(const Value& v) const;
     const StructInfo* findStructInfo(const std::string& typeName) const;
     size_t computeLayout(const StructInfo& info, std::vector<size_t>& offsets) const;
@@ -80,6 +84,28 @@ private:
                           const void* sample,
                           Value typeVal);
     void deleteEntityOnce(dds_entity_t ent);
+
+    // Signal bindings
+    Value createWriterSignal(const Value& writerVal, const Value& initial);
+    Value createReaderSignal(const Value& readerVal, const Value& initial);
+    void registerWriterSignal(const Value& sigVal, const Value& writerVal, dds_entity_t writer, const std::string& typeName);
+    void registerReaderSignal(const Value& sigVal, const Value& readerVal, dds_entity_t reader, const std::string& typeName);
+    void unregisterSignal(const Value& sigVal);
+    void readerThreadLoop();
+    void startReaderThread();
+    void stopReaderThread();
+
+    struct SignalBinding {
+        Value signal;
+        dds_entity_t entity;
+        std::string typeName;
+        std::shared_ptr<dds_topic_descriptor_t> descriptor;
+    };
+    std::vector<SignalBinding> writerSignals;
+    std::vector<SignalBinding> readerSignals;
+    std::atomic<bool> readerThreadRunning{false};
+    std::thread readerThread;
+    mutable std::mutex signalMutex;
 
     // native implementations
     static Value dds_create_participant(VM&, ArgsView args);
