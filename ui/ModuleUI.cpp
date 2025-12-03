@@ -42,9 +42,9 @@ void ModuleUI::registerBuiltins(VM& vm)
 
     linkMethod("Window", "close", [this](VM& vm, ArgsView a){ window_close(a); return Value::nilVal(); });
     linkMethod("Window", "open", [this](VM& vm, ArgsView a){ window_open(a); return Value::nilVal(); });
-    linkMethod("Window", "on_title_changed", [this](VM& vm, ArgsView a){ window_on_title_changed(a); return Value::nilVal(); });
-    linkMethod("Window", "on_position_changed", [this](VM& vm, ArgsView a){ window_on_position_changed(a); return Value::nilVal(); });
-    linkMethod("Window", "on_size_changed", [this](VM& vm, ArgsView a){ window_on_size_changed(a); return Value::nilVal(); });
+    linkMethod("Window", "when_title_changes", [this](VM& vm, ArgsView a){ window_when_title_changes(a); return Value::nilVal(); });
+    linkMethod("Window", "when_position_changes", [this](VM& vm, ArgsView a){ window_when_position_changes(a); return Value::nilVal(); });
+    linkMethod("Window", "when_size_changes", [this](VM& vm, ArgsView a){ window_when_size_changes(a); return Value::nilVal(); });
 
     displayType = uiType("Display").weakRef();
     windowType = uiType("Window").weakRef();
@@ -401,7 +401,7 @@ void ModuleUI::window_open(ArgsView args)
 }
 
 
-void ModuleUI::window_on_title_changed(ArgsView args)
+void ModuleUI::window_when_title_changes(ArgsView args)
 {
     debug_assert_msg(instanceOf(args[0], windowType), "instance is Window");
     Value& window { args[0] };
@@ -432,7 +432,7 @@ void ModuleUI::window_on_title_changed(ArgsView args)
 }
 
 
-void ModuleUI::window_on_position_changed(ArgsView args)
+void ModuleUI::window_when_position_changes(ArgsView args)
 {
     debug_assert_msg(instanceOf(args[0], windowType), "instance is Window");
     Value& window { args[0] };
@@ -462,7 +462,7 @@ void ModuleUI::window_on_position_changed(ArgsView args)
 }
 
 
-void ModuleUI::window_on_size_changed(ArgsView args)
+void ModuleUI::window_when_size_changes(ArgsView args)
 {
     debug_assert_msg(instanceOf(args[0], windowType), "instance is Window");
     Value& window { args[0] };

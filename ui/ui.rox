@@ -27,31 +27,31 @@ type Window object:
   // implementation
 
   proc init():
-    on title changed as evt:
-      this.on_title_changed(evt.value)
+    when title changes as evt:
+      this.when_title_changes(evt.value)
 
-    on x changed:
-      this.on_position_changed()
+    when x changes:
+      this.when_position_changes()
 
-    on y changed:
-      this.on_position_changed()
+    when y changes:
+      this.when_position_changes()
 
-    on width changed:
-      this.on_size_changed()
+    when width changes:
+      this.when_size_changes()
 
-    on height changed:
-      this.on_size_changed()
+    when height changes:
+      this.when_size_changes()
 
   @builtin
-  private proc on_title_changed(title :string):
+  private proc when_title_changes(title :string):
     """Update the window title in the native UI"""
 
   @builtin
-  private proc on_position_changed():
+  private proc when_position_changes():
     """Update the window position in the native UI"""
 
   @builtin
-  private proc on_size_changed():
+  private proc when_size_changes():
     """Update the window size in the native UI"""
 
 
