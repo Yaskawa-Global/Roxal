@@ -2,7 +2,7 @@
 func f():
   type Local event
 
-  on Local:
+  when Local occurs:
     print('e occured')
 
   return Local
@@ -17,4 +17,3 @@ eventType = nil
 print(eventType)
 
 // should be no events or handlers leaking as e is no longer referenceable
-

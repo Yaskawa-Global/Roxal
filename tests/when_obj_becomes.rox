@@ -1,0 +1,22 @@
+
+type Obj object:
+  var m: int
+
+var o3 = Obj({'m':3})
+
+var o = Obj()
+
+when o becomes o3:
+  print("o is o3")
+
+print('setting o to new instance with m=1')
+o = Obj({'m':1})
+
+print('setting o to o3 (becomes expr value)')
+o = o3
+
+print('setting o to new instance with m=3')
+o = Obj({'m':3})
+
+print('setting o to o3 (becomes expr value)')
+o = o3

@@ -6,7 +6,7 @@ func f():
 
     proc act():
 
-      on E:
+      when E occurs:
         print('e occured within MyActor.act')
 
       print('act')
@@ -36,4 +36,3 @@ emit E()
 wait(us=1000)
 
 print('done')
-

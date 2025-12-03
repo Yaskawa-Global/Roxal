@@ -3,7 +3,7 @@ type MyEvent event:
   var b:real = 1.5
   var s:string = 'world'
 
-on MyEvent as evt:
+when MyEvent occurs as evt:
   print("event a="+evt.a+" b="+evt.b+" s="+evt.s)
 
 emit MyEvent(s='hello', a=1, b=2.2)

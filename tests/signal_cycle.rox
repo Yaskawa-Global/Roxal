@@ -14,7 +14,7 @@ out <- sum * 2.0
 
 var samples = []
 
-on out changed as evt:
+when out changes as evt:
   samples = samples + [evt.value]
 
 // run the network for a while

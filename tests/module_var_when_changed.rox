@@ -1,6 +1,6 @@
 var x = 1
 
-on x changed:
+when x changes:
   print("handler:" + x)
 
 print("assign 2")

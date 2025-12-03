@@ -2,7 +2,7 @@ type Obj object:
   var mymembervar :int = 1
 
   func mymemberfunc():
-    on mymembervar changed:
+    when mymembervar changes:
       var value = this.mymembervar
       print("mymembervar now {value}")
 

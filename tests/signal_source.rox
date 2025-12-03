@@ -1,6 +1,6 @@
 var s = signal(20, [1 2 3])
 
-on s changed as evt:
+when s changes as evt:
   print(evt.value)
 
 wait(ms=100)

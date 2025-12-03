@@ -439,11 +439,39 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
             it = ev->subscribers.erase(it);
             continue;
         }
-        Thread::PendingEvent pending = baseEvent;
-        pending.sequence = handlerThread->nextPendingEventId.fetch_add(1, std::memory_order_relaxed);
-        handlerThread->pendingEvents.push(pending);
-        handlerThread->pendingEventCount.fetch_add(1, std::memory_order_release);
-        handlerThread->wake();
+
+        Value key = eventWeak;
+        auto regIt = handlerThread->eventHandlers.find(key);
+        if (regIt == handlerThread->eventHandlers.end()) {
+            ++it;
+            continue;
+        }
+
+        auto trySchedule = [&](const Thread::HandlerRegistration& reg) {
+            if (!reg.closure.isAlive())
+                return;
+            if (asClosure(reg.closure) != closure)
+                return;
+            if (reg.matchValue.has_value()) {
+                if (!isEventInstance(eventInstance))
+                    return;
+                auto* inst = asEventInstance(eventInstance);
+                if (inst->payload.empty())
+                    return;
+                const Value& sample = inst->payload.at(0);
+                if (!sample.equals(reg.matchValue.value(), /*strict=*/false))
+                    return;
+            }
+            Thread::PendingEvent pending = baseEvent;
+            pending.sequence = handlerThread->nextPendingEventId.fetch_add(1, std::memory_order_relaxed);
+            handlerThread->pendingEvents.push(pending);
+            handlerThread->pendingEventCount.fetch_add(1, std::memory_order_release);
+            handlerThread->wake();
+        };
+
+        for (const auto& reg : regIt->second)
+            trySchedule(reg);
+
         ++it;
     }
 }
@@ -2919,7 +2947,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     auto br = bindMethod(type, name);
                     if (br == BindResult::Bound) {
-                        runtimeError("'changed' requires a property when using object member access.");
+                        runtimeError("'changes' requires a property when using object member access.");
                         return errorReturn;
                     }
                     if (br == BindResult::Private)
@@ -2954,7 +2982,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     auto br = bindMethod(type, name);
                     if (br == BindResult::Bound) {
-                        runtimeError("'changed' requires a property when using object member access.");
+                        runtimeError("'changes' requires a property when using object member access.");
                         return errorReturn;
                     }
                     if (br == BindResult::Private)
@@ -2966,7 +2994,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     if (mit != builtinMethods.end()) {
                         auto methodIt = mit->second.find(name->hash);
                         if (methodIt != mit->second.end()) {
-                            runtimeError("'changed' requires a property when using object member access.");
+                            runtimeError("'changes' requires a property when using object member access.");
                             return errorReturn;
                         }
                     }
@@ -4450,9 +4478,11 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::EventOn: {
                 uint8_t modeByte = readByte();
-                bool requireChangedKeyword = (modeByte == 1);
+                bool requireChangesKeyword = (modeByte == 1) || (modeByte == 3);
                 bool disallowSignalTargets = (modeByte == 2);
+                bool matchOnBecomes = (modeByte == 3);
                 Value closureVal = pop();
+                Value matchVal = matchOnBecomes ? pop() : Value::nilVal();
                 Value eventVal = pop();
                 if (!isClosure(closureVal)) {
                     runtimeError("EVENT_ON expects event/signal and closure");
@@ -4462,16 +4492,20 @@ std::pair<InterpretResult,Value> VM::execute()
                 ObjEventType* ev = nullptr;
                 if (isSignal(eventVal)) {
                     if (disallowSignalTargets) {
-                        runtimeError("signal handlers must use 'changed'");
+                        runtimeError("signal handlers must use 'changes'");
                         return errorReturn;
                     }
                     ObjSignal* sigObj = asSignal(eventVal);
                     ev = sigObj->ensureChangeEventType();
                     eventVal = sigObj->changeEventType;
-                    thread->eventToSignal[eventVal.weakRef()] = Value::objRef(sigObj);
+                    thread->eventToSignal[eventVal.weakRef()] = eventVal.weakRef();
                 } else if (isEventType(eventVal)) {
-                    if (requireChangedKeyword) {
-                        runtimeError("'changed' is only valid with signals");
+                    if (matchOnBecomes) {
+                        runtimeError("'becomes' is only valid with signals");
+                        return errorReturn;
+                    }
+                    if (requireChangesKeyword) {
+                        runtimeError("'changes' is only valid with signals");
                         return errorReturn;
                     }
                     ev = asEventType(eventVal);
@@ -4482,7 +4516,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
                 // record this handler on the current thread
                 Value key = eventVal.weakRef();
-                thread->eventHandlers[key].push_back(closureVal);
+                thread->eventHandlers[key].push_back(Thread::HandlerRegistration{closureVal, matchOnBecomes ? std::make_optional(matchVal) : std::nullopt});
 
                 // track the handler thread and subscribe the closure to the event
                 auto* closure = asClosure(closureVal);
@@ -4513,7 +4547,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 if (it != thread->eventHandlers.end()) {
                     auto& handlers = it->second;
                     for(auto hit = handlers.begin(); hit != handlers.end(); ) {
-                        if (hit->isAlive() && asClosure(*hit) == asClosure(closureVal))
+                        if (hit->closure.isAlive() && asClosure(hit->closure) == asClosure(closureVal))
                             hit = handlers.erase(hit);
                         else
                             ++hit;
@@ -4866,23 +4900,31 @@ bool VM::processPendingEvents()
         auto handlersIt = thread->eventHandlers.find(tev.eventType);
         if (handlersIt != thread->eventHandlers.end()) {
             for(const auto& handler : handlersIt->second) {
-                auto closureObj = asClosure(handler);
+                auto closureObj = asClosure(handler.closure);
 
                 auto prevThreadSleep = thread->threadSleep.load();
                 auto prevThreadSleepUntil = thread->threadSleepUntil.load();
 
                 thread->threadSleep = false;
 
-                if (handler == conditionalInterruptClosure) {
+                if (handler.closure == conditionalInterruptClosure) {
                     bool raise = true;
                     auto sigIt = thread->eventToSignal.find(tev.eventType);
                     if (sigIt != thread->eventToSignal.end()) {
                         Value sigVal = sigIt->second;
-                        if (isSignal(sigVal)) {
-                            ObjSignal* sigObj = asSignal(sigVal);
-                            Value cur = sigObj->signal->lastValue();
-                            if (cur.isBool() && cur.asBool()) {
-                                raise = true;
+                        if (!sigVal.isAlive()) {
+                            thread->eventToSignal.erase(sigIt);
+                            raise = false;
+                        } else {
+                            Value sigStrong = sigVal.strongRef();
+                            if (!sigStrong.isNil() && isSignal(sigStrong)) {
+                                ObjSignal* sigObj = asSignal(sigStrong);
+                                Value cur = sigObj->signal->lastValue();
+                                if (cur.isBool() && cur.asBool()) {
+                                    raise = true;
+                                } else {
+                                    raise = false;
+                                }
                             } else {
                                 raise = false;
                             }
@@ -5571,7 +5613,7 @@ Value VM::event_on_builtin(ArgsView args)
     Value closureVal = args[1];
 
     Value key = eventVal.weakRef();
-    thread->eventHandlers[key].push_back(closureVal);
+    thread->eventHandlers[key].push_back(Thread::HandlerRegistration{closureVal, std::nullopt});
 
     ObjEventType* ev = asEventType(eventVal);
     ObjClosure* closure = asClosure(closureVal);
@@ -5609,7 +5651,7 @@ Value VM::event_off_builtin(ArgsView args)
     if (it != thread->eventHandlers.end()) {
         auto& handlers = it->second;
         for(auto hit = handlers.begin(); hit != handlers.end(); ) {
-            if (hit->isAlive() && asClosure(*hit) == asClosure(closureVal))
+            if (hit->closure.isAlive() && asClosure(hit->closure) == asClosure(closureVal))
                 hit = handlers.erase(hit);
             else
                 ++hit;
@@ -5850,7 +5892,7 @@ Value VM::signal_on_changed_builtin(ArgsView args)
 
     // Register handler on current thread
     Value key = eventVal.weakRef();
-    thread->eventHandlers[key].push_back(closureVal);
+    thread->eventHandlers[key].push_back(Thread::HandlerRegistration{closureVal, std::nullopt});
 
     // Validate closure arity (0 or 1 arguments allowed)
     ObjClosure* closure = asClosure(closureVal);
@@ -5865,7 +5907,7 @@ Value VM::signal_on_changed_builtin(ArgsView args)
     ev->subscribers.push_back(closureVal.weakRef());
 
     // Track the signal for this event
-    thread->eventToSignal[eventVal.weakRef()] = Value::objRef(sigObj);
+        thread->eventToSignal[eventVal.weakRef()] = eventVal.weakRef();
 
     return Value::nilVal();
 }

@@ -15,8 +15,10 @@ Thread::~Thread()
         if (!entry.first.isAlive()) continue;
         ObjEventType* ev = asEventType(entry.first);
         for (const auto& handler : entry.second) {
+            if (!handler.closure.isAlive())
+                continue;
             for (auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
-                if (!it->isAlive() || asClosure(*it) != asClosure(handler)) {
+                if (!it->isAlive() || asClosure(*it) != asClosure(handler.closure)) {
                     ++it;
                     continue;
                 }
@@ -63,8 +65,9 @@ void Thread::pruneEventRegistrations()
 
         auto& handlers = it->second;
         handlers.erase(std::remove_if(handlers.begin(), handlers.end(),
-                                      [](const Value& handler) {
-                                          return handler.isWeak() && !handler.isAlive();
+                                      [](const HandlerRegistration& handler) {
+                                          return !handler.closure.isAlive() ||
+                                                 (handler.closure.isWeak() && !handler.closure.isAlive());
                                       }),
                        handlers.end());
 

@@ -21,7 +21,7 @@ type E event
 p = EventProducer()
 //p.printid()
 
-on E:
+when E occurs:
   print('e occured')
 
 p.emitEvents()
@@ -31,4 +31,3 @@ wait(us=500000)
 print('awake')
 
 print('done')
-
