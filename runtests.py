@@ -73,7 +73,7 @@ tests = [
     'module_strict_assign_err', 'var_redeclare_err', 'var_redeclare_assign_err', 'repl_var_redeclare_err', 'func_nonstrict', 'conversions1',
     'serialize_values', 'serialize_objects', 'serialize_user_objects', 'serialize_func', 'serialize_actor',
     'json_basic',
-    'byteops', 'bitwise', 'byte_int_bits', 'list_byte_concat', 'list_enum_concat',
+    'byteops', 'bitwise', 'byte_int_bits', 'int64_promotion', 'list_byte_concat', 'list_enum_concat',
     'object_init', 'object_constructor_args', 'object_constructor_unknown_arg', 'object_constructor_arg_count',
     'object_inherit_is', 'object_ref_member_default',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'closure_many', 'lambda1',
