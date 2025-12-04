@@ -1343,8 +1343,8 @@ void ObjPrimitive::write(std::ostream& out, roxal::ptr<SerializationContext> ctx
             out.write(reinterpret_cast<char*>(&b), 1);
             break; }
         case ValueType::Int: {
-            int32_t i = as.integer;
-            out.write(reinterpret_cast<char*>(&i), 4);
+            int64_t i = as.integer;
+            out.write(reinterpret_cast<char*>(&i), 8);
             break; }
         case ValueType::Real: {
             double d = as.real;
@@ -1372,7 +1372,7 @@ void ObjPrimitive::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             break; }
         case ValueType::Int: {
             type = ObjType::Int;
-            int32_t i; in.read(reinterpret_cast<char*>(&i),4);
+            int64_t i; in.read(reinterpret_cast<char*>(&i),8);
             as.integer = i;
             break; }
         case ValueType::Real: {

@@ -19,6 +19,7 @@
 #include <utility>
 #include <cmath>
 #include <sstream>
+#include <limits>
 
 
 namespace roxal {
@@ -93,6 +94,24 @@ Value Value::objRef(Obj* o)
     Value v;
     v.val = SignBit | QNAN | uint64_t(uintptr_t(o));
     return v;
+}
+
+namespace {
+inline bool fitsInInt32(int64_t v) {
+    return v >= std::numeric_limits<int32_t>::min() && v <= std::numeric_limits<int32_t>::max();
+}
+}
+
+Value Value::intVal(int64_t i)
+{
+    if (fitsInInt32(i))
+        return Value(static_cast<int32_t>(i));
+    return boxedIntVal(i);
+}
+
+Value Value::boxedIntVal(int64_t i)
+{
+    return Value::objVal(newIntObj(i));
 }
 
 std::string roxal::to_string(ValueType t)
@@ -342,15 +361,21 @@ void Value::unbox() {
     if (!isBoxed()) return;
 
     Obj* obj = asObj();
+    ObjPrimitive* pobj = isObjPrimitive(*this) ? asObjPrimitive(*this) : nullptr;
 
     if (isBool())
-        *this = Value(asObjPrimitive(*this)->as.boolean);
-    else if (isInt())
-        *this = Value(asObjPrimitive(*this)->as.integer);
+        *this = Value(pobj->as.boolean);
+    else if (isInt()) {
+        int64_t v = pobj->as.integer;
+        if (fitsInInt32(v))
+            *this = Value(static_cast<int32_t>(v));
+        else
+            return; // keep boxed for out-of-range values
+    }
     else if (isReal())
-        *this = Value(asObjPrimitive(*this)->as.real);
+        *this = Value(pobj->as.real);
     else if (isType())
-        *this = Value(asObjPrimitive(*this)->as.btype);
+        *this = Value(pobj->as.btype);
     else
         throw std::runtime_error("Unsupported type for auto-unboxing "+typeName());
 
@@ -403,6 +428,16 @@ bool Value::asBool(bool strict) const
         return asFuture(*this)->asValue().asBool(strict);
     if (isSignal(*this))
         return asSignal(*this)->signal->lastValue().asBool(strict);
+    if (isBoxed() && isObjPrimitive(*this)) {
+        auto pobj = asObjPrimitive(*this);
+        if (pobj->isBool())
+            return pobj->as.boolean;
+        if (pobj->isInt()) {
+            if (strict)
+                throw std::invalid_argument("unable to convert int to bool in strict mode");
+            return pobj->as.integer != 0;
+        }
+    }
     Value unboxed;
     const Value* v { this };
     if (isBoxed()) {
@@ -457,6 +492,11 @@ uint8_t Value::asByte(bool strict) const
         return asFuture(*this)->asValue().asByte(strict);
     if (isSignal(*this))
         return asSignal(*this)->signal->lastValue().asByte(strict);
+    if (isBoxed() && isObjPrimitive(*this) && asObjPrimitive(*this)->isInt()) {
+        if (strict)
+            throw std::invalid_argument("unable to convert int to byte in strict mode");
+        return static_cast<uint8_t>(asObjPrimitive(*this)->as.integer);
+    }
     Value unboxed;
     Value const* v { this };
     if (isBoxed()) {
@@ -510,7 +550,7 @@ uint8_t Value::asByte(bool strict) const
 }
 
 
-int32_t Value::asInt(bool strict) const
+int64_t Value::asInt(bool strict) const
 {
     if (isFuture(*this))
         return asFuture(*this)->asValue().asInt(strict);
@@ -519,6 +559,8 @@ int32_t Value::asInt(bool strict) const
     Value unboxed;
     Value const* v { this };
     if (isBoxed()) {
+        if (isObjPrimitive(*this) && asObjPrimitive(*this)->isInt())
+            return asObjPrimitive(*this)->as.integer;
         unboxed = *this;
         unboxed.unbox();
         v = &unboxed;
@@ -528,7 +570,10 @@ int32_t Value::asInt(bool strict) const
         switch (v->type()) {
         case ValueType::Enum: return int32_t(asEnum());
         case ValueType::Byte: return int32_t(uint8_t(v->val & 0xff));
-        case ValueType::Int: { uint64_t i {v->val & ~(QNAN | TypeTag)} ; return *reinterpret_cast<int32_t*>(&i); }
+        case ValueType::Int: {
+            uint64_t i {v->val & ~(QNAN | TypeTag)} ;
+            return *reinterpret_cast<int32_t*>(&i);
+        }
         case ValueType::Real:
             if (!strict) {
                 uint64_t bits = v->val.load();
@@ -546,13 +591,13 @@ int32_t Value::asInt(bool strict) const
                 auto str { toUTF8StdString(asStringObj(*v)->s) };
                 if ((str.size() > 2) && (str[0] == '0')) {
                     if (str[1] == 'x' || str[1]=='X')
-                        return std::stol(str.substr(2),nullptr,16);
+                        return std::stoll(str.substr(2),nullptr,16);
                     else if (str[1] == 'b' || str[1]=='B')
-                        return std::stol(str.substr(2),nullptr,2);
+                        return std::stoll(str.substr(2),nullptr,2);
                     else if (str[1] == 'o' || str[1]=='O')
-                        return std::stol(str.substr(2),nullptr,8);
+                        return std::stoll(str.substr(2),nullptr,8);
                 }
-                return std::stol(str,nullptr,10);
+                return std::stoll(str,nullptr,10);
             } catch(...) { return 0; }
         }
     }
@@ -577,6 +622,13 @@ double Value::asReal(bool strict) const
         return asFuture(*this)->asValue().asReal(strict);
     if (isSignal(*this))
         return asSignal(*this)->signal->lastValue().asReal(strict);
+    if (isBoxed() && isObjPrimitive(*this)) {
+        auto pobj = asObjPrimitive(*this);
+        if (pobj->isReal())
+            return pobj->as.real;
+        if (pobj->isInt())
+            return static_cast<double>(pobj->as.integer);
+    }
     Value unboxed;
     Value const* v { this };
     if (isBoxed()) {

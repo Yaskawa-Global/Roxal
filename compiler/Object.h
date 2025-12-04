@@ -288,7 +288,7 @@ struct ObjPrimitive : public Obj
 {
     ObjPrimitive(bool b) { type=ObjType::Bool; as.boolean = b; }
     ObjPrimitive(double r) { type=ObjType::Real; as.real = r; }
-    ObjPrimitive(int32_t i) { type=ObjType::Int; as.integer = i; }
+    ObjPrimitive(int64_t i) { type=ObjType::Int; as.integer = i; }
     ObjPrimitive(ValueType bt) { type=ObjType::Type; as.btype = bt; }
 
     ValueType valueType() const {
@@ -314,7 +314,7 @@ struct ObjPrimitive : public Obj
     union {
         bool boolean;
         double real;
-        int32_t integer;
+        int64_t integer;
         ValueType btype;
     } as;
 
@@ -347,7 +347,7 @@ inline unique_ptr<ObjPrimitive, UnreleasedObj> newBoolObj(bool b) {
 #endif
 }
 
-inline unique_ptr<ObjPrimitive, UnreleasedObj> newIntObj(int32_t i) {
+inline unique_ptr<ObjPrimitive, UnreleasedObj> newIntObj(int64_t i) {
 #ifdef DEBUG_BUILD
     return newObj<ObjPrimitive>(__func__, __FILE__, __LINE__, i);
 #else

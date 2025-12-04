@@ -157,11 +157,11 @@ public:
     static inline Value byteVal(uint8_t b) { return Value(b); }
     static Value boxedByteVal(uint8_t b);
 
-    /// @brief Constructs an integer value.
+    /// @brief Constructs an integer value (inline 32-bit storage). Prefer intVal() to handle boxing.
     /// @param i The integer value.
     explicit Value(int32_t i) { val = QNAN | TagInt | static_cast<uint64_t>(static_cast<uint32_t>(i)); }
-    static inline Value intVal(int32_t i) { return Value(i); }
-    static Value boxedIntVal(uint8_t b);
+    static Value intVal(int64_t i);
+    static Value boxedIntVal(int64_t i);
 
     /// @brief Constructs a real value.
     /// @param r The real value.
@@ -380,7 +380,7 @@ public:
     /// @brief Retrieves the value as an integer.
     /// @param strict If true, performs strict type checking. If false, allows type coercion.
     /// @return The integer value.
-    int32_t asInt(bool strict=true) const;
+    int64_t asInt(bool strict=true) const;
 
     /// @brief Checks if the value is a real number.
     /// @return True if the value is a real number, false otherwise.
