@@ -1,0 +1,14 @@
+import BoundedTypes
+import dds
+
+p = dds.create_participant()
+t = dds.create_topic(p, "BoundTopic", BoundedTypes.Msg)
+w = dds.create_writer(p, t)
+
+print("about to exceed bounds; expect an error")
+m = BoundedTypes.Msg()
+m.name = "toolong"   # exceeds string<5>
+m.nums = [1, 2, 3]   # exceeds sequence<...,2>
+
+dds.write(w, m)  # should raise at marshalling
+print("UNEXPECTED: write succeeded")

@@ -47,6 +47,7 @@ struct StructInfo {
     std::string fullName;
     std::vector<FieldInfo> fields;
     const idl_node_t* node{nullptr};
+    int extensibility{IDL_APPENDABLE};
 };
 
 struct EnumInfo {

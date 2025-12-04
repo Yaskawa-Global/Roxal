@@ -88,8 +88,14 @@ FieldType classifyType(const void* typeSpec)
     } else if (idl_is_array(stripped)) {
         ft.kind = FieldType::Kind::List;
         // treat arrays similarly to sequences
-    } else if (idl_is_string(stripped) || idl_is_wstring(stripped))
+    } else if (idl_is_string(stripped) || idl_is_wstring(stripped)) {
         ft.kind = FieldType::Kind::String;
+        const idl_string_t* s = static_cast<const idl_string_t*>(stripped);
+        if (s && s->maximum > 0) {
+            ft.bounded = true;
+            ft.bound = s->maximum;
+        }
+    }
     else if (idl_is_enum(stripped)) {
         ft.kind = FieldType::Kind::EnumRef;
         const char* name = idl_identifier(stripped);
@@ -191,6 +197,7 @@ idl_retcode_t onStruct(const idl_pstate_t*, bool revisit, const idl_path_t*, con
     StructInfo s;
     s.fullName = joinScope(st->scope, name);
     s.node = reinterpret_cast<const idl_node_t*>(stNode);
+    s.extensibility = stNode->extensibility.value;
 
     const idl_member_t* member = stNode->members;
     while (member) {

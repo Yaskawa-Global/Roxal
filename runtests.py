@@ -127,6 +127,10 @@ fileio_tests = [
     'fileio_basic', 'fileio_binary', 'fileio_read_binary', 'fileio_write_binary',
     'fileio_actor_write', 'fileio_delete', 'fileio_extra'
 ]
+dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke']
+
+# Add feature-specific tests to the full list; feature gating happens later.
+tests += dds_tests
 
 long_running_tests = [
     'gc_stress',
@@ -200,12 +204,17 @@ os.chdir(os.path.join(project_root, roxalpath))
 features = detect_features(roxal)
 has_grpc = 'grpc' in features
 has_fileio = 'fileio' in features
+has_dds = 'dds' in features
 if not has_grpc and any(test in tests for test in grpc_tests):
     print("Skipping gRPC tests (feature not enabled).")
     tests = [t for t in tests if t not in grpc_tests]
 if not has_fileio and any(test in tests for test in fileio_tests):
     print("Skipping fileio tests (feature not enabled).")
     tests = [t for t in tests if t not in fileio_tests]
+if not has_dds:
+    if any(test in tests for test in dds_tests):
+        print("Skipping DDS tests (feature not enabled).")
+        tests = [t for t in tests if t not in dds_tests]
 needs_grpc_server = has_grpc and any(test in tests for test in grpc_server_tests)
 
 env_base = os.environ.copy()

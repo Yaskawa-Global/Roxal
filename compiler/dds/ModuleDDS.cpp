@@ -432,7 +432,12 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
                 structTypes.emplace(full, stype);
                 return stype;
             }
-            dds_dynamic_type_set_extensibility(&stype, DDS_DYNAMIC_TYPE_EXT_APPENDABLE);
+            dds_dynamic_type_extensibility ext = DDS_DYNAMIC_TYPE_EXT_APPENDABLE;
+            if (sInfo->extensibility == IDL_FINAL)
+                ext = DDS_DYNAMIC_TYPE_EXT_FINAL;
+            else if (sInfo->extensibility == IDL_MUTABLE)
+                ext = DDS_DYNAMIC_TYPE_EXT_MUTABLE;
+            dds_dynamic_type_set_extensibility(&stype, ext);
             dds_dynamic_type_set_nested(&stype, false);
             dds_dynamic_type_set_autoid(&stype, DDS_DYNAMIC_TYPE_AUTOID_SEQUENTIAL);
             uint32_t memberId = 0;
@@ -517,18 +522,25 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
                 case FieldType::Kind::UInt64: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_UINT64; break;
                 case FieldType::Kind::Float64: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_FLOAT64; break;
                 case FieldType::Kind::String: {
-                    auto it = stringTypes.find("string8");
+                    std::string key = ft.bounded ? "string8[b" + std::to_string(ft.bound) + "]" : "string8";
                     dds_dynamic_type_t st{};
+                    auto it = stringTypes.find(key);
                     if (it != stringTypes.end()) {
                         st = it->second;
                     } else {
                         dds_dynamic_type_descriptor_t sdesc{};
                         sdesc.kind = DDS_DYNAMIC_STRING8;
                         sdesc.name = keepName("_str");
+                        if (ft.bounded && ft.bound > 0) {
+                            static thread_local uint32_t boundsBuf[1];
+                            boundsBuf[0] = ft.bound;
+                            sdesc.bounds = boundsBuf;
+                            sdesc.num_bounds = 1;
+                        }
                         st = dds_dynamic_type_create(participant, sdesc);
                         if (st.ret != DDS_RETCODE_OK)
                             throw std::runtime_error("Failed to build string type: " + std::string(dds_strretcode(-st.ret)));
-                        stringTypes.emplace("string8", st);
+                        stringTypes.emplace(key, st);
                     }
                     spec = DDS_DYNAMIC_TYPE_SPEC(dds_dynamic_type_ref(&st));
                     break;
@@ -1090,7 +1102,11 @@ size_t ModuleDDS::typeSizeInternal(const FieldType& ft, ModuleDDS* mod)
         case FieldType::Kind::Bool: return sizeof(bool);
         case FieldType::Kind::Int32: return sizeof(int32_t);
         case FieldType::Kind::Float64: return sizeof(double);
-        case FieldType::Kind::String: return sizeof(char*);
+        case FieldType::Kind::String: {
+            if (ft.bounded && ft.bound > 0)
+                return static_cast<size_t>(ft.bound + 1); // inline buffer including null
+            return sizeof(char*);
+        }
         case FieldType::Kind::EnumRef: return sizeof(int32_t);
         case FieldType::Kind::Int64: return sizeof(int64_t);
         case FieldType::Kind::UInt64: return sizeof(uint64_t);
@@ -1121,7 +1137,10 @@ size_t ModuleDDS::fieldAlignInternal(const FieldType& ft, ModuleDDS* mod)
         case FieldType::Kind::Int64: return alignof(int64_t);
         case FieldType::Kind::UInt64: return alignof(uint64_t);
         case FieldType::Kind::EnumRef: return alignof(int32_t);
-        case FieldType::Kind::String: return alignof(char*);
+        case FieldType::Kind::String:
+            if (ft.bounded && ft.bound > 0)
+                return alignof(char);
+            return alignof(char*);
         case FieldType::Kind::List: return alignof(dds_sequence_t);
         case FieldType::Kind::StructRef: {
             if (mod) {
@@ -1163,6 +1182,10 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
     };
 
     auto handleField = [&](size_t offset, const FieldInfo& field, const Value& fval) {
+        if (field.isOptional && fval.isNil()) {
+            // leave zeroed/null to indicate absence
+            return;
+        }
         char* target = static_cast<char*>(sample) + offset;
         switch (field.type.kind) {
             case FieldType::Kind::Bool: {
@@ -1201,8 +1224,17 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
             }
             case FieldType::Kind::String: {
                 std::string s = isString(fval) ? toUTF8StdString(asStringObj(fval)->s) : "";
-                char** ptr = reinterpret_cast<char**>(target);
-                *ptr = s.empty() ? nullptr : dds_string_dup(s.c_str());
+                if (field.type.bounded && field.type.bound > 0) {
+                    if (s.size() > field.type.bound)
+                        throw std::runtime_error("DDS string field '" + field.name + "' exceeds bound " + std::to_string(field.type.bound));
+                    size_t cap = static_cast<size_t>(field.type.bound + 1);
+                    std::memset(target, 0, cap);
+                    if (!s.empty())
+                        std::memcpy(target, s.c_str(), s.size());
+                } else {
+                    char** ptr = reinterpret_cast<char**>(target);
+                    *ptr = s.empty() ? nullptr : dds_string_dup(s.c_str());
+                }
                 break;
             }
             case FieldType::Kind::StructRef: {
@@ -1226,7 +1258,10 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
                 }
                 ObjList* lst = asList(fval);
                 size_t len = lst->elts.size();
-                seq->_maximum = static_cast<uint32_t>(len);
+                if (field.type.bounded && field.type.bound > 0 && len > field.type.bound)
+                    throw std::runtime_error("DDS sequence field '" + field.name + "' exceeds bound " + std::to_string(field.type.bound));
+                uint32_t max = field.type.bounded && field.type.bound > 0 ? field.type.bound : static_cast<uint32_t>(len);
+                seq->_maximum = max;
                 seq->_length = static_cast<uint32_t>(len);
                 size_t elemSz = typeSizeInternal(*field.type.element, this);
                 seq->_buffer = elemSz > 0 ? static_cast<uint8_t*>(dds_alloc(elemSz * len)) : nullptr;
@@ -1339,8 +1374,13 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
                 val = Value::intVal(*reinterpret_cast<const int32_t*>(src));
                 break;
             case FieldType::Kind::String: {
-                const char* s = *reinterpret_cast<char* const*>(src);
-                val = s ? Value::stringVal(toUnicodeString(std::string(s))) : Value::nilVal();
+                if (field.type.bounded && field.type.bound > 0) {
+                    const char* buf = reinterpret_cast<const char*>(src);
+                    val = Value::stringVal(toUnicodeString(std::string(buf ? buf : "")));
+                } else {
+                    const char* s = *reinterpret_cast<char* const*>(src);
+                    val = s ? Value::stringVal(toUnicodeString(std::string(s))) : Value::nilVal();
+                }
                 break;
             }
             case FieldType::Kind::StructRef: {

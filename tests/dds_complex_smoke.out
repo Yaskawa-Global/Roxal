@@ -1,0 +1,8 @@
+color 1
+nums [1, 2, 3]
+inner 7 inner
+friend0 10 alice
+friend1 11 bob
+signed64 -90000000000
+unsigned64 5000000000
+serial 1234
