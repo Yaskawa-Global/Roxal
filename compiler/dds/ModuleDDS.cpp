@@ -459,7 +459,8 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
             case FieldType::Kind::String: base = "string"; break;
             case FieldType::Kind::Bool: base = "bool"; break;
             case FieldType::Kind::Int32: base = "int32"; break;
-            case FieldType::Kind::Int64Pair: base = "int64pair"; break;
+            case FieldType::Kind::Int64: base = "int64"; break;
+            case FieldType::Kind::UInt64: base = "uint64"; break;
             case FieldType::Kind::Float64: base = "float64"; break;
             case FieldType::Kind::List: base = "list"; break;
             default: base = "seq";
@@ -476,7 +477,8 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
             switch (ft.kind) {
                 case FieldType::Kind::Bool: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_BOOLEAN; break;
                 case FieldType::Kind::Int32: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_INT32; break;
-                case FieldType::Kind::Int64Pair: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_INT64; break;
+                case FieldType::Kind::Int64: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_INT64; break;
+                case FieldType::Kind::UInt64: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_UINT64; break;
                 case FieldType::Kind::Float64: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_FLOAT64; break;
                 case FieldType::Kind::String: {
                     auto it = stringTypes.find("string8");
@@ -914,29 +916,6 @@ static Value getFieldValue(const Value& msg, const std::string& name)
     return Value::nilVal();
 }
 
-static int64_t pairToInt64(const Value& listVal)
-{
-    if (!isList(listVal))
-        return 0;
-    ObjList* lst = asList(listVal);
-    if (lst->elts.size() < 2)
-        return 0;
-    Value hiVal = lst->elts.at(0);
-    Value loVal = lst->elts.at(1);
-    int64_t hi = hiVal.isNumber() ? static_cast<int64_t>(hiVal.asInt()) : 0;
-    uint64_t lo = loVal.isNumber() ? static_cast<uint32_t>(loVal.asInt()) : 0;
-    return (hi << 32) | lo;
-}
-
-static Value int64ToPair(int64_t v)
-{
-    Value l = Value::listVal();
-    ObjList* lst = asList(l);
-    lst->elts.push_back(Value::intVal(static_cast<int32_t>(v >> 32)));
-    lst->elts.push_back(Value::intVal(static_cast<int32_t>(v & 0xffffffff)));
-    return l;
-}
-
 static size_t alignTo(size_t offset, size_t align)
 {
     if (align == 0)
@@ -981,6 +960,8 @@ size_t ModuleDDS::typeSizeInternal(const FieldType& ft, ModuleDDS* mod)
         case FieldType::Kind::Float64: return sizeof(double);
         case FieldType::Kind::String: return sizeof(char*);
         case FieldType::Kind::EnumRef: return sizeof(int32_t);
+        case FieldType::Kind::Int64: return sizeof(int64_t);
+        case FieldType::Kind::UInt64: return sizeof(uint64_t);
         case FieldType::Kind::StructRef: {
             if (mod) {
                 auto sup = mod->supportByType.find(ft.refName);
@@ -995,7 +976,6 @@ size_t ModuleDDS::typeSizeInternal(const FieldType& ft, ModuleDDS* mod)
             return 0;
         }
         case FieldType::Kind::List: return sizeof(dds_sequence_t);
-        case FieldType::Kind::Int64Pair: return sizeof(int64_t);
         default: return 0;
     }
 }
@@ -1006,7 +986,8 @@ size_t ModuleDDS::fieldAlignInternal(const FieldType& ft, ModuleDDS* mod)
         case FieldType::Kind::Bool: return alignof(bool);
         case FieldType::Kind::Int32: return alignof(int32_t);
         case FieldType::Kind::Float64: return alignof(double);
-        case FieldType::Kind::Int64Pair: return alignof(int64_t);
+        case FieldType::Kind::Int64: return alignof(int64_t);
+        case FieldType::Kind::UInt64: return alignof(uint64_t);
         case FieldType::Kind::EnumRef: return alignof(int32_t);
         case FieldType::Kind::String: return alignof(char*);
         case FieldType::Kind::List: return alignof(dds_sequence_t);
@@ -1067,9 +1048,14 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
                 *reinterpret_cast<double*>(target) = d;
                 break;
             }
-            case FieldType::Kind::Int64Pair: {
-                int64_t v = pairToInt64(fval);
+            case FieldType::Kind::Int64: {
+                int64_t v = fval.isNumber() ? fval.asInt() : 0;
                 *reinterpret_cast<int64_t*>(target) = v;
+                break;
+            }
+            case FieldType::Kind::UInt64: {
+                uint64_t v = fval.isNumber() ? static_cast<uint64_t>(fval.asInt()) : 0;
+                *reinterpret_cast<uint64_t*>(target) = v;
                 break;
             }
             case FieldType::Kind::EnumRef: {
@@ -1129,8 +1115,11 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
                         case FieldType::Kind::Float64:
                             *reinterpret_cast<double*>(elemPtr) = ev.isNumber() ? ev.asReal() : 0.0;
                             break;
-                        case FieldType::Kind::Int64Pair:
-                            *reinterpret_cast<int64_t*>(elemPtr) = pairToInt64(ev);
+                        case FieldType::Kind::Int64:
+                            *reinterpret_cast<int64_t*>(elemPtr) = ev.isNumber() ? ev.asInt() : 0;
+                            break;
+                        case FieldType::Kind::UInt64:
+                            *reinterpret_cast<uint64_t*>(elemPtr) = ev.isNumber() ? static_cast<uint64_t>(ev.asInt()) : 0;
                             break;
                         case FieldType::Kind::EnumRef:
                             *reinterpret_cast<int32_t*>(elemPtr) = ev.isEnum() ? ev.asEnum() : (ev.isNumber() ? ev.asInt() : 0);
@@ -1208,8 +1197,11 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
             case FieldType::Kind::Float64:
                 val = Value::realVal(*reinterpret_cast<const double*>(src));
                 break;
-            case FieldType::Kind::Int64Pair:
-                val = int64ToPair(*reinterpret_cast<const int64_t*>(src));
+            case FieldType::Kind::Int64:
+                val = Value::intVal(*reinterpret_cast<const int64_t*>(src));
+                break;
+            case FieldType::Kind::UInt64:
+                val = Value::intVal(static_cast<int64_t>(*reinterpret_cast<const uint64_t*>(src)));
                 break;
             case FieldType::Kind::EnumRef:
                 val = Value::intVal(*reinterpret_cast<const int32_t*>(src));
@@ -1247,12 +1239,15 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
                             case FieldType::Kind::Int32:
                                 ev = Value::intVal(*reinterpret_cast<const int32_t*>(eptr));
                                 break;
-                            case FieldType::Kind::Float64:
-                                ev = Value::realVal(*reinterpret_cast<const double*>(eptr));
-                                break;
-                            case FieldType::Kind::Int64Pair:
-                                ev = int64ToPair(*reinterpret_cast<const int64_t*>(eptr));
-                                break;
+                        case FieldType::Kind::Float64:
+                            ev = Value::realVal(*reinterpret_cast<const double*>(eptr));
+                            break;
+                        case FieldType::Kind::Int64:
+                            ev = Value::intVal(*reinterpret_cast<const int64_t*>(eptr));
+                            break;
+                        case FieldType::Kind::UInt64:
+                            ev = Value::intVal(static_cast<int64_t>(*reinterpret_cast<const uint64_t*>(eptr)));
+                            break;
                             case FieldType::Kind::EnumRef:
                                 ev = Value::intVal(*reinterpret_cast<const int32_t*>(eptr));
                                 break;

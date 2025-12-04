@@ -65,7 +65,7 @@ FieldType::Kind mapBaseType(idl_type_t t)
         case IDL_ULLONG:
         case IDL_INT64:
         case IDL_UINT64:
-            return FieldType::Kind::Int64Pair;
+            return (t == IDL_ULLONG || t == IDL_UINT64) ? FieldType::Kind::UInt64 : FieldType::Kind::Int64;
         default:
             return FieldType::Kind::Unsupported;
     }
@@ -113,7 +113,8 @@ Value makeTypeSpec(FieldType::Kind kind) {
         case FieldType::Kind::Float64: return Value::typeSpecVal(ValueType::Real);
         case FieldType::Kind::String: return Value::typeSpecVal(ValueType::String);
         case FieldType::Kind::List: return Value::typeSpecVal(ValueType::List);
-        case FieldType::Kind::Int64Pair: return Value::typeSpecVal(ValueType::List);
+        case FieldType::Kind::Int64:
+        case FieldType::Kind::UInt64: return Value::typeSpecVal(ValueType::Int);
         default: return Value::nilVal();
     }
 }
@@ -125,13 +126,9 @@ Value makeDefault(FieldType::Kind kind) {
         case FieldType::Kind::Float64: return defaultValue(ValueType::Real);
         case FieldType::Kind::String: return defaultValue(ValueType::String);
         case FieldType::Kind::List: return Value::listVal();
-        case FieldType::Kind::Int64Pair: {
-            Value l = Value::listVal();
-            auto list = asList(l);
-            list->elts.push_back(Value::intVal(0));
-            list->elts.push_back(Value::intVal(0));
-            return l;
-        }
+        case FieldType::Kind::Int64:
+        case FieldType::Kind::UInt64:
+            return Value::intVal(0);
         default: return Value::nilVal();
     }
 }

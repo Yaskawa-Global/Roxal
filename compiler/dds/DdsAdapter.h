@@ -19,7 +19,16 @@ struct ObjObjectType;
 
 struct FieldType {
     enum class Kind {
-        Int32, Bool, Float64, String, List, EnumRef, StructRef, Unsupported, Int64Pair
+        Int32,
+        Bool,
+        Float64,
+        String,
+        List,
+        EnumRef,
+        StructRef,
+        Int64,
+        UInt64,
+        Unsupported
     } kind { Kind::Unsupported };
     std::string refName; // for enums/structs
     std::shared_ptr<FieldType> element; // for sequences/lists
