@@ -423,6 +423,26 @@ public:
         return isNil() || isBool() || isInt() || isReal() || isType() || isByte() || isEnum();
     }
 
+    /// @brief Indicates if this value should use value semantics (independent of storage).
+    /// @return True for primitives and object types that behave like values.
+    inline bool valueSemantics() const {
+        if (!isObj())
+            return true;
+        if (isObjPrimitive(*this))
+            return true;
+        switch (type()) {
+            case ValueType::Vector:
+            case ValueType::Matrix:
+            case ValueType::Tensor:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// @brief Indicates if this value should use reference semantics.
+    inline bool referenceSemantics() const { return !valueSemantics(); }
+
     /// @brief Checks if the value is an object.
     /// @return True if the value is an object, false otherwise.
     inline bool isObj() const { return (val & (QNAN | SignBit)) == (QNAN | SignBit); }

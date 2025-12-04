@@ -57,7 +57,7 @@ Value VariablesMap::MonitoredValue::ensureSignal(const std::string& signalName)
 
 bool VariablesMap::MonitoredValue::assign(const Value& newValue)
 {
-    if (value.isObj() && newValue.isObj()) {
+    if (value.referenceSemantics() && newValue.referenceSemantics()) {
         if (value.asObj() == newValue.asObj())
             return false;
     } else if (value.equals(newValue)) {
@@ -718,6 +718,8 @@ bool Value::equals(const Value& rhs, bool strict) const
     }
     // Vector comparisons
     else if (isVector(*this) && isVector(rhs)) {
+        if (asObj() == rhs.asObj())
+            return true;
         // Deep equality for vectors - compare elements
         return asVector(*this)->equals(asVector(rhs));
     }
@@ -757,6 +759,8 @@ bool Value::equals(const Value& rhs, bool strict) const
     }
     // Matrix comparisons
     else if (isMatrix(*this) && isMatrix(rhs)) {
+        if (asObj() == rhs.asObj())
+            return true;
         // Deep equality for matrices - compare elements
         return asMatrix(*this)->equals(asMatrix(rhs));
     }
@@ -811,8 +815,10 @@ bool Value::equals(const Value& rhs, bool strict) const
     else if (isDict(*this) && isDict(rhs)) {
         return asDict(*this)->equals(asDict(rhs));
     }
-    else if (isObj()) {
-        if (!rhs.isObj())
+    else if (referenceSemantics() || rhs.referenceSemantics()) {
+        if (!(referenceSemantics() && rhs.referenceSemantics()))
+            return false;
+        if (!isObj() || !rhs.isObj())
             return false;
         if (!isAlive() || !rhs.isAlive())
             return false;
@@ -884,8 +890,11 @@ bool Value::is(const Value& rhs, bool strict) const
             return asTypeSpec(*this)->typeValue == rhs.asType();
         return type() == rhs.asType();
     }
-    else if (isObj()) // reference value identity
-        return rhs.isObj() && (asObj() == rhs.asObj()); // same ptr/address
+    else if (referenceSemantics() || rhs.referenceSemantics()) { // reference value identity
+        if (!(referenceSemantics() && rhs.referenceSemantics()))
+            return false;
+        return isObj() && rhs.isObj() && (asObj() == rhs.asObj()); // same ptr/address
+    }
 
     // assume builtin value types, use equality
     return equals(rhs, strict);
@@ -1430,9 +1439,9 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
         if (isSignal(arg0)) {
             Value sample = asSignal(arg0)->signal->lastValue();
             if (sample.type() == type) {
-                // If the sampled value is an object, make a fresh copy via its constructor;
-                // otherwise return the primitive value directly.
-                if (sample.isObj()) {
+                // If the sampled value has value semantics and is an object, make a fresh copy via its constructor;
+                // otherwise return the sampled value directly.
+                if (sample.isObj() && sample.valueSemantics()) {
                     std::vector<Value> sampleArg{sample};
                     return construct(type, sampleArg.begin(), sampleArg.end());
                 }
