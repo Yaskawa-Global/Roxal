@@ -579,7 +579,7 @@ int64_t Value::asInt(bool strict) const
             if (!strict) {
                 uint64_t bits = v->val.load();
                 double d = *reinterpret_cast<double*>(&bits);
-                return int32_t(d);
+                return static_cast<int64_t>(d);
             }
             throw std::invalid_argument("unable to convert real to int in strict mode");
         case ValueType::Bool: return (v->val == (QNAN | TagTrue)) ? 1 : 0;

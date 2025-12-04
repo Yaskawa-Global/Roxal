@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 15;
+constexpr std::uint32_t ModuleCacheVersion = 16;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -2562,6 +2562,9 @@ std::any RoxalCompiler::visit(ptr<ast::Num> ast)
     }
     else if (std::holds_alternative<int32_t>(ast->num)) {
         emitConstant(Value::intVal(std::get<int32_t>(ast->num)));
+    }
+    else if (std::holds_alternative<int64_t>(ast->num)) {
+        emitConstant(Value::intVal(std::get<int64_t>(ast->num)));
     }
     else
         throw std::runtime_error("unhandled Num type");

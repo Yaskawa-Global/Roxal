@@ -218,9 +218,11 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                 return Value::stringVal(s->str);
             } else if (auto n = dynamic_ptr_cast<ast::Num>(expr)) {
                 if (std::holds_alternative<int32_t>(n->num))
-                    return Value(std::get<int32_t>(n->num));
+                    return Value::intVal(std::get<int32_t>(n->num));
+                else if (std::holds_alternative<int64_t>(n->num))
+                    return Value::intVal(std::get<int64_t>(n->num));
                 else
-                    return Value(std::get<double>(n->num));
+                    return Value::realVal(std::get<double>(n->num));
             } else if (auto b = dynamic_ptr_cast<ast::Bool>(expr)) {
                 return Value::boolVal(b->value);
             } else if (auto v = dynamic_ptr_cast<ast::Variable>(expr)) {

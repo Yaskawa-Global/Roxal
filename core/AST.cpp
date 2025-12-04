@@ -1357,6 +1357,8 @@ void Num::output(std::ostream& os, int indent) const
     os << spaces(indent)+"Num ";
     if (std::holds_alternative<int32_t>(num))
         os << std::to_string(std::get<int32_t>(num)) << ":int";
+    else if (std::holds_alternative<int64_t>(num))
+        os << std::to_string(std::get<int64_t>(num)) << ":int";
     else if (std::holds_alternative<double>(num))
         os << std::to_string(std::get<double>(num)) << ":real";
     else

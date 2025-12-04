@@ -121,7 +121,7 @@ Value ModuleMath::math_identity_builtin(ArgsView args)
     if (args.size() != 1 || !args[0].isNumber())
         throw std::invalid_argument("math.identity expects single integer size");
 
-    int n = toType(ValueType::Int, args[0], false).asInt();
+    Eigen::Index n = static_cast<Eigen::Index>(toType(ValueType::Int, args[0], false).asInt());
     Eigen::MatrixXd m = Eigen::MatrixXd::Identity(n, n);
     return Value::matrixVal(m);
 }
@@ -131,8 +131,8 @@ Value ModuleMath::math_zeros_builtin(ArgsView args)
     if (args.size() != 2 || !args[0].isNumber() || !args[1].isNumber())
         throw std::invalid_argument("math.zeros expects two integer arguments");
 
-    int r = toType(ValueType::Int, args[0], false).asInt();
-    int c = toType(ValueType::Int, args[1], false).asInt();
+    Eigen::Index r = static_cast<Eigen::Index>(toType(ValueType::Int, args[0], false).asInt());
+    Eigen::Index c = static_cast<Eigen::Index>(toType(ValueType::Int, args[1], false).asInt());
     Eigen::MatrixXd m = Eigen::MatrixXd::Zero(r, c);
     return Value::matrixVal(m);
 }
@@ -142,8 +142,8 @@ Value ModuleMath::math_ones_builtin(ArgsView args)
     if (args.size() != 2 || !args[0].isNumber() || !args[1].isNumber())
         throw std::invalid_argument("math.ones expects two integer arguments");
 
-    int r = toType(ValueType::Int, args[0], false).asInt();
-    int c = toType(ValueType::Int, args[1], false).asInt();
+    Eigen::Index r = static_cast<Eigen::Index>(toType(ValueType::Int, args[0], false).asInt());
+    Eigen::Index c = static_cast<Eigen::Index>(toType(ValueType::Int, args[1], false).asInt());
     Eigen::MatrixXd m = Eigen::MatrixXd::Ones(r, c);
     return Value::matrixVal(m);
 }
@@ -214,7 +214,7 @@ Value ModuleMath::counter_inc_builtin(ArgsView args)
     if (args.size() == 2) {
         if (!args[1].isNumber())
             throw std::invalid_argument("Counter.inc expects numeric increment");
-        n = args[1].asInt();
+        n = static_cast<int>(args[1].asInt());
     }
 
     #ifdef DEBUG_BUILD

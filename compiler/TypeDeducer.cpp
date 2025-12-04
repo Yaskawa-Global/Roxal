@@ -688,6 +688,8 @@ std::any TypeDeducer::visit(ptr<ast::Num> ast)
 {
     if (std::holds_alternative<int32_t>(ast->num))
         ast->type = make_ptr<Type>(BuiltinType::Int);
+    else if (std::holds_alternative<int64_t>(ast->num))
+        ast->type = make_ptr<Type>(BuiltinType::Int);
     else if (std::holds_alternative<double>(ast->num))
         ast->type = make_ptr<Type>(BuiltinType::Real);
     else

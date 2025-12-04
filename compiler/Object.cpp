@@ -134,6 +134,9 @@ void writeExpr(std::ostream& out, const ptr<ast::Expression>& expr){
         if(std::holds_alternative<int32_t>(n->num)){
             uint8_t ty=0; out.write(reinterpret_cast<char*>(&ty),1);
             int32_t v=std::get<int32_t>(n->num); out.write(reinterpret_cast<char*>(&v),4);
+        } else if (std::holds_alternative<int64_t>(n->num)) {
+            uint8_t ty=2; out.write(reinterpret_cast<char*>(&ty),1);
+            int64_t v=std::get<int64_t>(n->num); out.write(reinterpret_cast<char*>(&v),8);
         } else {
             uint8_t ty=1; out.write(reinterpret_cast<char*>(&ty),1);
             double v=std::get<double>(n->num); out.write(reinterpret_cast<char*>(&v),8);
@@ -163,6 +166,9 @@ ptr<ast::Expression> readExpr(std::istream& in){
             uint8_t ty; in.read(reinterpret_cast<char*>(&ty),1);
             if(ty==0){
                 int32_t v; in.read(reinterpret_cast<char*>(&v),4);
+                n->num = v;
+            } else if (ty==2) {
+                int64_t v; in.read(reinterpret_cast<char*>(&v),8);
                 n->num = v;
             } else {
                 double v; in.read(reinterpret_cast<char*>(&v),8);
