@@ -2640,6 +2640,9 @@ std::any RoxalCompiler::visit(ptr<ast::Num> ast)
     else if (std::holds_alternative<int32_t>(ast->num)) {
         emitConstant(Value::intVal(std::get<int32_t>(ast->num)));
     }
+    else if (std::holds_alternative<int64_t>(ast->num)) {
+        emitConstant(Value::intVal(std::get<int64_t>(ast->num)));
+    }
     else
         throw std::runtime_error("unhandled Num type");
     return {};

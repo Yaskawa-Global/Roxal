@@ -707,7 +707,7 @@ struct Bool : public Literal {
 struct Num : public Literal {
     Num() { literalType = LiteralType::Num; }
 
-    std::variant<int32_t,double> num;
+    std::variant<int32_t,int64_t,double> num;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

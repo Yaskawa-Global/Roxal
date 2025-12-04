@@ -544,15 +544,18 @@ void ProtoAdapter::buildRespField(const Message& msg, const FieldDescriptor* fie
             break;
 
         case FieldDescriptor::CPPTYPE_INT64:
-            roxField.assign(Value::intVal(static_cast<int32_t>(refl->GetInt64(msg, field))));
+            roxField.assign(Value::intVal(refl->GetInt64(msg, field)));
             break;
 
         case FieldDescriptor::CPPTYPE_UINT64:
-            roxField.assign(Value::intVal(static_cast<int32_t>(refl->GetUInt64(msg, field))));
+        {
+            uint64_t raw = refl->GetUInt64(msg, field);
+            roxField.assign(Value::intVal(static_cast<int64_t>(raw)));
+        }
             break;
 
         case FieldDescriptor::CPPTYPE_UINT32:
-            roxField.assign(Value::intVal(static_cast<int32_t>(refl->GetUInt32(msg, field))));
+            roxField.assign(Value::intVal(static_cast<int64_t>(refl->GetUInt32(msg, field))));
             break;
 
         case FieldDescriptor::CPPTYPE_DOUBLE:
@@ -619,21 +622,23 @@ void ProtoAdapter::buildRepeatedRespField(const Message& msg, const FieldDescrip
         case FieldDescriptor::CPPTYPE_INT64:
         {
             for (int i = 0; i < refl->FieldSize(msg, field); i++)
-                list->elts.push_back(Value::intVal(static_cast<int32_t>(refl->GetRepeatedInt64(msg, field, i))));
+                list->elts.push_back(Value::intVal(refl->GetRepeatedInt64(msg, field, i)));
         }
         break;
 
         case FieldDescriptor::CPPTYPE_UINT32:
         {
             for (int i = 0; i < refl->FieldSize(msg, field); i++)
-                list->elts.push_back(Value::intVal(static_cast<int32_t>(refl->GetRepeatedUInt32(msg, field, i))));
+                list->elts.push_back(Value::intVal(static_cast<int64_t>(refl->GetRepeatedUInt32(msg, field, i))));
         }
         break;
 
         case FieldDescriptor::CPPTYPE_UINT64:
         {
-            for (int i = 0; i < refl->FieldSize(msg, field); i++)
-                list->elts.push_back(Value::intVal(static_cast<int32_t>(refl->GetRepeatedUInt64(msg, field, i))));
+            for (int i = 0; i < refl->FieldSize(msg, field); i++) {
+                uint64_t raw = refl->GetRepeatedUInt64(msg, field, i);
+                list->elts.push_back(Value::intVal(static_cast<int64_t>(raw)));
+            }
         }
         break;
 

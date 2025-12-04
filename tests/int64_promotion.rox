@@ -1,0 +1,30 @@
+import math.*
+
+var max32 = 2147483647
+var promoted = max32 + 1
+print(promoted)
+print(promoted == 2147483648)
+print(promoted is 2147483648)
+
+var assigned = promoted
+print(assigned == promoted)
+print(assigned is promoted)
+
+var shrink = int(promoted - 1)
+print(shrink)
+print(shrink == max32)
+print(shrink is max32)
+
+var bigLiteral = 1099511627776 // 2^40
+print(bigLiteral)
+
+var powVal = int(pow(2, 40))
+print(powVal)
+print(powVal == bigLiteral)
+print(powVal is bigLiteral)
+
+var threeB = 3000000000
+var reduced = int(threeB - 1000000000)
+print(reduced)
+print(reduced == 2000000000)
+print(reduced is 2000000000)

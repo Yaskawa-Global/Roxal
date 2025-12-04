@@ -686,6 +686,9 @@ std::any ASTGraphviz::visit(ptr<ast::Num> ast)
     else if (std::holds_alternative<int32_t>(ast->num)) {
         nodes[name] = node(name,"int",std::to_string(std::get<int32_t>(ast->num)));
     }
+    else if (std::holds_alternative<int64_t>(ast->num)) {
+        nodes[name] = node(name,"int",std::to_string(std::get<int64_t>(ast->num)));
+    }
     else
         throw std::runtime_error("unhandled Num type");
 

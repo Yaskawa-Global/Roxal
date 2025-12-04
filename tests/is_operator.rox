@@ -16,17 +16,16 @@ var s2 = 'hello'
 var s3 = 'there'
 print('s1 is s2? '+(s1 is s2)) // true
 print('s1 is s3? '+(s1 is s3)) // false
- 
+
 var v1 = [1 2 3]
 var v2 = [1 2 3]
 var v3 = v1
-print("v1 is v2? " + (v1 is v2)) // false
+print("v1 is v2? " + (v1 is v2)) // true (value semantics)
 print("v1 is v3? " + (v1 is v3)) // true
 
 var m1 = [1 2;3 4]
 var m2 = [1 2;3 4]
 var m3 = m1
-print("m1 is m2? " + (m1 is m2)) // false
+print("m1 is m2? " + (m1 is m2)) // true (value semantics)
 print("m1 is m3? " + (m1 is m3)) // true
 print("m3 is matrix? " + (m3 is matrix)) // true
-
