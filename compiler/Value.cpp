@@ -1338,8 +1338,11 @@ Value roxal::toType(ValueType t, Value v, bool strict)
     }
     else {
         auto pobj = asObjPrimitive(v);
-        if (pobj->valueType() == t)
+        if (pobj->valueType() == t) {
+            if (t == ValueType::Int && fitsInInt32(pobj->as.integer))
+                return Value::intVal(pobj->as.integer);
             return v;
+        }
         Value unboxedv { v };
         unboxedv.unbox();
         return toType(t, unboxedv, strict);
@@ -1742,8 +1745,13 @@ bool roxal::isTruthy(const Value& v)
 
 Value roxal::negate(Value v)
 {
-    if (v.isInt() || v.isByte())
-        return Value::intVal(-v.asInt());
+    if (v.isInt() || v.isByte()) {
+        int64_t res;
+        int64_t val = v.asInt();
+        if (__builtin_sub_overflow(int64_t(0), val, &res))
+            throw std::overflow_error("integer negation overflow");
+        return Value::intVal(res);
+    }
     else if (v.isReal())
         return Value::realVal(-v.asReal());
     else if (isVector(v)) {
@@ -1840,7 +1848,12 @@ Value roxal::add(Value l, Value r)
     if (l.isNumber() && r.isNumber()) {
         ValueType resultType(binaryOpType(l,r));
         switch (resultType) {
-            case ValueType::Int: return Value::intVal(l.asInt()+r.asInt());
+            case ValueType::Int: {
+                int64_t res;
+                if (__builtin_add_overflow(l.asInt(), r.asInt(), &res))
+                    throw std::overflow_error("integer addition overflow");
+                return Value::intVal(res);
+            }
             case ValueType::Real: return Value::realVal(l.asReal()+r.asReal());
             case ValueType::Byte: return Value::byteVal(l.asByte()+r.asByte());
             //... decimal
@@ -1922,7 +1935,12 @@ Value roxal::subtract(Value l, Value r)
 
     ValueType resultType(binaryOpType(l,r));
     switch (resultType) {
-        case ValueType::Int: return Value::intVal(l.asInt()-r.asInt());
+        case ValueType::Int: {
+            int64_t res;
+            if (__builtin_sub_overflow(l.asInt(), r.asInt(), &res))
+                throw std::overflow_error("integer subtraction overflow");
+            return Value::intVal(res);
+        }
         case ValueType::Real: return Value::realVal(l.asReal()-r.asReal());
         case ValueType::Byte: return Value::byteVal(l.asByte()-r.asByte());
         //... decimal
@@ -2003,7 +2021,12 @@ Value roxal::multiply(Value l, Value r)
 
     ValueType resultType(binaryOpType(l,r));
     switch (resultType) {
-        case ValueType::Int: return Value::intVal(l.asInt()*r.asInt());
+        case ValueType::Int: {
+            int64_t res;
+            if (__builtin_mul_overflow(l.asInt(), r.asInt(), &res))
+                throw std::overflow_error("integer multiplication overflow");
+            return Value::intVal(res);
+        }
         case ValueType::Real: return Value::realVal(l.asReal()*r.asReal());
         case ValueType::Byte: return Value::byteVal(l.asByte()*r.asByte());
         //... decimal
@@ -2031,7 +2054,15 @@ Value roxal::divide(Value l, Value r)
 
     ValueType resultType(binaryOpType(l,r));
     switch (resultType) {
-        case ValueType::Int: return Value::intVal(l.asInt()/r.asInt());
+        case ValueType::Int: {
+            int64_t lhs = l.asInt();
+            int64_t rhs = r.asInt();
+            if (rhs == 0)
+                throw std::invalid_argument("Divide by 0");
+            if (lhs == std::numeric_limits<int64_t>::min() && rhs == -1)
+                throw std::overflow_error("integer division overflow");
+            return Value::intVal(lhs / rhs);
+        }
         case ValueType::Real: return Value::realVal(l.asReal()/r.asReal());
         case ValueType::Byte: return Value::byteVal(l.asByte()/r.asByte());
         //... decimal
@@ -2054,8 +2085,10 @@ Value roxal::mod(Value l, Value r)
     if (!r.isNumber() && !r.isBool())
         throw std::invalid_argument("RHS must be an integer");
 
-    int32_t lhs = toType(ValueType::Int, l, false).asInt();
-    int32_t rhs = toType(ValueType::Int, r, false).asInt();
+    int64_t lhs = toType(ValueType::Int, l, false).asInt();
+    int64_t rhs = toType(ValueType::Int, r, false).asInt();
+    if (rhs == 0)
+        throw std::invalid_argument("Divide by 0");
     return Value::intVal(lhs % rhs);
 }
 
@@ -2196,9 +2229,9 @@ Value roxal::band(Value l, Value r)
         if (l.isByte() && r.isByte())
             return Value::byteVal(l.asByte(false) & r.asByte(false));
 
-        uint32_t lhs = static_cast<uint32_t>(toType(ValueType::Int, l, false).asInt());
-        uint32_t rhs = static_cast<uint32_t>(toType(ValueType::Int, r, false).asInt());
-        return Value::intVal(static_cast<int32_t>(lhs & rhs));
+        int64_t lhs = toType(ValueType::Int, l, false).asInt();
+        int64_t rhs = toType(ValueType::Int, r, false).asInt();
+        return Value::intVal(lhs & rhs);
     }
 
     throw std::invalid_argument("Operands must be bool, byte, int or dict");
@@ -2237,9 +2270,9 @@ Value roxal::bor(Value l, Value r)
         if (l.isByte() && r.isByte())
             return Value::byteVal(l.asByte(false) | r.asByte(false));
 
-        uint32_t lhs = static_cast<uint32_t>(toType(ValueType::Int, l, false).asInt());
-        uint32_t rhs = static_cast<uint32_t>(toType(ValueType::Int, r, false).asInt());
-        return Value::intVal(static_cast<int32_t>(lhs | rhs));
+        int64_t lhs = toType(ValueType::Int, l, false).asInt();
+        int64_t rhs = toType(ValueType::Int, r, false).asInt();
+        return Value::intVal(lhs | rhs);
     }
 
     throw std::invalid_argument("Operands must be bool, byte, int or dict");
@@ -2261,9 +2294,9 @@ Value roxal::bxor(Value l, Value r)
         if (l.isByte() && r.isByte())
             return Value::byteVal(l.asByte(false) ^ r.asByte(false));
 
-        uint32_t lhs = static_cast<uint32_t>(toType(ValueType::Int, l, false).asInt());
-        uint32_t rhs = static_cast<uint32_t>(toType(ValueType::Int, r, false).asInt());
-        return Value::intVal(static_cast<int32_t>(lhs ^ rhs));
+        int64_t lhs = toType(ValueType::Int, l, false).asInt();
+        int64_t rhs = toType(ValueType::Int, r, false).asInt();
+        return Value::intVal(lhs ^ rhs);
     }
 
     throw std::invalid_argument("Operands must be bool, byte or int");
@@ -2280,8 +2313,8 @@ Value roxal::bnot(Value v)
     if (v.isByte())
         return Value::byteVal(~v.asByte(false));
     if (v.isInt()) {
-        uint32_t val = static_cast<uint32_t>(v.asInt());
-        return Value::intVal(static_cast<int32_t>(~val));
+        int64_t val = v.asInt();
+        return Value::intVal(~val);
     }
 
     throw std::invalid_argument("Operand must be bool, byte or int");
