@@ -22,7 +22,7 @@ Value types:
   * `nil`  - non-reference (aka null, nullptr)
   * `bool` - boolean (true, false)
   * `byte` - numeric 0..255
-  * `int`  - signed 32bit
+  * `int`  - signed 64bit
   * `real` - IEEE 64bit float (aka C double)
   * `decimal` - (unimplemented) fixed point (designed for no roundoff error for fractions in base 10)
   * `enum` - enumerated int labelled (similar to C)
@@ -208,7 +208,7 @@ print(v == [1 2]) // true
 However, for most reference types, like user-defined objects & actors (more below), equality only compares the reference.
 
 The `is` operator:
-  * Checks identity - when the operands are two (non-type) values, it compares them for being the same object (e.g. list, dict, vector, matrix, string)
+  * Checks identity - when the operands are two (non-type) values, it compares them for being the same object (e.g. list & dict)
   * Checks type - when the LHS is a type
 
 ```php

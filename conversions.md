@@ -96,11 +96,10 @@ Note1: for Modulo (%): Values are promoted to int first.
 
 TODO: Clarify when signals and futures are resolved vs 'sampled'.  Currently inconsistient:
 
-  * Futures & signals are resolved/sampled in builting functions like print(), but not for passing to user-defined functions
+  * Futures & signals are resolved/sampled in builtin functions like print(), but not for passing to user-defined functions
     * Passing a signal to a user-defined function actually creates a new dataflow node
     * Perhaps been some explicit .value property of signals (futures?)
-  * Builtin operators like +, -, etc. aren't consistnent with user defined functions
+  * Builtin operators like +, -, etc. aren't consistent with user defined functions
     * Operator + on futures will resolve futures & add them instead of creating a new future that is the future sum
     * Operator + on signals will sample the signals and add them instead of creating a new node in the dataflow network who's output is the sum signal
     * Indexing a vector or list signal - though that create an index node who's output is a signal of the element type?
-
