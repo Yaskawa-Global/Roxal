@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import os
+import sys
+import socket
 import subprocess
 import argparse
 import re
@@ -12,6 +14,7 @@ TEST_TIMEOUT_SECS = 5
 GC_STRESS_TIMEOUT_SECS = 20
 # Width of the test name column when printing results
 TEST_NAME_WIDTH = 32
+GRPC_TEST_ADDR = "127.0.0.1:50051"
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Run Roxal tests.")
@@ -115,10 +118,11 @@ tests = [
     'fileio_read_binary', 'fileio_write_binary', 'fileio_actor_write', 'fileio_delete', 'fileio_extra',
     'help_doc', 'help_time_wall_now', 'help_time_wall_now_instance', 'docstring_func',
     'builtin_object_methods', 'math_counter_signal', 'print_flush',
-    'grpc_message_types', 'grpc_service_actor', 'grpc_runtime_error'
+    'grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error'
 ]
 
-grpc_tests = ['grpc_message_types', 'grpc_service_actor', 'grpc_runtime_error']
+grpc_tests = ['grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error']
+grpc_server_tests = ['grpc_int64_values']
 fileio_tests = [
     'fileio_basic', 'fileio_binary', 'fileio_read_binary', 'fileio_write_binary',
     'fileio_actor_write', 'fileio_delete', 'fileio_extra'
@@ -202,13 +206,54 @@ if not has_grpc and any(test in tests for test in grpc_tests):
 if not has_fileio and any(test in tests for test in fileio_tests):
     print("Skipping fileio tests (feature not enabled).")
     tests = [t for t in tests if t not in fileio_tests]
+needs_grpc_server = has_grpc and any(test in tests for test in grpc_server_tests)
 
 env_base = os.environ.copy()
 env_base['ROXALPATH'] = test_dir
 
+def start_grpc_test_server(env) -> subprocess.Popen:
+    script_path = os.path.join(project_root, 'scripts', 'grpc_everything_server.py')
+    if not os.path.exists(script_path):
+        raise RuntimeError(f"gRPC test server script not found at {script_path}")
+
+    host, port_str = GRPC_TEST_ADDR.split(':', 1)
+    port = int(port_str)
+    proc = subprocess.Popen(
+        [sys.executable, script_path, "--address", GRPC_TEST_ADDR],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+    )
+
+    deadline = time.time() + 5.0
+    last_error = None
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            output, _ = proc.communicate(timeout=0.1)
+            raise RuntimeError(
+                f"gRPC test server failed to start (exit {proc.returncode}): "
+                f"{output.decode(errors='ignore')}"
+            )
+        try:
+            with socket.create_connection((host, port), timeout=0.25):
+                return proc
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.1)
+
+    proc.terminate()
+    try:
+        proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    raise RuntimeError(f"Timed out waiting for gRPC test server to start: {last_error}")
+
+grpc_server_proc = None
 total_start_time = time.perf_counter()
 
 try:
+    grpc_server_proc = start_grpc_test_server(env_base) if needs_grpc_server else None
+
     for test in tests:
         print(f"Test {test:<{TEST_NAME_WIDTH}} ", end='', flush=True)
         start_time = time.perf_counter()
@@ -335,6 +380,14 @@ try:
 
 except Exception as e:
     print('Exception: ' + str(e))
+finally:
+    if grpc_server_proc:
+        grpc_server_proc.terminate()
+        try:
+            grpc_server_proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            grpc_server_proc.kill()
+    os.chdir(cwd)
 
 total_duration = time.perf_counter() - total_start_time
 failed_unexpected_count = failed_count - len(failing_tests)
@@ -349,5 +402,3 @@ if args.opcode_prof:
         print(f"Opcode profile written to {opcode_profile_path}")
     else:
         print(f"Opcode profiling was requested but {opcode_profile_path} was not created.")
-
-os.chdir(cwd)
