@@ -485,9 +485,7 @@ public:
 
     /// @brief Calculates the hash value of the value.
     /// @return The hash value.
-    size_t hash() const {
-        return size_t(val.load());
-    }
+    size_t hash() const;
 
     #ifdef DEBUG_BUILD
     uint64_t getVal() const { return val; }

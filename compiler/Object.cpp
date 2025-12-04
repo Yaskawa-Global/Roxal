@@ -3443,6 +3443,15 @@ std::string roxal::objToString(const Value& v)
         case ObjType::Upvalue: {
             return "upvalue";
         }
+        case ObjType::Bool: {
+            return asObjPrimitive(v)->as.boolean ? "true" : "false";
+        }
+        case ObjType::Int: {
+            return std::to_string(asObjPrimitive(v)->as.integer);
+        }
+        case ObjType::Real: {
+            return format("%g", asObjPrimitive(v)->as.real);
+        }
         case ObjType::Function: {
             return objFunctionToString(asFunction(v));
         }
@@ -3489,6 +3498,9 @@ std::string roxal::objToString(const Value& v)
             return objExceptionToString(asException(v));
         }
         case ObjType::Type: {
+            if (isObjPrimitive(v))
+                return to_string(asObjPrimitive(v)->as.btype);
+
             ObjTypeSpec* ts = asTypeSpec(v);
             if ((ts->typeValue != ValueType::Object) && (ts->typeValue != ValueType::Actor)) {
                 return "<type "+to_string(ts->typeValue)+">";

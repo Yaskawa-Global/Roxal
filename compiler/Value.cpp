@@ -19,6 +19,7 @@
 #include <utility>
 #include <cmath>
 #include <sstream>
+#include <cstring>
 #include <limits>
 
 
@@ -748,10 +749,10 @@ bool Value::equals(const Value& rhs, bool strict) const
     // Fast path for same primitive types
     if (isBool())
         return rhs.isBool() && asBool() == rhs.asBool();
-    else if (isInt())
-        return rhs.isInt() && asInt() == rhs.asInt();
-    else if (isReal())
-        return rhs.isReal() && asReal() == rhs.asReal();
+    else if (type() == ValueType::Int && rhs.type() == ValueType::Int)
+        return asInt() == rhs.asInt();
+    else if (type() == ValueType::Real && rhs.type() == ValueType::Real)
+        return asReal() == rhs.asReal();
     else if (isType())
         return rhs.isType() && asType() == rhs.asType();
     else if (isEnum())
@@ -759,8 +760,10 @@ bool Value::equals(const Value& rhs, bool strict) const
     else if (isString(*this))
         return objsEqual(*this, rhs); // compares strings intelligently (e.g. using immutability & hash)
 
-    // Handle mixed numeric type comparisons
-    else if (isNumber() && rhs.isNumber()) {
+    // Handle mixed numeric type comparisons (including boxed primitives)
+    else if (isNumber() || rhs.isNumber() ||
+             type() == ValueType::Int || rhs.type() == ValueType::Int ||
+             type() == ValueType::Real || rhs.type() == ValueType::Real) {
         ValueType compType(binaryOpType(*this, rhs));
         switch(compType) {
             case ValueType::Int:  return asInt() == rhs.asInt();
@@ -955,6 +958,29 @@ bool Value::is(const Value& rhs, bool strict) const
 bool Value::operator==(const Value& rhs) const
 {
     return equals(rhs, false); // Default to non-strict mode
+}
+
+size_t Value::hash() const {
+    if (isBoxed() && isObjPrimitive(*this)) {
+        auto p = asObjPrimitive(*this);
+        switch (p->type) {
+            case ObjType::Bool:
+                return std::hash<bool>{}(p->as.boolean);
+            case ObjType::Int:
+                return std::hash<int64_t>{}(p->as.integer);
+            case ObjType::Real: {
+                uint64_t bits = 0;
+                static_assert(sizeof(bits) == sizeof(double), "double size unexpected");
+                std::memcpy(&bits, &p->as.real, sizeof(bits));
+                return std::hash<uint64_t>{}(bits);
+            }
+            case ObjType::Type:
+                return std::hash<int>{}(static_cast<int>(p->as.btype));
+            default:
+                break;
+        }
+    }
+    return size_t(val.load());
 }
 
 
