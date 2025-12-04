@@ -1739,16 +1739,19 @@ ValueType roxal::binaryOpType(Value l, Value r)
     // Determine result builtin type of numeric/bool binary operations
     // according to conversions.md.
 
+    auto lt = l.type();
+    auto rt = r.type();
+
     // bool op bool -> bool
-    if (l.isBool() && r.isBool())
+    if (lt == ValueType::Bool && rt == ValueType::Bool)
         return ValueType::Bool;
 
     // Decimal has highest precedence after bool/bool
-    if (l.type() == ValueType::Decimal || r.type() == ValueType::Decimal)
+    if (lt == ValueType::Decimal || rt == ValueType::Decimal)
         return ValueType::Decimal;
 
     // Next is real if either operand is real
-    if (l.isReal() || r.isReal())
+    if (lt == ValueType::Real || rt == ValueType::Real)
         return ValueType::Real;
 
     // All remaining numeric combinations yield int

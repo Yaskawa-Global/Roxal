@@ -393,7 +393,10 @@ public:
 
     /// @brief Checks if the value is a number (integer, real, or byte).
     /// @return True if the value is a number, false otherwise.
-    inline bool isNumber() const { return isInt() || isReal() || isByte(); } // TODO: || isDecimal(v)
+    inline bool isNumber() const {
+        ValueType t = type();
+        return t == ValueType::Int || t == ValueType::Real || t == ValueType::Byte; // TODO: || Decimal
+    }
 
     inline bool isEnum() const {
         return (val & (SignBit | QNAN | TypeTag)) == (QNAN | TagEnum);
