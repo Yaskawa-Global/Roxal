@@ -97,7 +97,8 @@ Value roxal::ffi_native(ArgsView args)
     std::vector<void*> argValues(argCount);
     std::vector<double> realVals(argCount);
     std::vector<float> floatVals(argCount);
-    std::vector<int32_t> intVals(argCount);
+    std::vector<int64_t> intVals(argCount);
+    std::vector<uint64_t> uint64Vals(argCount);
     std::vector<uint32_t> uint32Vals(argCount);
     std::vector<int16_t> sint16Vals(argCount);
     std::vector<uint16_t> uint16Vals(argCount);
@@ -115,11 +116,21 @@ Value roxal::ffi_native(ArgsView args)
                 floatVals[i] = args[i].asReal();
                 argValues[i] = &floatVals[i];
             }
+        } else if (spec->argTypes[i] == &ffi_type_sint64) {
+            if (!args[i].isNumber())
+                throw std::invalid_argument("ffi argument not int64_t");
+            intVals[i] = args[i].asInt();
+            argValues[i] = &intVals[i];
         } else if (spec->argTypes[i] == &ffi_type_sint32) {
             if (!args[i].isNumber())
                 throw std::invalid_argument("ffi argument not int");
             intVals[i] = args[i].asInt();
             argValues[i] = &intVals[i];
+        } else if (spec->argTypes[i] == &ffi_type_uint64) {
+            if (!args[i].isNumber())
+                throw std::invalid_argument("ffi argument not uint64_t");
+            uint64Vals[i] = uint64_t(args[i].asInt());
+            argValues[i] = &uint64Vals[i];
         } else if (spec->argTypes[i] == &ffi_type_uint32) {
             if (!args[i].isNumber())
                 throw std::invalid_argument("ffi argument not uint32_t");
@@ -159,6 +170,7 @@ Value roxal::ffi_native(ArgsView args)
 
     union {
         double d; float f;
+        int64_t i64; uint64_t ui64;
         int32_t i; uint32_t ui32;
         int16_t s16; uint16_t u16;
         int8_t s8; uint8_t u8;
@@ -170,8 +182,12 @@ Value roxal::ffi_native(ArgsView args)
         return Value::realVal(ret.d);
     else if (spec->retType == &ffi_type_float)
         return Value::realVal(double(ret.f));
+    else if (spec->retType == &ffi_type_sint64)
+        return Value::intVal(ret.i64);
     else if (spec->retType == &ffi_type_sint32)
         return Value::intVal(ret.i);
+    else if (spec->retType == &ffi_type_uint64)
+        return Value::intVal(int64_t(ret.ui64));
     else if (spec->retType == &ffi_type_uint32)
         return Value::intVal(int32_t(ret.ui32));
     else if (spec->retType == &ffi_type_sint16)
@@ -586,13 +602,15 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
     std::vector<void*> structPtrs(callSpec.argCount);
     std::vector<double> realVals(callSpec.argCount);
     std::vector<float> floatVals(callSpec.argCount);
-    std::vector<int32_t> intVals(callSpec.argCount);
+    std::vector<int64_t> intVals(callSpec.argCount);
+    std::vector<uint64_t> uint64Vals(callSpec.argCount);
     std::vector<uint32_t> uint32Vals(callSpec.argCount);
     std::vector<int16_t> sint16Vals(callSpec.argCount);
     std::vector<uint16_t> uint16Vals(callSpec.argCount);
     std::vector<uint8_t> byteVals(callSpec.argCount);
     std::vector<uint8_t> boolVals(callSpec.argCount);
-    std::vector<int32_t> intPtrVals(callSpec.argCount);
+    std::vector<int64_t> intPtrVals(callSpec.argCount);
+    std::vector<uint64_t> uint64PtrVals(callSpec.argCount);
     std::vector<uint32_t> uint32PtrVals(callSpec.argCount);
     std::vector<int16_t> sint16PtrVals(callSpec.argCount);
     std::vector<uint16_t> uint16PtrVals(callSpec.argCount);
@@ -615,11 +633,21 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                 floatVals[i] = argVector[i].asReal();
                 argValues[i] = &floatVals[i];
             }
+        } else if (spec->argTypes[i] == &ffi_type_sint64) {
+            if (!argVector[i].isNumber() && !argVector[i].isEnum())
+                throw std::invalid_argument(funcNameAndArg(i)+" not a number for C int64");
+            intVals[i] = argVector[i].asInt();
+            argValues[i] = &intVals[i];
         } else if (spec->argTypes[i] == &ffi_type_sint32) {
             if (!argVector[i].isNumber() && !argVector[i].isEnum())
                 throw std::invalid_argument(funcNameAndArg(i)+" not a number for C int32");
             intVals[i] = argVector[i].asInt();
             argValues[i] = &intVals[i];
+        } else if (spec->argTypes[i] == &ffi_type_uint64) {
+            if (!argVector[i].isNumber() && !argVector[i].isEnum())
+                throw std::invalid_argument(funcNameAndArg(i)+" not a number for C uint64");
+            uint64Vals[i] = uint64_t(argVector[i].asInt());
+            argValues[i] = &uint64Vals[i];
         } else if (spec->argTypes[i] == &ffi_type_uint32) {
             if (!argVector[i].isNumber() && !argVector[i].isEnum())
                 throw std::invalid_argument(funcNameAndArg(i)+" not a number for C uint32");
@@ -655,13 +683,23 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         } else if (spec->argPrimPtrTypes.size()>i && spec->argPrimPtrTypes[i] != PrimitivePtrType::None) {
             PrimitivePtrType pt = spec->argPrimPtrTypes[i];
             switch(pt) {
-                case PrimitivePtrType::Int32:
+                case PrimitivePtrType::Int64:
                     intPtrVals[i] = argVector[i].asInt();
                     primPtrPtrs[i] = &intPtrVals[i];
                     break;
+                case PrimitivePtrType::Int32: {
+                    int64_t v = argVector[i].asInt();
+                    intPtrVals[i] = v;
+                    primPtrPtrs[i] = &intPtrVals[i];
+                    break;
+                }
                 case PrimitivePtrType::UInt32:
                     uint32PtrVals[i] = uint32_t(argVector[i].asInt());
                     primPtrPtrs[i] = &uint32PtrVals[i];
+                    break;
+                case PrimitivePtrType::UInt64:
+                    uint64PtrVals[i] = uint64_t(argVector[i].asInt());
+                    primPtrPtrs[i] = &uint64PtrVals[i];
                     break;
                 case PrimitivePtrType::Int16:
                     sint16PtrVals[i] = int16_t(argVector[i].asInt());
@@ -724,7 +762,7 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         }
     }
 
-    union { double d; float f; int32_t i; uint32_t ui32; int16_t s16; uint16_t u16; int8_t s8; uint8_t u8; void* p; } ret;
+    union { double d; float f; int64_t i64; uint64_t ui64; int32_t i; uint32_t ui32; int16_t s16; uint16_t u16; int8_t s8; uint8_t u8; void* p; } ret;
     void* retPtr = &ret;
     std::vector<uint8_t> retBuf;
     if (!spec->retObjType.isNil()) {
@@ -746,11 +784,17 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         if (spec->argPrimPtrTypes.size()>i && spec->argPrimPtrTypes[i] != PrimitivePtrType::None) {
             PrimitivePtrType pt = spec->argPrimPtrTypes[i];
             switch(pt) {
+                case PrimitivePtrType::Int64:
+                    argVector[i] = Value::intVal(intPtrVals[i]);
+                    break;
                 case PrimitivePtrType::Int32:
                     argVector[i] = Value::intVal(intPtrVals[i]);
                     break;
                 case PrimitivePtrType::UInt32:
                     argVector[i] = Value::intVal(int32_t(uint32PtrVals[i]));
+                    break;
+                case PrimitivePtrType::UInt64:
+                    argVector[i] = Value::intVal(int64_t(uint64PtrVals[i]));
                     break;
                 case PrimitivePtrType::Int16:
                     argVector[i] = Value::intVal(int32_t(sint16PtrVals[i]));
@@ -829,6 +873,8 @@ void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& pro
     auto writeByNameVal = [&](const std::string& ctype, const Value& v) -> bool {
         if (ctype == "float") { float f = float(toType(ValueType::Real, v, false).asReal()); appendPadded(&f, sizeof(f), 4); return true; }
         if (ctype == "double" || ctype == "real") { double d = toType(ValueType::Real, v, false).asReal(); appendPadded(&d, sizeof(d), 8); return true; }
+        if (ctype == "int64_t" || ctype=="long long") { int64_t i = toType(ValueType::Int, v, false).asInt(); appendPadded(&i, sizeof(i), 8); return true; }
+        if (ctype == "uint64_t" || ctype=="unsigned long long") { uint64_t u = uint64_t(toType(ValueType::Int, v, false).asInt()); appendPadded(&u, sizeof(u), 8); return true; }
         if (ctype == "int" || ctype=="int32_t") { int32_t i = toType(ValueType::Int, v, false).asInt(); appendPadded(&i, sizeof(i), 4); return true; }
         if (ctype == "uint32_t") { uint32_t u = uint32_t(toType(ValueType::Int, v, false).asInt()); appendPadded(&u, sizeof(u), 4); return true; }
         if (ctype == "int16_t") { int16_t s = int16_t(toType(ValueType::Int, v, false).asInt()); appendPadded(&s, sizeof(s), 2); return true; }
@@ -855,11 +901,14 @@ void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& pro
             else if (base=="int8_t") ppt = PrimitivePtrType::Int8;
             else if (base=="uint16_t") ppt = PrimitivePtrType::UInt16;
             else if (base=="int16_t") ppt = PrimitivePtrType::Int16;
+            else if (base=="uint64_t" || base=="unsigned long long") ppt = PrimitivePtrType::UInt64;
+            else if (base=="int64_t" || base=="long long") ppt = PrimitivePtrType::Int64;
             else if (base=="uint32_t") ppt = PrimitivePtrType::UInt32;
             else if (base=="int32_t" || base=="int") ppt = PrimitivePtrType::Int32;
             if (ppt != PrimitivePtrType::None) {
                 size_t sz = (ppt==PrimitivePtrType::UInt8 || ppt==PrimitivePtrType::Int8)?1:
-                             (ppt==PrimitivePtrType::UInt16 || ppt==PrimitivePtrType::Int16?2:4);
+                             (ppt==PrimitivePtrType::UInt16 || ppt==PrimitivePtrType::Int16?2:
+                              (ppt==PrimitivePtrType::UInt32 || ppt==PrimitivePtrType::Int32?4:8));
                 ctx->buffers.emplace_back(sz);
                 ctx->instances.push_back(nullptr);
                 ctx->primPtrTypes.push_back(ppt);
@@ -871,6 +920,8 @@ void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& pro
                     case PrimitivePtrType::Int16: { int16_t s = int16_t(toType(ValueType::Int,v,false).asInt()); memcpy(pbuf,&s,2); break; }
                     case PrimitivePtrType::UInt32: { uint32_t u = uint32_t(toType(ValueType::Int,v,false).asInt()); memcpy(pbuf,&u,4); break; }
                     case PrimitivePtrType::Int32: { int32_t s = toType(ValueType::Int,v,false).asInt(); memcpy(pbuf,&s,4); break; }
+                    case PrimitivePtrType::UInt64: { uint64_t u = uint64_t(toType(ValueType::Int,v,false).asInt()); memcpy(pbuf,&u,8); break; }
+                    case PrimitivePtrType::Int64: { int64_t s = toType(ValueType::Int,v,false).asInt(); memcpy(pbuf,&s,8); break; }
                     default: break;
                 }
                 appendPadded(&pbuf, ptrSize, ptrSize);

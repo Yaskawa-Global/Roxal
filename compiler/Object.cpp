@@ -25,6 +25,14 @@
 
 using namespace roxal;
 
+namespace {
+inline int32_t checkedInt32(int64_t v, const char* what) {
+    if (v < std::numeric_limits<int32_t>::min() || v > std::numeric_limits<int32_t>::max())
+        throw std::runtime_error(what);
+    return static_cast<int32_t>(v);
+}
+}
+
 
 atomic_vector<Obj*> Obj::unrefedObjs {};
 
@@ -568,35 +576,39 @@ int32_t ObjRange::length(int32_t targetLen) const
          && (stop.isInt() || stop.isNil())
          && (step.isInt() || step.isNil())) {
 
-        int32_t stepi = step.isNil() ? 1 : step.asInt();
+        int64_t stepi = step.isNil() ? 1 : step.asInt();
 
         if (stepi > 0) { // normal order
-            int32_t starti = start.isNil() ? 0 : start.asInt();
-            int32_t stopi = stop.isNil() ? targetLen : stop.asInt();
+            int64_t starti = start.isNil() ? 0 : start.asInt();
+            int64_t stopi = stop.isNil() ? targetLen : stop.asInt();
             if (starti < 0) starti = targetLen + starti;
             if (stopi < 0) stopi = targetLen + stopi;
 
             if (!closed) {
                 //return abs(stopi - starti)/stepi;
                 if (starti >= stopi) return 0;
-                return (stopi - starti - 1) / stepi + 1;
+                return checkedInt32((stopi - starti - 1) / stepi + 1,
+                                    "range length overflow");
             }
             else {
                 //return abs(stopi - starti + 1)/stepi;
                 if (starti > stopi) return 0;
-                return ((stopi+1) - starti - 1) / stepi + 1;
+                return checkedInt32(((stopi+1) - starti - 1) / stepi + 1,
+                                    "range length overflow");
             }
         }
         else { // reverse order e.g. -2:1:-2
-            int32_t starti = start.isNil() ? targetLen-1 : start.asInt();
-            int32_t stopi = stop.isNil() ? (closed?0:-1) : stop.asInt();
+            int64_t starti = start.isNil() ? targetLen-1 : start.asInt();
+            int64_t stopi = stop.isNil() ? (closed?0:-1) : stop.asInt();
             if (starti < 0) starti = targetLen + starti;
             if ((stopi < 0) && !stop.isNil()) stopi = targetLen + stopi;
 
             if (!closed)
-                return (starti - stopi - 1)/-stepi + 1;
+                return checkedInt32((starti - stopi - 1)/-stepi + 1,
+                                    "range length overflow");
             else
-                return (starti - (stopi-1) - 1)/-stepi + 1;
+                return checkedInt32((starti - (stopi-1) - 1)/-stepi + 1,
+                                    "range length overflow");
         }
     }
     else {
@@ -612,37 +624,41 @@ int32_t ObjRange::length() const
          && (stop.isInt() || stop.isNil())
          && (step.isInt() || step.isNil())) {
 
-        int32_t stepi = step.isNil() ? 1 : step.asInt();
+        int64_t stepi = step.isNil() ? 1 : step.asInt();
 
         if (stepi > 0) { // normal order
             if (stop.isNil()) return -1;
 
-            int32_t starti = start.isNil() ? 0 : start.asInt();
-            int32_t stopi = stop.asInt();
+            int64_t starti = start.isNil() ? 0 : start.asInt();
+            int64_t stopi = stop.asInt();
             //if ((starti < 0) || (stopi < 0)) return -1;
             //std::cout << " length() starti:" << starti << " stopi:" << stopi << " stepi:" << stepi << " closed:" << closed << std::endl;
             if (!closed) {
                 if (starti >= stopi) return 0;
-                return (stopi - starti - 1) / stepi + 1;
+                return checkedInt32((stopi - starti - 1) / stepi + 1,
+                                    "range length overflow");
             }
             else {
                 if (starti > stopi) return 0;
-                return ((stopi+1) - starti - 1) / stepi + 1;
+                return checkedInt32(((stopi+1) - starti - 1) / stepi + 1,
+                                    "range length overflow");
             }
 
         } else { // reverse order e.g. -2:1:-2
             //std::cout << "length()" << objRangeToString(this) << std::endl;
             if (start.isNil()) return -1;
 
-            int32_t starti = start.asInt();
-            int32_t stopi = stop.isNil() ? (closed?0:-1) : stop.asInt();
+            int64_t starti = start.asInt();
+            int64_t stopi = stop.isNil() ? (closed?0:-1) : stop.asInt();
             //if ((starti < 0) || ((stopi < 0) && !stop.isNil())) return -1;
             //std::cout << " length() starti:" << starti << " stopi:" << stopi << " stepi:" << stepi << (closed?" closed":" open") << std::endl;
 
             if (!closed)
-                return (starti - stopi - 1)/-stepi + 1;
+                return checkedInt32((starti - stopi - 1)/-stepi + 1,
+                                    "range length overflow");
             else
-                return (starti - (stopi-1) - 1)/-stepi + 1;
+                return checkedInt32((starti - (stopi-1) - 1)/-stepi + 1,
+                                    "range length overflow");
         }
     }
     else {
@@ -661,8 +677,8 @@ int32_t ObjRange::targetIndex(int32_t index, int32_t targetLen) const
 
         bool rangeOverTarget = targetLen >= 0;
 
-        auto stepi = step.isNil() ? 1 : step.asInt();
-        int32_t starti, stopi;
+        int64_t stepi = step.isNil() ? 1 : step.asInt();
+        int64_t starti, stopi;
 
         if (stepi > 0) { // normal order
             starti = start.isNil() ? 0 : start.asInt();
@@ -684,7 +700,8 @@ int32_t ObjRange::targetIndex(int32_t index, int32_t targetLen) const
             }
         }
 
-        return starti + index*stepi;
+        int64_t result = starti + int64_t(index) * stepi;
+        return checkedInt32(result, "range index overflow");
     }
     else {
         throw std::runtime_error("non-int ranges unimplemented");
