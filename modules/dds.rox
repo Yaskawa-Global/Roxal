@@ -41,3 +41,16 @@ func create_writer_signal(writer, initial=nil):
 @builtin
 func create_reader_signal(reader, initial=nil):
   """Create a source signal tied to a DDS reader; signal updates when samples arrive."""
+
+# Convenience: create participant/topic/writer/reader and signals in one step.
+# name: topic name, msg_type: IDL struct type (e.g., ComplexTypes.Outer)
+# participant: optional existing participant (nil => create default)
+# qos: optional QoS dict applied to participant/topic/reader/writer creation
+# initial: optional initial value (writer_signal only)
+@builtin
+func writer_signal(name:str, msg_type, participant=nil, qos:dict={}, initial=nil):
+  """Create participant/topic/writer and return a writer signal for msg_type."""
+
+@builtin
+func reader_signal(name:str, msg_type, participant=nil, qos:dict={}, initial=nil):
+  """Create participant/topic/reader and return a reader signal for msg_type."""

@@ -14,6 +14,7 @@
 #include <dds/ddsc/dds_public_impl.h>
 #include <dds/ddsc/dds_public_alloc.h>
 #include <dds/ddsc/dds_opcodes.h>
+#include <dds/ddsc/dds_public_qos.h>
 #include <dds/ddsc/dds_public_dynamic_type.h>
 #include <dds/ddsi/ddsi_typelib.h>
 
@@ -22,6 +23,8 @@
 #include <cstring>
 #include <functional>
 #include <algorithm>
+#include <cctype>
+#include <vector>
 
 using namespace roxal;
 
@@ -214,6 +217,8 @@ void ModuleDDS::linkNativeFunctions()
     linkFn("read", &ModuleDDS::dds_read);
     linkFn("create_writer_signal", &ModuleDDS::dds_create_writer_signal);
     linkFn("create_reader_signal", &ModuleDDS::dds_create_reader_signal);
+    linkFn("writer_signal", &ModuleDDS::dds_writer_signal);
+    linkFn("reader_signal", &ModuleDDS::dds_reader_signal);
 }
 
 void ModuleDDS::setProperty(ObjectInstance* obj, const icu::UnicodeString& name, const Value& v)
@@ -253,14 +258,23 @@ std::string ModuleDDS::typeNameFromValue(const Value& v)
 
 Value ModuleDDS::dds_create_participant(VM&, ArgsView args)
 {
-    // TODO: add QoS support from args
     int32_t domainId = 0;
-    if (args.size() >= 1 && args[0].isNumber())
-        domainId = args[0].asInt();
-    dds_entity_t participant = ::dds_create_participant(domainId, nullptr, nullptr);
+    Value qosVal = Value::nilVal();
+    if (!args.empty()) {
+        if (args[0].isNumber()) {
+            domainId = args[0].asInt();
+            if (args.size() > 1)
+                qosVal = args[1];
+        } else {
+            qosVal = args[0];
+        }
+    }
+    ModuleDDS* self = VM::instance().ddsModule;
+    auto qos = self ? self->qosFromValue(qosVal) : std::unique_ptr<dds_qos_t, decltype(&dds_delete_qos)>(nullptr, dds_delete_qos);
+    dds_entity_t participant = ::dds_create_participant(domainId, qos.get(), nullptr);
     if (participant < 0)
         throw std::runtime_error(std::string("dds_create_participant failed: ") + ::dds_strretcode(-participant));
-    ModuleDDS* self = VM::instance().ddsModule;
+    self = VM::instance().ddsModule;
     Value handleVal = self ? self->makeHandleValue(participant) : Value::nilVal();
     if (!self || self->participantType.isNil())
         return handleVal;
@@ -275,10 +289,11 @@ Value ModuleDDS::dds_create_participant(VM&, ArgsView args)
 Value ModuleDDS::dds_create_topic(VM&, ArgsView args)
 {
     if (args.size() < 3)
-        throw std::invalid_argument("dds.create_topic(participant, name, msg_type) expects 3 args");
+        throw std::invalid_argument("dds.create_topic(participant, name, msg_type, qos=None) expects at least 3 args");
     Value part = args[0];
     Value nameVal = args[1];
     Value typeVal = args[2];
+    Value qosVal = args.size() > 3 ? args[3] : Value::nilVal();
     std::string topicName;
     if (isString(nameVal))
         topicName = toUTF8StdString(asStringObj(nameVal)->s);
@@ -289,7 +304,9 @@ Value ModuleDDS::dds_create_topic(VM&, ArgsView args)
         throw std::invalid_argument("topic name must be string");
 
     ModuleDDS* self = VM::instance().ddsModule;
-    auto support = self ? self->buildDynamicTopic(part, topicName, typeName) : nullptr;
+    auto emptyQos = [](){ return std::unique_ptr<dds_qos_t, decltype(&dds_delete_qos)>(nullptr, dds_delete_qos); };
+    auto qos = self ? self->qosFromValue(qosVal) : emptyQos();
+    auto support = self ? self->buildDynamicTopic(part, topicName, typeName, qos.get()) : nullptr;
     if (!support)
         return Value::nilVal();
     self->supportByType[typeName] = support;
@@ -316,7 +333,7 @@ Value ModuleDDS::dds_create_topic(VM&, ArgsView args)
     return inst;
 }
 
-std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value participantVal, const std::string& topicName, const std::string& typeName)
+std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value participantVal, const std::string& topicName, const std::string& typeName, dds_qos_t* qos)
 {
     dds_entity_t participant = entityFromValue(participantVal, true);
     if (participant <= 0)
@@ -325,6 +342,25 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
     auto self = VM::instance().ddsModule;
     if (!self || !self->adapter)
         return nullptr;
+
+    auto existing = self->supportByType.find(typeName);
+    if (existing != self->supportByType.end() && existing->second && existing->second->descriptor) {
+        dds_entity_t topic = ::dds_create_topic(participant,
+                                                existing->second->descriptor.get(),
+                                                topicName.c_str(),
+                                                qos,
+                                                nullptr);
+        if (topic > 0) {
+            auto support = std::make_shared<TopicSupport>();
+            support->descriptor = existing->second->descriptor;
+            support->typeinfo = existing->second->typeinfo;
+            support->typeName = typeName;
+            support->entity = topic;
+            support->handle = self->makeHandleValue(topic);
+            support->nameStorage = existing->second->nameStorage;
+            return support;
+        }
+    }
 
     const auto* structInfo = self->adapter->findStruct(typeName);
     if (!structInfo)
@@ -350,7 +386,7 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
                                                          DDS_SECS(5),
                                                          &descOut);
             if (rc == DDS_RETCODE_OK && descOut) {
-                dds_entity_t topic = ::dds_create_topic(participant, descOut, topicName.c_str(), nullptr, nullptr);
+                dds_entity_t topic = ::dds_create_topic(participant, descOut, topicName.c_str(), qos, nullptr);
                 if (topic > 0) {
                     auto support = std::make_shared<TopicSupport>();
                     support->descriptor = std::shared_ptr<dds_topic_descriptor_t>(descOut, dds_delete_topic_descriptor);
@@ -561,7 +597,7 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
         dds_dynamic_type_unref(&dynType);
         throw std::runtime_error("dds_create_topic_descriptor failed for " + typeName + ": " + dds_strretcode(-rc));
     }
-    dds_entity_t topic = ::dds_create_topic(participant, descOut, topicName.c_str(), nullptr, nullptr);
+    dds_entity_t topic = ::dds_create_topic(participant, descOut, topicName.c_str(), qos, nullptr);
     for (auto& kv : enumTypes) dds_dynamic_type_unref(&kv.second);
     for (auto& kv : structTypes) dds_dynamic_type_unref(&kv.second);
     for (auto& kv : stringTypes) dds_dynamic_type_unref(&kv.second);
@@ -592,11 +628,13 @@ Value ModuleDDS::dds_create_writer(VM&, ArgsView args)
         return Value::nilVal();
     dds_entity_t participant = entityFromValue(args[0], true);
     dds_entity_t topicEnt = entityFromValue(args[1], true);
+    Value qosVal = args.size() > 2 ? args[2] : Value::nilVal();
+    auto qos = self->qosFromValue(qosVal);
     auto topicSupport = self->lookupSupport(args[1]);
     Value handleVal = Value::nilVal();
     std::string typeName = typeNameFromValue(args[1]);
     if (participant > 0 && topicEnt > 0) {
-        dds_entity_t writer = ::dds_create_writer(participant, topicEnt, nullptr, nullptr);
+        dds_entity_t writer = ::dds_create_writer(participant, topicEnt, qos.get(), nullptr);
         if (writer < 0)
             throw std::runtime_error(std::string("dds_create_writer failed: ") + dds_strretcode(-writer));
         handleVal = self->makeHandleValue(writer);
@@ -631,11 +669,13 @@ Value ModuleDDS::dds_create_reader(VM&, ArgsView args)
         return Value::nilVal();
     dds_entity_t participant = entityFromValue(args[0], true);
     dds_entity_t topicEnt = entityFromValue(args[1], true);
+    Value qosVal = args.size() > 2 ? args[2] : Value::nilVal();
+    auto qos = self->qosFromValue(qosVal);
     auto topicSupport = self->lookupSupport(args[1]);
     Value handleVal = Value::nilVal();
     std::string typeName = typeNameFromValue(args[1]);
     if (participant > 0 && topicEnt > 0) {
-        dds_entity_t reader = ::dds_create_reader(participant, topicEnt, nullptr, nullptr);
+        dds_entity_t reader = ::dds_create_reader(participant, topicEnt, qos.get(), nullptr);
         if (reader < 0)
             throw std::runtime_error(std::string("dds_create_reader failed: ") + dds_strretcode(-reader));
         handleVal = self->makeHandleValue(reader);
@@ -883,6 +923,98 @@ void ModuleDDS::registerWriterSignal(const Value& sigVal, const Value& writerVal
             }
         });
     }
+}
+
+Value ModuleDDS::dds_writer_signal(VM& vm, ArgsView args)
+{
+    if (args.size() < 2)
+        throw std::invalid_argument("dds.writer_signal(name, msg_type, participant=nil, qos=nil, initial=nil) expects at least name and msg_type");
+    Value nameVal = args[0];
+    Value typeVal = args[1];
+    Value participantVal = args.size() > 2 ? args[2] : Value::nilVal();
+    Value qosVal = args.size() > 3 ? args[3] : Value::nilVal();
+    Value initial = args.size() > 4 ? args[4] : Value::nilVal();
+
+    ModuleDDS* self = VM::instance().ddsModule;
+    if (!self)
+        return Value::nilVal();
+
+    auto ensureParticipant = [&](const Value& existing) -> Value {
+        if (isObjectInstance(existing) || isForeignPtr(existing))
+            return existing;
+        if (self->defaultParticipant.isNonNil())
+            return self->defaultParticipant;
+        std::vector<Value> pargs;
+        if (qosVal.isNonNil()) {
+            pargs.push_back(Value::intVal(0));
+            pargs.push_back(qosVal);
+        } else {
+            pargs.push_back(Value::intVal(0));
+        }
+        Value p = dds_create_participant(vm, ArgsView(pargs.data(), pargs.size()));
+        self->defaultParticipant = p;
+        return p;
+    };
+
+    Value participant = ensureParticipant(participantVal);
+    std::vector<Value> targs{participant, nameVal, typeVal};
+    if (qosVal.isNonNil())
+        targs.push_back(qosVal);
+    Value topic = dds_create_topic(vm, ArgsView(targs.data(), targs.size()));
+
+    std::vector<Value> wargs{participant, topic};
+    if (qosVal.isNonNil())
+        wargs.push_back(qosVal);
+    Value writer = dds_create_writer(vm, ArgsView(wargs.data(), wargs.size()));
+
+    std::vector<Value> sargs{writer, initial};
+    return dds_create_writer_signal(vm, ArgsView(sargs.data(), sargs.size()));
+}
+
+Value ModuleDDS::dds_reader_signal(VM& vm, ArgsView args)
+{
+    if (args.size() < 2)
+        throw std::invalid_argument("dds.reader_signal(name, msg_type, participant=nil, qos=nil) expects at least name and msg_type");
+    Value nameVal = args[0];
+    Value typeVal = args[1];
+    Value participantVal = args.size() > 2 ? args[2] : Value::nilVal();
+    Value qosVal = args.size() > 3 ? args[3] : Value::nilVal();
+    Value initial = args.size() > 4 ? args[4] : Value::nilVal();
+
+    ModuleDDS* self = VM::instance().ddsModule;
+    if (!self)
+        return Value::nilVal();
+
+    auto ensureParticipant = [&](const Value& existing) -> Value {
+        if (isObjectInstance(existing) || isForeignPtr(existing))
+            return existing;
+        if (self->defaultParticipant.isNonNil())
+            return self->defaultParticipant;
+        std::vector<Value> pargs;
+        if (qosVal.isNonNil()) {
+            pargs.push_back(Value::intVal(0));
+            pargs.push_back(qosVal);
+        } else {
+            pargs.push_back(Value::intVal(0));
+        }
+        Value p = dds_create_participant(vm, ArgsView(pargs.data(), pargs.size()));
+        self->defaultParticipant = p;
+        return p;
+    };
+
+    Value participant = ensureParticipant(participantVal);
+    std::vector<Value> targs{participant, nameVal, typeVal};
+    if (qosVal.isNonNil())
+        targs.push_back(qosVal);
+    Value topic = dds_create_topic(vm, ArgsView(targs.data(), targs.size()));
+
+    std::vector<Value> rargs{participant, topic};
+    if (qosVal.isNonNil())
+        rargs.push_back(qosVal);
+    Value reader = dds_create_reader(vm, ArgsView(rargs.data(), rargs.size()));
+
+    std::vector<Value> sargs{reader, initial};
+    return dds_create_reader_signal(vm, ArgsView(sargs.data(), sargs.size()));
 }
 
 void ModuleDDS::registerReaderSignal(const Value& sigVal, const Value& readerVal, dds_entity_t reader, const std::string& typeName)
@@ -1315,6 +1447,153 @@ std::vector<size_t> ModuleDDS::offsetsFor(const StructInfo& info, const dds_topi
     std::vector<size_t> offsets;
     computeLayout(info, offsets);
     return offsets;
+}
+
+std::unique_ptr<dds_qos_t, decltype(&dds_delete_qos)> ModuleDDS::qosFromValue(const Value& v) const
+{
+    auto bad = [](const std::string& msg){ throw std::invalid_argument("DDS QoS: " + msg); };
+    if (v.isNil())
+        return {nullptr, dds_delete_qos};
+    if (!isDict(v))
+        bad("expected dict");
+    ObjDict* dict = asDict(v);
+    auto qos = std::unique_ptr<dds_qos_t, decltype(&dds_delete_qos)>(dds_create_qos(), dds_delete_qos);
+    if (!qos)
+        bad("failed to allocate qos");
+
+    auto toLower = [](std::string s){
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+        return s;
+    };
+    auto asInt64 = [](const Value& vv) -> int64_t {
+        if (!vv.isNumber())
+            throw std::invalid_argument("QoS value must be number");
+        return vv.asInt();
+    };
+
+    for (const auto& kv : dict->items()) {
+        if (!isString(kv.first))
+            continue;
+        std::string key = toLower(toUTF8StdString(asStringObj(kv.first)->s));
+        const Value& val = kv.second;
+
+        if (key == "reliability") {
+            if (!isString(val))
+                bad("reliability must be string");
+            std::string mode = toLower(toUTF8StdString(asStringObj(val)->s));
+            if (mode == "reliable")
+                dds_qset_reliability(qos.get(), DDS_RELIABILITY_RELIABLE, DDS_SECS(1));
+            else if (mode == "best_effort" || mode == "besteffort")
+                dds_qset_reliability(qos.get(), DDS_RELIABILITY_BEST_EFFORT, DDS_SECS(0));
+            else
+                bad("unknown reliability '" + mode + "'");
+        } else if (key == "durability") {
+            if (!isString(val))
+                bad("durability must be string");
+            std::string mode = toLower(toUTF8StdString(asStringObj(val)->s));
+            if (mode == "volatile")
+                dds_qset_durability(qos.get(), DDS_DURABILITY_VOLATILE);
+            else if (mode == "transient_local" || mode == "transientlocal")
+                dds_qset_durability(qos.get(), DDS_DURABILITY_TRANSIENT_LOCAL);
+            else
+                bad("unknown durability '" + mode + "'");
+        } else if (key == "history") {
+            dds_history_kind_t kind = DDS_HISTORY_KEEP_LAST;
+            int depth = 1;
+            if (isDict(val)) {
+                ObjDict* h = asDict(val);
+                for (const auto& hk : h->items()) {
+                    if (!isString(hk.first))
+                        continue;
+                    std::string hkey = toLower(toUTF8StdString(asStringObj(hk.first)->s));
+                    if (hkey == "kind") {
+                        if (!isString(hk.second))
+                            bad("history.kind must be string");
+                        std::string m = toLower(toUTF8StdString(asStringObj(hk.second)->s));
+                        if (m == "keep_all" || m == "keepall")
+                            kind = DDS_HISTORY_KEEP_ALL;
+                        else if (m == "keep_last" || m == "keeplast")
+                            kind = DDS_HISTORY_KEEP_LAST;
+                        else
+                            bad("unknown history.kind '" + m + "'");
+                    } else if (hkey == "depth") {
+                        depth = static_cast<int>(asInt64(hk.second));
+                    }
+                }
+            } else if (val.isNumber()) {
+                depth = static_cast<int>(asInt64(val));
+            } else {
+                bad("history must be dict or number");
+            }
+            dds_qset_history(qos.get(), kind, depth);
+        } else if (key == "deadline_ms") {
+            int64_t ms = asInt64(val);
+            dds_qset_deadline(qos.get(), DDS_MSECS(ms));
+        } else if (key == "lifespan_ms") {
+            int64_t ms = asInt64(val);
+            dds_qset_lifespan(qos.get(), DDS_MSECS(ms));
+        } else if (key == "latency_budget_ms") {
+            int64_t ms = asInt64(val);
+            dds_qset_latency_budget(qos.get(), DDS_MSECS(ms));
+        } else if (key == "liveliness") {
+            if (!isDict(val))
+                bad("liveliness must be dict");
+            dds_liveliness_kind_t lk = DDS_LIVELINESS_AUTOMATIC;
+            int64_t leaseMs = 0;
+            ObjDict* lv = asDict(val);
+            for (const auto& lkpair : lv->items()) {
+                if (!isString(lkpair.first))
+                    continue;
+                std::string lkey = toLower(toUTF8StdString(asStringObj(lkpair.first)->s));
+                if (lkey == "kind") {
+                    if (!isString(lkpair.second))
+                        bad("liveliness.kind must be string");
+                    std::string m = toLower(toUTF8StdString(asStringObj(lkpair.second)->s));
+                    if (m == "automatic")
+                        lk = DDS_LIVELINESS_AUTOMATIC;
+                    else if (m == "manual_by_topic" || m == "manualbytopic")
+                        lk = DDS_LIVELINESS_MANUAL_BY_TOPIC;
+                    else if (m == "manual_by_participant" || m == "manualbyparticipant")
+                        lk = DDS_LIVELINESS_MANUAL_BY_PARTICIPANT;
+                    else
+                        bad("unknown liveliness.kind '" + m + "'");
+                } else if (lkey == "lease_ms" || lkey == "lease_duration_ms") {
+                    leaseMs = asInt64(lkpair.second);
+                }
+            }
+            dds_qset_liveliness(qos.get(), lk, DDS_MSECS(leaseMs));
+        } else if (key == "ownership") {
+            if (!isString(val))
+                bad("ownership must be string");
+            std::string m = toLower(toUTF8StdString(asStringObj(val)->s));
+            if (m == "shared")
+                dds_qset_ownership(qos.get(), DDS_OWNERSHIP_SHARED);
+            else if (m == "exclusive")
+                dds_qset_ownership(qos.get(), DDS_OWNERSHIP_EXCLUSIVE);
+            else
+                bad("unknown ownership '" + m + "'");
+        } else if (key == "partition") {
+            if (!isList(val))
+                bad("partition must be list of strings");
+            std::vector<std::string> parts;
+            ObjList* lst = asList(val);
+            auto entries = lst->elts.get();
+            for (const auto& entry : entries) {
+                if (!isString(entry))
+                    bad("partition entries must be strings");
+                parts.push_back(toUTF8StdString(asStringObj(entry)->s));
+            }
+            std::vector<const char*> names;
+            names.reserve(parts.size());
+            for (auto& s : parts)
+                names.push_back(s.c_str());
+            dds_qset_partition(qos.get(), static_cast<int>(names.size()), names.data());
+        } else {
+            bad("unknown key '" + key + "'");
+        }
+    }
+
+    return qos;
 }
 
 void ModuleDDS::readerThreadLoop()
