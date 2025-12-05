@@ -448,6 +448,8 @@ bool Value::asBool(bool strict) const
     }
 
     if (!v->isObj()) {
+        if (v->isNil())
+            throw std::invalid_argument("unable to convert nil to bool");
         switch (v->type()) {
         case ValueType::Bool:
             return v->val == (QNAN | TagTrue);
@@ -507,6 +509,8 @@ uint8_t Value::asByte(bool strict) const
     }
 
     if (!v->isObj()) {
+        if (v->isNil())
+            throw std::invalid_argument("unable to convert nil to byte");
         switch (v->type()) {
         case ValueType::Byte:
             return uint8_t(v->val & 0xff);
@@ -568,6 +572,8 @@ int64_t Value::asInt(bool strict) const
     }
 
     if (!v->isObj()) {
+        if (v->isNil())
+            throw std::invalid_argument("unable to convert nil to int");
         switch (v->type()) {
         case ValueType::Enum: return int32_t(asEnum());
         case ValueType::Byte: return int32_t(uint8_t(v->val & 0xff));
@@ -639,6 +645,8 @@ double Value::asReal(bool strict) const
     }
 
     if (!v->isObj()) {
+        if (v->isNil())
+            throw std::invalid_argument("unable to convert nil to real");
         switch (v->type()) {
         case ValueType::Real:
             {
@@ -1796,7 +1804,7 @@ Value roxal::negate(Value v)
     else if (v.isBool())
         return Value::boolVal(!v.asBool());
     else if (v.isNil())
-        return Value::boolVal(true);
+        throw std::invalid_argument("unable to convert nil to bool");
 
     // TODO: decimal
 
