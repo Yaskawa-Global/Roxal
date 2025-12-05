@@ -87,6 +87,22 @@ Value ModuleDDS::importIdl(const std::string& idlFilename)
     Value moduleVal = getOrCreateModule(moduleName);
 
     registerGeneratedTypes(moduleVal, types);
+    // register constants from IDL in the module
+    if (adapter) {
+        ObjModuleType* mod = asModuleType(moduleVal);
+        auto shortName = [](const std::string& full) -> std::string {
+            auto pos = full.rfind("::");
+            if (pos == std::string::npos)
+                return full;
+            return full.substr(pos + 2);
+        };
+        for (const auto& c : adapter->constants()) {
+            if (c.value.isNil())
+                continue;
+            icu::UnicodeString name = toUnicodeString(shortName(c.fullName));
+            mod->vars.store(name, c.value, true);
+        }
+    }
     return moduleVal;
 }
 

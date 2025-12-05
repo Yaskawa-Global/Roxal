@@ -23,6 +23,7 @@ struct ParseResult {
     std::string package;
     std::vector<StructInfo> structs;
     std::vector<EnumInfo> enums;
+    std::vector<ConstInfo> consts;
     const idl_node_t* root{nullptr};
     idl_pstate_t* pstate{nullptr};
 };
@@ -227,6 +228,55 @@ idl_retcode_t onStruct(const idl_pstate_t*, bool revisit, const idl_path_t*, con
     return IDL_RETCODE_OK;
 }
 
+idl_retcode_t onConst(const idl_pstate_t*, bool revisit, const idl_path_t*, const void* node, void* user)
+{
+    if (revisit) return IDL_RETCODE_OK;
+    auto* st = static_cast<VisitorState*>(user);
+    const idl_const_t* c = static_cast<const idl_const_t*>(node);
+    const char* name = idl_identifier(c);
+    if (!name) return IDL_RETCODE_OK;
+    ConstInfo ci;
+    ci.fullName = joinScope(st->scope, name);
+    ci.type = classifyType(c->type_spec);
+    // constant expressions are evaluated by the parser into idl_literal_t
+    const idl_literal_t* lit = reinterpret_cast<const idl_literal_t*>(c->const_expr);
+    if (lit && (idl_mask(lit) & IDL_LITERAL)) {
+        idl_type_t t = idl_type(lit);
+        switch (t) {
+            case IDL_BOOL:
+                ci.value = Value::boolVal(lit->value.bln);
+                break;
+            case IDL_CHAR:
+            case IDL_WCHAR:
+                ci.value = Value::intVal(static_cast<int64_t>(lit->value.chr));
+                break;
+            case IDL_SHORT: ci.value = Value::intVal(static_cast<int64_t>(lit->value.int16)); break;
+            case IDL_USHORT: ci.value = Value::intVal(static_cast<int64_t>(lit->value.uint16)); break;
+            case IDL_LONG:
+            case IDL_INT32: ci.value = Value::intVal(static_cast<int64_t>(lit->value.int32)); break;
+            case IDL_ULONG:
+            case IDL_UINT32: ci.value = Value::intVal(static_cast<int64_t>(lit->value.uint32)); break;
+            case IDL_LLONG:
+            case IDL_INT64: ci.value = Value::intVal(static_cast<int64_t>(lit->value.int64)); break;
+            case IDL_ULLONG:
+            case IDL_UINT64: ci.value = Value::intVal(static_cast<int64_t>(lit->value.uint64)); break;
+            case IDL_FLOAT:
+            case IDL_DOUBLE:
+            case IDL_LDOUBLE:
+                ci.value = Value::realVal(static_cast<double>(lit->value.dbl));
+                break;
+            case IDL_STRING:
+                ci.value = Value::stringVal(toUnicodeString(lit->value.str ? std::string(lit->value.str) : std::string()));
+                break;
+            default:
+                ci.value = Value::nilVal();
+                break;
+        }
+    }
+    st->result.consts.push_back(std::move(ci));
+    return IDL_RETCODE_OK;
+}
+
 ParseResult parseWithIdl(const std::string& content)
 {
     idl_pstate_t* ps = nullptr;
@@ -239,15 +289,20 @@ ParseResult parseWithIdl(const std::string& content)
         throw std::runtime_error("IDL parse failed");
     }
 
+    // Debug traversal could go here if needed.
+
     VisitorState state;
     idl_visitor_t vis{};
     vis.revisit = IDL_VISIT_REVISIT;
+    vis.recurse = IDL_VISIT_RECURSE;
+    vis.iterate = IDL_VISIT_ITERATE;
     for (int i = 0; i <= IDL_ACCEPT; ++i)
         vis.accept[i] = nullptr;
     vis.accept[IDL_ACCEPT_MODULE] = onModule;
     vis.accept[IDL_ACCEPT_ENUM] = onEnum;
     vis.accept[IDL_ACCEPT_STRUCT] = onStruct;
-    vis.visit = IDL_DECLARATION | IDL_MODULE | IDL_ENUM | IDL_STRUCT;
+    vis.accept[IDL_ACCEPT_CONST] = onConst;
+    vis.visit = IDL_DECLARATION | IDL_MODULE | IDL_ENUM | IDL_STRUCT | IDL_CONST;
 
     rc = idl_visit(ps, ps->root, &vis, &state);
     if (rc != IDL_RETCODE_OK)
@@ -306,6 +361,7 @@ std::vector<Value> DdsAdapter::allocateTypes(const std::string& idlFile)
     std::unordered_map<std::string, Value> declByName;
     std::unordered_map<std::string, ObjObjectType*> structByName;
     std::vector<Value> out;
+    consts_.clear();
 
     for (const auto& e : parsed.enums) {
         enumsByFullName_.emplace(e.fullName, e);
@@ -333,6 +389,10 @@ std::vector<Value> DdsAdapter::allocateTypes(const std::string& idlFile)
         declByName.emplace(shortName(s.fullName), declVal);
         fullNameByType_.emplace(obj, s.fullName);
         out.push_back(declVal);
+    }
+
+    for (const auto& c : parsed.consts) {
+        consts_.push_back(c);
     }
 
     for (const auto& s : parsed.structs) {
