@@ -102,6 +102,35 @@ Value ModuleDDS::importIdl(const std::string& idlFilename)
             icu::UnicodeString name = toUnicodeString(shortName(c.fullName));
             mod->vars.store(name, c.value, true);
         }
+        // register typedef aliases as additional module vars pointing to the aliased type
+        for (const auto& td : adapter->typedefs()) {
+            icu::UnicodeString name = toUnicodeString(shortName(td.fullName));
+            Value target = Value::nilVal();
+            switch (td.aliasedType.kind) {
+                case FieldType::Kind::StructRef:
+                case FieldType::Kind::EnumRef:
+                    target = resolveTypeValue(td.aliasedType.refName);
+                    break;
+                case FieldType::Kind::Int32:
+                case FieldType::Kind::Bool:
+                case FieldType::Kind::Float64:
+                case FieldType::Kind::String:
+                case FieldType::Kind::List:
+                case FieldType::Kind::Int64:
+                case FieldType::Kind::UInt64:
+                    target = (td.aliasedType.kind == FieldType::Kind::Bool)   ? Value::typeSpecVal(ValueType::Bool)
+                           : (td.aliasedType.kind == FieldType::Kind::Float64)? Value::typeSpecVal(ValueType::Real)
+                           : (td.aliasedType.kind == FieldType::Kind::String) ? Value::typeSpecVal(ValueType::String)
+                           : (td.aliasedType.kind == FieldType::Kind::List)   ? Value::typeSpecVal(ValueType::List)
+                           : Value::typeSpecVal(ValueType::Int);
+                    break;
+                default:
+                    break;
+            }
+            if (!target.isNil()) {
+                mod->vars.store(name, target, true);
+            }
+        }
     }
     return moduleVal;
 }

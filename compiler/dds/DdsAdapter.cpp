@@ -24,6 +24,7 @@ struct ParseResult {
     std::vector<StructInfo> structs;
     std::vector<EnumInfo> enums;
     std::vector<ConstInfo> consts;
+    std::vector<TypedefInfo> typedefs;
     const idl_node_t* root{nullptr};
     idl_pstate_t* pstate{nullptr};
 };
@@ -277,6 +278,25 @@ idl_retcode_t onConst(const idl_pstate_t*, bool revisit, const idl_path_t*, cons
     return IDL_RETCODE_OK;
 }
 
+idl_retcode_t onTypedef(const idl_pstate_t*, bool revisit, const idl_path_t*, const void* node, void* user)
+{
+    if (revisit) return IDL_RETCODE_OK;
+    auto* st = static_cast<VisitorState*>(user);
+    const idl_typedef_t* td = static_cast<const idl_typedef_t*>(node);
+    idl_declarator_t* decl = td->declarators;
+    while (decl) {
+        const char* name = idl_identifier(decl);
+        if (name) {
+            TypedefInfo ti;
+            ti.fullName = joinScope(st->scope, name);
+            ti.aliasedType = classifyType(td->type_spec);
+            st->result.typedefs.push_back(std::move(ti));
+        }
+        decl = static_cast<idl_declarator_t*>(idl_next(decl));
+    }
+    return IDL_RETCODE_OK;
+}
+
 ParseResult parseWithIdl(const std::string& content)
 {
     idl_pstate_t* ps = nullptr;
@@ -302,7 +322,8 @@ ParseResult parseWithIdl(const std::string& content)
     vis.accept[IDL_ACCEPT_ENUM] = onEnum;
     vis.accept[IDL_ACCEPT_STRUCT] = onStruct;
     vis.accept[IDL_ACCEPT_CONST] = onConst;
-    vis.visit = IDL_DECLARATION | IDL_MODULE | IDL_ENUM | IDL_STRUCT | IDL_CONST;
+    vis.accept[IDL_ACCEPT_TYPEDEF] = onTypedef;
+    vis.visit = IDL_DECLARATION | IDL_MODULE | IDL_ENUM | IDL_STRUCT | IDL_CONST | IDL_TYPEDEF;
 
     rc = idl_visit(ps, ps->root, &vis, &state);
     if (rc != IDL_RETCODE_OK)
@@ -362,6 +383,7 @@ std::vector<Value> DdsAdapter::allocateTypes(const std::string& idlFile)
     std::unordered_map<std::string, ObjObjectType*> structByName;
     std::vector<Value> out;
     consts_.clear();
+    typedefs_.clear();
 
     for (const auto& e : parsed.enums) {
         enumsByFullName_.emplace(e.fullName, e);
@@ -393,6 +415,10 @@ std::vector<Value> DdsAdapter::allocateTypes(const std::string& idlFile)
 
     for (const auto& c : parsed.consts) {
         consts_.push_back(c);
+    }
+
+    for (const auto& td : parsed.typedefs) {
+        typedefs_.push_back(td);
     }
 
     for (const auto& s : parsed.structs) {

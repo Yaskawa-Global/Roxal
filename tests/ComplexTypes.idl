@@ -9,6 +9,8 @@ module ComplexTypes
     string name;
   };
 
+  typedef long SerialAlias;
+
   @appendable
   struct Outer {
     Color color;
@@ -17,6 +19,6 @@ module ComplexTypes
     sequence<Inner> friends;
     long long signed64;
     unsigned long long unsigned64;
-    @key long serial;
+    @key SerialAlias serial;
   };
 };

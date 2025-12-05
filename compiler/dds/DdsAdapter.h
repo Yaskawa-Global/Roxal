@@ -62,6 +62,11 @@ struct ConstInfo {
     Value value;
 };
 
+struct TypedefInfo {
+    std::string fullName;
+    FieldType aliasedType;
+};
+
 class DdsAdapter {
 public:
     DdsAdapter();
@@ -75,6 +80,7 @@ public:
     const void* rootNode() const { return rootNode_; }
     const void* parserState() const { return parserState_; }
     const std::vector<ConstInfo>& constants() const { return consts_; }
+    const std::vector<TypedefInfo>& typedefs() const { return typedefs_; }
     std::string fullNameForType(const Value& v) const;
     const StructInfo* findStruct(const std::string& fullName) const;
     const EnumInfo* findEnum(const std::string& fullName) const;
@@ -96,6 +102,7 @@ private:
     std::unordered_map<const ObjObjectType*, std::string> fullNameByType_;
     std::unordered_map<const ObjObjectType*, bool> isKeyByFieldType_;
     std::vector<ConstInfo> consts_;
+    std::vector<TypedefInfo> typedefs_;
     std::unordered_map<std::string, StructInfo> structsByFullName_;
     std::unordered_map<std::string, StructInfo> structsByName_;
     std::unordered_map<std::string, EnumInfo> enumsByFullName_;
