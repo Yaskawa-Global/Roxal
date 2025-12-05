@@ -421,7 +421,12 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
         return nameStorage->back().c_str();
     };
 
-    // Try using serialized typeinfo from adapter if available, unless arrays are present (current marshalling assumes our own layout)
+    // Try using serialized typeinfo from adapter if available. We skip it when
+    // arrays are present because the CycloneDDS topic descriptor (m_ops) layout
+    // differs from our manual packing for fixed arrays; using the generated
+    // descriptor with our marshal code would misalign fields. Until we decode
+    // and honor m_ops for arrays, stick to the manual layout for array-bearing
+    // types.
     if (!hasArray) {
         std::vector<unsigned char> perInfo;
         std::vector<unsigned char> perMap;
