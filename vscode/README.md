@@ -10,6 +10,10 @@ This folder contains a lightweight VS Code contribution that adds basic syntax c
 
 Developers can also copy the `vscode/syntaxes/roxal.tmLanguage.json` file into their user `snippets` folder or a personal extension if packaging is not required.
 
+### Versioning the VSIX
+
+`vsce` uses the `version` field in `vscode/package.json` when naming the `.vsix` output. Update that field (e.g., `0.0.2`) before running `vsce package` to control the generated filename and the extension version shown in VS Code.
+
 ## Notes
 
 - Line comments support both `#` and `//` styles, matching the Roxal grammar.
