@@ -1,0 +1,30 @@
+{
+  "name": "roxal-vscode",
+  "displayName": "Roxal",
+  "description": "Basic syntax highlighting for the Roxal language.",
+  "version": "1.0.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "roxal",
+        "aliases": ["Roxal", "roxal"],
+        "extensions": [".rox"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "roxal",
+        "scopeName": "source.roxal",
+        "path": "./syntaxes/roxal.tmLanguage.json"
+      }
+    ]
+  }
+}
