@@ -1,0 +1,16 @@
+import ArrayTypes
+import dds
+
+p = dds.create_participant()
+t = dds.create_topic(p, "ArrayTopic", ArrayTypes.Msg)
+w = dds.create_writer(p, t)
+r = dds.create_reader(p, t)
+
+m = ArrayTypes.Msg()
+m.nums = [1, 2, 3]
+m.names = ["one", "two"]
+dds.write(w, m)
+
+recv = dds.read(r)
+print("{recv.nums}")
+print("{recv.names}")

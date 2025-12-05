@@ -213,8 +213,17 @@ idl_retcode_t onStruct(const idl_pstate_t*, bool revisit, const idl_path_t*, con
             FieldInfo fi;
             fi.name = fname;
             FieldType ft = classifyType(member->type_spec);
-            if (idl_is_array(decl) && ft.kind != FieldType::Kind::List)
+            if (idl_is_array(decl)) {
+                FieldType elem = classifyType(member->type_spec);
                 ft.kind = FieldType::Kind::List;
+                ft.element = std::make_shared<FieldType>(elem);
+                uint32_t arrSize = idl_array_size(decl);
+                if (arrSize > 0) {
+                    ft.bounded = true;
+                    ft.bound = arrSize;
+                }
+                ft.isArray = true;
+            }
             fi.type = ft;
             const idl_member_t* mnode = static_cast<const idl_member_t*>(member);
             fi.isKey = mnode && mnode->key.value;

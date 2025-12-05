@@ -127,7 +127,7 @@ fileio_tests = [
     'fileio_basic', 'fileio_binary', 'fileio_read_binary', 'fileio_write_binary',
     'fileio_actor_write', 'fileio_delete', 'fileio_extra'
 ]
-dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke']
+dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok']
 
 # Add feature-specific tests to the full list; feature gating happens later.
 tests += dds_tests

@@ -34,6 +34,7 @@ struct FieldType {
     std::shared_ptr<FieldType> element; // for sequences/lists
     bool bounded{false};
     uint32_t bound{0};
+    bool isArray{false}; // true when declared as a fixed-size array
 };
 
 struct FieldInfo {

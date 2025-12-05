@@ -410,6 +410,10 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
     const auto* structInfo = self->adapter->findStruct(typeName);
     if (!structInfo)
         return nullptr;
+    bool hasArray = false;
+    for (const auto& f : structInfo->fields) {
+        if (f.type.isArray) { hasArray = true; break; }
+    }
 
     auto nameStorage = std::make_shared<std::vector<std::string>>();
     auto keepName = [&](const std::string& n) -> const char* {
@@ -417,34 +421,36 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
         return nameStorage->back().c_str();
     };
 
-    // Try using serialized typeinfo from adapter if available
-    std::vector<unsigned char> perInfo;
-    std::vector<unsigned char> perMap;
-    if (self->adapter->typeMetaFor(typeName, perInfo, perMap) && !perInfo.empty()) {
-        ddsi_typeinfo* ti = ddsi_typeinfo_deser(perInfo.data(),
-                                               static_cast<uint32_t>(perInfo.size()));
-        if (ti) {
-            dds_topic_descriptor_t* descOut = nullptr;
-            dds_return_t rc = dds_create_topic_descriptor(DDS_FIND_SCOPE_LOCAL_DOMAIN,
-                                                         participant,
-                                                         reinterpret_cast<const dds_typeinfo_t*>(ti),
-                                                         DDS_SECS(5),
-                                                         &descOut);
-            if (rc == DDS_RETCODE_OK && descOut) {
-                dds_entity_t topic = ::dds_create_topic(participant, descOut, topicName.c_str(), qos, nullptr);
-                if (topic > 0) {
-                    auto support = std::make_shared<TopicSupport>();
-                    support->descriptor = std::shared_ptr<dds_topic_descriptor_t>(descOut, dds_delete_topic_descriptor);
-                    support->typeinfo = std::shared_ptr<ddsi_typeinfo>(ti, ddsi_typeinfo_free);
-                    support->typeName = typeName;
-                    support->entity = topic;
-                    support->handle = self ? self->makeHandleValue(topic) : Value::nilVal();
-                    support->nameStorage = nameStorage;
-                    return support;
+    // Try using serialized typeinfo from adapter if available, unless arrays are present (current marshalling assumes our own layout)
+    if (!hasArray) {
+        std::vector<unsigned char> perInfo;
+        std::vector<unsigned char> perMap;
+        if (self->adapter->typeMetaFor(typeName, perInfo, perMap) && !perInfo.empty()) {
+            ddsi_typeinfo* ti = ddsi_typeinfo_deser(perInfo.data(),
+                                                   static_cast<uint32_t>(perInfo.size()));
+            if (ti) {
+                dds_topic_descriptor_t* descOut = nullptr;
+                dds_return_t rc = dds_create_topic_descriptor(DDS_FIND_SCOPE_LOCAL_DOMAIN,
+                                                             participant,
+                                                             reinterpret_cast<const dds_typeinfo_t*>(ti),
+                                                             DDS_SECS(5),
+                                                             &descOut);
+                if (rc == DDS_RETCODE_OK && descOut) {
+                    dds_entity_t topic = ::dds_create_topic(participant, descOut, topicName.c_str(), qos, nullptr);
+                    if (topic > 0) {
+                        auto support = std::make_shared<TopicSupport>();
+                        support->descriptor = std::shared_ptr<dds_topic_descriptor_t>(descOut, dds_delete_topic_descriptor);
+                        support->typeinfo = std::shared_ptr<ddsi_typeinfo>(ti, ddsi_typeinfo_free);
+                        support->typeName = typeName;
+                        support->entity = topic;
+                        support->handle = self ? self->makeHandleValue(topic) : Value::nilVal();
+                        support->nameStorage = nameStorage;
+                        return support;
+                    }
+                    dds_delete_topic_descriptor(descOut);
                 }
-                dds_delete_topic_descriptor(descOut);
+                ddsi_typeinfo_free(ti);
             }
-            ddsi_typeinfo_free(ti);
         }
     }
 
@@ -592,16 +598,16 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
                 }
                 case FieldType::Kind::List: {
                     dds_dynamic_type_descriptor_t seqDesc{};
-                    seqDesc.kind = DDS_DYNAMIC_SEQUENCE;
+                    seqDesc.kind = ft.isArray ? DDS_DYNAMIC_ARRAY : DDS_DYNAMIC_SEQUENCE;
                     seqDesc.element_type = ft.element ? makeSpec(*ft.element)
                                                       : dds_dynamic_type_spec_t{DDS_DYNAMIC_TYPE_KIND_PRIMITIVE, {.primitive = DDS_DYNAMIC_INT32}};
-                    if (ft.bounded) {
+                    if (ft.bounded || ft.isArray) {
                         static thread_local uint32_t boundsBuf[1];
                         boundsBuf[0] = ft.bound;
                         seqDesc.bounds = boundsBuf;
                         seqDesc.num_bounds = 1;
                     }
-                    std::string seqName = seqTypeName(ft.element ? *ft.element : FieldType{FieldType::Kind::Int32}, ft.bounded, ft.bound);
+                    std::string seqName = seqTypeName(ft.element ? *ft.element : FieldType{FieldType::Kind::Int32}, ft.bounded || ft.isArray, ft.bound);
                     seqDesc.name = keepName(seqName);
                     dds_dynamic_type_t seqType = dds_dynamic_type_create(participant, seqDesc);
                     if (seqType.ret != DDS_RETCODE_OK)
@@ -1152,6 +1158,12 @@ size_t ModuleDDS::typeSizeInternal(const FieldType& ft, ModuleDDS* mod)
                 return static_cast<size_t>(ft.bound + 1); // inline buffer including null
             return sizeof(char*);
         }
+        case FieldType::Kind::List:
+            if (ft.isArray && ft.element) {
+                size_t elemSz = typeSizeInternal(*ft.element, mod);
+                return elemSz * static_cast<size_t>(ft.bound);
+            }
+            return sizeof(dds_sequence_t);
         case FieldType::Kind::EnumRef: return sizeof(int32_t);
         case FieldType::Kind::Int64: return sizeof(int64_t);
         case FieldType::Kind::UInt64: return sizeof(uint64_t);
@@ -1168,7 +1180,6 @@ size_t ModuleDDS::typeSizeInternal(const FieldType& ft, ModuleDDS* mod)
             }
             return 0;
         }
-        case FieldType::Kind::List: return sizeof(dds_sequence_t);
         default: return 0;
     }
 }
@@ -1186,7 +1197,10 @@ size_t ModuleDDS::fieldAlignInternal(const FieldType& ft, ModuleDDS* mod)
             if (ft.bounded && ft.bound > 0)
                 return alignof(char);
             return alignof(char*);
-        case FieldType::Kind::List: return alignof(dds_sequence_t);
+        case FieldType::Kind::List:
+            if (ft.isArray && ft.element)
+                return fieldAlignInternal(*ft.element, mod);
+            return alignof(dds_sequence_t);
         case FieldType::Kind::StructRef: {
             if (mod) {
                 auto sup = mod->supportByType.find(ft.refName);
@@ -1294,66 +1308,129 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
                 break;
             }
             case FieldType::Kind::List: {
-                dds_sequence_t* seq = reinterpret_cast<dds_sequence_t*>(target);
                 if (!isList(fval) || !field.type.element) {
-                    seq->_maximum = seq->_length = 0;
-                    seq->_buffer = nullptr;
-                    seq->_release = false;
+                    if (!field.type.isArray) {
+                        dds_sequence_t* seq = reinterpret_cast<dds_sequence_t*>(target);
+                        seq->_maximum = seq->_length = 0;
+                        seq->_buffer = nullptr;
+                        seq->_release = false;
+                    }
                     break;
                 }
                 ObjList* lst = asList(fval);
                 size_t len = lst->elts.size();
-                if (field.type.bounded && field.type.bound > 0 && len > field.type.bound)
-                    throw std::runtime_error("DDS sequence field '" + field.name + "' exceeds bound " + std::to_string(field.type.bound));
-                uint32_t max = field.type.bounded && field.type.bound > 0 ? field.type.bound : static_cast<uint32_t>(len);
-                seq->_maximum = max;
-                seq->_length = static_cast<uint32_t>(len);
                 size_t elemSz = typeSizeInternal(*field.type.element, this);
-                seq->_buffer = elemSz > 0 ? static_cast<uint8_t*>(dds_alloc(elemSz * len)) : nullptr;
-                seq->_release = true;
-                if (!seq->_buffer || elemSz == 0)
-                    break;
-                std::memset(seq->_buffer, 0, elemSz * len);
-                for (size_t idx = 0; idx < len; ++idx) {
-                    Value ev = lst->elts.at(idx);
-                    char* elemPtr = reinterpret_cast<char*>(seq->_buffer + elemSz * idx);
-                    switch (field.type.element->kind) {
-                        case FieldType::Kind::Bool:
-                            *reinterpret_cast<bool*>(elemPtr) = ev.isBool() ? ev.asBool() : ev.isNumber() ? ev.asInt() != 0 : false;
-                            break;
-                        case FieldType::Kind::Int32:
-                            *reinterpret_cast<int32_t*>(elemPtr) = ev.isNumber() ? ev.asInt() : 0;
-                            break;
-                        case FieldType::Kind::Float64:
-                            *reinterpret_cast<double*>(elemPtr) = ev.isNumber() ? ev.asReal() : 0.0;
-                            break;
-                        case FieldType::Kind::Int64:
-                            *reinterpret_cast<int64_t*>(elemPtr) = ev.isNumber() ? ev.asInt() : 0;
-                            break;
-                        case FieldType::Kind::UInt64:
-                            *reinterpret_cast<uint64_t*>(elemPtr) = ev.isNumber() ? static_cast<uint64_t>(ev.asInt()) : 0;
-                            break;
-                        case FieldType::Kind::EnumRef:
-                            *reinterpret_cast<int32_t*>(elemPtr) = ev.isEnum() ? ev.asEnum() : (ev.isNumber() ? ev.asInt() : 0);
-                            break;
-                        case FieldType::Kind::String: {
-                            auto strPtr = reinterpret_cast<char**>(elemPtr);
-                            *strPtr = isString(ev) ? dds_string_dup(toUTF8StdString(asStringObj(ev)->s).c_str()) : nullptr;
-                            break;
+                if (field.type.isArray) {
+                    if (field.type.bounded && field.type.bound > 0 && len != field.type.bound)
+                        throw std::runtime_error("DDS array field '" + field.name + "' length mismatch: expected " + std::to_string(field.type.bound) + " got " + std::to_string(len));
+                    if (elemSz == 0)
+                        break;
+                    std::memset(target, 0, elemSz * field.type.bound);
+                    for (size_t idx = 0; idx < len; ++idx) {
+                        Value ev = lst->elts.at(idx);
+                        char* elemPtr = static_cast<char*>(target) + elemSz * idx;
+                        switch (field.type.element->kind) {
+                            case FieldType::Kind::Bool:
+                                *reinterpret_cast<bool*>(elemPtr) = ev.isBool() ? ev.asBool() : ev.isNumber() ? ev.asInt() != 0 : false;
+                                break;
+                            case FieldType::Kind::Int32:
+                                *reinterpret_cast<int32_t*>(elemPtr) = ev.isNumber() ? ev.asInt() : 0;
+                                break;
+                            case FieldType::Kind::Float64:
+                                *reinterpret_cast<double*>(elemPtr) = ev.isNumber() ? ev.asReal() : 0.0;
+                                break;
+                            case FieldType::Kind::Int64:
+                                *reinterpret_cast<int64_t*>(elemPtr) = ev.isNumber() ? ev.asInt() : 0;
+                                break;
+                            case FieldType::Kind::UInt64:
+                                *reinterpret_cast<uint64_t*>(elemPtr) = ev.isNumber() ? static_cast<uint64_t>(ev.asInt()) : 0;
+                                break;
+                            case FieldType::Kind::EnumRef:
+                                *reinterpret_cast<int32_t*>(elemPtr) = ev.isEnum() ? ev.asEnum() : (ev.isNumber() ? ev.asInt() : 0);
+                                break;
+                            case FieldType::Kind::String: {
+                                std::string s = isString(ev) ? toUTF8StdString(asStringObj(ev)->s) : "";
+                                if (field.type.element->bounded && field.type.element->bound > 0) {
+                                    size_t cap = static_cast<size_t>(field.type.element->bound + 1);
+                                    if (s.size() > field.type.element->bound)
+                                        throw std::runtime_error("DDS string array element in '" + field.name + "' exceeds bound " + std::to_string(field.type.element->bound));
+                                    std::memset(elemPtr, 0, cap);
+                                    if (!s.empty())
+                                        std::memcpy(elemPtr, s.c_str(), s.size());
+                                } else {
+                                    auto strPtr = reinterpret_cast<char**>(elemPtr);
+                                    *strPtr = s.empty() ? nullptr : dds_string_dup(s.c_str());
+                                }
+                                break;
+                            }
+                            case FieldType::Kind::StructRef: {
+                                std::string refName = canonicalName(field.type.element->refName);
+                                const StructInfo* subInfo = findStructInfo(refName);
+                                const dds_topic_descriptor_t* subDesc = nullptr;
+                                auto sup = supportByType.find(refName);
+                                if (sup != supportByType.end())
+                                    subDesc = sup->second ? sup->second->descriptor.get() : nullptr;
+                                if (subInfo)
+                                    fillSampleFromValue(*subInfo, subDesc, elemPtr, ev);
+                                break;
+                            }
+                            default:
+                                break;
                         }
-                        case FieldType::Kind::StructRef: {
-                            std::string refName = canonicalName(field.type.element->refName);
-                            const StructInfo* subInfo = findStructInfo(refName);
-                            const dds_topic_descriptor_t* subDesc = nullptr;
-                            auto sup = supportByType.find(refName);
-                            if (sup != supportByType.end())
-                                subDesc = sup->second ? sup->second->descriptor.get() : nullptr;
-                            if (subInfo)
-                                fillSampleFromValue(*subInfo, subDesc, elemPtr, ev);
-                            break;
+                    }
+                } else {
+                    dds_sequence_t* seq = reinterpret_cast<dds_sequence_t*>(target);
+                    if (field.type.bounded && field.type.bound > 0 && len > field.type.bound)
+                        throw std::runtime_error("DDS sequence field '" + field.name + "' exceeds bound " + std::to_string(field.type.bound));
+                    uint32_t max = field.type.bounded && field.type.bound > 0 ? field.type.bound : static_cast<uint32_t>(len);
+                    seq->_maximum = max;
+                    seq->_length = static_cast<uint32_t>(len);
+                    seq->_buffer = elemSz > 0 ? static_cast<uint8_t*>(dds_alloc(elemSz * len)) : nullptr;
+                    seq->_release = true;
+                    if (!seq->_buffer || elemSz == 0)
+                        break;
+                    std::memset(seq->_buffer, 0, elemSz * len);
+                    for (size_t idx = 0; idx < len; ++idx) {
+                        Value ev = lst->elts.at(idx);
+                        char* elemPtr = reinterpret_cast<char*>(seq->_buffer + elemSz * idx);
+                        switch (field.type.element->kind) {
+                            case FieldType::Kind::Bool:
+                                *reinterpret_cast<bool*>(elemPtr) = ev.isBool() ? ev.asBool() : ev.isNumber() ? ev.asInt() != 0 : false;
+                                break;
+                            case FieldType::Kind::Int32:
+                                *reinterpret_cast<int32_t*>(elemPtr) = ev.isNumber() ? ev.asInt() : 0;
+                                break;
+                            case FieldType::Kind::Float64:
+                                *reinterpret_cast<double*>(elemPtr) = ev.isNumber() ? ev.asReal() : 0.0;
+                                break;
+                            case FieldType::Kind::Int64:
+                                *reinterpret_cast<int64_t*>(elemPtr) = ev.isNumber() ? ev.asInt() : 0;
+                                break;
+                            case FieldType::Kind::UInt64:
+                                *reinterpret_cast<uint64_t*>(elemPtr) = ev.isNumber() ? static_cast<uint64_t>(ev.asInt()) : 0;
+                                break;
+                            case FieldType::Kind::EnumRef:
+                                *reinterpret_cast<int32_t*>(elemPtr) = ev.isEnum() ? ev.asEnum() : (ev.isNumber() ? ev.asInt() : 0);
+                                break;
+                            case FieldType::Kind::String: {
+                                auto strPtr = reinterpret_cast<char**>(elemPtr);
+                                *strPtr = isString(ev) ? dds_string_dup(toUTF8StdString(asStringObj(ev)->s).c_str()) : nullptr;
+                                break;
+                            }
+                            case FieldType::Kind::StructRef: {
+                                std::string refName = canonicalName(field.type.element->refName);
+                                const StructInfo* subInfo = findStructInfo(refName);
+                                const dds_topic_descriptor_t* subDesc = nullptr;
+                                auto sup = supportByType.find(refName);
+                                if (sup != supportByType.end())
+                                    subDesc = sup->second ? sup->second->descriptor.get() : nullptr;
+                                if (subInfo)
+                                    fillSampleFromValue(*subInfo, subDesc, elemPtr, ev);
+                                break;
+                            }
+                            default:
+                                break;
                         }
-                        default:
-                            break;
                     }
                 }
                 break;
@@ -1441,54 +1518,109 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
                 break;
             }
             case FieldType::Kind::List: {
-                const dds_sequence_t* seq = reinterpret_cast<const dds_sequence_t*>(src);
                 Value listVal = Value::listVal();
                 ObjList* lst = asList(listVal);
-                if (seq && seq->_buffer && field.type.element) {
+                if (field.type.element) {
                     size_t elemSz = typeSizeInternal(*field.type.element, this);
-                    for (uint32_t idx = 0; idx < seq->_length && elemSz > 0; ++idx) {
-                        const char* eptr = reinterpret_cast<const char*>(seq->_buffer + elemSz * idx);
-                        Value ev = Value::nilVal();
-                        switch (field.type.element->kind) {
-                            case FieldType::Kind::Bool:
-                                ev = Value::boolVal(*reinterpret_cast<const bool*>(eptr));
-                                break;
-                            case FieldType::Kind::Int32:
-                                ev = Value::intVal(*reinterpret_cast<const int32_t*>(eptr));
-                                break;
-                        case FieldType::Kind::Float64:
-                            ev = Value::realVal(*reinterpret_cast<const double*>(eptr));
-                            break;
-                        case FieldType::Kind::Int64:
-                            ev = Value::intVal(*reinterpret_cast<const int64_t*>(eptr));
-                            break;
-                        case FieldType::Kind::UInt64:
-                            ev = Value::intVal(static_cast<int64_t>(*reinterpret_cast<const uint64_t*>(eptr)));
-                            break;
-                            case FieldType::Kind::EnumRef:
-                                ev = Value::intVal(*reinterpret_cast<const int32_t*>(eptr));
-                                break;
+                    if (field.type.isArray) {
+                        uint32_t len = field.type.bound;
+                        for (uint32_t idx = 0; idx < len && elemSz > 0; ++idx) {
+                            const char* eptr = static_cast<const char*>(src) + elemSz * idx;
+                            Value ev = Value::nilVal();
+                            switch (field.type.element->kind) {
+                                case FieldType::Kind::Bool:
+                                    ev = Value::boolVal(*reinterpret_cast<const bool*>(eptr));
+                                    break;
+                                case FieldType::Kind::Int32:
+                                    ev = Value::intVal(*reinterpret_cast<const int32_t*>(eptr));
+                                    break;
+                                case FieldType::Kind::Float64:
+                                    ev = Value::realVal(*reinterpret_cast<const double*>(eptr));
+                                    break;
+                                case FieldType::Kind::Int64:
+                                    ev = Value::intVal(*reinterpret_cast<const int64_t*>(eptr));
+                                    break;
+                                case FieldType::Kind::UInt64:
+                                    ev = Value::intVal(static_cast<int64_t>(*reinterpret_cast<const uint64_t*>(eptr)));
+                                    break;
+                                case FieldType::Kind::EnumRef:
+                                    ev = Value::intVal(*reinterpret_cast<const int32_t*>(eptr));
+                                    break;
                             case FieldType::Kind::String: {
-                                const char* s = *reinterpret_cast<char* const*>(eptr);
-                                ev = s ? Value::stringVal(toUnicodeString(std::string(s))) : Value::nilVal();
+                                if (field.type.element->bounded && field.type.element->bound > 0) {
+                                    const char* buf = reinterpret_cast<const char*>(eptr);
+                                    ev = Value::stringVal(toUnicodeString(std::string(buf ? buf : "")));
+                                } else {
+                                    const char* s = *reinterpret_cast<char* const*>(eptr);
+                                    ev = s ? Value::stringVal(toUnicodeString(std::string(s))) : Value::nilVal();
+                                }
                                 break;
                             }
-                            case FieldType::Kind::StructRef: {
-                                std::string refName = canonicalName(field.type.element->refName);
-                                const StructInfo* subInfo = findStructInfo(refName);
-                                const dds_topic_descriptor_t* subDesc = nullptr;
-                                auto sup = supportByType.find(refName);
-                                if (sup != supportByType.end())
-                                    subDesc = sup->second ? sup->second->descriptor.get() : nullptr;
-                                Value subtypeVal = resolveTypeValue(refName);
-                                if (subInfo && !subtypeVal.isNil())
-                                    ev = valueFromSample(*subInfo, subDesc, eptr, subtypeVal);
-                                break;
+                                case FieldType::Kind::StructRef: {
+                                    std::string refName = canonicalName(field.type.element->refName);
+                                    const StructInfo* subInfo = findStructInfo(refName);
+                                    const dds_topic_descriptor_t* subDesc = nullptr;
+                                    auto sup = supportByType.find(refName);
+                                    if (sup != supportByType.end())
+                                        subDesc = sup->second ? sup->second->descriptor.get() : nullptr;
+                                    Value subtypeVal = resolveTypeValue(refName);
+                                    if (subInfo && !subtypeVal.isNil())
+                                        ev = valueFromSample(*subInfo, subDesc, eptr, subtypeVal);
+                                    break;
+                                }
+                                default:
+                                    break;
                             }
-                            default:
-                                break;
+                            lst->elts.push_back(ev);
                         }
-                        lst->elts.push_back(ev);
+                    } else {
+                        const dds_sequence_t* seq = reinterpret_cast<const dds_sequence_t*>(src);
+                        if (seq && seq->_buffer) {
+                            for (uint32_t idx = 0; idx < seq->_length && elemSz > 0; ++idx) {
+                                const char* eptr = reinterpret_cast<const char*>(seq->_buffer + elemSz * idx);
+                                Value ev = Value::nilVal();
+                                switch (field.type.element->kind) {
+                                    case FieldType::Kind::Bool:
+                                        ev = Value::boolVal(*reinterpret_cast<const bool*>(eptr));
+                                        break;
+                                    case FieldType::Kind::Int32:
+                                        ev = Value::intVal(*reinterpret_cast<const int32_t*>(eptr));
+                                        break;
+                                    case FieldType::Kind::Float64:
+                                        ev = Value::realVal(*reinterpret_cast<const double*>(eptr));
+                                        break;
+                                    case FieldType::Kind::Int64:
+                                        ev = Value::intVal(*reinterpret_cast<const int64_t*>(eptr));
+                                        break;
+                                    case FieldType::Kind::UInt64:
+                                        ev = Value::intVal(static_cast<int64_t>(*reinterpret_cast<const uint64_t*>(eptr)));
+                                        break;
+                                    case FieldType::Kind::EnumRef:
+                                        ev = Value::intVal(*reinterpret_cast<const int32_t*>(eptr));
+                                        break;
+                                    case FieldType::Kind::String: {
+                                        const char* s = *reinterpret_cast<char* const*>(eptr);
+                                        ev = s ? Value::stringVal(toUnicodeString(std::string(s))) : Value::nilVal();
+                                        break;
+                                    }
+                                    case FieldType::Kind::StructRef: {
+                                        std::string refName = canonicalName(field.type.element->refName);
+                                        const StructInfo* subInfo = findStructInfo(refName);
+                                        const dds_topic_descriptor_t* subDesc = nullptr;
+                                        auto sup = supportByType.find(refName);
+                                        if (sup != supportByType.end())
+                                            subDesc = sup->second ? sup->second->descriptor.get() : nullptr;
+                                        Value subtypeVal = resolveTypeValue(refName);
+                                        if (subInfo && !subtypeVal.isNil())
+                                            ev = valueFromSample(*subInfo, subDesc, eptr, subtypeVal);
+                                        break;
+                                    }
+                                    default:
+                                        break;
+                                }
+                                lst->elts.push_back(ev);
+                            }
+                        }
                     }
                 }
                 val = listVal;
