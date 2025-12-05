@@ -2239,6 +2239,8 @@ std::any RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
 {
     currentNode = ast;
 
+    bool handled = false;
+
     // Logical And and Or operators have short-circuit semantics, so may not need to evaluate all
     //  children, so handle them differently
     if (ast->op == BinaryOp::Or) {
@@ -2250,6 +2252,8 @@ std::any RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
         ast->rhs->accept(*this);
 
         patchJump(jumpToEnd);
+
+        handled = true;
     }
     else if (ast->op == BinaryOp::And) {
         ast->lhs->accept(*this);
@@ -2259,8 +2263,28 @@ std::any RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
         ast->rhs->accept(*this);
 
         patchJump(jumpToEnd);
+
+        handled = true;
     }
-    else {
+    // `is not nil` should behave like `not (<expr> is nil)`, even though the parser currently
+    // constructs it as `(<expr> is (not nil))`. Detect the pattern here to avoid introducing
+    // misleading AST rewrites that could surprise tools working directly with the AST.
+    else if (ast->op == BinaryOp::Is && isa<ast::UnaryOp>(ast->rhs)) {
+        auto rhsUnary = as<ast::UnaryOp>(ast->rhs);
+        if (rhsUnary->op == ast::UnaryOp::Not && isa<ast::Literal>(rhsUnary->arg)) {
+            auto rhsLiteral = as<ast::Literal>(rhsUnary->arg);
+            if (rhsLiteral->literalType == ast::Literal::LiteralType::Nil) {
+                ast->lhs->accept(*this);
+                rhsUnary->arg->accept(*this); // emit nil literal without applying the unary not
+                emitByte(OpCode::Is);
+                emitByte(OpCode::Negate);
+
+                handled = true;
+            }
+        }
+    }
+
+    if (!handled) {
         Anys results;
         ast->acceptChildren(*this, results);
 
