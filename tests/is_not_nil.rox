@@ -1,0 +1,6 @@
+var values = [[1, 2, 3], nil]
+for v in values:
+  if v is not nil:
+    print('present')
+  else:
+    print('absent')
