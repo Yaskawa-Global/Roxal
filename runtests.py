@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import os
+import sys
+import socket
 import subprocess
 import argparse
 import re
@@ -12,6 +14,7 @@ TEST_TIMEOUT_SECS = 5
 GC_STRESS_TIMEOUT_SECS = 20
 # Width of the test name column when printing results
 TEST_NAME_WIDTH = 32
+GRPC_TEST_ADDR = "127.0.0.1:50051"
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Run Roxal tests.")
@@ -55,7 +58,7 @@ def is_debug_build(build_dir: str) -> bool:
 
 tests = [
     'comments', 'primitive1', 'constants', 'scopetest2', 'scopetest3',
-    'andtest', 'ortest', 'not',
+    'andtest', 'ortest', 'not', 'not_nil_conversion_err', 'is_not_nil', 'is_not_non_nil',
     'arith', 'factorial', 'defaultvalues', 'construct_defaults', 'typeof_test',
     'dict', 'dict2', 'dict_keyerror', 'dict_dot', 'dict_dot_keyerror', 'dict_self_reference', 'list', 'list2', 'list_negative_index', 'list_self_reference', 'copyinto_list', 'copyinto_list_unicode', 'copyinto_sublist', 'copyinto_signal',
     'list_add_test', 'list_dict_equal', 'range', 'range2', 'enum1', 'enum2', 'enum3', 'upvalue_leak',
@@ -73,7 +76,7 @@ tests = [
     'module_strict_assign_err', 'var_redeclare_err', 'var_redeclare_assign_err', 'repl_var_redeclare_err', 'func_nonstrict', 'conversions1',
     'serialize_values', 'serialize_objects', 'serialize_user_objects', 'serialize_func', 'serialize_actor',
     'json_basic',
-    'byteops', 'bitwise', 'byte_int_bits', 'list_byte_concat', 'list_enum_concat',
+    'byteops', 'bitwise', 'byte_int_bits', 'int64_promotion', 'list_byte_concat', 'list_enum_concat',
     'object_init', 'object_constructor_args', 'object_constructor_unknown_arg', 'object_constructor_arg_count',
     'object_inherit_is', 'object_ref_member_default',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'closure_many', 'lambda1',
@@ -115,14 +118,19 @@ tests = [
     'fileio_read_binary', 'fileio_write_binary', 'fileio_actor_write', 'fileio_delete', 'fileio_extra',
     'help_doc', 'help_time_wall_now', 'help_time_wall_now_instance', 'docstring_func',
     'builtin_object_methods', 'math_counter_signal', 'print_flush',
-    'grpc_message_types', 'grpc_service_actor', 'grpc_runtime_error'
+    'grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error'
 ]
 
-grpc_tests = ['grpc_message_types', 'grpc_service_actor', 'grpc_runtime_error']
+grpc_tests = ['grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error']
+grpc_server_tests = ['grpc_int64_values']
 fileio_tests = [
     'fileio_basic', 'fileio_binary', 'fileio_read_binary', 'fileio_write_binary',
     'fileio_actor_write', 'fileio_delete', 'fileio_extra'
 ]
+dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok', 'dds_array_struct', 'dds_array_multi']
+
+# Add feature-specific tests to the full list; feature gating happens later.
+tests += dds_tests
 
 long_running_tests = [
     'gc_stress',
@@ -196,19 +204,65 @@ os.chdir(os.path.join(project_root, roxalpath))
 features = detect_features(roxal)
 has_grpc = 'grpc' in features
 has_fileio = 'fileio' in features
+has_dds = 'dds' in features
 if not has_grpc and any(test in tests for test in grpc_tests):
     print("Skipping gRPC tests (feature not enabled).")
     tests = [t for t in tests if t not in grpc_tests]
 if not has_fileio and any(test in tests for test in fileio_tests):
     print("Skipping fileio tests (feature not enabled).")
     tests = [t for t in tests if t not in fileio_tests]
+if not has_dds:
+    if any(test in tests for test in dds_tests):
+        print("Skipping DDS tests (feature not enabled).")
+        tests = [t for t in tests if t not in dds_tests]
+needs_grpc_server = has_grpc and any(test in tests for test in grpc_server_tests)
 
 env_base = os.environ.copy()
 env_base['ROXALPATH'] = test_dir
 
+def start_grpc_test_server(env) -> subprocess.Popen:
+    script_path = os.path.join(project_root, 'scripts', 'grpc_everything_server.py')
+    if not os.path.exists(script_path):
+        raise RuntimeError(f"gRPC test server script not found at {script_path}")
+
+    host, port_str = GRPC_TEST_ADDR.split(':', 1)
+    port = int(port_str)
+    proc = subprocess.Popen(
+        [sys.executable, script_path, "--address", GRPC_TEST_ADDR],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+    )
+
+    deadline = time.time() + 5.0
+    last_error = None
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            output, _ = proc.communicate(timeout=0.1)
+            raise RuntimeError(
+                f"gRPC test server failed to start (exit {proc.returncode}): "
+                f"{output.decode(errors='ignore')}"
+            )
+        try:
+            with socket.create_connection((host, port), timeout=0.25):
+                return proc
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.1)
+
+    proc.terminate()
+    try:
+        proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    raise RuntimeError(f"Timed out waiting for gRPC test server to start: {last_error}")
+
+grpc_server_proc = None
 total_start_time = time.perf_counter()
 
 try:
+    grpc_server_proc = start_grpc_test_server(env_base) if needs_grpc_server else None
+
     for test in tests:
         print(f"Test {test:<{TEST_NAME_WIDTH}} ", end='', flush=True)
         start_time = time.perf_counter()
@@ -335,6 +389,14 @@ try:
 
 except Exception as e:
     print('Exception: ' + str(e))
+finally:
+    if grpc_server_proc:
+        grpc_server_proc.terminate()
+        try:
+            grpc_server_proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            grpc_server_proc.kill()
+    os.chdir(cwd)
 
 total_duration = time.perf_counter() - total_start_time
 failed_unexpected_count = failed_count - len(failing_tests)
@@ -349,5 +411,3 @@ if args.opcode_prof:
         print(f"Opcode profile written to {opcode_profile_path}")
     else:
         print(f"Opcode profiling was requested but {opcode_profile_path} was not created.")
-
-os.chdir(cwd)

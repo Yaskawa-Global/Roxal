@@ -639,6 +639,9 @@ int main(int argc, const char* argv[])
         #ifdef ROXAL_ENABLE_GRPC
             features.push_back("grpc");
         #endif
+        #ifdef ROXAL_ENABLE_DDS
+            features.push_back("dds");
+        #endif
         if (!features.empty()) {
             std::cout << " [";
             for (size_t i = 0; i < features.size(); ++i) {

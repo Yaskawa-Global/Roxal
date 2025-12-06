@@ -1,0 +1,7 @@
+module ArrayTypes {
+  @appendable
+  struct Msg {
+    long nums[3];
+    string<5> names[2];
+  };
+};

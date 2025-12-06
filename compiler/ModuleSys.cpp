@@ -1140,7 +1140,9 @@ static json11::Json valueToJson(const Value& v) {
         case ValueType::Nil:   return Json();
         case ValueType::Bool:  return Json(v.asBool());
         case ValueType::Byte:  return Json(int(v.asByte()));
-        case ValueType::Int:   return Json(v.asInt());
+        case ValueType::Int:
+            // TODO: consider emitting ints as double to preserve up to 53 bits exactly and round-trip small ints back as int on read.
+            return Json(int(v.asInt())); // JSON library only has int ctor
         case ValueType::Real:  return Json(v.asReal());
         case ValueType::String: return Json(toUTF8StdString(asStringObj(v)->s));
         case ValueType::List: {

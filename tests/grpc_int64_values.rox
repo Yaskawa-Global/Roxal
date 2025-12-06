@@ -1,0 +1,22 @@
+import roxal_examples.*
+
+var svc = EverythingService("127.0.0.1:50051", { 'timeout_ms': 2000 })
+
+var payload = Everything(
+    i64=3000000000,
+    u64=5000000000,
+    si64=-4000000000,
+    fx64=9000000000,
+    sfx64=-9000000000,
+    nest=Nested(note="deep", count=7000000000)
+)
+
+var reply = svc.Echo(payload=payload)
+var p = reply.payload
+
+print(p.i64)
+print(p.u64)
+print(p.si64)
+print(p.fx64)
+print(p.sfx64)
+print(p.nest.count)

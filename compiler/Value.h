@@ -157,11 +157,11 @@ public:
     static inline Value byteVal(uint8_t b) { return Value(b); }
     static Value boxedByteVal(uint8_t b);
 
-    /// @brief Constructs an integer value.
+    /// @brief Constructs an integer value (inline 32-bit storage). Prefer intVal() to handle boxing.
     /// @param i The integer value.
     explicit Value(int32_t i) { val = QNAN | TagInt | static_cast<uint64_t>(static_cast<uint32_t>(i)); }
-    static inline Value intVal(int32_t i) { return Value(i); }
-    static Value boxedIntVal(uint8_t b);
+    static Value intVal(int64_t i);
+    static Value boxedIntVal(int64_t i);
 
     /// @brief Constructs a real value.
     /// @param r The real value.
@@ -380,7 +380,7 @@ public:
     /// @brief Retrieves the value as an integer.
     /// @param strict If true, performs strict type checking. If false, allows type coercion.
     /// @return The integer value.
-    int32_t asInt(bool strict=true) const;
+    int64_t asInt(bool strict=true) const;
 
     /// @brief Checks if the value is a real number.
     /// @return True if the value is a real number, false otherwise.
@@ -393,7 +393,10 @@ public:
 
     /// @brief Checks if the value is a number (integer, real, or byte).
     /// @return True if the value is a number, false otherwise.
-    inline bool isNumber() const { return isInt() || isReal() || isByte(); } // TODO: || isDecimal(v)
+    inline bool isNumber() const {
+        ValueType t = type();
+        return t == ValueType::Int || t == ValueType::Real || t == ValueType::Byte; // TODO: || Decimal
+    }
 
     inline bool isEnum() const {
         return (val & (SignBit | QNAN | TypeTag)) == (QNAN | TagEnum);
@@ -422,6 +425,26 @@ public:
     inline bool isPrimitive() const {
         return isNil() || isBool() || isInt() || isReal() || isType() || isByte() || isEnum();
     }
+
+    /// @brief Indicates if this value should use value semantics (independent of storage).
+    /// @return True for primitives and object types that behave like values.
+    inline bool valueSemantics() const {
+        if (!isObj())
+            return true;
+        if (isObjPrimitive(*this))
+            return true;
+        switch (type()) {
+            case ValueType::Vector:
+            case ValueType::Matrix:
+            case ValueType::Tensor:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// @brief Indicates if this value should use reference semantics.
+    inline bool referenceSemantics() const { return !valueSemantics(); }
 
     /// @brief Checks if the value is an object.
     /// @return True if the value is an object, false otherwise.
@@ -465,9 +488,7 @@ public:
 
     /// @brief Calculates the hash value of the value.
     /// @return The hash value.
-    size_t hash() const {
-        return size_t(val.load());
-    }
+    size_t hash() const;
 
     #ifdef DEBUG_BUILD
     uint64_t getVal() const { return val; }

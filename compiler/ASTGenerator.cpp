@@ -2002,6 +2002,8 @@ std::any ASTGenerator::visitUnary(RoxalParser::UnaryContext *context)
             auto numarg = as<Num>(arg);
             if (std::holds_alternative<int32_t>(numarg->num))
                 numarg->num = -std::get<int32_t>(numarg->num);
+            else if (std::holds_alternative<int64_t>(numarg->num))
+                numarg->num = -std::get<int64_t>(numarg->num);
             else if (std::holds_alternative<double>(numarg->num))
                 numarg->num = -std::get<double>(numarg->num);
             else
@@ -2500,6 +2502,8 @@ std::any ASTGenerator::visitSigned_num(RoxalParser::Signed_numContext *context)
     if (context->MINUS()) {
         if (std::holds_alternative<int32_t>(num->num))
             num->num = -std::get<int32_t>(num->num);
+        else if (std::holds_alternative<int64_t>(num->num))
+            num->num = -std::get<int64_t>(num->num);
         else
             num->num = -std::get<double>(num->num);
     }
@@ -2647,15 +2651,20 @@ std::any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
     ptr<Num> num = make_ptr<Num>();
 
     long long integer {0};
+    auto fitsInt32 = [](long long v) {
+        return v >= std::numeric_limits<int32_t>::min() && v <= std::numeric_limits<int32_t>::max();
+    };
     if (context->DECIMAL_INTEGER()) {
         try {
             integer = std::stoll(context->getText());
         } catch (...) {
             throw std::runtime_error("Invalid integer literal");
         }
-        if ((integer > std::numeric_limits<int32_t>::max()) || (integer < std::numeric_limits<int32_t>::min()))
-            throw std::runtime_error("Invalid integer literal (out-of-range)");
-        num->num = int32_t(integer);
+        if (!fitsInt32(integer)) {
+            num->num = int64_t(integer);
+        } else {
+            num->num = int32_t(integer);
+        }
         setSourceInfo(num,context->DECIMAL_INTEGER());
     }
     else if (context->HEX_INTEGER()) {
@@ -2664,9 +2673,11 @@ std::any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
         if (errno == ERANGE)
             throw std::runtime_error("Invalid hexadecimal integer literal");
         // TODO: accept unsigned range and convert to twos-compliment
-        if ((integer > std::numeric_limits<int32_t>::max()) || (integer < std::numeric_limits<int32_t>::min()))
-            throw std::runtime_error("Invalid hexadecimal integer literal (out-of-range)");
-        num->num = int32_t(integer);
+        if (!fitsInt32(integer)) {
+            num->num = int64_t(integer);
+        } else {
+            num->num = int32_t(integer);
+        }
         setSourceInfo(num,context->HEX_INTEGER());
     }
     else if (context->OCT_INTEGER()) {
@@ -2675,9 +2686,11 @@ std::any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
         if (errno == ERANGE)
             throw std::runtime_error("Invalid octal integer literal");
         // TODO: accept unsigned range and convert to twos-compliment
-        if ((integer > std::numeric_limits<int32_t>::max()) || (integer < std::numeric_limits<int32_t>::min()))
-            throw std::runtime_error("Invalid octal integer literal (out-of-range)");
-        num->num = int32_t(integer);
+        if (!fitsInt32(integer)) {
+            num->num = int64_t(integer);
+        } else {
+            num->num = int32_t(integer);
+        }
         setSourceInfo(num,context->OCT_INTEGER());
     }
     else if (context->BIN_INTEGER()) {
@@ -2686,9 +2699,11 @@ std::any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
         if (errno == ERANGE)
             throw std::runtime_error("Invalid binary integer literal");
         // TODO: accept unsigned range and convert to twos-compliment
-        if ((integer > std::numeric_limits<int32_t>::max()) || (integer < std::numeric_limits<int32_t>::min()))
-            throw std::runtime_error("Invalid binary integer literal (out-of-range)");
-        num->num = int32_t(integer);
+        if (!fitsInt32(integer)) {
+            num->num = int64_t(integer);
+        } else {
+            num->num = int32_t(integer);
+        }
         setSourceInfo(num,context->BIN_INTEGER());
     }
     else

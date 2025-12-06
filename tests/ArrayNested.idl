@@ -1,0 +1,15 @@
+module ArrayNested {
+  @appendable
+  enum Color { Red, Green, Blue };
+
+  @appendable
+  struct Inner {
+    long id;
+  };
+
+  @appendable
+  struct Msg {
+    Color colors[2];
+    Inner inners[2];
+  };
+};

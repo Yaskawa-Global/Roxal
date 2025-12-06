@@ -1,0 +1,24 @@
+module ComplexTypes
+{
+  @appendable
+  enum Color { Red, Green, Blue };
+
+  @appendable
+  struct Inner {
+    long id;
+    string name;
+  };
+
+  typedef long SerialAlias;
+
+  @appendable
+  struct Outer {
+    Color color;
+    sequence<long> nums;
+    Inner inner;
+    sequence<Inner> friends;
+    long long signed64;
+    unsigned long long unsigned64;
+    @key SerialAlias serial;
+  };
+};

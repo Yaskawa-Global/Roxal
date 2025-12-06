@@ -11,28 +11,50 @@ import importlib
 import os
 import sys
 import tempfile
+import subprocess
+import shutil
 from concurrent import futures
 
 import grpc
 
 
 def compile_proto(proto_path: str, workdir: str):
-    from grpc_tools import protoc
+    try:
+        from grpc_tools import protoc
+    except Exception:
+        protoc = None
 
     proto_path = os.path.abspath(proto_path)
     proto_dir = os.path.dirname(proto_path)
     proto_file = os.path.basename(proto_path)
-    result = protoc.main(
-        [
+
+    if protoc is not None:
+        result = protoc.main(
+            [
+                "protoc",
+                f"-I{proto_dir}",
+                f"--python_out={workdir}",
+                f"--grpc_python_out={workdir}",
+                proto_file,
+            ]
+        )
+        if result != 0:
+            raise SystemExit(f"protoc compilation failed with exit code {result}")
+    else:
+        # Fall back to invoking the protoc binary with the Python gRPC plugin.
+        plugin = shutil.which("grpc_python_plugin")
+        plugin_arg = [f"--plugin=protoc-gen-grpc_python={plugin}"] if plugin else []
+        cmd = [
             "protoc",
             f"-I{proto_dir}",
             f"--python_out={workdir}",
             f"--grpc_python_out={workdir}",
+            *plugin_arg,
             proto_file,
         ]
-    )
-    if result != 0:
-        raise SystemExit(f"protoc compilation failed with exit code {result}")
+        result = subprocess.run(cmd, cwd=proto_dir)
+        if result.returncode != 0:
+            raise SystemExit(f"protoc compilation failed with exit code {result.returncode}")
 
     sys.path.insert(0, workdir)
     module_basename = os.path.splitext(proto_file)[0]

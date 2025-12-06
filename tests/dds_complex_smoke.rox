@@ -1,0 +1,38 @@
+import ComplexTypes
+import dds
+
+p = dds.create_participant()
+t = dds.create_topic(p, "ComplexTopic", ComplexTypes.Outer)
+w = dds.create_writer(p, t)
+r = dds.create_reader(p, t)
+
+m = ComplexTypes.Outer()
+m.color = ComplexTypes.Color.Green
+m.nums = [1, 2, 3]
+m.inner = ComplexTypes.Inner()
+m.inner.id = 7
+m.inner.name = "inner"
+
+var f0 = ComplexTypes.Inner()
+f0.id = 10
+f0.name = "alice"
+var f1 = ComplexTypes.Inner()
+f1.id = 11
+f1.name = "bob"
+m.friends = [f0, f1]
+
+m.signed64 = -90000000000
+m.unsigned64 = 5000000000
+m.serial = 1234
+
+dds.write(w, m)
+var recv = dds.read(r)
+
+print("color {recv.color}")
+print("nums {recv.nums}")
+print("inner {recv.inner.id} {recv.inner.name}")
+print("friend0 {recv.friends[0].id} {recv.friends[0].name}")
+print("friend1 {recv.friends[1].id} {recv.friends[1].name}")
+print("signed64 {recv.signed64}")
+print("unsigned64 {recv.unsigned64}")
+print("serial {recv.serial}")

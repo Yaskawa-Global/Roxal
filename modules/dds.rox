@@ -1,0 +1,56 @@
+# Roxal built-in DDS module declarations
+# Functions are linked to native implementations in ModuleDDS.
+
+# Initialize native side (no-op placeholder).
+proc _init():
+  """Initialize DDS module"""
+
+@builtin
+func create_participant(domain_id:int=0, qos:dict={}):
+  """Create a domain participant (default domain_id=0)."""
+
+@builtin
+func create_topic(participant, name:str, msg_type):
+  """Create a topic on the participant for the given IDL message type."""
+
+@builtin
+func create_writer(participant, topic, qos:dict={}):
+  """Create a data writer for the topic."""
+
+@builtin
+func create_reader(participant, topic, qos:dict={}):
+  """Create a data reader for the topic."""
+
+@builtin
+proc close(entity):
+  """Close a DDS entity (participant/topic/reader/writer)."""
+
+@builtin
+proc write(writer, msg):
+  """Publish a message on the writer's topic."""
+
+@builtin
+func read(reader):
+  """Take one sample from the reader's topic and return it (or nil if none available)."""
+
+# Signal helpers
+@builtin
+func create_writer_signal(writer, initial=nil):
+  """Create a source signal tied to a DDS writer; setting the signal publishes a sample."""
+
+@builtin
+func create_reader_signal(reader, initial=nil):
+  """Create a source signal tied to a DDS reader; signal updates when samples arrive."""
+
+# Convenience: create participant/topic/writer/reader and signals in one step.
+# name: topic name, msg_type: IDL struct type (e.g., ComplexTypes.Outer)
+# participant: optional existing participant (nil => create default)
+# qos: optional QoS dict applied to participant/topic/reader/writer creation
+# initial: optional initial value (writer_signal only)
+@builtin
+func writer_signal(name:str, msg_type, participant=nil, qos:dict={}, initial=nil):
+  """Create participant/topic/writer and return a writer signal for msg_type."""
+
+@builtin
+func reader_signal(name:str, msg_type, participant=nil, qos:dict={}, initial=nil):
+  """Create participant/topic/reader and return a reader signal for msg_type."""

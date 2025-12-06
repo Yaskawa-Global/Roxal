@@ -1,0 +1,6 @@
+module ArrayMulti {
+  @appendable
+  struct Msg {
+    long cells[2][3];
+  };
+};

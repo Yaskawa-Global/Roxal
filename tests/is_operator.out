@@ -4,8 +4,8 @@ s is string? true
 'str' is 'str'? true
 s1 is s2? true
 s1 is s3? false
-v1 is v2? false
+v1 is v2? true
 v1 is v3? true
-m1 is m2? false
+m1 is m2? true
 m1 is m3? true
 m3 is matrix? true

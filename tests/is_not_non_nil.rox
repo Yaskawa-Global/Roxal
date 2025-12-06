@@ -1,0 +1,5 @@
+var flag = true
+if flag is not false:
+  print('not false branch')
+else:
+  print('unexpected branch')

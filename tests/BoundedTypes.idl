@@ -1,0 +1,6 @@
+module BoundedTypes {
+  @appendable struct Msg {
+    string<5> name;
+    sequence<long, 2> nums;
+  };
+};

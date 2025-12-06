@@ -1,0 +1,13 @@
+import ArrayMulti
+import dds
+
+p = dds.create_participant()
+t = dds.create_topic(p, "ArrayMultiTopic", ArrayMulti.Msg)
+w = dds.create_writer(p, t)
+r = dds.create_reader(p, t)
+
+var m = ArrayMulti.Msg()
+m.cells = [1, 2, 3, 4, 5, 6]
+dds.write(w, m)
+recv = dds.read(r)
+print("{recv.cells}")

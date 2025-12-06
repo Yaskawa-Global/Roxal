@@ -1,0 +1,13 @@
+import BoundedTypes
+import dds
+
+p = dds.create_participant()
+t = dds.create_topic(p, "BoundTopic", BoundedTypes.Msg)
+w = dds.create_writer(p, t)
+
+m = BoundedTypes.Msg()
+m.name = "okay"
+m.nums = [1, 2]
+
+dds.write(w, m)
+print("bounded write ok")

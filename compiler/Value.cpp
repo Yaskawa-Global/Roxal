@@ -19,6 +19,8 @@
 #include <utility>
 #include <cmath>
 #include <sstream>
+#include <cstring>
+#include <limits>
 
 
 namespace roxal {
@@ -57,7 +59,7 @@ Value VariablesMap::MonitoredValue::ensureSignal(const std::string& signalName)
 
 bool VariablesMap::MonitoredValue::assign(const Value& newValue)
 {
-    if (value.isObj() && newValue.isObj()) {
+    if (value.referenceSemantics() && newValue.referenceSemantics()) {
         if (value.asObj() == newValue.asObj())
             return false;
     } else if (value.equals(newValue)) {
@@ -93,6 +95,24 @@ Value Value::objRef(Obj* o)
     Value v;
     v.val = SignBit | QNAN | uint64_t(uintptr_t(o));
     return v;
+}
+
+namespace {
+inline bool fitsInInt32(int64_t v) {
+    return v >= std::numeric_limits<int32_t>::min() && v <= std::numeric_limits<int32_t>::max();
+}
+}
+
+Value Value::intVal(int64_t i)
+{
+    if (fitsInInt32(i))
+        return Value(static_cast<int32_t>(i));
+    return boxedIntVal(i);
+}
+
+Value Value::boxedIntVal(int64_t i)
+{
+    return Value::objVal(newIntObj(i));
 }
 
 std::string roxal::to_string(ValueType t)
@@ -342,15 +362,21 @@ void Value::unbox() {
     if (!isBoxed()) return;
 
     Obj* obj = asObj();
+    ObjPrimitive* pobj = isObjPrimitive(*this) ? asObjPrimitive(*this) : nullptr;
 
     if (isBool())
-        *this = Value(asObjPrimitive(*this)->as.boolean);
-    else if (isInt())
-        *this = Value(asObjPrimitive(*this)->as.integer);
+        *this = Value(pobj->as.boolean);
+    else if (isInt()) {
+        int64_t v = pobj->as.integer;
+        if (fitsInInt32(v))
+            *this = Value(static_cast<int32_t>(v));
+        else
+            return; // keep boxed for out-of-range values
+    }
     else if (isReal())
-        *this = Value(asObjPrimitive(*this)->as.real);
+        *this = Value(pobj->as.real);
     else if (isType())
-        *this = Value(asObjPrimitive(*this)->as.btype);
+        *this = Value(pobj->as.btype);
     else
         throw std::runtime_error("Unsupported type for auto-unboxing "+typeName());
 
@@ -403,6 +429,16 @@ bool Value::asBool(bool strict) const
         return asFuture(*this)->asValue().asBool(strict);
     if (isSignal(*this))
         return asSignal(*this)->signal->lastValue().asBool(strict);
+    if (isBoxed() && isObjPrimitive(*this)) {
+        auto pobj = asObjPrimitive(*this);
+        if (pobj->isBool())
+            return pobj->as.boolean;
+        if (pobj->isInt()) {
+            if (strict)
+                throw std::invalid_argument("unable to convert int to bool in strict mode");
+            return pobj->as.integer != 0;
+        }
+    }
     Value unboxed;
     const Value* v { this };
     if (isBoxed()) {
@@ -412,6 +448,8 @@ bool Value::asBool(bool strict) const
     }
 
     if (!v->isObj()) {
+        if (v->isNil())
+            throw std::invalid_argument("unable to convert nil to bool");
         switch (v->type()) {
         case ValueType::Bool:
             return v->val == (QNAN | TagTrue);
@@ -457,6 +495,11 @@ uint8_t Value::asByte(bool strict) const
         return asFuture(*this)->asValue().asByte(strict);
     if (isSignal(*this))
         return asSignal(*this)->signal->lastValue().asByte(strict);
+    if (isBoxed() && isObjPrimitive(*this) && asObjPrimitive(*this)->isInt()) {
+        if (strict)
+            throw std::invalid_argument("unable to convert int to byte in strict mode");
+        return static_cast<uint8_t>(asObjPrimitive(*this)->as.integer);
+    }
     Value unboxed;
     Value const* v { this };
     if (isBoxed()) {
@@ -466,6 +509,8 @@ uint8_t Value::asByte(bool strict) const
     }
 
     if (!v->isObj()) {
+        if (v->isNil())
+            throw std::invalid_argument("unable to convert nil to byte");
         switch (v->type()) {
         case ValueType::Byte:
             return uint8_t(v->val & 0xff);
@@ -510,7 +555,7 @@ uint8_t Value::asByte(bool strict) const
 }
 
 
-int32_t Value::asInt(bool strict) const
+int64_t Value::asInt(bool strict) const
 {
     if (isFuture(*this))
         return asFuture(*this)->asValue().asInt(strict);
@@ -519,21 +564,28 @@ int32_t Value::asInt(bool strict) const
     Value unboxed;
     Value const* v { this };
     if (isBoxed()) {
+        if (isObjPrimitive(*this) && asObjPrimitive(*this)->isInt())
+            return asObjPrimitive(*this)->as.integer;
         unboxed = *this;
         unboxed.unbox();
         v = &unboxed;
     }
 
     if (!v->isObj()) {
+        if (v->isNil())
+            throw std::invalid_argument("unable to convert nil to int");
         switch (v->type()) {
         case ValueType::Enum: return int32_t(asEnum());
         case ValueType::Byte: return int32_t(uint8_t(v->val & 0xff));
-        case ValueType::Int: { uint64_t i {v->val & ~(QNAN | TypeTag)} ; return *reinterpret_cast<int32_t*>(&i); }
+        case ValueType::Int: {
+            uint64_t i {v->val & ~(QNAN | TypeTag)} ;
+            return *reinterpret_cast<int32_t*>(&i);
+        }
         case ValueType::Real:
             if (!strict) {
                 uint64_t bits = v->val.load();
                 double d = *reinterpret_cast<double*>(&bits);
-                return int32_t(d);
+                return static_cast<int64_t>(d);
             }
             throw std::invalid_argument("unable to convert real to int in strict mode");
         case ValueType::Bool: return (v->val == (QNAN | TagTrue)) ? 1 : 0;
@@ -546,13 +598,13 @@ int32_t Value::asInt(bool strict) const
                 auto str { toUTF8StdString(asStringObj(*v)->s) };
                 if ((str.size() > 2) && (str[0] == '0')) {
                     if (str[1] == 'x' || str[1]=='X')
-                        return std::stol(str.substr(2),nullptr,16);
+                        return std::stoll(str.substr(2),nullptr,16);
                     else if (str[1] == 'b' || str[1]=='B')
-                        return std::stol(str.substr(2),nullptr,2);
+                        return std::stoll(str.substr(2),nullptr,2);
                     else if (str[1] == 'o' || str[1]=='O')
-                        return std::stol(str.substr(2),nullptr,8);
+                        return std::stoll(str.substr(2),nullptr,8);
                 }
-                return std::stol(str,nullptr,10);
+                return std::stoll(str,nullptr,10);
             } catch(...) { return 0; }
         }
     }
@@ -577,6 +629,13 @@ double Value::asReal(bool strict) const
         return asFuture(*this)->asValue().asReal(strict);
     if (isSignal(*this))
         return asSignal(*this)->signal->lastValue().asReal(strict);
+    if (isBoxed() && isObjPrimitive(*this)) {
+        auto pobj = asObjPrimitive(*this);
+        if (pobj->isReal())
+            return pobj->as.real;
+        if (pobj->isInt())
+            return static_cast<double>(pobj->as.integer);
+    }
     Value unboxed;
     Value const* v { this };
     if (isBoxed()) {
@@ -586,6 +645,8 @@ double Value::asReal(bool strict) const
     }
 
     if (!v->isObj()) {
+        if (v->isNil())
+            throw std::invalid_argument("unable to convert nil to real");
         switch (v->type()) {
         case ValueType::Real:
             {
@@ -696,10 +757,10 @@ bool Value::equals(const Value& rhs, bool strict) const
     // Fast path for same primitive types
     if (isBool())
         return rhs.isBool() && asBool() == rhs.asBool();
-    else if (isInt())
-        return rhs.isInt() && asInt() == rhs.asInt();
-    else if (isReal())
-        return rhs.isReal() && asReal() == rhs.asReal();
+    else if (type() == ValueType::Int && rhs.type() == ValueType::Int)
+        return asInt() == rhs.asInt();
+    else if (type() == ValueType::Real && rhs.type() == ValueType::Real)
+        return asReal() == rhs.asReal();
     else if (isType())
         return rhs.isType() && asType() == rhs.asType();
     else if (isEnum())
@@ -707,8 +768,10 @@ bool Value::equals(const Value& rhs, bool strict) const
     else if (isString(*this))
         return objsEqual(*this, rhs); // compares strings intelligently (e.g. using immutability & hash)
 
-    // Handle mixed numeric type comparisons
-    else if (isNumber() && rhs.isNumber()) {
+    // Handle mixed numeric type comparisons (including boxed primitives)
+    else if (isNumber() || rhs.isNumber() ||
+             type() == ValueType::Int || rhs.type() == ValueType::Int ||
+             type() == ValueType::Real || rhs.type() == ValueType::Real) {
         ValueType compType(binaryOpType(*this, rhs));
         switch(compType) {
             case ValueType::Int:  return asInt() == rhs.asInt();
@@ -718,6 +781,8 @@ bool Value::equals(const Value& rhs, bool strict) const
     }
     // Vector comparisons
     else if (isVector(*this) && isVector(rhs)) {
+        if (asObj() == rhs.asObj())
+            return true;
         // Deep equality for vectors - compare elements
         return asVector(*this)->equals(asVector(rhs));
     }
@@ -757,6 +822,8 @@ bool Value::equals(const Value& rhs, bool strict) const
     }
     // Matrix comparisons
     else if (isMatrix(*this) && isMatrix(rhs)) {
+        if (asObj() == rhs.asObj())
+            return true;
         // Deep equality for matrices - compare elements
         return asMatrix(*this)->equals(asMatrix(rhs));
     }
@@ -811,8 +878,10 @@ bool Value::equals(const Value& rhs, bool strict) const
     else if (isDict(*this) && isDict(rhs)) {
         return asDict(*this)->equals(asDict(rhs));
     }
-    else if (isObj()) {
-        if (!rhs.isObj())
+    else if (referenceSemantics() || rhs.referenceSemantics()) {
+        if (!(referenceSemantics() && rhs.referenceSemantics()))
+            return false;
+        if (!isObj() || !rhs.isObj())
             return false;
         if (!isAlive() || !rhs.isAlive())
             return false;
@@ -884,8 +953,11 @@ bool Value::is(const Value& rhs, bool strict) const
             return asTypeSpec(*this)->typeValue == rhs.asType();
         return type() == rhs.asType();
     }
-    else if (isObj()) // reference value identity
-        return rhs.isObj() && (asObj() == rhs.asObj()); // same ptr/address
+    else if (referenceSemantics() || rhs.referenceSemantics()) { // reference value identity
+        if (!(referenceSemantics() && rhs.referenceSemantics()))
+            return false;
+        return isObj() && rhs.isObj() && (asObj() == rhs.asObj()); // same ptr/address
+    }
 
     // assume builtin value types, use equality
     return equals(rhs, strict);
@@ -894,6 +966,29 @@ bool Value::is(const Value& rhs, bool strict) const
 bool Value::operator==(const Value& rhs) const
 {
     return equals(rhs, false); // Default to non-strict mode
+}
+
+size_t Value::hash() const {
+    if (isBoxed() && isObjPrimitive(*this)) {
+        auto p = asObjPrimitive(*this);
+        switch (p->type) {
+            case ObjType::Bool:
+                return std::hash<bool>{}(p->as.boolean);
+            case ObjType::Int:
+                return std::hash<int64_t>{}(p->as.integer);
+            case ObjType::Real: {
+                uint64_t bits = 0;
+                static_assert(sizeof(bits) == sizeof(double), "double size unexpected");
+                std::memcpy(&bits, &p->as.real, sizeof(bits));
+                return std::hash<uint64_t>{}(bits);
+            }
+            case ObjType::Type:
+                return std::hash<int>{}(static_cast<int>(p->as.btype));
+            default:
+                break;
+        }
+    }
+    return size_t(val.load());
 }
 
 
@@ -1277,8 +1372,11 @@ Value roxal::toType(ValueType t, Value v, bool strict)
     }
     else {
         auto pobj = asObjPrimitive(v);
-        if (pobj->valueType() == t)
+        if (pobj->valueType() == t) {
+            if (t == ValueType::Int && fitsInInt32(pobj->as.integer))
+                return Value::intVal(pobj->as.integer);
             return v;
+        }
         Value unboxedv { v };
         unboxedv.unbox();
         return toType(t, unboxedv, strict);
@@ -1430,9 +1528,9 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
         if (isSignal(arg0)) {
             Value sample = asSignal(arg0)->signal->lastValue();
             if (sample.type() == type) {
-                // If the sampled value is an object, make a fresh copy via its constructor;
-                // otherwise return the primitive value directly.
-                if (sample.isObj()) {
+                // If the sampled value has value semantics and is an object, make a fresh copy via its constructor;
+                // otherwise return the sampled value directly.
+                if (sample.isObj() && sample.valueSemantics()) {
                     std::vector<Value> sampleArg{sample};
                     return construct(type, sampleArg.begin(), sampleArg.end());
                 }
@@ -1649,16 +1747,19 @@ ValueType roxal::binaryOpType(Value l, Value r)
     // Determine result builtin type of numeric/bool binary operations
     // according to conversions.md.
 
+    auto lt = l.type();
+    auto rt = r.type();
+
     // bool op bool -> bool
-    if (l.isBool() && r.isBool())
+    if (lt == ValueType::Bool && rt == ValueType::Bool)
         return ValueType::Bool;
 
     // Decimal has highest precedence after bool/bool
-    if (l.type() == ValueType::Decimal || r.type() == ValueType::Decimal)
+    if (lt == ValueType::Decimal || rt == ValueType::Decimal)
         return ValueType::Decimal;
 
     // Next is real if either operand is real
-    if (l.isReal() || r.isReal())
+    if (lt == ValueType::Real || rt == ValueType::Real)
         return ValueType::Real;
 
     // All remaining numeric combinations yield int
@@ -1681,8 +1782,13 @@ bool roxal::isTruthy(const Value& v)
 
 Value roxal::negate(Value v)
 {
-    if (v.isInt() || v.isByte())
-        return Value::intVal(-v.asInt());
+    if (v.isInt() || v.isByte()) {
+        int64_t res;
+        int64_t val = v.asInt();
+        if (__builtin_sub_overflow(int64_t(0), val, &res))
+            throw std::overflow_error("integer negation overflow");
+        return Value::intVal(res);
+    }
     else if (v.isReal())
         return Value::realVal(-v.asReal());
     else if (isVector(v)) {
@@ -1698,7 +1804,7 @@ Value roxal::negate(Value v)
     else if (v.isBool())
         return Value::boolVal(!v.asBool());
     else if (v.isNil())
-        return Value::boolVal(true);
+        throw std::invalid_argument("unable to convert nil to bool");
 
     // TODO: decimal
 
@@ -1779,7 +1885,12 @@ Value roxal::add(Value l, Value r)
     if (l.isNumber() && r.isNumber()) {
         ValueType resultType(binaryOpType(l,r));
         switch (resultType) {
-            case ValueType::Int: return Value::intVal(l.asInt()+r.asInt());
+            case ValueType::Int: {
+                int64_t res;
+                if (__builtin_add_overflow(l.asInt(), r.asInt(), &res))
+                    throw std::overflow_error("integer addition overflow");
+                return Value::intVal(res);
+            }
             case ValueType::Real: return Value::realVal(l.asReal()+r.asReal());
             case ValueType::Byte: return Value::byteVal(l.asByte()+r.asByte());
             //... decimal
@@ -1861,7 +1972,12 @@ Value roxal::subtract(Value l, Value r)
 
     ValueType resultType(binaryOpType(l,r));
     switch (resultType) {
-        case ValueType::Int: return Value::intVal(l.asInt()-r.asInt());
+        case ValueType::Int: {
+            int64_t res;
+            if (__builtin_sub_overflow(l.asInt(), r.asInt(), &res))
+                throw std::overflow_error("integer subtraction overflow");
+            return Value::intVal(res);
+        }
         case ValueType::Real: return Value::realVal(l.asReal()-r.asReal());
         case ValueType::Byte: return Value::byteVal(l.asByte()-r.asByte());
         //... decimal
@@ -1942,7 +2058,12 @@ Value roxal::multiply(Value l, Value r)
 
     ValueType resultType(binaryOpType(l,r));
     switch (resultType) {
-        case ValueType::Int: return Value::intVal(l.asInt()*r.asInt());
+        case ValueType::Int: {
+            int64_t res;
+            if (__builtin_mul_overflow(l.asInt(), r.asInt(), &res))
+                throw std::overflow_error("integer multiplication overflow");
+            return Value::intVal(res);
+        }
         case ValueType::Real: return Value::realVal(l.asReal()*r.asReal());
         case ValueType::Byte: return Value::byteVal(l.asByte()*r.asByte());
         //... decimal
@@ -1970,7 +2091,15 @@ Value roxal::divide(Value l, Value r)
 
     ValueType resultType(binaryOpType(l,r));
     switch (resultType) {
-        case ValueType::Int: return Value::intVal(l.asInt()/r.asInt());
+        case ValueType::Int: {
+            int64_t lhs = l.asInt();
+            int64_t rhs = r.asInt();
+            if (rhs == 0)
+                throw std::invalid_argument("Divide by 0");
+            if (lhs == std::numeric_limits<int64_t>::min() && rhs == -1)
+                throw std::overflow_error("integer division overflow");
+            return Value::intVal(lhs / rhs);
+        }
         case ValueType::Real: return Value::realVal(l.asReal()/r.asReal());
         case ValueType::Byte: return Value::byteVal(l.asByte()/r.asByte());
         //... decimal
@@ -1993,8 +2122,10 @@ Value roxal::mod(Value l, Value r)
     if (!r.isNumber() && !r.isBool())
         throw std::invalid_argument("RHS must be an integer");
 
-    int32_t lhs = toType(ValueType::Int, l, false).asInt();
-    int32_t rhs = toType(ValueType::Int, r, false).asInt();
+    int64_t lhs = toType(ValueType::Int, l, false).asInt();
+    int64_t rhs = toType(ValueType::Int, r, false).asInt();
+    if (rhs == 0)
+        throw std::invalid_argument("Divide by 0");
     return Value::intVal(lhs % rhs);
 }
 
@@ -2135,9 +2266,9 @@ Value roxal::band(Value l, Value r)
         if (l.isByte() && r.isByte())
             return Value::byteVal(l.asByte(false) & r.asByte(false));
 
-        uint32_t lhs = static_cast<uint32_t>(toType(ValueType::Int, l, false).asInt());
-        uint32_t rhs = static_cast<uint32_t>(toType(ValueType::Int, r, false).asInt());
-        return Value::intVal(static_cast<int32_t>(lhs & rhs));
+        int64_t lhs = toType(ValueType::Int, l, false).asInt();
+        int64_t rhs = toType(ValueType::Int, r, false).asInt();
+        return Value::intVal(lhs & rhs);
     }
 
     throw std::invalid_argument("Operands must be bool, byte, int or dict");
@@ -2176,9 +2307,9 @@ Value roxal::bor(Value l, Value r)
         if (l.isByte() && r.isByte())
             return Value::byteVal(l.asByte(false) | r.asByte(false));
 
-        uint32_t lhs = static_cast<uint32_t>(toType(ValueType::Int, l, false).asInt());
-        uint32_t rhs = static_cast<uint32_t>(toType(ValueType::Int, r, false).asInt());
-        return Value::intVal(static_cast<int32_t>(lhs | rhs));
+        int64_t lhs = toType(ValueType::Int, l, false).asInt();
+        int64_t rhs = toType(ValueType::Int, r, false).asInt();
+        return Value::intVal(lhs | rhs);
     }
 
     throw std::invalid_argument("Operands must be bool, byte, int or dict");
@@ -2200,9 +2331,9 @@ Value roxal::bxor(Value l, Value r)
         if (l.isByte() && r.isByte())
             return Value::byteVal(l.asByte(false) ^ r.asByte(false));
 
-        uint32_t lhs = static_cast<uint32_t>(toType(ValueType::Int, l, false).asInt());
-        uint32_t rhs = static_cast<uint32_t>(toType(ValueType::Int, r, false).asInt());
-        return Value::intVal(static_cast<int32_t>(lhs ^ rhs));
+        int64_t lhs = toType(ValueType::Int, l, false).asInt();
+        int64_t rhs = toType(ValueType::Int, r, false).asInt();
+        return Value::intVal(lhs ^ rhs);
     }
 
     throw std::invalid_argument("Operands must be bool, byte or int");
@@ -2219,8 +2350,8 @@ Value roxal::bnot(Value v)
     if (v.isByte())
         return Value::byteVal(~v.asByte(false));
     if (v.isInt()) {
-        uint32_t val = static_cast<uint32_t>(v.asInt());
-        return Value::intVal(static_cast<int32_t>(~val));
+        int64_t val = v.asInt();
+        return Value::intVal(~val);
     }
 
     throw std::invalid_argument("Operand must be bool, byte or int");
