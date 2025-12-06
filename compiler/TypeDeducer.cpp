@@ -308,6 +308,14 @@ std::any TypeDeducer::visit(ptr<ast::TryStatement> ast)
     return results;
 }
 
+std::any TypeDeducer::visit(ptr<ast::MatchStatement> ast)
+{
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    // TODO: Add type checking for match patterns and exhaustiveness checking for enums
+    return results;
+}
+
 std::any TypeDeducer::visit(ptr<ast::RaiseStatement> ast)
 {
     ast::Anys results {};

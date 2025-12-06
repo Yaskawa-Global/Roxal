@@ -69,6 +69,7 @@ compound_stmt
  | emit_stmt
  | raise_stmt
  | try_stmt
+ | match_stmt
 //  | with_stmt
 ;
 
@@ -124,6 +125,23 @@ except_clause
 
 finally_clause
  : FINALLY ':' suite
+ ;
+
+
+match_stmt
+ : MATCH expression ':' NEWLINE INDENT match_case+ default_case? DEDENT
+ ;
+
+match_case
+ : CASE case_pattern (',' case_pattern)* ':' suite
+ ;
+
+case_pattern
+ : range
+ ;
+
+default_case
+ : DEFAULT ':' suite
  ;
 
 
@@ -474,6 +492,9 @@ FINALLY: 'finally';
 RAISE: 'raise';
 AS: 'as';
 UNTIL: 'until';
+MATCH: 'match';
+CASE: 'case';
+DEFAULT: 'default';
 
 
 NEWLINE : ( '\r'? '\n' | '\r' | '\f' ) SPACES?;

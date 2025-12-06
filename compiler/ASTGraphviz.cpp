@@ -417,6 +417,24 @@ std::any ASTGraphviz::visit(ptr<ast::TryStatement> ast)
     return {};
 }
 
+std::any ASTGraphviz::visit(ptr<ast::MatchStatement> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+    if (ast->defaultCase.has_value())
+        addLink(name, stackPop(), "default");
+    for(auto it = ast->cases.rbegin(); it != ast->cases.rend(); ++it) {
+        addLink(name, stackPop(), "suite");
+        for(size_t i = 0; i < it->first.size(); ++i)
+            addLink(name, stackPop(), "pattern");
+    }
+    addLink(name, stackPop(), "expr");
+    nodes[name] = node(name, "match");
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
 std::any ASTGraphviz::visit(ptr<ast::RaiseStatement> ast)
 {
     startVisit();

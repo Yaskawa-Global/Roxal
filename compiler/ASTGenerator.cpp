@@ -717,6 +717,9 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
         else if (is<TryStatement>(compound)) {
             stmt = as<TryStatement>(compound);
         }
+        else if (is<MatchStatement>(compound)) {
+            stmt = as<MatchStatement>(compound);
+        }
         else if (is<RaiseStatement>(compound)) {
             stmt = as<RaiseStatement>(compound);
         }
@@ -791,6 +794,8 @@ std::any ASTGenerator::visitCompound_stmt(RoxalParser::Compound_stmtContext *con
         return visitEmit_stmt(context->emit_stmt());
     else if (context->try_stmt())
         return visitTry_stmt(context->try_stmt());
+    else if (context->match_stmt())
+        return visitMatch_stmt(context->match_stmt());
     else if (context->raise_stmt())
         return visitRaise_stmt(context->raise_stmt());
     else
@@ -977,6 +982,65 @@ std::any ASTGenerator::visitTry_stmt(RoxalParser::Try_stmtContext *context)
 
     return typeValue(tryStmt);
     visitEnd();
+}
+
+std::any ASTGenerator::visitMatch_stmt(RoxalParser::Match_stmtContext *context)
+{
+    visitStart();
+
+    ptr<MatchStatement> matchStmt = make_ptr<MatchStatement>();
+    setSourceInfo(matchStmt, context);
+
+    // Get the match expression
+    matchStmt->matchExpr = as<Expression>(visitExpression(context->expression()));
+
+    // Process each case
+    for (size_t i = 0; i < context->match_case().size(); ++i) {
+        auto caseCtx = context->match_case(i);
+
+        // Get all patterns for this case
+        std::vector<ptr<ast::Expression>> patterns;
+        for (size_t j = 0; j < caseCtx->case_pattern().size(); ++j) {
+            auto patternCtx = caseCtx->case_pattern(j);
+            patterns.push_back(as<Expression>(visitExpression(patternCtx->expression())));
+        }
+
+        // Get the suite for this case
+        ptr<ast::Suite> suite = as<Suite>(visitSuite(caseCtx->suite()));
+
+        matchStmt->cases.push_back({patterns, suite});
+    }
+
+    // Process default case if present
+    if (context->default_case())
+        matchStmt->defaultCase = as<Suite>(visitSuite(context->default_case()->suite()));
+
+    return typeValue(matchStmt);
+    visitEnd();
+}
+
+std::any ASTGenerator::visitMatch_case(RoxalParser::Match_caseContext *context)
+{
+    // This is handled by visitMatch_stmt
+    visitStart();
+    visitEnd();
+    return {};
+}
+
+std::any ASTGenerator::visitCase_pattern(RoxalParser::Case_patternContext *context)
+{
+    // This is handled by visitMatch_stmt
+    visitStart();
+    visitEnd();
+    return {};
+}
+
+std::any ASTGenerator::visitDefault_case(RoxalParser::Default_caseContext *context)
+{
+    // This is handled by visitMatch_stmt
+    visitStart();
+    visitEnd();
+    return {};
 }
 
 std::any ASTGenerator::visitRaise_stmt(RoxalParser::Raise_stmtContext *context)

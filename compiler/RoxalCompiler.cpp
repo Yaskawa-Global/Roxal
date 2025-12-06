@@ -1889,6 +1889,153 @@ std::any RoxalCompiler::visit(ptr<ast::TryStatement> ast)
     return {};
 }
 
+std::any RoxalCompiler::visit(ptr<ast::MatchStatement> ast)
+{
+    currentNode = ast;
+
+    // Evaluate the match expression once and keep it on the stack
+    ast->matchExpr->accept(*this);
+
+    std::vector<size_t> endJumps;  // Jumps to end of match statement
+
+    // Process each case
+    for (const auto& [patterns, suite] : ast->cases) {
+        std::vector<size_t> caseMatchJumps;  // Jumps to this case's body when pattern matches
+
+        // Test each pattern in the case (OR logic - any pattern can match)
+        for (const auto& pattern : patterns) {
+            // Duplicate the match value for comparison
+            emitByte(OpCode::Dup);
+
+            // Check if pattern is a range
+            if (auto range = dynamic_ptr_cast<ast::Range>(pattern)) {
+                // Range matching for integral types
+                bool hasStart = (range->start != nullptr);
+                bool hasStop = (range->stop != nullptr);
+
+                if (hasStart && hasStop) {
+                    // Full range: start..stop or start:stop
+                    // We need: (value >= start) and (value <= stop) [or < stop if half-open]
+
+                    // Check lower bound: value >= start
+                    emitByte(OpCode::Dup);
+                    range->start->accept(*this);
+                    emitByte(OpCode::Less);
+                    emitByte(OpCode::Negate);
+
+                    // Short-circuit if lower bound fails
+                    auto lowerFail = emitJump(OpCode::JumpIfFalse);
+                    emitByte(OpCode::Pop);  // Pop the true from lower bound check
+
+                    // Check upper bound: value <= stop (or < stop if half-open)
+                    emitByte(OpCode::Dup);
+                    range->stop->accept(*this);
+                    if (range->closed) {
+                        emitByte(OpCode::Greater);
+                        emitByte(OpCode::Negate);
+                    } else {
+                        emitByte(OpCode::Less);
+                    }
+
+                    // If upper bound passes, we have a match
+                    caseMatchJumps.push_back(emitJump(OpCode::JumpIfTrue));
+                    emitByte(OpCode::Pop);  // Pop the comparison result
+
+                    // Upper bound failed, skip to clean up
+                    auto skipCleanup = emitJump(OpCode::Jump);
+
+                    // Lower bound failed
+                    patchJump(lowerFail);
+                    emitByte(OpCode::Pop);  // Pop the false from lower bound
+
+                    patchJump(skipCleanup);
+                    emitByte(OpCode::Pop);  // Pop the duplicated match value
+
+                } else if (hasStart) {
+                    // Only lower bound: start.. or start:
+                    // Check: value >= start
+                    range->start->accept(*this);
+                    emitByte(OpCode::Less);
+                    emitByte(OpCode::Negate);
+                    caseMatchJumps.push_back(emitJump(OpCode::JumpIfTrue));
+                    emitByte(OpCode::Pop);
+
+                } else if (hasStop) {
+                    // Only upper bound: ..stop or :stop
+                    // Check: value <= stop (or < stop if half-open)
+                    range->stop->accept(*this);
+                    if (range->closed) {
+                        emitByte(OpCode::Greater);
+                        emitByte(OpCode::Negate);
+                    } else {
+                        emitByte(OpCode::Less);
+                    }
+                    caseMatchJumps.push_back(emitJump(OpCode::JumpIfTrue));
+                    emitByte(OpCode::Pop);
+
+                } else {
+                    // No bounds: .. or : (matches everything)
+                    emitByte(OpCode::Pop);  // Pop the duplicated match value
+                    emitByte(OpCode::ConstTrue);
+                    caseMatchJumps.push_back(emitJump(OpCode::JumpIfTrue));
+                    emitByte(OpCode::Pop);
+                }
+
+            } else {
+                // Regular value matching: check equality
+                pattern->accept(*this);
+                emitByte(OpCode::Equal);
+                caseMatchJumps.push_back(emitJump(OpCode::JumpIfTrue));
+                emitByte(OpCode::Pop);  // Pop the false comparison result
+            }
+        }
+
+        // No pattern matched this case, skip to next case
+        auto skipCase = emitJump(OpCode::Jump);
+
+        // Patch all match jumps to here (case body entry point)
+        for (auto jump : caseMatchJumps) {
+            patchJump(jump);
+        }
+
+        // Pop the true value from the successful pattern match
+        emitByte(OpCode::Pop);
+
+        // Pop the original match value (consumed by this case)
+        emitByte(OpCode::Pop);
+
+        // Compile case body in its own scope
+        enterLocalScope();
+        suite->accept(*this);
+        exitLocalScope();
+
+        // Jump to end of match statement (no fallthrough between cases)
+        endJumps.push_back(emitJump(OpCode::Jump));
+
+        // Patch skip jump to continue to next case
+        // (match value is still on stack for next case to test)
+        patchJump(skipCase);
+    }
+
+    // Default case or just pop the match value if no default
+    if (ast->defaultCase.has_value()) {
+        emitByte(OpCode::Pop);  // Pop the match value
+        enterLocalScope();
+        ast->defaultCase.value()->accept(*this);
+        exitLocalScope();
+    } else {
+        // No default case and no match - just pop the match value
+        emitByte(OpCode::Pop);
+    }
+
+    // Patch all end jumps to here
+    for (auto jump : endJumps) {
+        patchJump(jump);
+    }
+
+    return {};
+}
+
 std::any RoxalCompiler::visit(ptr<ast::RaiseStatement> ast)
 {
     currentNode = ast;
