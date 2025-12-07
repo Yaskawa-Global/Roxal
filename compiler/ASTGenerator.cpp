@@ -1002,7 +1002,7 @@ std::any ASTGenerator::visitMatch_stmt(RoxalParser::Match_stmtContext *context)
         std::vector<ptr<ast::Expression>> patterns;
         for (size_t j = 0; j < caseCtx->case_pattern().size(); ++j) {
             auto patternCtx = caseCtx->case_pattern(j);
-            patterns.push_back(as<Expression>(visitExpression(patternCtx->expression())));
+            patterns.push_back(as<Expression>(visitRange(patternCtx->range())));
         }
 
         // Get the suite for this case
@@ -2267,10 +2267,9 @@ std::any ASTGenerator::visitRange(RoxalParser::RangeContext *context)
             range->step = as<Expression>(visitExpression(context->expression()));
     }
     else if (expressionOnly) { // simple single index expr
-        // equivelent to range [n..n]
-        range->closed = true;
-        range->start = as<Expression>(visitExpression(context->expression()));
-        range->stop = range->start;
+        // For match patterns, return the expression directly instead of wrapping in Range
+        // (In indexing contexts, this gets converted to range [n..n] later if needed)
+        return visitExpression(context->expression());
     }
     else
         throw std::runtime_error("Unexpected range alternative");

@@ -363,6 +363,72 @@ for [k,v] in d:  // keys and values of dict d
   print("k={k} v={v})
 ```
 
+### Match Statement
+
+The `match` statement provides pattern matching similar to Python's match or C's switch. It works with any type and supports multiple patterns per case, range matching for numeric types, and a default case.
+
+```php
+// Simple value matching
+func get_name(n :int) -> str:
+  match n:
+    case 1:
+      return "one"
+    case 2:
+      return "two"
+    case 3:
+      return "three"
+    default:
+      return "other"
+
+print(get_name(2))  // "two"
+print(get_name(5))  // "other"
+
+// Multiple patterns per case
+func classify(n :int) -> str:
+  match n:
+    case 1, 2, 3:
+      return "small"
+    case 10, 20, 30:
+      return "large"
+    default:
+      return "medium"
+
+print(classify(2))   // "small"
+print(classify(15))  // "medium"
+
+// Range matching with naked ranges (like indexing)
+func age_group(age :int) -> str:
+  match age:
+    case 0..12:        // closed range (0 to 12 inclusive)
+      return "child"
+    case 13..19:       // 13 to 19 inclusive
+      return "teen"
+    case 20..64:       // 20 to 64 inclusive
+      return "adult"
+    case 65..:         // 65 and above (open-ended)
+      return "senior"
+    default:
+      return "unknown"
+
+print(age_group(5))   // "child"
+print(age_group(15))  // "teen"
+print(age_group(70))  // "senior"
+
+// String matching
+func handle_command(cmd :str) -> str:
+  match cmd:
+    case "start", "begin":
+      return "starting"
+    case "stop", "end":
+      return "stopping"
+    default:
+      return "unknown command"
+
+print(handle_command("start"))  // "starting"
+print(handle_command("end"))    // "stopping"
+```
+
+Match cases are evaluated in order. The first matching case executes and then control exits the match statement. Ranges in case patterns use the same syntax as indexing: `..` for closed ranges, `..<` for half-open ranges, `:` for Python-style slicing. Start or end can be omitted for open-ended ranges.
 
 
 ## Modules

@@ -1,0 +1,18 @@
+# Test repeated calls
+
+func test_simple(x: int) -> str:
+    match x:
+        case 1:
+            return "one"
+        case 2:
+            return "two"
+        case 3:
+            return "three"
+        default:
+            return "other"
+
+print("Call 1: " + test_simple(1))
+print("Call 2: " + test_simple(2))
+print("Call 3: " + test_simple(5))
+print("Call 4: " + test_simple(3))
+print("Call 5: " + test_simple(1))

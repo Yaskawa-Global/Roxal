@@ -1,0 +1,72 @@
+# Test match statement implementation
+
+# Test 1: Simple value matching
+func test_simple_match(x: int) -> str:
+    match x:
+        case 1:
+            return "one"
+        case 2:
+            return "two"
+        case 3:
+            return "three"
+        default:
+            return "other"
+
+print("Test 1: Simple matching")
+print("  1 -> " + test_simple_match(1))
+print("  2 -> " + test_simple_match(2))
+print("  5 -> " + test_simple_match(5))
+
+# Test 2: Multiple patterns per case
+func test_multiple_patterns(x: int) -> str:
+    match x:
+        case 1, 2, 3:
+            return "small"
+        case 10, 20, 30:
+            return "large"
+        default:
+            return "medium"
+
+print("\nTest 2: Multiple patterns")
+print("  1 -> " + test_multiple_patterns(1))
+print("  2 -> " + test_multiple_patterns(2))
+print("  10 -> " + test_multiple_patterns(10))
+print("  5 -> " + test_multiple_patterns(5))
+
+# Test 3: Range matching
+func test_range_match(age: int) -> str:
+    match age:
+        case 0..12:
+            return "child"
+        case 13..19:
+            return "teen"
+        case 20..64:
+            return "adult"
+        case 65..:
+            return "senior"
+        default:
+            return "unknown"
+
+print("\nTest 3: Range matching")
+print("  5 -> " + test_range_match(5))
+print("  15 -> " + test_range_match(15))
+print("  35 -> " + test_range_match(35))
+print("  70 -> " + test_range_match(70))
+print("  -1 -> " + test_range_match(-1))
+
+# Test 4: String matching
+func test_string_match(cmd: str) -> str:
+    match cmd:
+        case "start", "begin":
+            return "starting"
+        case "stop", "end":
+            return "stopping"
+        default:
+            return "unknown command"
+
+print("\nTest 4: String matching")
+print("  'start' -> " + test_string_match("start"))
+print("  'end' -> " + test_string_match("end"))
+print("  'pause' -> " + test_string_match("pause"))
+
+print("\nAll tests completed!")
