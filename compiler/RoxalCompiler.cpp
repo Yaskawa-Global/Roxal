@@ -2036,6 +2036,54 @@ std::any RoxalCompiler::visit(ptr<ast::MatchStatement> ast)
     return {};
 }
 
+std::any RoxalCompiler::visit(ptr<ast::WithStatement> ast)
+{
+    currentNode = ast;
+
+    // The TypeDeducer should have set contextKind and contextType
+    if (ast->contextKind == ast::WithStatement::Unknown || !ast->contextType.has_value()) {
+        error("with statement context type not determined by type deducer");
+    }
+
+    // Evaluate the context expression (before entering local scope)
+    // This puts the value on the stack
+    ast->contextExpr->accept(*this);
+
+    // Enter a new scope for the with block
+    enterLocalScope();
+
+    // Add a hidden local to hold the context value (which is already on the stack)
+    icu::UnicodeString contextVarName = UnicodeString("__with_ctx__");
+    addLocal(contextVarName);
+
+    // Mark the local as initialized (value is already on stack from contextExpr evaluation)
+    asFuncScope(funcScope())->locals.back().depth = asFuncScope(funcScope())->scopeDepth;
+
+    // Get the stack slot where the context is stored
+    int16_t contextSlot = resolveLocal(funcScope(), contextVarName);
+    if (contextSlot == -1) {
+        error("internal error: with context local not found");
+    }
+
+    // Push the with context onto the stack for name resolution
+    WithContext ctx;
+    ctx.kind = ast->contextKind;
+    ctx.type = ast->contextType.value();
+    ctx.stackSlot = static_cast<uint16_t>(contextSlot);
+    withContextStack.push_back(ctx);
+
+    // Compile the body with the context available
+    ast->body->accept(*this);
+
+    // Pop the with context
+    withContextStack.pop_back();
+
+    // Exit the scope (this will clean up the local variable)
+    exitLocalScope();
+
+    return {};
+}
+
 std::any RoxalCompiler::visit(ptr<ast::RaiseStatement> ast)
 {
     currentNode = ast;
@@ -4149,6 +4197,77 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
         arg = upValueArg;
         getOp = OpCode::GetUpvalue;
         setOp = OpCode::SetUpvalue;
+    }
+
+    // Check with context stack for naked enum labels or object/actor members
+    if (!found && !withContextStack.empty()) {
+        const auto& ctx = withContextStack.back();
+
+        if (ctx.kind == ast::WithStatement::EnumType) {
+            // Check if name matches an enum label
+            if (ctx.type->enumer.has_value()) {
+                const auto& enumType = ctx.type->enumer.value();
+                for (const auto& [label, value] : enumType.values) {
+                    if (label == name) {
+                        if (assign)
+                            error("Cannot assign to enum label '" + toUTF8StdString(name) + "'");
+                        if (asSignal)
+                            error("Enum labels cannot be used as signals");
+
+                        // Load the enum type from the with context
+                        emitOpArgsBytes(OpCode::GetLocal, ctx.stackSlot);
+                        // Create the enum value (type + label)
+                        uint16_t labelConstant = identifierConstant(name);
+                        emitOpArgsBytes(OpCode::GetProp, labelConstant, toUTF8StdString(name));
+                        return true;
+                    }
+                }
+            }
+        }
+        else if (ctx.kind == ast::WithStatement::ObjectType || ctx.kind == ast::WithStatement::ActorType) {
+            // Check if name matches an object/actor property or method
+            if (ctx.type->obj.has_value()) {
+                const auto& objType = ctx.type->obj.value();
+
+                // Check properties
+                for (const auto& prop : objType.properties) {
+                    if (prop.name == name) {
+                        if (asSignal)
+                            error("'changes' requires a module variable binding; use a signal expression instead");
+
+                        // Load the instance from the with context
+                        // Then access the property
+                        uint16_t propConstant = identifierConstant(name);
+                        if (!assign) {
+                            emitOpArgsBytes(OpCode::GetLocal, ctx.stackSlot);
+                            emitOpArgsBytes(OpCode::GetProp, propConstant, toUTF8StdString(name));
+                        } else {
+                            // For assignment: value is already on stack, load instance, swap, then set
+                            emitOpArgsBytes(OpCode::GetLocal, ctx.stackSlot);
+                            emitByte(OpCode::Swap);
+                            emitOpArgsBytes(OpCode::SetProp, propConstant, toUTF8StdString(name));
+                        }
+                        return true;
+                    }
+                }
+
+                // Check methods
+                for (const auto& [methodName, methodType] : objType.methods) {
+                    if (methodName == name) {
+                        if (assign)
+                            error("Cannot assign to method '" + toUTF8StdString(name) + "'");
+                        if (asSignal)
+                            error("Methods cannot be used as signals");
+
+                        // Load the instance and access the method
+                        uint16_t methodConstant = identifierConstant(name);
+                        emitOpArgsBytes(OpCode::GetLocal, ctx.stackSlot);
+                        emitOpArgsBytes(OpCode::GetProp, methodConstant, toUTF8StdString(name));
+                        return true;
+                    }
+                }
+            }
+        }
     }
 
     if (!found) { // local or upvalue not found

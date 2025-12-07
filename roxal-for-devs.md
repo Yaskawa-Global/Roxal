@@ -431,6 +431,54 @@ print(handle_command("end"))    // "stopping"
 Match cases are evaluated in order. The first matching case executes and then control exits the match statement. Ranges in case patterns use the same syntax as indexing: `..` for closed ranges, `..<` for half-open ranges, `:` for Python-style slicing. Start or end can be omitted for open-ended ranges.
 
 
+### With Statement
+
+The `with` statement brings enum labels or object/actor members into scope, allowing you to reference them without prefixing.
+
+```php
+// With enum types - brings enum labels into scope
+type Color enum:
+  Red
+  Green
+  Blue
+
+with Color:
+  var c1 = Red      // instead of Color.Red
+  var c2 = Green    // instead of Color.Green
+  var c3 = Blue     // instead of Color.Blue
+  print(c1)
+
+// Combining with and match for cleaner code
+with Color:
+  var picked = Green
+  match picked:
+    case Red:
+      print("Red picked")
+    case Green:
+      print("Green picked")
+    case Blue:
+      print("Blue picked")
+
+// With object/actor instances - brings members into scope
+type Point object:
+  var x :int
+  var y :int
+
+var p = Point(x=10, y=20)
+with p:
+  print(x)  // instead of p.x
+  print(y)  // instead of p.y
+  x = 15    // instead of p.x = 15
+```
+
+**Important notes:**
+- For **enums**, use the type name: `with EnumType:`
+- For **objects/actors**, use an instance: `with instance:`
+- The with statement creates a new scope
+- Names from the with context are resolved before module-level names
+- Currently requires compile-time known types (Phase 1 implementation)
+
+
 ## Modules
 
 Similar to Python, a roxal file (`.rox`) is a module.  The variables declared at the 'top level' of the file are considered 'module scoped' variables.

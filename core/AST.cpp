@@ -694,6 +694,37 @@ void MatchStatement::acceptChildren(ASTVisitor& v, Anys& results)
         results.push_back( defaultCase.value()->accept(v) );
 }
 
+std::any WithStatement::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(dynamic_ptr_cast<WithStatement>(ptr_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(dynamic_ptr_cast<WithStatement>(ptr_from_this())) );
+
+    return results;
+}
+
+void WithStatement::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"With" << std::endl;
+    os << spaces(indent+1) << "contextExpr:" << std::endl;
+    contextExpr->output(os, indent+2);
+    os << spaces(indent+1) << "body:" << std::endl;
+    body->output(os, indent+2);
+}
+
+void WithStatement::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    results.push_back( contextExpr->accept(v) );
+    results.push_back( body->accept(v) );
+}
+
 
 
 std::any VarDecl::accept(ASTVisitor& v)

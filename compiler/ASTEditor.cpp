@@ -384,6 +384,11 @@ std::any ASTEditor::visit(ptr<ast::MatchStatement> ast)
     return {};
 }
 
+std::any ASTEditor::visit(ptr<ast::WithStatement> ast)
+{
+    return {};
+}
+
 std::any ASTEditor::visit(ptr<ast::RaiseStatement> ast)
 {
     return {};

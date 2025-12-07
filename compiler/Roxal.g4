@@ -70,7 +70,7 @@ compound_stmt
  | raise_stmt
  | try_stmt
  | match_stmt
-//  | with_stmt
+ | with_stmt
 ;
 
 block_stmt
@@ -142,6 +142,10 @@ case_pattern
 
 default_case
  : DEFAULT ':' suite
+ ;
+
+with_stmt
+ : WITH expression ':' suite
  ;
 
 

@@ -720,6 +720,9 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
         else if (is<MatchStatement>(compound)) {
             stmt = as<MatchStatement>(compound);
         }
+        else if (is<WithStatement>(compound)) {
+            stmt = as<WithStatement>(compound);
+        }
         else if (is<RaiseStatement>(compound)) {
             stmt = as<RaiseStatement>(compound);
         }
@@ -796,6 +799,8 @@ std::any ASTGenerator::visitCompound_stmt(RoxalParser::Compound_stmtContext *con
         return visitTry_stmt(context->try_stmt());
     else if (context->match_stmt())
         return visitMatch_stmt(context->match_stmt());
+    else if (context->with_stmt())
+        return visitWith_stmt(context->with_stmt());
     else if (context->raise_stmt())
         return visitRaise_stmt(context->raise_stmt());
     else
@@ -1041,6 +1046,22 @@ std::any ASTGenerator::visitDefault_case(RoxalParser::Default_caseContext *conte
     visitStart();
     visitEnd();
     return {};
+}
+
+std::any ASTGenerator::visitWith_stmt(RoxalParser::With_stmtContext *context)
+{
+    visitStart();
+    ptr<WithStatement> withStmt = make_ptr<WithStatement>();
+    setSourceInfo(withStmt, context);
+
+    // Get the context expression
+    withStmt->contextExpr = as<Expression>(visitExpression(context->expression()));
+
+    // Get the body
+    withStmt->body = as<Suite>(visitSuite(context->suite()));
+
+    return typeValue(withStmt);
+    visitEnd();
 }
 
 std::any ASTGenerator::visitRaise_stmt(RoxalParser::Raise_stmtContext *context)

@@ -44,6 +44,7 @@ public:
     virtual std::any visit(ptr<ast::UntilStatement> ast);
     virtual std::any visit(ptr<ast::TryStatement> ast);
     virtual std::any visit(ptr<ast::MatchStatement> ast);
+    virtual std::any visit(ptr<ast::WithStatement> ast);
     virtual std::any visit(ptr<ast::RaiseStatement> ast);
     virtual std::any visit(ptr<ast::Function> ast);
     virtual std::any visit(ptr<ast::Parameter> ast);

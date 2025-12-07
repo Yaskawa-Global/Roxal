@@ -1,0 +1,34 @@
+// Test with statement with enum type
+
+type Color enum:
+    Red
+    Green
+    Blue
+
+// Test basic with statement with enum
+with Color:
+    var c1 = Red
+    var c2 = Green
+    var c3 = Blue
+    print(c1)
+    print(c2)
+    print(c3)
+
+// Test with statement inside function
+func testWithInFunction():
+    with Color:
+        var myColor = Blue
+        print(myColor)
+
+testWithInFunction()
+
+// Test with statement with match
+with Color:
+    var picked = Green
+    match picked:
+        case Red:
+            print("Red picked")
+        case Green:
+            print("Green picked")
+        case Blue:
+            print("Blue picked")

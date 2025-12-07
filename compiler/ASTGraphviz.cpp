@@ -435,6 +435,18 @@ std::any ASTGraphviz::visit(ptr<ast::MatchStatement> ast)
     return {};
 }
 
+std::any ASTGraphviz::visit(ptr<ast::WithStatement> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+    addLink(name, stackPop(), "body");
+    addLink(name, stackPop(), "context");
+    nodes[name] = node(name, "with");
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
 std::any ASTGraphviz::visit(ptr<ast::RaiseStatement> ast)
 {
     startVisit();
