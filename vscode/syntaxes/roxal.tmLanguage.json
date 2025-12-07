@@ -58,7 +58,7 @@
       "patterns": [
         {
           "name": "keyword.control.roxal",
-          "match": "\\b(?:if|else|elseif|while|for|try|except|finally|raise|return|until|when|emit|scope|with)\\b"
+          "match": "\\b(?:if|else|elseif|while|for|match|case|default|try|except|finally|raise|return|until|when|emit|scope|with)\\b"
         },
         {
           "name": "keyword.control.import.roxal",
