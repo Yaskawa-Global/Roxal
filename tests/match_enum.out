@@ -1,0 +1,12 @@
+Color enum tests:
+  Red -> warm
+  Green -> cool
+  Blue -> cool
+  Yellow -> warm
+  Orange -> warm
+
+Status enum tests:
+  Idle -> ready
+  Running -> active
+  Paused -> waiting
+  Stopped -> done

@@ -1,0 +1,18 @@
+# Test with 3 cases
+
+func test_three_cases(x: int) -> str:
+    match x:
+        case 1:
+            return "one"
+        case 2:
+            return "two"
+        case 3:
+            return "three"
+        default:
+            return "other"
+
+print("Testing 3 cases:")
+print("1 -> " + test_three_cases(1))
+print("2 -> " + test_three_cases(2))
+print("3 -> " + test_three_cases(3))
+print("4 -> " + test_three_cases(4))

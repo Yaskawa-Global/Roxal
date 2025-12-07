@@ -121,17 +121,18 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
 
     if (ast->kind == ast::TypeDecl::Kind::Enumeration) {
 
+        ptr<type::Type> underlyingType;
         if (ast->extends.has_value()) {
             auto extendsStr = toUTF8StdString(ast->extends.value());
             if (extendsStr == to_string(BuiltinType::Byte))
-                ast->type = make_ptr<type::Type>(BuiltinType::Byte);
+                underlyingType = make_ptr<type::Type>(BuiltinType::Byte);
             else if (extendsStr == to_string(BuiltinType::Int))
-                ast->type = make_ptr<type::Type>(BuiltinType::Int);
+                underlyingType = make_ptr<type::Type>(BuiltinType::Int);
             else // TODO: consider allowing enums to extens other enums
                 throw std::runtime_error("Enum(eration) "+toUTF8StdString(ast->name)+" cannot extend type " + extendsStr);
         }
         else // default to int
-            ast->type = make_ptr<type::Type>(BuiltinType::Int);
+            underlyingType = make_ptr<type::Type>(BuiltinType::Int);
 
         // iterate over each enum label and
         //   * look at the type of it's expression (check it matches (or can match) the enum type)
@@ -140,7 +141,9 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
         // TODO: since this is manipulating the AST, it should be done in a separate pass
 
         int32_t nextValue = 0;
-        bool isByteEnum = ast->type.value()->builtin == BuiltinType::Byte;
+        bool isByteEnum = underlyingType->builtin == BuiltinType::Byte;
+
+        std::vector<std::pair<icu::UnicodeString, int32_t>> enumValues;
 
         for(auto& enumLabel : ast->enumLabels) {
 
@@ -181,9 +184,64 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
                 numExpr->type = make_ptr<type::Type>(BuiltinType::Int);
                 enumLabel.second = numExpr;
             }
+            enumValues.push_back({enumLabel.first, nextValue});
             nextValue++;
         }
 
+        // Create the enum type with full information
+        ptr<type::Type> enumType = make_ptr<type::Type>(BuiltinType::Enum);
+        enumType->enumer = type::Type::EnumType{};
+        enumType->enumer->name = ast->name;
+        enumType->enumer->extends = underlyingType;
+        enumType->enumer->values = enumValues;
+
+        ast->type = enumType;
+
+        // Register the enum type in the scope so 'with' statements can find it
+        declareVar(ast->name, enumType, true);
+
+    }
+    else if (ast->kind == ast::TypeDecl::Kind::Object || ast->kind == ast::TypeDecl::Kind::Actor) {
+        // Create object/actor type with full information
+        BuiltinType typeKind = (ast->kind == ast::TypeDecl::Kind::Object) ? BuiltinType::Object : BuiltinType::Actor;
+        ptr<type::Type> objType = make_ptr<type::Type>(typeKind);
+        objType->obj = type::Type::ObjectType{};
+        objType->obj->name = ast->name;
+
+        // Handle extends
+        if (ast->extends.has_value()) {
+            // For now, create a placeholder - full type resolution would require lookups
+            ptr<type::Type> extendsType = make_ptr<type::Type>(BuiltinType::Object);
+            objType->obj->extends = extendsType;
+        }
+
+        // Register properties
+        for (const auto& prop : ast->properties) {
+            type::Type::ObjectType::PropType propType;
+            propType.name = prop->name;
+            propType.nameHashCode = prop->name.hashCode();
+            // Set type if available
+            if (prop->varType.has_value() && std::holds_alternative<BuiltinType>(prop->varType.value())) {
+                propType.type = make_ptr<type::Type>(std::get<BuiltinType>(prop->varType.value()));
+            }
+            propType.hasDefault = prop->initializer.has_value();
+            objType->obj->properties.push_back(propType);
+        }
+
+        // Register methods
+        for (const auto& method : ast->methods) {
+            if (method->name.has_value()) {
+                // Create a basic function type for the method
+                ptr<type::Type::FuncType> methodType = make_ptr<type::Type::FuncType>();
+                methodType->isProc = method->isProc;
+                objType->obj->methods.emplace_back(method->name.value(), methodType);
+            }
+        }
+
+        ast->type = objType;
+
+        // Register the object/actor type in the scope so 'with' statements can find it
+        declareVar(ast->name, objType, true);
     }
 
     return results;
@@ -305,6 +363,62 @@ std::any TypeDeducer::visit(ptr<ast::TryStatement> ast)
 {
     ast::Anys results {};
     ast->acceptChildren(*this, results);
+    return results;
+}
+
+std::any TypeDeducer::visit(ptr<ast::MatchStatement> ast)
+{
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    // TODO: Add type checking for match patterns and exhaustiveness checking for enums
+    return results;
+}
+
+std::any TypeDeducer::visit(ptr<ast::WithStatement> ast)
+{
+    ast::Anys results {};
+
+    // Visit the context expression first to deduce its type
+    results.push_back(ast->contextExpr->accept(*this));
+
+    // Determine the kind of with context based on the expression type
+    if (ast->contextExpr->type.has_value()) {
+        auto exprType = ast->contextExpr->type.value();
+
+        switch (exprType->builtin) {
+            case BuiltinType::Enum:
+                // Enum type - brings enum labels into scope
+                ast->contextKind = ast::WithStatement::EnumType;
+                ast->contextType = exprType;
+                break;
+
+            case BuiltinType::Object:
+                // Object instance - brings object members into scope
+                ast->contextKind = ast::WithStatement::ObjectType;
+                ast->contextType = exprType;
+                break;
+
+            case BuiltinType::Actor:
+                // Actor instance - brings actor members into scope
+                ast->contextKind = ast::WithStatement::ActorType;
+                ast->contextType = exprType;
+                break;
+
+            default:
+                // Other types don't support with statement
+                throw std::logic_error(linePos(ast) +
+                    " - with statement requires enum type or object/actor instance, got " +
+                    to_string(exprType->builtin));
+        }
+    } else {
+        // Cannot determine type at compile time
+        throw std::logic_error(linePos(ast) +
+            " - with statement context type cannot be determined at compile time");
+    }
+
+    // Visit the body with the context available
+    results.push_back(ast->body->accept(*this));
+
     return results;
 }
 
@@ -610,6 +724,14 @@ std::any TypeDeducer::visit(ptr<ast::Call> ast)
             auto typeLit = dynamic_ptr_cast<ast::Type>(ast->callable);
             if (typeLit != nullptr)
                 ast->type = make_ptr<Type>(typeLit->t);
+        }
+        else if (ctype->builtin == BuiltinType::Object || ctype->builtin == BuiltinType::Actor) {
+            // Object/Actor constructor call - return an instance of that type
+            ast->type = ctype;
+        }
+        else if (ctype->builtin == BuiltinType::Enum) {
+            // Enum constructor call - return an instance of that enum
+            ast->type = ctype;
         }
     }
 

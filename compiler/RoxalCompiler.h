@@ -58,6 +58,8 @@ public:
     virtual std::any visit(ptr<ast::WhenStatement> ast);
     virtual std::any visit(ptr<ast::UntilStatement> ast);
     virtual std::any visit(ptr<ast::TryStatement> ast);
+    virtual std::any visit(ptr<ast::MatchStatement> ast);
+    virtual std::any visit(ptr<ast::WithStatement> ast);
     virtual std::any visit(ptr<ast::RaiseStatement> ast);
     virtual std::any visit(ptr<ast::Function> ast);
     virtual std::any visit(ptr<ast::Parameter> ast);
@@ -354,6 +356,14 @@ protected:
 
     // stack of current exception variable names for nested try/except blocks
     std::vector<icu::UnicodeString> exceptionVarStack {};
+
+    // Stack of with contexts for name resolution
+    struct WithContext {
+        ast::WithStatement::ContextKind kind;
+        ptr<type::Type> type;
+        uint16_t stackSlot; // local variable slot holding the context value
+    };
+    std::vector<WithContext> withContextStack {};
 
 
 

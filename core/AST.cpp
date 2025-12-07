@@ -646,6 +646,84 @@ void TryStatement::acceptChildren(ASTVisitor& v, Anys& results)
 }
 
 
+std::any MatchStatement::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(dynamic_ptr_cast<MatchStatement>(ptr_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(dynamic_ptr_cast<MatchStatement>(ptr_from_this())) );
+
+    return results;
+}
+
+void MatchStatement::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"Match" << std::endl;
+    os << spaces(indent+1) << "expr:" << std::endl;
+    matchExpr->output(os, indent+2);
+    for(const auto& [patterns, suite] : cases) {
+        os << spaces(indent+1) << "case:" << std::endl;
+        for(const auto& pattern : patterns) {
+            pattern->output(os, indent+2);
+        }
+        os << spaces(indent+2) << "body:" << std::endl;
+        suite->output(os, indent+3);
+    }
+    if (defaultCase.has_value()) {
+        os << spaces(indent+1) << "default:" << std::endl;
+        defaultCase.value()->output(os, indent+2);
+    }
+}
+
+void MatchStatement::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    results.push_back( matchExpr->accept(v) );
+    for(auto& [patterns, suite] : cases) {
+        for(auto& pattern : patterns) {
+            results.push_back( pattern->accept(v) );
+        }
+        results.push_back( suite->accept(v) );
+    }
+    if (defaultCase.has_value())
+        results.push_back( defaultCase.value()->accept(v) );
+}
+
+std::any WithStatement::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(dynamic_ptr_cast<WithStatement>(ptr_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(dynamic_ptr_cast<WithStatement>(ptr_from_this())) );
+
+    return results;
+}
+
+void WithStatement::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"With" << std::endl;
+    os << spaces(indent+1) << "contextExpr:" << std::endl;
+    contextExpr->output(os, indent+2);
+    os << spaces(indent+1) << "body:" << std::endl;
+    body->output(os, indent+2);
+}
+
+void WithStatement::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    results.push_back( contextExpr->accept(v) );
+    results.push_back( body->accept(v) );
+}
 
 
 

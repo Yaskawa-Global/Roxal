@@ -1889,6 +1889,201 @@ std::any RoxalCompiler::visit(ptr<ast::TryStatement> ast)
     return {};
 }
 
+std::any RoxalCompiler::visit(ptr<ast::MatchStatement> ast)
+{
+    currentNode = ast;
+
+    // Evaluate the match expression once and keep it on the stack
+    ast->matchExpr->accept(*this);
+
+    std::vector<size_t> endJumps;  // Jumps to end of match statement
+
+    // Process each case
+    for (const auto& [patterns, suite] : ast->cases) {
+        std::vector<size_t> caseMatchJumps;  // Jumps to this case's body when pattern matches
+
+        // Test each pattern in the case (OR logic - any pattern can match)
+        for (const auto& pattern : patterns) {
+            // Duplicate the match value for comparison
+            emitByte(OpCode::Dup);
+
+            // Check if pattern is a range
+            if (auto range = dynamic_ptr_cast<ast::Range>(pattern)) {
+                // Range matching for integral types
+                bool hasStart = (range->start != nullptr);
+                bool hasStop = (range->stop != nullptr);
+
+                if (hasStart && hasStop) {
+                    // Full range: start..stop or start:stop
+                    // We need: (value >= start) and (value <= stop) [or < stop if half-open]
+
+                    // Check lower bound: value >= start
+                    emitByte(OpCode::Dup);
+                    range->start->accept(*this);
+                    emitByte(OpCode::Less);
+                    emitByte(OpCode::Negate);
+
+                    // Short-circuit if lower bound fails
+                    auto lowerFail = emitJump(OpCode::JumpIfFalse);
+                    emitByte(OpCode::Pop);  // Pop the true from lower bound check
+
+                    // Check upper bound: value <= stop (or < stop if half-open)
+                    emitByte(OpCode::Dup);
+                    range->stop->accept(*this);
+                    if (range->closed) {
+                        emitByte(OpCode::Greater);
+                        emitByte(OpCode::Negate);
+                    } else {
+                        emitByte(OpCode::Less);
+                    }
+
+                    // If upper bound passes, we have a match
+                    caseMatchJumps.push_back(emitJump(OpCode::JumpIfTrue));
+                    emitByte(OpCode::Pop);  // Pop the comparison result
+
+                    // Upper bound failed, skip to clean up
+                    auto skipCleanup = emitJump(OpCode::Jump);
+
+                    // Lower bound failed
+                    patchJump(lowerFail);
+                    emitByte(OpCode::Pop);  // Pop the false from lower bound
+
+                    patchJump(skipCleanup);
+                    emitByte(OpCode::Pop);  // Pop the duplicated match value
+
+                } else if (hasStart) {
+                    // Only lower bound: start.. or start:
+                    // Check: value >= start
+                    range->start->accept(*this);
+                    emitByte(OpCode::Less);
+                    emitByte(OpCode::Negate);
+                    caseMatchJumps.push_back(emitJump(OpCode::JumpIfTrue));
+                    emitByte(OpCode::Pop);
+
+                } else if (hasStop) {
+                    // Only upper bound: ..stop or :stop
+                    // Check: value <= stop (or < stop if half-open)
+                    range->stop->accept(*this);
+                    if (range->closed) {
+                        emitByte(OpCode::Greater);
+                        emitByte(OpCode::Negate);
+                    } else {
+                        emitByte(OpCode::Less);
+                    }
+                    caseMatchJumps.push_back(emitJump(OpCode::JumpIfTrue));
+                    emitByte(OpCode::Pop);
+
+                } else {
+                    // No bounds: .. or : (matches everything)
+                    emitByte(OpCode::Pop);  // Pop the duplicated match value
+                    emitByte(OpCode::ConstTrue);
+                    caseMatchJumps.push_back(emitJump(OpCode::JumpIfTrue));
+                    emitByte(OpCode::Pop);
+                }
+
+            } else {
+                // Regular value matching: check equality
+                pattern->accept(*this);
+                emitByte(OpCode::Equal);
+                caseMatchJumps.push_back(emitJump(OpCode::JumpIfTrue));
+                emitByte(OpCode::Pop);  // Pop the false comparison result
+            }
+        }
+
+        // No pattern matched this case, skip to next case
+        auto skipCase = emitJump(OpCode::Jump);
+
+        // Patch all match jumps to here (case body entry point)
+        for (auto jump : caseMatchJumps) {
+            patchJump(jump);
+        }
+
+        // Pop the true value from the successful pattern match
+        emitByte(OpCode::Pop);
+
+        // Pop the original match value (consumed by this case)
+        emitByte(OpCode::Pop);
+
+        // Compile case body in its own scope
+        enterLocalScope();
+        suite->accept(*this);
+        exitLocalScope();
+
+        // Jump to end of match statement (no fallthrough between cases)
+        endJumps.push_back(emitJump(OpCode::Jump));
+
+        // Patch skip jump to continue to next case
+        // (match value is still on stack for next case to test)
+        patchJump(skipCase);
+    }
+
+    // Default case or just pop the match value if no default
+    if (ast->defaultCase.has_value()) {
+        emitByte(OpCode::Pop);  // Pop the match value
+        enterLocalScope();
+        ast->defaultCase.value()->accept(*this);
+        exitLocalScope();
+    } else {
+        // No default case and no match - just pop the match value
+        emitByte(OpCode::Pop);
+    }
+
+    // Patch all end jumps to here
+    for (auto jump : endJumps) {
+        patchJump(jump);
+    }
+
+    return {};
+}
+
+std::any RoxalCompiler::visit(ptr<ast::WithStatement> ast)
+{
+    currentNode = ast;
+
+    // The TypeDeducer should have set contextKind and contextType
+    if (ast->contextKind == ast::WithStatement::Unknown || !ast->contextType.has_value()) {
+        error("with statement context type not determined by type deducer");
+    }
+
+    // Evaluate the context expression (before entering local scope)
+    // This puts the value on the stack
+    ast->contextExpr->accept(*this);
+
+    // Enter a new scope for the with block
+    enterLocalScope();
+
+    // Add a hidden local to hold the context value (which is already on the stack)
+    icu::UnicodeString contextVarName = UnicodeString("__with_ctx__");
+    addLocal(contextVarName);
+
+    // Mark the local as initialized (value is already on stack from contextExpr evaluation)
+    asFuncScope(funcScope())->locals.back().depth = asFuncScope(funcScope())->scopeDepth;
+
+    // Get the stack slot where the context is stored
+    int16_t contextSlot = resolveLocal(funcScope(), contextVarName);
+    if (contextSlot == -1) {
+        error("internal error: with context local not found");
+    }
+
+    // Push the with context onto the stack for name resolution
+    WithContext ctx;
+    ctx.kind = ast->contextKind;
+    ctx.type = ast->contextType.value();
+    ctx.stackSlot = static_cast<uint16_t>(contextSlot);
+    withContextStack.push_back(ctx);
+
+    // Compile the body with the context available
+    ast->body->accept(*this);
+
+    // Pop the with context
+    withContextStack.pop_back();
+
+    // Exit the scope (this will clean up the local variable)
+    exitLocalScope();
+
+    return {};
+}
+
 std::any RoxalCompiler::visit(ptr<ast::RaiseStatement> ast)
 {
     currentNode = ast;
@@ -4002,6 +4197,77 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
         arg = upValueArg;
         getOp = OpCode::GetUpvalue;
         setOp = OpCode::SetUpvalue;
+    }
+
+    // Check with context stack for naked enum labels or object/actor members
+    if (!found && !withContextStack.empty()) {
+        const auto& ctx = withContextStack.back();
+
+        if (ctx.kind == ast::WithStatement::EnumType) {
+            // Check if name matches an enum label
+            if (ctx.type->enumer.has_value()) {
+                const auto& enumType = ctx.type->enumer.value();
+                for (const auto& [label, value] : enumType.values) {
+                    if (label == name) {
+                        if (assign)
+                            error("Cannot assign to enum label '" + toUTF8StdString(name) + "'");
+                        if (asSignal)
+                            error("Enum labels cannot be used as signals");
+
+                        // Load the enum type from the with context
+                        emitOpArgsBytes(OpCode::GetLocal, ctx.stackSlot);
+                        // Create the enum value (type + label)
+                        uint16_t labelConstant = identifierConstant(name);
+                        emitOpArgsBytes(OpCode::GetProp, labelConstant, toUTF8StdString(name));
+                        return true;
+                    }
+                }
+            }
+        }
+        else if (ctx.kind == ast::WithStatement::ObjectType || ctx.kind == ast::WithStatement::ActorType) {
+            // Check if name matches an object/actor property or method
+            if (ctx.type->obj.has_value()) {
+                const auto& objType = ctx.type->obj.value();
+
+                // Check properties
+                for (const auto& prop : objType.properties) {
+                    if (prop.name == name) {
+                        if (asSignal)
+                            error("'changes' requires a module variable binding; use a signal expression instead");
+
+                        // Load the instance from the with context
+                        // Then access the property
+                        uint16_t propConstant = identifierConstant(name);
+                        if (!assign) {
+                            emitOpArgsBytes(OpCode::GetLocal, ctx.stackSlot);
+                            emitOpArgsBytes(OpCode::GetProp, propConstant, toUTF8StdString(name));
+                        } else {
+                            // For assignment: value is already on stack, load instance, swap, then set
+                            emitOpArgsBytes(OpCode::GetLocal, ctx.stackSlot);
+                            emitByte(OpCode::Swap);
+                            emitOpArgsBytes(OpCode::SetProp, propConstant, toUTF8StdString(name));
+                        }
+                        return true;
+                    }
+                }
+
+                // Check methods
+                for (const auto& [methodName, methodType] : objType.methods) {
+                    if (methodName == name) {
+                        if (assign)
+                            error("Cannot assign to method '" + toUTF8StdString(name) + "'");
+                        if (asSignal)
+                            error("Methods cannot be used as signals");
+
+                        // Load the instance and access the method
+                        uint16_t methodConstant = identifierConstant(name);
+                        emitOpArgsBytes(OpCode::GetLocal, ctx.stackSlot);
+                        emitOpArgsBytes(OpCode::GetProp, methodConstant, toUTF8StdString(name));
+                        return true;
+                    }
+                }
+            }
+        }
     }
 
     if (!found) { // local or upvalue not found

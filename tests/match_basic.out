@@ -1,0 +1,24 @@
+Test 1: Simple matching
+  1 -> one
+  2 -> two
+  5 -> other
+
+Test 2: Multiple patterns
+  1 -> small
+  2 -> small
+  10 -> large
+  5 -> medium
+
+Test 3: Range matching
+  5 -> child
+  15 -> teen
+  35 -> adult
+  70 -> senior
+  -1 -> unknown
+
+Test 4: String matching
+  'start' -> starting
+  'end' -> stopping
+  'pause' -> unknown command
+
+All tests completed!

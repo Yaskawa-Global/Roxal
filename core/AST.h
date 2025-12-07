@@ -37,6 +37,8 @@ class ForStatement;
 class WhenStatement;
 class UntilStatement;
 class TryStatement;
+class MatchStatement;
+class WithStatement;
 class RaiseStatement;
 class Function;
 class Parameter;
@@ -90,6 +92,8 @@ public:
     virtual std::any visit(ptr<WhenStatement> ast) = 0;
     virtual std::any visit(ptr<UntilStatement> ast) = 0;
     virtual std::any visit(ptr<TryStatement> ast) = 0;
+    virtual std::any visit(ptr<MatchStatement> ast) = 0;
+    virtual std::any visit(ptr<WithStatement> ast) = 0;
     virtual std::any visit(ptr<RaiseStatement> ast) = 0;
     virtual std::any visit(ptr<Function> ast) = 0;
     virtual std::any visit(ptr<Parameter> ast) = 0;
@@ -271,7 +275,9 @@ struct Statement : public AST {
         When,
         Until,
         Try,
-        Raise
+        Raise,
+        Match,
+        With
     };
 
     Statement(StmtType st) : stmtType(st) {}
@@ -412,6 +418,62 @@ struct TryStatement : public Statement {
     };
     std::vector<ExceptClause> exceptClauses;
     std::optional<ptr<ast::Suite>> finallySuite;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
+struct MatchStatement : public Statement {
+    MatchStatement() : Statement(StmtType::Match) {}
+
+    // The expression being matched on
+    ptr<ast::Expression> matchExpr;
+
+    // Each case: (list of patterns, suite)
+    // Multiple patterns in one case act as OR
+    std::vector<std::pair<std::vector<ptr<ast::Expression>>, ptr<ast::Suite>>> cases;
+
+    // Optional default case
+    std::optional<ptr<ast::Suite>> defaultCase;
+
+    // Metadata for optimization (set during type deduction)
+    bool isEnumMatch = false;      // True if matching on enum
+    bool isIntegralMatch = false;  // True if matching on int/byte
+    bool hasRangeCase = false;     // True if any case uses range
+    std::optional<uint16_t> enumTypeId;  // If enum, which type
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+struct WithStatement : public Statement {
+    WithStatement() : Statement(StmtType::With) {}
+
+    // The expression being used as context (enum type, object instance, etc.)
+    ptr<ast::Expression> contextExpr;
+
+    // Body of the with block
+    ptr<ast::Suite> body;
+
+    // Metadata filled in by TypeDeducer
+    enum ContextKind {
+        Unknown,
+        EnumType,      // with EnumTypeName:
+        ObjectType,    // with objectInstance: (where type is known)
+        ActorType      // with actorInstance: (where type is known)
+    };
+
+    ContextKind contextKind = Unknown;
+
+    // The type information (filled by TypeDeducer)
+    // For enums: type->builtin == Enum, type->enumer has the EnumType
+    // For objects/actors: type->builtin == Object/Actor, type->obj has the ObjectType
+    std::optional<ptr<roxal::type::Type>> contextType;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

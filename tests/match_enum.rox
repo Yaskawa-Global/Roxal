@@ -1,0 +1,49 @@
+# Test match statement with enum types
+
+type Color enum:
+    Red = 1
+    Green = 2
+    Blue = 3
+    Yellow = 4
+    Orange = 5
+
+type Status enum:
+    Idle
+    Running
+    Paused
+    Stopped
+
+func color_category(c: Color) -> str:
+    match c:
+        case Color.Red, Color.Orange, Color.Yellow:
+            return "warm"
+        case Color.Blue, Color.Green:
+            return "cool"
+        default:
+            return "unknown"
+
+func status_message(s: Status) -> str:
+    match s:
+        case Status.Idle:
+            return "ready"
+        case Status.Running:
+            return "active"
+        case Status.Paused:
+            return "waiting"
+        case Status.Stopped:
+            return "done"
+        default:
+            return "error"
+
+print("Color enum tests:")
+print("  Red -> " + color_category(Color.Red))
+print("  Green -> " + color_category(Color.Green))
+print("  Blue -> " + color_category(Color.Blue))
+print("  Yellow -> " + color_category(Color.Yellow))
+print("  Orange -> " + color_category(Color.Orange))
+
+print("\nStatus enum tests:")
+print("  Idle -> " + status_message(Status.Idle))
+print("  Running -> " + status_message(Status.Running))
+print("  Paused -> " + status_message(Status.Paused))
+print("  Stopped -> " + status_message(Status.Stopped))
