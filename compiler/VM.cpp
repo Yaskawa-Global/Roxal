@@ -3218,7 +3218,10 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                 }
 
-                runtimeError("Only object and actor instances have methods and only object, actor, and dictionary instances have properties (string keys only).");
+                if (inst.isNil())
+                    runtimeError("Attempted member or property access on nil");
+                else
+                    runtimeError("Only object and actor instances have methods and only object, actor, and dictionary instances have properties (string keys only).");
 #ifdef DEBUG_BUILD
                 if (inst.isObj()) {
                     std::cerr << "GetProp fallback objType=" << int(objType(inst)) << std::endl;
@@ -3463,7 +3466,10 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                 }
 
-                runtimeError("Only object and actor instances have methods and only object, actor, and dictionary instances have properties (string keys only).");
+                if (inst.isNil())
+                    runtimeError("Attempted member or property access on nil");
+                else
+                    runtimeError("Only object and actor instances have methods and only object, actor, and dictionary instances have properties (string keys only).");
                 return errorReturn;
                 break;
             }
