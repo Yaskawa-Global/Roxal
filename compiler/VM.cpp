@@ -5390,8 +5390,8 @@ void VM::defineBuiltinMethods()
 
     defineBuiltinMethod(ValueType::Event, "emit", std::mem_fn(&VM::event_emit_builtin), true);
     defineBuiltinMethod(ValueType::Object, "emit", std::mem_fn(&VM::event_emit_builtin), true);
-    defineBuiltinMethod(ValueType::Event, "on", std::mem_fn(&VM::event_on_builtin), true);
-    defineBuiltinMethod(ValueType::Event, "off", std::mem_fn(&VM::event_off_builtin), true);
+    defineBuiltinMethod(ValueType::Event, "when", std::mem_fn(&VM::event_when_builtin), true);
+    defineBuiltinMethod(ValueType::Event, "remove", std::mem_fn(&VM::event_remove_builtin), true);
 
     defineBuiltinMethod(ValueType::Actor, "tick", std::mem_fn(&VM::dataflow_tick_native), true);  // proc
     defineBuiltinMethod(ValueType::Actor, "run", std::mem_fn(&VM::dataflow_run_native), true);   // proc
@@ -5602,10 +5602,10 @@ Value VM::event_emit_builtin(ArgsView args)
     return Value::nilVal();
 }
 
-Value VM::event_on_builtin(ArgsView args)
+Value VM::event_when_builtin(ArgsView args)
 {
     if (args.size() != 2 || !isEventType(args[0]) || !isClosure(args[1]))
-        throw std::invalid_argument("event.on expects event and closure argument");
+        throw std::invalid_argument("event.when expects event and closure argument");
 
     Value eventVal = args[0];
     Value closureVal = args[1];
@@ -5626,10 +5626,10 @@ Value VM::event_on_builtin(ArgsView args)
     return Value::nilVal();
 }
 
-Value VM::event_off_builtin(ArgsView args)
+Value VM::event_remove_builtin(ArgsView args)
 {
     if (args.size() != 2 || !(isEventType(args[0]) || isSignal(args[0])) || !isClosure(args[1]))
-        throw std::invalid_argument("event.off expects event/signal and closure argument");
+        throw std::invalid_argument("event.remove expects event/signal and closure argument");
 
     Value eventVal = args[0];
     Value closureVal = args[1];

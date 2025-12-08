@@ -4,6 +4,6 @@ type MyEvent event:
 func handler(evt):
   print('payload='+evt.payload)
 
-MyEvent.on(handler)
+MyEvent.when(handler)
 emit MyEvent(17)
 wait(us=1000)

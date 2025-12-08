@@ -1755,14 +1755,14 @@ std::any RoxalCompiler::visit(ptr<ast::UntilStatement> ast)
     //   is compiled as:
     //   declare temp local for event expression
     //   eventExpr -> local
-    //   event.on(local, __conditional_interrupt)
+    //   event.when(local, __conditional_interrupt)
     //   try:
     //       <stmt>
     //   except e:
-    //       event.off(local, __conditional_interrupt)
+    //       event.remove(local, __conditional_interrupt)
     //       if not isinstance(e, ConditionalInterrupt):
     //           raise
-    //   event.off(local, __conditional_interrupt)
+    //   event.remove(local, __conditional_interrupt)
 
     enterLocalScope();
 

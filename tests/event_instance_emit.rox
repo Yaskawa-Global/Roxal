@@ -10,7 +10,7 @@ func handler(evt):
     print('second handler')
     print(evt)
 
-E.on(handler)
+E.when(handler)
 
 emit E()
 wait(us=1000)

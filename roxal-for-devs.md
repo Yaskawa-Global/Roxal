@@ -648,23 +648,12 @@ when LowBattery occurs as evt:
 emit LowBattery(deviceId=42, percentRemaining=12.5)
 ```
 
-The builtin `event` type is still available for cases where no extra payload is required:
+Event types also expose `.when` and `.remove` helpers that mirror the statement form:
 
 ```php
-var generic:event
-
-when generic occurs:
-  print('generic event occurred')
-
-emit generic()
-```
-
-Event types also expose `.on` and `.off` helpers that mirror the statement form:
-
-```php
-var subscription = LowBattery.on(func (evt): print(evt.percentRemaining))
+var subscription = LowBattery.when(func (evt): print(evt.percentRemaining))
 LowBattery.emit(deviceId=1, percentRemaining=9.0)
-LowBattery.off(subscription)
+LowBattery.remove(subscription)
 ```
 
 ## Signals
