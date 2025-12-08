@@ -194,9 +194,10 @@ set(GRAMMAR_FILE ${CMAKE_SOURCE_DIR}/compiler/Roxal.g4)
 
 
 # Custom command to generate ANTLR4 parser and lexer
+find_program(ANTLR4 antlr4)
 add_custom_command(
     OUTPUT ${GENERATED_SOURCES}
-    COMMAND antlr4 -v 4.13.1 -Dlanguage=Cpp -package "roxal" -no-listener -visitor ${GRAMMAR_FILE} -o ${GENERATED_DIR}
+    COMMAND ${ANTLR4} -v 4.13.1 -Dlanguage=Cpp -package "roxal" -no-listener -visitor ${GRAMMAR_FILE} -o ${GENERATED_DIR}
     DEPENDS ${GRAMMAR_FILE}
     COMMENT "Generating ANTLR4 parser and lexer from Roxal.g4"
 )
