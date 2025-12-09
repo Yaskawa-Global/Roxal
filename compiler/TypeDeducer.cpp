@@ -297,6 +297,14 @@ std::any TypeDeducer::visit(ptr<ast::VarDecl> ast)
     return results;
 }
 
+std::any TypeDeducer::visit(ptr<ast::PropertyAccessor> ast)
+{
+    ast::Anys results {};
+    // TODO: Implement in Phase 5 - create backing field, synthetic getter/setter methods
+    // For now, just return empty results so compilation succeeds
+    return results;
+}
+
 
 std::any TypeDeducer::visit(ptr<ast::Suite> ast)
 {

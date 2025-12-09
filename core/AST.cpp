@@ -769,6 +769,79 @@ void VarDecl::output(std::ostream& os, int indent) const
 }
 
 
+std::any PropertyAccessor::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(dynamic_ptr_cast<PropertyAccessor>(ptr_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(dynamic_ptr_cast<PropertyAccessor>(ptr_from_this())) );
+
+    return results;
+}
+
+void PropertyAccessor::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    if (initializer.has_value())
+        results.push_back( initializer.value()->accept(v) );
+
+    if (getter.has_value()) {
+        if (std::holds_alternative<ptr<Suite>>(*getter))
+            results.push_back( std::get<ptr<Suite>>(*getter)->accept(v) );
+        else
+            results.push_back( std::get<ptr<Declaration>>(*getter)->accept(v) );
+    }
+
+    if (setter.has_value()) {
+        if (std::holds_alternative<ptr<Suite>>(*setter))
+            results.push_back( std::get<ptr<Suite>>(*setter)->accept(v) );
+        else
+            results.push_back( std::get<ptr<Declaration>>(*setter)->accept(v) );
+    }
+}
+
+
+void PropertyAccessor::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"PropertyAccessor " << (access==Access::Private?"private ":"") << toUTF8StdString(name);
+    if (std::holds_alternative<icu::UnicodeString>(propType))
+        os << " :" << toUTF8StdString(std::get<icu::UnicodeString>(propType));
+    else if (std::holds_alternative<BuiltinType>(propType))
+        os << " :" << to_string(std::get<BuiltinType>(propType));
+
+    if (initializer.has_value())
+        os << " = ...";
+    os << std::endl;
+
+    for(auto& annot : annotations)
+        annot->output(os,indent+1);
+
+    if (getter.has_value()) {
+        os << spaces(indent+1)+"get:\n";
+        if (std::holds_alternative<ptr<Suite>>(*getter))
+            std::get<ptr<Suite>>(*getter)->output(os,indent+2);
+        else
+            std::get<ptr<Declaration>>(*getter)->output(os,indent+2);
+    }
+
+    if (setter.has_value()) {
+        os << spaces(indent+1)+"set:\n";
+        if (std::holds_alternative<ptr<Suite>>(*setter))
+            std::get<ptr<Suite>>(*setter)->output(os,indent+2);
+        else
+            std::get<ptr<Declaration>>(*setter)->output(os,indent+2);
+    }
+
+    if (initializer.has_value())
+        initializer.value()->output(os,indent+1);
+}
+
+
 std::any FuncDecl::accept(ASTVisitor& v)
 {
     Anys results {};

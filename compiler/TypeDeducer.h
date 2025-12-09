@@ -34,6 +34,7 @@ public:
     virtual std::any visit(ptr<ast::TypeDecl> ast);
     virtual std::any visit(ptr<ast::FuncDecl> ast);
     virtual std::any visit(ptr<ast::VarDecl> ast);
+    virtual std::any visit(ptr<ast::PropertyAccessor> ast);
     virtual std::any visit(ptr<ast::Suite> ast);
     virtual std::any visit(ptr<ast::ExpressionStatement> ast);
     virtual std::any visit(ptr<ast::ReturnStatement> ast);

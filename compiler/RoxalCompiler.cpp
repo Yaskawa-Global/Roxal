@@ -1373,6 +1373,13 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
     return {};
 }
 
+std::any RoxalCompiler::visit(ptr<ast::PropertyAccessor> ast)
+{
+    // TODO: Implement in Phase 6 - generate code for property accessors
+    // For now, just return empty so compilation succeeds
+    return {};
+}
+
 
 std::any RoxalCompiler::visit(ptr<ast::Suite> ast)
 {

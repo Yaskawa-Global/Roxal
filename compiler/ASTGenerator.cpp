@@ -1411,9 +1411,17 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
         if (context->method().size() > 255)
             throw std::runtime_error("Too many methods for one actor or object type.");
 
-        for (auto* propertyContext : context->property()) {
-            auto varDecl = visitProperty(propertyContext);
+        // Member variables (var/const declarations)
+        for (auto* memberVarContext : context->member_var()) {
+            auto varDecl = visitMember_var(memberVarContext);
             typeDecl->properties.push_back(as<VarDecl>(varDecl));
+        }
+
+        // Property accessors (getters/setters) - TODO: implement
+        for (auto* propAccessorContext : context->property_accessor()) {
+            // Will implement in Phase 2 after adding PropertyAccessor AST node
+            // auto propAccessor = visitProperty_accessor(propAccessorContext);
+            // typeDecl->propertyAccessors.push_back(as<PropertyAccessor>(propAccessor));
         }
 
         for (auto* methodContext : context->method()) {
@@ -1500,8 +1508,8 @@ std::any ASTGenerator::visitEvent_type_decl(RoxalParser::Event_type_declContext 
             typeDecl->annotations.push_back(annotation);
         }
 
-        for (auto* propertyContext : context->property()) {
-            auto varDecl = visitProperty(propertyContext);
+        for (auto* memberVarContext : context->member_var()) {
+            auto varDecl = visitMember_var(memberVarContext);
             typeDecl->properties.push_back(as<VarDecl>(varDecl));
         }
 
@@ -1572,7 +1580,7 @@ std::any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
 
 
 
-std::any ASTGenerator::visitProperty(RoxalParser::PropertyContext *context)
+std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
 {
     visitStart();
 
@@ -1630,6 +1638,39 @@ std::any ASTGenerator::visitEnum_label(RoxalParser::Enum_labelContext *context)
 }
 
 
+std::any ASTGenerator::visitProperty_accessor(RoxalParser::Property_accessorContext *context)
+{
+    visitStart();
+
+    // TODO: Implement in Phase 2 after adding PropertyAccessor AST node
+    throw std::runtime_error("Property accessors not yet implemented");
+
+    visitEnd();
+}
+
+
+std::any ASTGenerator::visitProperty_getter(RoxalParser::Property_getterContext *context)
+{
+    visitStart();
+
+    // TODO: Implement in Phase 2
+    // Return variant<ptr<Suite>, ptr<Declaration>>
+    throw std::runtime_error("Property getter not yet implemented");
+
+    visitEnd();
+}
+
+
+std::any ASTGenerator::visitProperty_setter(RoxalParser::Property_setterContext *context)
+{
+    visitStart();
+
+    // TODO: Implement in Phase 2
+    // Return variant<ptr<Suite>, ptr<Declaration>>
+    throw std::runtime_error("Property setter not yet implemented");
+
+    visitEnd();
+}
 
 
 // returns ptr<ArgsOrAccessorInfo>

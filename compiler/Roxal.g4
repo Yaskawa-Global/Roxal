@@ -194,7 +194,7 @@ type_decl
 object_type_decl
  : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE)
     (EXTENDS IDENTIFIER)? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)?
-    (   (':' NEWLINE INDENT (str NEWLINE)? (property|method)* DEDENT)
+    (   (':' NEWLINE INDENT (str NEWLINE)? (member_var|property_accessor|method)* DEDENT)
       | NEWLINE
     )
  ;
@@ -212,7 +212,7 @@ enum_type_decl
 
 event_type_decl
  : annotation* TYPE IDENTIFIER EVENT (EXTENDS IDENTIFIER)?
-    (   (':' NEWLINE INDENT (str NEWLINE)? property* DEDENT)
+    (   (':' NEWLINE INDENT (str NEWLINE)? member_var* DEDENT)
       | NEWLINE
     )
  ;
@@ -223,8 +223,21 @@ method
    ((':' suite) | NEWLINE)  // abstract methods have no body
  ;
 
-property
+member_var
  : annotation* PRIVATE? (VAR | CONST) IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)? NEWLINE
+ ;
+
+property_accessor
+ : annotation* PRIVATE? PROPERTY IDENTIFIER ':' (builtin_type | IDENTIFIER) (EQUALS expression)?
+   ':' NEWLINE INDENT (property_getter | property_setter)+ DEDENT
+ ;
+
+property_getter
+ : GET ':' ( declaration NEWLINE | suite )
+ ;
+
+property_setter
+ : SET ':' ( declaration NEWLINE | suite )
  ;
 
 enum_label
@@ -441,6 +454,9 @@ TYPE: 'type';
 VAR : 'var';
 CONST : 'const';
 PRIVATE: 'private';
+PROPERTY: 'property';
+GET: 'get';
+SET: 'set';
 LET : 'let';
 FUNC: 'func';
 PROC: 'proc';

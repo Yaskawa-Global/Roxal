@@ -289,6 +289,12 @@ std::any ASTEditor::visit(ptr<ast::VarDecl> ast)
     return {};
 }
 
+std::any ASTEditor::visit(ptr<ast::PropertyAccessor> ast)
+{
+    // TODO: Implement PropertyAccessor editing support if needed
+    return {};
+}
+
 std::any ASTEditor::visit(ptr<ast::Suite> ast)
 {
     //handles only suite
