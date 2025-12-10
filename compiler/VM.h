@@ -125,7 +125,9 @@ public:
 #endif
 
     InterpretResult interpret(std::istream& source, const std::string& sourceName);
-    InterpretResult interpretLine(std::istream& linestream, bool replMode=true);
+    InterpretResult interpretLine(std::istream& linestream,
+                                  bool replMode=true,
+                                  const std::string& sourceNameOverride="");
 
 
     bool call(ObjClosure* closure, const CallSpec& callSpec);

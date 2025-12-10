@@ -853,7 +853,9 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
 }
 
 
-InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
+InterpretResult VM::interpretLine(std::istream& linestream,
+                                  bool replMode,
+                                  const std::string& sourceNameOverride)
 {
     Value function { Value::nilVal() }; // ObjFunction
 
@@ -868,7 +870,7 @@ InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
     compiler.setModuleResolverVM(this);
 
     try {
-        function = compiler.compile(linestream, "cli", replModuleValue);
+        function = compiler.compile(linestream, "cli", replModuleValue, sourceNameOverride);
 
     } catch (std::exception& e) {
         return InterpretResult::CompileError;

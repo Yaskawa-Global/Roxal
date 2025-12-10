@@ -107,16 +107,19 @@ RoxalCompiler::RoxalCompiler()
 
 
 Value RoxalCompiler::compile(std::istream& source, const std::string& name,
-                             Value existingModule)
+                             Value existingModule,
+                             const std::string& sourceNameOverride)
 {
     Value function { Value::nilVal() };
     currentModuleHasDynamicImport = false;
     currentDynamicImports.clear();
 
+    const std::string sourceName = sourceNameOverride.empty() ? name : sourceNameOverride;
+
     ptr<ast::AST> ast {};
     try {
         ASTGenerator astGenerator {};
-        ast = astGenerator.ast(source, name);
+        ast = astGenerator.ast(source, sourceName);
     } catch (std::exception& e) {
         compileError(e.what());
         clearCompileContext();
@@ -154,7 +157,7 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
 
         std::filesystem::path p{name};
         std::string moduleName = p.stem().filename().string();
-        enterModuleScope("", toUnicodeString(moduleName), toUnicodeString(name), existingModule);
+        enterModuleScope("", toUnicodeString(moduleName), toUnicodeString(sourceName), existingModule);
 
         auto module { asModuleScope(moduleScope()) };
 
