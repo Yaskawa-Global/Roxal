@@ -119,6 +119,7 @@ tests = [
     'runtime_error_snippet',
     'property_count', 'cmdline_execute', 'repl_run', 'invalid_option', 'fileio_basic', 'fileio_binary',
     'fileio_read_binary', 'fileio_write_binary', 'fileio_actor_write', 'fileio_delete', 'fileio_extra',
+    'string_concat_roundtrip', 'actor_concat_stress',
     'help_doc', 'help_time_wall_now', 'help_time_wall_now_instance', 'docstring_func',
     'builtin_object_methods', 'math_counter_signal', 'print_flush',
     'grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error'
@@ -128,7 +129,8 @@ grpc_tests = ['grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', '
 grpc_server_tests = ['grpc_int64_values']
 fileio_tests = [
     'fileio_basic', 'fileio_binary', 'fileio_read_binary', 'fileio_write_binary',
-    'fileio_actor_write', 'fileio_delete', 'fileio_extra'
+    'fileio_actor_write', 'fileio_delete', 'fileio_extra',
+    'string_concat_roundtrip', 'actor_concat_stress'
 ]
 dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok', 'dds_array_struct', 'dds_array_multi']
 

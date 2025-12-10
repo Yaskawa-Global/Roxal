@@ -1,0 +1,47 @@
+import fileio
+
+type Writer actor:
+  func write_lines(path, base, lines, width):
+    var h = fileio.open(path, append=false, write=true)
+    var i = 0
+    while i < lines:
+      var line = ''
+      var j = 0
+      while j < width:
+        var piece = string(base + i) + ':' + string(j)
+        if j + 1 < width:
+          line = line + piece + ','
+        else:
+          line = line + piece
+        j = j + 1
+      fileio.write(h, line + '\n')
+      i = i + 1
+    fileio.close(h)
+    return true
+
+var path = 'actor_concat_stress.tmp'
+var base = 0
+var lines = 150
+var width = 16
+
+var writer = Writer()
+var f = writer.write_lines(path, base, lines, width)
+wait(for=f)
+
+var expected = ''
+var i = 0
+while i < lines:
+  var line = ''
+  var j = 0
+  while j < width:
+    var piece = string(base + i) + ':' + string(j)
+    if j + 1 < width:
+      line = line + piece + ','
+    else:
+      line = line + piece
+    j = j + 1
+  expected = expected + line + '\n'
+  i = i + 1
+
+var actual = fileio.read_file(path)
+print(actual == expected)

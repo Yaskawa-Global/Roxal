@@ -384,6 +384,8 @@ struct ObjString : public Obj
     virtual ~ObjString();
 
     UnicodeString s;
+    // internKey is the value stored in the intern table; hash caches ICU hashCode().
+    uint64_t internKey;
     int32_t hash;
 
     // number of 16bit Unicode code units
