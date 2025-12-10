@@ -824,6 +824,9 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
                 assert(bytes.size()==1);
                 emitBytes(OpCode::Call, bytes[0]);
 
+                // Discard the module's return value so subsequent locals start at the expected slot
+                emitByte(OpCode::Pop);
+
                 importedModules[module] = importedModuleType;
 
             } catch (std::exception& e) {

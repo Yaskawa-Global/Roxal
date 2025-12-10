@@ -1,0 +1,8 @@
+import import_return_stack_mod
+
+poses = []
+poses.append([1 2])
+
+for pose in poses:
+    print("pose " + pose)
+
