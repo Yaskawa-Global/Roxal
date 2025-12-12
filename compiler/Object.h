@@ -1393,7 +1393,7 @@ struct ActorInstance : public Obj
 
     Value ensurePropertySignal(int32_t nameHash, const std::string& signalName);
 
-    // returns Value of ObjFuture or nil
+    // Returns a future resolved with the queued method's result, or nil for proc methods
     Value queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop);
 
 

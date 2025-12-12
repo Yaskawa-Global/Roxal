@@ -1,0 +1,22 @@
+type A actor:
+
+  func callBare() -> int:
+    return helper() + 1
+
+  func callWithThis() -> int:
+    noReturn()
+    return this.helper() + 2
+
+  func helper() -> int:
+    return 10
+
+  proc noReturn():
+    _
+
+var a = A()
+var bare = a.callBare()
+var withThis = a.callWithThis()
+a.noReturn()
+
+print(int(bare))
+print(int(withThis))

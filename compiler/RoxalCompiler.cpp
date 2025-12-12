@@ -1192,13 +1192,20 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     } // properties
 
 
+    // Register all method names up front so methods can reference each other
+    // without requiring an explicit 'this.' qualifier, regardless of order.
+    for (const auto& func : ast->methods) {
+        assert(func->name.has_value());
+        auto methodName = func->name.value();
+        asTypeScope(typeScope())->propertyNames[methodName] = {func->access, ast->name, /*isConst=*/false};
+    }
+
     for(size_t i=0; i<ast->methods.size(); i++) {
 
         auto func { ast->methods.at(i) };
 
         assert(func->name.has_value()); // methods must have names
         auto methodName { func->name.value() };
-        asTypeScope(typeScope())->propertyNames[methodName] = {func->access, ast->name, /*isConst=*/false};
         uint16_t methodNameConstant = identifierConstant(methodName);
 
         func->accept(*this);

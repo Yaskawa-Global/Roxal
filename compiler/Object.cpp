@@ -4040,16 +4040,6 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
     Value futureReturn {}; // nil by default
     if (!callInfo.returnFuture.isNil())
         futureReturn = callInfo.returnFuture;
-#ifdef DEBUG_BUILD
-    else {
-        if (isBoundMethod(callee)) {
-            auto fn = asFunction(asClosure(asBoundMethod(callee)->method)->function);
-            std::string name;
-            fn->name.toUTF8String(name);
-            std::cerr << "queueCall: no future created for method '" << name << "'" << std::endl;
-        }
-    }
-#endif
 
     return futureReturn;
 }
