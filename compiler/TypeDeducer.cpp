@@ -228,6 +228,33 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
             objType->obj->properties.push_back(propType);
         }
 
+        // Register property accessors (Phase 5)
+        for (const auto& propAccessor : ast->propertyAccessors) {
+            type::Type::ObjectType::PropType propType;
+            propType.name = propAccessor->name;
+            propType.nameHashCode = propAccessor->name.hashCode();
+
+            // Set type if available
+            if (std::holds_alternative<BuiltinType>(propAccessor->propType)) {
+                propType.type = make_ptr<type::Type>(std::get<BuiltinType>(propAccessor->propType));
+            }
+            // TODO: handle custom type identifiers (non-builtin types)
+
+            propType.hasDefault = propAccessor->initializer.has_value();
+
+            // Set accessor flags
+            propType.hasGetter = propAccessor->getter.has_value();
+            propType.hasSetter = propAccessor->setter.has_value();
+
+            // Validate at least one accessor is present
+            if (!propType.hasGetter && !propType.hasSetter) {
+                throw std::runtime_error("Property accessor '" + toUTF8StdString(propAccessor->name) +
+                                       "' must have at least one get or set block");
+            }
+
+            objType->obj->properties.push_back(propType);
+        }
+
         // Register methods
         for (const auto& method : ast->methods) {
             if (method->name.has_value()) {
@@ -300,8 +327,16 @@ std::any TypeDeducer::visit(ptr<ast::VarDecl> ast)
 std::any TypeDeducer::visit(ptr<ast::PropertyAccessor> ast)
 {
     ast::Anys results {};
-    // TODO: Implement in Phase 5 - create backing field, synthetic getter/setter methods
-    // For now, just return empty results so compilation succeeds
+
+    // Visit children (initializer, getter body, setter body) for type deduction
+    ast->acceptChildren(*this, results);
+
+    // Set the type of the PropertyAccessor itself based on propType
+    if (std::holds_alternative<BuiltinType>(ast->propType)) {
+        ast->type = make_ptr<type::Type>(std::get<BuiltinType>(ast->propType));
+    }
+    // TODO: handle custom type identifiers
+
     return results;
 }
 

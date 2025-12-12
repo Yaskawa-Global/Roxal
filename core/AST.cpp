@@ -1061,6 +1061,8 @@ void TypeDecl::output(std::ostream& os, int indent) const
         annot->output(os, indent+1);
     for(auto& property : properties)
         property->output(os, indent+1);
+    for(auto& propAccessor : propertyAccessors)
+        propAccessor->output(os, indent+1);
     for(auto& method : methods)
         method->output(os, indent+1);
     for(auto& enumLabels : enumLabels) {

@@ -1417,11 +1417,10 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
             typeDecl->properties.push_back(as<VarDecl>(varDecl));
         }
 
-        // Property accessors (getters/setters) - TODO: implement
+        // Property accessors (getters/setters)
         for (auto* propAccessorContext : context->property_accessor()) {
-            // Will implement in Phase 2 after adding PropertyAccessor AST node
-            // auto propAccessor = visitProperty_accessor(propAccessorContext);
-            // typeDecl->propertyAccessors.push_back(as<PropertyAccessor>(propAccessor));
+            auto propAccessor = visitProperty_accessor(propAccessorContext);
+            typeDecl->propertyAccessors.push_back(as<PropertyAccessor>(propAccessor));
         }
 
         for (auto* methodContext : context->method()) {
@@ -1642,9 +1641,55 @@ std::any ASTGenerator::visitProperty_accessor(RoxalParser::Property_accessorCont
 {
     visitStart();
 
-    // TODO: Implement in Phase 2 after adding PropertyAccessor AST node
-    throw std::runtime_error("Property accessors not yet implemented");
+    ptr<PropertyAccessor> propAccessor = make_ptr<PropertyAccessor>();
+    setSourceInfo(propAccessor, context);
 
+    // Get access level
+    propAccessor->access = (context->PRIVATE() != nullptr) ? Access::Private : Access::Public;
+
+    // Get name
+    propAccessor->name = UnicodeString::fromUTF8(context->IDENTIFIER(0)->getText());
+
+    // Get annotations
+    if (context->annotation().size() > 0) {
+        for(size_t i=0; i<context->annotation().size(); i++) {
+            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
+            ptr<Annotation> annotation = make_ptr<Annotation>();
+            annotation->name = annotInfo->accessed;
+            annotation->args = *annotInfo->args;
+            propAccessor->annotations.push_back(annotation);
+        }
+    }
+
+    // Get type (builtin or identifier)
+    if (context->builtin_type()) {
+        auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
+        propAccessor->propType = builtinType;
+    }
+    else if (context->IDENTIFIER().size() > 1) {
+        auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER(1)->getText()) };
+        propAccessor->propType = typeIdent;
+    }
+
+    // Get optional initializer
+    if (context->expression()) {
+        auto expr = visitExpression(context->expression());
+        propAccessor->initializer = as<Expression>(expr);
+    }
+
+    // Get getter (if present)
+    for (auto* getterCtx : context->property_getter()) {
+        propAccessor->getter = std::any_cast<std::variant<ptr<Suite>, ptr<Declaration>>>(
+            visitProperty_getter(getterCtx));
+    }
+
+    // Get setter (if present)
+    for (auto* setterCtx : context->property_setter()) {
+        propAccessor->setter = std::any_cast<std::variant<ptr<Suite>, ptr<Declaration>>>(
+            visitProperty_setter(setterCtx));
+    }
+
+    return typeValue(propAccessor);
     visitEnd();
 }
 
@@ -1653,10 +1698,20 @@ std::any ASTGenerator::visitProperty_getter(RoxalParser::Property_getterContext 
 {
     visitStart();
 
-    // TODO: Implement in Phase 2
-    // Return variant<ptr<Suite>, ptr<Declaration>>
-    throw std::runtime_error("Property getter not yet implemented");
+    std::variant<ptr<Suite>, ptr<Declaration>> result;
 
+    // Check if it's 'declaration NEWLINE' or 'suite'
+    if (context->suite()) {
+        // Block form: get: <newline> <indent> ... <dedent>
+        auto suite = visitSuite(context->suite());
+        result = as<Suite>(suite);
+    } else {
+        // One-liner form: get: <declaration> <newline>
+        auto decl = visitDeclaration(context->declaration());
+        result = as<Declaration>(decl);
+    }
+
+    return result;
     visitEnd();
 }
 
@@ -1665,10 +1720,20 @@ std::any ASTGenerator::visitProperty_setter(RoxalParser::Property_setterContext 
 {
     visitStart();
 
-    // TODO: Implement in Phase 2
-    // Return variant<ptr<Suite>, ptr<Declaration>>
-    throw std::runtime_error("Property setter not yet implemented");
+    std::variant<ptr<Suite>, ptr<Declaration>> result;
 
+    // Check if it's 'declaration NEWLINE' or 'suite'
+    if (context->suite()) {
+        // Block form: set: <newline> <indent> ... <dedent>
+        auto suite = visitSuite(context->suite());
+        result = as<Suite>(suite);
+    } else {
+        // One-liner form: set: <declaration> <newline>
+        auto decl = visitDeclaration(context->declaration());
+        result = as<Declaration>(decl);
+    }
+
+    return result;
     visitEnd();
 }
 
