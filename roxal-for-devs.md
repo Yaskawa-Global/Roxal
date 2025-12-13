@@ -569,6 +569,53 @@ print(ChildObjType is MyObjType) // true
 
 (`interface` is not fully implemented, but it'll be possible to inherit from multiple interfaces and one object type)
 
+### Property Accessors
+
+Member variables can have custom getter and/or setter methods by using the accessor syntax with `var` or `const`:
+
+```php
+type Widget object:
+
+  // Property with both getter and setter
+  var width :int = 100:
+    get:
+      print("Getting width")
+      return _width
+    set:
+      print("Setting width to {value}")
+      _width = value
+
+  // Read-only property (const with getter only)
+  const height :int = 50:
+    get:
+      return _height
+
+  // Write-only property (setter only)
+  var depth :int = 25:
+    set:
+      _depth = value
+
+  // Computed property
+  var area :int = 0:
+    get:
+      return _width * _height
+
+  proc init():
+    _
+
+var w = Widget()
+w.width = 200      // Calls the setter
+print(w.width)     // Calls the getter
+print(w.height)    // Calls the getter (read-only)
+w.depth = 30       // Calls the setter (write-only)
+```
+
+**Key points:**
+- A private member var `_<name>` is automatically created
+- The `value` parameter is available in setters
+- For `const` properties, the backing field is also marked as const (and the getter should only return a constant expression)
+
+
 ## Actors
 
 Actors are similar to objects, with a key difference - each actor instance has its *own associated execution thread*.  That is the only thread that executes the actor's methods.
