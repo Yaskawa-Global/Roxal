@@ -1,0 +1,49 @@
+=== Testing internal access ===
+=== Internal access (from within methods) ===
+
+1. Using this.width:
+Getting width: 100
+Got: 100
+
+2. Setting this.width = 150:
+Setting width to: 150
+
+3. Using bare width (no this.):
+Getting width: 150
+Got: 150
+
+4. Setting bare width = 200:
+Setting width to: 200
+
+5. Reading height (read-only):
+Getting height: 50
+Got: 50
+
+6. Writing depth (write-only):
+Setting depth to: 30
+
+7. Reading computed area:
+Computing area: 10000
+Got: 10000
+
+=== External access (from main) ===
+
+1. External read widget.width:
+Getting width: 200
+Got: 200
+
+2. External write widget.width = 250:
+Setting width to: 250
+
+3. External read widget.height (read-only):
+Getting height: 50
+Got: 50
+
+4. External write widget.depth (write-only):
+Setting depth to: 35
+
+5. External read widget.area (computed):
+Computing area: 12500
+Got: 12500
+
+=== All property accessor tests passed! ===

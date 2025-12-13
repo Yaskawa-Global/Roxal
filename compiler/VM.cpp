@@ -3105,6 +3105,23 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
+
+                    // Check if this property has a getter method
+                    icu::UnicodeString getterName = UnicodeString("__get_") + name->s;
+                    Value getterNameValue = Value::stringVal(getterName);
+                    ObjString* getterNameStr = asStringObj(getterNameValue);
+                    auto getterIt = asObjectType(objInst->instanceType)->methods.find(getterNameStr->hash);
+                    if (getterIt != asObjectType(objInst->instanceType)->methods.end()) {
+                        // Property has a getter - invoke it instead of direct access
+                        // Stack: [instance]
+                        // Call __get_<property>() with instance as receiver
+                        CallSpec callSpec{0}; // 0 arguments
+                        if (!invoke(getterNameStr, callSpec))
+                            return errorReturn;
+                        frame = thread->frames.end()-1;
+                        break;
+                    }
+
                     // is it an instance property?
                     auto it = objInst->properties.find(name->hash);
                     if (it != objInst->properties.end()) { // exists
@@ -3354,6 +3371,20 @@ std::pair<InterpretResult,Value> VM::execute()
                         push(it->second.value);
                         break;
                     } else {
+                        // Check if this property has a getter method
+                        icu::UnicodeString getterName = UnicodeString("__get_") + name->s;
+                        Value getterNameValue = Value::stringVal(getterName);
+                        ObjString* getterNameStr = asStringObj(getterNameValue);
+                        auto getterIt = t->methods.find(getterNameStr->hash);
+                        if (getterIt != t->methods.end()) {
+                            // Property has a getter - invoke it instead of direct access
+                            CallSpec callSpec{0}; // 0 arguments
+                            if (!invoke(getterNameStr, callSpec))
+                                return errorReturn;
+                            frame = thread->frames.end()-1;
+                            break;
+                        }
+
                         auto br = bindMethod(t, name);
                         if (br == BindResult::Bound)
                             break;
@@ -3518,6 +3549,23 @@ std::pair<InterpretResult,Value> VM::execute()
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjObjectType* t = asObjectType(objInst->instanceType);
+
+                    // Check if this property has a setter method
+                    icu::UnicodeString setterName = UnicodeString("__set_") + name->s;
+                    Value setterNameValue = Value::stringVal(setterName);
+                    ObjString* setterNameStr = asStringObj(setterNameValue);
+                    auto setterIt = t->methods.find(setterNameStr->hash);
+                    if (setterIt != t->methods.end()) {
+                        // Property has a setter - invoke it instead of direct assignment
+                        // Stack: [instance, value]
+                        // Call __set_<property>(value) with instance as receiver and value as arg
+                        CallSpec callSpec{1}; // 1 argument
+                        if (!invoke(setterNameStr, callSpec))
+                            return errorReturn;
+                        frame = thread->frames.end()-1;
+                        break;
+                    }
+
                     const auto& properties { t->properties };
                     auto propertyIt = properties.find(name->hash);
                     if (propertyIt != properties.end() && propertyIt->second.isConst) {
@@ -3657,6 +3705,23 @@ std::pair<InterpretResult,Value> VM::execute()
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjObjectType* t = asObjectType(objInst->instanceType);
+
+                    // Check if this property has a setter method
+                    icu::UnicodeString setterName = UnicodeString("__set_") + name->s;
+                    Value setterNameValue = Value::stringVal(setterName);
+                    ObjString* setterNameStr = asStringObj(setterNameValue);
+                    auto setterIt = t->methods.find(setterNameStr->hash);
+                    if (setterIt != t->methods.end()) {
+                        // Property has a setter - invoke it instead of direct assignment
+                        // Stack: [instance, value]
+                        // Call __set_<property>(value) with instance as receiver and value as arg
+                        CallSpec callSpec{1}; // 1 argument
+                        if (!invoke(setterNameStr, callSpec))
+                            return errorReturn;
+                        frame = thread->frames.end()-1;
+                        break;
+                    }
+
                     const auto& properties { t->properties };
                     auto propertyIt = properties.find(name->hash);
                     if (propertyIt != properties.end() && propertyIt->second.isConst) {

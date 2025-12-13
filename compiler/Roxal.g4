@@ -233,11 +233,11 @@ property_accessor
  ;
 
 property_getter
- : GET ':' ( declaration NEWLINE | suite )
+ : {_input->LT(1)->getText() == "get"}? IDENTIFIER ':' ( declaration NEWLINE | suite )
  ;
 
 property_setter
- : SET ':' ( declaration NEWLINE | suite )
+ : {_input->LT(1)->getText() == "set"}? IDENTIFIER ':' ( declaration NEWLINE | suite )
  ;
 
 enum_label
@@ -455,8 +455,6 @@ VAR : 'var';
 CONST : 'const';
 PRIVATE: 'private';
 PROPERTY: 'property';
-GET: 'get';
-SET: 'set';
 LET : 'let';
 FUNC: 'func';
 PROC: 'proc';

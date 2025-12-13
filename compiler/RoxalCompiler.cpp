@@ -1185,13 +1185,52 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     } // properties
 
-    // Compile property accessor getter/setter methods BEFORE regular methods (Phase 6)
+    // Compile property accessors (with implicit backing fields) BEFORE regular methods (Phase 6)
     // This ensures getter/setter method names are registered before methods that might access them
-    // These are compiled directly as methods without creating synthetic Function AST nodes
     for (const auto& propAccessor : ast->propertyAccessors) {
         auto enclosingModuleScope = asModuleScope(moduleScope());
 
-        // Register the property name itself in propertyNames so it can be accessed
+        // Step 1: Create implicit backing field _<name>
+        icu::UnicodeString backingFieldName = UnicodeString("_") + propAccessor->name;
+        uint16_t backingFieldConstant = identifierConstant(backingFieldName);
+
+        // Register backing field as private property
+        asTypeScope(typeScope())->propertyNames[backingFieldName] = {Access::Private, ast->name, /*isConst=*/false};
+
+        namedVariable(ast->name, false); // make type accessible on the stack
+
+        // Emit type for backing field
+        if (std::holds_alternative<BuiltinType>(propAccessor->propType)) {
+            auto builtinType = std::get<BuiltinType>(propAccessor->propType);
+            Value typeValue { Value::typeSpecVal(builtinToValueType(builtinType)) };
+            emitConstant(typeValue, "backing field " + toUTF8StdString(backingFieldName) + " type");
+        } else {
+            // Named type
+            namedVariable(std::get<icu::UnicodeString>(propAccessor->propType), false);
+        }
+
+        // Emit initial value for backing field
+        if (propAccessor->initializer.has_value()) {
+            propAccessor->initializer.value()->accept(*this);
+        } else {
+            // Default value based on type
+            if (std::holds_alternative<BuiltinType>(propAccessor->propType)) {
+                auto bt = std::get<BuiltinType>(propAccessor->propType);
+                if (bt == BuiltinType::Signal)
+                    error("Can't default-construct signal");
+                emitConstant(defaultValue(builtinToValueType(bt)));
+            } else {
+                emitByte(OpCode::ConstNil);
+            }
+        }
+
+        // Emit isPrivate=true, isConst=false for backing field
+        emitByte(OpCode::ConstTrue);  // private
+        emitByte(OpCode::ConstFalse); // not const
+
+        emitOpArgsBytes(OpCode::Property, backingFieldConstant, "backing field " + toUTF8StdString(backingFieldName));
+
+        // Step 2: Register the property name itself in propertyNames so it can be accessed
         asTypeScope(typeScope())->propertyNames[propAccessor->name] = {propAccessor->access, ast->name, /*isConst=*/false};
 
         // Compile getter method: func __get_<name>() -> <type>: <getter body>
@@ -4471,16 +4510,49 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
                 if (assign && info.isConst)
                     error("Cannot assign to const property '"+toUTF8StdString(name)+"'");
                 // treat as property access
-                if (!assign) {
+                // Check if this is a property accessor (has getter/setter methods)
+                icu::UnicodeString getterName = UnicodeString("__get_") + name;
+                icu::UnicodeString setterName = UnicodeString("__set_") + name;
+                auto getterIt = asTypeScope(typeScope())->propertyNames.find(getterName);
+                auto setterIt = asTypeScope(typeScope())->propertyNames.find(setterName);
+                bool hasGetter = getterIt != asTypeScope(typeScope())->propertyNames.end();
+                bool hasSetter = setterIt != asTypeScope(typeScope())->propertyNames.end();
+
+                if (!assign && hasGetter) {
+                    // Use getter method instead of GetProp
                     namedVariable(UnicodeString("this"), false);
-                    if (asSignal)
-                        emitOpArgsBytes(OpCode::GetPropSignal, arg, toUTF8StdString(name));
-                    else
-                        emitOpArgsBytes(OpCode::GetProp, arg);
+                    uint16_t getterConstant = identifierConstant(getterName);
+                    emitOpArgsBytes(OpCode::Invoke, getterConstant);
+                    CallSpec callSpec{0}; // 0 args
+                    auto callSpecBytes = callSpec.toBytes();
+                    for (uint8_t byte : callSpecBytes) {
+                        emitByte(byte);
+                    }
+                } else if (assign && hasSetter) {
+                    // Use setter method instead of SetProp
+                    // Stack has: [value]
+                    namedVariable(UnicodeString("this"), false); // Stack: [value, this]
+                    emitByte(OpCode::Swap); // Stack: [this, value]
+                    uint16_t setterConstant = identifierConstant(setterName);
+                    emitOpArgsBytes(OpCode::Invoke, setterConstant);
+                    CallSpec callSpec{1}; // 1 arg
+                    auto callSpecBytes = callSpec.toBytes();
+                    for (uint8_t byte : callSpecBytes) {
+                        emitByte(byte);
+                    }
                 } else {
-                    namedVariable(UnicodeString("this"), false);
-                    emitByte(OpCode::Swap);
-                    emitOpArgsBytes(OpCode::SetProp, arg);
+                    // Regular property access (no getter/setter)
+                    if (!assign) {
+                        namedVariable(UnicodeString("this"), false);
+                        if (asSignal)
+                            emitOpArgsBytes(OpCode::GetPropSignal, arg, toUTF8StdString(name));
+                        else
+                            emitOpArgsBytes(OpCode::GetProp, arg);
+                    } else {
+                        namedVariable(UnicodeString("this"), false);
+                        emitByte(OpCode::Swap);
+                        emitOpArgsBytes(OpCode::SetProp, arg);
+                    }
                 }
                 return true;
             }
