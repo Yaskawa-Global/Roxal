@@ -395,15 +395,18 @@ static int repl()
                 if (!script.is_open()) {
                     std::cerr << "Error: file not found: " << path << std::endl;
                 } else {
-                    std::filesystem::path filePath = std::filesystem::absolute(path);
-                    std::filesystem::path parentPath = filePath.parent_path();
+                    std::filesystem::path userPath = path;
+                    std::string displayPath = userPath.string(); // mimic CLI: use provided path text
+
+                    std::filesystem::path absolutePath = std::filesystem::absolute(userPath);
+                    std::filesystem::path parentPath = absolutePath.parent_path();
                     std::filesystem::path currentPath = std::filesystem::current_path();
                     std::filesystem::path relativePath = std::filesystem::relative(parentPath, currentPath);
                     vm.appendModulePaths({relativePath.string()});
                     std::stringstream scriptStream;
                     scriptStream << script.rdbuf();
                     try {
-                        vm.interpretLine(scriptStream, false);
+                        vm.interpretLine(scriptStream, false, displayPath);
                     } catch (std::exception& e) {
                         std::cerr << "Error: " << e.what() << std::endl;
                     }

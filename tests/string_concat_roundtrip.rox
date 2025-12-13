@@ -1,0 +1,29 @@
+import fileio
+
+var path = 'string_concat_roundtrip.tmp'
+var rows = 200
+var cols = 20
+
+var lines = []
+for i in range(0:rows):
+  var line = ''
+  for j in range(0:cols):
+    var piece = string(i) + ',' + string(j)
+    if j + 1 < cols:
+      line = line + piece + ' '
+    else:
+      line = line + piece
+  lines.append(line)
+
+var h = fileio.open(path, append=false, write=true)
+for line in lines:
+  fileio.write(h, line)
+  fileio.write(h, '\n')
+fileio.close(h)
+
+var disk = fileio.read_file(path)
+var expected = ''
+for line in lines:
+  expected = expected + line + '\n'
+
+print(disk == expected)

@@ -384,6 +384,8 @@ struct ObjString : public Obj
     virtual ~ObjString();
 
     UnicodeString s;
+    // internKey is the value stored in the intern table; hash caches ICU hashCode().
+    uint64_t internKey;
     int32_t hash;
 
     // number of 16bit Unicode code units
@@ -1391,7 +1393,7 @@ struct ActorInstance : public Obj
 
     Value ensurePropertySignal(int32_t nameHash, const std::string& signalName);
 
-    // returns Value of ObjFuture or nil
+    // Returns a future resolved with the queued method's result, or nil for proc methods
     Value queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop);
 
 

@@ -107,16 +107,19 @@ RoxalCompiler::RoxalCompiler()
 
 
 Value RoxalCompiler::compile(std::istream& source, const std::string& name,
-                             Value existingModule)
+                             Value existingModule,
+                             const std::string& sourceNameOverride)
 {
     Value function { Value::nilVal() };
     currentModuleHasDynamicImport = false;
     currentDynamicImports.clear();
 
+    const std::string sourceName = sourceNameOverride.empty() ? name : sourceNameOverride;
+
     ptr<ast::AST> ast {};
     try {
         ASTGenerator astGenerator {};
-        ast = astGenerator.ast(source, name);
+        ast = astGenerator.ast(source, sourceName);
     } catch (std::exception& e) {
         compileError(e.what());
         clearCompileContext();
@@ -154,7 +157,7 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
 
         std::filesystem::path p{name};
         std::string moduleName = p.stem().filename().string();
-        enterModuleScope("", toUnicodeString(moduleName), toUnicodeString(name), existingModule);
+        enterModuleScope("", toUnicodeString(moduleName), toUnicodeString(sourceName), existingModule);
 
         auto module { asModuleScope(moduleScope()) };
 
@@ -821,6 +824,9 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
                 assert(bytes.size()==1);
                 emitBytes(OpCode::Call, bytes[0]);
 
+                // Discard the module's return value so subsequent locals start at the expected slot
+                emitByte(OpCode::Pop);
+
                 importedModules[module] = importedModuleType;
 
             } catch (std::exception& e) {
@@ -1185,7 +1191,16 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     } // properties
 
-    // Compile property accessors (with implicit backing fields) BEFORE regular methods (Phase 6)
+
+    // Register all method names up front so methods can reference each other
+    // without requiring an explicit 'this.' qualifier, regardless of order.
+    for (const auto& func : ast->methods) {
+        assert(func->name.has_value());
+        auto methodName = func->name.value();
+        asTypeScope(typeScope())->propertyNames[methodName] = {func->access, ast->name, /*isConst=*/false};
+    }
+
+    // Compile property accessors (with implicit backing fields) BEFORE regular methods
     // This ensures getter/setter method names are registered before methods that might access them
     for (const auto& propAccessor : ast->propertyAccessors) {
         auto enclosingModuleScope = asModuleScope(moduleScope());
@@ -1329,13 +1344,13 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     }
 
     // Now compile regular methods (after property accessors so they can reference the getter/setter methods)
+
     for(size_t i=0; i<ast->methods.size(); i++) {
 
         auto func { ast->methods.at(i) };
 
         assert(func->name.has_value()); // methods must have names
         auto methodName { func->name.value() };
-        asTypeScope(typeScope())->propertyNames[methodName] = {func->access, ast->name, /*isConst=*/false};
         uint16_t methodNameConstant = identifierConstant(methodName);
 
         func->accept(*this);

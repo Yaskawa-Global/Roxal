@@ -129,9 +129,17 @@ Value ModuleFileIO::fileio_open_builtin(ArgsView args)
     bool binary = false;
     std::filesystem::path path = std::filesystem::path(toUTF8StdString(asStringObj(args[0])->s));
     ptr<std::fstream> f = roxal::make_ptr<std::fstream>();
-    std::ios_base::openmode mode = write ? (std::ios::in | std::ios::out) : std::ios::in;
-    if (append)
-        mode |= std::ios::app;
+    std::ios_base::openmode mode;
+    if (write) {
+        // Allow read/write, create if missing, and truncate unless appending.
+        mode = std::ios::in | std::ios::out;
+        if (append)
+            mode |= std::ios::app;
+        else
+            mode |= std::ios::trunc;
+    } else {
+        mode = std::ios::in;
+    }
     if (format == "binary") {
         mode |= std::ios::binary;
         binary = true;
