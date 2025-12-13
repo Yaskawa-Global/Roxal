@@ -1413,14 +1413,13 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
 
         // Member variables (var/const declarations)
         for (auto* memberVarContext : context->member_var()) {
-            auto varDecl = visitMember_var(memberVarContext);
-            typeDecl->properties.push_back(as<VarDecl>(varDecl));
-        }
-
-        // Property accessors (getters/setters)
-        for (auto* propAccessorContext : context->property_accessor()) {
-            auto propAccessor = visitProperty_accessor(propAccessorContext);
-            typeDecl->propertyAccessors.push_back(as<PropertyAccessor>(propAccessor));
+            auto result = visitMember_var(memberVarContext);
+            // visitMember_var now returns either VarDecl or PropertyAccessor
+            if (isa<PropertyAccessor>(result)) {
+                typeDecl->propertyAccessors.push_back(as<PropertyAccessor>(result));
+            } else {
+                typeDecl->properties.push_back(as<VarDecl>(result));
+            }
         }
 
         for (auto* methodContext : context->method()) {
@@ -1583,39 +1582,99 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
 {
     visitStart();
 
-    // a property looks like a variable declaration
-    ptr<VarDecl> varDecl = make_ptr<VarDecl>();
+    // Check if this is a property with accessors (getter/setter)
+    bool hasAccessors = !context->property_getter().empty() || !context->property_setter().empty();
 
-    varDecl->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
-    varDecl->isConst = (context->CONST() != nullptr);
+    if (hasAccessors) {
+        // Create PropertyAccessor instead of VarDecl
+        ptr<PropertyAccessor> propAccessor = make_ptr<PropertyAccessor>();
+        setSourceInfo(propAccessor, context);
 
-    varDecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText());
-    if (context->annotation().size() > 0) {
-        for(size_t i=0; i<context->annotation().size(); i++) {
-            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
+        propAccessor->access = (context->PRIVATE() != nullptr) ? Access::Private : Access::Public;
+        propAccessor->isConst = (context->CONST() != nullptr);
+        propAccessor->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText());
+
+        // Get annotations
+        for (auto* annotCtx : context->annotation()) {
+            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(annotCtx));
+            ptr<Annotation> annotation = make_ptr<Annotation>();
+            annotation->name = annotInfo->accessed;
+            annotation->args = *annotInfo->args;
+            propAccessor->annotations.push_back(annotation);
+        }
+
+        // Get type
+        if (context->builtin_type()) {
+            auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
+            propAccessor->propType = builtinType;
+        }
+        else if (context->IDENTIFIER().size() > 1) {
+            auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER(1)->getText()) };
+            propAccessor->propType = typeIdent;
+        }
+
+        // Get initializer
+        if (context->expression()) {
+            auto expr = visitExpression(context->expression());
+            propAccessor->initializer = as<Expression>(expr);
+        }
+
+        // Get getter (if present)
+        for (auto* getterCtx : context->property_getter()) {
+            propAccessor->getter = std::any_cast<std::variant<ptr<Suite>, ptr<Declaration>>>(
+                visitProperty_getter(getterCtx));
+        }
+
+        // Get setter (if present)
+        for (auto* setterCtx : context->property_setter()) {
+            propAccessor->setter = std::any_cast<std::variant<ptr<Suite>, ptr<Declaration>>>(
+                visitProperty_setter(setterCtx));
+        }
+
+        // Validate: const properties cannot have setters
+        if (propAccessor->isConst && propAccessor->setter.has_value()) {
+            throw std::runtime_error(std::to_string(context->start->getLine()) + ":" +
+                                   std::to_string(context->start->getCharPositionInLine()) +
+                                   " - const property '" + toUTF8StdString(propAccessor->name) +
+                                   "' cannot have a setter");
+        }
+
+        return typeValue(propAccessor);
+    }
+    else {
+        // Regular var declaration without accessors
+        ptr<VarDecl> varDecl = make_ptr<VarDecl>();
+
+        varDecl->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
+        varDecl->isConst = (context->CONST() != nullptr);
+        varDecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText());
+
+        for (auto* annotCtx : context->annotation()) {
+            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(annotCtx));
             ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
             varDecl->annotations.push_back(annotation);
         }
+
+        if (context->builtin_type()) {
+            auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
+            varDecl->varType = builtinType;
+        }
+        else if (context->IDENTIFIER().size()>1) {
+            auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
+            varDecl->varType = typeIdent;
+        }
+        else {} // type is optional
+
+        if (context->expression()) {
+            auto expr = visitExpression(context->expression());
+            varDecl->initializer = as<Expression>(expr);
+        }
+
+        return typeValue(varDecl);
     }
 
-    if (context->builtin_type()) {
-        auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
-        varDecl->varType = builtinType;
-    }
-    else if (context->IDENTIFIER().size()>1) {
-        auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
-        varDecl->varType = typeIdent;
-    }
-    else {} // type is optional
-
-    if (context->expression()) {
-        auto expr = visitExpression(context->expression());
-        varDecl->initializer = as<Expression>(expr);
-    }
-
-    return typeValue(varDecl);
     visitEnd();
 }
 
@@ -1633,63 +1692,6 @@ std::any ASTGenerator::visitEnum_label(RoxalParser::Enum_labelContext *context)
 
     return std::make_pair(labelName, expr);
 
-    visitEnd();
-}
-
-
-std::any ASTGenerator::visitProperty_accessor(RoxalParser::Property_accessorContext *context)
-{
-    visitStart();
-
-    ptr<PropertyAccessor> propAccessor = make_ptr<PropertyAccessor>();
-    setSourceInfo(propAccessor, context);
-
-    // Get access level
-    propAccessor->access = (context->PRIVATE() != nullptr) ? Access::Private : Access::Public;
-
-    // Get name
-    propAccessor->name = UnicodeString::fromUTF8(context->IDENTIFIER(0)->getText());
-
-    // Get annotations
-    if (context->annotation().size() > 0) {
-        for(size_t i=0; i<context->annotation().size(); i++) {
-            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
-            ptr<Annotation> annotation = make_ptr<Annotation>();
-            annotation->name = annotInfo->accessed;
-            annotation->args = *annotInfo->args;
-            propAccessor->annotations.push_back(annotation);
-        }
-    }
-
-    // Get type (builtin or identifier)
-    if (context->builtin_type()) {
-        auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
-        propAccessor->propType = builtinType;
-    }
-    else if (context->IDENTIFIER().size() > 1) {
-        auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER(1)->getText()) };
-        propAccessor->propType = typeIdent;
-    }
-
-    // Get optional initializer
-    if (context->expression()) {
-        auto expr = visitExpression(context->expression());
-        propAccessor->initializer = as<Expression>(expr);
-    }
-
-    // Get getter (if present)
-    for (auto* getterCtx : context->property_getter()) {
-        propAccessor->getter = std::any_cast<std::variant<ptr<Suite>, ptr<Declaration>>>(
-            visitProperty_getter(getterCtx));
-    }
-
-    // Get setter (if present)
-    for (auto* setterCtx : context->property_setter()) {
-        propAccessor->setter = std::any_cast<std::variant<ptr<Suite>, ptr<Declaration>>>(
-            visitProperty_setter(setterCtx));
-    }
-
-    return typeValue(propAccessor);
     visitEnd();
 }
 

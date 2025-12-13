@@ -194,7 +194,7 @@ type_decl
 object_type_decl
  : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE)
     (EXTENDS IDENTIFIER)? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)?
-    (   (':' NEWLINE INDENT (str NEWLINE)? (member_var|property_accessor|method)* DEDENT)
+    (   (':' NEWLINE INDENT (str NEWLINE)? (member_var|method)* DEDENT)
       | NEWLINE
     )
  ;
@@ -224,12 +224,10 @@ method
  ;
 
 member_var
- : annotation* PRIVATE? (VAR | CONST) IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)? NEWLINE
- ;
-
-property_accessor
- : annotation* PRIVATE? PROPERTY IDENTIFIER ':' (builtin_type | IDENTIFIER) (EQUALS expression)?
-   ':' NEWLINE INDENT (property_getter | property_setter)+ DEDENT
+ : annotation* PRIVATE? (VAR | CONST) IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)?
+   ( NEWLINE
+   | ':' NEWLINE INDENT (property_getter | property_setter)+ DEDENT
+   )
  ;
 
 property_getter
@@ -454,7 +452,6 @@ TYPE: 'type';
 VAR : 'var';
 CONST : 'const';
 PRIVATE: 'private';
-PROPERTY: 'property';
 LET : 'let';
 FUNC: 'func';
 PROC: 'proc';

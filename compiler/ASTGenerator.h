@@ -81,7 +81,6 @@ public:
 
     virtual std::any visitMember_var(RoxalParser::Member_varContext *context);
 
-    virtual std::any visitProperty_accessor(RoxalParser::Property_accessorContext *context);
     virtual std::any visitProperty_getter(RoxalParser::Property_getterContext *context);
     virtual std::any visitProperty_setter(RoxalParser::Property_setterContext *context);
 

@@ -1,7 +1,7 @@
 type Widget object:
 
     # Property with both getter and setter
-    property width :int = 100:
+    var width :int = 100:
         get:
             print("Getting width: {_width}")
             return _width
@@ -10,19 +10,19 @@ type Widget object:
             _width = value
 
     # Read-only property (getter only)
-    property height :int = 50:
+    const height :int = 50:
         get:
             print("Getting height: {_height}")
             return _height
 
     # Write-only property (setter only)
-    property depth :int = 25:
+    var depth :int = 25:
         set:
             print("Setting depth to: {value}")
             _depth = value
 
     # Property with computed getter
-    property area :int = 0:
+    var area :int = 0:
         get:
             var result = _width * _height
             print("Computing area: {result}")

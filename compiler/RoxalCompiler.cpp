@@ -1239,9 +1239,9 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             }
         }
 
-        // Emit isPrivate=true, isConst=false for backing field
+        // Emit isPrivate=true, isConst based on property declaration
         emitByte(OpCode::ConstTrue);  // private
-        emitByte(OpCode::ConstFalse); // not const
+        emitByte(propAccessor->isConst ? OpCode::ConstTrue : OpCode::ConstFalse); // const if property is const
 
         emitOpArgsBytes(OpCode::Property, backingFieldConstant, "backing field " + toUTF8StdString(backingFieldName));
 

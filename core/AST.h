@@ -505,6 +505,7 @@ struct PropertyAccessor : public AST {
     std::variant<BuiltinType, icu::UnicodeString> propType;
     std::optional<ptr<Expression>> initializer;
     Access access { Access::Public };
+    bool isConst { false }; // true if declared with const instead of var
 
     // At least one must be present (validated during semantic analysis)
     // For one-liner: variant holds ptr<Declaration> (e.g., return statement or expression statement)
