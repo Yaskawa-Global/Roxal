@@ -22,7 +22,7 @@ type Widget object:
             _depth = value
 
     # Property with computed getter
-    var area :int = 0:
+    var area :int :
         get:
             var result = _width * _height
             print("Computing area: {result}")
@@ -92,5 +92,3 @@ widget.depth = 35
 print("\n5. External read widget.area (computed):")
 var ext_a = widget.area
 print("Got: {ext_a}")
-
-print('\n=== All property accessor tests passed! ===')

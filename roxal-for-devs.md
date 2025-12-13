@@ -596,7 +596,7 @@ type Widget object:
       _depth = value
 
   // Computed property
-  var area :int = 0:
+  var area :int :
     get:
       return _width * _height
 
