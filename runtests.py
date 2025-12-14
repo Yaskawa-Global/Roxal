@@ -118,7 +118,7 @@ tests = [
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
     'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle', 'gc_list_cycle', 'gc_liveness',
     'runtime_error_snippet',
-    'property_count', 'property_accessor', 'cmdline_execute', 'repl_run', 'invalid_option', 'fileio_basic', 'fileio_binary',
+    'property_count', 'property_accessor', 'dict_property_getters', 'cmdline_execute', 'repl_run', 'invalid_option', 'fileio_basic', 'fileio_binary',
     'fileio_read_binary', 'fileio_write_binary', 'fileio_actor_write', 'fileio_delete', 'fileio_extra',
     'string_concat_roundtrip', 'actor_concat_stress',
     'help_doc', 'help_time_wall_now', 'help_time_wall_now_instance', 'docstring_func',

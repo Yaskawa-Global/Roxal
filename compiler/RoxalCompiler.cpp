@@ -2886,6 +2886,7 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
     currentNode = ast;
     Anys results {};
 
+
     ast->acceptChildren(*this, results);
 
     if (auto accessor = dynamic_ptr_cast<ast::UnaryOp>(ast->callable)) {
@@ -2949,6 +2950,82 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
         if (hashSet.size() != hashes.size())
             throw std::runtime_error("Hash collision occured between two argument names");
         #endif
+    }
+
+    // Optimization: dict(object) with known object type at compile time
+    // Instead of OpCode::Call -> construct -> toType (which accesses backing fields),
+    // emit GetProp for each property (which calls getters correctly)
+
+    // Check if callable is a type literal for dict
+    auto typeLit = dynamic_ptr_cast<ast::Type>(ast->callable);
+    if (typeLit != nullptr &&
+        typeLit->t == type::BuiltinType::Dict &&
+        ast->args.size() == 1 &&
+        ast->args[0].second->type.has_value()) {
+
+        auto argType = ast->args[0].second->type.value();
+
+        // Check if argument is an object instance type
+        if (argType->builtin == type::BuiltinType::Object && argType->obj.has_value()) {
+
+            // Generate optimized bytecode for dict construction
+            // Stack layout after acceptChildren: [dict_type, object_instance]
+            // We need to replace this with GetProp calls for each public property
+
+            // Pop both the dict type and the object instance from stack
+            emitByte(OpCode::Pop);  // Pop dict type
+            emitByte(OpCode::Pop);  // Pop object instance
+
+            // Get the object type's public properties only
+            auto& objType = argType->obj.value();
+            std::vector<icu::UnicodeString> publicProps;
+
+            // Look up the type in the property registry to check access levels
+            auto typeIt = typePropertyRegistry.find(objType.name);
+            if (typeIt != typePropertyRegistry.end()) {
+                for (const auto& prop : objType.properties) {
+                    // Check if this property is public
+                    auto propIt = typeIt->second.find(prop.name);
+                    if (propIt != typeIt->second.end() && propIt->second.access == ast::Access::Public) {
+                        publicProps.push_back(prop.name);
+                    }
+                }
+            } else {
+                // Type not in registry - include all properties (fallback)
+                for (const auto& prop : objType.properties) {
+                    publicProps.push_back(prop.name);
+                }
+            }
+
+
+            // For each public property: re-evaluate object, GetProp, push key, swap
+            // Stack layout goal: [key1, value1, key2, value2, ..., keyN, valueN]
+            for (const auto& propName : publicProps) {
+                // Re-evaluate the argument expression to get the object instance on stack
+                ast->args[0].second->accept(*this);
+
+                // Get property value (GetProp handles getter invocation)
+                // Stack: [object] -> [value]
+                uint16_t propNameConstant = identifierConstant(propName);
+                emitOpArgsBytes(OpCode::GetProp, propNameConstant);
+
+                // Push property name as dict key
+                // Stack: [value] -> [value, key]
+                emitConstant(Value::stringVal(propName));
+
+                // Swap top 2 to get [key, value]
+                emitByte(OpCode::Swap);
+            }
+
+            // Stack is now: [key1, value1, key2, value2, ..., keyN, valueN]
+            // NewDict will consume top 2*N items, creating dict on top
+            // Stack after NewDict: [dict]
+            if (publicProps.size() > 255)
+                error("Object has too many properties for dict conversion (limit 255)");
+            emitBytes(OpCode::NewDict, uint8_t(publicProps.size()));
+
+            return {};
+        }
     }
 
     auto bytes = callSpec.toBytes();

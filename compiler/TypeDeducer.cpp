@@ -303,6 +303,18 @@ std::any TypeDeducer::visit(ptr<ast::VarDecl> ast)
     if (ast->varType.has_value()) {
         if (std::holds_alternative<BuiltinType>(ast->varType.value())) {
             ast->type = make_ptr<type::Type>(std::get<BuiltinType>(ast->varType.value()));
+        } else if (std::holds_alternative<icu::UnicodeString>(ast->varType.value())) {
+            // Custom type (like Widget, MyClass, etc.) or runtime type variable
+            auto typeName = std::get<icu::UnicodeString>(ast->varType.value());
+            auto typeInfo = lookupVar(typeName);
+            if (typeInfo.has_value() && typeInfo->type != nullptr) {
+                // Only use as compile-time type if it's not a runtime type variable
+                // (runtime type variables have type BuiltinType::Type)
+                if (typeInfo->type->builtin != BuiltinType::Type) {
+                    ast->type = typeInfo->type;
+                }
+            }
+            // If not found or is a runtime type variable, type remains unset
         }
     } else if (ast->initializer.has_value() && ast->initializer.value()->type.has_value()) {
         ast->type = ast->initializer.value()->type.value();
