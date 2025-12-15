@@ -24,7 +24,6 @@
 cmake_minimum_required(VERSION 3.2...3.27)
 project(icu-cmake)
 
-#Jay
 # cache variables
 set(BUILD_ICU ON CACHE BOOL "Enable compilation of ICU")
 set(ICU_BUILD_VERSION "74.2" CACHE STRING "ICU version to build")
@@ -35,7 +34,6 @@ set(ICU_STATIC ON CACHE BOOL "Use static ICU libraries")
 # RPi4(VxWorks AArch64) 트리플릿 (wr-cc -dumpmachine 결과에 맞춰 필요 시 수정)
 set(ICU_CROSS_ARCH "aarch64-wrs-vxworks" CACHE STRING "Target arch/triplet (e.g., aarch64-wrs-vxworks)")
 set(SYSTEM_ICU OFF CACHE BOOL "Use system-provided ICU libraries (instead of prebuilts or building)")
-#Jay
 
 # allow including our modules
 list(INSERT CMAKE_MODULE_PATH 0 "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
