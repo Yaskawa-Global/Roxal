@@ -65,11 +65,13 @@ tests = [
     'unicode', 'signal_clock', 'signal_add', 'signal_subtract', 'signal_multiply', 'signal_divide', 'signal_modulo',
     'signal_greater', 'signal_less', 'signal_equal', 'signal_history', 'signal_cycle', 'signal_cleanup',
     'signal_and', 'signal_or', 'signal_not', 'signal_band', 'signal_bor', 'signal_bxor', 'signal_bnot',
-    'signal_func_nocall', 'signal_func_exec', 'signal_index', 'signal_when_stmt', 'signal_when_threads', 'when_expression', 'signal_when_in_method', 'signal_when_becomes', 'signal_on_changed_test', 'module_var_when_changed', 'module_var_when_changed_string', 'module_var_when_becomes', 'object_member_when_changed', 'when_obj_becomes',
+    'signal_func_nocall', 'signal_func_exec', 'signal_index', 'signal_when_stmt', 'signal_when_threads', 'when_expression', 'signal_when_in_method', 'signal_when_becomes', 'signal_on_changed_test',
+    'module_var_when_changed', 'module_var_when_changed_string', 'module_var_when_becomes', 'object_member_when_changed', 'when_obj_becomes', 'when_accessor_var_changes',
     'test_signal_value_property', 'test_signal_name_property', 'signal_named_param', 'construct_by_signal', 'signal_run_stop', 'signal_source', 'signal_default_err', 'signal_network1',
     'signal_islands',
     'dataflow_clocktest1', 'multi_clock', 'clock_error', 'clock_name_param',
-    'event1', 'event_when_stmt', 'event_emit_keyword', 'event_when_method', 'event_remove_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4', 'event_instance_emit', 'event_payload', 'event_implicit_constructor', 'event_type_when',
+    'event1', 'event_when_stmt', 'event_emit_keyword', 'event_when_method', 'event_remove_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4', 'event_instance_emit',
+    'event_payload', 'event_implicit_constructor', 'event_type_when',
     'event_in_sleep', 'event_in_sleep2',
     'until_event', 'until_signal', 'signal_vector_dot',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
@@ -203,6 +205,7 @@ if os.path.exists(testlib_c):
 # Track how many tests pass or fail
 passed_count = 0
 failed_count = 0
+unexpected_failures = []
 
 cwd = os.getcwd()
 os.chdir(os.path.join(project_root, roxalpath))
@@ -330,6 +333,8 @@ try:
             print(f"-- timeout after {timeout_secs} s --")
             print()
             failed_count += 1
+            if test not in failing_tests:
+                unexpected_failures.append(test)
             continue
         duration_ms = (time.perf_counter() - start_time) * 1000
 
@@ -392,6 +397,8 @@ try:
         else:
             print(f"({duration_ms:.1f} ms)", flush=True)
             failed_count += 1
+            if test not in failing_tests:
+                unexpected_failures.append(test)
 
 except Exception as e:
     print('Exception: ' + str(e))
@@ -405,11 +412,11 @@ finally:
     os.chdir(cwd)
 
 total_duration = time.perf_counter() - total_start_time
-failed_unexpected_count = failed_count - len(failing_tests)
+failed_unexpected_count = len(unexpected_failures)
 print()
 print(f"{passed_count} tests passed, {failed_unexpected_count} "+('FAILED' if failed_unexpected_count>0 else 'failed')+f" unexpectedly ({len(failing_tests)} were expected to fail)")
-if failed_count > 0:
-  print(f"Tests expecied to fail currently: {', '.join(failing_tests)}")
+if unexpected_failures:
+    print(f"Unexpected failures: {', '.join(unexpected_failures)}")
 print(f"Total time {total_duration:.2f} s")
 
 if args.opcode_prof:

@@ -1,0 +1,22 @@
+
+type Obj object:
+
+  var i :int :
+    set: _i = value
+    get: return _i
+
+  var j :int
+  var k :int
+
+  proc init():
+    when i changes as evt:
+      print("i changed to {evt.value}")
+    when j changes as evt:
+      print("j changed to {evt.value}")
+    when k changes:
+      print("k changed to {k}")
+
+o = Obj()
+o.i = 1
+o.j = 2
+o.k = 3

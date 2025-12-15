@@ -4628,7 +4628,7 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
                 bool hasGetter = getterIt != asTypeScope(typeScope())->propertyNames.end();
                 bool hasSetter = setterIt != asTypeScope(typeScope())->propertyNames.end();
 
-                if (!assign && hasGetter) {
+                if (!assign && hasGetter && !asSignal) {
                     // Use getter method instead of GetProp
                     namedVariable(UnicodeString("this"), false);
                     uint16_t getterConstant = identifierConstant(getterName);
@@ -4638,6 +4638,13 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
                     for (uint8_t byte : callSpecBytes) {
                         emitByte(byte);
                     }
+                } else if (!assign && (hasGetter || hasSetter) && asSignal) {
+                    // For 'when X changes:' on a property with accessors,
+                    // access the backing field's signal instead of invoking the getter
+                    icu::UnicodeString backingName = UnicodeString("_") + name;
+                    uint16_t backingArg = identifierConstant(backingName);
+                    namedVariable(UnicodeString("this"), false);
+                    emitOpArgsBytes(OpCode::GetPropSignal, backingArg, toUTF8StdString(backingName));
                 } else if (assign && hasSetter) {
                     // Use setter method instead of SetProp
                     // Stack has: [value]
@@ -4663,6 +4670,36 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
                         emitByte(OpCode::Swap);
                         emitOpArgsBytes(OpCode::SetProp, arg);
                     }
+                }
+                return true;
+            }
+        }
+
+        // For closures inside methods (e.g. when handlers), check if 'this' is available as an upvalue
+        // and the name is a property in the enclosing type scope
+        // IMPORTANT: Check if name is a property FIRST, because resolveUpvalue has side effects
+        // (it creates the upvalue if found). We only want to capture 'this' if actually needed.
+        if (inTypeScope()) {
+            auto itMem = asTypeScope(typeScope())->propertyNames.find(name);
+            int16_t thisUpvalue = (itMem != asTypeScope(typeScope())->propertyNames.end())
+                ? resolveUpvalue(funcScope(), UnicodeString("this"))
+                : -1;
+            if (thisUpvalue != -1 && itMem != asTypeScope(typeScope())->propertyNames.end()) {
+                const auto& info = itMem->second;
+                if (info.access == Access::Private && info.owner != asTypeScope(typeScope())->name)
+                    error("Cannot access private member '"+toUTF8StdString(name)+"'");
+                if (assign && info.isConst)
+                    error("Cannot assign to const property '"+toUTF8StdString(name)+"'");
+
+                // Access property via 'this' upvalue
+                uint16_t propConstant = identifierConstant(name);
+                if (!assign) {
+                    emitOpArgsBytes(OpCode::GetUpvalue, thisUpvalue, "this");
+                    emitOpArgsBytes(OpCode::GetProp, propConstant, toUTF8StdString(name));
+                } else {
+                    emitOpArgsBytes(OpCode::GetUpvalue, thisUpvalue, "this");
+                    emitByte(OpCode::Swap);
+                    emitOpArgsBytes(OpCode::SetProp, propConstant, toUTF8StdString(name));
                 }
                 return true;
             }

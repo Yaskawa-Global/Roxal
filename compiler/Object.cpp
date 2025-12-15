@@ -3808,11 +3808,31 @@ Value ObjectInstance::getProperty(const icu::UnicodeString& name) const
     auto it = properties.find(name.hashCode());
     if (it != properties.end())
         return it->second.value;
+
+    // If property not found and name doesn't start with '_', check for backing field
+    // (accessor properties store their data in _<name>)
+    if (!name.startsWith("_")) {
+        icu::UnicodeString backingName = UnicodeString("_") + name;
+        it = properties.find(backingName.hashCode());
+        if (it != properties.end())
+            return it->second.value;
+    }
     return Value::nilVal();
 }
 
 void ObjectInstance::setProperty(const icu::UnicodeString& name, Value value)
 {
+    // Check if this property has a backing field (accessor property)
+    // If so, set the backing field instead of creating a separate property
+    if (!name.startsWith("_")) {
+        icu::UnicodeString backingName = UnicodeString("_") + name;
+        auto it = properties.find(backingName.hashCode());
+        if (it != properties.end()) {
+            // Use backing field instead
+            it->second.assign(value);
+            return;
+        }
+    }
     properties[name.hashCode()].assign(value);
 }
 
