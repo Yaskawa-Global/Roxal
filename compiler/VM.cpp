@@ -1410,10 +1410,43 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             bool strictConv = false;
                             if (thread->frames.size() >= 1)
                                 strictConv = (thread->frames.end()-1)->strict;
+
+                            // Track setter calls needed
+                            struct DictSetterCall {
+                                Value closure;
+                                Value value;
+                                CallFrame frame;
+                            };
+                            std::vector<DictSetterCall> setterFrames;
+
                             for(const auto& kv : argDict->items()) {
                                 if (!isString(kv.first))
                                     continue;
-                                int32_t hash = asStringObj(kv.first)->hash;
+                                ObjString* keyStr = asStringObj(kv.first);
+                                int32_t hash = keyStr->hash;
+
+                                // First check if there's a setter method for this property
+                                icu::UnicodeString setterName = UnicodeString("__set_") + keyStr->s;
+                                Value setterNameValue = Value::stringVal(setterName);
+                                ObjString* setterNameStr = asStringObj(setterNameValue);
+                                auto setterIt = type->methods.find(setterNameStr->hash);
+
+                                if (setterIt != type->methods.end()) {
+                                    // Property has a setter - queue the call
+                                    // Type conversion will be handled by the setter
+                                    const auto& methodInfo = setterIt->second;
+                                    Value setterClosure = methodInfo.closure;
+
+                                    CallFrame setterFrame{};
+                                    setterFrame.closure = Value::objRef(asClosure(setterClosure));
+                                    setterFrame.startIp = setterFrame.ip = asFunction(asClosure(setterClosure)->function)->chunk->code.begin();
+                                    setterFrame.strict = asFunction(asClosure(setterClosure)->function)->strict;
+
+                                    setterFrames.push_back(DictSetterCall{setterClosure, kv.second, setterFrame});
+                                    continue;
+                                }
+
+                                // No setter - look for direct property
                                 auto pit = type->properties.find(hash);
                                 if (pit == type->properties.end())
                                     continue;
@@ -1432,9 +1465,31 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                         }
                                     }
                                 }
+                                // Direct assignment
                                 objInst->properties[hash].assign(val);
                             }
                             pop();
+
+                            // Push setter frames if any
+                            if (!setterFrames.empty()) {
+                                Value savedInstance = pop();
+                                thread->pendingConstructorInstance = savedInstance;
+                                thread->pendingSetterCount = static_cast<int>(setterFrames.size());
+
+                                CallFrames::iterator parentFrame = thread->frames.size() > 0 ? thread->frames.end() - 1 : thread->frames.end();
+
+                                for (auto& setterCall : setterFrames) {
+                                    Value instForSetter = Value::objRef(objInst);
+                                    push(instForSetter);
+                                    push(setterCall.value);
+
+                                    auto& frame = setterCall.frame;
+                                    frame.slots = &(*(thread->stackTop - 2));
+                                    frame.parent = parentFrame;
+                                    thread->pushFrame(frame);
+                                    thread->frameStart = true;
+                                }
+                            }
                         } else if (!type->isActor && initMethod == nullptr) {
                             ObjectInstance* objInst = asObjectInstance(inst);
 
