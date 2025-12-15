@@ -794,14 +794,14 @@ void PropertyAccessor::acceptChildren(ASTVisitor& v, Anys& results)
         if (std::holds_alternative<ptr<Suite>>(*getter))
             results.push_back( std::get<ptr<Suite>>(*getter)->accept(v) );
         else
-            results.push_back( std::get<ptr<Declaration>>(*getter)->accept(v) );
+            results.push_back( std::get<ptr<Statement>>(*getter)->accept(v) );
     }
 
     if (setter.has_value()) {
         if (std::holds_alternative<ptr<Suite>>(*setter))
             results.push_back( std::get<ptr<Suite>>(*setter)->accept(v) );
         else
-            results.push_back( std::get<ptr<Declaration>>(*setter)->accept(v) );
+            results.push_back( std::get<ptr<Statement>>(*setter)->accept(v) );
     }
 }
 
@@ -826,7 +826,7 @@ void PropertyAccessor::output(std::ostream& os, int indent) const
         if (std::holds_alternative<ptr<Suite>>(*getter))
             std::get<ptr<Suite>>(*getter)->output(os,indent+2);
         else
-            std::get<ptr<Declaration>>(*getter)->output(os,indent+2);
+            std::get<ptr<Statement>>(*getter)->output(os,indent+2);
     }
 
     if (setter.has_value()) {
@@ -834,7 +834,7 @@ void PropertyAccessor::output(std::ostream& os, int indent) const
         if (std::holds_alternative<ptr<Suite>>(*setter))
             std::get<ptr<Suite>>(*setter)->output(os,indent+2);
         else
-            std::get<ptr<Declaration>>(*setter)->output(os,indent+2);
+            std::get<ptr<Statement>>(*setter)->output(os,indent+2);
     }
 
     if (initializer.has_value())

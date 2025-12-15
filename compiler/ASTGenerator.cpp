@@ -1621,13 +1621,13 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
 
         // Get getter (if present)
         for (auto* getterCtx : context->property_getter()) {
-            propAccessor->getter = std::any_cast<std::variant<ptr<Suite>, ptr<Declaration>>>(
+            propAccessor->getter = std::any_cast<std::variant<ptr<Suite>, ptr<Statement>>>(
                 visitProperty_getter(getterCtx));
         }
 
         // Get setter (if present)
         for (auto* setterCtx : context->property_setter()) {
-            propAccessor->setter = std::any_cast<std::variant<ptr<Suite>, ptr<Declaration>>>(
+            propAccessor->setter = std::any_cast<std::variant<ptr<Suite>, ptr<Statement>>>(
                 visitProperty_setter(setterCtx));
         }
 
@@ -1700,17 +1700,19 @@ std::any ASTGenerator::visitProperty_getter(RoxalParser::Property_getterContext 
 {
     visitStart();
 
-    std::variant<ptr<Suite>, ptr<Declaration>> result;
+    std::variant<ptr<Suite>, ptr<Statement>> result;
 
-    // Check if it's 'declaration NEWLINE' or 'suite'
+    // Check if it's 'compound_stmt' or 'suite'
     if (context->suite()) {
         // Block form: get: <newline> <indent> ... <dedent>
         auto suite = visitSuite(context->suite());
         result = as<Suite>(suite);
+    } else if (context->compound_stmt()) {
+        // One-liner compound statement form (e.g., return _b)
+        auto stmt = visitCompound_stmt(context->compound_stmt());
+        result = as<Statement>(stmt);
     } else {
-        // One-liner form: get: <declaration> <newline>
-        auto decl = visitDeclaration(context->declaration());
-        result = as<Declaration>(decl);
+        throw std::runtime_error("Property getter must be a Suite or compound statement (e.g., return)");
     }
 
     return result;
@@ -1722,17 +1724,26 @@ std::any ASTGenerator::visitProperty_setter(RoxalParser::Property_setterContext 
 {
     visitStart();
 
-    std::variant<ptr<Suite>, ptr<Declaration>> result;
+    std::variant<ptr<Suite>, ptr<Statement>> result;
 
-    // Check if it's 'declaration NEWLINE' or 'suite'
+    // Check if it's 'statement' or 'suite'
     if (context->suite()) {
         // Block form: set: <newline> <indent> ... <dedent>
         auto suite = visitSuite(context->suite());
         result = as<Suite>(suite);
+    } else if (context->compound_stmt()) {
+        // One-liner compound statement form
+        auto stmt = visitCompound_stmt(context->compound_stmt());
+        result = as<Statement>(stmt);
+    } else if (context->expr_stmt()) {
+        // One-liner expression statement form (e.g., _b = value)
+        // visitExpr_stmt returns an Expression, so wrap it in an ExpressionStatement
+        auto expr = visitExpr_stmt(context->expr_stmt());
+        auto exprStmt = make_ptr<ExpressionStatement>();
+        exprStmt->expr = as<Expression>(expr);
+        result = std::move(exprStmt);
     } else {
-        // One-liner form: set: <declaration> <newline>
-        auto decl = visitDeclaration(context->declaration());
-        result = as<Declaration>(decl);
+        throw std::runtime_error("Property setter must be a Suite or Statement");
     }
 
     return result;

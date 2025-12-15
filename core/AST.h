@@ -508,10 +508,10 @@ struct PropertyAccessor : public AST {
     bool isConst { false }; // true if declared with const instead of var
 
     // At least one must be present (validated during semantic analysis)
-    // For one-liner: variant holds ptr<Declaration> (e.g., return statement or expression statement)
+    // For one-liner: variant holds ptr<Statement> (compound_stmt or expr_stmt)
     // For block: variant holds ptr<Suite>
-    std::optional<std::variant<ptr<Suite>, ptr<Declaration>>> getter;
-    std::optional<std::variant<ptr<Suite>, ptr<Declaration>>> setter;
+    std::optional<std::variant<ptr<Suite>, ptr<Statement>>> getter;
+    std::optional<std::variant<ptr<Suite>, ptr<Statement>>> setter;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

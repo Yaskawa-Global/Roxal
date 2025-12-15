@@ -36,3 +36,4 @@
 # Build directories
 build/
 compiler/cpp-gen/
+node_modules/

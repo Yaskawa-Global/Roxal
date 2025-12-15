@@ -142,6 +142,10 @@ public:
     std::atomic_bool exceptionJumpPending;
     int nativeCallDepth;
 
+    // Constructor setter support: track pending setter cleanup
+    Value pendingConstructorInstance { Value::nilVal() };
+    int pendingSetterCount { 0 };
+
 private:
     ptr<std::thread> osthread;
 

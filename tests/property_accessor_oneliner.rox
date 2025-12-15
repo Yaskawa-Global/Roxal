@@ -1,0 +1,45 @@
+# Test one-liner and block property accessors
+
+type Counter object:
+    # One-liner getter with block setter
+    var count :int = 0:
+        get: return _count
+        set:
+            if value >= 0:
+                _count = value
+
+    # Block getter with one-liner setter
+    var name :string = "default":
+        get:
+            return _name
+        set: _name = value
+
+    # Both one-liners
+    var enabled :bool = false:
+        get: return _enabled
+        set: _enabled = value
+
+# Test construction with setter via named parameters
+var c :Counter = Counter(count=10, name="test", enabled=true)
+
+print("Initial values:")
+print("count={c.count}")
+print("name={c.name}")
+print("enabled={c.enabled}")
+
+# Test setter validation (count must be >= 0)
+c.count = 5
+print("After c.count=5: {c.count}")
+
+c.count = -1
+print("After c.count=-1 (should stay 5): {c.count}")
+
+# Test one-liner setter
+c.name = "updated"
+print("After c.name='updated': {c.name}")
+
+c.enabled = false
+print("After c.enabled=false: {c.enabled}")
+
+# Test dict includes accessor properties
+print("dict(c)="+dict(c))

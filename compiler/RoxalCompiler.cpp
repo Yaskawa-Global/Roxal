@@ -1205,6 +1205,12 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     for (const auto& propAccessor : ast->propertyAccessors) {
         auto enclosingModuleScope = asModuleScope(moduleScope());
 
+        // Property accessor names cannot start with '_' (reserved for backing fields)
+        // This enables the optimization in GetProp/SetProp to skip accessor search for '_' prefixed properties
+        if (propAccessor->name.startsWith("_")) {
+            error("Property accessor name cannot start with '_': " + toUTF8StdString(propAccessor->name));
+        }
+
         // Step 1: Create implicit backing field _<name>
         icu::UnicodeString backingFieldName = UnicodeString("_") + propAccessor->name;
         uint16_t backingFieldConstant = identifierConstant(backingFieldName);
@@ -1268,10 +1274,16 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
             // Compile the getter body
             if (std::holds_alternative<ptr<Suite>>(*propAccessor->getter)) {
-                std::get<ptr<Suite>>(*propAccessor->getter)->accept(*this);
-            } else {
-                // One-liner declaration form
-                std::get<ptr<Declaration>>(*propAccessor->getter)->accept(*this);
+                auto suite = std::get<ptr<Suite>>(*propAccessor->getter);
+                if (suite != nullptr) {
+                    suite->accept(*this);
+                }
+            } else if (std::holds_alternative<ptr<Statement>>(*propAccessor->getter)) {
+                // One-liner statement form (e.g., return _b)
+                auto stmt = std::get<ptr<Statement>>(*propAccessor->getter);
+                if (stmt != nullptr) {
+                    stmt->accept(*this);
+                }
             }
 
             // Ensure function ends with return
@@ -1317,10 +1329,16 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
             // Compile the setter body
             if (std::holds_alternative<ptr<Suite>>(*propAccessor->setter)) {
-                std::get<ptr<Suite>>(*propAccessor->setter)->accept(*this);
-            } else {
-                // One-liner declaration form
-                std::get<ptr<Declaration>>(*propAccessor->setter)->accept(*this);
+                auto suite = std::get<ptr<Suite>>(*propAccessor->setter);
+                if (suite != nullptr) {
+                    suite->accept(*this);
+                }
+            } else if (std::holds_alternative<ptr<Statement>>(*propAccessor->setter)) {
+                // One-liner statement form (e.g., _b = value)
+                auto stmt = std::get<ptr<Statement>>(*propAccessor->setter);
+                if (stmt != nullptr) {
+                    stmt->accept(*this);
+                }
             }
 
             // Ensure function ends with return
