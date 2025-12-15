@@ -23,6 +23,14 @@
 #include <optional>
 #include <utility>
 
+//Jay
+#ifdef VXWORKS_BUILD
+#include <unordered_map>
+#include <functional>
+#include <mutex>
+#endif
+//Jay
+
 
 namespace roxal {
 
@@ -664,7 +672,12 @@ public:
 
     atomic_stack& operator=(const std::stack<T>& rhs)
     {
+#ifdef VXWORKS_BUILD //Jay
+        std::lock_guard<std::mutex> lock(m_lock);
+#else
         std::lock_guard<std::timed_mutex> lock(m_lock);
+#endif
+
         s = rhs;
         return *this;
     }

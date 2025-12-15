@@ -10,7 +10,6 @@
 #include "Chunk.h"
 #include "Object.h"
 #include <core/AST.h>
-
 namespace roxal {
 
 enum class PrimitivePtrType {

@@ -1,7 +1,12 @@
 #pragma once
 #include "Value.h"
 #include "Object.h"
+//Jay
+#ifdef VXWORKS_BUILD
+#else
 #include <span>
+#endif
+//Jay
 #include <string>
 
 namespace roxal {

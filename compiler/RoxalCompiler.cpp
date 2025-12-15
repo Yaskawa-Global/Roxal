@@ -3296,6 +3296,11 @@ void RoxalCompiler::enterModuleScope(const icu::UnicodeString& packageName,
         std::string sourceUtf8 = toUTF8StdString(sourceName);
         bool assigned = false;
         if (!sourceUtf8.empty()) {
+
+        #ifdef VXWORKS_BUILD
+            moduleType->sourcePath = sourceName;
+            assigned = true;
+        #else
             std::error_code ec;
             std::filesystem::path candidate = std::filesystem::absolute(sourceUtf8, ec);
             if (!ec) {
@@ -3303,6 +3308,7 @@ void RoxalCompiler::enterModuleScope(const icu::UnicodeString& packageName,
                 moduleType->sourcePath = toUnicodeString(normalized.string());
                 assigned = true;
             }
+        #endif
         }
         if (!assigned)
             moduleType->sourcePath = sourceName;

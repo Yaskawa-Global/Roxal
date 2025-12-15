@@ -5,13 +5,17 @@ set(ROXAL_PRERELEASE "" CACHE STRING "SemVer prerelease label (e.g. alpha.1, rc.
 
 enable_testing()
 
+# ------- Platform detect (VxWorks) --------- #
+if(CMAKE_SYSTEM_NAME STREQUAL "VxWorks")
+  set(VXWORKS TRUE)
+  add_definitions(-DVXWORKS_BUILD)
+endif()
+
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-fmax-errors=1)
 endif()
 
 option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
-
-
 option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
 option(ROXAL_ENABLE_GRPC "Enable gRPC/protobuf import support" OFF)
 option(ROXAL_ENABLE_DDS "Enable CycloneDDS support" OFF)
@@ -49,7 +53,12 @@ if(ROXAL_DEBUG_TRACE_GC)
 endif()
 
 # Set the C++ standard
+if(VXWORKS)
+  add_compile_options(-fno-char8_t)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
+
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 
@@ -57,46 +66,105 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 # vcpkg
 # (install at same level as project folder)
 
-# Set the relative path to vcpkg (assumed to be at same level as project folder)
-if(DEFINED ENV{VCPKG_ROOT})
-    set(VCPKG_ROOT $ENV{VCPKG_ROOT})
-else()
-#if VCPKG_ROOT isn't set for the environment then it is assumed to be at same level as project folder
-    set(VCPKG_ROOT "${CMAKE_SOURCE_DIR}/../vcpkg")
+# --- vcpkg only for non-VxWorks ---
+if(NOT VXWORKS)
+    # Set the relative path to vcpkg (assumed to be at same level as project folder)
+    if(DEFINED ENV{VCPKG_ROOT})
+        set(VCPKG_ROOT $ENV{VCPKG_ROOT})
+    else()
+    #if VCPKG_ROOT isn't set for the environment then it is assumed to be at same level as project folder
+        set(VCPKG_ROOT "${CMAKE_SOURCE_DIR}/../vcpkg")
+    endif()
+
+    # Point CMake to the vcpkg toolchain file
+    set(CMAKE_TOOLCHAIN_FILE "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
+
+    # Add the vcpkg installation prefix to CMAKE_PREFIX_PATH
+    list(APPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-linux")
 endif()
 
-# Point CMake to the vcpkg toolchain file
-set(CMAKE_TOOLCHAIN_FILE "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
+# -------------------------------------------------------- #
+# ------------Third-party: ANTLR4 / FFI / ICU ------------ #
+# -------------------------------------------------------- #
 
-# Add the vcpkg installation prefix to CMAKE_PREFIX_PATH
-list(APPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-linux")
+if(VXWORKS)
+    set(VX_EXT_ANTLR4_DIR "${CMAKE_SOURCE_DIR}/External/antlr4-cpp-runtime")
+    set(VX_EXT_FFI_DIR "${CMAKE_SOURCE_DIR}/External/ffi")
+    set(VX_EXT_ICU_DIR "${CMAKE_SOURCE_DIR}/External/icu/icu4c")
+    set(VX_LIB_DIR "${CMAKE_SOURCE_DIR}/External/libraries")
+
+    add_library(antlr4-runtime STATIC IMPORTED GLOBAL)
+    set_target_properties(antlr4-runtime PROPERTIES
+    IMPORTED_LOCATION "${VX_LIB_DIR}/antlr4/libantlr4-runtime.a"   
+    )
+
+    add_library(ffi STATIC IMPORTED GLOBAL)
+    set_target_properties(ffi PROPERTIES
+    IMPORTED_LOCATION "${VX_LIB_DIR}/ffi/libffi.a"   
+    )
+
+    add_library(icuio STATIC IMPORTED GLOBAL)
+    set_target_properties(icuio PROPERTIES
+    IMPORTED_LOCATION "${VX_LIB_DIR}/icu/libicuio.a"    
+    )
+
+    add_library(icui18n STATIC IMPORTED GLOBAL)
+    set_target_properties(icui18n PROPERTIES
+    IMPORTED_LOCATION "${VX_LIB_DIR}/icu/libicui18n.a"   
+    )
+
+    add_library(icuuc STATIC IMPORTED GLOBAL)
+    set_target_properties(icuuc PROPERTIES
+    IMPORTED_LOCATION "${VX_LIB_DIR}/icu/libicuuc.a"   
+    )
+
+    add_library(icudata STATIC IMPORTED GLOBAL)
+    set_target_properties(icudata PROPERTIES
+    IMPORTED_LOCATION "${VX_LIB_DIR}/icu/libicudata.a"
+    )
+
+    include_directories(
+        "${CMAKE_SOURCE_DIR}/External/antlr4/runtime/Cpp/runtime/src"
+        "${CMAKE_SOURCE_DIR}/External/icu/icu4c/source/common"
+        "${CMAKE_SOURCE_DIR}/External/icu/icu4c/source/common/unicode"
+        "${CMAKE_SOURCE_DIR}/External/icu/icu4c/source/io"
+        "${CMAKE_SOURCE_DIR}/External/icu/icu4c/source/i18n"
+        "${CMAKE_SOURCE_DIR}/External/ffi/include"
+    )
 
 
-#
-# ANTLR4
+else()
+    #
+    # ANTLR4
 
-# Install runtime first via:
-# $ ./vcpkg install antlr4
-# and tools using: (see https://github.com/antlr/antlr4-tools)
-# $ pip install antlr4-tools
-# (check they are compatible)
+    # Install runtime first via:
+    # $ ./vcpkg install antlr4
+    # and tools using: (see https://github.com/antlr/antlr4-tools)
+    # $ pip install antlr4-tools
+    # (check they are compatible)
 
-# Set ANTLR4_ROOT to the location where ANTLR4 is installed by vcpkg
-set(ANTLR4_ROOT "${VCPKG_ROOT}/installed/x64-linux")
+    # Set ANTLR4_ROOT to the location where ANTLR4 is installed by vcpkg
+    set(ANTLR4_ROOT "${VCPKG_ROOT}/installed/x64-linux")
 
-# Find ANTLR4 package (if updated, adjust the -v command below)
-find_package(antlr4-runtime 4.13.1 CONFIG REQUIRED)
+    # Find ANTLR4 package (if updated, adjust the -v command below)
+    find_package(antlr4-runtime 4.13.1 CONFIG REQUIRED)
 
-#
-# Eigen
 
-# Install via:
-# git clone https://gitlab.com/libeigen/eigen.git
-# git checkout 3.4.0
-# mkdir build && cd build && make && sudo make install
-find_package( Eigen3 REQUIRED )
-set(EIGEN3_INCLUDE_DIR "/usr/local/include/eigen3/")
-include_directories(${EIGEN3_INCLUDE_DIR})
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBFFI REQUIRED libffi)
+endif()
+
+    #
+    # Eigen : header only
+
+    # Install via:
+    # git clone https://gitlab.com/libeigen/eigen.git
+    # git checkout 3.4.0
+    # mkdir build && cd build && make && sudo make install
+    find_package( Eigen3 REQUIRED )
+    set(EIGEN3_INCLUDE_DIR "/usr/local/include/eigen3/")
+    include_directories(${EIGEN3_INCLUDE_DIR})
+
 
 if(ROXAL_ENABLE_GRPC)
     find_package(Protobuf REQUIRED) # use module or config
@@ -118,8 +186,7 @@ endif()
 # Detect libffi via pkg-config so that include and library paths
 # are recorded explicitly and the build fails clearly if libffi is
 # missing.
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBFFI REQUIRED libffi)
+
 
 # Build the dataflow engine library
 add_subdirectory(dataflow)
@@ -189,18 +256,23 @@ set(GENERATED_SOURCES
     ${GENERATED_DIR}/RoxalVisitor.cpp
     ${GENERATED_DIR}/RoxalBaseVisitor.cpp)
 
+
+if(NOT VXWORKS)
 # Path to the .g4 file
 set(GRAMMAR_FILE ${CMAKE_SOURCE_DIR}/compiler/Roxal.g4)
-
 
 # Custom command to generate ANTLR4 parser and lexer
 find_program(ANTLR4 antlr4)
 add_custom_command(
     OUTPUT ${GENERATED_SOURCES}
-    COMMAND ${ANTLR4} -v 4.13.1 -Dlanguage=Cpp -package "roxal" -no-listener -visitor ${GRAMMAR_FILE} -o ${GENERATED_DIR}
+    COMMAND ${ANTLR4} -Dlanguage=Cpp -package "roxal" -no-listener -visitor ${GRAMMAR_FILE} -o ${GENERATED_DIR}
+    #COMMAND ${ANTLR4} -v 4.13.1 -Dlanguage=Cpp -package "roxal" -no-listener -visitor ${GRAMMAR_FILE} -o ${GENERATED_DIR}
+    COMMAND ${ANTLR4} -Dlanguage=Cpp -package "roxal" -no-listener -visitor ${GRAMMAR_FILE} -o ${GENERATED_DIR}
     DEPENDS ${GRAMMAR_FILE}
     COMMENT "Generating ANTLR4 parser and lexer from Roxal.g4"
 )
+endif()
+#endif
 
 # Custom target to tie the generated files to a target
 add_custom_target(generate_parser
@@ -212,24 +284,30 @@ add_custom_target(generate_parser
 # include the project root directory
 include_directories(${CMAKE_HOME_DIRECTORY})
 
+if(NOT VXWORKS)
 # Add the include directories
 include_directories(
     ${ANTLR4_ROOT}/include/antlr4-runtime
-    compiler/cpp-gen
+)
+
+link_directories(
+    ${ANTLR4_ROOT}/lib
+    ${LIBFFI_LIBRARY_DIRS}
+)
+# Add libffi include directories discovered via pkg-config
+include_directories(${LIBFFI_INCLUDE_DIRS})
+endif()
+
+include_directories(
+    ${CMAKE_SOURCE_DIR}/compiler/cpp-gen
     ${CMAKE_SOURCE_DIR}/compiler
     ${CMAKE_SOURCE_DIR}/compiler/grpc
     ${CMAKE_SOURCE_DIR}/compiler/dds
 )
 
 link_directories(
-    ${ANTLR4_ROOT}/lib
     ${CMAKE_SOURCE_DIR}/cpp-gen
-    ${LIBFFI_LIBRARY_DIRS}
 )
-
-# Add libffi include directories discovered via pkg-config
-include_directories(${LIBFFI_INCLUDE_DIRS})
-
 
 # Build the static library containing the core compiler and VM
 add_library(roxalcore STATIC ${CORE_SOURCES} ${COMPILER_SOURCES} ${GENERATED_SOURCES})
@@ -238,23 +316,35 @@ set_target_properties(roxalcore PROPERTIES OUTPUT_NAME roxal)
 add_dependencies(roxalcore generate_parser)
 
 
-target_link_libraries(roxalcore
-    PUBLIC
-        antlr4-runtime
-        icuio
-        icui18n
-        icuuc
-        icudata
-        pthread
-        dataflow
-        dl
-        ${LIBFFI_LIBRARIES}
-        $<$<BOOL:${ROXAL_ENABLE_GRPC}>:protobuf::libprotobuf>
-        $<$<BOOL:${ROXAL_ENABLE_GRPC}>:gRPC::grpc++>
-        $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::ddsc>
-        $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::libidlc>
-        $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::idl>
-)
+if(VXWORKS)    
+    target_link_libraries(roxalcore
+        PUBLIC
+            antlr4-runtime
+            icuio icui18n icuuc icudata
+            ffi
+            dataflow
+            $<$<BOOL:${ROXAL_ENABLE_GRPC}>:protobuf::libprotobuf>
+            $<$<BOOL:${ROXAL_ENABLE_GRPC}>:gRPC::grpc++>
+            $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::ddsc>
+            $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::libidlc>
+            $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::idl>
+    )
+else ()
+    target_link_libraries(roxalcore
+        PUBLIC
+            antlr4-runtime
+            icuio icui18n icuuc icudata
+            pthread
+            dataflow
+            dl
+            ${LIBFFI_LIBRARIES}
+            $<$<BOOL:${ROXAL_ENABLE_GRPC}>:protobuf::libprotobuf>
+            $<$<BOOL:${ROXAL_ENABLE_GRPC}>:gRPC::grpc++>
+            $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::ddsc>
+            $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::libidlc>
+            $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::idl>
+    )
+endif ()
 
 
 # Set compile options based on the build type
@@ -276,30 +366,65 @@ target_compile_definitions(roxalcore PRIVATE
 
 
 if(ROXAL_BUILD_MAIN)
-    add_executable(roxal ${MAIN_SOURCE})
-    target_link_libraries(roxal PRIVATE roxalcore boost_program_options)
-    target_compile_options(roxal PRIVATE
-        $<$<CONFIG:DEBUG>:-fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1>
-        $<$<CONFIG:RELEASE>:-O3>
-    )
-    target_compile_definitions(roxal PRIVATE
-        $<$<CONFIG:DEBUG>:DEBUG_BUILD>
-        $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
-        $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
-        $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
-        ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
-        ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
-        ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
-    )
+    if(VXWORKS)
+        add_executable(roxal_vxe ${MAIN_SOURCE})
 
-    add_test(NAME RoxalSourceTests
-        COMMAND python3 ${CMAKE_SOURCE_DIR}/runtests.py
-    )
+        target_link_libraries(roxal_vxe PRIVATE
+               roxalcore
+               boost_program_options
+               $<TARGET_FILE:roxalcore>
+               $<TARGET_FILE:dataflow>
+        )
 
-    set_tests_properties(RoxalSourceTests PROPERTIES
-        PASS_REGULAR_EXPRESSION ".*"
-        FAIL_REGULAR_EXPRESSION ".*FAIL.*"
-    )
+        target_link_options(roxal_vxe PRIVATE
+            -Wl,-Map,${CMAKE_BINARY_DIR}/roxal_link.map
+        )
+
+        target_compile_options(roxal_vxe PRIVATE
+            $<$<CONFIG:DEBUG>:-g -O0>
+            $<$<CONFIG:RELEASE>:-O3>
+        )
+
+        target_compile_definitions(roxal_vxe PRIVATE
+            $<$<CONFIG:DEBUG>:DEBUG_BUILD>
+            $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
+            $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
+            $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
+            ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
+            ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
+            ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
+        )
+
+        set_target_properties(roxal_vxe PROPERTIES OUTPUT_NAME "roxal" SUFFIX ".vxe")
+
+    else()
+        add_executable(roxal ${MAIN_SOURCE})
+        target_link_libraries(roxal PRIVATE roxalcore boost_program_options Threads::Threads)
+
+        target_compile_options(roxal PRIVATE
+            $<$<CONFIG:DEBUG>:-fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1>
+            $<$<CONFIG:RELEASE>:-O3>
+        )
+
+        target_compile_definitions(roxal PRIVATE
+            $<$<CONFIG:DEBUG>:DEBUG_BUILD>
+            $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
+            $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
+            $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
+            ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
+            ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
+            ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
+        )
+
+        add_test(NAME RoxalSourceTests
+            COMMAND python3 ${CMAKE_SOURCE_DIR}/runtests.py
+        )
+
+        set_tests_properties(RoxalSourceTests PROPERTIES
+            PASS_REGULAR_EXPRESSION ".*"
+            FAIL_REGULAR_EXPRESSION ".*FAIL.*"
+        )
+    endif()
 endif()
 
 

@@ -14,6 +14,11 @@
 #include <atomic>
 #include <typeinfo>
 
+//Jay
+#ifdef VXWORKS_BUILD
+#include <unordered_map>
+#endif
+//Jay
 
 // ICU
 #include <unicode/unistr.h>

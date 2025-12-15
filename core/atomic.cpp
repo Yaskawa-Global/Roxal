@@ -6,7 +6,11 @@
 ** Authors: David Jung
 **
 ****************************************************************************/
-
+#ifdef VXWORKS_BUILD
+#include <unordered_map>
+#include <functional>
+#include <mutex>
+#endif
 #include "atomic.h"
 
 using namespace roxal;

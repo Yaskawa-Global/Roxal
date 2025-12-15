@@ -8,6 +8,10 @@
 #include <ffi.h>
 #include <filesystem>
 #include <system_error>
+#ifdef VXWORKS_BUILD
+#include <unistd.h>
+#endif
+
 
 using namespace roxal;
 
@@ -56,25 +60,48 @@ Value roxal::loadlib_native(ArgsView args)
             if (combined == path) {
                 std::string src = toUTF8StdString(fn->chunk->sourceName);
                 if (!src.empty()) {
+                #ifdef VXWORKS_BUILD
+                    char cwd[256];
+                    std::string baseStr;
+                    if (getcwd(cwd, sizeof(cwd)) != nullptr) {
+                        baseStr = std::string(cwd) + "/" + src;
+                    } else {
+                        baseStr = src;
+                    }
+                    std::filesystem::path base = std::filesystem::path(baseStr).parent_path().lexically_normal();
+                    if (!base.empty()) {
+                        combined = base / path;
+                    }
+                #else
                     std::filesystem::path base = std::filesystem::path(src).parent_path();
                     if (!base.empty()) {
                         std::error_code baseEc;
                         std::filesystem::path absoluteBase = std::filesystem::absolute(base, baseEc);
-                        if (!baseEc)
-                            combined = absoluteBase / path;
-                        else
-                            combined = base / path;
+                        combined = (!baseEc) ? absoluteBase / path : base / path;
                     }
+                #endif
                 }
             }
+
         }
 
+        #ifdef VXWORKS_BUILD
+        char cwd[256];
+        std::string combinedStr;
+        std::string combinedPathStr = combined.string();
+
+        if (getcwd(cwd, sizeof(cwd)) != nullptr) {
+            combinedStr = std::string(cwd) + "/" + combinedPathStr;
+        } else {
+            combinedStr = combinedPathStr;
+        }
+
+        path = std::filesystem::path(combinedStr).lexically_normal();
+        #else
         std::error_code ec;
         std::filesystem::path absoluteCombined = std::filesystem::absolute(combined, ec);
-        if (!ec)
-            path = absoluteCombined.lexically_normal();
-        else
-            path = combined.lexically_normal();
+        path = (!ec) ? absoluteCombined.lexically_normal() : combined.lexically_normal();
+        #endif       
     }
 
     void* h = dlopen(path.string().c_str(), RTLD_LAZY);

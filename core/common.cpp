@@ -1,6 +1,9 @@
 
 #include <cstdarg>
 #include <vector>
+#ifdef VXWORKS_BUILD
+#include <numeric>
+#endif
 
 #include "common.h"
 

@@ -1456,7 +1456,13 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             // Helper that enforces duplicate/named argument validation and performs
                             // type conversion before storing the value for later assignment.
                             auto assignValue = [&](const ObjObjectType::PublicPropertyView& entry, Value value) -> bool {
-                                if (assignedKeys.contains(entry.key)) {
+
+                            #ifdef VXWORKS_BUILD
+                                if (assignedKeys.count(entry.key) > 0)
+                            #else
+                                if (assignedKeys.contains(entry.key))
+                            #endif
+                                {
                                     runtimeError("Multiple values provided for property '" +
                                                  toUTF8StdString(entry.property->name) +
                                                  "' when constructing type '" + typeName + "'.");
@@ -1501,10 +1507,17 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 for (size_t i = 0; i < callSpec.argCount && ok; ++i) {
                                     const auto& spec = callSpec.args[i];
                                     Value value = *(argBegin + i);
-                                    if (spec.positional) {
-                                        while (positionalIndex < publicProps.size() &&
-                                               assignedKeys.contains(publicProps[positionalIndex].key))
+                                    if (spec.positional) {                                        
+                                        while (positionalIndex < publicProps.size()
+                                        #ifdef VXWORKS_BUILD
+                                               && assignedKeys.count(publicProps[positionalIndex].key) > 0
+                                        #else
+                                               && assignedKeys.contains(publicProps[positionalIndex].key)
+                                        #endif
+                                        )
+                                        {
                                             ++positionalIndex;
+                                        }
                                         if (positionalIndex >= publicProps.size()) {
                                             runtimeError("Too many positional arguments when constructing type '" +
                                                          typeName + "'.");
@@ -2338,8 +2351,12 @@ void VM::defineProperty(ObjString* name)
         throw std::runtime_error("Can't create property for an interface");
     #endif
 
-    if (objType->properties.contains(name->hash))
-        throw std::runtime_error("Duplicate property '"+name->toStdString()+"' declared in type "+(objType->isActor?"actor":"object")+" "+toUTF8StdString(objType->name));
+    #ifdef VXWORKS_BUILD
+        if (objType->properties.count(name->hash) > 0)
+    #else
+        if (objType->properties.contains(name->hash))
+    #endif
+            throw std::runtime_error("Duplicate property '"+name->toStdString()+"' declared in type "+(objType->isActor?"actor":"object")+" "+toUTF8StdString(objType->name));
 
     const Value& propertyType { peek(typeObjOffset - 1) };
     Value propertyInitial { peek(typeObjOffset - 2) };
@@ -2411,8 +2428,12 @@ void VM::defineEventPayload(ObjString* name)
 
     ObjEventType* eventType = asEventType(peek(2));
 
-    if (eventType->propertyLookup.contains(name->hash))
-        throw std::runtime_error("Duplicate event payload '" + name->toStdString() + "' declared in event '" + toUTF8StdString(eventType->name) + "'");
+    #ifdef VXWORKS_BUILD
+        if (eventType->propertyLookup.count(name->hash) > 0)
+    #else
+        if (eventType->propertyLookup.contains(name->hash))
+    #endif
+            throw std::runtime_error("Duplicate event payload '" + name->toStdString() + "' declared in event '" + toUTF8StdString(eventType->name) + "'");
 
     Value propertyType = peek(1);
     Value initialValue = peek(0);
@@ -2475,8 +2496,12 @@ void VM::defineMethod(ObjString* name)
     #endif
     ObjObjectType* type = asObjectType(peek(1));
 
-    if (type->methods.contains(name->hash))
-        throw std::runtime_error("Duplicate method '"+name->toStdString()+"' declared in type "+(type->isActor?"actor":"object")+" '"+toUTF8StdString(type->name)+"'");
+    #ifdef VXWORKS_BUILD
+        if (type->methods.count(name->hash) > 0)
+    #else
+        if (type->methods.contains(name->hash))
+    #endif
+            throw std::runtime_error("Duplicate method '"+name->toStdString()+"' declared in type "+(type->isActor?"actor":"object")+" '"+toUTF8StdString(type->name)+"'");
 
     ObjClosure* closure = asClosure(method);
     ObjFunction* function = asFunction(closure->function);
@@ -2499,8 +2524,12 @@ void VM::defineEnumLabel(ObjString* name)
     #endif
     ObjObjectType* type = asObjectType(peek(1));
 
-     if (type->enumLabelValues.contains(name->hash))
-         throw std::runtime_error("Duplicate enum label '"+name->toStdString()+"' declared in type '"+toUTF8StdString(type->name)+"'");
+    #ifdef VXWORKS_BUILD
+        if (type->enumLabelValues.count(name->hash) > 0)
+    #else
+        if (type->enumLabelValues.contains(name->hash))
+    #endif
+            throw std::runtime_error("Duplicate enum label '"+name->toStdString()+"' declared in type '"+toUTF8StdString(type->name)+"'");
 
     // convert the value from byte or int to enum
     int32_t intVal = value.asInt();
