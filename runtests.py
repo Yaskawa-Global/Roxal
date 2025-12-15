@@ -88,7 +88,7 @@ tests = [
     'with_enum_test', 'with_object_test',
     'func_param_default', 'func_param_default2', 'func_param_default3','func_param_default4',
     'typeobj1', 'typeobj2', 'typeobj3', 'typeobj4', 'typeobj5', 'typeobj6', 'typeobj7',
-    'object_to_dict_private', 'object_from_dict', 'virtual_method',
+    'object_to_dict_private', 'object_from_dict', 'object_from_dict_set', 'virtual_method',
     'implements1', 'object_inherit_bank',
     'importmodule1', 'importstar', 'importsyms', 'importdiamond', 'pkg1/main',
     'import_return_stack',
