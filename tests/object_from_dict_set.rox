@@ -1,0 +1,10 @@
+
+type Obj object:
+
+  var i :int
+  var s :string :
+    get: return _s
+    set: _s = value
+
+var o = Obj({'i':1, 's':'hello'})
+print(dict(o))

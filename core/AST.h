@@ -27,6 +27,7 @@ class Statement;
 class TypeDecl;
 class FuncDecl;
 class VarDecl;
+class PropertyAccessor;
 class Expression;
 class Suite;
 class ExpressionStatement;
@@ -83,6 +84,7 @@ public:
     virtual std::any visit(ptr<TypeDecl> ast) = 0;
     virtual std::any visit(ptr<FuncDecl> ast) = 0;
     virtual std::any visit(ptr<VarDecl> ast) = 0;
+    virtual std::any visit(ptr<PropertyAccessor> ast) = 0;
     virtual std::any visit(ptr<Suite> ast) = 0;
     virtual std::any visit(ptr<ExpressionStatement> ast) = 0;
     virtual std::any visit(ptr<ReturnStatement> ast) = 0;
@@ -498,6 +500,25 @@ struct VarDecl : public Declaration {
 };
 
 
+struct PropertyAccessor : public AST {
+    icu::UnicodeString name;
+    std::variant<BuiltinType, icu::UnicodeString> propType;
+    std::optional<ptr<Expression>> initializer;
+    Access access { Access::Public };
+    bool isConst { false }; // true if declared with const instead of var
+
+    // At least one must be present (validated during semantic analysis)
+    // For one-liner: variant holds ptr<Statement> (compound_stmt or expr_stmt)
+    // For block: variant holds ptr<Suite>
+    std::optional<std::variant<ptr<Suite>, ptr<Statement>>> getter;
+    std::optional<std::variant<ptr<Suite>, ptr<Statement>>> setter;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
 struct FuncDecl : public Declaration {
     FuncDecl() : Declaration(DeclType::Func) {}
 
@@ -551,6 +572,9 @@ struct TypeDecl : public Declaration {
 
     // pre-declared properties (same syntax as variable declarations)
     std::vector<ptr<VarDecl>> properties;
+
+    // Property accessors (getters/setters)
+    std::vector<ptr<PropertyAccessor>> propertyAccessors;
 
     // only for enumerations
     std::vector<std::pair<icu::UnicodeString, ptr<Expression>>> enumLabels;

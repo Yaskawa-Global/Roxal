@@ -107,16 +107,19 @@ RoxalCompiler::RoxalCompiler()
 
 
 Value RoxalCompiler::compile(std::istream& source, const std::string& name,
-                             Value existingModule)
+                             Value existingModule,
+                             const std::string& sourceNameOverride)
 {
     Value function { Value::nilVal() };
     currentModuleHasDynamicImport = false;
     currentDynamicImports.clear();
 
+    const std::string sourceName = sourceNameOverride.empty() ? name : sourceNameOverride;
+
     ptr<ast::AST> ast {};
     try {
         ASTGenerator astGenerator {};
-        ast = astGenerator.ast(source, name);
+        ast = astGenerator.ast(source, sourceName);
     } catch (std::exception& e) {
         compileError(e.what());
         clearCompileContext();
@@ -154,7 +157,7 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
 
         std::filesystem::path p{name};
         std::string moduleName = p.stem().filename().string();
-        enterModuleScope("", toUnicodeString(moduleName), toUnicodeString(name), existingModule);
+        enterModuleScope("", toUnicodeString(moduleName), toUnicodeString(sourceName), existingModule);
 
         auto module { asModuleScope(moduleScope()) };
 
@@ -821,6 +824,9 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
                 assert(bytes.size()==1);
                 emitBytes(OpCode::Call, bytes[0]);
 
+                // Discard the module's return value so subsequent locals start at the expected slot
+                emitByte(OpCode::Pop);
+
                 importedModules[module] = importedModuleType;
 
             } catch (std::exception& e) {
@@ -1186,13 +1192,183 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     } // properties
 
 
+    // Register all method names up front so methods can reference each other
+    // without requiring an explicit 'this.' qualifier, regardless of order.
+    for (const auto& func : ast->methods) {
+        assert(func->name.has_value());
+        auto methodName = func->name.value();
+        asTypeScope(typeScope())->propertyNames[methodName] = {func->access, ast->name, /*isConst=*/false};
+    }
+
+    // Compile property accessors (with implicit backing fields) BEFORE regular methods
+    // This ensures getter/setter method names are registered before methods that might access them
+    for (const auto& propAccessor : ast->propertyAccessors) {
+        auto enclosingModuleScope = asModuleScope(moduleScope());
+
+        // Property accessor names cannot start with '_' (reserved for backing fields)
+        // This enables the optimization in GetProp/SetProp to skip accessor search for '_' prefixed properties
+        if (propAccessor->name.startsWith("_")) {
+            error("Property accessor name cannot start with '_': " + toUTF8StdString(propAccessor->name));
+        }
+
+        // Step 1: Create implicit backing field _<name>
+        icu::UnicodeString backingFieldName = UnicodeString("_") + propAccessor->name;
+        uint16_t backingFieldConstant = identifierConstant(backingFieldName);
+
+        // Register backing field as private property
+        asTypeScope(typeScope())->propertyNames[backingFieldName] = {Access::Private, ast->name, /*isConst=*/false};
+
+        namedVariable(ast->name, false); // make type accessible on the stack
+
+        // Emit type for backing field
+        if (std::holds_alternative<BuiltinType>(propAccessor->propType)) {
+            auto builtinType = std::get<BuiltinType>(propAccessor->propType);
+            Value typeValue { Value::typeSpecVal(builtinToValueType(builtinType)) };
+            emitConstant(typeValue, "backing field " + toUTF8StdString(backingFieldName) + " type");
+        } else {
+            // Named type
+            namedVariable(std::get<icu::UnicodeString>(propAccessor->propType), false);
+        }
+
+        // Emit initial value for backing field
+        if (propAccessor->initializer.has_value()) {
+            propAccessor->initializer.value()->accept(*this);
+        } else {
+            // Default value based on type
+            if (std::holds_alternative<BuiltinType>(propAccessor->propType)) {
+                auto bt = std::get<BuiltinType>(propAccessor->propType);
+                if (bt == BuiltinType::Signal)
+                    error("Can't default-construct signal");
+                emitConstant(defaultValue(builtinToValueType(bt)));
+            } else {
+                emitByte(OpCode::ConstNil);
+            }
+        }
+
+        // Emit isPrivate=true, isConst based on property declaration
+        emitByte(OpCode::ConstTrue);  // private
+        emitByte(propAccessor->isConst ? OpCode::ConstTrue : OpCode::ConstFalse); // const if property is const
+
+        emitOpArgsBytes(OpCode::Property, backingFieldConstant, "backing field " + toUTF8StdString(backingFieldName));
+
+        // Step 2: Register the property name itself in propertyNames so it can be accessed
+        asTypeScope(typeScope())->propertyNames[propAccessor->name] = {propAccessor->access, ast->name, /*isConst=*/false};
+
+        // Compile getter method: func __get_<name>() -> <type>: <getter body>
+        if (propAccessor->getter.has_value()) {
+            icu::UnicodeString getterName = UnicodeString("__get_") + propAccessor->name;
+            asTypeScope(typeScope())->propertyNames[getterName] = {propAccessor->access, ast->name, /*isConst=*/false};
+            uint16_t methodNameConstant = identifierConstant(getterName);
+
+            // Create function type for getter
+            ptr<type::Type> getterType = make_ptr<type::Type>(BuiltinType::Func);
+            getterType->func = type::Type::FuncType{};
+            getterType->func->isProc = false;
+
+            // Start function compilation
+            enterFuncScope(enclosingModuleScope->moduleType, getterName, FunctionType::Method, getterType);
+            asFunction(asFuncScope(funcScope())->function)->access = propAccessor->access;
+            asFunction(asFuncScope(funcScope())->function)->arity = 0; // No parameters
+
+            enterLocalScope();
+
+            // Compile the getter body
+            if (std::holds_alternative<ptr<Suite>>(*propAccessor->getter)) {
+                auto suite = std::get<ptr<Suite>>(*propAccessor->getter);
+                if (suite != nullptr) {
+                    suite->accept(*this);
+                }
+            } else if (std::holds_alternative<ptr<Statement>>(*propAccessor->getter)) {
+                // One-liner statement form (e.g., return _b)
+                auto stmt = std::get<ptr<Statement>>(*propAccessor->getter);
+                if (stmt != nullptr) {
+                    stmt->accept(*this);
+                }
+            }
+
+            // Ensure function ends with return
+            if (lastByte() != uint8_t(OpCode::Return))
+                emitReturn();
+
+            auto getterFuncScope = *asFuncScope(funcScope());
+            ObjFunction* getterFunc = asFunction(getterFuncScope.function);
+            exitFuncScope();
+
+            // Emit closure to put it on the stack
+            uint16_t constIdx = makeConstant(Value::objRef(getterFunc));
+            emitOpArgsBytes(OpCode::Closure, constIdx);
+            for (int i = 0; i < getterFunc->upvalueCount; i++) {
+                emitByte(getterFuncScope.upvalues[i].isLocal ? 1 : 0);
+                emitByte(getterFuncScope.upvalues[i].index);
+            }
+
+            emitOpArgsBytes(OpCode::Method, methodNameConstant, "getter "+toUTF8StdString(getterName));
+        }
+
+        // Compile setter method: proc __set_<name>(value: <type>): <setter body>
+        if (propAccessor->setter.has_value()) {
+            icu::UnicodeString setterName = UnicodeString("__set_") + propAccessor->name;
+            asTypeScope(typeScope())->propertyNames[setterName] = {propAccessor->access, ast->name, /*isConst=*/false};
+            uint16_t methodNameConstant = identifierConstant(setterName);
+
+            // Create function type for setter (proc with one parameter)
+            ptr<type::Type> setterType = make_ptr<type::Type>(BuiltinType::Func);
+            setterType->func = type::Type::FuncType{};
+            setterType->func->isProc = true;
+
+            // Start function compilation
+            enterFuncScope(enclosingModuleScope->moduleType, setterName, FunctionType::Method, setterType);
+            asFunction(asFuncScope(funcScope())->function)->access = propAccessor->access;
+            asFunction(asFuncScope(funcScope())->function)->arity = 1; // One parameter: value
+
+            enterLocalScope();
+
+            // Add 'value' parameter as a local variable
+            addLocal("value");
+            defineVariable(0);
+
+            // Compile the setter body
+            if (std::holds_alternative<ptr<Suite>>(*propAccessor->setter)) {
+                auto suite = std::get<ptr<Suite>>(*propAccessor->setter);
+                if (suite != nullptr) {
+                    suite->accept(*this);
+                }
+            } else if (std::holds_alternative<ptr<Statement>>(*propAccessor->setter)) {
+                // One-liner statement form (e.g., _b = value)
+                auto stmt = std::get<ptr<Statement>>(*propAccessor->setter);
+                if (stmt != nullptr) {
+                    stmt->accept(*this);
+                }
+            }
+
+            // Ensure function ends with return
+            if (lastByte() != uint8_t(OpCode::Return))
+                emitReturn();
+
+            auto setterFuncScope = *asFuncScope(funcScope());
+            ObjFunction* setterFunc = asFunction(setterFuncScope.function);
+            exitFuncScope();
+
+            // Emit closure to put it on the stack
+            uint16_t constIdx = makeConstant(Value::objRef(setterFunc));
+            emitOpArgsBytes(OpCode::Closure, constIdx);
+            for (int i = 0; i < setterFunc->upvalueCount; i++) {
+                emitByte(setterFuncScope.upvalues[i].isLocal ? 1 : 0);
+                emitByte(setterFuncScope.upvalues[i].index);
+            }
+
+            emitOpArgsBytes(OpCode::Method, methodNameConstant, "setter "+toUTF8StdString(setterName));
+        }
+    }
+
+    // Now compile regular methods (after property accessors so they can reference the getter/setter methods)
+
     for(size_t i=0; i<ast->methods.size(); i++) {
 
         auto func { ast->methods.at(i) };
 
         assert(func->name.has_value()); // methods must have names
         auto methodName { func->name.value() };
-        asTypeScope(typeScope())->propertyNames[methodName] = {func->access, ast->name, /*isConst=*/false};
         uint16_t methodNameConstant = identifierConstant(methodName);
 
         func->accept(*this);
@@ -1370,6 +1546,13 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
 
     defineVariable(var);
 
+    return {};
+}
+
+std::any RoxalCompiler::visit(ptr<ast::PropertyAccessor> ast)
+{
+    // TODO: Implement in Phase 6 - generate code for property accessors
+    // For now, just return empty so compilation succeeds
     return {};
 }
 
@@ -1755,14 +1938,14 @@ std::any RoxalCompiler::visit(ptr<ast::UntilStatement> ast)
     //   is compiled as:
     //   declare temp local for event expression
     //   eventExpr -> local
-    //   event.on(local, __conditional_interrupt)
+    //   event.when(local, __conditional_interrupt)
     //   try:
     //       <stmt>
     //   except e:
-    //       event.off(local, __conditional_interrupt)
+    //       event.remove(local, __conditional_interrupt)
     //       if not isinstance(e, ConditionalInterrupt):
     //           raise
-    //   event.off(local, __conditional_interrupt)
+    //   event.remove(local, __conditional_interrupt)
 
     enterLocalScope();
 
@@ -2392,6 +2575,8 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
         uint16_t propName = identifierConstant(accessor->member.value());
 
         OpCode op = OpCode::SetPropCheck;
+        bool useSetter = false;
+
         if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
             auto typeScopePtr = asTypeScope(typeScope());
             auto itMem = typeScopePtr->propertyNames.find(accessor->member.value());
@@ -2402,12 +2587,36 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                 if (info.isConst)
                     error("Cannot assign to constant '"+toUTF8StdString(accessor->member.value())+"'");
                 op = OpCode::SetProp;
+
+                // Check if property has a setter (Phase 6)
+                // Check if __set_<property> method exists in current type
+                icu::UnicodeString setterMethodName = UnicodeString("__set_") + accessor->member.value();
+                if (typeScopePtr->propertyNames.find(setterMethodName) != typeScopePtr->propertyNames.end()) {
+                    useSetter = true;
+                }
             }
         }
 
         ast->rhs->accept(*this);
 
-        emitOpArgsBytes(op, propName);
+        if (useSetter) {
+            // Call __set_<property>(value) instead of SetProp
+            // Stack has: [receiver, value]
+            // Invoke expects: [receiver, arg1, arg2, ...] and will peek(argCount) to get receiver
+            // For 1 argument: peek(1) gets receiver, peek(0) gets arg1
+            icu::UnicodeString setterName = UnicodeString("__set_") + accessor->member.value();
+            uint16_t setterConstant = identifierConstant(setterName);
+            // Emit: [OpCode::Invoke] [method_name_constant] [CallSpec_bytes]
+            emitOpArgsBytes(OpCode::Invoke, setterConstant);
+            // Emit CallSpec for 1 positional argument
+            CallSpec callSpec{1}; // 1 arg, all positional
+            auto callSpecBytes = callSpec.toBytes();
+            for (uint8_t byte : callSpecBytes) {
+                emitByte(byte);
+            }
+        } else {
+            emitOpArgsBytes(op, propName);
+        }
     }
     else if (isa<Index>(ast->lhs)) {
 
@@ -2633,7 +2842,18 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
 
             uint16_t identConstant = identifierConstant(ast->member.value());
             OpCode op = OpCode::GetPropCheck;
+            bool useGetter = false;
+
             if (isa<Variable>(ast->arg) && as<Variable>(ast->arg)->name == "this" && inTypeScope()) {
+                // First check if this property has a getter in the current type being compiled
+                icu::UnicodeString getterMethodName = UnicodeString("__get_") + ast->member.value();
+                auto typeScopePtr = asTypeScope(typeScope());
+                if (typeScopePtr->propertyNames.find(getterMethodName) != typeScopePtr->propertyNames.end()) {
+                    useGetter = true;
+                    op = OpCode::GetProp; // Use GetProp instead of GetPropCheck for this.prop
+                }
+
+                // Check type registry for inherited properties or access control
                 auto itType = typePropertyRegistry.find(asTypeScope(typeScope())->name);
                 if (itType != typePropertyRegistry.end()) {
                     auto itMem = itType->second.find(ast->member.value());
@@ -2645,7 +2865,24 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
                     }
                 }
             }
-            emitOpArgsBytes(op, identConstant);
+
+            if (useGetter) {
+                // Call __get_<property>() instead of GetProp
+                // Stack has: [this]
+                // Invoke will look up the method and call it with 'this' as receiver
+                icu::UnicodeString getterName = UnicodeString("__get_") + ast->member.value();
+                uint16_t getterConstant = identifierConstant(getterName);
+                // Emit: [OpCode::Invoke] [method_name_constant] [CallSpec_bytes]
+                emitOpArgsBytes(OpCode::Invoke, getterConstant);
+                // Emit CallSpec for 0 positional arguments
+                CallSpec callSpec{0}; // 0 args, all positional
+                auto callSpecBytes = callSpec.toBytes();
+                for (uint8_t byte : callSpecBytes) {
+                    emitByte(byte);
+                }
+            } else {
+                emitOpArgsBytes(op, identConstant);
+            }
         } break;
         default:
             throw std::runtime_error("unimplemented unary operator:"+ast->opString());
@@ -2666,6 +2903,7 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
 {
     currentNode = ast;
     Anys results {};
+
 
     ast->acceptChildren(*this, results);
 
@@ -2730,6 +2968,82 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
         if (hashSet.size() != hashes.size())
             throw std::runtime_error("Hash collision occured between two argument names");
         #endif
+    }
+
+    // Optimization: dict(object) with known object type at compile time
+    // Instead of OpCode::Call -> construct -> toType (which accesses backing fields),
+    // emit GetProp for each property (which calls getters correctly)
+
+    // Check if callable is a type literal for dict
+    auto typeLit = dynamic_ptr_cast<ast::Type>(ast->callable);
+    if (typeLit != nullptr &&
+        typeLit->t == type::BuiltinType::Dict &&
+        ast->args.size() == 1 &&
+        ast->args[0].second->type.has_value()) {
+
+        auto argType = ast->args[0].second->type.value();
+
+        // Check if argument is an object instance type
+        if (argType->builtin == type::BuiltinType::Object && argType->obj.has_value()) {
+
+            // Generate optimized bytecode for dict construction
+            // Stack layout after acceptChildren: [dict_type, object_instance]
+            // We need to replace this with GetProp calls for each public property
+
+            // Pop both the dict type and the object instance from stack
+            emitByte(OpCode::Pop);  // Pop dict type
+            emitByte(OpCode::Pop);  // Pop object instance
+
+            // Get the object type's public properties only
+            auto& objType = argType->obj.value();
+            std::vector<icu::UnicodeString> publicProps;
+
+            // Look up the type in the property registry to check access levels
+            auto typeIt = typePropertyRegistry.find(objType.name);
+            if (typeIt != typePropertyRegistry.end()) {
+                for (const auto& prop : objType.properties) {
+                    // Check if this property is public
+                    auto propIt = typeIt->second.find(prop.name);
+                    if (propIt != typeIt->second.end() && propIt->second.access == ast::Access::Public) {
+                        publicProps.push_back(prop.name);
+                    }
+                }
+            } else {
+                // Type not in registry - include all properties (fallback)
+                for (const auto& prop : objType.properties) {
+                    publicProps.push_back(prop.name);
+                }
+            }
+
+
+            // For each public property: re-evaluate object, GetProp, push key, swap
+            // Stack layout goal: [key1, value1, key2, value2, ..., keyN, valueN]
+            for (const auto& propName : publicProps) {
+                // Re-evaluate the argument expression to get the object instance on stack
+                ast->args[0].second->accept(*this);
+
+                // Get property value (GetProp handles getter invocation)
+                // Stack: [object] -> [value]
+                uint16_t propNameConstant = identifierConstant(propName);
+                emitOpArgsBytes(OpCode::GetProp, propNameConstant);
+
+                // Push property name as dict key
+                // Stack: [value] -> [value, key]
+                emitConstant(Value::stringVal(propName));
+
+                // Swap top 2 to get [key, value]
+                emitByte(OpCode::Swap);
+            }
+
+            // Stack is now: [key1, value1, key2, value2, ..., keyN, valueN]
+            // NewDict will consume top 2*N items, creating dict on top
+            // Stack after NewDict: [dict]
+            if (publicProps.size() > 255)
+                error("Object has too many properties for dict conversion (limit 255)");
+            emitBytes(OpCode::NewDict, uint8_t(publicProps.size()));
+
+            return {};
+        }
     }
 
     auto bytes = callSpec.toBytes();
@@ -4306,16 +4620,49 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
                 if (assign && info.isConst)
                     error("Cannot assign to const property '"+toUTF8StdString(name)+"'");
                 // treat as property access
-                if (!assign) {
+                // Check if this is a property accessor (has getter/setter methods)
+                icu::UnicodeString getterName = UnicodeString("__get_") + name;
+                icu::UnicodeString setterName = UnicodeString("__set_") + name;
+                auto getterIt = asTypeScope(typeScope())->propertyNames.find(getterName);
+                auto setterIt = asTypeScope(typeScope())->propertyNames.find(setterName);
+                bool hasGetter = getterIt != asTypeScope(typeScope())->propertyNames.end();
+                bool hasSetter = setterIt != asTypeScope(typeScope())->propertyNames.end();
+
+                if (!assign && hasGetter) {
+                    // Use getter method instead of GetProp
                     namedVariable(UnicodeString("this"), false);
-                    if (asSignal)
-                        emitOpArgsBytes(OpCode::GetPropSignal, arg, toUTF8StdString(name));
-                    else
-                        emitOpArgsBytes(OpCode::GetProp, arg);
+                    uint16_t getterConstant = identifierConstant(getterName);
+                    emitOpArgsBytes(OpCode::Invoke, getterConstant);
+                    CallSpec callSpec{0}; // 0 args
+                    auto callSpecBytes = callSpec.toBytes();
+                    for (uint8_t byte : callSpecBytes) {
+                        emitByte(byte);
+                    }
+                } else if (assign && hasSetter) {
+                    // Use setter method instead of SetProp
+                    // Stack has: [value]
+                    namedVariable(UnicodeString("this"), false); // Stack: [value, this]
+                    emitByte(OpCode::Swap); // Stack: [this, value]
+                    uint16_t setterConstant = identifierConstant(setterName);
+                    emitOpArgsBytes(OpCode::Invoke, setterConstant);
+                    CallSpec callSpec{1}; // 1 arg
+                    auto callSpecBytes = callSpec.toBytes();
+                    for (uint8_t byte : callSpecBytes) {
+                        emitByte(byte);
+                    }
                 } else {
-                    namedVariable(UnicodeString("this"), false);
-                    emitByte(OpCode::Swap);
-                    emitOpArgsBytes(OpCode::SetProp, arg);
+                    // Regular property access (no getter/setter)
+                    if (!assign) {
+                        namedVariable(UnicodeString("this"), false);
+                        if (asSignal)
+                            emitOpArgsBytes(OpCode::GetPropSignal, arg, toUTF8StdString(name));
+                        else
+                            emitOpArgsBytes(OpCode::GetProp, arg);
+                    } else {
+                        namedVariable(UnicodeString("this"), false);
+                        emitByte(OpCode::Swap);
+                        emitOpArgsBytes(OpCode::SetProp, arg);
+                    }
                 }
                 return true;
             }

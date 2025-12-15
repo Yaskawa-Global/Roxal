@@ -277,7 +277,44 @@ void Obj::dropReferences()
 
 
 // interned strings table
-static atomic_unordered_map<int32_t, ObjString*> strings {};
+static atomic_unordered_map<uint64_t, ObjString*> strings {};
+
+namespace {
+
+// 64-bit FNV-1a over UTF-16 code units, with optional salt to rehash on collision.
+uint64_t fnv1a64(const UnicodeString& s, uint64_t salt = 0)
+{
+    uint64_t hash = 1469598103934665603ULL ^ salt;
+    const char16_t* buf = s.getBuffer();
+    const int32_t len = s.length();
+    for (int32_t i = 0; i < len; ++i) {
+        hash ^= static_cast<uint16_t>(buf[i]);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+// Blend multiple cheap discriminators into a 64-bit key and allow deterministic
+// perturbation via salt so we can walk away from an observed collision.
+uint64_t computeInternKey(const UnicodeString& s, uint32_t salt = 0)
+{
+    const uint64_t base = fnv1a64(s);
+    const uint64_t icuHash = static_cast<uint32_t>(s.hashCode());
+    const uint64_t len = static_cast<uint32_t>(s.length());
+    const char16_t c0 = s.length() > 0 ? s.charAt(0) : 0;
+    const char16_t c1 = s.length() > 1 ? s.charAt(1) : 0;
+    const char16_t c2 = s.length() > 1 ? s.charAt(s.length() - 2) : 0;
+    const char16_t c3 = s.length() > 0 ? s.charAt(s.length() - 1) : 0;
+    uint64_t edge = (static_cast<uint64_t>(c0) << 48) ^
+                    (static_cast<uint64_t>(c1) << 32) ^
+                    (static_cast<uint64_t>(c2) << 16) ^
+                    static_cast<uint64_t>(c3);
+    uint64_t mixed = base ^ (icuHash * 0x9e3779b97f4a7c15ULL) ^ (len * 0xbf58476d1ce4e5b9ULL) ^ edge;
+    mixed ^= static_cast<uint64_t>(salt) * 0x94d049bb133111ebULL;
+    return mixed;
+}
+
+} // namespace
 
 void roxal::visitInternedStrings(const std::function<void(ObjString*)>& fn)
 {
@@ -292,7 +329,7 @@ void roxal::visitInternedStrings(const std::function<void(ObjString*)>& fn)
 
 void roxal::purgeDeadInternedStrings()
 {
-    std::vector<int32_t> deadHashes;
+    std::vector<uint64_t> deadHashes;
     strings.unsafeApply([&deadHashes](const auto& interned) {
         deadHashes.reserve(interned.size());
         for (const auto& entry : interned) {
@@ -308,37 +345,34 @@ void roxal::purgeDeadInternedStrings()
         }
     });
 
-    for (int32_t hash : deadHashes) {
+    for (uint64_t hash : deadHashes) {
         strings.erase(hash);
     }
 }
 
 ObjString::ObjString()
-    : s()
+    : s(), internKey(0)
 {
     type = ObjType::String;
     hash = 0;
 }
 
 ObjString::ObjString(const UnicodeString& us)
-    :  s(us)
+    :  s(us), internKey(0)
 {
     type = ObjType::String;
     hash = s.hashCode();
-
-    // add ourself to the string intern table
-    #ifdef DEBUG_BUILD
-    if (strings.containsKey(hash))
-        throw std::runtime_error("Duplicate ObjString creation");
-    #endif
-    strings.store(hash, this);
 }
 
 
 ObjString::~ObjString()
 {
     // remove ourself from the strings intern table
-    strings.erase(hash);
+    if (internKey != 0 || !s.isEmpty()) {
+        auto existing = strings.lookup(internKey);
+        if (existing.has_value() && existing.value() == this)
+            strings.erase(internKey);
+    }
 }
 
 
@@ -401,29 +435,56 @@ static uint32_t fnv1a32(const UnicodeString& s)
 
 unique_ptr<ObjString, UnreleasedObj> roxal::newObjString(const UnicodeString& s)
 {
-    int32_t hash = s.hashCode();
-    auto objStr = strings.lookup(hash);
-    if (!objStr.has_value()) { // not found
+    uint32_t attempt = 0;
+    while (true) {
+        uint64_t key = computeInternKey(s, attempt);
+        auto existing = strings.lookup(key);
+        if (existing.has_value()) {
+            ObjString* objStr = existing.value();
+            if (objStr && objStr->s == s) {
+                return unique_ptr<ObjString, UnreleasedObj>(objStr);
+            }
+            ++attempt;
+            continue;
+        }
 
         // create new
         #ifdef DEBUG_BUILD
-        return newObj<ObjString>(std::string(__func__)+" '" + toUTF8StdString(s) + "'",__FILE__,__LINE__,s);
+        auto objStr = newObj<ObjString>(std::string(__func__)+" '" + toUTF8StdString(s) + "'",__FILE__,__LINE__,s);
         #else
-        return newObj<ObjString>(s);
+        auto objStr = newObj<ObjString>(s);
         #endif
-    }
-    else { // found existing string
-        return unique_ptr<ObjString, UnreleasedObj>(objStr.value());
+        objStr->internKey = key;
+        strings.store(key, objStr.get());
+        return objStr;
     }
 }
 
 void roxal::updateInternedString(ObjString* obj, const UnicodeString& newVal)
 {
     if (!obj) return;
-    strings.erase(obj->hash);
+    if (obj->internKey != 0)
+        strings.erase(obj->internKey);
     obj->s = newVal;
     obj->hash = obj->s.hashCode();
-    strings.store(obj->hash, obj);
+
+    uint32_t attempt = 0;
+    while (true) {
+        uint64_t key = computeInternKey(obj->s, attempt);
+        auto existing = strings.lookup(key);
+        if (existing.has_value()) {
+            ObjString* other = existing.value();
+            if (other == obj || (other && other->s == obj->s)) {
+                obj->internKey = key;
+                return;
+            }
+            ++attempt;
+            continue;
+        }
+        obj->internKey = key;
+        strings.store(key, obj);
+        break;
+    }
 }
 
 void ObjString::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -3979,16 +4040,6 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
     Value futureReturn {}; // nil by default
     if (!callInfo.returnFuture.isNil())
         futureReturn = callInfo.returnFuture;
-#ifdef DEBUG_BUILD
-    else {
-        if (isBoundMethod(callee)) {
-            auto fn = asFunction(asClosure(asBoundMethod(callee)->method)->function);
-            std::string name;
-            fn->name.toUTF8String(name);
-            std::cerr << "queueCall: no future created for method '" << name << "'" << std::endl;
-        }
-    }
-#endif
 
     return futureReturn;
 }
@@ -4047,13 +4098,10 @@ bool roxal::objsEqual(const Value& l, const Value& r)
             if (ls == rs) // identical object
                 return true;
 
-            // Trust hash.  Possible different strings with hash collisions will
-            // compare as equal (low probability).
-            // TODO: consider doing full char comparison for equality if hashes match
-            return ls->hash == rs->hash;
-            // if (ls->s.length() != rs->s.length())
-            //     return false;
-            // return ls->s == rs->s;
+            if (ls->internKey != 0 && rs->internKey != 0 && ls->internKey != rs->internKey)
+                return false;
+
+            return ls->s == rs->s;
         } break;
         default:
             throw std::runtime_error("Unimplemented object type for objEqual:"+std::to_string(int(objType(l))));

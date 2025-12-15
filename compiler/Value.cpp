@@ -1415,6 +1415,11 @@ Value roxal::toType(ValueType t, Value v, bool strict)
         case ValueType::Dict: {
             // can convert objects to dict of property, value pairs (non-strict only)
 
+            // NOTE: This conversion accesses backing field values directly, NOT getters.
+            //  For properties with getters (especially computed properties), the backing
+            //  field value may be stale or default. To get computed values, call getters
+            //  before conversion or manually construct the dict.
+            //
             // FIXME: current object instances don't store property names for properties
             //  added by assignment at runtime (the properties map keys are property name string hashes only)
             //  Hence, currently, only the properties declared in the type object declaration are

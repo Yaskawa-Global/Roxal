@@ -1411,9 +1411,15 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
         if (context->method().size() > 255)
             throw std::runtime_error("Too many methods for one actor or object type.");
 
-        for (auto* propertyContext : context->property()) {
-            auto varDecl = visitProperty(propertyContext);
-            typeDecl->properties.push_back(as<VarDecl>(varDecl));
+        // Member variables (var/const declarations)
+        for (auto* memberVarContext : context->member_var()) {
+            auto result = visitMember_var(memberVarContext);
+            // visitMember_var now returns either VarDecl or PropertyAccessor
+            if (isa<PropertyAccessor>(result)) {
+                typeDecl->propertyAccessors.push_back(as<PropertyAccessor>(result));
+            } else {
+                typeDecl->properties.push_back(as<VarDecl>(result));
+            }
         }
 
         for (auto* methodContext : context->method()) {
@@ -1500,8 +1506,8 @@ std::any ASTGenerator::visitEvent_type_decl(RoxalParser::Event_type_declContext 
             typeDecl->annotations.push_back(annotation);
         }
 
-        for (auto* propertyContext : context->property()) {
-            auto varDecl = visitProperty(propertyContext);
+        for (auto* memberVarContext : context->member_var()) {
+            auto varDecl = visitMember_var(memberVarContext);
             typeDecl->properties.push_back(as<VarDecl>(varDecl));
         }
 
@@ -1572,43 +1578,103 @@ std::any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
 
 
 
-std::any ASTGenerator::visitProperty(RoxalParser::PropertyContext *context)
+std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
 {
     visitStart();
 
-    // a property looks like a variable declaration
-    ptr<VarDecl> varDecl = make_ptr<VarDecl>();
+    // Check if this is a property with accessors (getter/setter)
+    bool hasAccessors = !context->property_getter().empty() || !context->property_setter().empty();
 
-    varDecl->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
-    varDecl->isConst = (context->CONST() != nullptr);
+    if (hasAccessors) {
+        // Create PropertyAccessor instead of VarDecl
+        ptr<PropertyAccessor> propAccessor = make_ptr<PropertyAccessor>();
+        setSourceInfo(propAccessor, context);
 
-    varDecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText());
-    if (context->annotation().size() > 0) {
-        for(size_t i=0; i<context->annotation().size(); i++) {
-            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
+        propAccessor->access = (context->PRIVATE() != nullptr) ? Access::Private : Access::Public;
+        propAccessor->isConst = (context->CONST() != nullptr);
+        propAccessor->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText());
+
+        // Get annotations
+        for (auto* annotCtx : context->annotation()) {
+            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(annotCtx));
+            ptr<Annotation> annotation = make_ptr<Annotation>();
+            annotation->name = annotInfo->accessed;
+            annotation->args = *annotInfo->args;
+            propAccessor->annotations.push_back(annotation);
+        }
+
+        // Get type
+        if (context->builtin_type()) {
+            auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
+            propAccessor->propType = builtinType;
+        }
+        else if (context->IDENTIFIER().size() > 1) {
+            auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER(1)->getText()) };
+            propAccessor->propType = typeIdent;
+        }
+
+        // Get initializer
+        if (context->expression()) {
+            auto expr = visitExpression(context->expression());
+            propAccessor->initializer = as<Expression>(expr);
+        }
+
+        // Get getter (if present)
+        for (auto* getterCtx : context->property_getter()) {
+            propAccessor->getter = std::any_cast<std::variant<ptr<Suite>, ptr<Statement>>>(
+                visitProperty_getter(getterCtx));
+        }
+
+        // Get setter (if present)
+        for (auto* setterCtx : context->property_setter()) {
+            propAccessor->setter = std::any_cast<std::variant<ptr<Suite>, ptr<Statement>>>(
+                visitProperty_setter(setterCtx));
+        }
+
+        // Validate: const properties cannot have setters
+        if (propAccessor->isConst && propAccessor->setter.has_value()) {
+            throw std::runtime_error(std::to_string(context->start->getLine()) + ":" +
+                                   std::to_string(context->start->getCharPositionInLine()) +
+                                   " - const property '" + toUTF8StdString(propAccessor->name) +
+                                   "' cannot have a setter");
+        }
+
+        return typeValue(propAccessor);
+    }
+    else {
+        // Regular var declaration without accessors
+        ptr<VarDecl> varDecl = make_ptr<VarDecl>();
+
+        varDecl->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
+        varDecl->isConst = (context->CONST() != nullptr);
+        varDecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText());
+
+        for (auto* annotCtx : context->annotation()) {
+            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(annotCtx));
             ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
             varDecl->annotations.push_back(annotation);
         }
+
+        if (context->builtin_type()) {
+            auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
+            varDecl->varType = builtinType;
+        }
+        else if (context->IDENTIFIER().size()>1) {
+            auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
+            varDecl->varType = typeIdent;
+        }
+        else {} // type is optional
+
+        if (context->expression()) {
+            auto expr = visitExpression(context->expression());
+            varDecl->initializer = as<Expression>(expr);
+        }
+
+        return typeValue(varDecl);
     }
 
-    if (context->builtin_type()) {
-        auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
-        varDecl->varType = builtinType;
-    }
-    else if (context->IDENTIFIER().size()>1) {
-        auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
-        varDecl->varType = typeIdent;
-    }
-    else {} // type is optional
-
-    if (context->expression()) {
-        auto expr = visitExpression(context->expression());
-        varDecl->initializer = as<Expression>(expr);
-    }
-
-    return typeValue(varDecl);
     visitEnd();
 }
 
@@ -1630,6 +1696,59 @@ std::any ASTGenerator::visitEnum_label(RoxalParser::Enum_labelContext *context)
 }
 
 
+std::any ASTGenerator::visitProperty_getter(RoxalParser::Property_getterContext *context)
+{
+    visitStart();
+
+    std::variant<ptr<Suite>, ptr<Statement>> result;
+
+    // Check if it's 'compound_stmt' or 'suite'
+    if (context->suite()) {
+        // Block form: get: <newline> <indent> ... <dedent>
+        auto suite = visitSuite(context->suite());
+        result = as<Suite>(suite);
+    } else if (context->compound_stmt()) {
+        // One-liner compound statement form (e.g., return _b)
+        auto stmt = visitCompound_stmt(context->compound_stmt());
+        result = as<Statement>(stmt);
+    } else {
+        throw std::runtime_error("Property getter must be a Suite or compound statement (e.g., return)");
+    }
+
+    return result;
+    visitEnd();
+}
+
+
+std::any ASTGenerator::visitProperty_setter(RoxalParser::Property_setterContext *context)
+{
+    visitStart();
+
+    std::variant<ptr<Suite>, ptr<Statement>> result;
+
+    // Check if it's 'statement' or 'suite'
+    if (context->suite()) {
+        // Block form: set: <newline> <indent> ... <dedent>
+        auto suite = visitSuite(context->suite());
+        result = as<Suite>(suite);
+    } else if (context->compound_stmt()) {
+        // One-liner compound statement form
+        auto stmt = visitCompound_stmt(context->compound_stmt());
+        result = as<Statement>(stmt);
+    } else if (context->expr_stmt()) {
+        // One-liner expression statement form (e.g., _b = value)
+        // visitExpr_stmt returns an Expression, so wrap it in an ExpressionStatement
+        auto expr = visitExpr_stmt(context->expr_stmt());
+        auto exprStmt = make_ptr<ExpressionStatement>();
+        exprStmt->expr = as<Expression>(expr);
+        result = std::move(exprStmt);
+    } else {
+        throw std::runtime_error("Property setter must be a Suite or Statement");
+    }
+
+    return result;
+    visitEnd();
+}
 
 
 // returns ptr<ArgsOrAccessorInfo>

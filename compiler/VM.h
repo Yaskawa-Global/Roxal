@@ -131,7 +131,9 @@ public:
 #endif
 
     InterpretResult interpret(std::istream& source, const std::string& sourceName);
-    InterpretResult interpretLine(std::istream& linestream, bool replMode=true);
+    InterpretResult interpretLine(std::istream& linestream,
+                                  bool replMode=true,
+                                  const std::string& sourceNameOverride="");
 
 
     bool call(ObjClosure* closure, const CallSpec& callSpec);
@@ -414,8 +416,8 @@ public:
 
 
     Value event_emit_builtin(ArgsView args);
-    Value event_on_builtin(ArgsView args);
-    Value event_off_builtin(ArgsView args);
+    Value event_when_builtin(ArgsView args);
+    Value event_remove_builtin(ArgsView args);
 
     // Output stack traces for all running threads
     void dumpStackTraces();

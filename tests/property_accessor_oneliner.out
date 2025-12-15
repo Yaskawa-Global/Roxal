@@ -1,0 +1,9 @@
+Initial values:
+count=10
+name=test
+enabled=true
+After c.count=5: 5
+After c.count=-1 (should stay 5): 5
+After c.name='updated': updated
+After c.enabled=false: false
+dict(c)={"count": 5, "name": "updated", "enabled": false}

@@ -1,0 +1,41 @@
+type Widget object:
+
+    var width :int = 100:
+        get:
+            print("Getting width: {_width}")
+            return _width
+        set:
+            print("Setting width to: {value}")
+            _width = value
+
+    var height :int = 50:
+        get:
+            print("Getting height: {_height}")
+            return _height
+        set:
+            print("Setting height to: {value}")
+            _height = value
+
+    # Computed property - no backing field value
+    var area :int :
+        get:
+            var result = _width * _height
+            print("Computing area: {result}")
+            return result
+
+    proc init():
+        _
+
+var widget :Widget = Widget()
+
+print('=== Testing dict conversion ===')
+print('\n1. Converting widget to dict:')
+var d = dict(widget)
+
+print('\n2. Dict contents:')
+print(d)
+
+print('\n3. Accessing area from dict:')
+print("area = {d['area']}")
+
+print('\nDone!')

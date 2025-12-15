@@ -1,0 +1,15 @@
+type E event
+var count = 0
+
+func handler():
+  count = count + 1
+  print('handler '+count)
+
+E.when(handler)
+emit E()
+wait(us=1000)
+E.remove(handler)
+emit E()
+wait(us=1000)
+
+print('count='+count)

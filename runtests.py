@@ -69,7 +69,7 @@ tests = [
     'test_signal_value_property', 'test_signal_name_property', 'signal_named_param', 'construct_by_signal', 'signal_run_stop', 'signal_source', 'signal_default_err', 'signal_network1',
     'signal_islands',
     'dataflow_clocktest1', 'multi_clock', 'clock_error', 'clock_name_param',
-    'event1', 'event_when_stmt', 'event_emit_keyword', 'event_on_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4', 'event_instance_emit', 'event_payload', 'event_implicit_constructor', 'event_type_on',
+    'event1', 'event_when_stmt', 'event_emit_keyword', 'event_when_method', 'event_remove_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4', 'event_instance_emit', 'event_payload', 'event_implicit_constructor', 'event_type_when',
     'event_in_sleep', 'event_in_sleep2',
     'until_event', 'until_signal', 'signal_vector_dot',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
@@ -88,15 +88,17 @@ tests = [
     'with_enum_test', 'with_object_test',
     'func_param_default', 'func_param_default2', 'func_param_default3','func_param_default4',
     'typeobj1', 'typeobj2', 'typeobj3', 'typeobj4', 'typeobj5', 'typeobj6', 'typeobj7',
-    'object_to_dict_private', 'object_from_dict', 'virtual_method',
+    'object_to_dict_private', 'object_from_dict', 'object_from_dict_set', 'virtual_method',
     'implements1', 'object_inherit_bank',
     'importmodule1', 'importstar', 'importsyms', 'importdiamond', 'pkg1/main',
+    'import_return_stack',
     'import_folder_init', 'import_folder_single',
     'method_named_param',
     'annot1', 'generic', 'objscopes',
     'threads1', 'fork_upvalue_error', 'fork_no_upvalues',
     'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8', 'actor9',
     'actor_init', 'actor_stack', 'actor_future', 'future_ready',
+    'actor_method_order',
     'actor_closure1', 'actor_closure2', 'actor_closure3',
     'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4',
     'private_prop', 'private_method', 'private_inherit',
@@ -116,8 +118,9 @@ tests = [
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
     'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle', 'gc_list_cycle', 'gc_liveness',
     'runtime_error_snippet',
-    'property_count', 'cmdline_execute', 'repl_run', 'invalid_option', 'fileio_basic', 'fileio_binary',
+    'property_count', 'property_accessor', 'property_accessor_oneliner', 'dict_property_getters', 'cmdline_execute', 'repl_run', 'invalid_option', 'fileio_basic', 'fileio_binary',
     'fileio_read_binary', 'fileio_write_binary', 'fileio_actor_write', 'fileio_delete', 'fileio_extra',
+    'string_concat_roundtrip', 'actor_concat_stress',
     'help_doc', 'help_time_wall_now', 'help_time_wall_now_instance', 'docstring_func',
     'builtin_object_methods', 'math_counter_signal', 'print_flush',
     'grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error'
@@ -127,7 +130,8 @@ grpc_tests = ['grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', '
 grpc_server_tests = ['grpc_int64_values']
 fileio_tests = [
     'fileio_basic', 'fileio_binary', 'fileio_read_binary', 'fileio_write_binary',
-    'fileio_actor_write', 'fileio_delete', 'fileio_extra'
+    'fileio_actor_write', 'fileio_delete', 'fileio_extra',
+    'string_concat_roundtrip', 'actor_concat_stress'
 ]
 dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok', 'dds_array_struct', 'dds_array_multi']
 

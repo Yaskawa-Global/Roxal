@@ -872,7 +872,9 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
 }
 
 
-InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
+InterpretResult VM::interpretLine(std::istream& linestream,
+                                  bool replMode,
+                                  const std::string& sourceNameOverride)
 {
     Value function { Value::nilVal() }; // ObjFunction
 
@@ -887,7 +889,7 @@ InterpretResult VM::interpretLine(std::istream& linestream, bool replMode)
     compiler.setModuleResolverVM(this);
 
     try {
-        function = compiler.compile(linestream, "cli", replModuleValue);
+        function = compiler.compile(linestream, "cli", replModuleValue, sourceNameOverride);
 
     } catch (std::exception& e) {
         return InterpretResult::CompileError;
@@ -1427,10 +1429,43 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             bool strictConv = false;
                             if (thread->frames.size() >= 1)
                                 strictConv = (thread->frames.end()-1)->strict;
+
+                            // Track setter calls needed
+                            struct DictSetterCall {
+                                Value closure;
+                                Value value;
+                                CallFrame frame;
+                            };
+                            std::vector<DictSetterCall> setterFrames;
+
                             for(const auto& kv : argDict->items()) {
                                 if (!isString(kv.first))
                                     continue;
-                                int32_t hash = asStringObj(kv.first)->hash;
+                                ObjString* keyStr = asStringObj(kv.first);
+                                int32_t hash = keyStr->hash;
+
+                                // First check if there's a setter method for this property
+                                icu::UnicodeString setterName = UnicodeString("__set_") + keyStr->s;
+                                Value setterNameValue = Value::stringVal(setterName);
+                                ObjString* setterNameStr = asStringObj(setterNameValue);
+                                auto setterIt = type->methods.find(setterNameStr->hash);
+
+                                if (setterIt != type->methods.end()) {
+                                    // Property has a setter - queue the call
+                                    // Type conversion will be handled by the setter
+                                    const auto& methodInfo = setterIt->second;
+                                    Value setterClosure = methodInfo.closure;
+
+                                    CallFrame setterFrame{};
+                                    setterFrame.closure = Value::objRef(asClosure(setterClosure));
+                                    setterFrame.startIp = setterFrame.ip = asFunction(asClosure(setterClosure)->function)->chunk->code.begin();
+                                    setterFrame.strict = asFunction(asClosure(setterClosure)->function)->strict;
+
+                                    setterFrames.push_back(DictSetterCall{setterClosure, kv.second, setterFrame});
+                                    continue;
+                                }
+
+                                // No setter - look for direct property
                                 auto pit = type->properties.find(hash);
                                 if (pit == type->properties.end())
                                     continue;
@@ -1449,9 +1484,31 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                         }
                                     }
                                 }
+                                // Direct assignment
                                 objInst->properties[hash].assign(val);
                             }
                             pop();
+
+                            // Push setter frames if any
+                            if (!setterFrames.empty()) {
+                                Value savedInstance = pop();
+                                thread->pendingConstructorInstance = savedInstance;
+                                thread->pendingSetterCount = static_cast<int>(setterFrames.size());
+
+                                CallFrames::iterator parentFrame = thread->frames.size() > 0 ? thread->frames.end() - 1 : thread->frames.end();
+
+                                for (auto& setterCall : setterFrames) {
+                                    Value instForSetter = Value::objRef(objInst);
+                                    push(instForSetter);
+                                    push(setterCall.value);
+
+                                    auto& frame = setterCall.frame;
+                                    frame.slots = &(*(thread->stackTop - 2));
+                                    frame.parent = parentFrame;
+                                    thread->pushFrame(frame);
+                                    thread->frameStart = true;
+                                }
+                            }
                         } else if (!type->isActor && initMethod == nullptr) {
                             ObjectInstance* objInst = asObjectInstance(inst);
 
@@ -1466,7 +1523,13 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
                             auto argBegin = thread->stackTop - callSpec.argCount;
 
-                            std::unordered_map<int32_t, Value> assignedValues;
+                            // Track property assignments: key -> (value, property_name, has_setter)
+                            struct PropertyAssignment {
+                                Value value;
+                                icu::UnicodeString propertyName;
+                                bool callSetter;
+                            };
+                            std::unordered_map<int32_t, PropertyAssignment> assignedValues;
                             assignedValues.reserve(callSpec.argCount);
                             std::unordered_set<int32_t> assignedKeys;
 
@@ -1491,7 +1554,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                     }
                                 }
                                 assignedKeys.insert(entry.key);
-                                assignedValues.emplace(entry.key, value);
+                                assignedValues.emplace(entry.key, PropertyAssignment{value, entry.property->name, false});
                                 return true;
                             };
 
@@ -1545,15 +1608,64 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                             ok = false;
                                             break;
                                         }
-                                        if (!entry.has_value()) {
-                                            runtimeError("Unknown named argument when constructing type '" +
-                                                         typeName + "'.");
-                                            ok = false;
-                                            break;
-                                        }
-                                        if (!assignValue(*entry, value)) {
-                                            ok = false;
-                                            break;
+                                        if (entry.has_value()) {
+                                            // Normal case: property found in public properties
+                                            if (!assignValue(*entry, value)) {
+                                                ok = false;
+                                                break;
+                                            }
+                                        } else {
+                                            // Named parameter didn't match a public property.
+                                            // Check if it matches a property with a setter method.
+                                            // Search through all methods for one matching "__set_<name>" where <name> hash matches parameter hash
+                                            icu::UnicodeString propertyName;
+                                            bool foundSetter = false;
+                                            int32_t setterMethodHash = 0;
+
+                                            for (const auto& methodPair : type->methods) {
+                                                const auto& method = methodPair.second;
+                                                ObjFunction* func = asFunction(asClosure(method.closure)->function);
+                                                icu::UnicodeString methodName = func->name;
+
+                                                // Check if method name starts with "__set_"
+                                                if (methodName.startsWith("__set_")) {
+                                                    // Extract property name by removing "__set_" prefix
+                                                    icu::UnicodeString propName = methodName.tempSubString(6); // Skip "__set_"
+
+                                                    // Compute hash of property name
+                                                    ObjString* propNameStr = asStringObj(Value::stringVal(propName));
+                                                    uint16_t propHash = static_cast<uint16_t>(propNameStr->hash & 0x7fff);
+
+                                                    if (propHash == static_cast<uint16_t>(spec.paramNameHash & 0x7fff)) {
+                                                        propertyName = propName;
+                                                        setterMethodHash = methodPair.first;
+                                                        foundSetter = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+
+                                            if (!foundSetter) {
+                                                runtimeError("Unknown named argument when constructing type '" +
+                                                             typeName + "'.");
+                                                ok = false;
+                                                break;
+                                            }
+
+                                            // Property has a setter - store for later
+                                            // Use setter method hash as key
+                                            int32_t propKey = setterMethodHash;
+
+                                            if (assignedKeys.contains(propKey)) {
+                                                runtimeError("Multiple values provided for property '" +
+                                                             toUTF8StdString(propertyName) +
+                                                             "' when constructing type '" + typeName + "'.");
+                                                ok = false;
+                                                break;
+                                            }
+
+                                            assignedKeys.insert(propKey);
+                                            assignedValues.emplace(propKey, PropertyAssignment{value, propertyName, true});
                                         }
                                     }
                                 }
@@ -1562,10 +1674,73 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             if (!ok)
                                 return false;
 
-                            for (const auto& kv : assignedValues)
-                                objInst->properties[kv.first].assign(kv.second);
+                            // Process property assignments: direct assignment for properties without setters,
+                            // frame batching for properties with setters (similar to default parameter pattern)
+                            struct SetterCall {
+                                Value closure;
+                                Value value;
+                                CallFrame frame;
+                            };
+                            std::vector<SetterCall> setterFrames;
+
+                            for (const auto& kv : assignedValues) {
+                                const auto& assignment = kv.second;
+
+                                if (assignment.callSetter) {
+                                    // Property has a setter - prepare to call it
+                                    icu::UnicodeString setterName = UnicodeString("__set_") + assignment.propertyName;
+                                    Value setterNameValue = Value::stringVal(setterName);
+                                    ObjString* setterNameStr = asStringObj(setterNameValue);
+                                    auto setterIt = type->methods.find(setterNameStr->hash);
+
+                                    #ifdef DEBUG_BUILD
+                                    assert(setterIt != type->methods.end());
+                                    #endif
+
+                                    const auto& methodInfo = setterIt->second;
+                                    Value setterClosure = methodInfo.closure;
+
+                                    // Create frame for setter call (similar to default parameter frames)
+                                    CallFrame setterFrame{};
+                                    setterFrame.closure = Value::objRef(asClosure(setterClosure));
+                                    setterFrame.startIp = setterFrame.ip = asFunction(asClosure(setterClosure)->function)->chunk->code.begin();
+                                    setterFrame.strict = asFunction(asClosure(setterClosure)->function)->strict;
+
+                                    // Save closure, value, and frame for later
+                                    setterFrames.push_back(SetterCall{setterClosure, assignment.value, setterFrame});
+                                } else {
+                                    // Property without setter - direct assignment to backing field
+                                    objInst->properties[kv.first].assign(assignment.value);
+                                }
+                            }
 
                             popN(callSpec.argCount);
+
+                            // Push setter frames if any (they execute after object is created)
+                            if (!setterFrames.empty()) {
+                                // Save instance for later - after setters execute, we'll clean up their results
+                                // and push the instance back
+                                Value savedInstance = pop(); // Remove instance from stack
+                                thread->pendingConstructorInstance = savedInstance;
+                                thread->pendingSetterCount = static_cast<int>(setterFrames.size());
+
+                                // Setter frames should return to the current frame (the one with OpCode::Call)
+                                CallFrames::iterator parentFrame = thread->frames.size() > 0 ? thread->frames.end() - 1 : thread->frames.end();
+
+                                for (auto& setterCall : setterFrames) {
+                                    // Push instance and value for this setter call
+                                    Value instForSetter = Value::objRef(objInst);
+                                    push(instForSetter);
+                                    push(setterCall.value);
+
+                                    // Update frame slots to point to current stack position
+                                    auto& frame = setterCall.frame;
+                                    frame.slots = &(*(thread->stackTop - 2)); // Point to instance (receiver)
+                                    frame.parent = parentFrame;
+                                    thread->pushFrame(frame);
+                                    thread->frameStart = true;
+                                }
+                            }
                         } else if (callSpec.argCount != 0) {
                             runtimeError("Expected 0 arguments for type instantiation, provided " +
                                          std::to_string(callSpec.argCount));
@@ -2795,6 +2970,17 @@ std::pair<InterpretResult,Value> VM::execute()
 
         if (runtimeErrorFlag.load())
             return errorReturn;
+
+        // Constructor setter cleanup: after setter frames execute and return,
+        // clean up their results and push the saved instance
+        if (thread->pendingSetterCount > 0 && thread->frames.size() == frame_depth_on_entry) {
+            // All setter frames have returned, clean up
+            popN(thread->pendingSetterCount);
+            push(thread->pendingConstructorInstance);
+            thread->pendingSetterCount = 0;
+            thread->pendingConstructorInstance = Value::nilVal();
+        }
+
         if (exitRequested.load())
             return std::make_pair(InterpretResult::OK,Value::nilVal());
 
@@ -3124,6 +3310,27 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
+
+                    // Check if this property has a getter method
+                    // Optimization: skip accessor search for properties starting with '_'
+                    // (backing fields cannot have accessors)
+                    if (!name->s.startsWith("_")) {
+                        icu::UnicodeString getterName = UnicodeString("__get_") + name->s;
+                        Value getterNameValue = Value::stringVal(getterName);
+                        ObjString* getterNameStr = asStringObj(getterNameValue);
+                        auto getterIt = asObjectType(objInst->instanceType)->methods.find(getterNameStr->hash);
+                        if (getterIt != asObjectType(objInst->instanceType)->methods.end()) {
+                            // Property has a getter - invoke it instead of direct access
+                            // Stack: [instance]
+                            // Call __get_<property>() with instance as receiver
+                            CallSpec callSpec{0}; // 0 arguments
+                            if (!invoke(getterNameStr, callSpec))
+                                return errorReturn;
+                            frame = thread->frames.end()-1;
+                            break;
+                        }
+                    }
+
                     // is it an instance property?
                     auto it = objInst->properties.find(name->hash);
                     if (it != objInst->properties.end()) { // exists
@@ -3373,6 +3580,20 @@ std::pair<InterpretResult,Value> VM::execute()
                         push(it->second.value);
                         break;
                     } else {
+                        // Check if this property has a getter method
+                        icu::UnicodeString getterName = UnicodeString("__get_") + name->s;
+                        Value getterNameValue = Value::stringVal(getterName);
+                        ObjString* getterNameStr = asStringObj(getterNameValue);
+                        auto getterIt = t->methods.find(getterNameStr->hash);
+                        if (getterIt != t->methods.end()) {
+                            // Property has a getter - invoke it instead of direct access
+                            CallSpec callSpec{0}; // 0 arguments
+                            if (!invoke(getterNameStr, callSpec))
+                                return errorReturn;
+                            frame = thread->frames.end()-1;
+                            break;
+                        }
+
                         auto br = bindMethod(t, name);
                         if (br == BindResult::Bound)
                             break;
@@ -3537,6 +3758,27 @@ std::pair<InterpretResult,Value> VM::execute()
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjObjectType* t = asObjectType(objInst->instanceType);
+
+                    // Check if this property has a setter method
+                    // Optimization: skip accessor search for properties starting with '_'
+                    // (backing fields cannot have accessors)
+                    if (!name->s.startsWith("_")) {
+                        icu::UnicodeString setterName = UnicodeString("__set_") + name->s;
+                        Value setterNameValue = Value::stringVal(setterName);
+                        ObjString* setterNameStr = asStringObj(setterNameValue);
+                        auto setterIt = t->methods.find(setterNameStr->hash);
+                        if (setterIt != t->methods.end()) {
+                            // Property has a setter - invoke it instead of direct assignment
+                            // Stack: [instance, value]
+                            // Call __set_<property>(value) with instance as receiver and value as arg
+                            CallSpec callSpec{1}; // 1 argument
+                            if (!invoke(setterNameStr, callSpec))
+                                return errorReturn;
+                            frame = thread->frames.end()-1;
+                            break;
+                        }
+                    }
+
                     const auto& properties { t->properties };
                     auto propertyIt = properties.find(name->hash);
                     if (propertyIt != properties.end() && propertyIt->second.isConst) {
@@ -3676,6 +3918,23 @@ std::pair<InterpretResult,Value> VM::execute()
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjObjectType* t = asObjectType(objInst->instanceType);
+
+                    // Check if this property has a setter method
+                    icu::UnicodeString setterName = UnicodeString("__set_") + name->s;
+                    Value setterNameValue = Value::stringVal(setterName);
+                    ObjString* setterNameStr = asStringObj(setterNameValue);
+                    auto setterIt = t->methods.find(setterNameStr->hash);
+                    if (setterIt != t->methods.end()) {
+                        // Property has a setter - invoke it instead of direct assignment
+                        // Stack: [instance, value]
+                        // Call __set_<property>(value) with instance as receiver and value as arg
+                        CallSpec callSpec{1}; // 1 argument
+                        if (!invoke(setterNameStr, callSpec))
+                            return errorReturn;
+                        frame = thread->frames.end()-1;
+                        break;
+                    }
+
                     const auto& properties { t->properties };
                     auto propertyIt = properties.find(name->hash);
                     if (propertyIt != properties.end() && propertyIt->second.isConst) {
@@ -4078,6 +4337,13 @@ std::pair<InterpretResult,Value> VM::execute()
                 if (!callValue(callee, callSpec))
                     return errorReturn;
                 frame = thread->frames.end()-1;
+
+                // Constructor setter cleanup: if callValue() pushed setter frames,
+                // they will execute and return, leaving their results on stack.
+                // We detect this and clean up after all setters have executed.
+                // The cleanup happens later when pendingSetterCount is checked
+                // at the start of VM loop iterations.
+
                 break;
             }
             case OpCode::Index: {
@@ -5409,8 +5675,8 @@ void VM::defineBuiltinMethods()
 
     defineBuiltinMethod(ValueType::Event, "emit", std::mem_fn(&VM::event_emit_builtin), true);
     defineBuiltinMethod(ValueType::Object, "emit", std::mem_fn(&VM::event_emit_builtin), true);
-    defineBuiltinMethod(ValueType::Event, "on", std::mem_fn(&VM::event_on_builtin), true);
-    defineBuiltinMethod(ValueType::Event, "off", std::mem_fn(&VM::event_off_builtin), true);
+    defineBuiltinMethod(ValueType::Event, "when", std::mem_fn(&VM::event_when_builtin), true);
+    defineBuiltinMethod(ValueType::Event, "remove", std::mem_fn(&VM::event_remove_builtin), true);
 
     defineBuiltinMethod(ValueType::Actor, "tick", std::mem_fn(&VM::dataflow_tick_native), true);  // proc
     defineBuiltinMethod(ValueType::Actor, "run", std::mem_fn(&VM::dataflow_run_native), true);   // proc
@@ -5621,10 +5887,10 @@ Value VM::event_emit_builtin(ArgsView args)
     return Value::nilVal();
 }
 
-Value VM::event_on_builtin(ArgsView args)
+Value VM::event_when_builtin(ArgsView args)
 {
     if (args.size() != 2 || !isEventType(args[0]) || !isClosure(args[1]))
-        throw std::invalid_argument("event.on expects event and closure argument");
+        throw std::invalid_argument("event.when expects event and closure argument");
 
     Value eventVal = args[0];
     Value closureVal = args[1];
@@ -5645,10 +5911,10 @@ Value VM::event_on_builtin(ArgsView args)
     return Value::nilVal();
 }
 
-Value VM::event_off_builtin(ArgsView args)
+Value VM::event_remove_builtin(ArgsView args)
 {
     if (args.size() != 2 || !(isEventType(args[0]) || isSignal(args[0])) || !isClosure(args[1]))
-        throw std::invalid_argument("event.off expects event/signal and closure argument");
+        throw std::invalid_argument("event.remove expects event/signal and closure argument");
 
     Value eventVal = args[0];
     Value closureVal = args[1];

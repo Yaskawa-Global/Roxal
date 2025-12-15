@@ -76,6 +76,11 @@ struct Type {
             int32_t nameHashCode; // hashCode() of above (for use at runtime)
             std::optional<ptr<Type>> type;
             bool hasDefault;
+
+            // Property accessor flags
+            // If true, accessing this property calls __get_<name>() or __set_<name>(value)
+            bool hasGetter { false };
+            bool hasSetter { false };
         };
 
         std::vector<PropType> properties;

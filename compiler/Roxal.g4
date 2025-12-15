@@ -194,7 +194,7 @@ type_decl
 object_type_decl
  : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE)
     (EXTENDS IDENTIFIER)? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)?
-    (   (':' NEWLINE INDENT (str NEWLINE)? (property|method)* DEDENT)
+    (   (':' NEWLINE INDENT (str NEWLINE)? (member_var|method)* DEDENT)
       | NEWLINE
     )
  ;
@@ -212,7 +212,7 @@ enum_type_decl
 
 event_type_decl
  : annotation* TYPE IDENTIFIER EVENT (EXTENDS IDENTIFIER)?
-    (   (':' NEWLINE INDENT (str NEWLINE)? property* DEDENT)
+    (   (':' NEWLINE INDENT (str NEWLINE)? member_var* DEDENT)
       | NEWLINE
     )
  ;
@@ -223,8 +223,19 @@ method
    ((':' suite) | NEWLINE)  // abstract methods have no body
  ;
 
-property
- : annotation* PRIVATE? (VAR | CONST) IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)? NEWLINE
+member_var
+ : annotation* PRIVATE? (VAR | CONST) IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)?
+   ( NEWLINE
+   | ':' NEWLINE INDENT (property_getter | property_setter)+ DEDENT
+   )
+ ;
+
+property_getter
+ : {_input->LT(1)->getText() == "get"}? IDENTIFIER ':' ( compound_stmt NEWLINE | suite )
+ ;
+
+property_setter
+ : {_input->LT(1)->getText() == "set"}? IDENTIFIER ':' ( (compound_stmt | expr_stmt) NEWLINE | suite )
  ;
 
 enum_label

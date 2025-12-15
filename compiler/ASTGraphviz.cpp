@@ -254,6 +254,19 @@ std::any ASTGraphviz::visit(ptr<ast::VarDecl> ast)
     return {};
 }
 
+std::any ASTGraphviz::visit(ptr<ast::PropertyAccessor> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+
+    // TODO: Implement PropertyAccessor graphviz visualization
+    std::string label = toUTF8StdString(ast->name);
+    nodes[name] = node(name,"PropertyAccessor",label);
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
 
 std::any ASTGraphviz::visit(ptr<ast::Suite> ast)
 {

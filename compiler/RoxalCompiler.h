@@ -26,7 +26,8 @@ public:
 
     // Compile the specified source code and return a Value ObjFunction reference
     Value compile(std::istream& source, const std::string& name,
-                  Value existingModule = Value::nilVal());
+                  Value existingModule = Value::nilVal(),
+                  const std::string& sourceNameOverride = "");
 
     // Attempt to load/store cached bytecode for a standalone source file (.rox)
     Value loadFileCache(const std::filesystem::path& sourcePath) const;
@@ -49,6 +50,7 @@ public:
     virtual std::any visit(ptr<ast::TypeDecl> ast);
     virtual std::any visit(ptr<ast::FuncDecl> ast);
     virtual std::any visit(ptr<ast::VarDecl> ast);
+    virtual std::any visit(ptr<ast::PropertyAccessor> ast);
     virtual std::any visit(ptr<ast::Suite> ast);
     virtual std::any visit(ptr<ast::ExpressionStatement> ast);
     virtual std::any visit(ptr<ast::ReturnStatement> ast);

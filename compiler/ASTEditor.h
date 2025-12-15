@@ -26,6 +26,7 @@ public:
     virtual std::any visit(ptr<ast::TypeDecl> ast);
     virtual std::any visit(ptr<ast::FuncDecl> ast);
     virtual std::any visit(ptr<ast::VarDecl> ast);
+    virtual std::any visit(ptr<ast::PropertyAccessor> ast);
     virtual std::any visit(ptr<ast::Suite> ast);
     virtual std::any visit(ptr<ast::ExpressionStatement> ast);
     virtual std::any visit(ptr<ast::ReturnStatement> ast);
@@ -102,6 +103,7 @@ public:
     std::any visit(ptr<roxal::ast::TypeDecl> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::FuncDecl> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::VarDecl> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::PropertyAccessor> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Suite> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::ExpressionStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::ReturnStatement> ast) override { if(m_f) m_f(ast); return{}; }
