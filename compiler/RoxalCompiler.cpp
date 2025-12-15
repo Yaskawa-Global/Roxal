@@ -4677,9 +4677,13 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
 
         // For closures inside methods (e.g. when handlers), check if 'this' is available as an upvalue
         // and the name is a property in the enclosing type scope
+        // IMPORTANT: Check if name is a property FIRST, because resolveUpvalue has side effects
+        // (it creates the upvalue if found). We only want to capture 'this' if actually needed.
         if (inTypeScope()) {
-            int16_t thisUpvalue = resolveUpvalue(funcScope(), UnicodeString("this"));
             auto itMem = asTypeScope(typeScope())->propertyNames.find(name);
+            int16_t thisUpvalue = (itMem != asTypeScope(typeScope())->propertyNames.end())
+                ? resolveUpvalue(funcScope(), UnicodeString("this"))
+                : -1;
             if (thisUpvalue != -1 && itMem != asTypeScope(typeScope())->propertyNames.end()) {
                 const auto& info = itMem->second;
                 if (info.access == Access::Private && info.owner != asTypeScope(typeScope())->name)
