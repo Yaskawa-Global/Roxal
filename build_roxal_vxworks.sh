@@ -12,7 +12,7 @@ ROXAL_ROOT="${SCRIPT_DIR}"
 
 echo "Roxal root: ${ROXAL_ROOT}"
 
-BUILD_DIR="${ROXAL_ROOT}/vxworks_build"
+BUILD_DIR="${ROXAL_ROOT}/build_vxworks"
 
 # -------------------------------
 # Full clean option
@@ -32,6 +32,8 @@ export PATH="$WIND_BASE/host/$WIND_VX7_HOST_TYPE/bin:$PATH"
 
 which wr-c++
 wr-c++ --version
+
+ROXAL_BUILD=ON
 
 # -------------------------------
 # CMake configure

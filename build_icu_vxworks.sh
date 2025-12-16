@@ -2,6 +2,7 @@
 echo "Building ICU"
 set -euo pipefail
 
+ICU_BUILD=ON
 ROXAL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTERNAL_DIR="$ROXAL_ROOT/External"
 ICU_DIR="$EXTERNAL_DIR/icu"

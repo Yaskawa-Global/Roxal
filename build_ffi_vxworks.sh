@@ -8,13 +8,14 @@ FFI_REPO="https://github.com/libffi/libffi.git"
 
 ROXAL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+FFI_BUILD=ON
 EXTERNAL_DIR="$ROXAL_ROOT/External"
 FFI_DIR="$EXTERNAL_DIR/ffi"
 FFI_BUILD_DIR="$FFI_DIR/build"
 FFI_LIB_DST="$ROXAL_ROOT/External/libraries/ffi"
 FFI_CMAKE_DIR="$EXTERNAL_DIR/cmake/ffi"
 
-TOOLCHAIN_FILE="$ROXAL_ROOT/toolchains/vxworksffi.cmake"
+TOOLCHAIN_FILE="$ROXAL_ROOT/toolchains/vxworks.cmake"
 FFI_CLONED=0
 
 # -------------------------------

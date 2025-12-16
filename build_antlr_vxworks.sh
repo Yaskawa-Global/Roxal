@@ -8,6 +8,7 @@ ANTLR_REPO="https://github.com/antlr/antlr4.git"
 
 ROXAL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+ANTLR_BUILD=ON
 EXTERNAL_DIR="$ROXAL_ROOT/External"
 ANTLR_DIR="$EXTERNAL_DIR/antlr4"
 ANTLR_CPP_DIR="$ANTLR_DIR/runtime/Cpp"
