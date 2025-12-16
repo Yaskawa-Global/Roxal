@@ -5,17 +5,17 @@ set -euo pipefail
 echo "Building Roxal"
 
 # -------------------------------
-# Roxal 루트 자동 감지
+# Roxal Root detect
 # -------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROXAL_ROOT="${SCRIPT_DIR}"
 
 echo "Roxal root: ${ROXAL_ROOT}"
 
-BUILD_DIR="${ROXAL_ROOT}/build"
+BUILD_DIR="${ROXAL_ROOT}/vxworks_build"
 
 # -------------------------------
-# Full clean 옵션
+# Full clean option
 # -------------------------------
 if [ "${FULLCLEAN:-1}" = "1" ]; then
   echo "[Full clean] Removing build dir: ${BUILD_DIR}"
@@ -23,7 +23,7 @@ if [ "${FULLCLEAN:-1}" = "1" ]; then
 fi
 
 # -------------------------------
-# VxWorks 환경 설정
+# VxWorks environment setting
 # -------------------------------
 export WIND_BASE="$HOME/wrsdk-vxworks7-raspberrypi4b/vxsdk"
 export WIND_VX7_HOST_TYPE=x86_64-linux
