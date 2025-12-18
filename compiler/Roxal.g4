@@ -258,6 +258,10 @@ lambda_func
  : FUNC '(' parameters? ')' (YIELDS return_type)? ':' (expression | suite)
  ;
 
+lambda_proc
+ : PROC '(' parameters? ')' ':' (compound_stmt | expression | suite)
+ ;
+
 
 //TODO: assignment is an expression, but maybe we don't want assignments
 // in places like if conditions?
@@ -391,6 +395,7 @@ primary
  | IDENTIFIER
  | OPEN_PAREN expression CLOSE_PAREN
  | lambda_func
+ | lambda_proc
  | SUPER '.' IDENTIFIER
  | builtin_type
  ;

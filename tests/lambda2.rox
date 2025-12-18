@@ -1,0 +1,156 @@
+# Test multi-line lambdas inside parentheses (implicit line joining context)
+
+type Handler object:
+  var on_click
+  var on_hover
+
+type Button object:
+  var label: string
+  var handler: Handler
+
+# Basic multi-line lambda inside object constructor
+h1 = Handler(
+    on_click = func():
+      print("clicked")
+      return 1
+)
+print(h1.on_click()) # clicked, 1
+
+# Multi-line lambda with return type annotation
+h2 = Handler(
+    on_click = func() -> int:
+      var x = 10
+      var y = 20
+      return x + y
+)
+print(h2.on_click()) # 30
+
+# Multiple multi-line lambdas in same constructor
+h3 = Handler(
+    on_click = func():
+      print("click handler")
+      return 100
+    ,
+    on_hover = func():
+      print("hover handler")
+      return 200
+)
+print(h3.on_click()) # click handler, 100
+print(h3.on_hover()) # hover handler, 200
+
+# Nested: lambda that creates an object with another lambda
+type Wrapper object:
+  var inner: Handler
+
+w = Wrapper(
+    inner = Handler(
+        on_click = func():
+          print("nested click")
+          return 42
+    )
+)
+print(w.inner.on_click()) # nested click, 42
+
+# Deeper nesting: lambda body instantiates object with lambda
+type Factory object:
+  var create_handler
+
+f = Factory(
+    create_handler = func(msg: string) -> Handler:
+      return Handler(
+          on_click = func():
+            print(msg)
+            return 999
+      )
+)
+var created = f.create_handler("dynamic message")
+print(created.on_click()) # dynamic message, 999
+
+# Lambda with parameters inside parens
+b = Button(
+    label = "Submit",
+    handler = Handler(
+        on_click = func() -> int:
+          print("button clicked")
+          return 0
+        ,
+        on_hover = func() -> int:
+          print("button hovered")
+          return 1
+    )
+)
+print(b.handler.on_click()) # button clicked, 0
+
+# Func with no return value (void-like) multi-line inside parens
+type Runner object:
+  var run
+
+r = Runner(
+    run = func():
+      print("running step 1")
+      print("running step 2")
+      print("done")
+)
+r.run() # running step 1, running step 2, done
+
+# ============================================
+# Lambda proc tests (procs don't return values)
+# ============================================
+
+# Multi-line lambda proc inside object constructor
+r2 = Runner(
+    run = proc():
+      print("proc step 1")
+      print("proc step 2")
+)
+r2.run()
+
+# Single-line expression lambda proc
+r3 = Runner(run = proc(): print("single line proc"))
+r3.run()
+
+# Single-line compound_stmt lambda proc (early return)
+r4 = Runner(run = proc(): return)
+r4.run()
+print("r4 completed")
+
+# Lambda proc with parameters
+type Greeter object:
+  var greet
+
+g = Greeter(
+    greet = proc(name: string):
+      print("Hello, " + name + "!")
+)
+g.greet("World")
+
+# Nested lambda procs
+type Executor object:
+  var setup
+  var teardown
+
+e = Executor(
+    setup = proc():
+      print("setup start")
+      print("setup done")
+    ,
+    teardown = proc():
+      print("teardown start")
+      print("teardown done")
+)
+e.setup()
+e.teardown()
+
+# Lambda proc body instantiates object with another lambda proc
+type ProcFactory object:
+  var create_runner
+
+pf = ProcFactory(
+    create_runner = func(msg: string) -> Runner:
+      return Runner(
+          run = proc():
+            print("Factory created: " + msg)
+      )
+)
+var created_runner = pf.create_runner("nested proc")
+created_runner.run()

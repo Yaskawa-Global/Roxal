@@ -92,6 +92,8 @@ public:
 
     virtual std::any visitLambda_func(RoxalParser::Lambda_funcContext *context);
 
+    virtual std::any visitLambda_proc(RoxalParser::Lambda_procContext *context);
+
     virtual std::any visitExpression(RoxalParser::ExpressionContext *context);
 
     virtual std::any visitAssignment(RoxalParser::AssignmentContext *context);

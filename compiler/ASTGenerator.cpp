@@ -1831,6 +1831,52 @@ std::any ASTGenerator::visitLambda_func(RoxalParser::Lambda_funcContext *context
 }
 
 
+std::any ASTGenerator::visitLambda_proc(RoxalParser::Lambda_procContext *context)
+{
+    visitStart();
+
+    ptr<Function> func = make_ptr<Function>();
+    setSourceInfo(func, context);
+    func->isProc = true;
+    func->name.reset();
+
+    if (context->parameters()) {
+        auto params = visitParameters(context->parameters());
+        func->params = *anyas<ptr<std::vector<ptr<Parameter>>>>(params);
+    }
+
+    // procs have no return type
+
+    if (context->suite()) {
+        auto suite = visitSuite(context->suite());
+        func->body = as<Suite>(suite);
+    }
+    else if (context->compound_stmt()) {
+        // Wrap compound_stmt in a Suite
+        auto stmt = visitCompound_stmt(context->compound_stmt());
+        ptr<Suite> suite = make_ptr<Suite>();
+        setSourceInfo(suite, context->compound_stmt());
+        suite->declsOrStmts.push_back(as<Statement>(stmt));
+        func->body = suite;
+    }
+    else if (context->expression()) {
+        auto expr = visitExpression(context->expression());
+        func->body = as<Expression>(expr);
+    }
+    else {
+        // abstract (shouldn't happen for lambda_proc)
+        func->body = std::monostate();
+    }
+
+    ptr<LambdaFunc> lambdaFunc = make_ptr<LambdaFunc>();
+    lambdaFunc->func = func;
+
+    return typeValue(lambdaFunc);
+
+    visitEnd();
+}
+
+
 std::any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *context)
 {
     visitStart();
@@ -2533,6 +2579,8 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
         return visitExpression(context->expression());
     else if (context->lambda_func())
         return visitLambda_func(context->lambda_func());
+    else if (context->lambda_proc())
+        return visitLambda_proc(context->lambda_proc());
     else if (context->list())
         return visitList(context->list());
     else if (context->vector())
