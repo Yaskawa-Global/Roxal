@@ -7,13 +7,15 @@ using namespace roxal;
 
 
 
-RoxalIndentationLexer::RoxalIndentationLexer(antlr4::CharStream *input) 
+RoxalIndentationLexer::RoxalIndentationLexer(antlr4::CharStream *input)
     : RoxalLexer(input)
 {
     indentLengths.push(0);
     opened = 0;
     wasSpaceIndentation = false;
     wasTabIndentation = false;
+    lambdaState = LambdaState::NONE;
+    funcParenOpenedLevel = 0;
 }
 
 std::string RoxalIndentationLexer::TEXT_LEXER {"lexer --> "};
@@ -28,50 +30,107 @@ bool contains(const C& container, const T& element) {
 
 std::unique_ptr<antlr4::Token> RoxalIndentationLexer::nextToken()
 {
-    bool atVeryFirstCharWhichIsSpaceOrTAB = (getCharIndex() == 0) 
+    bool atVeryFirstCharWhichIsSpaceOrTAB = (getCharIndex() == 0)
         && contains(std::vector<size_t>({size_t(' '), size_t('\t')}), _input->LA(1));
     std::unique_ptr<antlr4::Token> currentToken;
 
     while (true) {
         currentToken = RoxalLexer::nextToken(); // get a token from the inputstream
         this->insertLeadingTokens(atVeryFirstCharWhichIsSpaceOrTAB, currentToken->getType(), currentToken->getStartIndex());
+
+        // Lambda state tracking: detect FUNC/PROC tokens
+        if (currentToken->getType() == FUNC || currentToken->getType() == PROC) {
+            lambdaState = LambdaState::SAW_FUNC;
+        }
+
         switch (currentToken->getType()) {
             case OPEN_PAREN:
+                // Track if this is the opening paren for func/proc parameters
+                if (lambdaState == LambdaState::SAW_FUNC) {
+                    funcParenOpenedLevel = this->opened;  // before incrementing
+                    lambdaState = LambdaState::IN_PARAMS;
+                }
+                this->opened++;
+                this->openers.push(currentToken->getType());
+                this->pendingTokens.push_back(std::move(currentToken));
+                break;
             case OPEN_BRACK:
             case OPEN_BRACE:
                 this->opened++;
                 this->openers.push(currentToken->getType());
-                this->pendingTokens.push_back(std::move(currentToken));  // insert the current open parentheses or square bracket or curly brace token
+                this->pendingTokens.push_back(std::move(currentToken));
                 break;
             case CLOSE_PAREN:
+                this->opened--;
+                if (!this->openers.empty())
+                    this->openers.pop();
+                // Check if this closes the func/proc parameter list
+                if (lambdaState == LambdaState::IN_PARAMS && this->opened == funcParenOpenedLevel) {
+                    lambdaState = LambdaState::AFTER_PARAMS;
+                }
+                this->pendingTokens.push_back(std::move(currentToken));
+                break;
             case CLOSE_BRACK:
             case CLOSE_BRACE:
                 this->opened--;
                 if (!this->openers.empty())
                     this->openers.pop();
-                this->pendingTokens.push_back(std::move(currentToken));  // insert the current close parentheses or square bracket or curly brace token
+                this->pendingTokens.push_back(std::move(currentToken));
+                break;
+            case COLON:
+                // Check if this starts a lambda suite
+                if (lambdaState == LambdaState::AFTER_PARAMS) {
+                    // Start a lambda suite - record current indent level and opened count
+                    LambdaSuiteInfo info;
+                    info.baseIndentLevel = this->indentLengths.top();
+                    info.openedAtStart = this->opened;
+                    this->lambdaSuites.push(info);
+                    lambdaState = LambdaState::NONE;
+                }
+                this->pendingTokens.push_back(std::move(currentToken));
                 break;
             case NEWLINE:
+                // Reset lambda detection state on NEWLINE (lambda header must be on one line)
+                if (lambdaState != LambdaState::NONE) {
+                    lambdaState = LambdaState::NONE;
+                }
+
                 if (this->opened > 0) {                             //*** https://docs.python.org/3/reference/lexical_analysis.html#implicit-line-joining
-                    if (!this->openers.empty() && this->openers.top()==OPEN_BRACK) {
+                    // Check if we're inside a lambda suite
+                    if (!this->lambdaSuites.empty()) {
+                        // Calculate effective opened (parens opened within the lambda)
+                        int effectiveOpened = this->opened - this->lambdaSuites.top().openedAtStart;
+                        if (effectiveOpened > 0) {
+                            // Inside parens within the lambda - skip NEWLINE (implicit line joining)
+                            continue;
+                        }
+                        // In lambda suite but not inside inner parens - emit NEWLINE
+                        // Fall through to emit NEWLINE
+                    } else if (!this->openers.empty() && this->openers.top()==OPEN_BRACK) {
                         this->pendingTokens.push_back(std::move(currentToken));
+                        break;
                     } else {
                         continue;  // We're inside an implicit line joining section, skip the NEWLINE token
                     }
-                } else {
-                    switch (_input->LA(1) /* next symbol */) {    //*** https://www.antlr.org/api/Java/org/antlr/v4/runtime/IntStream.html#LA(int)
-                        case '\r':
-                        case '\n':
-                        case '\f':
-                        case '#':                                  //*** https://docs.python.org/3/reference/lexical_analysis.html#blank-lines
-                            continue;  // We're on a blank line or before a comment, skip the NEWLINE token
-                        case '/': // same for // style comments
-                            if (_input->LA(2)=='/')
-                                continue;
-                        default:
-                            this->pendingTokens.push_back(std::move(currentToken)); // insert the current NEWLINE token
-                            this->insertIndentDedentTokens();       //*** https://docs.python.org/3/reference/lexical_analysis.html#indentation
-                    }
+                }
+                // Emit NEWLINE (either opened == 0 or we're in a lambda suite)
+                switch (_input->LA(1) /* next symbol */) {    //*** https://www.antlr.org/api/Java/org/antlr/v4/runtime/IntStream.html#LA(int)
+                    case '\r':
+                    case '\n':
+                    case '\f':
+                    case '#':                                  //*** https://docs.python.org/3/reference/lexical_analysis.html#blank-lines
+                        continue;  // We're on a blank line or before a comment, skip the NEWLINE token
+                    case '/': // same for // style comments
+                        if (_input->LA(2)=='/')
+                            continue;
+                    default:
+                        this->pendingTokens.push_back(std::move(currentToken)); // insert the current NEWLINE token
+                        this->insertIndentDedentTokens();       //*** https://docs.python.org/3/reference/lexical_analysis.html#indentation
+                        // Check if any lambda suites have ended (DEDENT back to or below base level)
+                        while (!this->lambdaSuites.empty() &&
+                               this->indentLengths.top() <= this->lambdaSuites.top().baseIndentLevel) {
+                            this->lambdaSuites.pop();
+                        }
                 }
                 break;
             case EOF:
@@ -81,7 +140,19 @@ std::unique_ptr<antlr4::Token> RoxalIndentationLexer::nextToken()
                     this->pendingTokens.push_back(std::move(currentToken)); // insert the current EOF token
                 }
                 break;
+            case FUNC:
+            case PROC:
+                // Already handled above - just add to pending
+                this->pendingTokens.push_back(std::move(currentToken));
+                break;
             default:
+                // Reset lambda detection for tokens that can't be part of lambda signature
+                // (keep AFTER_PARAMS state for YIELDS/return type tokens)
+                if (lambdaState == LambdaState::SAW_FUNC) {
+                    // After FUNC, we expect '(' - anything else cancels
+                    lambdaState = LambdaState::NONE;
+                }
+                // AFTER_PARAMS stays until we see COLON or NEWLINE (allows -> and type names)
                 this->pendingTokens.push_back(std::move(currentToken)); // insert the current token
         }
         break; // exit from the loop

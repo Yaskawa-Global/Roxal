@@ -37,6 +37,17 @@ protected:
     // Stack of the open tokens to track bracket type
     std::stack<int> openers;
 
+    // Lambda suite tracking
+    enum class LambdaState { NONE, SAW_FUNC, IN_PARAMS, AFTER_PARAMS };
+    LambdaState lambdaState;
+    int funcParenOpenedLevel;  // value of 'opened' when we saw '(' after FUNC/PROC
+
+    struct LambdaSuiteInfo {
+        int baseIndentLevel;  // indentLengths.top() when suite started
+        int openedAtStart;    // value of 'opened' when suite started
+    };
+    std::stack<LambdaSuiteInfo> lambdaSuites;
+
     // Was there space char in the indentations?
     bool wasSpaceIndentation;
     // Was there TAB char in the indentations?

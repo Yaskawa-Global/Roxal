@@ -1,0 +1,26 @@
+clicked
+1
+30
+click handler
+100
+hover handler
+200
+nested click
+42
+dynamic message
+999
+button clicked
+0
+running step 1
+running step 2
+done
+proc step 1
+proc step 2
+single line proc
+r4 completed
+Hello, World!
+setup start
+setup done
+teardown start
+teardown done
+Factory created: nested proc
