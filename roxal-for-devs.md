@@ -170,6 +170,38 @@ print( f(1) )   // "a is 1 and b is 3"
 print( f(b=7, a=2) ) // // "a is 2 and b is 7"
 ```
 
+### Variadic Parameters
+
+Functions can accept a variable number of arguments using the `...` prefix on the last parameter. The variadic arguments are collected into a list:
+
+```php
+func sum(...nums):
+    var total = 0
+    for n in nums:
+        total = total + n
+    return total
+
+print( sum(1, 2, 3) )  // 6
+print( sum() )         // 0 (empty list)
+```
+
+Variadic parameters can be combined with regular and default parameters. When a function has a variadic parameter, named arguments can appear before the positional variadic arguments:
+
+```php
+func format(sep = ", ", ...items):
+    var result = ""
+    var first = true
+    for item in items:
+        if not first:
+            result = result + sep
+        result = result + string(item)
+        first = false
+    return result
+
+print( format("x", "y", "z") )           // "x, y, z" (sep uses default)
+print( format(sep=" | ", "a", "b", "c") ) // "a | b | c"
+```
+
 
 ## Operators
 
