@@ -928,22 +928,50 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
     // closure,frame pair for any param default value 'func' calls
     std::vector<std::pair<Value,CallFrame>> defValFrames {};
 
-    // fast-path: if callee supplied all all arguments by position and none are missing,
-    //  nothing special to do
-    bool paramDefaultAndArgsReorderNeeded = !(callSpec.allPositional && callSpec.argCount == asFunction(closure->function)->arity);
+    // Check if function has variadic parameter
+    assert(asFunction(closure->function)->funcType.has_value());
+    ptr<type::Type> calleeType { asFunction(closure->function)->funcType.value() };
+    bool hasVariadic = calleeType->func.has_value() && calleeType->func.value().hasVariadic();
+    size_t regularArity = asFunction(closure->function)->arity;
+
+    // fast-path: if callee supplied all arguments by position and none are missing,
+    //  nothing special to do (but not for variadic functions which need arg collection)
+    bool paramDefaultAndArgsReorderNeeded = hasVariadic || !(callSpec.allPositional && callSpec.argCount == regularArity);
 
     CallFrame callframe {};
     auto argCount = callSpec.argCount;
 
     if (paramDefaultAndArgsReorderNeeded) {
 
-        assert(asFunction(closure->function)->funcType.has_value());
-        ptr<type::Type> calleeType { asFunction(closure->function)->funcType.value() };
-
         callframe.reorderArgs = callSpec.paramPositions(calleeType, true);
 
+        // Handle variadic args: collect extra args into a list
+        Value variadicList = Value::nilVal();
+        size_t variadicArgCount = 0;
+        if (hasVariadic && argCount > regularArity) {
+            variadicArgCount = argCount - regularArity;
+            // Create list and collect variadic args from stack
+            variadicList = Value::listVal();
+            ObjList* list = asList(variadicList);
+
+            // Args are on stack: [callee][arg0][arg1]...[argN-1] <- stackTop
+            // Variadic args are the last variadicArgCount args
+            Value* variadicStart = &(*(thread->stackTop - variadicArgCount));
+            for (size_t i = 0; i < variadicArgCount; i++) {
+                list->append(variadicStart[i]);
+            }
+
+            // Pop variadic args from stack (they're now in the list)
+            for (size_t i = 0; i < variadicArgCount; i++) {
+                pop();
+            }
+            argCount = regularArity;  // Now only regular args remain
+        }
+
         // handle execution of default param expression 'func' for params not supplied
-        if (argCount < asFunction(closure->function)->arity) {
+        // For variadic functions, we need to enter this block even if regular args are satisfied
+        // because we still need to handle the variadic param (either empty list or collected args)
+        if (argCount < regularArity || hasVariadic) {
             auto paramTypes { calleeType->func.value().params };
             // for each missing arg
             for(int16_t paramIndex = 0; paramIndex < callframe.reorderArgs.size(); paramIndex++) {
@@ -954,7 +982,14 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
                     #ifdef DEBUG_BUILD
                     assert(param.has_value());
                     #endif
-                    //auto paramName = param.value().name;
+
+                    // For variadic param, create empty list (no default func lookup)
+                    if (param.value().variadic) {
+                        push(Value::listVal());
+                        callframe.reorderArgs[paramIndex] = argCount;
+                        argCount++;
+                        continue;
+                    }
 
                     auto funcIt = asFunction(closure->function)->paramDefaultFunc.find(param.value().nameHashCode);
                     #ifdef DEBUG_BUILD
@@ -1011,6 +1046,14 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
                     argCount++;
 
                 }
+                else if (callframe.reorderArgs[paramIndex] == -2) {
+                    // -2 indicates variadic param with args to collect
+                    // The variadic list was already created and args collected above
+                    // Push the list and record its position
+                    push(variadicList);
+                    callframe.reorderArgs[paramIndex] = argCount;
+                    argCount++;
+                }
             }
 
             // if the final arg ordering matches parameter ordering (i.e. in-order)
@@ -1024,13 +1067,20 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
             if (argsInOrder)
                 callframe.reorderArgs.clear();
         }
-        else if (argCount > asFunction(closure->function)->arity) {
+        else if (argCount > regularArity && !hasVariadic) {
             runtimeError("Passed "+std::to_string(argCount)+" arguments for function "
                         +toUTF8StdString(asFunction(closure->function)->name)+" which has "
-                        +std::to_string(asFunction(closure->function)->arity)+" parameters.");
+                        +std::to_string(regularArity)+" parameters.");
             return false;
         }
-        assert(argCount == asFunction(closure->function)->arity);
+
+        // Verify final arg count
+        if (hasVariadic) {
+            assert(argCount == calleeType->func.value().params.size());
+        }
+        else {
+            assert(argCount == regularArity);
+        }
     }
 
     if (thread->frames.size() > callFrameLimit) {

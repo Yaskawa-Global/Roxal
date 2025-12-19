@@ -175,7 +175,8 @@ parameters
  ;
 
 parameter
- : annotation* identifier_word (':' (builtin_type | IDENTIFIER) )? (EQUALS expression)?
+ : annotation* DOTDOT identifier_word (':' (builtin_type | IDENTIFIER) )?  // variadic ...rest param (no default allowed)
+ | annotation* identifier_word (':' (builtin_type | IDENTIFIER) )? (EQUALS expression)?
  ;
 
 

@@ -550,6 +550,7 @@ struct Parameter : public AST {
     icu::UnicodeString name;
     std::optional<std::variant<BuiltinType,icu::UnicodeString>> type;
     std::optional<ptr<Expression>> defaultValue;
+    bool variadic = false;  // true if ...name syntax (collects remaining positional args)
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

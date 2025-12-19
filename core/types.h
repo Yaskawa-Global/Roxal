@@ -52,7 +52,8 @@ struct Type {
             icu::UnicodeString name;
             int32_t nameHashCode; // hashCode() of above (for use at runtime)
             std::optional<ptr<Type>> type;
-            bool hasDefault;
+            bool hasDefault = false;
+            bool variadic = false;  // true if ...name syntax (collects remaining positional args)
         };
 
         bool isProc; // proc or func?
@@ -60,6 +61,13 @@ struct Type {
         std::vector<ptr<Type>> returnTypes; // if specified and not a proc
 
         std::string toString() const;
+
+        // Returns true if this function has a variadic parameter (must be last param)
+        bool hasVariadic() const {
+            return !params.empty() &&
+                   params.back().has_value() &&
+                   params.back().value().variadic;
+        }
     };
 
     struct ObjectType { // Object or Actor type

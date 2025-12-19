@@ -1272,6 +1272,14 @@ std::any ASTGenerator::visitParameters(RoxalParser::ParametersContext *context)
         auto param = visitParameter(context->parameter().at(i));
         params->push_back( as<Parameter>(param) );
     }
+
+    // Validate: variadic parameter must be last
+    for(size_t i=0; i<params->size(); i++) {
+        if ((*params)[i]->variadic && i != params->size() - 1) {
+            throw std::runtime_error("Variadic parameter '..." + toUTF8StdString((*params)[i]->name) + "' must be the last parameter");
+        }
+    }
+
     return params;
     visitEnd();
 }
@@ -1287,6 +1295,11 @@ std::any ASTGenerator::visitParameter(RoxalParser::ParameterContext *context)
     ptr<Parameter> param = make_ptr<Parameter>();
     setSourceInfo(param, nameCtx);
     param->name = ident;
+
+    // Check for variadic ...name syntax
+    if (context->DOTDOT()) {
+        param->variadic = true;
+    }
 
    if (context->annotation().size() > 0) {
 

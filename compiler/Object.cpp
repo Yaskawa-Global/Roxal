@@ -91,6 +91,7 @@ void writeTypeInfo(std::ostream& out, const type::Type& t) {
                 uint8_t ht = p->type.has_value()?1:0; out.write(reinterpret_cast<char*>(&ht),1);
                 if(ht) writeTypeInfo(out, *p->type.value());
                 uint8_t hd = p->hasDefault?1:0; out.write(reinterpret_cast<char*>(&hd),1);
+                uint8_t vd = p->variadic?1:0; out.write(reinterpret_cast<char*>(&vd),1);
             }
         }
         uint32_t rc = ft.returnTypes.size();
@@ -121,6 +122,7 @@ ptr<type::Type> readTypeInfo(std::istream& in) {
                     uint8_t ht; in.read(reinterpret_cast<char*>(&ht),1);
                     if(ht) param.type = readTypeInfo(in);
                     uint8_t hd; in.read(reinterpret_cast<char*>(&hd),1); param.hasDefault = hd!=0;
+                    uint8_t vd; in.read(reinterpret_cast<char*>(&vd),1); param.variadic = vd!=0;
                     ft.params[i] = param;
                 }
             }
