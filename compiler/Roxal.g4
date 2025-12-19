@@ -246,7 +246,7 @@ enum_label
 
 annotation
  : AT IDENTIFIER
-   ( OPEN_PAREN (annot_argument (COMMA annot_argument)* COMMA?)? CLOSE_PAREN )?
+   ( OPEN_PAREN NEWLINE* (annot_argument ( (COMMA | NEWLINE) NEWLINE* annot_argument )* COMMA? NEWLINE*)? CLOSE_PAREN )?
    NEWLINE
  ;
 
@@ -366,7 +366,7 @@ optional_expression
 
 
 arguments
- : argument ( ',' argument )*
+ : NEWLINE* argument ( (COMMA | NEWLINE) NEWLINE* argument )* COMMA? NEWLINE*
  ;
 
 argument

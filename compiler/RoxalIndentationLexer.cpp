@@ -102,13 +102,35 @@ std::unique_ptr<antlr4::Token> RoxalIndentationLexer::nextToken()
                         int effectiveOpened = this->opened - this->lambdaSuites.top().openedAtStart;
                         if (effectiveOpened > 0) {
                             // Inside parens within the lambda - skip NEWLINE (implicit line joining)
+                            // This preserves existing behavior for multi-line lambdas
                             continue;
                         }
                         // In lambda suite but not inside inner parens - emit NEWLINE
                         // Fall through to emit NEWLINE
-                    } else if (!this->openers.empty() && this->openers.top()==OPEN_BRACK) {
-                        this->pendingTokens.push_back(std::move(currentToken));
-                        break;
+                    } else if (!this->openers.empty()) {
+                        // Not in lambda suite, inside some bracket
+                        if (this->openers.top() == OPEN_BRACK) {
+                            // Inside [] - emit NEWLINE (matrix row separator)
+                            this->pendingTokens.push_back(std::move(currentToken));
+                            break;
+                        } else if (this->openers.top() == OPEN_PAREN) {
+                            // Inside () - emit NEWLINE (optional comma feature)
+                            // But skip blank lines and comment-only lines
+                            switch (_input->LA(1)) {
+                                case '\r': case '\n': case '\f': case '#':
+                                    continue;  // blank line
+                                case '/':
+                                    if (_input->LA(2) == '/')
+                                        continue;  // comment line
+                                    // fall through
+                                default:
+                                    this->pendingTokens.push_back(std::move(currentToken));
+                            }
+                            break;
+                        } else {
+                            // Inside {} - skip NEWLINE (implicit line joining)
+                            continue;
+                        }
                     } else {
                         continue;  // We're inside an implicit line joining section, skip the NEWLINE token
                     }
