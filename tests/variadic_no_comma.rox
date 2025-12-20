@@ -1,0 +1,41 @@
+
+
+// UI-style nesting simulation
+type Container object:
+    proc init(name = "container", f = nil, ...children):
+        this.name = name
+        this.f = f
+        this.children = children
+
+    proc describe():
+        var n = len(this.children)
+        print("Container '{this.name}' with {n} children")
+        var result :int = -1
+        if this.f is not nil:
+            result = this.f(1)
+        print("  f returned {result}")
+        for child in this.children:
+            if child is Container:
+                child.describe()
+
+print("UI nesting test:")
+var c = Container(
+    name = "root"
+    f = func(a,b=2): a+b
+    Container(name = "panel1")
+    Container(name = "panel2")
+    Container(
+        name = "nested"
+        f = func(a=1,c=4):
+          print("a={a} c={c}")
+          var c2 = Container(
+            name='lambda instantiated'
+            f = func() -> int: 0
+            // no children
+          )
+          wait(ms=10)
+          return a*2+c
+        Container(name = "deep")
+    )
+)
+c.describe()

@@ -89,7 +89,7 @@ tests = [
     'match_simple', 'match_3cases', 'match_repeated', 'match_basic', 'match_enum',
     'with_enum_test', 'with_object_test',
     'func_param_default', 'func_param_default2', 'func_param_default3','func_param_default4',
-    'variadic', 'variadic_format',
+    'variadic', 'variadic_format', 'variadic_no_comma',
     'typeobj1', 'typeobj2', 'typeobj3', 'typeobj4', 'typeobj5', 'typeobj6', 'typeobj7',
     'object_to_dict_private', 'object_from_dict', 'object_from_dict_set', 'virtual_method',
     'implements1', 'object_inherit_bank',

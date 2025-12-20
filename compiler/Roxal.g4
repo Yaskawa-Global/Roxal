@@ -424,7 +424,7 @@ builtin_type
 
 
 list
- : '[' (expression ( ',' expression )*)? ']'
+ : '[' NEWLINE* (expression ( (COMMA | NEWLINE) NEWLINE* expression )* COMMA? NEWLINE*)? ']'
  ;
 
 vector
@@ -445,7 +445,7 @@ signed_num
 
 
 dict
- : '{' ((expression ':' expression) (',' expression ':' expression)*)? '}'
+ : '{' NEWLINE* ((expression ':' expression) ( (COMMA | NEWLINE) NEWLINE* expression ':' expression )* COMMA? NEWLINE*)? '}'
  ;
 
 

@@ -948,8 +948,16 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
         // Handle variadic args: collect extra args into a list
         Value variadicList = Value::nilVal();
         size_t variadicArgCount = 0;
-        if (hasVariadic && argCount > regularArity) {
-            variadicArgCount = argCount - regularArity;
+        // Count regular params that actually have args assigned (vs using defaults)
+        // This is needed because named args can leave gaps in regular params
+        size_t regularArgsAssigned = 0;
+        for (size_t i = 0; i < regularArity && i < callframe.reorderArgs.size(); i++) {
+            if (callframe.reorderArgs[i] >= 0) {
+                regularArgsAssigned++;
+            }
+        }
+        if (hasVariadic && argCount > regularArgsAssigned) {
+            variadicArgCount = argCount - regularArgsAssigned;
             // Create list and collect variadic args from stack
             variadicList = Value::listVal();
             ObjList* list = asList(variadicList);
@@ -965,7 +973,7 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
             for (size_t i = 0; i < variadicArgCount; i++) {
                 pop();
             }
-            argCount = regularArity;  // Now only regular args remain
+            argCount = regularArgsAssigned;  // Now only regular args remain
         }
 
         // handle execution of default param expression 'func' for params not supplied

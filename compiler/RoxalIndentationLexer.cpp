@@ -44,20 +44,48 @@ std::unique_ptr<antlr4::Token> RoxalIndentationLexer::nextToken()
         }
 
         switch (currentToken->getType()) {
-            case OPEN_PAREN:
+            case OPEN_PAREN: {
                 // Track if this is the opening paren for func/proc parameters
                 if (lambdaState == LambdaState::SAW_FUNC) {
                     funcParenOpenedLevel = this->opened;  // before incrementing
                     lambdaState = LambdaState::IN_PARAMS;
                 }
+                // Determine if this is a call context by checking previous token
+                bool isCall = false;
+                if (!this->pendingTokens.empty()) {
+                    auto prevType = this->pendingTokens.back()->getType();
+                    // Call context: preceded by something that can be called
+                    // IDENTIFIER, ), ], THIS, or type keywords that can be constructors
+                    isCall = (prevType == IDENTIFIER ||
+                              prevType == CLOSE_PAREN ||
+                              prevType == CLOSE_BRACK ||
+                              prevType == THIS);
+                }
                 this->opened++;
-                this->openers.push(currentToken->getType());
+                this->openers.push({static_cast<int>(OPEN_PAREN), isCall});
                 this->pendingTokens.push_back(std::move(currentToken));
                 break;
-            case OPEN_BRACK:
-            case OPEN_BRACE:
+            }
+            case OPEN_BRACK: {
+                // Determine if this is indexing (call-like) or list literal
+                bool isIndexing = false;
+                if (!this->pendingTokens.empty()) {
+                    auto prevType = this->pendingTokens.back()->getType();
+                    // Indexing: preceded by something that can be indexed
+                    isIndexing = (prevType == IDENTIFIER ||
+                                  prevType == CLOSE_PAREN ||
+                                  prevType == CLOSE_BRACK ||
+                                  prevType == THIS);
+                }
                 this->opened++;
-                this->openers.push(currentToken->getType());
+                this->openers.push({static_cast<int>(OPEN_BRACK), isIndexing});
+                this->pendingTokens.push_back(std::move(currentToken));
+                break;
+            }
+            case OPEN_BRACE:
+                // Dict/set literal - not a call context
+                this->opened++;
+                this->openers.push({static_cast<int>(OPEN_BRACE), false});
                 this->pendingTokens.push_back(std::move(currentToken));
                 break;
             case CLOSE_PAREN:
@@ -101,20 +129,83 @@ std::unique_ptr<antlr4::Token> RoxalIndentationLexer::nextToken()
                         // Calculate effective opened (parens opened within the lambda)
                         int effectiveOpened = this->opened - this->lambdaSuites.top().openedAtStart;
                         if (effectiveOpened > 0) {
-                            // Inside parens within the lambda - skip NEWLINE (implicit line joining)
-                            // This preserves existing behavior for multi-line lambdas
+                            // Inside parens/brackets within the lambda
+                            // Check if the innermost opener is a call/indexing context
+                            if (!this->openers.empty() && this->openers.top().isCallContext) {
+                                // Call context - emit NEWLINE (optional comma feature)
+                                // But skip blank lines and comment-only lines
+                                switch (_input->LA(1)) {
+                                    case '\r': case '\n': case '\f': case '#':
+                                        continue;  // blank line
+                                    case '/':
+                                        if (_input->LA(2) == '/')
+                                            continue;  // comment line
+                                        // fall through
+                                    default:
+                                        this->pendingTokens.push_back(std::move(currentToken));
+                                }
+                                break;
+                            }
+                            // Expression grouping or literal - skip NEWLINE (implicit line joining)
                             continue;
                         }
-                        // In lambda suite but not inside inner parens - emit NEWLINE
-                        // Fall through to emit NEWLINE
+                        // In lambda suite but not inside inner parens (effectiveOpened == 0)
+                        // Check if this is a one-liner lambda inside a call context:
+                        // - Previous token is NOT COLON (expression followed the :, not NEWLINE)
+                        // - We haven't entered the lambda body yet (no INDENT was inserted)
+                        // - We're inside a call context from BEFORE the lambda
+                        bool prevWasColon = !this->pendingTokens.empty() &&
+                                           this->pendingTokens.back()->getType() == COLON;
+                        bool noIndentYet = this->indentLengths.top() <= this->lambdaSuites.top().baseIndentLevel;
+                        if (!prevWasColon && noIndentYet && !this->openers.empty() && this->openers.top().isCallContext) {
+                            // One-liner lambda as argument (e.g., func(a,b): a+b followed by newline)
+                            // Pop the lambda suite (one-liner is complete)
+                            this->lambdaSuites.pop();
+                            // Emit NEWLINE as argument separator (no INDENT/DEDENT)
+                            switch (_input->LA(1)) {
+                                case '\r': case '\n': case '\f': case '#':
+                                    continue;  // blank line
+                                case '/':
+                                    if (_input->LA(2) == '/')
+                                        continue;  // comment line
+                                    // fall through
+                                default:
+                                    this->pendingTokens.push_back(std::move(currentToken));
+                            }
+                            break;
+                        }
+                        // Multi-line lambda (prevWasColon=true) or inside lambda body - fall through to emit NEWLINE with INDENT/DEDENT
                     } else if (!this->openers.empty()) {
                         // Not in lambda suite, inside some bracket
-                        if (this->openers.top() == OPEN_BRACK) {
-                            // Inside [] - emit NEWLINE (matrix row separator)
+                        if (this->openers.top().tokenType == OPEN_BRACK) {
+                            // Inside [] - check if it's indexing or list literal
+                            if (this->openers.top().isCallContext) {
+                                // Indexing - skip NEWLINE (implicit line joining for index expressions)
+                                continue;
+                            }
+                            // List literal - emit NEWLINE (element separator)
                             this->pendingTokens.push_back(std::move(currentToken));
                             break;
-                        } else if (this->openers.top() == OPEN_PAREN) {
-                            // Inside () - emit NEWLINE (optional comma feature)
+                        } else if (this->openers.top().tokenType == OPEN_PAREN) {
+                            if (this->openers.top().isCallContext) {
+                                // Call context - emit NEWLINE (optional comma feature)
+                                // But skip blank lines and comment-only lines
+                                switch (_input->LA(1)) {
+                                    case '\r': case '\n': case '\f': case '#':
+                                        continue;  // blank line
+                                    case '/':
+                                        if (_input->LA(2) == '/')
+                                            continue;  // comment line
+                                        // fall through
+                                    default:
+                                        this->pendingTokens.push_back(std::move(currentToken));
+                                }
+                                break;
+                            }
+                            // Expression grouping - skip NEWLINE (implicit line joining)
+                            continue;
+                        } else {
+                            // Inside {} - dict literal, emit NEWLINE (element separator)
                             // But skip blank lines and comment-only lines
                             switch (_input->LA(1)) {
                                 case '\r': case '\n': case '\f': case '#':
@@ -127,9 +218,6 @@ std::unique_ptr<antlr4::Token> RoxalIndentationLexer::nextToken()
                                     this->pendingTokens.push_back(std::move(currentToken));
                             }
                             break;
-                        } else {
-                            // Inside {} - skip NEWLINE (implicit line joining)
-                            continue;
                         }
                     } else {
                         continue;  // We're inside an implicit line joining section, skip the NEWLINE token
@@ -149,9 +237,27 @@ std::unique_ptr<antlr4::Token> RoxalIndentationLexer::nextToken()
                         this->pendingTokens.push_back(std::move(currentToken)); // insert the current NEWLINE token
                         this->insertIndentDedentTokens();       //*** https://docs.python.org/3/reference/lexical_analysis.html#indentation
                         // Check if any lambda suites have ended (DEDENT back to or below base level)
+                        bool lambdaSuiteEnded = false;
                         while (!this->lambdaSuites.empty() &&
                                this->indentLengths.top() <= this->lambdaSuites.top().baseIndentLevel) {
                             this->lambdaSuites.pop();
+                            lambdaSuiteEnded = true;
+                        }
+                        // If lambda suite ended and we're in a call context, emit extra NEWLINE
+                        // as argument separator (the NEWLINE that triggered DEDENT was consumed by suite)
+                        // But only if the next token isn't already a separator (comma or close paren)
+                        if (lambdaSuiteEnded && !this->openers.empty() && this->openers.top().isCallContext) {
+                            auto nextChar = _input->LA(1);
+                            // Skip whitespace to peek at actual next token
+                            int offset = 1;
+                            while (nextChar == ' ' || nextChar == '\t') {
+                                nextChar = _input->LA(++offset);
+                            }
+                            // Don't emit NEWLINE if next is comma, close paren/bracket/brace, or newline
+                            if (nextChar != ',' && nextChar != ')' && nextChar != ']' && nextChar != '}' &&
+                                nextChar != '\n' && nextChar != '\r') {
+                                this->insertToken("NEWLINE", NEWLINE);
+                            }
                         }
                 }
                 break;
