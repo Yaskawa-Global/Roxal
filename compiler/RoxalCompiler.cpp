@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 18;
+constexpr std::uint32_t ModuleCacheVersion = 19;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -2338,7 +2338,12 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     #endif
     enterLocalScope();
 
-    asFunction(asFuncScope(funcScope())->function)->arity = ast->params.size();
+    // Count regular params (exclude variadic param from arity)
+    size_t regularParamCount = ast->params.size();
+    if (!ast->params.empty() && ast->params.back()->variadic) {
+        regularParamCount--;
+    }
+    asFunction(asFuncScope(funcScope())->function)->arity = regularParamCount;
     if (asFunction(asFuncScope(funcScope())->function)->arity > 255)
         error("Maximum of function or procedure 255 parameters exceeded.");
 

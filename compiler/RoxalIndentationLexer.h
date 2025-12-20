@@ -34,8 +34,14 @@ protected:
 
     // The amount of opened braces, brackets and parenthesis
     int opened;
-    // Stack of the open tokens to track bracket type
-    std::stack<int> openers;
+
+    // Track opener info including whether it's a call context
+    struct OpenerInfo {
+        int tokenType;      // OPEN_PAREN, OPEN_BRACK, OPEN_BRACE
+        bool isCallContext; // true if function call/indexing, false if expression grouping/literal
+    };
+    // Stack of the open tokens to track bracket type and purpose
+    std::stack<OpenerInfo> openers;
 
     // Lambda suite tracking
     enum class LambdaState { NONE, SAW_FUNC, IN_PARAMS, AFTER_PARAMS };

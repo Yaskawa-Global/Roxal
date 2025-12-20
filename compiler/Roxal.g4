@@ -175,7 +175,8 @@ parameters
  ;
 
 parameter
- : annotation* identifier_word (':' (builtin_type | IDENTIFIER) )? (EQUALS expression)?
+ : annotation* DOTDOT identifier_word (':' (builtin_type | IDENTIFIER) )?  // variadic ...rest param (no default allowed)
+ | annotation* identifier_word (':' (builtin_type | IDENTIFIER) )? (EQUALS expression)?
  ;
 
 
@@ -245,7 +246,7 @@ enum_label
 
 annotation
  : AT IDENTIFIER
-   ( OPEN_PAREN (annot_argument (COMMA annot_argument)* COMMA?)? CLOSE_PAREN )?
+   ( OPEN_PAREN NEWLINE* (annot_argument ( (COMMA | NEWLINE) NEWLINE* annot_argument )* COMMA? NEWLINE*)? CLOSE_PAREN )?
    NEWLINE
  ;
 
@@ -365,7 +366,7 @@ optional_expression
 
 
 arguments
- : argument ( ',' argument )*
+ : NEWLINE* argument ( (COMMA | NEWLINE) NEWLINE* argument )* COMMA? NEWLINE*
  ;
 
 argument
@@ -423,7 +424,7 @@ builtin_type
 
 
 list
- : '[' (expression ( ',' expression )*)? ']'
+ : '[' NEWLINE* (expression ( (COMMA | NEWLINE) NEWLINE* expression )* COMMA? NEWLINE*)? ']'
  ;
 
 vector
@@ -444,7 +445,7 @@ signed_num
 
 
 dict
- : '{' ((expression ':' expression) (',' expression ':' expression)*)? '}'
+ : '{' NEWLINE* ((expression ':' expression) ( (COMMA | NEWLINE) NEWLINE* expression ':' expression )* COMMA? NEWLINE*)? '}'
  ;
 
 

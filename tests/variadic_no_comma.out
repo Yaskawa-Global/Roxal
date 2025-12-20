@@ -1,0 +1,12 @@
+UI nesting test:
+Container 'root' with 3 children
+  f returned 3
+Container 'panel1' with 0 children
+  f returned -1
+Container 'panel2' with 0 children
+  f returned -1
+Container 'nested' with 1 children
+a=1 c=4
+  f returned 6
+Container 'deep' with 0 children
+  f returned -1

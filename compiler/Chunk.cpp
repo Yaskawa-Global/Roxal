@@ -509,7 +509,8 @@ std::vector<int8_t> CallSpec::paramPositions(ptr<type::Type> calleeType, bool th
 {
     std::vector<int8_t> argPositions {};
 
-    // check that all uunspecified arguments have defaults declared (thow if any missing)
+    // check that all unspecified arguments have defaults declared (throw if any missing)
+    // Note: variadic params (marked with -2) are allowed to have no args
     auto checkRequiredArgumentsSpecified = [&](const type::Type::FuncType& funcType) {
         #ifdef DEBUG_BUILD
         assert(argPositions.size() == funcType.params.size());
@@ -517,6 +518,9 @@ std::vector<int8_t> CallSpec::paramPositions(ptr<type::Type> calleeType, bool th
         for(int pi=0; pi<funcType.params.size();pi++) {
             if (argPositions[pi] == -1) {
                 if (funcType.params[pi].has_value()) {
+                    // Variadic params are optional (empty list if no args)
+                    if (funcType.params[pi].value().variadic)
+                        continue;
                     if (!funcType.params[pi].value().hasDefault)
                         throw std::runtime_error("Argument for parameter "+toUTF8StdString(funcType.params[pi].value().name)+" in call to "+calleeType->toString()+" not provided.");
                 }
@@ -531,14 +535,33 @@ std::vector<int8_t> CallSpec::paramPositions(ptr<type::Type> calleeType, bool th
         // just in-order
         if (argCount > 2)
             argPositions.reserve(argCount+2);
-        for(auto i=0; i<argCount; i++)
-            argPositions.push_back(i);
 
         if (calleeType->builtin == type::BuiltinType::Func) {
             if (calleeType->func.has_value()) {
                 const type::Type::FuncType& funcType { calleeType->func.value() };
-                for(auto i=argCount; i<funcType.params.size(); i++)
-                    argPositions.push_back(-1); // not supplied
+                bool hasVariadic = funcType.hasVariadic();
+                size_t regularParamCount = hasVariadic ? funcType.params.size() - 1 : funcType.params.size();
+
+                // Fill regular params first
+                for(size_t i=0; i<argCount && i<regularParamCount; i++)
+                    argPositions.push_back(i);
+
+                // For unfilled regular params, mark as not supplied
+                for(size_t i=argCount; i<regularParamCount; i++)
+                    argPositions.push_back(-1);
+
+                // Handle variadic param
+                if (hasVariadic) {
+                    if (argCount > regularParamCount) {
+                        // -2 indicates variadic param; VM will collect remaining args
+                        // The value encodes: -2 means "collect args from index regularParamCount onwards"
+                        argPositions.push_back(-2);
+                    } else {
+                        // No variadic args provided - VM will create empty list
+                        argPositions.push_back(-1);
+                    }
+                }
+
                 if (throwOnMissing)
                     checkRequiredArgumentsSpecified(funcType);
             }
@@ -551,11 +574,17 @@ std::vector<int8_t> CallSpec::paramPositions(ptr<type::Type> calleeType, bool th
 
             if (calleeType->func.has_value()) {
                 const type::Type::FuncType& funcType { calleeType->func.value() };
+                bool hasVariadic = funcType.hasVariadic();
+                size_t regularParamCount = hasVariadic ? funcType.params.size() - 1 : funcType.params.size();
 
+                // Find param index by name hash (excluding variadic param)
                 auto paramIndex = [&](uint16_t nameHashCode) -> int8_t {
                     int8_t index=0;
                     for(const auto& param : funcType.params) {
                         if (param.has_value()) {
+                            // Don't match against variadic param by name
+                            if (param.value().variadic)
+                                break;
                             if ((param.value().nameHashCode & 0x7fff) == (nameHashCode & 0x7fff))
                                 return index;
                         }
@@ -567,30 +596,79 @@ std::vector<int8_t> CallSpec::paramPositions(ptr<type::Type> calleeType, bool th
                 argPositions = std::vector<int8_t>(funcType.params.size(),int8_t(-1));
                 bool callerOutOfOrderParamSeen = false;
                 size_t argIndex = 0;
-                for(const auto& arg : args) {
-                    if (arg.positional) {
-                        if (!callerOutOfOrderParamSeen)
-                            argPositions[argIndex] = argIndex;
-                        else // TODO: runtime error? (or handle in caller?)
-                            throw std::runtime_error("Can't use positional arguments after named arguments in call to "+calleeType->toString());
+                size_t nextUnfilledRegularParam = 0;  // For positional args when variadic exists
+                bool variadicArgsStarted = false;
+
+                // First pass: match all named arguments
+                for(size_t ai = 0; ai < args.size(); ai++) {
+                    if (!args[ai].positional) {
+                        auto pindex = paramIndex(args[ai].paramNameHash);
+                        if (pindex >= 0) {
+                            argPositions[pindex] = ai;
+                            callerOutOfOrderParamSeen = true;  // named arg seen
+                        }
+                        else
+                            throw std::runtime_error("Unknown parameter name in call to "+calleeType->toString());
+                    }
+                }
+
+                // Find which regular params are still unfilled after named args
+                for(size_t pi = 0; pi < regularParamCount; pi++) {
+                    if (argPositions[pi] == -1) {
+                        nextUnfilledRegularParam = pi;
+                        break;
+                    }
+                    nextUnfilledRegularParam = pi + 1;
+                }
+
+                // Second pass: handle positional arguments
+                // Track if we've seen a named arg before current position (in call order)
+                bool seenNamedArgInCallOrder = false;
+                size_t positionalArgIndex = 0;  // Index among positional args only
+                for(size_t ai = 0; ai < args.size(); ai++) {
+                    if (!args[ai].positional) {
+                        seenNamedArgInCallOrder = true;  // Mark that we've seen a named arg
                     }
                     else {
-                        // if the arg is named but is in position, treat like positional
-                        auto pindex = paramIndex(arg.paramNameHash);
-                        if (pindex >= 0) {
-                            if (pindex == argIndex) { // named, but in correct position
-                                argPositions[pindex] = argIndex;
+                        // This is a positional argument
+                        if (hasVariadic) {
+                            // With variadic: positional args after named go to variadic
+                            if (seenNamedArgInCallOrder) {
+                                // Positional after named -> goes to variadic
+                                variadicArgsStarted = true;
+                                // Don't assign to argPositions; VM will collect these
                             }
-                            else { // named, out of position
-                                argPositions[pindex] = argIndex;
-                                callerOutOfOrderParamSeen = true;
+                            else {
+                                // Positional before any named -> fills regular params
+                                if (nextUnfilledRegularParam < regularParamCount) {
+                                    argPositions[nextUnfilledRegularParam] = ai;
+                                    nextUnfilledRegularParam++;
+                                }
+                                else {
+                                    // Regular params full, rest go to variadic
+                                    variadicArgsStarted = true;
+                                }
                             }
                         }
-                        else // FIXME: should this be runtime error (and how can we list the call arg name?)
-                            throw std::runtime_error("Function call parameter "+std::to_string(argIndex)+" in call to "+calleeType->toString());
-
+                        else {
+                            // No variadic: original behavior
+                            if (!seenNamedArgInCallOrder) {
+                                if (positionalArgIndex < regularParamCount)
+                                    argPositions[positionalArgIndex] = ai;
+                            }
+                            else
+                                throw std::runtime_error("Can't use positional arguments after named arguments in call to "+calleeType->toString());
+                        }
+                        positionalArgIndex++;
                     }
-                    argIndex++;
+                }
+
+                // Set variadic param marker if we have variadic args
+                if (hasVariadic) {
+                    if (variadicArgsStarted) {
+                        argPositions[funcType.params.size() - 1] = -2;  // -2 = collect variadic args
+                    }
+                    // else remains -1, VM creates empty list
                 }
 
                 if (throwOnMissing)

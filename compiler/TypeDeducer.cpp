@@ -543,6 +543,7 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
                 paramType.nameHashCode = param->name.hashCode();
                 paramType.type = make_ptr<Type>(std::get<BuiltinType>(param->type.value()));
                 paramType.hasDefault = param->defaultValue.has_value();
+                paramType.variadic = param->variadic;
                 type->func.value().params[i] = paramType;
             }
             else if (std::holds_alternative<icu::UnicodeString>(param->type.value())) {
@@ -555,6 +556,7 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
             paramType.name = param->name;
             paramType.nameHashCode = param->name.hashCode();
             paramType.hasDefault = param->defaultValue.has_value();
+            paramType.variadic = param->variadic;
             type->func.value().params[i] = paramType;
         }
     }
