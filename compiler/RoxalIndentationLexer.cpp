@@ -51,16 +51,17 @@ std::unique_ptr<antlr4::Token> RoxalIndentationLexer::nextToken()
                     lambdaState = LambdaState::IN_PARAMS;
                 }
                 // Determine if this is a call context by checking previous token
-                bool isCall = false;
-                if (!this->pendingTokens.empty()) {
-                    auto prevType = this->pendingTokens.back()->getType();
-                    // Call context: preceded by something that can be called
-                    // IDENTIFIER, ), ], THIS, or type keywords that can be constructors
-                    isCall = (prevType == IDENTIFIER ||
+                // Use pendingTokens.back() if available, otherwise use lastAppendedTokenType
+                // (the token that was just returned in the previous nextToken() call)
+                auto prevType = !this->pendingTokens.empty()
+                    ? this->pendingTokens.back()->getType()
+                    : this->lastAppendedTokenType;
+                // Call context: preceded by something that can be called
+                // IDENTIFIER, ), ], THIS, or type keywords that can be constructors
+                bool isCall = (prevType == IDENTIFIER ||
                               prevType == CLOSE_PAREN ||
                               prevType == CLOSE_BRACK ||
                               prevType == THIS);
-                }
                 this->opened++;
                 this->openers.push({static_cast<int>(OPEN_PAREN), isCall});
                 this->pendingTokens.push_back(std::move(currentToken));
@@ -68,15 +69,15 @@ std::unique_ptr<antlr4::Token> RoxalIndentationLexer::nextToken()
             }
             case OPEN_BRACK: {
                 // Determine if this is indexing (call-like) or list literal
-                bool isIndexing = false;
-                if (!this->pendingTokens.empty()) {
-                    auto prevType = this->pendingTokens.back()->getType();
-                    // Indexing: preceded by something that can be indexed
-                    isIndexing = (prevType == IDENTIFIER ||
-                                  prevType == CLOSE_PAREN ||
-                                  prevType == CLOSE_BRACK ||
-                                  prevType == THIS);
-                }
+                // Use pendingTokens.back() if available, otherwise use lastAppendedTokenType
+                auto prevType = !this->pendingTokens.empty()
+                    ? this->pendingTokens.back()->getType()
+                    : this->lastAppendedTokenType;
+                // Indexing: preceded by something that can be indexed
+                bool isIndexing = (prevType == IDENTIFIER ||
+                              prevType == CLOSE_PAREN ||
+                              prevType == CLOSE_BRACK ||
+                              prevType == THIS);
                 this->opened++;
                 this->openers.push({static_cast<int>(OPEN_BRACK), isIndexing});
                 this->pendingTokens.push_back(std::move(currentToken));
