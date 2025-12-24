@@ -72,7 +72,7 @@ tests = [
     'dataflow_clocktest1', 'multi_clock', 'clock_error', 'clock_name_param',
     'event1', 'event_when_stmt', 'event_emit_keyword', 'event_when_method', 'event_remove_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4', 'event_instance_emit',
     'event_payload', 'event_implicit_constructor', 'event_type_when',
-    'event_in_sleep', 'event_in_sleep2',
+    'event_in_sleep', 'event_in_sleep2', 'event_cascade',
     'until_event', 'until_signal', 'signal_vector_dot',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
     'module_strict_assign_err', 'var_redeclare_err', 'var_redeclare_assign_err', 'repl_var_redeclare_err', 'func_nonstrict', 'conversions1',

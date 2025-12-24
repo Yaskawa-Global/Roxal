@@ -1,0 +1,62 @@
+// Test for event handler stack cleanup during nested/cascading events
+// Regression test for bug where RETURN used <= instead of < for frame depth check
+// The key test is that stack depth is balanced after event processing
+
+type ClickEvent event:
+  var source
+
+// Track initial stack depth
+var initial_depth = _stackdepth()
+
+// Track that handlers actually ran and called methods
+var method_calls = 0
+
+type Widget object:
+  var name :string = ""
+
+  proc init(name = "widget"):
+    this.name = name
+
+    // Handler that calls a method - this was the bug trigger
+    when ClickEvent occurs as evt:
+      if evt.source is this:
+        this.on_click()
+
+  proc on_click():
+    method_calls = method_calls + 1
+
+// Create widgets
+var w1 = Widget(name="Button1")
+var w2 = Widget(name="Button2")
+
+// Emit events
+emit ClickEvent(source=w1)
+emit ClickEvent(source=w2)
+
+wait(ms=100)
+
+// Verify some handlers ran (at least 2)
+if method_calls < 2:
+  print("FAIL: Expected at least 2 method calls, got {method_calls}")
+
+// Critical: verify stack is balanced after all event processing
+var final_depth = _stackdepth()
+if final_depth != initial_depth:
+  print("FAIL: Stack leak: initial={initial_depth} final={final_depth}")
+
+// Stress test with more events
+method_calls = 0
+for i in range(5):
+  emit ClickEvent(source=w1)
+  emit ClickEvent(source=w2)
+
+wait(ms=100)
+
+if method_calls < 4:
+  print("FAIL: Stress test: Expected at least 4 method calls, got {method_calls}")
+
+var stress_depth = _stackdepth()
+if stress_depth != initial_depth:
+  print("FAIL: Stack leak after stress: initial={initial_depth} final={stress_depth}")
+
+print("event_cascade: PASSED")
