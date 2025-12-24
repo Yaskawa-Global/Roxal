@@ -1995,14 +1995,14 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
 std::pair<InterpretResult,Value> VM::callAndExec(ObjClosure* closure, const std::vector<Value>& args)
 {
-
     // Push closure first, then arguments (to match OpCode::Call stack layout)
     push(Value::objRef(closure));
     for(const auto& a : args)
         push(a);
     CallSpec spec(args.size());
-    if(!call(closure, spec))
+    if(!call(closure, spec)) {
         return { InterpretResult::RuntimeError, Value::nilVal() };
+    }
 
     auto result = execute();
 
@@ -5174,8 +5174,38 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             else {
                 auto remainingSleepTime = thread->threadSleepUntil - TimePoint::currentTime();
-                std::unique_lock<std::mutex> lk(thread->sleepMutex);
-                bool timedout = (thread->sleepCondVar.wait_for(lk, std::chrono::microseconds(remainingSleepTime.microSecs())) == std::cv_status::timeout);
+                int64_t remainingMicros = remainingSleepTime.microSecs();
+
+                // If poll callbacks are registered, sleep in chunks and poll between
+                int64_t pollInterval = poller.minIntervalMicros();
+                if (pollInterval > 0 && poller.hasCallbacks()) {
+                    // Sleep in chunks, polling between each chunk
+                    while (remainingMicros > 0 && thread->threadSleep) {
+                        int64_t sleepChunk = std::min(remainingMicros, pollInterval);
+                        {
+                            std::unique_lock<std::mutex> lk(thread->sleepMutex);
+                            thread->sleepCondVar.wait_for(lk, std::chrono::microseconds(sleepChunk));
+                        }
+                        // Poll registered callbacks (e.g., UI event loop)
+                        poller.poll();
+
+                        // Process any pending event handlers that were scheduled during polling
+                        if (!processPendingEvents())
+                            return errorReturn;
+
+                        // Recalculate remaining time
+                        auto now = TimePoint::currentTime();
+                        if (now >= thread->threadSleepUntil) {
+                            thread->threadSleep = false;
+                            break;
+                        }
+                        remainingMicros = (thread->threadSleepUntil - now).microSecs();
+                    }
+                } else {
+                    // No poll callbacks, use original behavior
+                    std::unique_lock<std::mutex> lk(thread->sleepMutex);
+                    thread->sleepCondVar.wait_for(lk, std::chrono::microseconds(remainingMicros));
+                }
             }
         }
 
@@ -5246,6 +5276,10 @@ bool VM::processPendingEvents()
         auto handlersIt = thread->eventHandlers.find(tev.eventType);
         if (handlersIt != thread->eventHandlers.end()) {
             for(const auto& handler : handlersIt->second) {
+                // Skip if handler closure is nil or no longer alive
+                if (handler.closure.isNil() || !handler.closure.isAlive()) {
+                    continue;
+                }
                 auto closureObj = asClosure(handler.closure);
 
                 auto prevThreadSleep = thread->threadSleep.load();
@@ -6458,6 +6492,68 @@ void VM::registerBuiltinModule(ptr<BuiltinModule> module)
         appendModulePaths(module->additionalModulePaths());
     }
 }
+
+void VM::registerPollCallback(std::function<void()> callback, int64_t intervalMicros)
+{
+    poller.add(std::move(callback), intervalMicros);
+}
+
+
+// ============================================================================
+// ModulePoller Implementation
+// ============================================================================
+
+void ModulePoller::add(std::function<void()> callback, int64_t intervalMicros)
+{
+    std::lock_guard<std::mutex> lock(mutex);
+    callbacks.emplace_back(std::move(callback), intervalMicros);
+}
+
+void ModulePoller::clear()
+{
+    std::lock_guard<std::mutex> lock(mutex);
+    callbacks.clear();
+}
+
+void ModulePoller::poll()
+{
+    std::lock_guard<std::mutex> lock(mutex);
+    if (callbacks.empty())
+        return;
+
+    // Get current time in microseconds (steady clock)
+    auto now = std::chrono::steady_clock::now();
+    int64_t nowMicros = std::chrono::duration_cast<std::chrono::microseconds>(
+        now.time_since_epoch()).count();
+
+    for (auto& cb : callbacks) {
+        int64_t elapsed = nowMicros - cb.lastCallMicros;
+        if (elapsed >= cb.intervalMicros) {
+            try {
+                cb.callback();
+            } catch (const std::exception& e) {
+                // Log but don't propagate exceptions from poll callbacks
+                fprintf(stderr, "Warning: poll callback exception: %s\n", e.what());
+            }
+            cb.lastCallMicros = nowMicros;
+        }
+    }
+}
+
+int64_t ModulePoller::minIntervalMicros() const
+{
+    std::lock_guard<std::mutex> lock(mutex);
+    if (callbacks.empty())
+        return 0;
+
+    int64_t minInterval = std::numeric_limits<int64_t>::max();
+    for (const auto& cb : callbacks) {
+        if (cb.intervalMicros < minInterval)
+            minInterval = cb.intervalMicros;
+    }
+    return minInterval;
+}
+
 
 #ifdef ROXAL_ENABLE_GRPC
 Value VM::importProtoModule(const std::string& path)

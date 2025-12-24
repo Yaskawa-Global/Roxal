@@ -4,6 +4,57 @@
 
 const FPS = 100
 
+
+// ============================================================================
+// Event Types
+// ============================================================================
+
+// Base event for all UI events
+type Event event:
+  var widget   // the widget that triggered the event
+  var timestamp :int = 0  // event timestamp in ms
+
+
+// Input events
+type Clicked event extends Event:
+  var x :int = 0      // x position relative to widget
+  var y :int = 0      // y position relative to widget
+
+type Pressed event extends Event
+  // widget was pressed
+
+type Released event extends Event
+  // widget was released
+
+type LongPressed event extends Event:
+  var duration :int = 0   // how long pressed in ms
+
+type Focused event extends Event
+  // widget received focus
+
+type Defocused event extends Event
+  // widget lost focus
+
+
+// Value change events
+type ValueChanged event extends Event:
+  var value :int = 0      // new value
+  var previous :int = 0   // previous value
+
+
+// Window events
+type WindowClose event extends Event
+  // window close requested
+
+type WindowResize event extends Event:
+  var newWidth :int = 0
+  var newHeight :int = 0
+
+
+// ============================================================================
+// Window & Display
+// ============================================================================
+
 @builtin
 type Window object:
 
@@ -22,6 +73,10 @@ type Window object:
   @builtin
   proc open():
     """Open (show) the window"""
+
+  @builtin
+  proc set_root(widget):
+    """Set the root widget for this window"""
 
 
   // implementation
@@ -67,29 +122,306 @@ type Display object:
     """create a new window (closed by default)"""
 
 
+// ============================================================================
+// Base Widget
+// ============================================================================
+
 @builtin
 type Widget object:
-  var x :int
-  var y :int
-  var width :int
-  var height :int
+  var x :int = 0:
+    set:
+      _x = value
+      this._update_position()
+
+  var y :int = 0:
+    set:
+      _y = value
+      this._update_position()
+
+  var width :int = 100:
+    set:
+      _width = value
+      this._update_size()
+
+  var height :int = 50:
+    set:
+      _height = value
+      this._update_size()
+
+  var visible :bool = true:
+    set:
+      _visible = value
+      this._update_visible()
+
+  var enabled :bool = true:
+    set:
+      _enabled = value
+      this._update_enabled()
+
+  @builtin
+  private proc _update_position():
+    """Update widget position in native UI"""
+
+  @builtin
+  private proc _update_size():
+    """Update widget size in native UI"""
+
+  @builtin
+  private proc _update_visible():
+    """Update widget visibility in native UI"""
+
+  @builtin
+  private proc _update_enabled():
+    """Update widget enabled state in native UI"""
+
+
+// ============================================================================
+// Label Widget - displays text
+// ============================================================================
+
+@builtin
+type Label object extends Widget:
+  var text :string = "":
+    set:
+      _text = value
+      this._update_text()
+
+  var align :int = 0  // 0=left, 1=center, 2=right
+
+  proc init(parent = nil, text = "", x = 0, y = 0):
+    // Create native label via builtin
+    var lbl = _label_create(parent)
+    // Copy native object reference
+    this._lv_obj = lbl._lv_obj
+    // Register this widget instance (not the temporary)
+    _widget_register(this)
+    // Set initial properties (using public setters which trigger native updates)
+    this.x = x
+    this.y = y
+    this.text = text
+
+  @builtin
+  private proc _update_text():
+    """Update label text in native UI"""
+
+
+// ============================================================================
+// Button Widget - clickable button with label
+// ============================================================================
 
 @builtin
 type Button object extends Widget:
-  var label :string
+  var label :string = "Button":
+    set:
+      _label = value
+      this._update_label()
+
+  var pressed :bool = false  // read-only, set by native
+
+  // Event callback - called when button is clicked
+  var clicked = nil
+
+  proc init(parent = nil, label = "Button", x = 0, y = 0, clicked = nil):
+    // Create native button via builtin
+    var btn = _button_create(parent)
+    // Copy native object references
+    this._lv_obj = btn._lv_obj
+    this._lv_label = btn._lv_label
+    // Register this widget instance (not the temporary)
+    _widget_register(this)
+    // Set initial properties (using public setters which trigger native updates)
+    this.x = x
+    this.y = y
+    this.label = label
+    this.clicked = clicked
+
+    // Set up click handler
+    when Clicked occurs as evt:
+      if evt.widget is this:
+        if this.clicked is not nil:
+          this.clicked()
+
+  @builtin
+  private proc _update_label():
+    """Update button label in native UI"""
 
 
+// ============================================================================
+// Slider Widget - value selection slider
+// ============================================================================
+
+@builtin
+type Slider object extends Widget:
+  var value :int = 0:
+    get:
+      return _value
+    set:
+      _value = value
+      this._update_value()
+
+  var min :int = 0:
+    set:
+      _min = value
+      this._update_range()
+
+  var max :int = 100:
+    set:
+      _max = value
+      this._update_range()
+
+  var dragging :bool = false  // read-only
+
+  // Event callback - called when value changes
+  var changed = nil
+
+  proc init(parent = nil, min = 0, max = 100, value = 0, x = 0, y = 0, changed = nil):
+    // Create native slider via builtin
+    var sld = _slider_create(parent)
+    // Copy native object reference
+    this._lv_obj = sld._lv_obj
+    // Register this widget instance (not the temporary)
+    _widget_register(this)
+    // Set initial properties (using public setters which trigger native updates)
+    this.x = x
+    this.y = y
+    this.min = min
+    this.max = max
+    this.value = value
+    this.changed = changed
+
+    // Set up value change handler
+    when ValueChanged occurs as evt:
+      if evt.widget is this:
+        this._value = evt.value  // sync from native (use backing field to avoid triggering update)
+        if this.changed is not nil:
+          this.changed(evt.value)
+
+  @builtin
+  private proc _update_value():
+    """Update slider value in native UI"""
+
+  @builtin
+  private proc _update_range():
+    """Update slider min/max range in native UI"""
 
 
+// ============================================================================
+// Layout Widget - layout container for arranging child widgets
+// ============================================================================
+
+@builtin
+type Layout object extends Widget:
+  var children :list = []
+
+  var mode :string = "none":  // "none", "flex", "grid"
+    set:
+      _mode = value
+      this._update_mode()
+
+  var padding :int = 0:
+    set:
+      _padding = value
+      this._update_padding()
+
+  var gap :int = 0:
+    set:
+      _gap = value
+      this._update_gap()
+
+  var direction :string = "row":  // "row", "column" (for flex mode)
+    set:
+      _direction = value
+      this._update_mode()  // direction affects flex layout
+
+  var wrap :bool = false:  // wrap children in flex mode
+    set:
+      _wrap = value
+      this._update_mode()
+
+  var justify :string = "start":  // "start", "center", "end", "space-between", "space-around", "space-evenly"
+    set:
+      _justify = value
+      this._update_mode()
+
+  var align :string = "start":  // "start", "center", "end", "stretch"
+    set:
+      _align = value
+      this._update_mode()
+
+  // Variadic constructor for nested children
+  proc init(parent = nil, x = 0, y = 0, width = 100, height = 100, mode = "none", direction = "row", wrap = false, justify = "start", align = "start", padding = 0, gap = 0, ...widgets):
+    // Create native layout via builtin
+    var lay = _layout_create(parent)
+    // Copy native object reference
+    this._lv_obj = lay._lv_obj
+    // Register this widget instance (not the temporary)
+    _widget_register(this)
+    // Set initial properties (using public setters which trigger native updates)
+    this.x = x
+    this.y = y
+    this.width = width
+    this.height = height
+    this.mode = mode
+    this.padding = padding
+    this.gap = gap
+
+    // Add any child widgets passed as variadic arguments
+    for widget in widgets:
+      this.add(widget)
+
+  proc add(widget):
+    """Add a child widget to this layout"""
+    this._add(widget)
+    this.children = this.children + [widget]
+
+  proc remove(widget):
+    """Remove a child widget from this layout"""
+    this._remove(widget)
+    // Remove from children list
+    var new_children = []
+    for child in this.children:
+      if child is not widget:
+        new_children = new_children + [child]
+    this.children = new_children
+
+  @builtin
+  private proc _add(widget):
+    """Add child widget in native UI"""
+
+  @builtin
+  private proc _remove(widget):
+    """Remove child widget in native UI"""
 
 
-
-
-
+// ============================================================================
+// Native functions (only called when module is imported)
+// ============================================================================
 
 @builtin
 func _init():
-  """native initialization function called when module is imported"""
+  """Native initialization - called when module is imported.
+     This starts the UIThread for event processing."""
+
+@builtin
+func _label_create(parent):
+  """Create a native label widget"""
+
+@builtin
+func _button_create(parent):
+  """Create a native button widget"""
+
+@builtin
+func _slider_create(parent):
+  """Create a native slider widget"""
+
+@builtin
+func _layout_create(parent):
+  """Create a native layout widget"""
+
+@builtin
+func _widget_register(widget):
+  """Register a widget in the native widget registry (called from init)"""
+
 
 // automatically populated on import
 var displays :list = []

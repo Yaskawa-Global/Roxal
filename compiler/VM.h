@@ -43,6 +43,45 @@ struct CallFrame; // forward
 struct ActorInstance;
 
 
+// ============================================================================
+// ModulePoller - allows builtin modules to register poll callbacks
+// ============================================================================
+
+class ModulePoller {
+public:
+    struct PollCallback {
+        std::function<void()> callback;
+        int64_t intervalMicros;  // minimum interval between calls in microseconds
+        int64_t lastCallMicros;  // last call time (steady clock microseconds)
+
+        PollCallback(std::function<void()> cb, int64_t interval)
+            : callback(std::move(cb)), intervalMicros(interval), lastCallMicros(0) {}
+    };
+
+    // Register a poll callback with the specified minimum interval
+    void add(std::function<void()> callback, int64_t intervalMicros);
+
+    // Remove a poll callback (by matching function pointer not supported,
+    // so modules should keep track of their own registration)
+    void clear();
+
+    // Poll all registered callbacks that are due
+    // Called by VM during execution and wait loops
+    void poll();
+
+    // Get the minimum interval across all registered callbacks (for sleep chunking)
+    // Returns 0 if no callbacks registered
+    int64_t minIntervalMicros() const;
+
+    // Check if any callbacks are registered
+    bool hasCallbacks() const { return !callbacks.empty(); }
+
+private:
+    std::vector<PollCallback> callbacks;
+    mutable std::mutex mutex;
+};
+
+
 typedef std::vector<CallFrame> CallFrames;
 
 struct CallFrame {
@@ -123,6 +162,14 @@ public:
     Value getBuiltinModuleType(const icu::UnicodeString& name);
     std::optional<Value> loadGlobal(const icu::UnicodeString& name) { return globals.load(name); }
     void registerBuiltinModule(ptr<BuiltinModule> module);
+
+    // Register a poll callback for periodic execution during VM operation
+    // intervalMicros specifies the minimum interval between callback invocations
+    void registerPollCallback(std::function<void()> callback, int64_t intervalMicros);
+
+    // Access the module poller (for direct polling if needed)
+    ModulePoller& modulePoller() { return poller; }
+
 #ifdef ROXAL_ENABLE_GRPC
     Value importProtoModule(const std::string& path);
 #endif
@@ -290,6 +337,9 @@ protected:
 
     // builtin modules
     std::vector<ptr<BuiltinModule>> builtinModules;
+
+    // module poll callback handler
+    ModulePoller poller;
 #ifdef ROXAL_ENABLE_GRPC
     ModuleGrpc* grpcModule { nullptr };
 #endif
