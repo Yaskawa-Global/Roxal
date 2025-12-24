@@ -4455,8 +4455,12 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     push(result);
 
-                    // For nested execute() calls, only terminate when we return to entry depth
-                    if (thread->execute_depth > 1 && thread->frames.size() <= frame_depth_on_entry) {
+                    // For nested execute() calls, only terminate when we return BELOW the entry depth.
+                    // Use < (not <=) because we should only return if we've popped BELOW the entry depth,
+                    // which means we've returned from the function that execute() was started for.
+                    // Using <= would cause early return when a called function returns, even if the
+                    // caller still has code to execute.
+                    if (thread->execute_depth > 1 && thread->frames.size() < frame_depth_on_entry) {
                         Value returnVal = pop();
 
                         if (consumePendingObjectCleanup()) {
@@ -4495,8 +4499,9 @@ std::pair<InterpretResult,Value> VM::execute()
                 try {
                     Value result = opReturn();
 
-                    // For nested execute() calls, only terminate when we return to entry depth
-                    if (thread->execute_depth > 1 && thread->frames.size() <= frame_depth_on_entry) {
+                    // For nested execute() calls, only terminate when we return BELOW the entry depth
+                    // Use < (not <=) to avoid early return when a called function returns
+                    if (thread->execute_depth > 1 && thread->frames.size() < frame_depth_on_entry) {
                         if (consumePendingObjectCleanup()) {
                             freeObjects(); // Drain pending objects on scope exit for deterministic destruction
                         }
@@ -5277,10 +5282,24 @@ bool VM::processPendingEvents()
                         raiseException(exc);
                     }
                 } else {
+                    // Skip handler if closure has been cleaned up (function is nil)
+                    if (closureObj->function.isNil()) {
+                        continue;
+                    }
+
                     std::vector<Value> handlerArgs;
-                    if (closureObj->function.isNonNil() &&
-                        asFunction(closureObj->function)->arity > 0) {
-                        handlerArgs.push_back(tev.instance);
+                    int arity = asFunction(closureObj->function)->arity;
+                    if (arity > 0) {
+                        // Check if event instance is nil or no longer valid
+                        if (tev.instance.isNil()) {
+                            continue;
+                        }
+                        // Ensure we have a strong reference to the event instance
+                        Value strongInstance = tev.instance.strongRef();
+                        if (strongInstance.isNil() || !isEventInstance(strongInstance)) {
+                            continue;
+                        }
+                        handlerArgs.push_back(strongInstance);
                     }
                     auto result = callAndExec(closureObj, handlerArgs);
                     assert(!thread->threadSleep);
