@@ -155,8 +155,11 @@ std::unique_ptr<antlr4::Token> RoxalIndentationLexer::nextToken()
                         // - Previous token is NOT COLON (expression followed the :, not NEWLINE)
                         // - We haven't entered the lambda body yet (no INDENT was inserted)
                         // - We're inside a call context from BEFORE the lambda
-                        bool prevWasColon = !this->pendingTokens.empty() &&
-                                           this->pendingTokens.back()->getType() == COLON;
+                        // Use pendingTokens.back() if available, otherwise use lastAppendedTokenType
+                        auto prevTokenType = !this->pendingTokens.empty()
+                            ? this->pendingTokens.back()->getType()
+                            : this->lastAppendedTokenType;
+                        bool prevWasColon = (prevTokenType == COLON);
                         bool noIndentYet = this->indentLengths.top() <= this->lambdaSuites.top().baseIndentLevel;
                         if (!prevWasColon && noIndentYet && !this->openers.empty() && this->openers.top().isCallContext) {
                             // One-liner lambda as argument (e.g., func(a,b): a+b followed by newline)
