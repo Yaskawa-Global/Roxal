@@ -10,6 +10,137 @@ using namespace roxal;
 // Target frames per second for UI event polling (matches FPS in ui.rox)
 static constexpr int FPS = 100;
 
+// ============================================================================
+// Keyboard Input Support
+// ============================================================================
+
+// Get the size of a UTF-8 encoded character from its first byte
+static inline uint32_t utf8_char_size(const char* txt) {
+    if (txt == nullptr || *txt == '\0') return 0;
+    uint8_t c = (uint8_t)*txt;
+    if ((c & 0x80) == 0) return 1;       // 0xxxxxxx - ASCII
+    if ((c & 0xE0) == 0xC0) return 2;    // 110xxxxx - 2 byte
+    if ((c & 0xF0) == 0xE0) return 3;    // 1110xxxx - 3 byte
+    if ((c & 0xF8) == 0xF0) return 4;    // 11110xxx - 4 byte
+    return 1;  // Invalid UTF-8, treat as single byte
+}
+
+static constexpr size_t KEYBOARD_BUFFER_SIZE = 64;
+
+struct KeyboardState {
+    char buf[KEYBOARD_BUFFER_SIZE] = {0};
+    bool dummy_read = false;
+    lv_indev_t* indev = nullptr;
+    lv_display_t* disp = nullptr;
+    lv_group_t* group = nullptr;  // Input group for keyboard navigation
+};
+
+// Global keyboard state (one per window would be better, but this works for now)
+static KeyboardState g_keyboard;
+
+// Convert GLFW key to LVGL control key
+static uint32_t glfw_key_to_lv_key(int key) {
+    switch (key) {
+        case GLFW_KEY_RIGHT:      return LV_KEY_RIGHT;
+        case GLFW_KEY_LEFT:       return LV_KEY_LEFT;
+        case GLFW_KEY_UP:         return LV_KEY_UP;
+        case GLFW_KEY_DOWN:       return LV_KEY_DOWN;
+        case GLFW_KEY_ESCAPE:     return LV_KEY_ESC;
+        case GLFW_KEY_BACKSPACE:  return LV_KEY_BACKSPACE;
+        case GLFW_KEY_DELETE:     return LV_KEY_DEL;
+        case GLFW_KEY_ENTER:
+        case GLFW_KEY_KP_ENTER:   return LV_KEY_ENTER;
+        case GLFW_KEY_TAB:        return LV_KEY_NEXT;
+        case GLFW_KEY_HOME:       return LV_KEY_HOME;
+        case GLFW_KEY_END:        return LV_KEY_END;
+        default:                  return 0;
+    }
+}
+
+// Keyboard read callback for LVGL
+static void keyboard_read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
+    size_t len = strlen(g_keyboard.buf);
+
+    // Send a release after each press
+    if (g_keyboard.dummy_read) {
+        g_keyboard.dummy_read = false;
+        data->state = LV_INDEV_STATE_RELEASED;
+    }
+    // Send the pressed character
+    else if (len > 0) {
+        g_keyboard.dummy_read = true;
+        data->state = LV_INDEV_STATE_PRESSED;
+        data->key = 0;
+
+        // Copy the first UTF8 character from the buffer
+        uint32_t utf8_len = utf8_char_size(g_keyboard.buf);
+        if (utf8_len == 0) utf8_len = 1;
+        memcpy(&data->key, g_keyboard.buf, utf8_len);
+
+        // Drop the first character
+        memmove(g_keyboard.buf, g_keyboard.buf + utf8_len, len - utf8_len + 1);
+    }
+}
+
+// GLFW key callback - handles control keys
+static void glfw_key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    (void)window; (void)scancode; (void)mods;
+
+    if (action != GLFW_PRESS && action != GLFW_REPEAT)
+        return;
+
+    uint32_t lv_key = glfw_key_to_lv_key(key);
+    if (lv_key == 0)
+        return;
+
+    size_t len = strlen(g_keyboard.buf);
+    if (len < KEYBOARD_BUFFER_SIZE - 1) {
+        g_keyboard.buf[len] = (char)lv_key;
+        g_keyboard.buf[len + 1] = '\0';
+    }
+
+    // Trigger LVGL to read the keyboard
+    if (g_keyboard.indev) {
+        lv_indev_read(g_keyboard.indev);
+        lv_indev_read(g_keyboard.indev);  // Second call for dummy read
+    }
+}
+
+// GLFW character callback - handles text input
+static void glfw_char_callback(GLFWwindow* window, unsigned int codepoint) {
+    (void)window;
+
+    // Convert Unicode codepoint to UTF-8
+    char utf8[5] = {0};
+    if (codepoint < 0x80) {
+        utf8[0] = (char)codepoint;
+    } else if (codepoint < 0x800) {
+        utf8[0] = (char)(0xC0 | (codepoint >> 6));
+        utf8[1] = (char)(0x80 | (codepoint & 0x3F));
+    } else if (codepoint < 0x10000) {
+        utf8[0] = (char)(0xE0 | (codepoint >> 12));
+        utf8[1] = (char)(0x80 | ((codepoint >> 6) & 0x3F));
+        utf8[2] = (char)(0x80 | (codepoint & 0x3F));
+    } else {
+        utf8[0] = (char)(0xF0 | (codepoint >> 18));
+        utf8[1] = (char)(0x80 | ((codepoint >> 12) & 0x3F));
+        utf8[2] = (char)(0x80 | ((codepoint >> 6) & 0x3F));
+        utf8[3] = (char)(0x80 | (codepoint & 0x3F));
+    }
+
+    size_t buf_len = strlen(g_keyboard.buf);
+    size_t utf8_len = strlen(utf8);
+    if (buf_len + utf8_len < KEYBOARD_BUFFER_SIZE - 1) {
+        strcat(g_keyboard.buf, utf8);
+    }
+
+    // Trigger LVGL to read the keyboard
+    if (g_keyboard.indev) {
+        lv_indev_read(g_keyboard.indev);
+        lv_indev_read(g_keyboard.indev);  // Second call for dummy read
+    }
+}
+
 ModuleUI::ModuleUI()
 {
     moduleTypeValue = Value::objVal(newModuleTypeObj(toUnicodeString("ui")));
@@ -45,6 +176,10 @@ void ModuleUI::registerBuiltins(VM& vm)
 
     // Display methods
     linkMethod("Display", "create_window", [this](VM& vm, ArgsView a){ return display_create_window(a); });
+    linkMethod("Display", "show_perf_monitor", [this](VM& vm, ArgsView a){ display_show_perf_monitor(a); return Value::nilVal(); });
+    linkMethod("Display", "hide_perf_monitor", [this](VM& vm, ArgsView a){ display_hide_perf_monitor(a); return Value::nilVal(); });
+    linkMethod("Display", "show_mem_monitor", [this](VM& vm, ArgsView a){ display_show_mem_monitor(a); return Value::nilVal(); });
+    linkMethod("Display", "hide_mem_monitor", [this](VM& vm, ArgsView a){ display_hide_mem_monitor(a); return Value::nilVal(); });
 
     // Window methods
     linkMethod("Window", "close", [this](VM& vm, ArgsView a){ window_close(a); return Value::nilVal(); });
@@ -69,6 +204,23 @@ void ModuleUI::registerBuiltins(VM& vm)
     link("_button_create", [this](VM& vm, ArgsView a){ return button_create(a); });
     linkMethod("Button", "_update_label", [this](VM& vm, ArgsView a){ button_update_label(a); return Value::nilVal(); });
 
+    // Checkbox methods
+    link("_checkbox_create", [this](VM& vm, ArgsView a){ return checkbox_create(a); });
+    linkMethod("Checkbox", "_update_text", [this](VM& vm, ArgsView a){ checkbox_update_text(a); return Value::nilVal(); });
+    linkMethod("Checkbox", "_update_checked", [this](VM& vm, ArgsView a){ checkbox_update_checked(a); return Value::nilVal(); });
+
+    // Switch methods
+    link("_switch_create", [this](VM& vm, ArgsView a){ return switch_create(a); });
+    linkMethod("Switch", "_update_state", [this](VM& vm, ArgsView a){ switch_update_state(a); return Value::nilVal(); });
+
+    // TextArea methods
+    link("_textarea_create", [this](VM& vm, ArgsView a){ return textarea_create(a); });
+    linkMethod("TextArea", "_update_text", [this](VM& vm, ArgsView a){ textarea_update_text(a); return Value::nilVal(); });
+    linkMethod("TextArea", "_update_placeholder", [this](VM& vm, ArgsView a){ textarea_update_placeholder(a); return Value::nilVal(); });
+    linkMethod("TextArea", "_update_one_line", [this](VM& vm, ArgsView a){ textarea_update_one_line(a); return Value::nilVal(); });
+    linkMethod("TextArea", "_update_password", [this](VM& vm, ArgsView a){ textarea_update_password(a); return Value::nilVal(); });
+    linkMethod("TextArea", "_update_max_length", [this](VM& vm, ArgsView a){ textarea_update_max_length(a); return Value::nilVal(); });
+
     // Slider methods
     link("_slider_create", [this](VM& vm, ArgsView a){ return slider_create(a); });
     linkMethod("Slider", "_update_value", [this](VM& vm, ArgsView a){ slider_update_value(a); return Value::nilVal(); });
@@ -78,6 +230,9 @@ void ModuleUI::registerBuiltins(VM& vm)
     link("_layout_create", [this](VM& vm, ArgsView a){ return layout_create(a); });
     linkMethod("Layout", "_add", [this](VM& vm, ArgsView a){ layout_add(a); return Value::nilVal(); });
     linkMethod("Layout", "_remove", [this](VM& vm, ArgsView a){ layout_remove(a); return Value::nilVal(); });
+    linkMethod("Layout", "_update_mode", [this](VM& vm, ArgsView a){ layout_update_mode(a); return Value::nilVal(); });
+    linkMethod("Layout", "_update_padding", [this](VM& vm, ArgsView a){ layout_update_padding(a); return Value::nilVal(); });
+    linkMethod("Layout", "_update_gap", [this](VM& vm, ArgsView a){ layout_update_gap(a); return Value::nilVal(); });
 
     // Note: Type references are cached in initialize() after the module script is parsed
 }
@@ -91,6 +246,9 @@ void ModuleUI::initialize()
     widgetType = uiType("Widget").weakRef();
     labelType = uiType("Label").weakRef();
     buttonType = uiType("Button").weakRef();
+    checkboxType = uiType("Checkbox").weakRef();
+    switchType = uiType("Switch").weakRef();
+    textareaType = uiType("TextArea").weakRef();
     sliderType = uiType("Slider").weakRef();
     layoutType = uiType("Layout").weakRef();
 
@@ -285,6 +443,10 @@ Value ModuleUI::display_create_window(ArgsView args)
         glfwSetWindowShouldClose(window, GLFW_FALSE);
     });
 
+    // Set up keyboard callbacks for text input
+    glfwSetKeyCallback(glfw_window, glfw_key_callback);
+    glfwSetCharCallback(glfw_window, glfw_char_callback);
+
     windowInst->setProperty("_lv_window", Value::foreignPtrVal(lv_window));
 
     lv_display_t* lv_display = lv_opengles_texture_create(width.asInt(), height.asInt());
@@ -347,8 +509,34 @@ Value ModuleUI::display_create_window(ArgsView args)
     debug_assert_msg(isDict(display_windows),"Display.windows is a dict");
     auto display_windowsDict = asDict(display_windows);
 
-    if (display_windowsDict->length() == 0) // first window
+    if (display_windowsDict->length() == 0) { // first window
         lv_display_set_default(lv_display);
+
+        // Create keyboard input device for text input
+        if (g_keyboard.indev == nullptr) {
+            // Create input group for keyboard navigation
+            g_keyboard.group = lv_group_create();
+            lv_group_set_default(g_keyboard.group);
+
+            g_keyboard.indev = lv_indev_create();
+            if (g_keyboard.indev) {
+                lv_indev_set_type(g_keyboard.indev, LV_INDEV_TYPE_KEYPAD);
+                lv_indev_set_read_cb(g_keyboard.indev, keyboard_read_cb);
+                lv_indev_set_mode(g_keyboard.indev, LV_INDEV_MODE_EVENT);
+                lv_indev_set_display(g_keyboard.indev, lv_display);
+                lv_indev_set_group(g_keyboard.indev, g_keyboard.group);
+                g_keyboard.disp = lv_display;
+            }
+        }
+
+        // Hide auto-created monitors by default (user can show them via API)
+#if LV_USE_SYSMON && LV_USE_PERF_MONITOR
+        lv_sysmon_hide_performance(lv_display);
+#endif
+#if LV_USE_SYSMON && LV_USE_MEM_MONITOR
+        lv_sysmon_hide_memory(lv_display);
+#endif
+    }
 
     display_windowsDict->store(Value::intVal(texture_id),window);
 
@@ -356,6 +544,51 @@ Value ModuleUI::display_create_window(ArgsView args)
     callInit(window, windowType);
 
     return window;
+}
+
+
+void ModuleUI::display_show_perf_monitor(ArgsView args)
+{
+#if LV_USE_SYSMON
+    debug_assert_msg(instanceOf(args[0], displayType), "instance is Display");
+    lv_display_t* disp = lv_display_get_default();
+    if (disp) {
+        lv_sysmon_show_performance(disp);
+    }
+#endif
+}
+
+void ModuleUI::display_hide_perf_monitor(ArgsView args)
+{
+#if LV_USE_SYSMON
+    debug_assert_msg(instanceOf(args[0], displayType), "instance is Display");
+    lv_display_t* disp = lv_display_get_default();
+    if (disp) {
+        lv_sysmon_hide_performance(disp);
+    }
+#endif
+}
+
+void ModuleUI::display_show_mem_monitor(ArgsView args)
+{
+#if LV_USE_SYSMON
+    debug_assert_msg(instanceOf(args[0], displayType), "instance is Display");
+    lv_display_t* disp = lv_display_get_default();
+    if (disp) {
+        lv_sysmon_show_memory(disp);
+    }
+#endif
+}
+
+void ModuleUI::display_hide_mem_monitor(ArgsView args)
+{
+#if LV_USE_SYSMON
+    debug_assert_msg(instanceOf(args[0], displayType), "instance is Display");
+    lv_display_t* disp = lv_display_get_default();
+    if (disp) {
+        lv_sysmon_hide_memory(disp);
+    }
+#endif
 }
 
 
@@ -673,10 +906,38 @@ void ModuleUI::lvglEventCallback(void* e)
             break;
 
         case LV_EVENT_VALUE_CHANGED: {
-            // For sliders, include the value
+            // For TextArea, only emit on actual text changes, not cursor movements
+            // LVGL sends VALUE_CHANGED for both, but we only want actual text changes
+            bool is_textarea = lv_obj_check_type(target, &lv_textarea_class);
+            if (is_textarea) {
+                const char* current_text = lv_textarea_get_text(target);
+                icu::UnicodeString currentStr = current_text ? toUnicodeString(current_text) : icu::UnicodeString();
+
+                // Get the last text from the widget's hidden property
+                ObjectInstance* inst = asObjectInstance(roxalWidget);
+                Value lastTextVal = inst->getProperty("_last_emitted_text");
+                icu::UnicodeString lastStr = isString(lastTextVal) ? asUString(lastTextVal) : icu::UnicodeString();
+
+                // Skip if text hasn't actually changed
+                if (currentStr == lastStr) {
+                    break;  // No actual text change, skip event
+                }
+
+                // Update the hidden property with current text
+                inst->setProperty("_last_emitted_text", Value::stringVal(currentStr));
+
+                module->emitUIEvent("ValueChanged", roxalWidget, {{"value", Value::intVal(0)}});
+                break;
+            }
+
+            // Get value based on widget type
             int32_t value = 0;
             if (lv_obj_check_type(target, &lv_slider_class)) {
                 value = lv_slider_get_value(target);
+            } else if (lv_obj_check_type(target, &lv_checkbox_class)) {
+                value = lv_obj_has_state(target, LV_STATE_CHECKED) ? 1 : 0;
+            } else if (lv_obj_check_type(target, &lv_switch_class)) {
+                value = lv_obj_has_state(target, LV_STATE_CHECKED) ? 1 : 0;
             }
             module->emitUIEvent("ValueChanged", roxalWidget, {{"value", Value::intVal(value)}});
             break;
@@ -1034,6 +1295,340 @@ void ModuleUI::button_update_label(ArgsView args)
 
 
 // ============================================================================
+// Checkbox Widget
+// ============================================================================
+
+Value ModuleUI::checkbox_create(ArgsView args)
+{
+    Value& parent = args[0];
+
+    // Determine the LVGL parent
+    lv_obj_t* lv_parent = nullptr;
+    if (isObjectInstance(parent)) {
+        auto parentInst = asObjectInstance(parent);
+        Value lv_obj_val = parentInst->getProperty("_lv_obj");
+        if (lv_obj_val.isNonNil() && isForeignPtr(lv_obj_val)) {
+            lv_parent = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+        }
+        if (!lv_parent) {
+            Value lv_screen_val = parentInst->getProperty("_lv_screen");
+            if (lv_screen_val.isNonNil() && isForeignPtr(lv_screen_val)) {
+                lv_parent = (lv_obj_t*)(asForeignPtr(lv_screen_val)->ptr);
+            }
+        }
+    }
+
+    if (!lv_parent) {
+        lv_parent = lv_screen_active();
+    }
+
+    // Create the LVGL checkbox
+    lv_obj_t* lv_checkbox = lv_checkbox_create(lv_parent);
+    if (!lv_checkbox) {
+        raiseException("Failed to create LVGL checkbox");
+        return Value::nilVal();
+    }
+
+    // Create Roxal Checkbox instance
+    Value checkbox = newUIObj(checkboxType);
+    auto checkboxInst = asObjectInstance(checkbox);
+
+    // Store the LVGL object reference
+    checkboxInst->setProperty("_lv_obj", Value::foreignPtrVal(lv_checkbox));
+
+    // Add event callback
+    lv_obj_add_event_cb(lv_checkbox, (lv_event_cb_t)lvglEventCallback, LV_EVENT_ALL, this);
+
+    return checkbox;
+}
+
+void ModuleUI::checkbox_update_text(ArgsView args)
+{
+    Value& checkbox = args[0];
+    if (!isObjectInstance(checkbox))
+        return;
+
+    auto checkboxInst = asObjectInstance(checkbox);
+    Value lv_obj_val = checkboxInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_checkbox = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_checkbox)
+        return;
+
+    Value text_val = checkboxInst->getProperty("text");
+    if (isString(text_val)) {
+        std::string textStr;
+        asUString(text_val).toUTF8String(textStr);
+        lv_checkbox_set_text(lv_checkbox, textStr.c_str());
+    }
+}
+
+void ModuleUI::checkbox_update_checked(ArgsView args)
+{
+    Value& checkbox = args[0];
+    if (!isObjectInstance(checkbox))
+        return;
+
+    auto checkboxInst = asObjectInstance(checkbox);
+    Value lv_obj_val = checkboxInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_checkbox = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_checkbox)
+        return;
+
+    Value checked_val = checkboxInst->getProperty("checked");
+    if (checked_val.isBool()) {
+        if (checked_val.asBool()) {
+            lv_obj_add_state(lv_checkbox, LV_STATE_CHECKED);
+        } else {
+            lv_obj_remove_state(lv_checkbox, LV_STATE_CHECKED);
+        }
+    }
+}
+
+
+// ============================================================================
+// Switch Widget
+// ============================================================================
+
+Value ModuleUI::switch_create(ArgsView args)
+{
+    Value& parent = args[0];
+
+    // Determine the LVGL parent
+    lv_obj_t* lv_parent = nullptr;
+    if (isObjectInstance(parent)) {
+        auto parentInst = asObjectInstance(parent);
+        Value lv_obj_val = parentInst->getProperty("_lv_obj");
+        if (lv_obj_val.isNonNil() && isForeignPtr(lv_obj_val)) {
+            lv_parent = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+        }
+        if (!lv_parent) {
+            Value lv_screen_val = parentInst->getProperty("_lv_screen");
+            if (lv_screen_val.isNonNil() && isForeignPtr(lv_screen_val)) {
+                lv_parent = (lv_obj_t*)(asForeignPtr(lv_screen_val)->ptr);
+            }
+        }
+    }
+
+    if (!lv_parent) {
+        lv_parent = lv_screen_active();
+    }
+
+    // Create the LVGL switch
+    lv_obj_t* lv_switch = lv_switch_create(lv_parent);
+    if (!lv_switch) {
+        raiseException("Failed to create LVGL switch");
+        return Value::nilVal();
+    }
+
+    // Create Roxal Switch instance
+    Value switchObj = newUIObj(switchType);
+    auto switchInst = asObjectInstance(switchObj);
+
+    // Store the LVGL object reference
+    switchInst->setProperty("_lv_obj", Value::foreignPtrVal(lv_switch));
+
+    // Add event callback
+    lv_obj_add_event_cb(lv_switch, (lv_event_cb_t)lvglEventCallback, LV_EVENT_ALL, this);
+
+    return switchObj;
+}
+
+void ModuleUI::switch_update_state(ArgsView args)
+{
+    Value& switchObj = args[0];
+    if (!isObjectInstance(switchObj))
+        return;
+
+    auto switchInst = asObjectInstance(switchObj);
+    Value lv_obj_val = switchInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_switch = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_switch)
+        return;
+
+    Value on_val = switchInst->getProperty("on");
+    if (on_val.isBool()) {
+        if (on_val.asBool()) {
+            lv_obj_add_state(lv_switch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_remove_state(lv_switch, LV_STATE_CHECKED);
+        }
+    }
+}
+
+
+// ============================================================================
+// TextArea Widget
+// ============================================================================
+
+Value ModuleUI::textarea_create(ArgsView args)
+{
+    Value& parent = args[0];
+
+    // Determine the LVGL parent
+    lv_obj_t* lv_parent = nullptr;
+    if (isObjectInstance(parent)) {
+        auto parentInst = asObjectInstance(parent);
+        Value lv_obj_val = parentInst->getProperty("_lv_obj");
+        if (lv_obj_val.isNonNil() && isForeignPtr(lv_obj_val)) {
+            lv_parent = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+        }
+        if (!lv_parent) {
+            Value lv_screen_val = parentInst->getProperty("_lv_screen");
+            if (lv_screen_val.isNonNil() && isForeignPtr(lv_screen_val)) {
+                lv_parent = (lv_obj_t*)(asForeignPtr(lv_screen_val)->ptr);
+            }
+        }
+    }
+
+    if (!lv_parent) {
+        lv_parent = lv_screen_active();
+    }
+
+    // Create the LVGL textarea
+    lv_obj_t* lv_textarea = lv_textarea_create(lv_parent);
+    if (!lv_textarea) {
+        raiseException("Failed to create LVGL textarea");
+        return Value::nilVal();
+    }
+
+    // Create Roxal TextArea instance
+    Value textarea = newUIObj(textareaType);
+    auto textareaInst = asObjectInstance(textarea);
+
+    // Store the LVGL object reference
+    textareaInst->setProperty("_lv_obj", Value::foreignPtrVal(lv_textarea));
+
+    // Add event callback
+    lv_obj_add_event_cb(lv_textarea, (lv_event_cb_t)lvglEventCallback, LV_EVENT_ALL, this);
+
+    // Add to keyboard input group for text input support
+    if (g_keyboard.group) {
+        lv_group_add_obj(g_keyboard.group, lv_textarea);
+    }
+
+    return textarea;
+}
+
+void ModuleUI::textarea_update_text(ArgsView args)
+{
+    Value& textarea = args[0];
+    if (!isObjectInstance(textarea))
+        return;
+
+    auto textareaInst = asObjectInstance(textarea);
+    Value lv_obj_val = textareaInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_textarea = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_textarea)
+        return;
+
+    Value text_val = textareaInst->getProperty("text");
+    if (isString(text_val)) {
+        std::string textStr;
+        asUString(text_val).toUTF8String(textStr);
+        lv_textarea_set_text(lv_textarea, textStr.c_str());
+    }
+}
+
+void ModuleUI::textarea_update_placeholder(ArgsView args)
+{
+    Value& textarea = args[0];
+    if (!isObjectInstance(textarea))
+        return;
+
+    auto textareaInst = asObjectInstance(textarea);
+    Value lv_obj_val = textareaInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_textarea = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_textarea)
+        return;
+
+    Value placeholder_val = textareaInst->getProperty("placeholder");
+    if (isString(placeholder_val)) {
+        std::string placeholderStr;
+        asUString(placeholder_val).toUTF8String(placeholderStr);
+        lv_textarea_set_placeholder_text(lv_textarea, placeholderStr.c_str());
+    }
+}
+
+void ModuleUI::textarea_update_one_line(ArgsView args)
+{
+    Value& textarea = args[0];
+    if (!isObjectInstance(textarea))
+        return;
+
+    auto textareaInst = asObjectInstance(textarea);
+    Value lv_obj_val = textareaInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_textarea = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_textarea)
+        return;
+
+    Value one_line_val = textareaInst->getProperty("one_line");
+    if (one_line_val.isBool()) {
+        lv_textarea_set_one_line(lv_textarea, one_line_val.asBool());
+    }
+}
+
+void ModuleUI::textarea_update_password(ArgsView args)
+{
+    Value& textarea = args[0];
+    if (!isObjectInstance(textarea))
+        return;
+
+    auto textareaInst = asObjectInstance(textarea);
+    Value lv_obj_val = textareaInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_textarea = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_textarea)
+        return;
+
+    Value password_val = textareaInst->getProperty("password");
+    if (password_val.isBool()) {
+        lv_textarea_set_password_mode(lv_textarea, password_val.asBool());
+    }
+}
+
+void ModuleUI::textarea_update_max_length(ArgsView args)
+{
+    Value& textarea = args[0];
+    if (!isObjectInstance(textarea))
+        return;
+
+    auto textareaInst = asObjectInstance(textarea);
+    Value lv_obj_val = textareaInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_textarea = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_textarea)
+        return;
+
+    Value max_length_val = textareaInst->getProperty("max_length");
+    if (max_length_val.isNumber()) {
+        lv_textarea_set_max_length(lv_textarea, max_length_val.asInt());
+    }
+}
+
+
+// ============================================================================
 // Slider Widget
 // ============================================================================
 
@@ -1229,4 +1824,149 @@ void ModuleUI::layout_remove(ArgsView args)
     }
 
     // Note: We don't delete the LVGL object here - it may be re-parented
+}
+
+
+void ModuleUI::layout_update_mode(ArgsView args)
+{
+    Value& layout = args[0];
+    if (!isObjectInstance(layout))
+        return;
+
+    auto layoutInst = asObjectInstance(layout);
+    Value lv_obj_val = layoutInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_layout = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_layout)
+        return;
+
+    // Get mode property
+    Value mode_val = layoutInst->getProperty("mode");
+    if (!isString(mode_val))
+        return;
+
+    std::string mode;
+    asUString(mode_val).toUTF8String(mode);
+
+    if (mode == "flex") {
+        // Set flex layout
+        lv_obj_set_layout(lv_layout, LV_LAYOUT_FLEX);
+
+        // Get direction from backing field (set directly in init before mode triggers _update_mode)
+        Value dir_val = layoutInst->getProperty("_direction");
+        std::string dir;
+        if (isString(dir_val)) {
+            asUString(dir_val).toUTF8String(dir);
+        }
+        if (dir.empty()) dir = "row";  // default
+
+        // Get wrap from backing field
+        Value wrap_val = layoutInst->getProperty("_wrap");
+        bool wrap = wrap_val.isBool() ? wrap_val.asBool() : false;
+
+        // Determine flex flow
+        lv_flex_flow_t flow;
+        if (dir == "column") {
+            flow = wrap ? LV_FLEX_FLOW_COLUMN_WRAP : LV_FLEX_FLOW_COLUMN;
+        } else {
+            flow = wrap ? LV_FLEX_FLOW_ROW_WRAP : LV_FLEX_FLOW_ROW;
+        }
+        lv_obj_set_flex_flow(lv_layout, flow);
+
+        // Get justify from backing field (main axis alignment)
+        Value justify_val = layoutInst->getProperty("_justify");
+        std::string justify;
+        if (isString(justify_val)) {
+            asUString(justify_val).toUTF8String(justify);
+        }
+        if (justify.empty()) justify = "start";  // default
+
+        lv_flex_align_t main_align = LV_FLEX_ALIGN_START;
+        if (justify == "center") main_align = LV_FLEX_ALIGN_CENTER;
+        else if (justify == "end") main_align = LV_FLEX_ALIGN_END;
+        else if (justify == "space-between") main_align = LV_FLEX_ALIGN_SPACE_BETWEEN;
+        else if (justify == "space-around") main_align = LV_FLEX_ALIGN_SPACE_AROUND;
+        else if (justify == "space-evenly") main_align = LV_FLEX_ALIGN_SPACE_EVENLY;
+
+        // Get align from backing field (cross axis alignment)
+        Value align_val = layoutInst->getProperty("_align");
+        std::string align;
+        if (isString(align_val)) {
+            asUString(align_val).toUTF8String(align);
+        }
+        if (align.empty()) align = "start";  // default
+
+        lv_flex_align_t cross_align = LV_FLEX_ALIGN_START;
+        if (align == "center") cross_align = LV_FLEX_ALIGN_CENTER;
+        else if (align == "end") cross_align = LV_FLEX_ALIGN_END;
+        else if (align == "stretch") cross_align = LV_FLEX_ALIGN_START;  // stretch handled differently
+
+        // Set flex alignment
+        lv_obj_set_flex_align(lv_layout, main_align, cross_align, cross_align);
+
+    } else if (mode == "grid") {
+        // Grid layout - LVGL supports this but requires column/row definitions
+        // For now, we'll set up a basic grid; more complex grids need additional properties
+        lv_obj_set_layout(lv_layout, LV_LAYOUT_GRID);
+
+        // Default to a simple 2-column grid (can be extended with cols/rows properties)
+        static int32_t col_dsc[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
+        static int32_t row_dsc[] = {LV_GRID_CONTENT, LV_GRID_CONTENT, LV_GRID_CONTENT,
+                                    LV_GRID_CONTENT, LV_GRID_TEMPLATE_LAST};
+        lv_obj_set_grid_dsc_array(lv_layout, col_dsc, row_dsc);
+
+    } else {
+        // mode == "none" - disable layout, use manual positioning
+        lv_obj_set_layout(lv_layout, LV_LAYOUT_NONE);
+    }
+}
+
+
+void ModuleUI::layout_update_padding(ArgsView args)
+{
+    Value& layout = args[0];
+    if (!isObjectInstance(layout))
+        return;
+
+    auto layoutInst = asObjectInstance(layout);
+    Value lv_obj_val = layoutInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_layout = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_layout)
+        return;
+
+    Value padding_val = layoutInst->getProperty("padding");
+    if (padding_val.isNumber()) {
+        int32_t padding = padding_val.asInt();
+        lv_obj_set_style_pad_all(lv_layout, padding, 0);
+    }
+}
+
+
+void ModuleUI::layout_update_gap(ArgsView args)
+{
+    Value& layout = args[0];
+    if (!isObjectInstance(layout))
+        return;
+
+    auto layoutInst = asObjectInstance(layout);
+    Value lv_obj_val = layoutInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_layout = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_layout)
+        return;
+
+    Value gap_val = layoutInst->getProperty("gap");
+    if (gap_val.isNumber()) {
+        int32_t gap = gap_val.asInt();
+        // Set both row and column gap
+        lv_obj_set_style_pad_row(lv_layout, gap, 0);
+        lv_obj_set_style_pad_column(lv_layout, gap, 0);
+    }
 }

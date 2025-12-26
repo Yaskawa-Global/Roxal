@@ -64,6 +64,10 @@ public:
     // builtin function implementations
 
     Value display_create_window(ArgsView args);
+    void display_show_perf_monitor(ArgsView args);
+    void display_hide_perf_monitor(ArgsView args);
+    void display_show_mem_monitor(ArgsView args);
+    void display_hide_mem_monitor(ArgsView args);
 
     void window_close(ArgsView args);
     void window_open(ArgsView args);
@@ -87,6 +91,23 @@ public:
     Value button_create(ArgsView args);
     void button_update_label(ArgsView args);
 
+    // Checkbox methods
+    Value checkbox_create(ArgsView args);
+    void checkbox_update_text(ArgsView args);
+    void checkbox_update_checked(ArgsView args);
+
+    // Switch methods
+    Value switch_create(ArgsView args);
+    void switch_update_state(ArgsView args);
+
+    // TextArea methods
+    Value textarea_create(ArgsView args);
+    void textarea_update_text(ArgsView args);
+    void textarea_update_placeholder(ArgsView args);
+    void textarea_update_one_line(ArgsView args);
+    void textarea_update_password(ArgsView args);
+    void textarea_update_max_length(ArgsView args);
+
     // Slider methods
     Value slider_create(ArgsView args);
     void slider_update_value(ArgsView args);
@@ -96,6 +117,9 @@ public:
     Value layout_create(ArgsView args);
     void layout_add(ArgsView args);
     void layout_remove(ArgsView args);
+    void layout_update_mode(ArgsView args);
+    void layout_update_padding(ArgsView args);
+    void layout_update_gap(ArgsView args);
 
     // Access to widget registry
     WidgetRegistry& getWidgetRegistry() { return widgetRegistry; }
@@ -110,6 +134,9 @@ protected:
     Value widgetType;
     Value labelType;
     Value buttonType;
+    Value checkboxType;
+    Value switchType;
+    Value textareaType;
     Value sliderType;
     Value layoutType;
 

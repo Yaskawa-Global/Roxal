@@ -121,6 +121,22 @@ type Display object:
   func create_window(width :int, height :int, title :string="", open :bool=false):
     """create a new window (closed by default)"""
 
+  @builtin
+  proc show_perf_monitor():
+    """Show the performance monitor (FPS, CPU usage) on this display"""
+
+  @builtin
+  proc hide_perf_monitor():
+    """Hide the performance monitor on this display"""
+
+  @builtin
+  proc show_mem_monitor():
+    """Show the memory monitor on this display"""
+
+  @builtin
+  proc hide_mem_monitor():
+    """Hide the memory monitor on this display"""
+
 
 // ============================================================================
 // Base Widget
@@ -247,6 +263,184 @@ type Button object extends Widget:
 
 
 // ============================================================================
+// Checkbox Widget - toggleable checkbox with label
+// ============================================================================
+
+@builtin
+type Checkbox object extends Widget:
+  var text :string = "":
+    set:
+      _text = value
+      this._update_text()
+
+  var checked :bool = false:
+    get:
+      return _checked
+    set:
+      _checked = value
+      this._update_checked()
+
+  // Event callback - called when checked state changes
+  var changed = nil
+
+  proc init(parent = nil, text = "", checked = false, x = 0, y = 0, changed = nil):
+    // Create native checkbox via builtin
+    var cb = _checkbox_create(parent)
+    // Copy native object reference
+    this._lv_obj = cb._lv_obj
+    // Register this widget instance (not the temporary)
+    _widget_register(this)
+    // Set initial properties (using public setters which trigger native updates)
+    this.x = x
+    this.y = y
+    this.text = text
+    this.checked = checked
+    this.changed = changed
+
+    // Set up value change handler
+    when ValueChanged occurs as evt:
+      if evt.widget is this:
+        var new_checked = evt.value != 0
+        if new_checked != this._checked:  // only fire if actually changed
+          this._checked = new_checked
+          if this.changed is not nil:
+            this.changed(this._checked)
+
+  @builtin
+  private proc _update_text():
+    """Update checkbox text in native UI"""
+
+  @builtin
+  private proc _update_checked():
+    """Update checkbox checked state in native UI"""
+
+
+// ============================================================================
+// Switch Widget - on/off toggle switch
+// ============================================================================
+
+@builtin
+type Switch object extends Widget:
+  var on :bool = false:
+    get:
+      return _on
+    set:
+      _on = value
+      this._update_state()
+
+  // Event callback - called when switch state changes
+  var changed = nil
+
+  proc init(parent = nil, on = false, x = 0, y = 0, changed = nil):
+    // Create native switch via builtin
+    var sw = _switch_create(parent)
+    // Copy native object reference
+    this._lv_obj = sw._lv_obj
+    // Register this widget instance (not the temporary)
+    _widget_register(this)
+    // Set initial properties (using public setters which trigger native updates)
+    this.x = x
+    this.y = y
+    this.on = on
+    this.changed = changed
+
+    // Set up value change handler
+    when ValueChanged occurs as evt:
+      if evt.widget is this:
+        var new_on = evt.value != 0
+        if new_on != this._on:  // only fire if actually changed
+          this._on = new_on
+          if this.changed is not nil:
+            this.changed(this._on)
+
+  @builtin
+  private proc _update_state():
+    """Update switch state in native UI"""
+
+
+// ============================================================================
+// TextArea Widget - multi-line text input
+// ============================================================================
+
+@builtin
+type TextArea object extends Widget:
+  var text :string = "":
+    get:
+      return _text
+    set:
+      _text = value
+      this._update_text()
+
+  var placeholder :string = "":
+    set:
+      _placeholder = value
+      this._update_placeholder()
+
+  var one_line :bool = false:
+    set:
+      _one_line = value
+      this._update_one_line()
+
+  var password :bool = false:
+    set:
+      _password = value
+      this._update_password()
+
+  var max_length :int = 0:  // 0 = unlimited
+    set:
+      _max_length = value
+      this._update_max_length()
+
+  // Event callback - called when text changes
+  var changed = nil
+
+  proc init(parent = nil, text = "", placeholder = "", one_line = false, password = false, max_length = 0, x = 0, y = 0, width = 200, height = 100, changed = nil):
+    // Create native textarea via builtin
+    var ta = _textarea_create(parent)
+    // Copy native object reference
+    this._lv_obj = ta._lv_obj
+    // Register this widget instance (not the temporary)
+    _widget_register(this)
+    // Set initial properties (using public setters which trigger native updates)
+    this.x = x
+    this.y = y
+    this.width = width
+    this.height = height
+    this.one_line = one_line
+    this.password = password
+    this.max_length = max_length
+    this.placeholder = placeholder
+    this.text = text
+    this.changed = changed
+
+    // Set up value change handler (text changed events)
+    when ValueChanged occurs as evt:
+      if evt.widget is this:
+        if this.changed is not nil:
+          this.changed(this.text)
+
+  @builtin
+  private proc _update_text():
+    """Update textarea text in native UI"""
+
+  @builtin
+  private proc _update_placeholder():
+    """Update textarea placeholder in native UI"""
+
+  @builtin
+  private proc _update_one_line():
+    """Update textarea one-line mode in native UI"""
+
+  @builtin
+  private proc _update_password():
+    """Update textarea password mode in native UI"""
+
+  @builtin
+  private proc _update_max_length():
+    """Update textarea max length in native UI"""
+
+
+// ============================================================================
 // Slider Widget - value selection slider
 // ============================================================================
 
@@ -329,21 +523,29 @@ type Layout object extends Widget:
       this._update_gap()
 
   var direction :string = "row":  // "row", "column" (for flex mode)
+    get:
+      return _direction
     set:
       _direction = value
       this._update_mode()  // direction affects flex layout
 
   var wrap :bool = false:  // wrap children in flex mode
+    get:
+      return _wrap
     set:
       _wrap = value
       this._update_mode()
 
   var justify :string = "start":  // "start", "center", "end", "space-between", "space-around", "space-evenly"
+    get:
+      return _justify
     set:
       _justify = value
       this._update_mode()
 
   var align :string = "start":  // "start", "center", "end", "stretch"
+    get:
+      return _align
     set:
       _align = value
       this._update_mode()
@@ -361,7 +563,12 @@ type Layout object extends Widget:
     this.y = y
     this.width = width
     this.height = height
-    this.mode = mode
+    // Set layout-specific properties (direction, wrap, justify, align before mode to configure flex)
+    this._direction = direction
+    this._wrap = wrap
+    this._justify = justify
+    this._align = align
+    this.mode = mode  // This triggers _update_mode which uses the above
     this.padding = padding
     this.gap = gap
 
@@ -392,6 +599,18 @@ type Layout object extends Widget:
   private proc _remove(widget):
     """Remove child widget in native UI"""
 
+  @builtin
+  private proc _update_mode():
+    """Update layout mode in native UI (none, flex, grid)"""
+
+  @builtin
+  private proc _update_padding():
+    """Update layout padding in native UI"""
+
+  @builtin
+  private proc _update_gap():
+    """Update layout gap in native UI"""
+
 
 // ============================================================================
 // Native functions (only called when module is imported)
@@ -409,6 +628,18 @@ func _label_create(parent):
 @builtin
 func _button_create(parent):
   """Create a native button widget"""
+
+@builtin
+func _checkbox_create(parent):
+  """Create a native checkbox widget"""
+
+@builtin
+func _switch_create(parent):
+  """Create a native switch widget"""
+
+@builtin
+func _textarea_create(parent):
+  """Create a native textarea widget"""
 
 @builtin
 func _slider_create(parent):
