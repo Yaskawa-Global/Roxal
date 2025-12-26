@@ -50,6 +50,41 @@ type WindowResize event extends Event:
   var newWidth :int = 0
   var newHeight :int = 0
 
+type WindowMove event extends Event:
+  var newX :int = 0
+  var newY :int = 0
+
+type WindowFocus event extends Event
+  // window gained focus
+
+type WindowDefocus event extends Event
+  // window lost focus
+
+type WindowMinimize event extends Event
+  // window was minimized (iconified)
+
+type WindowRestore event extends Event
+  // window was restored from minimized state
+
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+// Scrollbar visibility modes
+type ScrollbarMode enum:
+  Hidden   // Never show scrollbars
+  Visible  // Always show scrollbars
+  Active   // Show while scrolling
+  Auto     // Show when content is large enough (default)
+
+// Scroll direction control
+type ScrollDir enum:
+  None        // Disable scrolling
+  Horizontal  // Horizontal only
+  Vertical    // Vertical only
+  Both        // Both directions (default)
+
 
 // ============================================================================
 // Window & Display
@@ -118,8 +153,8 @@ type Display object:
   var windows :dict // id : Window
 
   @builtin
-  func create_window(width :int, height :int, title :string="", open :bool=false):
-    """create a new window (closed by default)"""
+  func create_window(width :int, height :int, title :string="", open :bool=false, resizable :bool=false):
+    """create a new window (closed by default, resizable by default)"""
 
   @builtin
   proc show_perf_monitor():
@@ -174,6 +209,16 @@ type Widget object:
       _enabled = value
       this._update_enabled()
 
+  var scrollbar :ScrollbarMode = ScrollbarMode.Auto:
+    set:
+      _scrollbar = value
+      this._update_scrollbar()
+
+  var scroll_dir :ScrollDir = ScrollDir.Both:
+    set:
+      _scroll_dir = value
+      this._update_scroll_dir()
+
   @builtin
   private proc _update_position():
     """Update widget position in native UI"""
@@ -189,6 +234,14 @@ type Widget object:
   @builtin
   private proc _update_enabled():
     """Update widget enabled state in native UI"""
+
+  @builtin
+  private proc _update_scrollbar():
+    """Update widget scrollbar mode in native UI"""
+
+  @builtin
+  private proc _update_scroll_dir():
+    """Update widget scroll direction in native UI"""
 
 
 // ============================================================================
@@ -512,7 +565,7 @@ type Layout object extends Widget:
       _mode = value
       this._update_mode()
 
-  var padding :int = 0:
+  var padding :int = 8:
     set:
       _padding = value
       this._update_padding()
@@ -521,6 +574,11 @@ type Layout object extends Widget:
     set:
       _gap = value
       this._update_gap()
+
+  var border_width :int = -1:  // -1 = use default, 0 = no border, >0 = border width in pixels
+    set:
+      _border_width = value
+      this._update_border_width()
 
   var direction :string = "row":  // "row", "column" (for flex mode)
     get:
@@ -551,7 +609,7 @@ type Layout object extends Widget:
       this._update_mode()
 
   // Variadic constructor for nested children
-  proc init(parent = nil, x = 0, y = 0, width = 100, height = 100, mode = "none", direction = "row", wrap = false, justify = "start", align = "start", padding = 0, gap = 0, ...widgets):
+  proc init(parent = nil, x = 0, y = 0, width = 100, height = 100, mode = "none", direction = "row", wrap = false, justify = "start", align = "start", padding = 8, gap = 0, border_width = -1, scrollbar = ScrollbarMode.Auto, scroll_dir = ScrollDir.Both, ...widgets):
     // Create native layout via builtin
     var lay = _layout_create(parent)
     // Copy native object reference
@@ -571,6 +629,9 @@ type Layout object extends Widget:
     this.mode = mode  // This triggers _update_mode which uses the above
     this.padding = padding
     this.gap = gap
+    this.border_width = border_width
+    this.scrollbar = scrollbar
+    this.scroll_dir = scroll_dir
 
     // Add any child widgets passed as variadic arguments
     for widget in widgets:
@@ -610,6 +671,10 @@ type Layout object extends Widget:
   @builtin
   private proc _update_gap():
     """Update layout gap in native UI"""
+
+  @builtin
+  private proc _update_border_width():
+    """Update layout border width in native UI"""
 
 
 // ============================================================================

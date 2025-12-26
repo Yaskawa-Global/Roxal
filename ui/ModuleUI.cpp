@@ -38,6 +38,84 @@ struct KeyboardState {
 // Global keyboard state (one per window would be better, but this works for now)
 static KeyboardState g_keyboard;
 
+// ============================================================================
+// Window Event Support
+// ============================================================================
+
+// Queued window event - simple struct with all needed data
+struct QueuedWindowEvent {
+    std::string eventName;
+    ModuleUI* module;
+    Value window;  // Weak reference to Roxal Window object
+    std::map<std::string, Value> payload;
+};
+
+// Data associated with each GLFW window for event callbacks
+struct WindowUserData {
+    ModuleUI* module = nullptr;
+    Value window;  // Weak reference to Roxal Window object
+    lv_display_t* lv_display = nullptr;  // For resize handling
+    lv_opengles_window_texture_t* window_texture = nullptr;  // For resize handling
+};
+
+// Global registry mapping GLFWwindow* to WindowUserData
+// NOTE: We cannot use glfwSetWindowUserPointer because LVGL uses it for its own data!
+// All access is single-threaded (UI poll thread), so no mutex needed
+static std::unordered_map<GLFWwindow*, ptr<WindowUserData>> g_windowUserDataMap;
+static std::vector<QueuedWindowEvent> g_pendingWindowEvents;
+
+// Pending resize operation (processed after glfwPollEvents to avoid re-entrancy)
+struct PendingResize {
+    lv_display_t* display;
+    int32_t width;
+    int32_t height;
+};
+static std::vector<PendingResize> g_pendingResizes;
+
+// Look up WindowUserData for a GLFW window
+static WindowUserData* getWindowUserData(GLFWwindow* window) {
+    auto it = g_windowUserDataMap.find(window);
+    return (it != g_windowUserDataMap.end()) ? it->second.get() : nullptr;
+}
+
+// Queue a window event (called from GLFW callbacks during glfwPollEvents)
+static void queueWindowEvent(GLFWwindow* window, const std::string& eventName,
+                             const std::map<std::string, Value>& payload = {}) {
+    WindowUserData* userData = getWindowUserData(window);
+    if (!userData || !userData->module) return;
+    g_pendingWindowEvents.push_back({eventName, userData->module, userData->window, payload});
+}
+
+// Process all queued window events (called after glfwPollEvents returns)
+static void processQueuedWindowEvents() {
+    // Move events to local vector in case processing triggers more events
+    auto events = std::move(g_pendingWindowEvents);
+    g_pendingWindowEvents.clear();
+
+    for (auto& evt : events) {
+        if (!evt.module) continue;
+        Value roxalWindow = evt.window.isWeak() ? evt.window.strongRef() : evt.window;
+        if (roxalWindow.isNil()) continue;
+        evt.module->emitUIEvent(evt.eventName, roxalWindow, evt.payload);
+    }
+}
+
+// Process pending resize operations (called after glfwPollEvents, before lv_timer_handler)
+static void processQueuedResizes() {
+    // NOTE: LVGL's lv_opengles_texture_reshape doesn't properly update display buffers,
+    // causing assertions when enlarging windows. For now, we skip the LVGL resize.
+    // The WindowResize event is still emitted so Roxal code can handle it.
+    // TODO: Implement proper resize by recreating display/texture or fixing LVGL driver.
+    g_pendingResizes.clear();
+}
+
+// Forward declarations for GLFW callbacks
+static void glfw_window_close_callback(GLFWwindow* window);
+static void glfw_window_size_callback(GLFWwindow* window, int width, int height);
+static void glfw_window_pos_callback(GLFWwindow* window, int xpos, int ypos);
+static void glfw_window_focus_callback(GLFWwindow* window, int focused);
+static void glfw_window_iconify_callback(GLFWwindow* window, int iconified);
+
 // Convert GLFW key to LVGL control key
 static uint32_t glfw_key_to_lv_key(int key) {
     switch (key) {
@@ -141,6 +219,47 @@ static void glfw_char_callback(GLFWwindow* window, unsigned int codepoint) {
     }
 }
 
+// ============================================================================
+// GLFW Window Event Callbacks
+// ============================================================================
+// These callbacks queue events instead of emitting directly to avoid
+// re-entrancy issues with LVGL during glfwPollEvents()
+
+static void glfw_window_close_callback(GLFWwindow* window) {
+    // Prevent the window from closing - Roxal code must explicitly call close()
+    glfwSetWindowShouldClose(window, GLFW_FALSE);
+    queueWindowEvent(window, "WindowClose");
+}
+
+static void glfw_window_size_callback(GLFWwindow* window, int width, int height) {
+    // Queue LVGL resize operation (processed after glfwPollEvents to avoid re-entrancy)
+    WindowUserData* userData = getWindowUserData(window);
+    if (userData && userData->lv_display && width > 0 && height > 0) {
+        g_pendingResizes.push_back({userData->lv_display, width, height});
+    }
+
+    // Queue event for Roxal code to handle
+    queueWindowEvent(window, "WindowResize", {
+        {"newWidth", Value::intVal(width)},
+        {"newHeight", Value::intVal(height)}
+    });
+}
+
+static void glfw_window_pos_callback(GLFWwindow* window, int xpos, int ypos) {
+    queueWindowEvent(window, "WindowMove", {
+        {"newX", Value::intVal(xpos)},
+        {"newY", Value::intVal(ypos)}
+    });
+}
+
+static void glfw_window_focus_callback(GLFWwindow* window, int focused) {
+    queueWindowEvent(window, focused ? "WindowFocus" : "WindowDefocus");
+}
+
+static void glfw_window_iconify_callback(GLFWwindow* window, int iconified) {
+    queueWindowEvent(window, iconified ? "WindowMinimize" : "WindowRestore");
+}
+
 ModuleUI::ModuleUI()
 {
     moduleTypeValue = Value::objVal(newModuleTypeObj(toUnicodeString("ui")));
@@ -195,6 +314,8 @@ void ModuleUI::registerBuiltins(VM& vm)
     linkMethod("Widget", "_update_size", [this](VM& vm, ArgsView a){ widget_update_size(a); return Value::nilVal(); });
     linkMethod("Widget", "_update_visible", [this](VM& vm, ArgsView a){ widget_update_visible(a); return Value::nilVal(); });
     linkMethod("Widget", "_update_enabled", [this](VM& vm, ArgsView a){ widget_update_enabled(a); return Value::nilVal(); });
+    linkMethod("Widget", "_update_scrollbar", [this](VM& vm, ArgsView a){ widget_update_scrollbar(a); return Value::nilVal(); });
+    linkMethod("Widget", "_update_scroll_dir", [this](VM& vm, ArgsView a){ widget_update_scroll_dir(a); return Value::nilVal(); });
 
     // Label methods
     link("_label_create", [this](VM& vm, ArgsView a){ return label_create(a); });
@@ -233,6 +354,7 @@ void ModuleUI::registerBuiltins(VM& vm)
     linkMethod("Layout", "_update_mode", [this](VM& vm, ArgsView a){ layout_update_mode(a); return Value::nilVal(); });
     linkMethod("Layout", "_update_padding", [this](VM& vm, ArgsView a){ layout_update_padding(a); return Value::nilVal(); });
     linkMethod("Layout", "_update_gap", [this](VM& vm, ArgsView a){ layout_update_gap(a); return Value::nilVal(); });
+    linkMethod("Layout", "_update_border_width", [this](VM& vm, ArgsView a){ layout_update_border_width(a); return Value::nilVal(); });
 
     // Note: Type references are cached in initialize() after the module script is parsed
 }
@@ -274,6 +396,10 @@ void ModuleUI::initialize()
         const int64_t pollIntervalMicros = 1000000 / FPS;  // FPS defined in ui.rox (100)
         vm().registerPollCallback([this]() {
             glfwPollEvents();
+            // Process resize operations before LVGL rendering (must happen before lv_timer_handler)
+            processQueuedResizes();
+            // Process any window events that were queued during glfwPollEvents
+            processQueuedWindowEvents();
             lv_timer_handler();
         }, pollIntervalMicros);
     }
@@ -418,6 +544,7 @@ Value ModuleUI::display_create_window(ArgsView args)
     Value height { args[2] };
     Value title { args[3] };
     Value open { args[4] };
+    Value resizable { args[5] };
     if (!width.isNumber() || !height.isNumber())
         throw std::runtime_error("width & height must be numeric");
 
@@ -426,28 +553,50 @@ Value ModuleUI::display_create_window(ArgsView args)
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     }
 
+    // Set resizable hint before creating the window
+    if (resizable.isBool() && !resizable.asBool()) {
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+    }
+
     lv_opengles_window_t* lv_window = lv_opengles_glfw_window_create(width.asInt(), height.asInt(), true);
 
-    // Reset visibility hint to default for future windows
+    // Reset window hints to default for future windows
     glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
     if (!lv_window) {
         LV_LOG_ERROR("Failed to create OpenGL ES window");
         raiseException("Unable to create window (lv_opengles_glfw)");
         return Value::nilVal();
     }
 
-    // Override the window close callback to prevent automatic closing
+    // Get the underlying GLFW window
     GLFWwindow* glfw_window = (GLFWwindow*)lv_opengles_glfw_window_get_glfw_window(lv_window);
-    glfwSetWindowCloseCallback(glfw_window, [](GLFWwindow* window) {
-        // Prevent the window from closing - we'll handle it in Roxal
-        glfwSetWindowShouldClose(window, GLFW_FALSE);
-    });
+
+    // Apply resizable attribute after window creation (more reliable than hints on some platforms)
+    if (resizable.isBool() && !resizable.asBool()) {
+        glfwSetWindowAttrib(glfw_window, GLFW_RESIZABLE, GLFW_FALSE);
+    }
+
+    // Create user data for GLFW callbacks (stored in map, cleaned up in window_close)
+    // NOTE: We use a map instead of glfwSetWindowUserPointer because LVGL uses it!
+    ptr<WindowUserData> userData = make_ptr<WindowUserData>();
+    userData->module = this;
+    userData->window = window.weakRef();
+    g_windowUserDataMap[glfw_window] = userData;
+
+    // Set up window event callbacks
+    glfwSetWindowCloseCallback(glfw_window, glfw_window_close_callback);
+    glfwSetWindowSizeCallback(glfw_window, glfw_window_size_callback);
+    glfwSetWindowPosCallback(glfw_window, glfw_window_pos_callback);
+    glfwSetWindowFocusCallback(glfw_window, glfw_window_focus_callback);
+    glfwSetWindowIconifyCallback(glfw_window, glfw_window_iconify_callback);
 
     // Set up keyboard callbacks for text input
     glfwSetKeyCallback(glfw_window, glfw_key_callback);
     glfwSetCharCallback(glfw_window, glfw_char_callback);
 
     windowInst->setProperty("_lv_window", Value::foreignPtrVal(lv_window));
+    // Note: userData is kept alive by g_windowUserDataMap, not stored here
 
     lv_display_t* lv_display = lv_opengles_texture_create(width.asInt(), height.asInt());
     if (!lv_display) {
@@ -476,6 +625,10 @@ Value ModuleUI::display_create_window(ArgsView args)
     }
     windowInst->setProperty("_texture_id", Value::intVal(texture_id));
     windowInst->setProperty("_window_texture", Value::foreignPtrVal(window_texture));
+
+    // Update WindowUserData with LVGL pointers for resize handling
+    userData->lv_display = lv_display;
+    userData->window_texture = window_texture;
 
     // Set window title (or generate default using texture_id)
     std::string windowTitle;
@@ -598,13 +751,20 @@ void ModuleUI::window_close(ArgsView args)
     Value& window { args[0] };
     auto windowInst { asObjectInstance(window) };
 
-    auto window_texture = (lv_opengles_window_texture_t*)(asForeignPtr(windowInst->getProperty("_window_texture"))->ptr);
+    // Safe extraction of foreign pointers (may be nil if already closed)
+    Value window_texture_val = windowInst->getProperty("_window_texture");
+    auto window_texture = isForeignPtr(window_texture_val)
+        ? (lv_opengles_window_texture_t*)(asForeignPtr(window_texture_val)->ptr)
+        : nullptr;
     if (window_texture) {
         lv_opengles_window_texture_remove(window_texture);
         windowInst->setProperty("_window_texture",Value::nilVal());
     }
 
-    auto lv_display = (lv_display_t*)(asForeignPtr(windowInst->getProperty("_lv_display"))->ptr);
+    Value lv_display_val = windowInst->getProperty("_lv_display");
+    auto lv_display = isForeignPtr(lv_display_val)
+        ? (lv_display_t*)(asForeignPtr(lv_display_val)->ptr)
+        : nullptr;
     if (lv_display) {
         lv_display_delete(lv_display);
         windowInst->setProperty("_lv_display",Value::nilVal());
@@ -623,8 +783,18 @@ void ModuleUI::window_close(ArgsView args)
         window_count = display_windowsDict->length();
     }
 
-    auto lv_window = (lv_opengles_window_t*)(asForeignPtr(windowInst->getProperty("_lv_window"))->ptr);
+    Value lv_window_val = windowInst->getProperty("_lv_window");
+    auto lv_window = isForeignPtr(lv_window_val)
+        ? (lv_opengles_window_t*)(asForeignPtr(lv_window_val)->ptr)
+        : nullptr;
     if (lv_window) {
+        // Clean up the user data for GLFW callbacks
+        GLFWwindow* glfw_window = (GLFWwindow*)lv_opengles_glfw_window_get_glfw_window(lv_window);
+        if (glfw_window) {
+            // Remove from map (removing ptr<> releases the memory)
+            g_windowUserDataMap.erase(glfw_window);
+        }
+
         if (window_count > 1) {
             // Safe to delete - not the last window
             lv_opengles_window_delete(lv_window);
@@ -632,7 +802,6 @@ void ModuleUI::window_close(ArgsView args)
         } else {
             // WORKAROUND: Don't delete the last window to avoid LVGL bug (SEGFAULT)
             // Instead, just hide it
-            GLFWwindow* glfw_window = (GLFWwindow*)lv_opengles_glfw_window_get_glfw_window(lv_window);
             glfwHideWindow(glfw_window);
             // Note: We intentionally leak lv_window to avoid the SEGFAULT
         }
@@ -1006,8 +1175,15 @@ void ModuleUI::emitUIEvent(const std::string& eventTypeName, Value widget,
         auto hIt = extraPayload.find("newHeight");
         payload.push_back(wIt != extraPayload.end() ? wIt->second : Value::intVal(0));
         payload.push_back(hIt != extraPayload.end() ? hIt->second : Value::intVal(0));
+    } else if (eventTypeName == "WindowMove") {
+        // WindowMove has: newX, newY
+        auto xIt = extraPayload.find("newX");
+        auto yIt = extraPayload.find("newY");
+        payload.push_back(xIt != extraPayload.end() ? xIt->second : Value::intVal(0));
+        payload.push_back(yIt != extraPayload.end() ? yIt->second : Value::intVal(0));
     }
-    // Pressed, Released, Focused, Defocused, WindowClose have no extra fields
+    // Pressed, Released, Focused, Defocused, WindowClose, WindowFocus, WindowDefocus,
+    // WindowMinimize, WindowRestore have no extra fields
 
     // Create event instance with payload
     Value eventInstance = Value::eventInstanceVal(eventType, std::move(payload));
@@ -1135,6 +1311,68 @@ void ModuleUI::widget_update_enabled(ArgsView args)
         } else {
             lv_obj_add_state(lv_obj, LV_STATE_DISABLED);
         }
+    }
+}
+
+void ModuleUI::widget_update_scrollbar(ArgsView args)
+{
+    Value& widget = args[0];
+    if (!isObjectInstance(widget))
+        return;
+
+    auto widgetInst = asObjectInstance(widget);
+    Value lv_obj_val = widgetInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_obj = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_obj)
+        return;
+
+    Value scrollbar_val = widgetInst->getProperty("scrollbar");
+    if (scrollbar_val.isEnum()) {
+        // ScrollbarMode enum: Hidden=0, Visible=1, Active=2, Auto=3
+        int mode = scrollbar_val.asEnum();
+        lv_scrollbar_mode_t lv_mode;
+        switch (mode) {
+            case 0: lv_mode = LV_SCROLLBAR_MODE_OFF; break;     // Hidden
+            case 1: lv_mode = LV_SCROLLBAR_MODE_ON; break;      // Visible
+            case 2: lv_mode = LV_SCROLLBAR_MODE_ACTIVE; break;  // Active
+            case 3: lv_mode = LV_SCROLLBAR_MODE_AUTO; break;    // Auto
+            default: lv_mode = LV_SCROLLBAR_MODE_AUTO; break;
+        }
+        lv_obj_set_scrollbar_mode(lv_obj, lv_mode);
+    }
+}
+
+void ModuleUI::widget_update_scroll_dir(ArgsView args)
+{
+    Value& widget = args[0];
+    if (!isObjectInstance(widget))
+        return;
+
+    auto widgetInst = asObjectInstance(widget);
+    Value lv_obj_val = widgetInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_obj = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_obj)
+        return;
+
+    Value scroll_dir_val = widgetInst->getProperty("scroll_dir");
+    if (scroll_dir_val.isEnum()) {
+        // ScrollDir enum: None=0, Horizontal=1, Vertical=2, Both=3
+        int dir = scroll_dir_val.asEnum();
+        lv_dir_t lv_dir;
+        switch (dir) {
+            case 0: lv_dir = LV_DIR_NONE; break;  // None
+            case 1: lv_dir = LV_DIR_HOR; break;   // Horizontal
+            case 2: lv_dir = LV_DIR_VER; break;   // Vertical
+            case 3: lv_dir = LV_DIR_ALL; break;   // Both
+            default: lv_dir = LV_DIR_ALL; break;
+        }
+        lv_obj_set_scroll_dir(lv_obj, lv_dir);
     }
 }
 
@@ -1968,5 +2206,31 @@ void ModuleUI::layout_update_gap(ArgsView args)
         // Set both row and column gap
         lv_obj_set_style_pad_row(lv_layout, gap, 0);
         lv_obj_set_style_pad_column(lv_layout, gap, 0);
+    }
+}
+
+void ModuleUI::layout_update_border_width(ArgsView args)
+{
+    Value& layout = args[0];
+    if (!isObjectInstance(layout))
+        return;
+
+    auto layoutInst = asObjectInstance(layout);
+    Value lv_obj_val = layoutInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_layout = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_layout)
+        return;
+
+    Value border_val = layoutInst->getProperty("border_width");
+    if (border_val.isNumber()) {
+        int32_t border_width = border_val.asInt();
+        if (border_width >= 0) {
+            // Set border width (0 = no border)
+            lv_obj_set_style_border_width(lv_layout, border_width, 0);
+        }
+        // If -1 (default), don't change the LVGL default
     }
 }

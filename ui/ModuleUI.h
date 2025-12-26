@@ -82,6 +82,8 @@ public:
     void widget_update_size(ArgsView args);
     void widget_update_visible(ArgsView args);
     void widget_update_enabled(ArgsView args);
+    void widget_update_scrollbar(ArgsView args);
+    void widget_update_scroll_dir(ArgsView args);
 
     // Label methods
     Value label_create(ArgsView args);
@@ -120,6 +122,7 @@ public:
     void layout_update_mode(ArgsView args);
     void layout_update_padding(ArgsView args);
     void layout_update_gap(ArgsView args);
+    void layout_update_border_width(ArgsView args);
 
     // Access to widget registry
     WidgetRegistry& getWidgetRegistry() { return widgetRegistry; }
