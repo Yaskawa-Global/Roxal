@@ -9,8 +9,6 @@ s2 changed (count: 2)
 Test 3: Multiple handlers on same signal
 Handler A: 99
 Handler B: 99
-Handler A: 99
-Handler B: 99
 
 Test 4: Clock signal with on_changed
 Clock ticked (count: 1)
