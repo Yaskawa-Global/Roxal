@@ -429,6 +429,12 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
     baseEvent.when = when;
     baseEvent.eventType = eventWeak;
     baseEvent.instance = eventInstance;
+
+    // Track which threads have already been scheduled for this event.
+    // processPendingEvents() calls ALL handlers for an event type when processing
+    // a single pending event, so we only need to schedule once per thread.
+    std::unordered_set<Thread*> scheduledThreads;
+
     for (auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
         Value handlerVal = *it;
         if (!handlerVal.isAlive()) {
@@ -443,6 +449,12 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
             continue;
         }
 
+        // Skip if we've already scheduled an event to this thread
+        if (scheduledThreads.count(handlerThread.get()) > 0) {
+            ++it;
+            continue;
+        }
+
         Value key = eventWeak;
         auto regIt = handlerThread->eventHandlers.find(key);
         if (regIt == handlerThread->eventHandlers.end()) {
@@ -450,30 +462,34 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
             continue;
         }
 
-        auto trySchedule = [&](const Thread::HandlerRegistration& reg) {
+        // Check if any handler on this thread should receive the event
+        // (considering matchValue filters)
+        bool shouldSchedule = false;
+        for (const auto& reg : regIt->second) {
             if (!reg.closure.isAlive())
-                return;
-            if (asClosure(reg.closure) != closure)
-                return;
+                continue;
             if (reg.matchValue.has_value()) {
                 if (!isEventInstance(eventInstance))
-                    return;
+                    continue;
                 auto* inst = asEventInstance(eventInstance);
                 if (inst->payload.empty())
-                    return;
+                    continue;
                 const Value& sample = inst->payload.at(0);
                 if (!sample.equals(reg.matchValue.value(), /*strict=*/false))
-                    return;
+                    continue;
             }
+            shouldSchedule = true;
+            break;
+        }
+
+        if (shouldSchedule) {
+            scheduledThreads.insert(handlerThread.get());
             Thread::PendingEvent pending = baseEvent;
             pending.sequence = handlerThread->nextPendingEventId.fetch_add(1, std::memory_order_relaxed);
             handlerThread->pendingEvents.push(pending);
             handlerThread->pendingEventCount.fetch_add(1, std::memory_order_release);
             handlerThread->wake();
-        };
-
-        for (const auto& reg : regIt->second)
-            trySchedule(reg);
+        }
 
         ++it;
     }
