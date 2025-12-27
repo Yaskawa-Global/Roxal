@@ -85,6 +85,14 @@ type ScrollDir enum:
   Vertical    // Vertical only
   Both        // Both directions (default)
 
+// Image alignment/scaling modes
+type ImageAlign enum:
+  Default   // Auto-size to image dimensions
+  Stretch   // Scale to fill widget area (ignores aspect ratio)
+  Tile      // Tile image to fill widget area
+  Contain   // Fit within widget, keep aspect ratio
+  Cover     // Fill widget, keep aspect ratio (may crop)
+
 
 // ============================================================================
 // Window & Display
@@ -272,6 +280,49 @@ type Label object extends Widget:
   @builtin
   private proc _update_text():
     """Update label text in native UI"""
+
+
+// ============================================================================
+// Image Widget - displays an image from file
+// ============================================================================
+
+@builtin
+type Image object extends Widget:
+  var src :string = "":
+    set:
+      _src = value
+      this._update_src()
+
+  // Image alignment/scaling modes
+  var align :ImageAlign = ImageAlign.Contain:
+    set:
+      _align = value
+      this._update_align()
+
+  proc init(parent = nil, src = "", x = 0, y = 0, width = 0, height = 0, align = ImageAlign.Contain):
+    // Create native image via builtin
+    var img = _image_create(parent)
+    // Copy native object reference
+    this._lv_obj = img._lv_obj
+    // Register this widget instance (not the temporary)
+    _widget_register(this)
+    // Set initial properties (using public setters which trigger native updates)
+    this.x = x
+    this.y = y
+    if width > 0:
+      this.width = width
+    if height > 0:
+      this.height = height
+    this.align = align  // Use setter to trigger _update_align() before loading image
+    this.src = src
+
+  @builtin
+  private proc _update_src():
+    """Update image source in native UI"""
+
+  @builtin
+  private proc _update_align():
+    """Update image alignment/scaling in native UI"""
 
 
 // ============================================================================
@@ -575,7 +626,7 @@ type Layout object extends Widget:
       _gap = value
       this._update_gap()
 
-  var border_width :int = -1:  // -1 = use default, 0 = no border, >0 = border width in pixels
+  var border_width :int = 0:  // -1 = use default, 0 = no border, >0 = border width in pixels
     set:
       _border_width = value
       this._update_border_width()
@@ -609,7 +660,7 @@ type Layout object extends Widget:
       this._update_mode()
 
   // Variadic constructor for nested children
-  proc init(parent = nil, x = 0, y = 0, width = 100, height = 100, mode = "none", direction = "row", wrap = false, justify = "start", align = "start", padding = 8, gap = 0, border_width = -1, scrollbar = ScrollbarMode.Auto, scroll_dir = ScrollDir.Both, ...widgets):
+  proc init(parent = nil, x = 0, y = 0, width = 100, height = 100, mode = "none", direction = "row", wrap = false, justify = "start", align = "start", padding = 8, gap = 0, border_width = 0, scrollbar = ScrollbarMode.Auto, scroll_dir = ScrollDir.Both, ...widgets):
     // Create native layout via builtin
     var lay = _layout_create(parent)
     // Copy native object reference
@@ -689,6 +740,10 @@ func _init():
 @builtin
 func _label_create(parent):
   """Create a native label widget"""
+
+@builtin
+func _image_create(parent):
+  """Create a native image widget"""
 
 @builtin
 func _button_create(parent):

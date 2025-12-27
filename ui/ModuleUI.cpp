@@ -321,6 +321,11 @@ void ModuleUI::registerBuiltins(VM& vm)
     link("_label_create", [this](VM& vm, ArgsView a){ return label_create(a); });
     linkMethod("Label", "_update_text", [this](VM& vm, ArgsView a){ label_update_text(a); return Value::nilVal(); });
 
+    // Image methods
+    link("_image_create", [this](VM& vm, ArgsView a){ return image_create(a); });
+    linkMethod("Image", "_update_src", [this](VM& vm, ArgsView a){ image_update_src(a); return Value::nilVal(); });
+    linkMethod("Image", "_update_align", [this](VM& vm, ArgsView a){ image_update_align(a); return Value::nilVal(); });
+
     // Button methods
     link("_button_create", [this](VM& vm, ArgsView a){ return button_create(a); });
     linkMethod("Button", "_update_label", [this](VM& vm, ArgsView a){ button_update_label(a); return Value::nilVal(); });
@@ -367,6 +372,7 @@ void ModuleUI::initialize()
     windowType = uiType("Window").weakRef();
     widgetType = uiType("Widget").weakRef();
     labelType = uiType("Label").weakRef();
+    imageType = uiType("Image").weakRef();
     buttonType = uiType("Button").weakRef();
     checkboxType = uiType("Checkbox").weakRef();
     switchType = uiType("Switch").weakRef();
@@ -1448,6 +1454,115 @@ void ModuleUI::label_update_text(ArgsView args)
         std::string textStr;
         asUString(text_val).toUTF8String(textStr);
         lv_label_set_text(lv_label, textStr.c_str());
+    }
+}
+
+
+// ============================================================================
+// Image Widget
+// ============================================================================
+
+Value ModuleUI::image_create(ArgsView args)
+{
+    Value& parent = args[0];  // parent widget or nil for screen
+
+    // Determine the LVGL parent
+    lv_obj_t* lv_parent = nullptr;
+    if (isObjectInstance(parent)) {
+        auto parentInst = asObjectInstance(parent);
+        Value lv_obj_val = parentInst->getProperty("_lv_obj");
+        if (lv_obj_val.isNonNil() && isForeignPtr(lv_obj_val)) {
+            lv_parent = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+        }
+        // Also check for _lv_screen (for Window)
+        if (!lv_parent) {
+            Value lv_screen_val = parentInst->getProperty("_lv_screen");
+            if (lv_screen_val.isNonNil() && isForeignPtr(lv_screen_val)) {
+                lv_parent = (lv_obj_t*)(asForeignPtr(lv_screen_val)->ptr);
+            }
+        }
+    }
+
+    if (!lv_parent) {
+        lv_parent = lv_screen_active();
+    }
+
+    // Create the LVGL image
+    lv_obj_t* lv_image = lv_image_create(lv_parent);
+    if (!lv_image) {
+        raiseException("Failed to create LVGL image");
+        return Value::nilVal();
+    }
+
+    // Create Roxal Image instance
+    Value image = newUIObj(imageType);
+    auto imageInst = asObjectInstance(image);
+
+    // Store the LVGL object reference
+    imageInst->setProperty("_lv_obj", Value::foreignPtrVal(lv_image));
+
+    // Note: Widget registry registration happens in Roxal init() via _widget_register(this)
+
+    return image;
+}
+
+void ModuleUI::image_update_src(ArgsView args)
+{
+    Value& image = args[0];
+    if (!isObjectInstance(image))
+        return;
+
+    auto imageInst = asObjectInstance(image);
+    Value lv_obj_val = imageInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_image = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_image)
+        return;
+
+    Value src_val = imageInst->getProperty("src");
+    if (isString(src_val)) {
+        std::string srcStr;
+        asUString(src_val).toUTF8String(srcStr);
+        if (!srcStr.empty()) {
+            // LVGL expects file paths with a drive letter prefix for POSIX fs
+            // The 'U' prefix is for POSIX filesystem (LV_FS_POSIX_LETTER in lv_conf.h)
+            std::string lvPath = "U:" + srcStr;
+            lv_image_set_src(lv_image, lvPath.c_str());
+        }
+    }
+}
+
+void ModuleUI::image_update_align(ArgsView args)
+{
+    Value& image = args[0];
+    if (!isObjectInstance(image))
+        return;
+
+    auto imageInst = asObjectInstance(image);
+    Value lv_obj_val = imageInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_image = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_image)
+        return;
+
+    Value align_val = imageInst->getProperty("align");
+    if (align_val.isEnum()) {
+        // ImageAlign enum: Default=0, Stretch=1, Tile=2, Contain=3, Cover=4
+        int align = align_val.asEnum();
+        lv_image_align_t lv_align;
+        switch (align) {
+            case 0: lv_align = LV_IMAGE_ALIGN_DEFAULT; break;   // Default
+            case 1: lv_align = LV_IMAGE_ALIGN_STRETCH; break;   // Stretch
+            case 2: lv_align = LV_IMAGE_ALIGN_TILE; break;      // Tile
+            case 3: lv_align = LV_IMAGE_ALIGN_CONTAIN; break;   // Contain
+            case 4: lv_align = LV_IMAGE_ALIGN_COVER; break;     // Cover
+            default: lv_align = LV_IMAGE_ALIGN_DEFAULT; break;
+        }
+        lv_image_set_inner_align(lv_image, lv_align);
     }
 }
 

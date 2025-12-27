@@ -89,6 +89,11 @@ public:
     Value label_create(ArgsView args);
     void label_update_text(ArgsView args);
 
+    // Image methods
+    Value image_create(ArgsView args);
+    void image_update_src(ArgsView args);
+    void image_update_align(ArgsView args);
+
     // Button methods
     Value button_create(ArgsView args);
     void button_update_label(ArgsView args);
@@ -136,6 +141,7 @@ protected:
     Value windowType;
     Value widgetType;
     Value labelType;
+    Value imageType;
     Value buttonType;
     Value checkboxType;
     Value switchType;

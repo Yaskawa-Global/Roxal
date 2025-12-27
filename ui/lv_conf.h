@@ -71,7 +71,7 @@
 
 #if LV_USE_STDLIB_MALLOC == LV_STDLIB_BUILTIN
     /** Size of memory available for `lv_malloc()` in bytes (>= 2kB) */
-    #define LV_MEM_SIZE (8 * 1024 * 1024U)      /**< [bytes] - increased for larger windows */
+    #define LV_MEM_SIZE (16 * 1024 * 1024U)     /**< [bytes] - increased for larger windows and images */
 
     /** Size of the memory expand for `lv_malloc()` in bytes */
     #define LV_MEM_POOL_EXPAND_SIZE 0
@@ -948,7 +948,7 @@
 
 /** libjpeg-turbo decoder library.
  *  - Supports complete JPEG specifications and high-performance JPEG decoding. */
-#define LV_USE_LIBJPEG_TURBO 0
+#define LV_USE_LIBJPEG_TURBO 1
 
 /** GIF decoder library */
 #define LV_USE_GIF 0

@@ -298,6 +298,7 @@ if(ENABLE_UI)
 
     find_package(PNG REQUIRED)
     find_package(ZLIB REQUIRED)
+    find_package(JPEG REQUIRED)
 
     find_package(OpenGL REQUIRED)          # OpenGL::GL
     find_package(GLEW REQUIRED)            # GLEW::GLEW  (via vcpkg)
@@ -309,7 +310,7 @@ if(ENABLE_UI)
     target_link_libraries(lvgl PRIVATE Freetype::Freetype)
 
     # Your library that uses LVGL
-    target_link_libraries(roxalcore PUBLIC lvgl PNG::PNG ZLIB::ZLIB OpenGL::GL GLEW::GLEW glfw)
+    target_link_libraries(roxalcore PUBLIC lvgl PNG::PNG ZLIB::ZLIB JPEG::JPEG OpenGL::GL GLEW::GLEW glfw)
 
     target_compile_definitions(roxalcore PUBLIC ENABLE_UI=1)
 else()
