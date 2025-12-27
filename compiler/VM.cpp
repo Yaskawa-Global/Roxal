@@ -463,7 +463,7 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
         }
 
         // Check if any handler on this thread should receive the event
-        // (considering matchValue filters)
+        // (considering matchValue and targetFilter filters)
         bool shouldSchedule = false;
         for (const auto& reg : regIt->second) {
             if (!reg.closure.isAlive())
@@ -472,10 +472,27 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
                 if (!isEventInstance(eventInstance))
                     continue;
                 auto* inst = asEventInstance(eventInstance);
-                if (inst->payload.empty())
+                // Look up the "value" property for signal change events
+                static const int32_t valueHash = toUnicodeString("value").hashCode();
+                auto it = inst->payload.find(valueHash);
+                if (it == inst->payload.end())
                     continue;
-                const Value& sample = inst->payload.at(0);
+                const Value& sample = it->second;
                 if (!sample.equals(reg.matchValue.value(), /*strict=*/false))
+                    continue;
+            }
+            // Check target filter (for 'where evt.target == <value>')
+            if (reg.targetFilter.has_value()) {
+                if (!isEventInstance(eventInstance))
+                    continue;
+                auto* inst = asEventInstance(eventInstance);
+                // Look up the "target" property
+                static const int32_t targetHash = toUnicodeString("target").hashCode();
+                auto it = inst->payload.find(targetHash);
+                if (it == inst->payload.end())
+                    continue;
+                const Value& eventTarget = it->second;
+                if (!eventTarget.equals(reg.targetFilter.value(), /*strict=*/false))
                     continue;
             }
             shouldSchedule = true;
@@ -1290,10 +1307,13 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     strict = (thread->frames.end() - 1)->strict;
 
                 auto argBegin = thread->stackTop - callSpec.argCount;
-                std::vector<Value> payload(payloadCount);
+                std::unordered_map<int32_t, Value> payload;
                 std::vector<bool> assigned(payloadCount, false);
-                for (size_t i = 0; i < payloadCount; ++i)
-                    payload[i] = eventType->payloadProperties[i].initialValue;
+                // Initialize payload with default values
+                for (size_t i = 0; i < payloadCount; ++i) {
+                    const auto& prop = eventType->payloadProperties[i];
+                    payload[prop.name.hashCode()] = prop.initialValue;
+                }
 
                 auto orderedProps = eventType->orderedPayloadProperties();
                 auto assignValue = [&](const ObjEventType::PayloadPropertyView& entry, Value value) -> bool {
@@ -1307,7 +1327,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     if (!value.isNil() && !typeSpec.isNil())
                         value = toType(typeSpec, value, strict);
                     assigned[entry.index] = true;
-                    payload[entry.index] = value;
+                    payload[entry.property->name.hashCode()] = value;
                     return true;
                 };
 
@@ -3306,16 +3326,10 @@ std::pair<InterpretResult,Value> VM::execute()
                         return errorReturn;
                     }
 
-                    ObjEventType* type = asEventType(eventInst->typeHandle);
-                    auto pit = type->propertyLookup.find(name->hash);
-                    if (pit != type->propertyLookup.end()) {
-                        size_t index = pit->second;
-                        if (index >= eventInst->payload.size()) {
-                            runtimeError("Event instance payload is missing property '" + toUTF8StdString(name->s) + "'.");
-                            return errorReturn;
-                        }
-
-                        Value result = eventInst->payload[index];
+                    // Look up property directly in payload map by name hash
+                    auto pit = eventInst->payload.find(name->hash);
+                    if (pit != eventInst->payload.end()) {
+                        Value result = pit->second;
                         pop();
                         push(result);
                         break;
@@ -3559,16 +3573,10 @@ std::pair<InterpretResult,Value> VM::execute()
                         return errorReturn;
                     }
 
-                    ObjEventType* type = asEventType(eventInst->typeHandle);
-                    auto pit = type->propertyLookup.find(name->hash);
-                    if (pit != type->propertyLookup.end()) {
-                        size_t index = pit->second;
-                        if (index >= eventInst->payload.size()) {
-                            runtimeError("Event instance payload is missing property '" + toUTF8StdString(name->s) + "'.");
-                            return errorReturn;
-                        }
-
-                        Value result = eventInst->payload[index];
+                    // Look up property directly in payload map by name hash
+                    auto pit = eventInst->payload.find(name->hash);
+                    if (pit != eventInst->payload.end()) {
+                        Value result = pit->second;
                         pop();
                         push(result);
                         break;
@@ -4821,10 +4829,15 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::EventOn: {
                 uint8_t modeByte = readByte();
-                bool requireChangesKeyword = (modeByte == 1) || (modeByte == 3);
-                bool disallowSignalTargets = (modeByte == 2);
-                bool matchOnBecomes = (modeByte == 3);
+                // mode encoding: bits 0-1 = base mode, bit 2 = target filter present
+                uint8_t baseMode = modeByte & 0x03;
+                bool hasTargetFilter = (modeByte & 0x04) != 0;
+                bool requireChangesKeyword = (baseMode == 1) || (baseMode == 3);
+                bool disallowSignalTargets = (baseMode == 2);
+                bool matchOnBecomes = (baseMode == 3);
+
                 Value closureVal = pop();
+                Value targetFilterVal = hasTargetFilter ? pop() : Value::nilVal();
                 Value matchVal = matchOnBecomes ? pop() : Value::nilVal();
                 Value eventVal = pop();
                 if (!isClosure(closureVal)) {
@@ -4859,7 +4872,11 @@ std::pair<InterpretResult,Value> VM::execute()
 
                 // record this handler on the current thread
                 Value key = eventVal.weakRef();
-                thread->eventHandlers[key].push_back(Thread::HandlerRegistration{closureVal, matchOnBecomes ? std::make_optional(matchVal) : std::nullopt});
+                thread->eventHandlers[key].push_back(Thread::HandlerRegistration{
+                    closureVal,
+                    matchOnBecomes ? std::make_optional(matchVal) : std::nullopt,
+                    hasTargetFilter ? std::make_optional(targetFilterVal) : std::nullopt
+                });
 
                 // track the handler thread and subscribe the closure to the event
                 auto* closure = asClosure(closureVal);
@@ -5243,6 +5260,34 @@ bool VM::processPendingEvents()
         auto handlersIt = thread->eventHandlers.find(tev.eventType);
         if (handlersIt != thread->eventHandlers.end()) {
             for(const auto& handler : handlersIt->second) {
+                // Check target filter before invoking handler
+                if (handler.targetFilter.has_value() && isEventInstance(tev.instance)) {
+                    auto* inst = asEventInstance(tev.instance);
+                    static const int32_t targetHash = toUnicodeString("target").hashCode();
+                    auto it = inst->payload.find(targetHash);
+                    if (it == inst->payload.end()) {
+                        continue;  // No target property, skip this handler
+                    }
+                    const Value& eventTarget = it->second;
+                    if (!eventTarget.equals(handler.targetFilter.value(), /*strict=*/false)) {
+                        continue;  // Target doesn't match filter, skip this handler
+                    }
+                }
+
+                // Check matchValue filter for 'becomes' handlers
+                if (handler.matchValue.has_value() && isEventInstance(tev.instance)) {
+                    auto* inst = asEventInstance(tev.instance);
+                    static const int32_t valueHash = toUnicodeString("value").hashCode();
+                    auto it = inst->payload.find(valueHash);
+                    if (it == inst->payload.end()) {
+                        continue;
+                    }
+                    const Value& sample = it->second;
+                    if (!sample.equals(handler.matchValue.value(), /*strict=*/false)) {
+                        continue;
+                    }
+                }
+
                 auto closureObj = asClosure(handler.closure);
 
                 auto prevThreadSleep = thread->threadSleep.load();

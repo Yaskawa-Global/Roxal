@@ -7,7 +7,7 @@ when MyEvent occurs as evt:
   print("event a="+evt.a+" b="+evt.b+" s="+evt.s)
 
 emit MyEvent(s='hello', a=1, b=2.2)
-emit MyEvent(3, s='bye')
+emit MyEvent(a=3, s='bye')
 emit MyEvent()
 
 var inst = MyEvent(b=4.5)

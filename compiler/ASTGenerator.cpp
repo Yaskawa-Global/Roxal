@@ -927,10 +927,49 @@ std::any ASTGenerator::visitWhen_stmt(RoxalParser::When_stmtContext *context)
     whenStmt->trigger = as<Expression>(visitExpression(context->expression(0)));
     whenStmt->requiresSignalChange = context->CHANGES() != nullptr || context->BECOMES() != nullptr;
     whenStmt->matchesBecomes = context->BECOMES() != nullptr;
-    if (context->BECOMES())
-        whenStmt->becomes = as<Expression>(visitExpression(context->expression(1)));
+
+    size_t exprIndex = 1;
+    if (context->BECOMES()) {
+        whenStmt->becomes = as<Expression>(visitExpression(context->expression(exprIndex)));
+        exprIndex++;
+    }
+
     if (context->IDENTIFIER())
         whenStmt->binding = UnicodeString::fromUTF8(context->IDENTIFIER()->getText());
+
+    // Parse WHERE clause if present
+    if (context->WHERE() && context->expression().size() > exprIndex) {
+        auto whereExpr = as<Expression>(visitExpression(context->expression(exprIndex)));
+
+        // Validate pattern: <binding>.target == <expr>
+        // The expression must be a BinaryOp with Equal operator
+        auto binaryOp = dynamic_ptr_cast<BinaryOp>(whereExpr);
+        if (!binaryOp || binaryOp->op != BinaryOp::Equal) {
+            throw std::runtime_error("where clause must be: <binding>.target == <expr>");
+        }
+
+        // LHS must be <binding>.target (UnaryOp Accessor)
+        auto accessor = dynamic_ptr_cast<UnaryOp>(binaryOp->lhs);
+        if (!accessor || accessor->op != UnaryOp::Accessor) {
+            throw std::runtime_error("where clause must be: <binding>.target == <expr>");
+        }
+
+        // Check that the accessor's member is "target"
+        if (accessor->member != toUnicodeString("target")) {
+            throw std::runtime_error("where clause must reference .target property");
+        }
+
+        // Check that the accessor's arg is the binding variable
+        auto variable = dynamic_ptr_cast<Variable>(accessor->arg);
+        if (!variable || !whenStmt->binding.has_value() ||
+            variable->name != whenStmt->binding.value()) {
+            throw std::runtime_error("where clause must reference the binding variable's .target");
+        }
+
+        // Store the RHS as the target filter
+        whenStmt->targetFilter = binaryOp->rhs;
+    }
+
     whenStmt->body = as<Suite>(visitSuite(context->suite()));
 
     return typeValue(whenStmt);

@@ -1653,7 +1653,6 @@ ObjEventInstance::ObjEventInstance(const Value& eventType)
     type = ObjType::EventInstance;
     if (isEventType(eventType)) {
         ObjEventType* typeObj = asEventType(eventType);
-        payload.reserve(typeObj->payloadProperties.size());
         for (const auto& prop : typeObj->payloadProperties) {
             auto propInitialValue = prop.initialValue;
             // Clone reference types to avoid sharing between instances
@@ -1664,7 +1663,7 @@ ObjEventInstance::ObjEventInstance(const Value& eventType)
                 }
                 propInitialValue = propInitialValue.clone();
             }
-            payload.push_back(propInitialValue);
+            payload[prop.name.hashCode()] = propInitialValue;
         }
     }
 }
@@ -1682,7 +1681,8 @@ void ObjEventInstance::write(std::ostream& out, roxal::ptr<SerializationContext>
 
     uint32_t count = payload.size();
     out.write(reinterpret_cast<char*>(&count), 4);
-    for (const auto& value : payload) {
+    for (const auto& [key, value] : payload) {
+        out.write(reinterpret_cast<const char*>(&key), sizeof(key));
         writeValue(out, value, ctx);
     }
 }
@@ -1697,9 +1697,10 @@ void ObjEventInstance::read(std::istream& in, roxal::ptr<SerializationContext> c
 
     uint32_t count; in.read(reinterpret_cast<char*>(&count), 4);
     payload.clear();
-    payload.reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
-        payload.push_back(readValue(in, ctx));
+        int32_t key;
+        in.read(reinterpret_cast<char*>(&key), sizeof(key));
+        payload[key] = readValue(in, ctx);
     }
 
     type = ObjType::EventInstance;
@@ -1708,7 +1709,7 @@ void ObjEventInstance::read(std::istream& in, roxal::ptr<SerializationContext> c
 void ObjEventInstance::trace(ValueVisitor& visitor) const
 {
     visitor.visit(typeHandle);
-    for (const auto& value : payload) {
+    for (const auto& [key, value] : payload) {
         visitor.visit(value);
     }
 }
@@ -2964,16 +2965,15 @@ ObjEventType* ObjSignal::ensureChangeEventType()
             if (eventTypeStrong.isNil())
                 return;
             ObjEventType* ev = asEventType(eventTypeStrong);
-            std::vector<Value> payload;
-            payload.reserve(ev->payloadProperties.size());
-            // First payload slot carries the current signal sample.
-            payload.push_back(sample);
+            std::unordered_map<int32_t, Value> payload;
+            // Payload properties keyed by name hash
+            payload[toUnicodeString("value").hashCode()] = sample;
             if (useSpan) {
                 // Emit the elapsed steady-clock time since engine start as a
                 // TimeSpan instance when the sys module is available.
-                payload.push_back(sysNewTimeSpan(t.microSecs()));
+                payload[toUnicodeString("timestamp").hashCode()] = sysNewTimeSpan(t.microSecs());
             } else {
-                payload.push_back(Value::intVal(static_cast<int32_t>(t.microSecs())));
+                payload[toUnicodeString("timestamp").hashCode()] = Value::intVal(static_cast<int32_t>(t.microSecs()));
             }
             // Track the discrete tick associated with this change. Prefer the
             // signal's own period when available, otherwise fall back to the
@@ -2989,8 +2989,8 @@ ObjEventType* ObjSignal::ensureChangeEventType()
             tickIndex = std::clamp(tickIndex,
                                    static_cast<int64_t>(std::numeric_limits<int32_t>::min()),
                                    static_cast<int64_t>(std::numeric_limits<int32_t>::max()));
-            payload.push_back(Value::intVal(static_cast<int32_t>(tickIndex)));
-            payload.push_back(Value::signalVal(sig));
+            payload[toUnicodeString("tick").hashCode()] = Value::intVal(static_cast<int32_t>(tickIndex));
+            payload[toUnicodeString("source_signal").hashCode()] = Value::signalVal(sig);
 
             // Package the change information into a new event instance and invoke
             // every subscribed handler for this occurrence.
@@ -3077,11 +3077,17 @@ unique_ptr<ObjEventType, UnreleasedObj> roxal::newEventTypeObj(const icu::Unicod
     auto eventType = newObj<ObjEventType>(name);
     #endif
     eventType->superType = superType;
+
+    // Add built-in 'target' property to all event types (nil by default)
+    ObjEventType::PayloadProperty targetProp { toUnicodeString("target"), Value::nilVal(), Value::nilVal() };
+    eventType->payloadProperties.push_back(targetProp);
+    eventType->propertyLookup[targetProp.name.hashCode()] = 0;
+
     return eventType;
 }
 
 unique_ptr<ObjEventInstance, UnreleasedObj> roxal::newEventInstanceObj(const Value& eventType,
-                                                                       std::vector<Value> payload)
+                                                                       std::unordered_map<int32_t, Value> payload)
 {
     #ifdef DEBUG_BUILD
     auto instance = newObj<ObjEventInstance>(__func__, __FILE__, __LINE__, eventType);
