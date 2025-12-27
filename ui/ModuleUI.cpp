@@ -1160,8 +1160,7 @@ void ModuleUI::emitUIEvent(const std::string& eventTypeName, Value widget,
     };
 
     // Add base Event fields
-    addProp("target", widget);  // target (for event filtering)
-    addProp("widget", widget);  // widget
+    addProp("target", widget);  // target (for event filtering via where clause)
     addProp("timestamp", Value::intVal(static_cast<int64_t>(lv_tick_get())));
 
     // Add event-specific fields based on type name

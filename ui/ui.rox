@@ -10,8 +10,8 @@ const FPS = 100
 // ============================================================================
 
 // Base event for all UI events
+// Note: All events have a built-in 'target' property for event filtering
 type Event event:
-  var widget   // the widget that triggered the event
   var timestamp :int = 0  // event timestamp in ms
 
 
@@ -355,11 +355,10 @@ type Button object extends Widget:
     this.label = label
     this.clicked = clicked
 
-    // Set up click handler
-    when Clicked occurs as evt:
-      if evt.widget is this:
-        if this.clicked is not nil:
-          this.clicked()
+    // Set up click handler - filter by target widget
+    when Clicked occurs as evt where evt.target == this:
+      if this.clicked is not nil:
+        this.clicked()
 
   @builtin
   private proc _update_label():
@@ -401,14 +400,13 @@ type Checkbox object extends Widget:
     this.checked = checked
     this.changed = changed
 
-    // Set up value change handler
-    when ValueChanged occurs as evt:
-      if evt.widget is this:
-        var new_checked = evt.value != 0
-        if new_checked != this._checked:  // only fire if actually changed
-          this._checked = new_checked
-          if this.changed is not nil:
-            this.changed(this._checked)
+    // Set up value change handler - filter by target widget
+    when ValueChanged occurs as evt where evt.target == this:
+      var new_checked = evt.value != 0
+      if new_checked != this._checked:  // only fire if actually changed
+        this._checked = new_checked
+        if this.changed is not nil:
+          this.changed(this._checked)
 
   @builtin
   private proc _update_text():
@@ -448,14 +446,13 @@ type Switch object extends Widget:
     this.on = on
     this.changed = changed
 
-    // Set up value change handler
-    when ValueChanged occurs as evt:
-      if evt.widget is this:
-        var new_on = evt.value != 0
-        if new_on != this._on:  // only fire if actually changed
-          this._on = new_on
-          if this.changed is not nil:
-            this.changed(this._on)
+    // Set up value change handler - filter by target widget
+    when ValueChanged occurs as evt where evt.target == this:
+      var new_on = evt.value != 0
+      if new_on != this._on:  // only fire if actually changed
+        this._on = new_on
+        if this.changed is not nil:
+          this.changed(this._on)
 
   @builtin
   private proc _update_state():
@@ -517,11 +514,10 @@ type TextArea object extends Widget:
     this.text = text
     this.changed = changed
 
-    // Set up value change handler (text changed events)
-    when ValueChanged occurs as evt:
-      if evt.widget is this:
-        if this.changed is not nil:
-          this.changed(this.text)
+    // Set up value change handler (text changed events) - filter by target widget
+    when ValueChanged occurs as evt where evt.target == this:
+      if this.changed is not nil:
+        this.changed(this.text)
 
   @builtin
   private proc _update_text():
@@ -587,12 +583,11 @@ type Slider object extends Widget:
     this.value = value
     this.changed = changed
 
-    // Set up value change handler
-    when ValueChanged occurs as evt:
-      if evt.widget is this:
-        this._value = evt.value  // sync from native (use backing field to avoid triggering update)
-        if this.changed is not nil:
-          this.changed(evt.value)
+    // Set up value change handler - filter by target widget
+    when ValueChanged occurs as evt where evt.target == this:
+      this._value = evt.value  // sync from native (use backing field to avoid triggering update)
+      if this.changed is not nil:
+        this.changed(evt.value)
 
   @builtin
   private proc _update_value():
