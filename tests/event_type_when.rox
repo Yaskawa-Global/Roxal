@@ -5,5 +5,5 @@ func handler(evt):
   print('payload='+evt.payload)
 
 MyEvent.when(handler)
-emit MyEvent(17)
+emit MyEvent(payload=17)
 wait(us=1000)

@@ -735,6 +735,45 @@ LowBattery.emit(deviceId=1, percentRemaining=9.0)
 LowBattery.remove(subscription)
 ```
 
+### Event Target Filtering
+
+All events have a built-in `target` property that can be used to filter which handlers receive an event.  This is useful for UI frameworks where many widgets may listen for the same event type (e.g., `Clicked`), but each widget only wants to handle events targeted at itself.
+
+Use the `where` clause to filter events by target:
+
+```php
+type Clicked event:
+  var x :int
+  var y :int
+
+var widget1 = "Widget1"
+var widget2 = "Widget2"
+
+// Handler only receives events where target == widget1
+when Clicked occurs as evt where evt.target == widget1:
+  print("Widget1 clicked at " + evt.x + "," + evt.y)
+
+// Handler only receives events where target == widget2
+when Clicked occurs as evt where evt.target == widget2:
+  print("Widget2 clicked at " + evt.x + "," + evt.y)
+
+// Handler without 'where' receives ALL events (targeted and untargeted)
+when Clicked occurs as evt:
+  print("Global handler: " + evt.target)
+
+// Emit with a target
+emit Clicked(target=widget1, x=10, y=20)  // only widget1 and global handlers fire
+
+// Emit without a target
+emit Clicked(x=50, y=60)  // only global handler fires (target is nil)
+```
+
+**Notes:**
+- The `where` clause currently only supports the pattern `evt.target == <value>`
+- The `<value>` is evaluated when the handler is registered
+- Handlers without a `where` clause receive all events, including those with no target
+- Events emitted without a `target=` argument have `target` set to `nil`
+
 ## Signals
 
 Signals in roxal represent values that can (spontaneously) change.  For example, for robotics, they might represent an external input.  Signals can be transformed, using functions (func) into new signals.  To create your own source signals you "call" the builtin `signal` type (e.g. `signal(freq, initial)`), while `clock(freq)` provides a signal that counts up automatically.  A signal's value can be any of the usual roxal value types, but most usefully bool, byte, int, real, vector or matrix.

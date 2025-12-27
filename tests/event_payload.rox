@@ -11,11 +11,11 @@ when DerivedEvent occurs as evt:
   print('handler payload='+evt.payload)
   captured = evt
 
-var inst = DerivedEvent(3)
+var inst = DerivedEvent(base=3)
 print('inst base='+inst.base)
 print('inst payload='+inst.payload)
 
-emit DerivedEvent(7)
+emit DerivedEvent(base=7)
 
 if captured != nil:
   print('captured base='+captured.base)

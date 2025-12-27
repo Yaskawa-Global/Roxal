@@ -1,0 +1,5 @@
+Handler1: x=10 y=20
+Global: target=Widget1 x=10 y=20
+Handler2: x=30 y=40
+Global: target=Widget2 x=30 y=40
+Global: target=nil x=50 y=60

@@ -771,7 +771,7 @@ struct ObjEventInstance : public Obj {
     virtual ~ObjEventInstance() {}
 
     Value typeHandle;
-    std::vector<Value> payload;
+    std::unordered_map<int32_t, Value> payload;  // keyed by property name hash
 
     unique_ptr<Obj, UnreleasedObj> clone() const override;
 
@@ -791,7 +791,7 @@ inline ObjEventInstance* asEventInstance(const Value& v) { return static_cast<Ob
 unique_ptr<ObjEventType, UnreleasedObj> newEventTypeObj(const icu::UnicodeString& name,
                                                          Value superType = Value::nilVal());
 unique_ptr<ObjEventInstance, UnreleasedObj> newEventInstanceObj(const Value& eventType,
-                                                                std::vector<Value> payload = {});
+                                                                std::unordered_map<int32_t, Value> payload = {});
 std::string objEventTypeToString(const ObjEventType* ev);
 std::string objEventInstanceToString(const ObjEventInstance* ev);
 

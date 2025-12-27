@@ -1149,44 +1149,50 @@ void ModuleUI::emitUIEvent(const std::string& eventTypeName, Value widget,
 
     ObjEventType* evType = asEventType(eventType);
 
-    // Build the payload vector in the order defined by the event type
-    // Base Event has: widget, timestamp
-    // Subclasses add their own fields after these
-    std::vector<Value> payload;
+    // Build the payload map keyed by property name hash
+    // Base Event has: target, widget, timestamp
+    // Subclasses add their own fields
+    std::unordered_map<int32_t, Value> payload;
+
+    // Helper to add a property by name
+    auto addProp = [&payload](const char* name, Value val) {
+        payload[toUnicodeString(name).hashCode()] = val;
+    };
 
     // Add base Event fields
-    payload.push_back(widget);  // widget
-    payload.push_back(Value::intVal(static_cast<int64_t>(lv_tick_get())));  // timestamp
+    addProp("target", widget);  // target (for event filtering)
+    addProp("widget", widget);  // widget
+    addProp("timestamp", Value::intVal(static_cast<int64_t>(lv_tick_get())));
 
     // Add event-specific fields based on type name
     if (eventTypeName == "Clicked") {
         // Clicked has: x, y
         auto xIt = extraPayload.find("x");
         auto yIt = extraPayload.find("y");
-        payload.push_back(xIt != extraPayload.end() ? xIt->second : Value::intVal(0));
-        payload.push_back(yIt != extraPayload.end() ? yIt->second : Value::intVal(0));
+        addProp("x", xIt != extraPayload.end() ? xIt->second : Value::intVal(0));
+        addProp("y", yIt != extraPayload.end() ? yIt->second : Value::intVal(0));
     } else if (eventTypeName == "LongPressed") {
         // LongPressed has: duration
         auto durIt = extraPayload.find("duration");
-        payload.push_back(durIt != extraPayload.end() ? durIt->second : Value::intVal(0));
+        addProp("duration", durIt != extraPayload.end() ? durIt->second : Value::intVal(0));
     } else if (eventTypeName == "ValueChanged") {
         // ValueChanged has: value, previous
         auto valIt = extraPayload.find("value");
         auto prevIt = extraPayload.find("previous");
-        payload.push_back(valIt != extraPayload.end() ? valIt->second : Value::intVal(0));
-        payload.push_back(prevIt != extraPayload.end() ? prevIt->second : Value::intVal(0));
+        addProp("value", valIt != extraPayload.end() ? valIt->second : Value::intVal(0));
+        addProp("previous", prevIt != extraPayload.end() ? prevIt->second : Value::intVal(0));
     } else if (eventTypeName == "WindowResize") {
         // WindowResize has: newWidth, newHeight
         auto wIt = extraPayload.find("newWidth");
         auto hIt = extraPayload.find("newHeight");
-        payload.push_back(wIt != extraPayload.end() ? wIt->second : Value::intVal(0));
-        payload.push_back(hIt != extraPayload.end() ? hIt->second : Value::intVal(0));
+        addProp("newWidth", wIt != extraPayload.end() ? wIt->second : Value::intVal(0));
+        addProp("newHeight", hIt != extraPayload.end() ? hIt->second : Value::intVal(0));
     } else if (eventTypeName == "WindowMove") {
         // WindowMove has: newX, newY
         auto xIt = extraPayload.find("newX");
         auto yIt = extraPayload.find("newY");
-        payload.push_back(xIt != extraPayload.end() ? xIt->second : Value::intVal(0));
-        payload.push_back(yIt != extraPayload.end() ? yIt->second : Value::intVal(0));
+        addProp("newX", xIt != extraPayload.end() ? xIt->second : Value::intVal(0));
+        addProp("newY", yIt != extraPayload.end() ? yIt->second : Value::intVal(0));
     }
     // Pressed, Released, Focused, Defocused, WindowClose, WindowFocus, WindowDefocus,
     // WindowMinimize, WindowRestore have no extra fields

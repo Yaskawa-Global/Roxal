@@ -1891,6 +1891,10 @@ std::any RoxalCompiler::visit(ptr<ast::WhenStatement> ast)
     if (ast->matchesBecomes && ast->becomes.has_value())
         ast->becomes.value()->accept(*this);
 
+    // Emit target filter expression if present (before closure)
+    if (ast->targetFilter.has_value())
+        ast->targetFilter.value()->accept(*this);
+
     // compile handler body as closure proc
     ptr<type::Type> funcType = make_ptr<type::Type>(BuiltinType::Func);
     funcType->func = type::Type::FuncType();
@@ -1924,7 +1928,12 @@ std::any RoxalCompiler::visit(ptr<ast::WhenStatement> ast)
         emitByte(fs->upvalues[i].index);
     }
 
+    // whenMode encoding:
+    // bits 0-1: base mode (1=signal changes, 2=event occurs, 3=becomes)
+    // bit 2: target filter present
     uint8_t whenMode = ast->matchesBecomes ? 3 : (ast->requiresSignalChange ? 1 : 2);
+    if (ast->targetFilter.has_value())
+        whenMode |= 4;  // Set bit 2 for target filter
     emitOpArgsBytes(OpCode::EventOn, whenMode);
 
     return {};

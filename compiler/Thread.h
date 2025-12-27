@@ -94,7 +94,8 @@ public:
     // closures registered by this thread.
     struct HandlerRegistration {
         Value closure;
-        std::optional<Value> matchValue;
+        std::optional<Value> matchValue;    // for 'becomes' clause
+        std::optional<Value> targetFilter;  // for 'where evt.target == <value>' clause
     };
     std::unordered_map<Value, std::vector<HandlerRegistration>, ValueHasher, ValueEqual> eventHandlers;
 

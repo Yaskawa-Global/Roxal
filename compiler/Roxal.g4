@@ -102,7 +102,7 @@ for_stmt
    IN expression ':' suite
  ;
 when_stmt
- : WHEN expression ((CHANGES | OCCURS) | (BECOMES expression)) (AS IDENTIFIER)? ':' suite
+ : WHEN expression ((CHANGES | OCCURS) | (BECOMES expression)) (AS IDENTIFIER)? (WHERE expression)? ':' suite
  ;
 
 emit_stmt
@@ -474,6 +474,7 @@ IMPORT : 'import';
 CHANGES: 'changes';
 BECOMES: 'becomes';
 OCCURS: 'occurs';
+WHERE: 'where';
 
 
 // Types

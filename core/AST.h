@@ -373,6 +373,7 @@ struct WhenStatement : public Statement {
     ptr<ast::Expression> trigger;
     std::optional<icu::UnicodeString> binding;
     std::optional<ptr<ast::Expression>> becomes;
+    std::optional<ptr<ast::Expression>> targetFilter;  // RHS of: where <binding>.target == <expr>
     bool matchesBecomes { false };
     bool requiresSignalChange { false };
     ptr<ast::Suite> body;

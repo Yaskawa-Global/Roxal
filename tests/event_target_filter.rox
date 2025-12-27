@@ -1,0 +1,26 @@
+// Test event target filtering with 'where' clause
+
+type Clicked event:
+  var x :int = 0
+  var y :int = 0
+
+// Create two "widgets"
+var widget1 = "Widget1"
+var widget2 = "Widget2"
+
+// Handler that only receives events targeted at widget1
+when Clicked occurs as evt where evt.target == widget1:
+  print("Handler1: x=" + evt.x + " y=" + evt.y)
+
+// Handler that only receives events targeted at widget2
+when Clicked occurs as evt where evt.target == widget2:
+  print("Handler2: x=" + evt.x + " y=" + evt.y)
+
+// Handler that receives all Clicked events (no filter)
+when Clicked occurs as evt:
+  print("Global: target=" + evt.target + " x=" + evt.x + " y=" + evt.y)
+
+// Emit events with different targets
+emit Clicked(target=widget1, x=10, y=20)
+emit Clicked(target=widget2, x=30, y=40)
+emit Clicked(x=50, y=60)

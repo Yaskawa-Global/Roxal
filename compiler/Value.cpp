@@ -235,7 +235,7 @@ Value Value::eventVal()
     return Value::objVal(newEventTypeObj(toUnicodeString("event")));
 }
 
-Value Value::eventInstanceVal(const Value& eventType, std::vector<Value> payload)
+Value Value::eventInstanceVal(const Value& eventType, std::unordered_map<int32_t, Value> payload)
 {
     debug_assert_msg(isEventType(eventType), "Value is an ObjEventType");
     return Value::objVal(newEventInstanceObj(eventType, std::move(payload)));
