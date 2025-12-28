@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 19;
+constexpr std::uint32_t ModuleCacheVersion = 20;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -469,6 +469,22 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
                 if (isModuleType(moduleValue)) {
                     ObjModuleType* imported = asModuleType(moduleValue);
                     canonicalModules[toKey(moduleQualifiedName(imported))] = moduleValue.strongRef();
+                }
+            }
+        }
+
+        // Also process functions stored in paramDefaultFunc (parameter default value functions)
+        for (auto& kv : fn->paramDefaultFunc) {
+            if (isFunction(kv.second)) {
+                enqueueFunction(kv.second);
+                Value moduleTypeValue = asFunction(kv.second)->moduleType;
+                if (isModuleType(moduleTypeValue)) {
+                    Value moduleValue = canonicalizeModuleValue(moduleTypeValue);
+                    asFunction(kv.second)->moduleType = moduleValue.weakRef();
+                    if (isModuleType(moduleValue)) {
+                        ObjModuleType* imported = asModuleType(moduleValue);
+                        canonicalModules[toKey(moduleQualifiedName(imported))] = moduleValue.strongRef();
+                    }
                 }
             }
         }
