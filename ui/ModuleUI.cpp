@@ -2,8 +2,10 @@
 #include "../compiler/VM.h"
 #include "../compiler/Object.h"
 
+#include <GL/glew.h>  // Must be before GLFW
 #include <GLFW/glfw3.h>
 #include <lvgl.h>
+#include <png.h>
 
 using namespace roxal;
 
@@ -307,6 +309,11 @@ void ModuleUI::registerBuiltins(VM& vm)
     linkMethod("Window", "when_position_changes", [this](VM& vm, ArgsView a){ window_when_position_changes(a); return Value::nilVal(); });
     linkMethod("Window", "when_size_changes", [this](VM& vm, ArgsView a){ window_when_size_changes(a); return Value::nilVal(); });
     linkMethod("Window", "set_root", [this](VM& vm, ArgsView a){ window_set_root(a); return Value::nilVal(); });
+    linkMethod("Window", "capture", [this](VM& vm, ArgsView a){ return window_capture(a); });
+
+    // Snapshot methods
+    linkMethod("Snapshot", "save", [this](VM& vm, ArgsView a){ snapshot_save(a); return Value::nilVal(); });
+    linkMethod("Snapshot", "release", [this](VM& vm, ArgsView a){ snapshot_release(a); return Value::nilVal(); });
 
     // Widget base methods
     link("_widget_register", [this](VM& vm, ArgsView a){ widget_register(a); return Value::nilVal(); });
@@ -370,6 +377,7 @@ void ModuleUI::initialize()
     // Cache type references (now that the module script has been parsed)
     displayType = uiType("Display").weakRef();
     windowType = uiType("Window").weakRef();
+    snapshotType = uiType("Snapshot").weakRef();
     widgetType = uiType("Widget").weakRef();
     labelType = uiType("Label").weakRef();
     imageType = uiType("Image").weakRef();
@@ -756,6 +764,22 @@ void ModuleUI::window_close(ArgsView args)
     debug_assert_msg(instanceOf(args[0], windowType), "instance is Window");
     Value& window { args[0] };
     auto windowInst { asObjectInstance(window) };
+
+    // Ensure all OpenGL operations are complete before cleanup
+    // This helps avoid race conditions in the WSL2 D3D12 driver
+    Value lv_window_val_pre = windowInst->getProperty("_lv_window");
+    if (!lv_window_val_pre.isNil() && isForeignPtr(lv_window_val_pre)) {
+        lv_opengles_window_t* lv_window_pre = (lv_opengles_window_t*)(asForeignPtr(lv_window_val_pre)->ptr);
+        if (lv_window_pre) {
+            GLFWwindow* glfw_window_pre = (GLFWwindow*)lv_opengles_glfw_window_get_glfw_window(lv_window_pre);
+            if (glfw_window_pre) {
+                GLFWwindow* prev_context = glfwGetCurrentContext();
+                glfwMakeContextCurrent(glfw_window_pre);
+                glFinish();
+                glfwMakeContextCurrent(prev_context);
+            }
+        }
+    }
 
     // Safe extraction of foreign pointers (may be nil if already closed)
     Value window_texture_val = windowInst->getProperty("_window_texture");
@@ -2353,4 +2377,207 @@ void ModuleUI::layout_update_border_width(ArgsView args)
         }
         // If -1 (default), don't change the LVGL default
     }
+}
+
+
+// ============================================================================
+// Window Snapshot
+// ============================================================================
+
+// Internal structure for snapshot pixel data
+struct SnapshotPixelData {
+    uint8_t* pixels;
+    int width;
+    int height;
+};
+
+Value ModuleUI::window_capture(ArgsView args)
+{
+    Value& window = args[0];
+    if (!isObjectInstance(window))
+        return Value::nilVal();
+
+    auto windowInst = asObjectInstance(window);
+    Value lv_screen_val = windowInst->getProperty("_lv_screen");
+    if (lv_screen_val.isNil() || !isForeignPtr(lv_screen_val))
+        return Value::nilVal();
+
+    lv_obj_t* lv_screen = (lv_obj_t*)(asForeignPtr(lv_screen_val)->ptr);
+    if (!lv_screen)
+        return Value::nilVal();
+
+    // Get the lv_opengles_window_t from the Window object
+    Value lv_window_val = windowInst->getProperty("_lv_window");
+    if (lv_window_val.isNil() || !isForeignPtr(lv_window_val))
+        return Value::nilVal();
+
+    lv_opengles_window_t* lv_window = (lv_opengles_window_t*)(asForeignPtr(lv_window_val)->ptr);
+    if (!lv_window)
+        return Value::nilVal();
+
+    // Get the GLFW window handle
+    GLFWwindow* glfw_window = (GLFWwindow*)lv_opengles_glfw_window_get_glfw_window(lv_window);
+    if (!glfw_window)
+        return Value::nilVal();
+
+    // Force a complete refresh before taking snapshot
+    lv_display_t* disp = lv_obj_get_display(lv_screen);
+    if (disp) {
+        lv_refr_now(disp);
+    }
+
+    // Make the window's context current (save and restore the original context)
+    GLFWwindow* prev_context = glfwGetCurrentContext();
+    glfwMakeContextCurrent(glfw_window);
+
+    // Get window size
+    int width, height;
+    glfwGetFramebufferSize(glfw_window, &width, &height);
+
+    if (width <= 0 || height <= 0) {
+        glfwMakeContextCurrent(prev_context);
+        return Value::nilVal();
+    }
+
+    // Allocate buffer for pixel data (RGBA, 4 bytes per pixel)
+    size_t buffer_size = width * height * 4;
+    uint8_t* pixels = (uint8_t*)malloc(buffer_size);
+    if (!pixels) {
+        glfwMakeContextCurrent(prev_context);
+        return Value::nilVal();
+    }
+
+    // Read the framebuffer using OpenGL
+    // Note: OpenGL reads from bottom-left, so we'll need to flip vertically later
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    // Ensure all GL operations complete before we proceed
+    glFinish();
+
+    // Restore original context
+    glfwMakeContextCurrent(prev_context);
+
+    // Create a Snapshot object
+    Value snapshotObj = newUIObj(snapshotType.isWeak() ? snapshotType.strongRef() : snapshotType);
+    if (!isObjectInstance(snapshotObj)) {
+        free(pixels);
+        return Value::nilVal();
+    }
+
+    auto snapshotInst = asObjectInstance(snapshotObj);
+
+    // Store the pixel buffer and dimensions
+    SnapshotPixelData* snapData = new SnapshotPixelData{pixels, width, height};
+    snapshotInst->setProperty("_snapshot_data", Value::foreignPtrVal(snapData));
+
+    // Set width and height
+    snapshotInst->setProperty("width", Value::intVal(width));
+    snapshotInst->setProperty("height", Value::intVal(height));
+
+    return snapshotObj;
+}
+
+void ModuleUI::snapshot_save(ArgsView args)
+{
+    Value& snapshot = args[0];
+    Value& pathVal = args[1];
+
+    if (!isObjectInstance(snapshot))
+        return;
+
+    auto snapshotInst = asObjectInstance(snapshot);
+    Value snapshot_data_val = snapshotInst->getProperty("_snapshot_data");
+    if (snapshot_data_val.isNil() || !isForeignPtr(snapshot_data_val))
+        return;
+
+    SnapshotPixelData* snapData = (SnapshotPixelData*)(asForeignPtr(snapshot_data_val)->ptr);
+    if (!snapData || !snapData->pixels)
+        return;
+
+    if (!isString(pathVal))
+        return;
+
+    std::string path;
+    asUString(pathVal).toUTF8String(path);
+
+    int width = snapData->width;
+    int height = snapData->height;
+    uint8_t* pixels = snapData->pixels;
+
+    // Open file for writing
+    FILE* fp = fopen(path.c_str(), "wb");
+    if (!fp) {
+        return;
+    }
+
+    // Initialize PNG structures
+    png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+    if (!png_ptr) {
+        fclose(fp);
+        return;
+    }
+
+    png_infop info_ptr = png_create_info_struct(png_ptr);
+    if (!info_ptr) {
+        png_destroy_write_struct(&png_ptr, nullptr);
+        fclose(fp);
+        return;
+    }
+
+    if (setjmp(png_jmpbuf(png_ptr))) {
+        png_destroy_write_struct(&png_ptr, &info_ptr);
+        fclose(fp);
+        return;
+    }
+
+    png_init_io(png_ptr, fp);
+
+    // Set image properties (RGBA)
+    png_set_IHDR(png_ptr, info_ptr, width, height, 8,
+                 PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE,
+                 PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+
+    png_write_info(png_ptr, info_ptr);
+
+    // OpenGL reads from bottom-left, so we need to flip vertically
+    // The pixel data is already in RGBA format from glReadPixels
+    int stride = width * 4;
+
+    for (int y = 0; y < height; y++) {
+        // Read from bottom row first (flip vertical)
+        uint8_t* src_row = pixels + (height - 1 - y) * stride;
+        png_write_row(png_ptr, src_row);
+    }
+
+    png_write_end(png_ptr, nullptr);
+    png_destroy_write_struct(&png_ptr, &info_ptr);
+    fclose(fp);
+}
+
+void ModuleUI::snapshot_release(ArgsView args)
+{
+    Value& snapshot = args[0];
+
+    if (!isObjectInstance(snapshot))
+        return;
+
+    auto snapshotInst = asObjectInstance(snapshot);
+    Value snapshot_data_val = snapshotInst->getProperty("_snapshot_data");
+    if (snapshot_data_val.isNil() || !isForeignPtr(snapshot_data_val))
+        return;
+
+    SnapshotPixelData* snapData = (SnapshotPixelData*)(asForeignPtr(snapshot_data_val)->ptr);
+    if (snapData) {
+        if (snapData->pixels) {
+            free(snapData->pixels);
+            snapData->pixels = nullptr;
+        }
+        delete snapData;
+    }
+
+    // Clear the property so we don't double-free
+    snapshotInst->setProperty("_snapshot_data", Value::nilVal());
+    snapshotInst->setProperty("width", Value::intVal(0));
+    snapshotInst->setProperty("height", Value::intVal(0));
 }

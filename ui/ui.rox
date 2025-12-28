@@ -95,6 +95,24 @@ type ImageAlign enum:
 
 
 // ============================================================================
+// Snapshot - captured image from window/widget
+// ============================================================================
+
+@builtin
+type Snapshot object:
+  var width :int = 0
+  var height :int = 0
+
+  @builtin
+  proc save(path :string):
+    """Save the snapshot to a PNG file"""
+
+  @builtin
+  proc release():
+    """Release the snapshot's pixel buffer memory"""
+
+
+// ============================================================================
 // Window & Display
 // ============================================================================
 
@@ -120,6 +138,10 @@ type Window object:
   @builtin
   proc set_root(widget):
     """Set the root widget for this window"""
+
+  @builtin
+  func capture() -> Snapshot:
+    """Capture a snapshot of the window contents"""
 
 
   // implementation

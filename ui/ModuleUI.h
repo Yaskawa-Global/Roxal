@@ -75,6 +75,11 @@ public:
     void window_when_position_changes(ArgsView args);
     void window_when_size_changes(ArgsView args);
     void window_set_root(ArgsView args);
+    Value window_capture(ArgsView args);
+
+    // Snapshot methods
+    void snapshot_save(ArgsView args);
+    void snapshot_release(ArgsView args);
 
     // Widget methods
     void widget_register(ArgsView args);
@@ -139,6 +144,7 @@ public:
 protected:
     Value displayType;
     Value windowType;
+    Value snapshotType;
     Value widgetType;
     Value labelType;
     Value imageType;
