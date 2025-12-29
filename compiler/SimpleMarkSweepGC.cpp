@@ -499,11 +499,11 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
         }
     });
 
-    for (const auto& entry : ObjObjectType::enumTypes) {
-        if (entry.second) {
-            visitStrongValue(visitor, Value::objRef(entry.second));
-        }
-    }
+    // Note: ObjObjectType::enumTypes is NOT visited here. It holds raw pointers for
+    // fast enum value -> type lookup, but enum types are already rooted through modules:
+    // - User-defined enums are stored in module vars via DefineModuleVar opcode
+    // - DDS/Proto enums are stored in module vars via registerGeneratedTypes()
+    // - ObjModuleType::trace() traces all vars, so enum types are visited via allModules above
 
 }
 
