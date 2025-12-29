@@ -19,12 +19,15 @@ GRPC_TEST_ADDR = "127.0.0.1:50051"
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Run Roxal tests.")
 parser.add_argument('--convs', action='store_true', help='Include tests/conversions/* tests')
-parser.add_argument('--all', action='store_true', help='Run all tests, including conversions and long running tests')
+parser.add_argument('--ui', action='store_true', help='Include UI tests (requires ui feature)')
+parser.add_argument('--uionly', action='store_true', help='Run only UI tests (requires ui feature)')
+parser.add_argument('--all', action='store_true', help='Run all tests, including conversions, UI, and long running tests')
 parser.add_argument('--opcode-prof', action='store_true', help='Enable opcode profiling for each Roxal invocation')
 parser.add_argument('--nocache', action='store_true', help='Disable reading and writing Roxal bytecode cache files')
 parser.add_argument('--nogc', action='store_true', help='Disable Roxal garbage collection during tests')
 parser.add_argument('--recompile', action='store_true', help='Force Roxal to recompile input scripts on each run')
 parser.add_argument('--build', action='store_true', help='Invoke cmake --build before running the tests')
+parser.add_argument('--software-gl', action='store_true', help='Use software GL rendering for UI tests (for WSL2/CI environments)')
 args = parser.parse_args()
 
 
@@ -42,6 +45,63 @@ def detect_features(roxal_binary: str) -> Set[str]:
         return set()
     entries = [fragment.strip() for fragment in match.group(1).split(',')]
     return {entry for entry in entries if entry}
+
+
+def compare_screenshots(expected_path: str, actual_path: str,
+                        pixel_tolerance: int = 5, diff_threshold: float = 0.01):
+    """Compare two PNG screenshots with fuzzy matching.
+
+    Args:
+        expected_path: Path to expected/reference PNG
+        actual_path: Path to actual/generated PNG
+        pixel_tolerance: Maximum allowed difference per color channel (0-255)
+        diff_threshold: Maximum allowed fraction of pixels that can differ (0.0-1.0)
+
+    Returns:
+        (match: bool, description: str) - match is True if images are similar enough
+    """
+    try:
+        from PIL import Image
+        import numpy as np
+    except ImportError:
+        # Fall back to byte comparison if PIL not available
+        with open(expected_path, 'rb') as f:
+            expected = f.read()
+        with open(actual_path, 'rb') as f:
+            actual = f.read()
+        if expected == actual:
+            return True, "exact match"
+        return False, f"byte mismatch (PIL not available for fuzzy comparison)"
+
+    try:
+        expected_img = Image.open(expected_path).convert('RGBA')
+        actual_img = Image.open(actual_path).convert('RGBA')
+    except Exception as e:
+        return False, f"failed to load images: {e}"
+
+    # Check dimensions
+    if expected_img.size != actual_img.size:
+        return False, f"size mismatch: expected {expected_img.size}, got {actual_img.size}"
+
+    # Convert to numpy arrays
+    expected_arr = np.array(expected_img, dtype=np.int16)
+    actual_arr = np.array(actual_img, dtype=np.int16)
+
+    # Calculate per-pixel difference
+    diff = np.abs(expected_arr - actual_arr)
+
+    # Count pixels where any channel exceeds tolerance
+    pixels_different = np.any(diff > pixel_tolerance, axis=2)
+    num_different = np.sum(pixels_different)
+    total_pixels = expected_img.size[0] * expected_img.size[1]
+    diff_ratio = num_different / total_pixels
+
+    if diff_ratio <= diff_threshold:
+        if num_different == 0:
+            return True, "exact match"
+        return True, f"within tolerance ({num_different} pixels differ, {diff_ratio*100:.2f}%)"
+
+    return False, f"{num_different} pixels differ ({diff_ratio*100:.2f}% > {diff_threshold*100:.1f}% threshold)"
 
 
 def is_debug_build(build_dir: str) -> bool:
@@ -137,9 +197,12 @@ fileio_tests = [
     'string_concat_roundtrip', 'actor_concat_stress'
 ]
 dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok', 'dds_array_struct', 'dds_array_multi']
+ui_tests = ['ui/label_basic']
 
 # Add feature-specific tests to the full list; feature gating happens later.
 tests += dds_tests
+# UI tests are only added when --ui or --all is passed
+# (feature gating happens later)
 
 long_running_tests = [
     'gc_stress',
@@ -162,6 +225,14 @@ if include_convs:
 
 if args.all:
     tests += long_running_tests
+
+include_ui = args.ui or args.all or args.uionly
+if include_ui:
+    tests += ui_tests
+
+# If --uionly, only run UI tests
+if args.uionly:
+    tests = ui_tests.copy()
 
 project_root = os.path.dirname(os.path.abspath(__file__))
 test_dir = os.path.join(project_root, 'tests')
@@ -225,6 +296,11 @@ if not has_dds:
     if any(test in tests for test in dds_tests):
         print("Skipping DDS tests (feature not enabled).")
         tests = [t for t in tests if t not in dds_tests]
+has_ui = 'ui' in features
+if not has_ui:
+    if any(test in tests for test in ui_tests):
+        print("Skipping UI tests (feature not enabled).")
+        tests = [t for t in tests if t not in ui_tests]
 needs_grpc_server = has_grpc and any(test in tests for test in grpc_server_tests)
 
 env_base = os.environ.copy()
@@ -309,6 +385,11 @@ try:
             proto_path = os.path.join('..', 'compiler', 'grpc', 'protos')
             cmd = [cmd[0], '-p', proto_path, *cmd[1:]]
 
+        # UI tests: run in offscreen mode with software rendering
+        is_ui_test = test.startswith('ui/')
+        if is_ui_test:
+            cmd = [cmd[0], '--offscreen', *cmd[1:]]
+
         if args.opcode_prof and '--opcode-prof' not in cmd:
             cmd = [cmd[0], '--opcode-prof', *cmd[1:]]
         if args.nocache and '--nocache' not in cmd:
@@ -322,12 +403,20 @@ try:
 
         timeout_secs = GC_STRESS_TIMEOUT_SECS if test == 'gc_stress' else TEST_TIMEOUT_SECS
 
+        # UI tests need project root in ROXALPATH for ui module
+        test_env = env_base
+        if is_ui_test:
+            test_env = env_base.copy()
+            test_env['ROXALPATH'] = project_root + os.pathsep + test_dir
+            if args.software_gl:
+                test_env['LIBGL_ALWAYS_SOFTWARE'] = '1'
+
         try:
             compProc = subprocess.run(
                 cmd,
                 input=(input_data.encode() if isinstance(input_data, str) else input_data if input_data else None),
                 capture_output=True, shell=False,
-                timeout=timeout_secs, env=env_base)
+                timeout=timeout_secs, env=test_env)
         except subprocess.TimeoutExpired:
             duration_ms = (time.perf_counter() - start_time) * 1000
             print(f"FAIL: {opt_expected}", flush=True)
@@ -370,7 +459,22 @@ try:
         if os.path.exists(testout):
             with open(testout, mode='rb') as file:
                 expected = file.read()
-            if expected != compProc.stdout:
+            actual_stdout = compProc.stdout
+            # For UI tests, filter out LVGL log lines before comparison
+            # LVGL logs format: [Info/Warn/Error]\t(timestamp)\t message source:line
+            # Some lines have continuation lines ending with .c:NNN or .h:NNN
+            if is_ui_test:
+                filtered_lines = []
+                for line in compProc.stdout.split(b'\n'):
+                    # Skip lines starting with LVGL log prefix
+                    if line.startswith(b'[Info]') or line.startswith(b'[Warn]') or line.startswith(b'[Error]'):
+                        continue
+                    # Skip continuation lines (LVGL source file references)
+                    if re.search(rb'\.(c|h|cpp):\d+\s*$', line):
+                        continue
+                    filtered_lines.append(line)
+                actual_stdout = b'\n'.join(filtered_lines)
+            if expected != actual_stdout:
                 print(f"FAIL: {opt_expected}", flush=True)
                 print("-- stdout --")
                 print(compProc.stdout)
@@ -392,6 +496,27 @@ try:
                 print("--")
                 print()
                 passed = False
+        # For UI tests, compare screenshots if expected file exists
+        if is_ui_test and passed:
+            expected_png = os.path.join(test_dir, test + '_expected.png')
+            actual_png = '/tmp/ui_test_' + os.path.basename(test) + '.png'
+            if os.path.exists(expected_png):
+                if os.path.exists(actual_png):
+                    screenshot_match, screenshot_diff = compare_screenshots(expected_png, actual_png)
+                    if not screenshot_match:
+                        print(f"FAIL: {opt_expected}", flush=True)
+                        print(f"-- screenshot mismatch --")
+                        print(f"Expected: {expected_png}")
+                        print(f"Actual: {actual_png}")
+                        print(f"Difference: {screenshot_diff}")
+                        print("--")
+                        print()
+                        passed = False
+                else:
+                    print(f"FAIL: {opt_expected}", flush=True)
+                    print(f"-- screenshot not found: {actual_png} --")
+                    print()
+                    passed = False
         if passed:
             print(f"pass ({duration_ms:.0f} ms)", flush=True)
             passed_count += 1

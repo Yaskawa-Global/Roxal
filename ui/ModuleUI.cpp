@@ -345,6 +345,7 @@ void ModuleUI::registerBuiltins(VM& vm)
     linkMethod("Window", "simulate_key", [this](VM& vm, ArgsView a){ window_simulate_key(a); return Value::nilVal(); });
     linkMethod("Window", "simulate_text", [this](VM& vm, ArgsView a){ window_simulate_text(a); return Value::nilVal(); });
     linkMethod("Window", "simulate_close", [this](VM& vm, ArgsView a){ window_simulate_close(a); return Value::nilVal(); });
+    linkMethod("Window", "_update_background_color", [this](VM& vm, ArgsView a){ window_update_background_color(a); return Value::nilVal(); });
 
     // Snapshot methods
     linkMethod("Snapshot", "save", [this](VM& vm, ArgsView a){ snapshot_save(a); return Value::nilVal(); });
@@ -1261,6 +1262,71 @@ void ModuleUI::window_simulate_close(ArgsView args)
 
     // Also emit the WindowClose event immediately so it can be handled
     emitUIEvent("WindowClose", window);
+}
+
+void ModuleUI::window_update_background_color(ArgsView args)
+{
+    debug_assert_msg(instanceOf(args[0], windowType), "instance is Window");
+    Value& window { args[0] };
+    auto windowInst { asObjectInstance(window) };
+
+    // Get the background_color property
+    Value bg_color_val = windowInst->getProperty("_background_color");
+    if (!bg_color_val.isNumber())
+        return;
+
+    int32_t bg_color = bg_color_val.asInt();
+
+    // Get the screen for this window
+    Value lv_screen_val = windowInst->getProperty("_lv_screen");
+    if (lv_screen_val.isNil() || !isForeignPtr(lv_screen_val))
+        return;
+
+    lv_obj_t* screen = (lv_obj_t*)(asForeignPtr(lv_screen_val)->ptr);
+    if (!screen)
+        return;
+
+    if (bg_color < 0) {
+        // Transparent background
+        lv_obj_set_style_bg_opa(screen, LV_OPA_TRANSP, 0);
+    } else {
+        // Extract RGB from 0xRRGGBB
+        uint8_t r = (bg_color >> 16) & 0xFF;
+        uint8_t g = (bg_color >> 8) & 0xFF;
+        uint8_t b = bg_color & 0xFF;
+
+        // Get or create a background object
+        // The screen itself doesn't render a background in LVGL's OpenGL driver,
+        // so we create a full-screen object to serve as the background
+        Value bg_obj_val = windowInst->getProperty("_lv_bg_obj");
+        lv_obj_t* bg_obj = nullptr;
+
+        if (bg_obj_val.isNil() || !isForeignPtr(bg_obj_val)) {
+            // Create a new background object
+            bg_obj = lv_obj_create(screen);
+            if (bg_obj) {
+                // Make it fill the entire screen
+                lv_obj_set_size(bg_obj, LV_PCT(100), LV_PCT(100));
+                lv_obj_set_pos(bg_obj, 0, 0);
+                // Remove any border/padding
+                lv_obj_set_style_border_width(bg_obj, 0, 0);
+                lv_obj_set_style_pad_all(bg_obj, 0, 0);
+                lv_obj_set_style_radius(bg_obj, 0, 0);
+                // Send to back so it's behind other widgets
+                lv_obj_move_to_index(bg_obj, 0);
+                // Store reference
+                windowInst->setProperty("_lv_bg_obj", Value::foreignPtrVal(bg_obj));
+            }
+        } else {
+            bg_obj = (lv_obj_t*)(asForeignPtr(bg_obj_val)->ptr);
+        }
+
+        if (bg_obj) {
+            lv_obj_set_style_bg_color(bg_obj, lv_color_make(r, g, b), 0);
+            lv_obj_set_style_bg_opa(bg_obj, LV_OPA_COVER, 0);
+            lv_obj_invalidate(bg_obj);
+        }
+    }
 }
 
 

@@ -82,6 +82,7 @@ public:
     void window_simulate_key(ArgsView args);
     void window_simulate_text(ArgsView args);
     void window_simulate_close(ArgsView args);
+    void window_update_background_color(ArgsView args);
 
     // Snapshot methods
     void snapshot_save(ArgsView args);

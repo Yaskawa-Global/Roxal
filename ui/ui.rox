@@ -127,6 +127,13 @@ type Window object:
   var height :int
   var offscreen :bool = false  // true if this is an offscreen (software-rendered) window
 
+  // Background color as 0xRRGGBB integer, or -1 for transparent (default)
+  // Note: Does not work in offscreen mode; use a Layout as the root widget instead
+  var background_color :int = -1:
+    set:
+      _background_color = value
+      this._update_background_color()
+    get: return _background_color
 
   @builtin
   proc close():
@@ -191,6 +198,10 @@ type Window object:
   @builtin
   private proc when_size_changes():
     """Update the window size in the native UI"""
+
+  @builtin
+  private proc _update_background_color():
+    """Update the window background color in native UI"""
 
 
 
@@ -308,6 +319,7 @@ type Label object extends Widget:
     set:
       _text = value
       this._update_text()
+    get: return _text
 
   var align :int = 0  // 0=left, 1=center, 2=right
 

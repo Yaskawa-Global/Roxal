@@ -649,6 +649,9 @@ int main(int argc, const char* argv[])
         #ifdef ROXAL_ENABLE_DDS
             features.push_back("dds");
         #endif
+        #ifdef ENABLE_UI
+            features.push_back("ui");
+        #endif
         if (!features.empty()) {
             std::cout << " [";
             for (size_t i = 0; i < features.size(); ++i) {

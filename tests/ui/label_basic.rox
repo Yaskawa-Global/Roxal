@@ -1,0 +1,35 @@
+import ui.*
+
+// UI Test: Basic Label widget
+// Tests: Label creation, text property, snapshot capture
+
+// Get display and create offscreen window
+display = displays[0]
+window = display.create_window(320, 240, title="Label Test", open=true)
+
+// Create a background layout (white by default) for consistent screenshots
+var bg = Layout(parent=window, x=0, y=0, width=320, height=240)
+window.set_root(bg)
+
+// Create a label with text
+var label = Label(parent=bg, text="Hello, Roxal!", x=50, y=50)
+
+// Print label properties for verification
+print("Label text: {label.text}")
+
+// Wait briefly to ensure rendering completes
+wait(ms=500)
+
+// Capture screenshot
+var snap = window.capture()
+if snap is not nil:
+    print("Snapshot size: {snap.width}x{snap.height}")
+    snap.save("/tmp/ui_test_label_basic.png")
+    print("Screenshot saved to /tmp/ui_test_label_basic.png")
+    snap.release()
+else:
+    print("ERROR: Failed to capture snapshot")
+
+// Cleanup
+window.close()
+print("Test completed")
