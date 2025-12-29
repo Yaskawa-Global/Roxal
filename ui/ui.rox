@@ -144,6 +144,23 @@ type Window object:
   func capture() -> Snapshot:
     """Capture a snapshot of the window contents"""
 
+  // Simulation methods for UI testing
+  @builtin
+  proc simulate_click(x :int, y :int):
+    """Simulate a mouse click at the given coordinates (relative to window)"""
+
+  @builtin
+  proc simulate_key(key :string):
+    """Simulate a key press (e.g., 'Enter', 'Escape', 'Tab', 'a', 'A')"""
+
+  @builtin
+  proc simulate_text(text :string):
+    """Simulate typing text input"""
+
+  @builtin
+  proc simulate_close():
+    """Simulate clicking the window close button"""
+
 
   // implementation
 
@@ -275,6 +292,11 @@ type Widget object:
   private proc _update_scroll_dir():
     """Update widget scroll direction in native UI"""
 
+  // Simulation method for UI testing
+  @builtin
+  proc simulate_click():
+    """Simulate a click on this widget (triggers Clicked event)"""
+
 
 // ============================================================================
 // Label Widget - displays text
@@ -359,6 +381,7 @@ type Button object extends Widget:
     set:
       _label = value
       this._update_label()
+    get: return _label
 
   var pressed :bool = false  // read-only, set by native
 

@@ -77,6 +77,12 @@ public:
     void window_set_root(ArgsView args);
     Value window_capture(ArgsView args);
 
+    // Window simulation methods (for UI testing)
+    void window_simulate_click(ArgsView args);
+    void window_simulate_key(ArgsView args);
+    void window_simulate_text(ArgsView args);
+    void window_simulate_close(ArgsView args);
+
     // Snapshot methods
     void snapshot_save(ArgsView args);
     void snapshot_release(ArgsView args);
@@ -89,6 +95,7 @@ public:
     void widget_update_enabled(ArgsView args);
     void widget_update_scrollbar(ArgsView args);
     void widget_update_scroll_dir(ArgsView args);
+    void widget_simulate_click(ArgsView args);
 
     // Label methods
     Value label_create(ArgsView args);

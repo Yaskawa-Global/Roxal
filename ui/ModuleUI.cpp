@@ -340,6 +340,12 @@ void ModuleUI::registerBuiltins(VM& vm)
     linkMethod("Window", "set_root", [this](VM& vm, ArgsView a){ window_set_root(a); return Value::nilVal(); });
     linkMethod("Window", "capture", [this](VM& vm, ArgsView a){ return window_capture(a); });
 
+    // Window simulation methods (for UI testing)
+    linkMethod("Window", "simulate_click", [this](VM& vm, ArgsView a){ window_simulate_click(a); return Value::nilVal(); });
+    linkMethod("Window", "simulate_key", [this](VM& vm, ArgsView a){ window_simulate_key(a); return Value::nilVal(); });
+    linkMethod("Window", "simulate_text", [this](VM& vm, ArgsView a){ window_simulate_text(a); return Value::nilVal(); });
+    linkMethod("Window", "simulate_close", [this](VM& vm, ArgsView a){ window_simulate_close(a); return Value::nilVal(); });
+
     // Snapshot methods
     linkMethod("Snapshot", "save", [this](VM& vm, ArgsView a){ snapshot_save(a); return Value::nilVal(); });
     linkMethod("Snapshot", "release", [this](VM& vm, ArgsView a){ snapshot_release(a); return Value::nilVal(); });
@@ -352,6 +358,7 @@ void ModuleUI::registerBuiltins(VM& vm)
     linkMethod("Widget", "_update_enabled", [this](VM& vm, ArgsView a){ widget_update_enabled(a); return Value::nilVal(); });
     linkMethod("Widget", "_update_scrollbar", [this](VM& vm, ArgsView a){ widget_update_scrollbar(a); return Value::nilVal(); });
     linkMethod("Widget", "_update_scroll_dir", [this](VM& vm, ArgsView a){ widget_update_scroll_dir(a); return Value::nilVal(); });
+    linkMethod("Widget", "simulate_click", [this](VM& vm, ArgsView a){ widget_simulate_click(a); return Value::nilVal(); });
 
     // Label methods
     link("_label_create", [this](VM& vm, ArgsView a){ return label_create(a); });
@@ -1052,6 +1059,234 @@ void ModuleUI::window_set_root(ArgsView args)
             }
         }
     }
+}
+
+
+// ============================================================================
+// Window Event Simulation (for UI testing)
+// ============================================================================
+
+// Helper function to find widget at coordinates by recursively checking children
+static lv_obj_t* find_obj_at_point(lv_obj_t* parent, int32_t x, int32_t y)
+{
+    if (!parent) return nullptr;
+
+    // Check children in reverse order (top-most first)
+    uint32_t child_count = lv_obj_get_child_count(parent);
+    for (int32_t i = child_count - 1; i >= 0; i--) {
+        lv_obj_t* child = lv_obj_get_child(parent, i);
+        if (!child) continue;
+
+        // Skip hidden objects
+        if (lv_obj_has_flag(child, LV_OBJ_FLAG_HIDDEN)) continue;
+
+        // Check if point is within this object's bounds
+        lv_area_t area;
+        lv_obj_get_coords(child, &area);
+        if (x >= area.x1 && x <= area.x2 && y >= area.y1 && y <= area.y2) {
+            // Recursively check this object's children
+            lv_obj_t* found = find_obj_at_point(child, x, y);
+            if (found) return found;
+            // If no child contains the point, this object is the target
+            if (lv_obj_has_flag(child, LV_OBJ_FLAG_CLICKABLE)) {
+                return child;
+            }
+        }
+    }
+
+    // Check if parent itself is clickable at this point
+    if (lv_obj_has_flag(parent, LV_OBJ_FLAG_CLICKABLE)) {
+        lv_area_t area;
+        lv_obj_get_coords(parent, &area);
+        if (x >= area.x1 && x <= area.x2 && y >= area.y1 && y <= area.y2) {
+            return parent;
+        }
+    }
+
+    return nullptr;
+}
+
+void ModuleUI::window_simulate_click(ArgsView args)
+{
+    debug_assert_msg(instanceOf(args[0], windowType), "instance is Window");
+    Value& window { args[0] };
+    auto windowInst { asObjectInstance(window) };
+
+    int x = args[1].asInt();
+    int y = args[2].asInt();
+
+    // Get the screen for this window
+    Value lv_screen_val = windowInst->getProperty("_lv_screen");
+    if (lv_screen_val.isNil() || !isForeignPtr(lv_screen_val))
+        return;
+
+    lv_obj_t* screen = (lv_obj_t*)(asForeignPtr(lv_screen_val)->ptr);
+    if (!screen)
+        return;
+
+    // Find the widget at the given coordinates
+    lv_obj_t* target = find_obj_at_point(screen, x, y);
+    if (!target) {
+        target = screen;  // Click on screen if no clickable widget at coordinates
+    }
+
+    // Send click events: PRESSED -> CLICKED -> RELEASED
+    lv_obj_send_event(target, LV_EVENT_PRESSED, nullptr);
+    lv_obj_send_event(target, LV_EVENT_CLICKED, nullptr);
+    lv_obj_send_event(target, LV_EVENT_RELEASED, nullptr);
+}
+
+void ModuleUI::window_simulate_key(ArgsView args)
+{
+    debug_assert_msg(instanceOf(args[0], windowType), "instance is Window");
+    Value& window { args[0] };
+    auto windowInst { asObjectInstance(window) };
+    Value keyVal { args[1] };
+
+    if (!isString(keyVal))
+        return;
+
+    std::string keyStr;
+    asUString(keyVal).toUTF8String(keyStr);
+
+    // Map key names to LVGL key codes
+    uint32_t key = 0;
+    if (keyStr == "Enter" || keyStr == "Return") {
+        key = LV_KEY_ENTER;
+    } else if (keyStr == "Escape" || keyStr == "Esc") {
+        key = LV_KEY_ESC;
+    } else if (keyStr == "Tab") {
+        key = LV_KEY_NEXT;
+    } else if (keyStr == "Backspace") {
+        key = LV_KEY_BACKSPACE;
+    } else if (keyStr == "Delete") {
+        key = LV_KEY_DEL;
+    } else if (keyStr == "Left") {
+        key = LV_KEY_LEFT;
+    } else if (keyStr == "Right") {
+        key = LV_KEY_RIGHT;
+    } else if (keyStr == "Up") {
+        key = LV_KEY_UP;
+    } else if (keyStr == "Down") {
+        key = LV_KEY_DOWN;
+    } else if (keyStr == "Home") {
+        key = LV_KEY_HOME;
+    } else if (keyStr == "End") {
+        key = LV_KEY_END;
+    } else if (keyStr.length() == 1) {
+        // Single character - treat as character input
+        key = (uint32_t)keyStr[0];
+    } else {
+        return;  // Unknown key
+    }
+
+    // Inject the key through the keyboard buffer (same mechanism as real input)
+    if (key < 128 && key >= 32) {
+        // Printable character - add to keyboard buffer
+        size_t len = strlen(g_keyboard.buf);
+        if (len < KEYBOARD_BUFFER_SIZE - 2) {
+            g_keyboard.buf[len] = (char)key;
+            g_keyboard.buf[len + 1] = '\0';
+        }
+    } else {
+        // Special key - send directly to focused widget via indev
+        // For now, just add to buffer as a single-byte code
+        size_t len = strlen(g_keyboard.buf);
+        if (len < KEYBOARD_BUFFER_SIZE - 2) {
+            g_keyboard.buf[len] = (char)key;
+            g_keyboard.buf[len + 1] = '\0';
+        }
+    }
+
+    // Trigger keyboard read
+    if (g_keyboard.indev) {
+        lv_indev_read(g_keyboard.indev);
+    }
+}
+
+void ModuleUI::window_simulate_text(ArgsView args)
+{
+    debug_assert_msg(instanceOf(args[0], windowType), "instance is Window");
+    Value& window { args[0] };
+    Value textVal { args[1] };
+
+    if (!isString(textVal))
+        return;
+
+    std::string text;
+    asUString(textVal).toUTF8String(text);
+
+    // Add text to keyboard buffer
+    size_t current_len = strlen(g_keyboard.buf);
+    size_t text_len = text.length();
+    size_t available = KEYBOARD_BUFFER_SIZE - current_len - 1;
+
+    if (text_len > available) {
+        text_len = available;
+    }
+
+    if (text_len > 0) {
+        memcpy(g_keyboard.buf + current_len, text.c_str(), text_len);
+        g_keyboard.buf[current_len + text_len] = '\0';
+    }
+
+    // Trigger keyboard read to process the text
+    if (g_keyboard.indev) {
+        lv_indev_read(g_keyboard.indev);
+    }
+}
+
+void ModuleUI::window_simulate_close(ArgsView args)
+{
+    debug_assert_msg(instanceOf(args[0], windowType), "instance is Window");
+    Value& window { args[0] };
+    auto windowInst { asObjectInstance(window) };
+
+    // Get the GLFW window
+    Value lv_window_val = windowInst->getProperty("_lv_window");
+    if (lv_window_val.isNil() || !isForeignPtr(lv_window_val))
+        return;
+
+    lv_opengles_window_t* lv_window = (lv_opengles_window_t*)(asForeignPtr(lv_window_val)->ptr);
+    if (!lv_window)
+        return;
+
+    GLFWwindow* glfw_window = (GLFWwindow*)lv_opengles_glfw_window_get_glfw_window(lv_window);
+    if (!glfw_window)
+        return;
+
+    // Trigger the window close callback (same as clicking the X button)
+    // This will emit the WindowClose event which Roxal code can handle
+    glfwSetWindowShouldClose(glfw_window, GLFW_TRUE);
+
+    // Also emit the WindowClose event immediately so it can be handled
+    emitUIEvent("WindowClose", window);
+}
+
+
+// ============================================================================
+// Widget Event Simulation (for UI testing)
+// ============================================================================
+
+void ModuleUI::widget_simulate_click(ArgsView args)
+{
+    Value& widget { args[0] };
+    if (!isObjectInstance(widget))
+        return;
+
+    auto widgetInst = asObjectInstance(widget);
+    Value lv_obj_val = widgetInst->getProperty("_lv_obj");
+    if (lv_obj_val.isNil() || !isForeignPtr(lv_obj_val))
+        return;
+
+    lv_obj_t* lv_obj = (lv_obj_t*)(asForeignPtr(lv_obj_val)->ptr);
+    if (!lv_obj)
+        return;
+
+    // Send click events: PRESSED -> CLICKED -> RELEASED
+    lv_obj_send_event(lv_obj, LV_EVENT_PRESSED, nullptr);
+    lv_obj_send_event(lv_obj, LV_EVENT_CLICKED, nullptr);
+    lv_obj_send_event(lv_obj, LV_EVENT_RELEASED, nullptr);
 }
 
 
