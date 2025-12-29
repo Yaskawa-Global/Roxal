@@ -33,6 +33,7 @@
 #include "SimpleMarkSweepGC.h"
 #include "Object.h"
 #include "Introspection.h"
+#include "RuntimeConfig.h"
 
 
 extern "C" {
@@ -738,6 +739,38 @@ int main(int argc, const char* argv[])
         }
 
         SimpleMarkSweepGC::instance().setAutoTriggerThreshold(thresholdKbUnsigned * 1024ull);
+    }
+
+    // Populate RuntimeConfig with parsed options for module access
+    {
+        // Module paths (comma-separated)
+        if (!modulePaths.empty()) {
+            std::string pathsStr;
+            for (size_t i = 0; i < modulePaths.size(); ++i) {
+                if (i > 0) pathsStr += ",";
+                pathsStr += modulePaths[i];
+            }
+            RuntimeConfig::set("path.modules", pathsStr);
+        }
+
+        // Cache mode
+        if (disableCache)
+            RuntimeConfig::set("cache.mode", "none");
+        else if (forceRecompile)
+            RuntimeConfig::set("cache.mode", "writeonly");
+        else
+            RuntimeConfig::set("cache.mode", "readwrite");
+
+        // GC settings
+        if (vmap.count("nogc"))
+            RuntimeConfig::set("gc.disabled", "true");
+
+        if (vmap.count("gc-threshold"))
+            RuntimeConfig::set("gc.threshold", std::to_string(vmap["gc-threshold"].as<long long>()));
+
+        // VM limits
+        RuntimeConfig::set("vm.stack_size", std::to_string(stackSizeLimit));
+        RuntimeConfig::set("vm.call_frame_limit", std::to_string(callFrameLimit));
     }
 
     if (vmap.count("execute")) {
