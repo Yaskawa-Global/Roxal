@@ -125,6 +125,7 @@ type Window object:
   var y :int
   var width :int
   var height :int
+  var offscreen :bool = false  // true if this is an offscreen (software-rendered) window
 
 
   @builtin
@@ -183,8 +184,9 @@ type Display object:
   var windows :dict // id : Window
 
   @builtin
-  func create_window(width :int, height :int, title :string="", open :bool=false, resizable :bool=false):
-    """create a new window (closed by default, resizable by default)"""
+  func create_window(width :int, height :int, title :string="", open :bool=false, resizable :bool=false, offscreen :bool=false):
+    """create a new window (closed by default, not resizable by default, visible by default).
+       If offscreen=true, creates a software-rendered surface without a visible window (for testing/headless rendering)."""
 
   @builtin
   proc show_perf_monitor():

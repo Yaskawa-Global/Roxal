@@ -1,6 +1,7 @@
 #include "ModuleUI.h"
 #include "../compiler/VM.h"
 #include "../compiler/Object.h"
+#include "../compiler/RuntimeConfig.h"
 
 #include <GL/glew.h>  // Must be before GLFW
 #include <GLFW/glfw3.h>
@@ -8,6 +9,34 @@
 #include <png.h>
 
 using namespace roxal;
+
+// ============================================================================
+// Architecture: Roxal UI / GLFW / LVGL Relationship
+// ============================================================================
+//
+// Roxal UI Layer (ui.rox):
+//   - Display: Represents a physical display/monitor. Contains a dict of Windows.
+//              Currently there's typically one Display (displays[0]).
+//   - Window:  A rendering surface that can contain UI widgets.
+//
+// Native Implementation (this file):
+//   Each Roxal Window creates:
+//   - lv_display_t* (_lv_display): LVGL display/rendering context with draw buffers
+//   - lv_opengles_window_t* (_lv_window): GLFW window wrapper
+//   - lv_obj_t* (_lv_screen): The root LVGL screen object for this display
+//
+// All Windows use GLFW + OpenGL rendering (LVGL is compiled with LV_USE_OPENGLES=1).
+// GLFW handles: window management, input events, OpenGL context
+// LVGL renders to OpenGL texture, displayed via GLFW window
+//
+// Offscreen Windows (offscreen=true or --offscreen CLI flag):
+//   Same rendering pipeline as visible windows, but the GLFW window is never shown.
+//   Used for automated UI testing, screenshot comparison, CI environments.
+//   For truly headless environments (no display), use Xvfb or similar.
+//
+// Note: Pure software rendering (no OpenGL) would require rebuilding LVGL with
+// LV_USE_OPENGLES=0, LV_USE_GLFW=0 in lv_conf.h.
+// ============================================================================
 
 // Target frames per second for UI event polling (matches FPS in ui.rox)
 static constexpr int FPS = 100;
@@ -553,17 +582,36 @@ Value ModuleUI::display_create_window(ArgsView args)
     Value window { newUIObj(windowType) };
     auto windowInst = asObjectInstance(window);
 
-    // create lvgl window
+    // Get parameters
     Value width { args[1] };
     Value height { args[2] };
     Value title { args[3] };
     Value open { args[4] };
     Value resizable { args[5] };
+    Value offscreenArg { args[6] };
+
     if (!width.isNumber() || !height.isNumber())
         throw std::runtime_error("width & height must be numeric");
 
+    // Determine if this should be an offscreen (hidden) window:
+    // 1. Global override from --offscreen CLI flag
+    // 2. Per-window offscreen parameter
+    bool isOffscreen = RuntimeConfig::getBool("ui.offscreen", false);
+    if (!isOffscreen && offscreenArg.isBool()) {
+        isOffscreen = offscreenArg.asBool();
+    }
+
+    // For offscreen windows, force them to start hidden
+    bool shouldOpen = open.isBool() ? open.asBool() : false;
+    if (isOffscreen) {
+        shouldOpen = false;  // Never show offscreen windows
+    }
+
+    int32_t w = width.asInt();
+    int32_t h = height.asInt();
+
     // Set window visibility hint before creating the window to prevent flash
-    if (open.isBool() && !open.asBool()) {
+    if (!shouldOpen) {
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     }
 
@@ -572,7 +620,7 @@ Value ModuleUI::display_create_window(ArgsView args)
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
     }
 
-    lv_opengles_window_t* lv_window = lv_opengles_glfw_window_create(width.asInt(), height.asInt(), true);
+    lv_opengles_window_t* lv_window = lv_opengles_glfw_window_create(w, h, true);
 
     // Reset window hints to default for future windows
     glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
@@ -610,9 +658,10 @@ Value ModuleUI::display_create_window(ArgsView args)
     glfwSetCharCallback(glfw_window, glfw_char_callback);
 
     windowInst->setProperty("_lv_window", Value::foreignPtrVal(lv_window));
+    windowInst->setProperty("offscreen", Value::boolVal(isOffscreen));
     // Note: userData is kept alive by g_windowUserDataMap, not stored here
 
-    lv_display_t* lv_display = lv_opengles_texture_create(width.asInt(), height.asInt());
+    lv_display_t* lv_display = lv_opengles_texture_create(w, h);
     if (!lv_display) {
         LV_LOG_ERROR("Failed to create OpenGL ES texture");
         lv_opengles_window_delete(lv_window);
@@ -628,7 +677,7 @@ Value ModuleUI::display_create_window(ArgsView args)
     int32_t texture_id = lv_opengles_texture_get_texture_id(lv_display);
     lv_opengles_window_texture_t* window_texture = lv_opengles_window_add_texture(
         lv_window, texture_id,
-        width.asInt(), height.asInt()
+        w, h
     );
     if (!window_texture) {
         LV_LOG_ERROR("Failed to obtain OpenGL ES texture id");
@@ -2541,11 +2590,8 @@ void ModuleUI::snapshot_save(ArgsView args)
     png_write_info(png_ptr, info_ptr);
 
     // OpenGL reads from bottom-left, so we need to flip vertically
-    // The pixel data is already in RGBA format from glReadPixels
     int stride = width * 4;
-
     for (int y = 0; y < height; y++) {
-        // Read from bottom row first (flip vertical)
         uint8_t* src_row = pixels + (height - 1 - y) * stride;
         png_write_row(png_ptr, src_row);
     }

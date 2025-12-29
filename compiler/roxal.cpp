@@ -603,6 +603,9 @@ int main(int argc, const char* argv[])
         #ifdef DEBUG_BUILD
         ("opcode-prof", "collect opcode execution frequencies in opcode_profile.json")
         #endif
+        #if ENABLE_UI
+        ("offscreen", "force all UI windows to render offscreen (no visible windows)")
+        #endif
     ;
 
     po::positional_options_description pos;
@@ -771,6 +774,12 @@ int main(int argc, const char* argv[])
         // VM limits
         RuntimeConfig::set("vm.stack_size", std::to_string(stackSizeLimit));
         RuntimeConfig::set("vm.call_frame_limit", std::to_string(callFrameLimit));
+
+        // UI settings
+        #if ENABLE_UI
+        if (vmap.count("offscreen"))
+            RuntimeConfig::set("ui.offscreen", "true");
+        #endif
     }
 
     if (vmap.count("execute")) {
