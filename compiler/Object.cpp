@@ -3724,13 +3724,18 @@ ObjObjectType::ObjObjectType(const icu::UnicodeString& typeName, bool isactor, b
         typeValue = ValueType::Actor;
     else if (isEnumeration) {
         typeValue = ValueType::Enum;
-if (isActor && name!="_DataflowEngine") std::cout << "Actor ObjObjectType created" << std::endl;//!!!
-        // register ourselves in the global map of enum types, referenced in the enum values
-        enumTypeId = randomUint16(1); // generate unique random id (1..max)
-        while (ObjObjectType::enumTypes.find(enumTypeId) != ObjObjectType::enumTypes.end())
-            enumTypeId = randomUint16(1);
-        //std::cout << "registered new enum id " << enumTypeId << std::endl;
-        enumTypes[enumTypeId] = this;
+
+        // Only register in enumTypes if name is non-empty (fresh compile).
+        // During deserialization, name is empty and read() will register with the correct
+        // enumTypeId from the cache. This prevents duplicate/stale entries in enumTypes.
+        if (!typeName.isEmpty()) {
+            // register ourselves in the global map of enum types, referenced in the enum values
+            enumTypeId = randomUint16(1); // generate unique random id (1..max)
+            while (ObjObjectType::enumTypes.find(enumTypeId) != ObjObjectType::enumTypes.end())
+                enumTypeId = randomUint16(1);
+            //std::cout << "registered new enum id " << enumTypeId << std::endl;
+            enumTypes[enumTypeId] = this;
+        }
     }
 }
 
