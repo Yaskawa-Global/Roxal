@@ -1,0 +1,42 @@
+# Test the 'in' and 'not in' binary operators
+
+# List containment
+var mylist = [1, 2, 3, 4, 5]
+print(2 in mylist)
+print(10 in mylist)
+print(2 not in mylist)
+print(10 not in mylist)
+
+# String containment (substring)
+var str = "hello world"
+print("world" in str)
+print("xyz" in str)
+print("xyz" not in str)
+
+# Dict key containment
+var mydict = {'a': 1, 'b': 2}
+print('a' in mydict)
+print('z' in mydict)
+
+# Range containment (closed range)
+print(5 in range(1..10))
+print(10 in range(1..10))
+print(11 in range(1..10))
+
+# Range containment (half-open range)
+print(5 in range(1..<10))
+print(10 in range(1..<10))
+
+# Range containment (with step)
+print(4 in range(0..10 by 2))
+print(5 in range(0..10 by 2))
+
+# Combined with other operators
+if 2 in mylist and 3 in mylist:
+    print("both present")
+
+# Precedence test: in should bind tighter than and/or
+var a = 1
+var b = 2
+if a in mylist or b in mylist:
+    print("at least one present")
