@@ -10,8 +10,10 @@
 #include <grpcpp/generic/generic_stub.h>
 #include <grpcpp/completion_queue.h>
 
+#include <chrono>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 
 class ClientCall

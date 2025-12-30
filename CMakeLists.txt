@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(roxal VERSION 1.0.0 LANGUAGES CXX C)
-set(ROXAL_PRERELEASE "" CACHE STRING "SemVer prerelease label (e.g. alpha.1, rc.1)")
+project(roxal VERSION 0.8.0 LANGUAGES CXX C)
+set(ROXAL_PRERELEASE "pre" CACHE STRING "SemVer prerelease label (e.g. alpha.1, rc.1)")
 
 enable_testing()
 
@@ -52,6 +52,8 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+find_package(PkgConfig REQUIRED)
+
 
 #
 # vcpkg
@@ -100,7 +102,8 @@ include_directories(${EIGEN3_INCLUDE_DIR})
 
 if(ROXAL_ENABLE_GRPC)
     find_package(Protobuf REQUIRED) # use module or config
-    find_package(gRPC CONFIG REQUIRED)
+    pkg_check_modules(GRPC REQUIRED grpc++)
+    include_directories(${GRPC_INCLUDE_DIRS})
 endif()
 
 # CycloneDDS
@@ -118,7 +121,6 @@ endif()
 # Detect libffi via pkg-config so that include and library paths
 # are recorded explicitly and the build fails clearly if libffi is
 # missing.
-find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBFFI REQUIRED libffi)
 
 # Build the dataflow engine library
@@ -251,7 +253,7 @@ target_link_libraries(roxalcore
         dl
         ${LIBFFI_LIBRARIES}
         $<$<BOOL:${ROXAL_ENABLE_GRPC}>:protobuf::libprotobuf>
-        $<$<BOOL:${ROXAL_ENABLE_GRPC}>:gRPC::grpc++>
+        $<$<BOOL:${ROXAL_ENABLE_GRPC}>:${GRPC_LIBRARIES}>
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::ddsc>
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::libidlc>
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::idl>
