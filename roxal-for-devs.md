@@ -931,6 +931,11 @@ Responses are flattened in the opposite direction when possible: if the RPC’s 
 The functions in the sys module are always globally available (- as if `import sys.*` were used).  See `sys.rox`.
 
 ### sys
+
+#### Variables
+* `args` - list of command-line arguments passed to the script (not including the script filename)
+
+#### Functions
 * `print(value='')` - print the string representation of `value` followed by a newline
 * `len(v)` - return the length of `v` if applicable
 * `help(fn)` - return signature and doc string for `fn`
