@@ -1,0 +1,45 @@
+import ui.*
+
+// UI Test: Slider widget
+// Tests: value, min, max properties, change callback
+
+display = displays[0]
+window = display.create_window(320, 240, title="Slider Test", open=true)
+
+var bg = Layout(parent=window, x=0, y=0, width=320, height=240)
+window.set_root(bg)
+
+var change_count = 0
+
+var sl = Slider(
+    parent = bg
+    min = 0
+    max = 100
+    value = 25
+    x = 50
+    y = 100
+    changed = func(val):
+        change_count = change_count + 1
+        print("Slider changed to: {val}")
+)
+
+print("Initial value: {sl.value}")
+print("Min: {sl.min}, Max: {sl.max}")
+
+// Test programmatic value change
+sl.value = 50
+print("After set 50: {sl.value}")
+
+sl.value = 75
+print("After set 75: {sl.value}")
+
+print("Change count: {change_count}")
+
+// Capture screenshot
+var snap = window.capture()
+if snap is not nil:
+    snap.save("/tmp/ui_test_slider.png")
+    snap.release()
+
+window.close()
+print("Test completed")

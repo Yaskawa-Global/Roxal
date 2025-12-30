@@ -18,7 +18,7 @@ var label = Label(parent=bg, text="Hello, Roxal!", x=50, y=50)
 print("Label text: {label.text}")
 
 // Wait briefly to ensure rendering completes
-wait(ms=500)
+#wait(ms=50)
 
 // Capture screenshot
 var snap = window.capture()

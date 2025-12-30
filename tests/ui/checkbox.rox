@@ -1,0 +1,47 @@
+import ui.*
+
+// UI Test: Checkbox widget
+// Tests: text property, checked state, change callback, simulate_click
+
+display = displays[0]
+window = display.create_window(320, 240, title="Checkbox Test", open=true)
+
+var bg = Layout(parent=window, x=0, y=0, width=320, height=240)
+window.set_root(bg)
+
+var change_count = 0
+
+var cb = Checkbox(
+    parent = bg
+    text = "Option A"
+    checked = false
+    x = 50
+    y = 50
+    changed = func(checked):
+        change_count = change_count + 1
+        print("Checkbox changed to: {checked}")
+)
+
+print("Checkbox text: {cb.text}")
+print("Initial checked: {cb.checked}")
+
+// Test programmatic state change
+cb.checked = true
+print("After set true: {cb.checked}")
+
+// Simulate click to toggle off
+cb.simulate_click()
+
+// Simulate click to toggle on
+cb.simulate_click()
+
+print("Change count: {change_count}")
+
+// Capture screenshot
+var snap = window.capture()
+if snap is not nil:
+    snap.save("/tmp/ui_test_checkbox.png")
+    snap.release()
+
+window.close()
+print("Test completed")

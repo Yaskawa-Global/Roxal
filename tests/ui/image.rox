@@ -1,0 +1,37 @@
+import ui.*
+
+// UI Test: Image widget
+// Tests: src property, alignment modes
+
+display = displays[0]
+window = display.create_window(320, 240, title="Image Test", open=true)
+
+var bg = Layout(parent=window, x=0, y=0, width=320, height=240)
+window.set_root(bg)
+
+// Use a small test image - path relative to build/ directory for runtests.py
+var img = Image(
+    parent = bg
+    src = "../images/robot-letter-r-small.png"
+    x = 50
+    y = 50
+    width = 100
+    height = 100
+    align = ImageAlign.Contain
+)
+
+print("Image src: {img.src}")
+print("Image align: {img.align}")
+
+// Test changing alignment
+img.align = ImageAlign.Cover
+print("After align change: {img.align}")
+
+// Capture screenshot
+var snap = window.capture()
+if snap is not nil:
+    snap.save("/tmp/ui_test_image.png")
+    snap.release()
+
+window.close()
+print("Test completed")

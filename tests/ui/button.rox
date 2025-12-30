@@ -1,0 +1,43 @@
+import ui.*
+
+// UI Test: Button widget
+// Tests: label property, click event callback, simulate_click
+
+display = displays[0]
+window = display.create_window(320, 240, title="Button Test", open=true)
+
+var bg = Layout(parent=window, x=0, y=0, width=320, height=240)
+window.set_root(bg)
+
+var click_count = 0
+
+var btn = Button(
+    parent = bg
+    label = "Click Me"
+    x = 50
+    y = 50
+    clicked = func():
+        click_count = click_count + 1
+        print("Button clicked! Count: {click_count}")
+)
+
+print("Button label: {btn.label}")
+
+// Test changing the label
+btn.label = "New Label"
+print("Updated label: {btn.label}")
+
+// Simulate clicks
+btn.simulate_click()
+btn.simulate_click()
+
+print("Total clicks: {click_count}")
+
+// Capture screenshot
+var snap = window.capture()
+if snap is not nil:
+    snap.save("/tmp/ui_test_button.png")
+    snap.release()
+
+window.close()
+print("Test completed")

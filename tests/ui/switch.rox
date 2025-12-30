@@ -1,0 +1,45 @@
+import ui.*
+
+// UI Test: Switch widget
+// Tests: on state property, change callback, simulate_click
+
+display = displays[0]
+window = display.create_window(320, 240, title="Switch Test", open=true)
+
+var bg = Layout(parent=window, x=0, y=0, width=320, height=240)
+window.set_root(bg)
+
+var change_count = 0
+
+var sw = Switch(
+    parent = bg
+    on = false
+    x = 50
+    y = 50
+    changed = func(on):
+        change_count = change_count + 1
+        print("Switch changed to: {on}")
+)
+
+print("Initial state: {sw.on}")
+
+// Test programmatic state change
+sw.on = true
+print("After set true: {sw.on}")
+
+// Simulate click to toggle off
+sw.simulate_click()
+
+// Simulate click to toggle on
+sw.simulate_click()
+
+print("Change count: {change_count}")
+
+// Capture screenshot
+var snap = window.capture()
+if snap is not nil:
+    snap.save("/tmp/ui_test_switch.png")
+    snap.release()
+
+window.close()
+print("Test completed")

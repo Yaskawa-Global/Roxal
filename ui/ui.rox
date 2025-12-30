@@ -347,12 +347,14 @@ type Label object extends Widget:
 @builtin
 type Image object extends Widget:
   var src :string = "":
+    get: return _src
     set:
       _src = value
       this._update_src()
 
   // Image alignment/scaling modes
   var align :ImageAlign = ImageAlign.Contain:
+    get: return _align
     set:
       _align = value
       this._update_align()
@@ -431,6 +433,7 @@ type Button object extends Widget:
 @builtin
 type Checkbox object extends Widget:
   var text :string = "":
+    get: return _text
     set:
       _text = value
       this._update_text()
@@ -613,11 +616,13 @@ type Slider object extends Widget:
       this._update_value()
 
   var min :int = 0:
+    get: return _min
     set:
       _min = value
       this._update_range()
 
   var max :int = 100:
+    get: return _max
     set:
       _max = value
       this._update_range()

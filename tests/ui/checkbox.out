@@ -1,0 +1,7 @@
+Checkbox text: Option A
+Initial checked: false
+After set true: true
+Checkbox changed to: false
+Checkbox changed to: true
+Change count: 2
+Test completed

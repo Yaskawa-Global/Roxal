@@ -1,0 +1,51 @@
+import ui.*
+
+// UI Test: TextArea widget
+// Tests: text property, placeholder, one_line, password
+
+display = displays[0]
+window = display.create_window(320, 240, title="TextArea Test", open=true)
+
+var bg = Layout(parent=window, x=0, y=0, width=320, height=240)
+window.set_root(bg)
+
+var ta = TextArea(
+    parent = bg
+    placeholder = "Enter text..."
+    one_line = true
+    x = 50
+    y = 50
+    width = 200
+    height = 40
+)
+
+print("Initial text: '{ta.text}'")
+
+// Test programmatic text change
+ta.text = "Hello World"
+print("After set: '{ta.text}'")
+
+// Test password mode textarea
+var ta_pw = TextArea(
+    parent = bg
+    placeholder = "Password"
+    one_line = true
+    password = true
+    max_length = 20
+    x = 50
+    y = 100
+    width = 200
+    height = 40
+)
+ta_pw.text = "secret"
+var pw_len = len(ta_pw.text)
+print("Password length: {pw_len}")
+
+// Capture screenshot
+var snap = window.capture()
+if snap is not nil:
+    snap.save("/tmp/ui_test_textarea.png")
+    snap.release()
+
+window.close()
+print("Test completed")

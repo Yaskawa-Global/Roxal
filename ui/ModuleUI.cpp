@@ -2771,6 +2771,9 @@ Value ModuleUI::window_capture(ArgsView args)
         return Value::nilVal();
 
     // Force a complete refresh before taking snapshot
+    // First, run the timer handler to process any pending layout/style changes
+    lv_timer_handler();
+    // Then force an immediate refresh
     lv_display_t* disp = lv_obj_get_display(lv_screen);
     if (disp) {
         lv_refr_now(disp);

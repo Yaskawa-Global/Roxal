@@ -197,7 +197,7 @@ fileio_tests = [
     'string_concat_roundtrip', 'actor_concat_stress'
 ]
 dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok', 'dds_array_struct', 'dds_array_multi']
-ui_tests = ['ui/label_basic']
+ui_tests = ['ui/label_basic', 'ui/button', 'ui/checkbox', 'ui/switch', 'ui/textarea', 'ui/slider', 'ui/image']
 
 # Add feature-specific tests to the full list; feature gating happens later.
 tests += dds_tests
