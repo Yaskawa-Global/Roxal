@@ -681,6 +681,8 @@ std::any TypeDeducer::visit(ptr<ast::BinaryOp> ast)
                 break;
             case ast::BinaryOp::Equal:
             case ast::BinaryOp::NotEqual:
+            case ast::BinaryOp::In:
+            case ast::BinaryOp::NotIn:
             case ast::BinaryOp::LessThan:
             case ast::BinaryOp::GreaterThan:
             case ast::BinaryOp::LessOrEqual:

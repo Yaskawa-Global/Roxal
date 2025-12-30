@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 20;
+constexpr std::uint32_t ModuleCacheVersion = 21;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -2807,6 +2807,8 @@ std::any RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
             case BinaryOp::Equal: emitByte(OpCode::Equal); break;
             case BinaryOp::NotEqual: emitByte(OpCode::Equal); emitByte(OpCode::Negate); break;
             case BinaryOp::Is: emitByte(OpCode::Is); break;
+            case BinaryOp::In: emitByte(OpCode::In); break;
+            case BinaryOp::NotIn: emitByte(OpCode::In); emitByte(OpCode::Negate); break;
             case BinaryOp::Modulo: emitByte(OpCode::Modulo); break;
             case BinaryOp::BitAnd: emitByte(OpCode::BitAnd); break;
             case BinaryOp::BitOr: emitByte(OpCode::BitOr); break;

@@ -308,7 +308,9 @@ equalnotequal
  ;
 
 comparison
- : term ( ( GREATER_THAN | GT_EQ | LESS_THAN | LT_EQ ) term )?
+ : term ( ( GREATER_THAN | GT_EQ | LESS_THAN | LT_EQ ) term
+        | (NOT)? IN term
+        )?
  ;
 
 

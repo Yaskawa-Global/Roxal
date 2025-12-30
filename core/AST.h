@@ -614,7 +614,7 @@ struct BinaryOp : public Expression {
         Add, Subtract, Multiply, Divide, Modulo,
         And, Or,
         BitAnd, BitOr, BitXor,
-        Equal, NotEqual, Is,
+        Equal, NotEqual, Is, In, NotIn,
         LessThan, GreaterThan, LessOrEqual, GreaterOrEqual
     };
 
