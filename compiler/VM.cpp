@@ -4158,6 +4158,78 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(Value::boolVal(a.is(b, frame->strict)));
                 break;
             }
+            case OpCode::In: {
+                Value container = pop();
+                Value needle = pop();
+                if (!resolveValue(needle) || !resolveValue(container))
+                    return errorReturn;
+
+                bool result = false;
+
+                if (isList(container)) {
+                    ObjList* list = asList(container);
+                    for (int32_t i = 0; i < list->length(); i++) {
+                        if (needle.equals(list->elts.at(i), frame->strict)) {
+                            result = true;
+                            break;
+                        }
+                    }
+                }
+                else if (isDict(container)) {
+                    ObjDict* dict = asDict(container);
+                    result = dict->contains(needle);
+                }
+                else if (isString(container)) {
+                    if (!isString(needle)) {
+                        runtimeError("'in' for string requires string operand on left side");
+                        return errorReturn;
+                    }
+                    ObjString* haystack = asStringObj(container);
+                    ObjString* needleStr = asStringObj(needle);
+                    result = (haystack->s.indexOf(needleStr->s) >= 0);
+                }
+                else if (isRange(container)) {
+                    ObjRange* range = asRange(container);
+                    if (!needle.isNumber()) {
+                        runtimeError("'in' for range requires numeric operand on left side");
+                        return errorReturn;
+                    }
+                    double val = needle.asReal();
+                    double start = range->start.isNil() ? 0 : range->start.asReal();
+                    double stop = range->stop.asReal();
+                    double step = range->step.isNil() ? 1.0 : range->step.asReal();
+
+                    if (step > 0) {
+                        bool inBounds = range->closed
+                            ? (val >= start && val <= stop)
+                            : (val >= start && val < stop);
+                        if (inBounds && step != 1.0) {
+                            double offset = val - start;
+                            result = (fmod(offset, step) == 0);
+                        } else {
+                            result = inBounds;
+                        }
+                    } else {
+                        // Negative step (reverse range)
+                        bool inBounds = range->closed
+                            ? (val <= start && val >= stop)
+                            : (val <= start && val > stop);
+                        if (inBounds && step != -1.0) {
+                            double offset = start - val;
+                            result = (fmod(offset, -step) == 0);
+                        } else {
+                            result = inBounds;
+                        }
+                    }
+                }
+                else {
+                    runtimeError("'in' operator requires list, dict, string, or range on right side");
+                    return errorReturn;
+                }
+
+                push(Value::boolVal(result));
+                break;
+            }
             case OpCode::Greater: {
                 if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
                     goto postInstructionDispatch;

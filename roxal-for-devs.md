@@ -230,81 +230,6 @@ print({'a':1,'b':2} & {'b':3,'c':4}) /  {"b": 2} - keys in LHS and RHS
 
 The equality operators `≟` (is equal to), `≠` (not equal to), `<` / `>` (less / greater than), `≤` / `≥` (less / greater than or equal to) function as expected bool, byte, int, decimal, range, vector & matrix.  Note that the `==` and `!=` or `<>` familiar from C are also available.
 
-## DDS Integration
-
-Roxal can import DDS IDL (`.idl`) when built with `-DROXAL_ENABLE_DDS=ON`. An import like `import HelloWorldData` will locate `HelloWorldData.idl`, generate Roxal types (structs/enums), constants, and typedef aliases, and expose them as a module. Built-in functions live in the `dds` module (participants, topics, readers/writers, and convenience reader/writer signals).
-
-Supported IDL subset (aligned with the ROS 2 profile): structs (final/appendable/mutable), enums, optional fields, bounded/unbounded strings and sequences, fixed-size arrays (including arrays of enums/structs), typedefs, and consts. 64-bit ints map to Roxal `int`. Known unsupported/unsupported-to-parse: unions, maps, bitsets/bitmasks.
-
-Marshalling notes: bounded strings/sequences enforce bounds at write time. Fixed arrays are flattened to a single list on the Roxal side. For array-bearing types we avoid CycloneDDS’s serialized typeinfo descriptors because our manual layout doesn’t yet interpret the descriptor `m_ops` for arrays; everything else reuses the generated typeinfo for efficiency.
-
-Common `dds` functions
-
-- `create_participant(domain_id=0, qos=nil)`
-- `create_topic(participant, name_or_type, msg_type, qos=nil)`
-- `create_writer(participant, topic, qos=nil)`
-- `create_reader(participant, topic, qos=nil)`
-- `write(writer, msg)`
-- `read(reader)` (takes one sample or returns nil)
-- `close(handle_or_obj)` (participant/topic/reader/writer)
-- Convenience: `writer_signal(name, msg_type, participant=nil, qos=nil, initial=nil)` and `reader_signal(name, msg_type, participant=nil, qos=nil, initial=nil)` create participant/topic/writer/reader as needed and return a Roxal signal.
-- Lower level signal helpers: `create_writer_signal(writer, initial=nil)` and `create_reader_signal(reader, initial=nil)` wrap existing entities.
-
-QoS dict keys supported (strings, case-insensitive):
-- `reliability`: `"reliable"` or `"best_effort"`
-- `durability`: `"volatile"` or `"transient_local"`
-- `history`: number (depth) or dict `{kind: "keep_last"/"keep_all", depth: N}`
-- `deadline_ms`, `lifespan_ms`, `latency_budget_ms`
-- `liveliness`: dict `{kind: "automatic"/"manual_by_topic"/"manual_by_participant", lease_ms: N}`
-- `ownership`: `"shared"` or `"exclusive"`
-- `partition`: list of strings
-
-Quick examples
-
-Basic pub/sub:
-```roxal
-import HelloWorldData
-import dds
-
-p = dds.create_participant()
-t = dds.create_topic(p, "Hello", HelloWorldData.Msg)
-w = dds.create_writer(p, t)
-r = dds.create_reader(p, t)
-
-m = HelloWorldData.Msg()
-m.userID = 7
-m.message = "hi"
-dds.write(w, m)
-print(dds.read(r).message)
-```
-
-Signals (auto-create participant/topic):
-```roxal
-import HelloWorldData
-import dds
-
-wsig = dds.writer_signal("SignalTopic", HelloWorldData.Msg)
-rsig = dds.reader_signal("SignalTopic", HelloWorldData.Msg)
-
-var msg = HelloWorldData.Msg()
-msg.userID = 99
-msg.message = "hello via signal"
-wsig.set(msg)  // publishes
-
-when rsig changes as evt:
-  print("received {evt.value.message}")
-```
-
-Custom QoS:
-```roxal
-var qos = {
-  'reliability': 'reliable',
-  'history': { 'kind': 'keep_last', 'depth': 5 },
-  'deadline_ms': 100
-}
-t = dds.create_topic(p, "QoSTopic", HelloWorldData.Msg, qos)
-```
-
 ```php
 if 5 ≥ 4:
   print('always')
@@ -326,6 +251,21 @@ print(l is list) // true, it is a list
 l3 = l2
 print(l3 is l2)  // true, the two variables l3 & l2 reference the same list
 print(1 is 1)    // true, same as == for value types
+```
+
+The `in` operator checks for membership/containment:
+  * For lists: checks if an element is in the list
+  * For dicts: checks if a key exists in the dict
+  * For strings: checks if a substring is present
+  * For ranges: checks if a value is within the range (respecting step)
+
+```php
+print(2 in [1, 2, 3])           // true
+print('key' in {'key': 'val'})  // true
+print('ell' in 'hello')         // true (substring)
+print(5 in range(1..10))        // true
+print(5 in range(0..10 by 2))   // false (5 not on step boundary)
+print(4 not in [1, 2, 3])       // true (not in)
 ```
 
 
@@ -925,8 +865,84 @@ If `request` is provided, the per-field parameters are ignored. Under the hood t
 Responses are flattened in the opposite direction when possible: if the RPC’s response message has exactly one field, the future resolves to the field value instead of the wrapper object. If the response message is empty (has no fields) the future resolves to `nil`, allowing callers to `wait` on the RPC even though there is no payload. Responses with multiple fields continue to return the full response object.
 
 
+## Advanced: DDS Integration
 
-## Builtin Modules & Functions
+Roxal can import DDS IDL (`.idl`) when built with `-DROXAL_ENABLE_DDS=ON`. An import like `import HelloWorldData` will locate `HelloWorldData.idl`, generate Roxal types (structs/enums), constants, and typedef aliases, and expose them as a module. Built-in functions live in the `dds` module (participants, topics, readers/writers, and convenience reader/writer signals).
+
+Supported IDL subset (aligned with the ROS 2 profile): structs (final/appendable/mutable), enums, optional fields, bounded/unbounded strings and sequences, fixed-size arrays (including arrays of enums/structs), typedefs, and consts. 64-bit ints map to Roxal `int`. Known unsupported/unsupported-to-parse: unions, maps, bitsets/bitmasks.
+
+Marshalling notes: bounded strings/sequences enforce bounds at write time. Fixed arrays are flattened to a single list on the Roxal side. For array-bearing types we avoid CycloneDDS’s serialized typeinfo descriptors because our manual layout doesn’t yet interpret the descriptor `m_ops` for arrays; everything else reuses the generated typeinfo for efficiency.
+
+Common `dds` functions
+
+- `create_participant(domain_id=0, qos=nil)`
+- `create_topic(participant, name_or_type, msg_type, qos=nil)`
+- `create_writer(participant, topic, qos=nil)`
+- `create_reader(participant, topic, qos=nil)`
+- `write(writer, msg)`
+- `read(reader)` (takes one sample or returns nil)
+- `close(handle_or_obj)` (participant/topic/reader/writer)
+- Convenience: `writer_signal(name, msg_type, participant=nil, qos=nil, initial=nil)` and `reader_signal(name, msg_type, participant=nil, qos=nil, initial=nil)` create participant/topic/writer/reader as needed and return a Roxal signal.
+- Lower level signal helpers: `create_writer_signal(writer, initial=nil)` and `create_reader_signal(reader, initial=nil)` wrap existing entities.
+
+QoS dict keys supported (strings, case-insensitive):
+- `reliability`: `"reliable"` or `"best_effort"`
+- `durability`: `"volatile"` or `"transient_local"`
+- `history`: number (depth) or dict `{kind: "keep_last"/"keep_all", depth: N}`
+- `deadline_ms`, `lifespan_ms`, `latency_budget_ms`
+- `liveliness`: dict `{kind: "automatic"/"manual_by_topic"/"manual_by_participant", lease_ms: N}`
+- `ownership`: `"shared"` or `"exclusive"`
+- `partition`: list of strings
+
+Quick examples
+
+Basic pub/sub:
+```roxal
+import HelloWorldData
+import dds
+
+p = dds.create_participant()
+t = dds.create_topic(p, "Hello", HelloWorldData.Msg)
+w = dds.create_writer(p, t)
+r = dds.create_reader(p, t)
+
+m = HelloWorldData.Msg()
+m.userID = 7
+m.message = "hi"
+dds.write(w, m)
+print(dds.read(r).message)
+```
+
+Signals (auto-create participant/topic):
+```roxal
+import HelloWorldData
+import dds
+
+wsig = dds.writer_signal("SignalTopic", HelloWorldData.Msg)
+rsig = dds.reader_signal("SignalTopic", HelloWorldData.Msg)
+
+var msg = HelloWorldData.Msg()
+msg.userID = 99
+msg.message = "hello via signal"
+wsig.set(msg)  // publishes
+
+when rsig changes as evt:
+  print("received {evt.value.message}")
+```
+
+Custom QoS:
+```roxal
+var qos = {
+  'reliability': 'reliable',
+  'history': { 'kind': 'keep_last', 'depth': 5 },
+  'deadline_ms': 100
+}
+t = dds.create_topic(p, "QoSTopic", HelloWorldData.Msg, qos)
+```
+
+
+
+## Builtin Modules & Functions Reference
 
 The functions in the sys module are always globally available (- as if `import sys.*` were used).  See `sys.rox`.
 
@@ -941,8 +957,6 @@ The functions in the sys module are always globally available (- as if `import s
 * `help(fn)` - return signature and doc string for `fn`
 * `clone(v)` - deep copy `v`
 * `wait(s=0, ms=0, us=0, ns=0, for=nil)` - pause execution for the specified time and optionally await a future or list of futures afterwards
-* `fork(fn)` - run `fn` in a new thread and return its id
-* `join(id)` - wait for thread `id` to finish and return true if joined
 * `stacktrace()` - return the current call stack as a list
 * `serialize(value, protocol='default')` - serialize `value` using protocol
 * `deserialize(bytes, protocol='default')` - deserialize bytes using protocol
@@ -957,6 +971,8 @@ The functions in the sys module are always globally available (- as if `import s
   * relative paths are resolved against the directory of the executing script
 
 #### Internal (likely to be removed or renamed)
+* `fork(fn)` - run `fn` in a new thread and return its id
+* `join(id)` - wait for thread `id` to finish and return true if joined
 * `_clock()` - return process time in seconds
 * `_threadid()` - return the current thread id
 * `_stackdepth()` - depth of the current call stack

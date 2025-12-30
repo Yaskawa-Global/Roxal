@@ -1120,6 +1120,8 @@ std::string BinaryOp::opString() const
         case Equal: return "\u225F";
         case NotEqual: return "\u2260";
         case Is: return "is";
+        case In: return "in";
+        case NotIn: return "not in";
         case LessThan: return "<";
         case GreaterThan: return ">";
         case LessOrEqual: return "\u2A7D";

@@ -21,6 +21,7 @@ enum class OpCode {
     ConstInt1,
     Equal,
     Is,
+    In,
     Greater,
     Less,
     Add,

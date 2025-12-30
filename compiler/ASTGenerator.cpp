@@ -2166,12 +2166,17 @@ std::any ASTGenerator::visitComparison(RoxalParser::ComparisonContext *context)
     if (context->term().size()==1)
         return term;
 
-    auto op = (   context->GREATER_THAN() ? BinaryOp::GreaterThan
+    BinaryOp::Op op;
+    if (context->IN()) {
+        op = context->NOT() ? BinaryOp::NotIn : BinaryOp::In;
+    } else {
+        op = (   context->GREATER_THAN() ? BinaryOp::GreaterThan
               : ( context->GT_EQ() ? BinaryOp::GreaterOrEqual
               : ( context->LESS_THAN() ? BinaryOp::LessThan
               : ( context->LT_EQ() ? BinaryOp::LessOrEqual
               : BinaryOp::None
               ))));
+    }
 
     ptr<BinaryOp> compOp = make_ptr<BinaryOp>(op);
     setSourceInfo(compOp, context);

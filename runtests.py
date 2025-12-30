@@ -113,7 +113,7 @@ tests = [
     'matrix_index', 'matrix_methods', 'matrix_assign', 'matrix_equal', 'matrix_math',
     'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_relative', 'ffi_toupper', 'ffi_primptr', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3', 'cstruct_byval', 'cstruct_array',
     'nested_cstruct', 'nested_cstruct_ptr', 'nested_cstruct_byval',
-    'weakref', 'strongref', 'is_operator', 'stackdepth', 'modulevar2',
+    'weakref', 'strongref', 'is_operator', 'in_operator', 'stackdepth', 'modulevar2',
     'const_basic', 'const_assign_err', 'const_nonliteral_err', 'const_missing_initializer_err',
     'const_property', 'const_property_method_err', 'const_property_runtime_err', 'const_module_assign',
     'actor_module_const', 'actor_module_var_err',

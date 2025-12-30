@@ -223,6 +223,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("EQUAL", offset);
         case OpCode::Is:
             return simpleInstruction("IS", offset);
+        case OpCode::In:
+            return simpleInstruction("IN", offset);
         case OpCode::Greater:
             return simpleInstruction("GREATER", offset);
         case OpCode::Less:
