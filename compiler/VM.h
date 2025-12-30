@@ -151,6 +151,8 @@ public:
 
     void setDisassemblyOutput(bool outputBytecodeDisassembly);
     void appendModulePaths(const std::vector<std::string>& modulePaths);
+    void setScriptArguments(const std::vector<std::string>& args);
+    const std::vector<std::string>& getScriptArguments() const { return scriptArguments; }
     void setCacheMode(CacheMode mode);
     CacheMode cacheMode() const { return cacheModeSetting; }
     bool cacheReadsEnabled() const;
@@ -292,6 +294,7 @@ protected:
     std::istream* lineStream;
 
     std::vector<std::string> modulePaths {};
+    std::vector<std::string> scriptArguments {};
 
     static constexpr size_t OpcodeCount = static_cast<size_t>(OpCode::_Last);
     std::atomic_bool opcodeProfilingEnabled {false};

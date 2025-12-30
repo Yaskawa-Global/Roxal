@@ -802,6 +802,19 @@ void VM::appendModulePaths(const std::vector<std::string>& modulePaths)
     }
 }
 
+void VM::setScriptArguments(const std::vector<std::string>& args)
+{
+    scriptArguments = args;
+
+    // Update the global 'args' list
+    std::vector<Value> argValues;
+    argValues.reserve(args.size());
+    for (const auto& arg : args) {
+        argValues.push_back(Value::stringVal(toUnicodeString(arg)));
+    }
+    globals.storeGlobal(toUnicodeString("args"), Value::listVal(argValues));
+}
+
 void VM::setCacheMode(CacheMode mode)
 {
     cacheModeSetting = mode;

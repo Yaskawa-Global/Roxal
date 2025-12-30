@@ -584,6 +584,58 @@ int main(int argc, const char* argv[])
     const std::string frameOptionHelp =
         "set maximum call frame depth per thread (default " + std::to_string(VM::DefaultMaxCallFrames) + ")";
 
+    // Find script arguments in argv
+    // - For script file mode: ALL args after the script filename go to the script
+    // - For -e mode: ALL args after the code string go to the script
+    // - For REPL mode: no script args
+    int scriptArgIndex = 0;  // Index of script file (0 if none/using -e)
+    int executeCodeIndex = 0;  // Index of the -e code string (for roxalArgc calculation)
+    std::vector<std::string> scriptArgs;
+    bool collectingScriptArgs = false;  // Once true, all remaining args are script args
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg(argv[i]);
+
+        // Once we start collecting, ALL remaining args are script args
+        if (collectingScriptArgs) {
+            scriptArgs.push_back(arg);
+            continue;
+        }
+
+        if (arg[0] == '-') {
+            // Check for -e/--execute option
+            if (arg == "-e" || arg == "--execute") {
+                if (i + 1 < argc) {
+                    executeCodeIndex = i + 1;
+                    ++i; // skip the code string
+                    collectingScriptArgs = true;  // Everything after is for the script
+                }
+                continue;
+            }
+            // Skip the value for other options that take arguments
+            if (arg == "-f" || arg == "-p" ||
+                arg == "--input-file" || arg == "--module-paths" ||
+                arg == "--astgraph" || arg == "--gc-threshold" ||
+                arg == "--stack-size" || arg == "--max-call-frames") {
+                ++i; // skip next arg (the option's value)
+            }
+        } else {
+            // First positional arg is the script file, everything after is for the script
+            scriptArgIndex = i;
+            collectingScriptArgs = true;
+        }
+    }
+
+    // Only pass roxal options + script filename (or -e code) to boost::program_options
+    int roxalArgc;
+    if (scriptArgIndex > 0) {
+        roxalArgc = scriptArgIndex + 1;
+    } else if (executeCodeIndex > 0) {
+        roxalArgc = executeCodeIndex + 1;
+    } else {
+        roxalArgc = argc;
+    }
+
     po::options_description desc("Allowed options");
     desc.add_options()
         ("help,h", "options help")
@@ -609,7 +661,7 @@ int main(int argc, const char* argv[])
     ;
 
     po::positional_options_description pos;
-    pos.add("input-file", -1);
+    pos.add("input-file", 1);  // Only take one positional arg (the script file)
 
     #ifdef DEBUG_BUILD
     struct OpcodeProfileFlushGuard {
@@ -623,7 +675,7 @@ int main(int argc, const char* argv[])
 
     po::variables_map vmap;
     try {
-        po::store(po::command_line_parser(argc, argv).options(desc).positional(pos).run(), vmap);
+        po::store(po::command_line_parser(roxalArgc, argv).options(desc).positional(pos).run(), vmap);
         po::notify(vmap);
     } catch(const po::error& e) {
         std::cerr << "Error: " << e.what() << std::endl;
@@ -787,6 +839,7 @@ int main(int argc, const char* argv[])
 
     if (vmap.count("execute")) {
         VM::instance().setCacheMode(cacheMode);
+        VM::instance().setScriptArguments(scriptArgs);
         bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
         InterpretResult res =
             runString(vmap["execute"].as<std::string>(), modulePaths,
@@ -799,6 +852,7 @@ int main(int argc, const char* argv[])
     else if (vmap.count("input-file") == 0) {
         VM& vm = VM::instance();
         vm.setCacheMode(cacheMode);
+        vm.setScriptArguments({});  // Empty args for REPL
         vm.appendModulePaths(modulePaths);
         int rc = repl();
         if (VM::instance().isExitRequested())
@@ -816,6 +870,7 @@ int main(int argc, const char* argv[])
             else {
                 bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
                 VM::instance().setCacheMode(cacheMode);
+                VM::instance().setScriptArguments(scriptArgs);
                 InterpretResult res =
                     runFile(filename, modulePaths, outputBytecodeDisassembly);
                 if (VM::instance().isExitRequested())
