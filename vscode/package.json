@@ -2,7 +2,7 @@
   "name": "roxal-vscode",
   "displayName": "Roxal",
   "description": "Basic syntax highlighting for the Roxal language.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "local",
   "engines": {
     "vscode": "^1.80.0"
