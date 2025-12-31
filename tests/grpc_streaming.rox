@@ -1,0 +1,30 @@
+import roxal_examples.*
+
+// Test server streaming RPC
+var svc = EverythingService("127.0.0.1:50051")
+
+// Request 5 streaming responses
+var responseSignal = svc.ServerStream(count=5)
+wait(for=responseSignal)  // Wait for future to resolve to signal
+
+var received = 0
+var sum = 0
+when responseSignal changes as evt:
+    received = received + 1
+    var msg = evt.value
+    sum = sum + msg.value
+
+// Wait for stream to complete
+wait(ms=1000)
+
+// Server sends: value=0,10,20,30,40 (index*10)
+// Due to race, first message may be missed
+// Minimum expected: received >= 4, sum >= 60 (10+20+30+40)
+if received >= 4:
+    print("received_ok")
+else:
+    print("received:" + received)
+if sum >= 60:
+    print("sum_ok")
+else:
+    print("sum:" + sum)

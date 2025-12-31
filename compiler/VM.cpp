@@ -4700,6 +4700,18 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
 
                 Value value = optValue.value();
+
+                // If the value is a future that resolves to a signal, resolve it first
+                if (isFuture(value)) {
+                    if (!value.resolveFuture()) {
+                        return errorReturn;
+                    }
+                    // Update the module variable with the resolved value
+                    if (isSignal(value)) {
+                        vars.store(name->hash, name->s, value);
+                    }
+                }
+
                 if (isSignal(value)) {
                     push(value);
                     break;

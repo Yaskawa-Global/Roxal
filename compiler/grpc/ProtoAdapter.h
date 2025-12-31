@@ -38,6 +38,8 @@ namespace roxal {
                     std::string name;
                     std::string inputTypeFullName;
                     std::string outputTypeFullName;
+                    bool clientStreaming = false;
+                    bool serverStreaming = false;
                 };
                 std::string name;
                 std::string package;

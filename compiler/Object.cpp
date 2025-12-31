@@ -1477,7 +1477,10 @@ void ObjPrimitive::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 }
 
 // Default serialization stubs for unsupported object types
-unique_ptr<Obj, UnreleasedObj> ObjSignal::clone() const { throw std::runtime_error("cannot clone signals"); }
+// Signals are shared state - cloning returns the same signal (like interned strings)
+unique_ptr<Obj, UnreleasedObj> ObjSignal::clone() const {
+    return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjSignal*>(this));
+}
 void ObjSignal::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Signal);

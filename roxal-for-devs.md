@@ -862,7 +862,80 @@ resp = svc.Echo(request=req)
 
 If `request` is provided, the per-field parameters are ignored. Under the hood the method constructs a fresh request instance, populates the fields you specified, and sends it across gRPC. Because services and messages live in the proto package module, you can import and use them just like any other Roxal code.
 
-Responses are flattened in the opposite direction when possible: if the RPC’s response message has exactly one field, the future resolves to the field value instead of the wrapper object. If the response message is empty (has no fields) the future resolves to `nil`, allowing callers to `wait` on the RPC even though there is no payload. Responses with multiple fields continue to return the full response object.
+Responses are flattened in the opposite direction when possible: if the RPC's response message has exactly one field, the future resolves to the field value instead of the wrapper object. If the response message is empty (has no fields) the future resolves to `nil`, allowing callers to `wait` on the RPC even though there is no payload. Responses with multiple fields continue to return the full response object.
+
+### Streaming RPCs
+
+gRPC streaming RPCs are supported using Roxal signals. Signals naturally represent streams: setting a signal's value sends a message, and stopping a signal closes the stream.
+
+**Server streaming** (server sends multiple responses):
+
+```php
+// Proto: rpc ServerStream(Request) returns (stream Response);
+var responseSignal = svc.ServerStream(count=5)
+wait(for=responseSignal)  // Wait for future to resolve to signal
+
+when responseSignal changes as evt:
+    print("Received: " + evt.value)
+
+// Check if stream is still active
+if responseSignal.running:
+    print("Stream still open")
+
+// Wait for stream to end
+wait(ms=1000)
+```
+
+The RPC returns a future that resolves to a signal. Each server message updates the signal's value, triggering `when ... changes` handlers. When the server closes the stream, the signal's `.running` property becomes `false`.
+
+**Client streaming** (client sends multiple requests):
+
+```php
+// Proto: rpc ClientStream(stream Request) returns (Response);
+var inputSignal = signal(0, StreamRequest(value=1))
+var responseFuture = svc.ClientStream(value=inputSignal)
+
+// Send messages by setting the signal
+inputSignal.set(StreamRequest(value=10))
+inputSignal.set(StreamRequest(value=20))
+
+// Close the client stream
+inputSignal.stop()
+
+// Get the final response
+var response = wait(for=responseFuture)
+print("Sum: " + response.value)
+```
+
+When any RPC parameter is a signal, the call becomes a streaming RPC. Each `.set()` on the input signal sends a new request message. Calling `.stop()` on all input signals closes the client side of the stream.
+
+**Bidirectional streaming**:
+
+```php
+// Proto: rpc BiStream(stream Request) returns (stream Response);
+var inputSignal = signal(0, StreamRequest(value=1))
+var outputSignal = svc.BiStream(value=inputSignal)
+wait(for=outputSignal)
+
+// Send and receive concurrently
+when outputSignal changes as evt:
+    print("Server sent: " + evt.value)
+
+inputSignal.set(StreamRequest(value=5))
+inputSignal.set(StreamRequest(value=10))
+inputSignal.stop()  // Done sending
+
+// Wait for server to finish
+wait(ms=500)
+```
+
+**Signal properties for streaming**:
+
+| Property/Method | Description |
+|-----------------|-------------|
+| `.running`      | `true` while the stream is active, `false` after stream ends |
+| `.stop()`       | Close the client side of the stream (for input signals) |
+| `.set(value)`   | Send a new message on the stream (for input signals) |
 
 
 ## Advanced: DDS Integration

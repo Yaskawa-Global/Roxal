@@ -71,10 +71,32 @@ message PingRequest {}
 
 message PingResponse {}
 
+// Request for streaming tests
+message StreamRequest {
+  int32 count = 1;      // For server streaming: number of items to generate
+  int32 value = 2;      // Value to send/accumulate
+}
+
+// Response for streaming tests
+message StreamResponse {
+  int32 index = 1;      // Item index (for server streaming)
+  int32 value = 2;      // Response value
+  string status = 3;    // Status message
+}
+
 // Service without streaming to exercise stub generation and type mapping.
 service EverythingService {
   rpc Echo(EchoRequest) returns (EchoResponse);
   rpc Reverse(EchoRequest) returns (EchoResponse);
   rpc Status(StatusRequest) returns (StatusResponse);
   rpc Ping(PingRequest) returns (PingResponse);
+
+  // Server streaming: returns 'count' responses with incrementing values
+  rpc ServerStream(StreamRequest) returns (stream StreamResponse);
+
+  // Client streaming: accumulates values, returns sum
+  rpc ClientStream(stream StreamRequest) returns (StreamResponse);
+
+  // Bidirectional: echoes each request with value doubled
+  rpc BiStream(stream StreamRequest) returns (stream StreamResponse);
 }

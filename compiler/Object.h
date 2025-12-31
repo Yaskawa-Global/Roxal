@@ -709,6 +709,9 @@ struct ObjSignal : public Obj {
     weak_ptr<df::Signal> changeEventSignal;
     bool changeEventUsesTimeSpan = false;
 
+    // Optional callback invoked when signal.stop() is called (for gRPC streaming)
+    std::function<void()> onStopCallback;
+
     unique_ptr<Obj, UnreleasedObj> clone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;

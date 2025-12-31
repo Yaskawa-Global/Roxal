@@ -311,6 +311,8 @@ std::vector<ProtoAdapter::ServiceInfo> ProtoAdapter::addServices(const std::stri
             m.name = methodDesc->name();
             m.inputTypeFullName = methodDesc->input_type()->full_name();
             m.outputTypeFullName = methodDesc->output_type()->full_name();
+            m.clientStreaming = methodDesc->client_streaming();
+            m.serverStreaming = methodDesc->server_streaming();
             info.methods.push_back(std::move(m));
         }
         services.push_back(std::move(info));

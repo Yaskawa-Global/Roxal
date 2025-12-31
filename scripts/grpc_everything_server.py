@@ -138,6 +138,42 @@ def serve(proto_path: str, address: str):
             def Ping(self, request, context):
                 return pb2.PingResponse()
 
+            def ServerStream(self, request, context):
+                """Stream back 'count' responses with incrementing values."""
+                count = max(1, request.count)
+                for i in range(count):
+                    response = pb2.StreamResponse(
+                        index=i,
+                        value=i * 10,
+                        status=f"item_{i}"
+                    )
+                    yield response
+
+            def ClientStream(self, request_iterator, context):
+                """Accumulate values from client stream, return sum."""
+                total = 0
+                count = 0
+                for request in request_iterator:
+                    total += request.value
+                    count += 1
+                return pb2.StreamResponse(
+                    index=count,
+                    value=total,
+                    status=f"accumulated_{count}_items"
+                )
+
+            def BiStream(self, request_iterator, context):
+                """Echo each request with value doubled."""
+                idx = 0
+                for request in request_iterator:
+                    response = pb2.StreamResponse(
+                        index=idx,
+                        value=request.value * 2,
+                        status=f"echo_{idx}"
+                    )
+                    yield response
+                    idx += 1
+
         server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
         pb2_grpc.add_EverythingServiceServicer_to_server(EverythingService(), server)
         server.add_insecure_port(address)
