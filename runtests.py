@@ -62,7 +62,7 @@ tests = [
     'arith', 'factorial', 'defaultvalues', 'construct_defaults', 'typeof_test',
     'dict', 'dict2', 'dict_keyerror', 'dict_dot', 'dict_dot_keyerror', 'dict_self_reference', 'list', 'list2', 'list_negative_index', 'list_self_reference', 'copyinto_list', 'copyinto_list_unicode', 'copyinto_sublist', 'copyinto_signal',
     'list_add_test', 'list_dict_equal', 'range', 'range2', 'enum1', 'enum2', 'enum3', 'upvalue_leak',
-    'unicode', 'signal_clock', 'signal_add', 'signal_subtract', 'signal_multiply', 'signal_divide', 'signal_modulo',
+    'unicode', 'backtick_identifier', 'signal_clock', 'signal_add', 'signal_subtract', 'signal_multiply', 'signal_divide', 'signal_modulo',
     'signal_greater', 'signal_less', 'signal_equal', 'signal_history', 'signal_cycle', 'signal_cleanup',
     'signal_and', 'signal_or', 'signal_not', 'signal_band', 'signal_bor', 'signal_bxor', 'signal_bnot',
     'signal_func_nocall', 'signal_func_exec', 'signal_index', 'signal_when_stmt', 'signal_when_threads', 'when_expression', 'signal_when_in_method', 'signal_when_becomes', 'signal_on_changed_test',

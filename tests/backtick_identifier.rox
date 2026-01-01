@@ -1,0 +1,13 @@
+type Pose object:
+    var `orient`: int = 0
+
+    func set(`orient`: int):
+        this.`orient` = `orient`
+
+var `orient` = 3
+var pose = Pose()
+pose.`orient` = `orient`
+print(pose.`orient`)
+pose.set(`orient`=7)
+print(pose.`orient`)
+

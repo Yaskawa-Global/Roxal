@@ -79,6 +79,34 @@ void ASTGenerator::setSourceInfo(ptr<AST> ast, antlr4::tree::TerminalNode* termi
 }
 
 
+UnicodeString ASTGenerator::normalizeIdentifier(const std::string& text)
+{
+    std::string identText = text;
+
+    if (identText.size() >= 2 && identText.front() == '`' && identText.back() == '`') {
+        identText = identText.substr(1, identText.size() - 2);
+    }
+
+    boost::replace_all(identText, "``", "`");
+
+    return UnicodeString::fromUTF8(identText);
+}
+
+UnicodeString ASTGenerator::identifierFromTerminal(antlr4::tree::TerminalNode* terminal)
+{
+    if (!terminal)
+        return {};
+    return normalizeIdentifier(terminal->getText());
+}
+
+UnicodeString ASTGenerator::identifierFromContext(antlr4::ParserRuleContext* context)
+{
+    if (!context)
+        return {};
+    return normalizeIdentifier(context->getText());
+}
+
+
 ptr<Expression> ASTGenerator::parseInterpolationExpression(const std::string& text, antlr4::ParserRuleContext* context)
 {
     std::string trimmed = trim(text);
@@ -620,7 +648,7 @@ std::any ASTGenerator::visitImport_stmt(RoxalParser::Import_stmtContext *context
     setSourceInfo(import, context);
 
     for(auto i=0; i<context->IDENTIFIER().size(); i++) {
-        auto component { UnicodeString::fromUTF8(context->IDENTIFIER().at(i)->getText()) };
+        auto component { identifierFromTerminal(context->IDENTIFIER().at(i)) };
         import->packages.push_back( component );
     }
 
@@ -642,7 +670,7 @@ std::any ASTGenerator::visitIdentifier_list(RoxalParser::Identifier_listContext 
 
     std::vector<UnicodeString> symbols {};
     for(auto i=0; i<context->IDENTIFIER().size(); i++) {
-        auto component { UnicodeString::fromUTF8(context->IDENTIFIER().at(i)->getText()) };
+        auto component { identifierFromTerminal(context->IDENTIFIER().at(i)) };
         symbols.push_back(component);
     }
 
@@ -935,7 +963,7 @@ std::any ASTGenerator::visitWhen_stmt(RoxalParser::When_stmtContext *context)
     }
 
     if (context->IDENTIFIER())
-        whenStmt->binding = UnicodeString::fromUTF8(context->IDENTIFIER()->getText());
+        whenStmt->binding = identifierFromTerminal(context->IDENTIFIER());
 
     // Parse WHERE clause if present
     if (context->WHERE() && context->expression().size() > exprIndex) {
@@ -1016,7 +1044,7 @@ std::any ASTGenerator::visitTry_stmt(RoxalParser::Try_stmtContext *context)
         if (excCtx->expression())
             ec.type = as<Expression>(visitExpression(excCtx->expression()));
         if (excCtx->IDENTIFIER())
-            ec.name = UnicodeString::fromUTF8(excCtx->IDENTIFIER()->getText());
+            ec.name = identifierFromTerminal(excCtx->IDENTIFIER());
         ec.body = as<Suite>(visitSuite(excCtx->suite()));
         tryStmt->exceptClauses.push_back(ec);
     }
@@ -1145,7 +1173,7 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
 {
     visitStart();
 
-    UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText()) };
+    UnicodeString ident { identifierFromTerminal(context->IDENTIFIER().at(0)) };
 
     ptr<VarDecl> vardecl = make_ptr<VarDecl>();
     setSourceInfo(vardecl,context);
@@ -1172,7 +1200,7 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
             vardecl->varType = builtinType;
         }
         else if (context->IDENTIFIER().size()>1) {
-            auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
+            auto typeIdent { identifierFromTerminal(context->IDENTIFIER().at(1)) };
             vardecl->varType = typeIdent;
         }
     }
@@ -1189,13 +1217,13 @@ std::any ASTGenerator::visitIdent_opt_type(RoxalParser::Ident_opt_typeContext *c
 {
     visitStart();
 
-    auto ident { UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText()) };
+    auto ident { identifierFromTerminal(context->IDENTIFIER().at(0)) };
 
     if (context->COLON()) { // type specified
         if (context->builtin_type())
             return std::make_pair(ident, std::variant<std::monostate,BuiltinType,icu::UnicodeString>(anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()))));
         else {
-            auto identType { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
+            auto identType { identifierFromTerminal(context->IDENTIFIER().at(1)) };
 
             return std::make_pair(ident, std::variant<std::monostate,BuiltinType,icu::UnicodeString>(identType));
         }
@@ -1275,7 +1303,7 @@ std::any ASTGenerator::visitFunc_sig(RoxalParser::Func_sigContext *context)
 {
     visitStart();
 
-    auto ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
+    auto ident { identifierFromTerminal(context->IDENTIFIER()) };
 
     ptr<Function> func = make_ptr<Function>();
     setSourceInfo(func,context);
@@ -1329,7 +1357,7 @@ std::any ASTGenerator::visitParameter(RoxalParser::ParameterContext *context)
 {
     visitStart();
     auto nameCtx = context->identifier_word();
-    auto ident { UnicodeString::fromUTF8(nameCtx->getText()) };
+    auto ident { identifierFromContext(nameCtx) };
 
     ptr<Parameter> param = make_ptr<Parameter>();
     setSourceInfo(param, nameCtx);
@@ -1359,7 +1387,7 @@ std::any ASTGenerator::visitParameter(RoxalParser::ParameterContext *context)
         param->type = builtinType;
     }
     else if (auto typeIdentNode = context->IDENTIFIER()) {
-        auto typeIdent { UnicodeString::fromUTF8(typeIdentNode->getText()) };
+        auto typeIdent { identifierFromTerminal(typeIdentNode) };
         param->type = typeIdent;
     }
     else {} // type is optional
@@ -1437,16 +1465,16 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
         }
 
         size_t identIndex = 0;
-        typeDecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
+        typeDecl->name = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
 
         if (context->EXTENDS()) {
             if (identIndex >= context->IDENTIFIER().size())
                 throw std::runtime_error("type extends clause missing identifier");
-            typeDecl->extends = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
+            typeDecl->extends = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
         }
 
         while (identIndex < context->IDENTIFIER().size())
-            typeDecl->implements.push_back(UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText()));
+            typeDecl->implements.push_back(identifierFromTerminal(context->IDENTIFIER().at(identIndex++)));
 
         if (isInterface && !typeDecl->implements.empty())
             throw std::runtime_error("Interface "+toUTF8StdString(typeDecl->name)+" cannot implement, use extends instead");
@@ -1502,12 +1530,12 @@ std::any ASTGenerator::visitEnum_type_decl(RoxalParser::Enum_type_declContext *c
         }
 
         size_t identIndex = 0;
-        typeDecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
+        typeDecl->name = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
 
         if (context->EXTENDS()) {
             if (identIndex >= context->IDENTIFIER().size())
                 throw std::runtime_error("enum extends clause missing identifier");
-            typeDecl->extends = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
+            typeDecl->extends = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
 
             if (typeDecl->extends != UnicodeString("byte") && typeDecl->extends != UnicodeString("int"))
                 throw std::runtime_error("Enum(eration) "+toUTF8StdString(typeDecl->name)+" can only extend byte or int");
@@ -1541,12 +1569,12 @@ std::any ASTGenerator::visitEvent_type_decl(RoxalParser::Event_type_declContext 
         }
 
         size_t identIndex = 0;
-        typeDecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
+        typeDecl->name = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
 
         if (context->EXTENDS()) {
             if (identIndex >= context->IDENTIFIER().size())
                 throw std::runtime_error("event extends clause missing identifier");
-            typeDecl->extends = UnicodeString::fromUTF8(context->IDENTIFIER().at(identIndex++)->getText());
+            typeDecl->extends = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
         }
 
         if (context->str()) {
@@ -1644,7 +1672,7 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
 
         propAccessor->access = (context->PRIVATE() != nullptr) ? Access::Private : Access::Public;
         propAccessor->isConst = (context->CONST() != nullptr);
-        propAccessor->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText());
+        propAccessor->name = identifierFromTerminal(context->IDENTIFIER().at(0));
 
         // Get annotations
         for (auto* annotCtx : context->annotation()) {
@@ -1661,7 +1689,7 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
             propAccessor->propType = builtinType;
         }
         else if (context->IDENTIFIER().size() > 1) {
-            auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER(1)->getText()) };
+            auto typeIdent { identifierFromTerminal(context->IDENTIFIER(1)) };
             propAccessor->propType = typeIdent;
         }
 
@@ -1699,7 +1727,7 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
 
         varDecl->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
         varDecl->isConst = (context->CONST() != nullptr);
-        varDecl->name = UnicodeString::fromUTF8(context->IDENTIFIER().at(0)->getText());
+        varDecl->name = identifierFromTerminal(context->IDENTIFIER().at(0));
 
         for (auto* annotCtx : context->annotation()) {
             auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(annotCtx));
@@ -1714,7 +1742,7 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
             varDecl->varType = builtinType;
         }
         else if (context->IDENTIFIER().size()>1) {
-            auto typeIdent { UnicodeString::fromUTF8(context->IDENTIFIER().at(1)->getText()) };
+            auto typeIdent { identifierFromTerminal(context->IDENTIFIER().at(1)) };
             varDecl->varType = typeIdent;
         }
         else {} // type is optional
@@ -1735,7 +1763,7 @@ std::any ASTGenerator::visitEnum_label(RoxalParser::Enum_labelContext *context)
 {
     visitStart();
 
-    UnicodeString labelName { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
+    UnicodeString labelName { identifierFromTerminal(context->IDENTIFIER()) };
 
     ptr<Expression> expr = nullptr;
 
@@ -1808,7 +1836,7 @@ std::any ASTGenerator::visitAnnotation(RoxalParser::AnnotationContext *context)
 {
     visitStart();
 
-    UnicodeString annotName { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
+    UnicodeString annotName { identifierFromTerminal(context->IDENTIFIER()) };
 
     ptr<ArgsOrAccessorInfo> info = make_ptr<ArgsOrAccessorInfo>();
     info->accessor = info->indexer = false;
@@ -1833,7 +1861,7 @@ std::any ASTGenerator::visitAnnot_argument(RoxalParser::Annot_argumentContext *c
 {
     visitStart();
 
-    UnicodeString argName { context->IDENTIFIER()? UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) : UnicodeString() };
+    UnicodeString argName { context->IDENTIFIER()? identifierFromTerminal(context->IDENTIFIER()) : UnicodeString() };
     ptr<Expression> expr = as<Expression>(visitExpression(context->expression()));
 
     return std::make_pair(argName, expr);
@@ -1940,7 +1968,7 @@ std::any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *context)
 
         if (context->IDENTIFIER()) {  // property or variable set
 
-            icu::UnicodeString ident { icu::UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
+            icu::UnicodeString ident { identifierFromTerminal(context->IDENTIFIER()) };
 
             if (context->DOT()) { // property set
 
@@ -2401,7 +2429,7 @@ std::any ASTGenerator::visitArgs_or_index_or_accessor(RoxalParser::Args_or_index
         info->arguments = false;
         UnicodeString ident;
         if (context->IDENTIFIER())
-            ident = UnicodeString::fromUTF8(context->IDENTIFIER()->getText());
+            ident = identifierFromTerminal(context->IDENTIFIER());
         else if (context->WHEN())
             ident = UnicodeString("when");
         else if (context->EMIT())
@@ -2554,7 +2582,7 @@ std::any ASTGenerator::visitArgument(RoxalParser::ArgumentContext *context)
 {
     visitStart();
 
-    UnicodeString argName { context->identifier_word()? UnicodeString::fromUTF8(context->identifier_word()->getText()) : UnicodeString() };
+    UnicodeString argName { context->identifier_word()? identifierFromContext(context->identifier_word()) : UnicodeString() };
     ptr<Expression> expr = as<Expression>(visitExpression(context->expression()));
 
     return std::make_pair(argName, expr);
@@ -2565,7 +2593,7 @@ std::any ASTGenerator::visitIdentifier_word(RoxalParser::Identifier_wordContext 
 {
     visitStart();
 
-    UnicodeString ident { UnicodeString::fromUTF8(context->getText()) };
+    UnicodeString ident { normalizeIdentifier(context->getText()) };
 
     return ident;
     visitEnd();
@@ -2600,7 +2628,7 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
         ptr<Variable> supervar = make_ptr<Variable>("super");
         setSourceInfo(supervar, context);
 
-        UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
+        UnicodeString ident { identifierFromTerminal(context->IDENTIFIER()) };
 
         ptr<UnaryOp> access = make_ptr<UnaryOp>(UnaryOp::Accessor);
         setSourceInfo(access, context->DOT());
@@ -2610,7 +2638,7 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
         return typeValue(access);
     }
     else if (context->IDENTIFIER()) {
-        UnicodeString ident { UnicodeString::fromUTF8(context->IDENTIFIER()->getText()) };
+        UnicodeString ident { identifierFromTerminal(context->IDENTIFIER()) };
         ptr<Variable> var = make_ptr<Variable>(ident);
         setSourceInfo(var, context);
         return typeValue(var);
@@ -2691,7 +2719,7 @@ std::any ASTGenerator::visitType_spec(RoxalParser::Type_specContext *context)
         return std::variant<BuiltinType,icu::UnicodeString>(builtinType);
     }
     else if (context->IDENTIFIER()) {
-        auto typeIdent = UnicodeString::fromUTF8(context->IDENTIFIER()->getText());
+        auto typeIdent = identifierFromTerminal(context->IDENTIFIER());
         return std::variant<BuiltinType,icu::UnicodeString>(typeIdent);
     }
     else {
