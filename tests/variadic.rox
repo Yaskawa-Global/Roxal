@@ -1,0 +1,62 @@
+// Test variadic ...rest parameter support
+
+// Basic variadic function
+func sum(...nums):
+    var total = 0
+    for n in nums:
+        total = total + n
+    return total
+
+print("sum(1, 2, 3) = {sum(1,2,3)}")  // Should print 6
+
+print("sum() = {sum()}")  // Should print 0 (empty list)
+
+// Variadic with regular params
+proc greet(prefix, ...names):
+    for name in names:
+        print("{prefix} {name}")
+
+print("\nGreeting test:")
+greet("Hello", "Alice", "Bob", "Charlie")
+
+// Named params before variadic
+func format(sep = ", ", ...items):
+    var result = ""
+    var first = true
+    for item in items:
+        if not first:
+            result = result + sep
+        result = result + string(item)
+        first = false
+    return result
+
+print("\nFormat test:")
+r = format(sep=", ", "x", "y", "z")
+print("Default sep: {r}")
+r = format(sep=" | ", "a", "b", "c")
+print("Custom sep: {r}")
+
+// UI-style nesting simulation
+type Container object:
+    proc init(name = "container", ...children):
+        this.name = name
+        this.children = children
+
+    proc describe():
+        var n = len(this.children)
+        print("Container '{this.name}' with {n} children")
+        for child in this.children:
+            if child is Container:
+                child.describe()
+
+print("\nUI nesting test:")
+var c = Container(
+    name = "root",
+    Container(name = "panel1"),
+    Container(name = "panel2"),
+    Container(
+        name = "nested",
+        Container(name = "deep")
+    )
+)
+c.describe()

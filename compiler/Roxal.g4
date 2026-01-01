@@ -631,7 +631,8 @@ DOUBLE_STRING
 
 // this must be below keywords so they're not matched as identifiers
 IDENTIFIER
- : ID_START ID_CONTINUE*
+ : BACKTICK_IDENTIFIER
+ | ID_START ID_CONTINUE*
  ;
 
 SKIP_
@@ -659,6 +660,14 @@ fragment ID_START
 fragment ID_CONTINUE
  : ID_START
  | [\p{Nonspacing_Mark}\p{Spacing_Mark}\p{Decimal_Number}\p{Connector_Punctuation}\p{Format}]
+ ;
+
+fragment BACKTICK_IDENTIFIER
+ : '`' BACKTICK_IDENTIFIER_BODY '`'
+ ;
+
+fragment BACKTICK_IDENTIFIER_BODY
+ : ID_START ID_CONTINUE*
  ;
 
 fragment DIGIT
