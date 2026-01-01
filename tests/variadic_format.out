@@ -1,0 +1,5 @@
+sep: 
+, 
+items: 
+["x", "y", "z"]
+Result: x, y, z

@@ -1,0 +1,18 @@
+// Test format function with named params before variadic
+
+func format(sep = ", ", ...items):
+    print("sep: ")
+    print(sep)
+    print("items: ")
+    print(items)
+    var result = ""
+    var first = true
+    for item in items:
+        if not first:
+            result = result + sep
+        result = result + string(item)
+        first = false
+    return result
+
+var r = format(sep=", ", "x", "y", "z")
+print("Result: {r}")
