@@ -4053,8 +4053,11 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
                 Value arg = Value::nilVal();
                 if (pi < positions.size()) {
                     int pos = positions[pi];
-                    if (pos >= 0 && static_cast<size_t>(pos) < originalArgs.size())
-                        arg = originalArgs[pos];
+                    // originalArgs is in reverse stack order, so index from the end
+                    if (pos >= 0 && static_cast<size_t>(pos) < originalArgs.size()) {
+                        size_t reversedPos = originalArgs.size() - 1 - pos;
+                        arg = originalArgs[reversedPos];
+                    }
                 }
                 if (arg.isNil() && pi < bound->defaultValues.size())
                     arg = bound->defaultValues[pi];

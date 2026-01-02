@@ -48,6 +48,7 @@ namespace roxal {
 
             std::vector<ServiceInfo> addServices(const std::string& protoFile);
         std::vector<Value> allocateObjects(const std::string& protoFile);
+        std::vector<Value> allocateObjectsFromFileDesc(const google::protobuf::FileDescriptor* file_desc);
         std::string packageName() const { return m_lastPackage; }
         Value declForFullName(const std::string& fullName) const;
 

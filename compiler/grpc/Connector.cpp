@@ -54,7 +54,8 @@ Value ACUCommunicator::call(const std::string& methodName,
     std::string request = m_adapter->generateProtocRequest(methodName, args[0]);
     std::string response;
 
-    grpc::Status status = m_caller->Call(m_adapter->getFormattedMethodName(methodName),
+    std::string formattedName = m_adapter->getFormattedMethodName(methodName);
+    grpc::Status status = m_caller->Call(formattedName,
                                          request,
                                          response,
                                          nullptr,

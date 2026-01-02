@@ -157,10 +157,45 @@ std::vector<Value> ProtoAdapter::allocateObjects(const std::string& protoFile)
         return objects;
     }
 
+    // Process dependencies first (imported proto files)
+    for (int d = 0; d < file_desc->dependency_count(); ++d) {
+        const auto* depFile = file_desc->dependency(d);
+        if (depFile) {
+            // Recursively allocate objects from dependency (if not already processed)
+            // Use file name as marker since multiple files can share same package
+            std::string depFileName = depFile->name();
+            std::string processedKey = "_file_processed:" + depFileName;
+            if (m_declByFullName.find(processedKey) == m_declByFullName.end()) {
+                // Mark as processed to avoid infinite recursion
+                m_declByFullName[processedKey] = Value::nilVal();
+                auto depObjects = allocateObjectsFromFileDesc(depFile);
+                objects.insert(objects.end(), depObjects.begin(), depObjects.end());
+            }
+        }
+    }
+
     m_lastPackage = file_desc->package();
+
+    // Use helper to register types from this file
+    auto mainObjects = allocateObjectsFromFileDesc(file_desc);
+    objects.insert(objects.end(), mainObjects.begin(), mainObjects.end());
+
+    return objects;
+}
+
+std::vector<Value> ProtoAdapter::allocateObjectsFromFileDesc(const google::protobuf::FileDescriptor* file_desc)
+{
+    std::vector<Value> objects;
+
+    if (!file_desc)
+        return objects;
 
     auto registerEnum = [&](const EnumDescriptor* enumDesc) {
         if (!enumDesc)
+            return;
+
+        // Skip if already registered
+        if (m_declByFullName.find(enumDesc->full_name()) != m_declByFullName.end())
             return;
 
         Value declVal = Value::objectTypeVal(toUnicodeString(enumDesc->name()), false, false, true);
@@ -197,6 +232,11 @@ std::vector<Value> ProtoAdapter::allocateObjects(const std::string& protoFile)
 
     for (int i = 0; i < file_desc->message_type_count(); i++) {
         const Descriptor* msgDesc = file_desc->message_type(i);
+
+        // Skip if already registered
+        if (m_declByFullName.find(msgDesc->full_name()) != m_declByFullName.end())
+            continue;
+
         registerNestedEnums(msgDesc);
 
         Value declVal = Value::objectTypeVal(toUnicodeString(msgDesc->name()), false);
@@ -587,6 +627,7 @@ void ProtoAdapter::buildRespField(const Message& msg, const FieldDescriptor* fie
         {
             Value declVal = declForFullName(field->message_type()->full_name());
             if (declVal.isNil()) {
+                std::cerr << "DEBUG: declForFullName returned nil for: " << field->message_type()->full_name() << std::endl;
                 roxField.assign(Value::nilVal());
                 break;
             }

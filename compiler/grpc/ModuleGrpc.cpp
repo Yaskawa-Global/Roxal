@@ -322,6 +322,7 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                         throw std::runtime_error("gRPC response type unavailable for method " + method.name);
                     ObjObjectType* responseType = asObjectType(responseTypeVal);
                     size_t expectedArgs = fieldHashes.size() + 2;
+
                     if (args.size() < 2 || args.size() > expectedArgs || !isActorInstance(args[0]))
                         throw std::invalid_argument(method.name + " expects receiver plus parameters");
                     ActorInstance* self = asActorInstance(args[0]);
@@ -347,8 +348,9 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                             Value coerced = argVal;
                             if (propIt != requestType->properties.end()) {
                                 const auto& prop = propIt->second;
-                                if (!prop.type.isNil())
+                                if (!prop.type.isNil()) {
                                     coerced = toType(prop.type, argVal, false);
+                                }
                             }
                             inst->properties[fieldHashes[i]].assign(coerced);
                         }
