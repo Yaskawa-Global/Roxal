@@ -1,0 +1,6 @@
+# leading comment before imports should be allowed
+// and a second comment style
+import importmodule2
+
+importmodule2.m2f()
+print(importmodule2.a)

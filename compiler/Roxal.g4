@@ -17,7 +17,7 @@ tokens { INDENT, DEDENT }
  */
 
 file_input
- : annotation* import_stmt* ( NEWLINE | declaration )* EOF
+ : (NEWLINE | annotation)* import_stmt* ( NEWLINE | declaration )* EOF
  ;
 
 
