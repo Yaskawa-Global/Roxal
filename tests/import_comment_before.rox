@@ -1,0 +1,6 @@
+// This is a comment before the import
+// Another comment line
+import importmodule2
+
+print('success')
+importmodule2.m2f()

@@ -155,7 +155,7 @@ tests = [
     'implements1', 'object_inherit_bank',
     'importmodule1', 'importstar', 'importsyms', 'importdiamond', 'pkg1/main',
     'import_return_stack',
-    'import_folder_init', 'import_folder_single',
+    'import_folder_init', 'import_folder_single', 'import_comment_before',
     'method_named_param',
     'annot1', 'generic', 'objscopes',
     'threads1', 'fork_upvalue_error', 'fork_no_upvalues',
