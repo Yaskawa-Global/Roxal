@@ -578,24 +578,6 @@ std::any ASTGenerator::visitFile_input(RoxalParser::File_inputContext *context)
     ptr<File> file = make_ptr<File>();
     setSourceInfo(file, context);
 
-    if (context->annotation().size() > 0) {
-
-        for(size_t i=0; i < context->annotation().size();i++) {
-
-            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
-
-            ptr<Annotation> annotation = make_ptr<Annotation>();
-            annotation->name = annotInfo->accessed;
-            annotation->args = *annotInfo->args;
-
-            file->annotations.push_back(annotation);
-        }
-    }
-
-
-
-
-
     if (context->import_stmt().size() > 0) {
 
         for(size_t i=0; i < context->import_stmt().size(); i++) {

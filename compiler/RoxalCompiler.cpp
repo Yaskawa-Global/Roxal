@@ -8,6 +8,7 @@
 #include <fstream>
 #include <functional>
 #include <sstream>
+#include <variant>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -163,11 +164,21 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
 
         bool strictContext = false;
         if (auto file = dynamic_ptr_cast<ast::File>(ast)) {
-            for (const auto& annot : file->annotations) {
-                if (annot->name == "strict")
-                    strictContext = true;
-                else if (annot->name == "nonstrict")
-                    strictContext = false;
+            auto updateStrictContext = [&strictContext](const std::vector<ptr<Annotation>>& annots) {
+                for (const auto& annot : annots) {
+                    if (annot->name == "strict")
+                        strictContext = true;
+                    else if (annot->name == "nonstrict")
+                        strictContext = false;
+                }
+            };
+
+            updateStrictContext(file->annotations);
+
+            for (const auto& declOrStmt : file->declsOrStmts) {
+                if (std::holds_alternative<ptr<Declaration>>(declOrStmt)) {
+                    updateStrictContext(std::get<ptr<Declaration>>(declOrStmt)->annotations);
+                }
             }
         }
 
