@@ -168,6 +168,9 @@ protected:
     void setSourceInfo(ptr<ast::AST> ast, antlr4::ParserRuleContext* context);
     void setSourceInfo(ptr<ast::AST> ast, antlr4::tree::TerminalNode* terminal);
     ptr<ast::Expression> parseInterpolationExpression(const std::string& text, antlr4::ParserRuleContext* context);
+    icu::UnicodeString normalizeIdentifier(const std::string& text);
+    icu::UnicodeString identifierFromTerminal(antlr4::tree::TerminalNode* terminal);
+    icu::UnicodeString identifierFromContext(antlr4::ParserRuleContext* context);
 
     antlr4::Token* currentToken;
     ptr<std::string> source;

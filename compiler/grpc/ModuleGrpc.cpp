@@ -4,6 +4,7 @@
 #include "VM.h"
 #include "Object.h"
 #include "core/AST.h"
+#include "dataflow/Signal.h"
 
 #include <cctype>
 #include <grpcpp/create_channel.h>
@@ -306,8 +307,12 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
             std::vector<ptr<type::Type>> returns;
             returns.push_back(makeObjTypeMeta(method.outputTypeFullName));
 
+            bool isClientStreaming = method.clientStreaming;
+            bool isServerStreaming = method.serverStreaming;
+
             addNativeMethod(svcType, method.name,
-                [this, method, requestTypeWeak, responseTypeWeak, fieldHashes](VM& vm, ArgsView args) -> Value {
+                [this, method, requestTypeWeak, responseTypeWeak, fieldHashes,
+                 isClientStreaming, isServerStreaming](VM& vm, ArgsView args) -> Value {
                     Value requestTypeVal = requestTypeWeak.strongRef();
                     if (requestTypeVal.isNil())
                         throw std::runtime_error("gRPC request type unavailable for method " + method.name);
@@ -317,6 +322,7 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                         throw std::runtime_error("gRPC response type unavailable for method " + method.name);
                     ObjObjectType* responseType = asObjectType(responseTypeVal);
                     size_t expectedArgs = fieldHashes.size() + 2;
+
                     if (args.size() < 2 || args.size() > expectedArgs || !isActorInstance(args[0]))
                         throw std::invalid_argument(method.name + " expects receiver plus parameters");
                     ActorInstance* self = asActorInstance(args[0]);
@@ -342,8 +348,9 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                             Value coerced = argVal;
                             if (propIt != requestType->properties.end()) {
                                 const auto& prop = propIt->second;
-                                if (!prop.type.isNil())
+                                if (!prop.type.isNil()) {
                                     coerced = toType(prop.type, argVal, false);
+                                }
                             }
                             inst->properties[fieldHashes[i]].assign(coerced);
                         }
@@ -378,11 +385,30 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                         if (ms > 0)
                             timeout = std::chrono::milliseconds(ms);
                     }
+                    // Check if any field argument is a signal (triggers client streaming)
+                    bool hasSignalArg = false;
+                    for (size_t i = 2; i < args.size(); ++i) {
+                        if (isSignal(args[i])) {
+                            hasSignalArg = true;
+                            break;
+                        }
+                    }
+
+                    // Determine if we should use streaming
+                    bool useStreaming = isClientStreaming || isServerStreaming || hasSignalArg;
+
                     Value reqStorage[1] = { requestValue };
                     ArgsView reqArgs(reqStorage, 1);
                     Value resp;
                     try {
-                        resp = comm->call(method.name, reqArgs, timeout);
+                        if (useStreaming) {
+                            // For streaming, use callStreaming which handles signal-based streaming
+                            bool effectiveClientStreaming = isClientStreaming || hasSignalArg;
+                            resp = comm->callStreaming(method.name, reqArgs,
+                                                       effectiveClientStreaming, isServerStreaming, timeout);
+                        } else {
+                            resp = comm->call(method.name, reqArgs, timeout);
+                        }
                     } catch (const GrpcStatusError& ge) {
                         const bool isAppStatus = isApplicationStatus(ge.code());
                         const char* typeName = isAppStatus ? "ProgramException" : "RuntimeException";

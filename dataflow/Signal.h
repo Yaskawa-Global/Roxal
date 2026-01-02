@@ -75,6 +75,7 @@ public:
 
     bool isSourceSignal() const { return isSource; }
     bool isClockSignal() const { return isClock; }
+    bool isRunning() const { return running; }
 
     // Get the last value of the signal
     Value lastValue() const;

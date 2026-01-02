@@ -257,12 +257,51 @@ void Thread::act(Value actorInstance)
                     this->stack[0] = strongActor;
 
                     if (isBoundMethod(callInfo.callee)) {
-                        auto closure = asClosure(asBoundMethod(callInfo.callee)->method);
+                        auto boundMethod = asBoundMethod(callInfo.callee);
+                        auto closure = asClosure(boundMethod->method);
+                        auto function = asFunction(closure->function);
 
-                        for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
-                            push(*it);
+                        // Check if this is a native method wrapped in a BoundMethod
+                        if (function->nativeImpl) {
+                            // For native methods, we need to pass receiver as first arg
+                            push(boundMethod->receiver);
+                            for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
+                                push(*it);
 
-                        vm.call(closure, callInfo.callSpec);
+                            NativeFn native = function->nativeImpl;
+                            ArgsView view{&(*vm.thread->stackTop) - callInfo.callSpec.argCount - 1,
+                                          static_cast<size_t>(callInfo.callSpec.argCount + 1)};
+                            Value ret{};
+                            bool ok = true;
+                            try {
+                                ret = native(vm, view);
+                            } catch (std::exception& e) {
+                                ok = false;
+                            }
+
+                            popN(callInfo.callSpec.argCount + 1);
+
+                            if (callInfo.returnPromise != nullptr) {
+                                if (!ret.isPrimitive() && !isException(ret))
+                                    ret = ret.clone();
+                                callInfo.returnPromise->set_value(ok ? ret : Value::nilVal());
+                                if (!callInfo.returnFuture.isNil()) {
+                                    asFuture(callInfo.returnFuture)->wakeWaiters();
+                                    callInfo.returnFuture = Value::nilVal();
+                                }
+                            }
+
+                            {
+                                auto diff = this->stackTop - (this->stack.begin()+1);
+                                if (diff > 0) popN(size_t(diff));
+                                this->stack[0] = this->actorInstance;
+                            }
+                        } else {
+                            // Regular closure method
+                            for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
+                                push(*it);
+
+                            vm.call(closure, callInfo.callSpec);
 
                         auto resultPair = vm.execute();
                         result = resultPair.first;
@@ -302,6 +341,7 @@ void Thread::act(Value actorInstance)
                             if (diff > 0) popN(size_t(diff));
                             this->stack[0] = this->actorInstance;
                         }
+                        } // end of regular closure else block
 
                     } else if (isBoundNative(callInfo.callee)) {
                         ObjBoundNative* bn = asBoundNative(callInfo.callee);
