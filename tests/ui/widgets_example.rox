@@ -1,0 +1,140 @@
+import ui.*
+
+// Test script for new UI widgets: Checkbox, Switch, TextArea
+// Run with: ./build/roxal widget_test.rox
+
+display = displays[0]
+window = display.create_window(600, 500, title="Widget Test", open=true)
+
+display.show_perf_monitor()  // Show FPS/CPU
+
+print("Widget Test")
+print("===========")
+print("")
+
+// Create the entire UI tree with nested constructors
+var root = Layout(
+  parent = window
+  x = 10
+  y = 10
+  width = 580
+  height = 480
+  mode = "flex"
+  direction = "column"
+  gap = 15
+  padding = 15
+  scrollbar = ScrollbarMode.Hidden
+  scroll_dir = ScrollDir.None
+
+  // Title
+  Label(text = "New Widget Test")
+
+  // Section 1: Checkboxes
+  Layout(
+    mode = "flex"
+    direction = "column"
+    gap = 5
+    width = 550
+    height = 100
+
+    Label(text = "Checkboxes:")
+
+    Checkbox(
+      text = "Option A"
+      checked = false
+      changed = func(checked):
+        print("Option A: {checked}")
+    )
+
+    Checkbox(
+      text = "Option B (pre-checked)"
+      checked = true
+      changed = func(checked):
+        print("Option B: {checked}")
+    )
+  )
+
+  // Section 2: Switches
+  Layout(
+    mode = "flex"
+    direction = "row"
+    gap = 20
+    align = "center"
+    width = 550
+    height = 60
+
+    Label(text = "Switches:")
+
+    Switch(
+      on = false
+      changed = func(on):
+        print("Switch 1: {on}")
+    )
+
+    Switch(
+      on = true
+      changed = func(on):
+        print("Switch 2: {on}")
+    )
+  )
+
+  // Section 3: TextAreas
+  Layout(
+    mode = "flex"
+    direction = "column"
+    gap = 10
+    width = 550
+    height = 200
+
+    Label(text = "Text Areas:")
+
+    TextArea(
+      placeholder = "Enter some text..."
+      width = 300
+      height = 80
+      changed = func(text):
+        print("TextArea 1 changed")
+    )
+
+    TextArea(
+      text = "Pre-filled text"
+      one_line = true
+      width = 300
+      height = 40
+      changed = func(text):
+        print("TextArea 2 (one-line) changed")
+    )
+
+    TextArea(
+      placeholder = "Password..."
+      password = true
+      one_line = true
+      max_length = 20
+      width = 200
+      height = 40
+      changed = func(text):
+        print("Password field changed")
+    )
+  )
+)
+
+window.set_root(root)
+
+
+print("")
+print("Window opened.")
+print("Check console for event callbacks.")
+
+
+// Wait for window close button to be clicked
+
+var quit :bool = false
+if '--quit' in args:
+  quit = true
+
+when WindowClose occurs as evt where evt.target == window:
+  window.close()
+  quit = true
+
+while not quit:
+  wait(ms=250)
