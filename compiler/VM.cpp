@@ -3295,7 +3295,12 @@ std::pair<InterpretResult,Value> VM::execute()
                 Value& inst { peek(0) };
                 ObjString* name = readString();
 
-                // Check for signal properties BEFORE resolving
+                // Resolve futures first (but NOT signals - we need to check for signal properties)
+                if (!inst.resolveFuture()) {
+                    return errorReturn;
+                }
+
+                // Check for signal properties AFTER resolving futures but BEFORE resolving signals
                 if (isSignal(inst)) {
                     // Handle signal builtin properties
                     auto vt = inst.type();
@@ -3330,7 +3335,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                if (!resolveValue(inst))
+                // Now resolve signals for non-signal types
+                inst.resolveSignal();
+                if (runtimeErrorFlag.load())
                     return errorReturn;
                 if (isEventInstance(inst)) {
                     ObjEventInstance* eventInst = asEventInstance(inst);
@@ -3542,7 +3549,12 @@ std::pair<InterpretResult,Value> VM::execute()
                 Value& inst { peek(0) };
                 ObjString* name = readString();
 
-                // Check for signal properties BEFORE resolving
+                // Resolve futures first (but NOT signals - we need to check for signal properties)
+                if (!inst.resolveFuture()) {
+                    return errorReturn;
+                }
+
+                // Check for signal properties AFTER resolving futures but BEFORE resolving signals
                 if (isSignal(inst)) {
                     // Handle signal builtin properties
                     auto vt = inst.type();
@@ -3577,7 +3589,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                if (!resolveValue(inst))
+                // Now resolve signals for non-signal types
+                inst.resolveSignal();
+                if (runtimeErrorFlag.load())
                     return errorReturn;
                 if (isEventInstance(inst)) {
                     ObjEventInstance* eventInst = asEventInstance(inst);

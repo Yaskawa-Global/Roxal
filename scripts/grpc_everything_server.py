@@ -13,6 +13,7 @@ import sys
 import tempfile
 import subprocess
 import shutil
+import time
 from concurrent import futures
 
 import grpc
@@ -148,6 +149,7 @@ def serve(proto_path: str, address: str):
                         status=f"item_{i}"
                     )
                     yield response
+                    time.sleep(0.1)  # Small delay to allow client to set up handler
 
             def ClientStream(self, request_iterator, context):
                 """Accumulate values from client stream, return sum."""
