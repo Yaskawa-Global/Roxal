@@ -403,6 +403,9 @@ public:
     Value matrix_sum_builtin(ArgsView args);
 
     Value list_append_builtin(ArgsView args);
+    Value list_filter_builtin(ArgsView args);
+    Value list_map_builtin(ArgsView args);
+    Value list_reduce_builtin(ArgsView args);
 
     Value signal_run_builtin(ArgsView args);
     Value signal_stop_builtin(ArgsView args);
