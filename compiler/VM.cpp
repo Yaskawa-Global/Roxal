@@ -5949,6 +5949,9 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Matrix, "sum", std::mem_fn(&VM::matrix_sum_builtin));
 
     defineBuiltinMethod(ValueType::List, "append", std::mem_fn(&VM::list_append_builtin));
+    defineBuiltinMethod(ValueType::List, "filter", std::mem_fn(&VM::list_filter_builtin));
+    defineBuiltinMethod(ValueType::List, "map", std::mem_fn(&VM::list_map_builtin));
+    defineBuiltinMethod(ValueType::List, "reduce", std::mem_fn(&VM::list_reduce_builtin));
 
     defineBuiltinMethod(ValueType::Signal, "run", std::mem_fn(&VM::signal_run_builtin));
     defineBuiltinMethod(ValueType::Signal, "stop", std::mem_fn(&VM::signal_stop_builtin));
@@ -6377,6 +6380,109 @@ Value VM::list_append_builtin(ArgsView args)
     ObjList* list = asList(args[0]);
     list->elts.push_back(args[1]);
     return Value::nilVal();
+}
+
+Value VM::list_filter_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isList(args[0]))
+        throw std::invalid_argument("list.filter expects single predicate argument");
+
+    if (!isClosure(args[1]))
+        throw std::invalid_argument("list.filter: argument must be a function");
+
+    ObjList* inputList = asList(args[0]);
+    ObjClosure* predicate = asClosure(args[1]);
+
+    // Detect callback arity
+    int arity = asFunction(predicate->function)->arity;
+
+    Value resultVal = Value::listVal();
+    ObjList* result = asList(resultVal);
+
+    auto elts = inputList->elts.get();
+    for (size_t i = 0; i < elts.size(); ++i) {
+        std::vector<Value> callArgs;
+        callArgs.push_back(elts[i]);
+        if (arity >= 2)
+            callArgs.push_back(Value::intVal(static_cast<int32_t>(i)));
+
+        auto [interpResult, returnValue] = callAndExec(predicate, callArgs);
+        if (interpResult != InterpretResult::OK)
+            throw std::runtime_error("list.filter: predicate callback failed");
+
+        if (isTruthy(returnValue))
+            result->append(elts[i]);
+    }
+
+    return resultVal;
+}
+
+Value VM::list_map_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isList(args[0]))
+        throw std::invalid_argument("list.map expects single transform argument");
+
+    if (!isClosure(args[1]))
+        throw std::invalid_argument("list.map: argument must be a function");
+
+    ObjList* inputList = asList(args[0]);
+    ObjClosure* transform = asClosure(args[1]);
+
+    // Detect callback arity
+    int arity = asFunction(transform->function)->arity;
+
+    Value resultVal = Value::listVal();
+    ObjList* result = asList(resultVal);
+
+    auto elts = inputList->elts.get();
+    for (size_t i = 0; i < elts.size(); ++i) {
+        std::vector<Value> callArgs;
+        callArgs.push_back(elts[i]);
+        if (arity >= 2)
+            callArgs.push_back(Value::intVal(static_cast<int32_t>(i)));
+
+        auto [interpResult, returnValue] = callAndExec(transform, callArgs);
+        if (interpResult != InterpretResult::OK)
+            throw std::runtime_error("list.map: transform callback failed");
+
+        result->append(returnValue);
+    }
+
+    return resultVal;
+}
+
+Value VM::list_reduce_builtin(ArgsView args)
+{
+    if (args.size() != 3 || !isList(args[0]))
+        throw std::invalid_argument("list.reduce expects reducer function and initial value");
+
+    if (!isClosure(args[1]))
+        throw std::invalid_argument("list.reduce: first argument must be a function");
+
+    ObjList* inputList = asList(args[0]);
+    ObjClosure* reducer = asClosure(args[1]);
+
+    // Detect callback arity
+    int arity = asFunction(reducer->function)->arity;
+
+    Value accumulator = args[2];
+
+    auto elts = inputList->elts.get();
+    for (size_t i = 0; i < elts.size(); ++i) {
+        std::vector<Value> callArgs;
+        callArgs.push_back(accumulator);
+        callArgs.push_back(elts[i]);
+        if (arity >= 3)
+            callArgs.push_back(Value::intVal(static_cast<int32_t>(i)));
+
+        auto [interpResult, returnValue] = callAndExec(reducer, callArgs);
+        if (interpResult != InterpretResult::OK)
+            throw std::runtime_error("list.reduce: reducer callback failed");
+
+        accumulator = returnValue;
+    }
+
+    return accumulator;
 }
 
 Value VM::signal_run_builtin(ArgsView args)

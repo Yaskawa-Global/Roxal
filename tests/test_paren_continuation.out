@@ -1,0 +1,13 @@
+simple grouping: 3
+nested parens: 9
+binary operators: 8
+lambda in grouping: 10
+method chain with var: 24
+inline list method chain: 24
+multi-chain different lambdas: [20, 30]
+mixed literal/method: [101, 102, 103]
+deeply nested chain: [4, 16]
+lambda with index: [10, 21, 32]
+function call result chain: [7, 8]
+
+All paren continuation tests passed!

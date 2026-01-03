@@ -533,6 +533,9 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("deserialize", [this](VM& vm, ArgsView a){ return deserialize_builtin(vm,a); });
         addSys("to_json", [this](VM& vm, ArgsView a){ return to_json_builtin(vm,a); });
         addSys("from_json", [this](VM& vm, ArgsView a){ return from_json_builtin(vm,a); });
+        addSys("filter", [this](VM& vm, ArgsView a){ return filter_builtin(vm,a); });
+        addSys("map", [this](VM& vm, ArgsView a){ return map_builtin(vm,a); });
+        addSys("reduce", [this](VM& vm, ArgsView a){ return reduce_builtin(vm,a); });
     }
 
     if (!vm.loadGlobal(toUnicodeString("_clock")).has_value()) {
@@ -1859,4 +1862,128 @@ Value ModuleSys::df_graphdot_native(VM& vm, ArgsView args)
 Value ModuleSys::loadlib_native(VM& vm, ArgsView args)
 {
     return roxal::loadlib_native(args);
+}
+
+Value ModuleSys::filter_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 2)
+        throw std::invalid_argument("filter expects 2 arguments: list and predicate");
+
+    Value listVal = args[0];
+    if (!listVal.resolveFuture())
+        return Value::nilVal();
+    if (!isList(listVal))
+        throw std::invalid_argument("filter: first argument must be a list");
+
+    Value predVal = args[1];
+    if (!isClosure(predVal))
+        throw std::invalid_argument("filter: second argument must be a function");
+
+    ObjList* inputList = asList(listVal);
+    ObjClosure* predicate = asClosure(predVal);
+
+    // Detect callback arity
+    int arity = asFunction(predicate->function)->arity;
+
+    Value resultVal = Value::listVal();
+    ObjList* result = asList(resultVal);
+
+    auto elts = inputList->elts.get();
+    for (size_t i = 0; i < elts.size(); ++i) {
+        std::vector<Value> callArgs;
+        callArgs.push_back(elts[i]);
+        if (arity >= 2)
+            callArgs.push_back(Value::intVal(static_cast<int32_t>(i)));
+
+        auto [interpResult, returnValue] = vm.callAndExec(predicate, callArgs);
+        if (interpResult != InterpretResult::OK)
+            throw std::runtime_error("filter: predicate callback failed");
+
+        if (isTruthy(returnValue))
+            result->append(elts[i]);
+    }
+
+    return resultVal;
+}
+
+Value ModuleSys::map_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 2)
+        throw std::invalid_argument("map expects 2 arguments: list and transform");
+
+    Value listVal = args[0];
+    if (!listVal.resolveFuture())
+        return Value::nilVal();
+    if (!isList(listVal))
+        throw std::invalid_argument("map: first argument must be a list");
+
+    Value transformVal = args[1];
+    if (!isClosure(transformVal))
+        throw std::invalid_argument("map: second argument must be a function");
+
+    ObjList* inputList = asList(listVal);
+    ObjClosure* transform = asClosure(transformVal);
+
+    // Detect callback arity
+    int arity = asFunction(transform->function)->arity;
+
+    Value resultVal = Value::listVal();
+    ObjList* result = asList(resultVal);
+
+    auto elts = inputList->elts.get();
+    for (size_t i = 0; i < elts.size(); ++i) {
+        std::vector<Value> callArgs;
+        callArgs.push_back(elts[i]);
+        if (arity >= 2)
+            callArgs.push_back(Value::intVal(static_cast<int32_t>(i)));
+
+        auto [interpResult, returnValue] = vm.callAndExec(transform, callArgs);
+        if (interpResult != InterpretResult::OK)
+            throw std::runtime_error("map: transform callback failed");
+
+        result->append(returnValue);
+    }
+
+    return resultVal;
+}
+
+Value ModuleSys::reduce_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 3)
+        throw std::invalid_argument("reduce expects 3 arguments: list, reducer, and initial value");
+
+    Value listVal = args[0];
+    if (!listVal.resolveFuture())
+        return Value::nilVal();
+    if (!isList(listVal))
+        throw std::invalid_argument("reduce: first argument must be a list");
+
+    Value reducerVal = args[1];
+    if (!isClosure(reducerVal))
+        throw std::invalid_argument("reduce: second argument must be a function");
+
+    ObjList* inputList = asList(listVal);
+    ObjClosure* reducer = asClosure(reducerVal);
+
+    // Detect callback arity
+    int arity = asFunction(reducer->function)->arity;
+
+    Value accumulator = args[2];
+
+    auto elts = inputList->elts.get();
+    for (size_t i = 0; i < elts.size(); ++i) {
+        std::vector<Value> callArgs;
+        callArgs.push_back(accumulator);
+        callArgs.push_back(elts[i]);
+        if (arity >= 3)
+            callArgs.push_back(Value::intVal(static_cast<int32_t>(i)));
+
+        auto [interpResult, returnValue] = vm.callAndExec(reducer, callArgs);
+        if (interpResult != InterpretResult::OK)
+            throw std::runtime_error("reduce: reducer callback failed");
+
+        accumulator = returnValue;
+    }
+
+    return accumulator;
 }

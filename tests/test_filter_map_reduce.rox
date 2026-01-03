@@ -1,0 +1,109 @@
+// Test filter/map/reduce functions
+
+func assert(cond, msg=''):
+  if not cond:
+    print("FAIL: " + msg)
+    exit(1)
+
+// Test filter - basic
+var nums = [1, 2, 3, 4, 5]
+var evens = filter(nums, func(x): x % 2 == 0)
+print("filter evens: " + evens)
+assert(evens == [2, 4], "filter evens")
+
+// Test filter with index
+var first3 = filter(nums, func(x, i): i < 3)
+print("filter first 3: " + first3)
+assert(first3 == [1, 2, 3], "filter first 3")
+
+// Test filter - empty result
+var big = filter(nums, func(x): x > 100)
+print("filter big: " + big)
+assert(big == [], "filter big")
+
+// Test map - basic
+var doubled = map(nums, func(x): x * 2)
+print("map doubled: " + doubled)
+assert(doubled == [2, 4, 6, 8, 10], "map doubled")
+
+// Test map with index
+var withIdx = map(nums, func(x, i): x + i)
+print("map with index: " + withIdx)
+assert(withIdx == [1, 3, 5, 7, 9], "map with index")
+
+// Test map - type transformation
+var strs = map(nums, func(x): "num" + x)
+print("map to strings: " + strs)
+assert(strs == ["num1", "num2", "num3", "num4", "num5"], "map to strings")
+
+// Test reduce - sum
+var sum = reduce(nums, func(acc, x): acc + x, 0)
+print("reduce sum: " + sum)
+assert(sum == 15, "reduce sum")
+
+// Test reduce - product
+var prod = reduce(nums, func(acc, x): acc * x, 1)
+print("reduce product: " + prod)
+assert(prod == 120, "reduce product")
+
+// Test reduce with index
+var sumIdx = reduce(nums, func(acc, x, i): acc + i, 0)
+print("reduce sum of indices: " + sumIdx)
+assert(sumIdx == 10, "reduce sum indices")  // 0+1+2+3+4
+
+// Test reduce - string concatenation
+var concat = reduce(nums, func(acc, x): acc + x, "")
+print("reduce concat: " + concat)
+assert(concat == "12345", "reduce concat")
+
+// Test chaining - filter then map
+var bigDoubled = map(filter(nums, func(x): x > 2), func(x): x * 2)
+print("chained filter+map: " + bigDoubled)
+assert(bigDoubled == [6, 8, 10], "chained filter+map")
+
+// Test chaining - filter, map, reduce
+var result = reduce(map(filter(nums, func(x): x > 2), func(x): x * 2), func(a, b): a + b, 0)
+print("chained filter+map+reduce: " + result)
+assert(result == 24, "chained filter+map+reduce")  // (3*2) + (4*2) + (5*2) = 6 + 8 + 10
+
+// Test with empty list
+var empty = []
+var emptyFiltered = filter(empty, func(x): true)
+var emptyMapped = map(empty, func(x): x * 2)
+var emptyReduced = reduce(empty, func(a, b): a + b, 0)
+assert(emptyFiltered == [], "empty filter")
+assert(emptyMapped == [], "empty map")
+assert(emptyReduced == 0, "empty reduce")
+print("empty list tests passed")
+
+// Test method-style calls
+print("\nTesting method-style calls...")
+
+var nums2 = [1, 2, 3, 4, 5]
+
+// Method-style filter
+var evens2 = nums2.filter(func(x): x % 2 == 0)
+print("method filter evens: " + evens2)
+assert(evens2 == [2, 4], "method filter evens")
+
+// Method-style map
+var doubled2 = nums2.map(func(x): x * 2)
+print("method map doubled: " + doubled2)
+assert(doubled2 == [2, 4, 6, 8, 10], "method map doubled")
+
+// Method-style reduce
+var sum2 = nums2.reduce(func(acc, x): acc + x, 0)
+print("method reduce sum: " + sum2)
+assert(sum2 == 15, "method reduce sum")
+
+// Method-style chaining (JavaScript style!)
+var chained = nums2.filter(func(x): x > 2).map(func(x): x * 2).reduce(func(a, b): a + b, 0)
+print("method chained filter+map+reduce: " + chained)
+assert(chained == 24, "method chained filter+map+reduce")
+
+// Chained style on single line
+var chained2 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].filter(func(x): x % 2 == 0).map(func(x): x * x).reduce(func(a, b): a + b, 0)
+print("chained evens squared sum: " + chained2)
+assert(chained2 == 220, "chained evens squared sum")  // 4+16+36+64+100 = 220
+
+print("\nAll filter/map/reduce tests passed!")
