@@ -30,6 +30,17 @@ if snap is not nil:
 else:
     print("ERROR: Failed to capture snapshot")
 
-// Cleanup
-window.close()
+// Wait for window close or --quit
+var quit :bool = false
+if '--quit' in args:
+    window.close()
+    quit = true
+
+when WindowClose occurs as evt where evt.target == window:
+    window.close()
+    quit = true
+
+while not quit:
+    wait(ms=250)
+
 print("Test completed")

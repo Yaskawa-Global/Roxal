@@ -385,10 +385,10 @@ try:
             proto_path = os.path.join('..', 'compiler', 'grpc', 'protos')
             cmd = [cmd[0], '-p', proto_path, *cmd[1:]]
 
-        # UI tests: run in offscreen mode with software rendering
+        # UI tests: run in offscreen mode with software rendering and --quit to exit immediately
         is_ui_test = test.startswith('ui/')
         if is_ui_test:
-            cmd = [cmd[0], '--offscreen', *cmd[1:]]
+            cmd = [cmd[0], '--offscreen', *cmd[1:], '--quit']
 
         if args.opcode_prof and '--opcode-prof' not in cmd:
             cmd = [cmd[0], '--opcode-prof', *cmd[1:]]
