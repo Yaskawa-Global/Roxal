@@ -1141,3 +1141,85 @@ Use `import fileio` or `import fileio.*`.  See `fileio.sys`.
 * `file_without_extension(path)` - path without the extension
 * `delete_file(path)` - delete a file, returning true if it existed
 * `delete_dir(path, recurse=false)` - delete a directory, optionally recursively
+
+### regex
+
+Regular expression support using PCRE2.
+Use `import regex` or `import regex.*`. See `regex.rox`.
+(only available when built with cmake option ROXAL_ENABLE_REGEX is on)
+
+#### Module Functions
+
+* `compile(pattern, flags='')` - compile a regex pattern and return a `Regex` object
+
+#### Regex Type
+
+The `Regex` type represents a compiled regular expression pattern.
+
+**Constructor:**
+* `Regex(pattern, flags='')` - create a new Regex from pattern string and optional flags
+
+**Methods:**
+* `test(str)` - return `true` if pattern matches anywhere in `str`
+* `exec(str)` - execute match and return a dict with match details, or `nil` if no match
+
+**Flags:**
+| Flag | Description |
+|------|-------------|
+| `'i'` | Case-insensitive matching |
+| `'m'` | Multiline mode (`^` and `$` match line boundaries) |
+| `'s'` | Dotall mode (`.` matches newlines) |
+| `'g'` | Global mode (affects `replace` behavior) |
+
+**exec() Result:**
+
+When `exec()` finds a match, it returns a dict containing:
+* `'match'` - the full matched string
+* `'index'` - the starting position of the match in the input string
+* `'groups'` - a list of captured groups (excluding the full match)
+* `'named'` - a dict of named capture groups (if any)
+
+```php
+import regex.*
+
+var re = Regex('(\\w+)@(\\w+)')
+var m = re.exec('user@host')
+print(m['match'])   // "user@host"
+print(m['index'])   // 0
+print(m['groups'])  // ["user", "host"]
+
+// Named capture groups
+var reNamed = Regex('(?<year>\\d{4})-(?<month>\\d{2})')
+var mNamed = reNamed.exec('2024-03-15')
+print(mNamed['match'])  // "2024-03"
+print(mNamed['named'])  // {"year": "2024", "month": "03"}
+```
+
+#### String Methods
+
+When the regex module is enabled, strings gain the following methods that accept either a `Regex` object or a plain string pattern (which is auto-compiled):
+
+* `match(pattern)` - find matches and return a list, or `nil` if no match
+* `search(pattern)` - return the index of the first match, or `-1` if not found
+* `replace(pattern, replacement)` - replace matches with `replacement` string
+* `split(pattern)` - split string by pattern and return a list
+
+```php
+import regex.*
+
+var str = 'hello world'
+
+// Using Regex objects
+print(str.search(Regex('world')))           // 6
+print(str.match(Regex('\\w+')))             // ["hello"]
+print(str.replace(Regex('world'), 'there')) // "hello there"
+
+// Using plain string patterns (auto-compiled)
+print('a,b,c'.split(','))                   // ["a", "b", "c"]
+print('test123'.match('\\d+'))              // ["123"]
+print('foo bar'.replace('bar', 'baz'))      // "foo baz"
+
+// Global flag for replace-all
+var str2 = 'foo bar boo'
+print(str2.replace(Regex('o', 'g'), 'O'))   // "fOO bar bOO"
+```
