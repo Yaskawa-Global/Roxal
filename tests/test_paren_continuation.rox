@@ -1,0 +1,112 @@
+// Test Python-style line continuation inside parentheses
+
+func assert(cond, msg=''):
+  if not cond:
+    print("FAIL: " + msg)
+    exit(1)
+
+// Simple grouping paren continuation
+var a = (
+    1 + 2
+)
+print("simple grouping: " + a)
+assert(a == 3, "simple grouping")
+
+// Nested parens with continuation
+var b = (
+    (
+        1 + 2
+    ) * 3
+)
+print("nested parens: " + b)
+assert(b == 9, "nested parens")
+
+// Binary operators continued across lines
+var c = (
+    10
+    - 5
+    + 3
+)
+print("binary operators: " + c)
+assert(c == 8, "binary operators")
+
+// Lambda in grouping paren (not as method call arg)
+var fn = (
+    func(x): x * 2
+)
+print("lambda in grouping: " + fn(5))
+assert(fn(5) == 10, "lambda in grouping")
+
+// Method chaining inside grouping parens with variable
+var nums = [1, 2, 3, 4, 5]
+var d = (
+    nums
+    .filter(func(x): x > 2)
+    .map(func(x): x * 2)
+    .reduce(func(a, b): a + b, 0)
+)
+print("method chain with var: " + d)
+assert(d == 24, "method chain with var")
+
+// Inline list with method chaining inside parens
+var e = (
+    [1, 2, 3, 4, 5]
+    .filter(func(x): x > 2)
+    .map(func(x): x * 2)
+    .reduce(func(a, b): a + b, 0)
+)
+print("inline list method chain: " + e)
+assert(e == 24, "inline list method chain")
+
+// Multiple method chains with different lambdas
+var f = (
+    [1, 2, 3]
+    .map(func(x): x * 10)
+    .filter(func(x): x > 15)
+)
+print("multi-chain different lambdas: " + f)
+assert(f == [20, 30], "multi-chain different lambdas")
+
+// Mixed list literal (multiline) and method calls
+var g = (
+    [
+        1,
+        2,
+        3
+    ]
+    .map(func(x): x + 100)
+)
+print("mixed literal/method: " + g)
+assert(g == [101, 102, 103], "mixed literal/method")
+
+// Deeply nested with method chain
+var h = (
+    (
+        [1, 2, 3, 4]
+        .filter(func(x): x % 2 == 0)
+    )
+    .map(func(x): x * x)
+)
+print("deeply nested chain: " + h)
+assert(h == [4, 16], "deeply nested chain")
+
+// Lambda with index parameter inside grouping
+var i = (
+    [10, 20, 30]
+    .map(func(x, idx): x + idx)
+)
+print("lambda with index: " + i)
+assert(i == [10, 21, 32], "lambda with index")
+
+// Expression with function call result
+func get_list():
+    return [5, 6, 7, 8]
+
+var j = (
+    get_list()
+    .filter(func(x): x > 6)
+)
+print("function call result chain: " + j)
+assert(j == [7, 8], "function call result chain")
+
+print("\nAll paren continuation tests passed!")
