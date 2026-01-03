@@ -698,6 +698,9 @@ int main(int argc, const char* argv[])
         #ifdef ROXAL_ENABLE_DDS
             features.push_back("dds");
         #endif
+        #ifdef ROXAL_ENABLE_REGEX
+            features.push_back("regex");
+        #endif
         if (!features.empty()) {
             std::cout << " [";
             for (size_t i = 0; i < features.size(); ++i) {

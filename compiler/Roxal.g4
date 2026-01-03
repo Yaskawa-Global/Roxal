@@ -347,7 +347,7 @@ call
 args_or_index_or_accessor
  : '(' arguments? ')'
  | '[' ranges ']'
- | DOT (IDENTIFIER | WHEN | EMIT) ('(' arguments? ')')?
+ | DOT (IDENTIFIER | WHEN | EMIT | MATCH) ('(' arguments? ')')?
  ;
 
 ranges

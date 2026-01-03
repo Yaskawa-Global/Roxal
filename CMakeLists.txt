@@ -16,6 +16,7 @@ option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
 option(ROXAL_ENABLE_GRPC "Enable gRPC/protobuf import support" OFF)
 option(ROXAL_ENABLE_DDS "Enable CycloneDDS support" OFF)
 set(ROXAL_DDS_ROOT "/usr/share" CACHE PATH "CycloneDDS install prefix when ROXAL_ENABLE_DDS is ON")
+option(ROXAL_ENABLE_REGEX "Enable regex module (requires libpcre2)" OFF)
 
 # Expose the project version and git hash to the codebase
 set(ROXAL_PROJECT_VERSION "${PROJECT_VERSION}")
@@ -118,6 +119,12 @@ if(ROXAL_ENABLE_DDS)
     include_directories(${CycloneDDS_INCLUDE_DIRS})
 endif()
 
+# PCRE2 for regex module
+if(ROXAL_ENABLE_REGEX)
+    pkg_check_modules(PCRE2 REQUIRED libpcre2-8)
+    include_directories(${PCRE2_INCLUDE_DIRS})
+endif()
+
 # Detect libffi via pkg-config so that include and library paths
 # are recorded explicitly and the build fails clearly if libffi is
 # missing.
@@ -176,6 +183,9 @@ if(ROXAL_ENABLE_DDS)
         compiler/dds/ModuleDDS.cpp
     )
 endif()
+if(ROXAL_ENABLE_REGEX)
+    list(APPEND COMPILER_SOURCES compiler/ModuleRegex.cpp)
+endif()
 
 set(MAIN_SOURCE compiler/roxal.cpp)
 
@@ -228,6 +238,7 @@ link_directories(
     ${ANTLR4_ROOT}/lib
     ${CMAKE_SOURCE_DIR}/cpp-gen
     ${LIBFFI_LIBRARY_DIRS}
+    ${PCRE2_LIBRARY_DIRS}
 )
 
 # Add libffi include directories discovered via pkg-config
@@ -257,6 +268,7 @@ target_link_libraries(roxalcore
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::ddsc>
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::libidlc>
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::idl>
+        $<$<BOOL:${ROXAL_ENABLE_REGEX}>:${PCRE2_LIBRARIES}>
 )
 
 
@@ -272,6 +284,7 @@ target_compile_definitions(roxalcore PRIVATE
     $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
     $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
     $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
+    $<$<BOOL:${ROXAL_ENABLE_REGEX}>:ROXAL_ENABLE_REGEX>
     ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
     ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
     ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
@@ -290,6 +303,7 @@ if(ROXAL_BUILD_MAIN)
         $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
         $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
+        $<$<BOOL:${ROXAL_ENABLE_REGEX}>:ROXAL_ENABLE_REGEX>
         ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
         ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
         ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
