@@ -554,6 +554,9 @@ VM::VM()
     #ifdef ROXAL_ENABLE_REGEX
     registerBuiltinModule(make_ptr<ModuleRegex>());
     #endif
+    #ifdef ROXAL_ENABLE_SOCKET
+    registerBuiltinModule(make_ptr<ModuleSocket>());
+    #endif
 
     std::vector<std::string> stagedModulePaths;
     {
@@ -576,6 +579,9 @@ VM::VM()
 #endif
 #ifdef ROXAL_ENABLE_REGEX
     executeBuiltinModuleScript("regex.rox", getBuiltinModuleType(toUnicodeString("regex")));
+#endif
+#ifdef ROXAL_ENABLE_SOCKET
+    executeBuiltinModuleScript("socket.rox", getBuiltinModuleType(toUnicodeString("socket")));
 #endif
 
     thread = nullptr;

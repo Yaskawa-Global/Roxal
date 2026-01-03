@@ -1,0 +1,40 @@
+// Basic socket module test
+import socket
+
+// Test TCP socket creation
+var tcp = socket.tcp()
+print("TCP socket created")
+
+// Test UDP socket creation
+var udp = socket.udp()
+print("UDP socket created")
+
+// Test getsockname (before bind, should work but return 0.0.0.0:0)
+[host, port] = tcp.getsockname()
+print("TCP sockname host: {host}")
+print("TCP sockname port zero: " + (port == 0))
+
+// Test settimeout
+tcp.settimeout(1.0)
+print("Timeout set")
+
+// Test setsockopt
+var ok = tcp.setsockopt("reuseaddr", true)
+print("setsockopt reuseaddr: {ok}")
+
+// Test fileno returns positive int
+var fd = tcp.fileno()
+print("TCP fd valid: " + (fd >= 0))
+
+// Test bind
+udp.bind("127.0.0.1", 0)  // Bind to random port
+[host, port] = udp.getsockname()
+print("UDP bound host: {host}")
+print("UDP port assigned: " + (port > 0))
+
+// Close sockets
+tcp.close()
+udp.close()
+print("Sockets closed")
+
+print("PASS")

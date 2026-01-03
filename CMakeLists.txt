@@ -17,6 +17,7 @@ option(ROXAL_ENABLE_GRPC "Enable gRPC/protobuf import support" OFF)
 option(ROXAL_ENABLE_DDS "Enable CycloneDDS support" OFF)
 set(ROXAL_DDS_ROOT "/usr/share" CACHE PATH "CycloneDDS install prefix when ROXAL_ENABLE_DDS is ON")
 option(ROXAL_ENABLE_REGEX "Enable regex module (requires libpcre2)" OFF)
+option(ROXAL_ENABLE_SOCKET "Enable socket module (POSIX sockets)" ON)
 
 # Expose the project version and git hash to the codebase
 set(ROXAL_PROJECT_VERSION "${PROJECT_VERSION}")
@@ -186,6 +187,9 @@ endif()
 if(ROXAL_ENABLE_REGEX)
     list(APPEND COMPILER_SOURCES compiler/ModuleRegex.cpp)
 endif()
+if(ROXAL_ENABLE_SOCKET)
+    list(APPEND COMPILER_SOURCES compiler/ModuleSocket.cpp)
+endif()
 
 set(MAIN_SOURCE compiler/roxal.cpp)
 
@@ -285,6 +289,7 @@ target_compile_definitions(roxalcore PRIVATE
     $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
     $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
     $<$<BOOL:${ROXAL_ENABLE_REGEX}>:ROXAL_ENABLE_REGEX>
+    $<$<BOOL:${ROXAL_ENABLE_SOCKET}>:ROXAL_ENABLE_SOCKET>
     ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
     ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
     ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
@@ -304,6 +309,7 @@ if(ROXAL_BUILD_MAIN)
         $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
         $<$<BOOL:${ROXAL_ENABLE_REGEX}>:ROXAL_ENABLE_REGEX>
+        $<$<BOOL:${ROXAL_ENABLE_SOCKET}>:ROXAL_ENABLE_SOCKET>
         ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
         ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
         ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"

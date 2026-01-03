@@ -1223,3 +1223,115 @@ print('foo bar'.replace('bar', 'baz'))      // "foo baz"
 var str2 = 'foo bar boo'
 print(str2.replace(Regex('o', 'g'), 'O'))   // "fOO bar bOO"
 ```
+
+### socket
+
+TCP and UDP socket networking support using POSIX sockets.
+Use `import socket` or `import socket.*`. See `socket.rox`.
+(only available when built with cmake option ROXAL_ENABLE_SOCKET is on - enabled by default)
+
+**Key Design**: Blocking operations (`accept`, `connect`, `recv`, `recvfrom`, `gethostbyname`) return futures to avoid blocking. Use `wait(for=future)` or type conversion to resolve/wait.
+
+#### Module Functions
+
+* `tcp()` - create a TCP socket (SOCK_STREAM)
+* `udp()` - create a UDP socket (SOCK_DGRAM)
+* `gethostbyname(hostname)` - resolve hostname to IP address, returns `future<string>`
+
+#### Socket Type
+
+The `Socket` type represents a network socket for TCP or UDP communication.
+
+**Methods:**
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `bind(host, port)` | bool | Bind socket to local address |
+| `listen(backlog=5)` | bool | Start listening for connections (TCP) |
+| `accept()` | future<[Socket, [host, port]]> | Accept incoming connection (TCP) |
+| `connect(host, port)` | future<bool> | Connect to remote address (TCP) |
+| `send(data)` | int | Send data on connected socket (immediate) |
+| `recv(size=4096)` | future<string> | Receive data from connected socket |
+| `sendto(data, host, port)` | int | Send data to address (UDP, immediate) |
+| `recvfrom(size=4096)` | future<[data, host, port]> | Receive data with sender address (UDP) |
+| `close()` | nil | Close the socket |
+| `settimeout(seconds)` | nil | Set timeout (nil=blocking, 0=non-blocking) |
+| `setsockopt(option, value)` | bool | Set socket option |
+| `getsockname()` | [host, port] | Get local address |
+| `getpeername()` | [host, port] | Get remote address |
+| `fileno()` | int | Get underlying file descriptor |
+
+**Socket Options** (for `setsockopt`):
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `'reuseaddr'` | bool | Allow address reuse (SO_REUSEADDR) |
+| `'broadcast'` | bool | Allow broadcast (SO_BROADCAST, UDP) |
+| `'keepalive'` | bool | Enable keepalive (SO_KEEPALIVE, TCP) |
+| `'nodelay'` | bool | Disable Nagle algorithm (TCP_NODELAY) |
+| `'rcvbuf'` | int | Receive buffer size |
+| `'sndbuf'` | int | Send buffer size |
+
+#### Examples
+
+**TCP Echo Client:**
+```php
+import socket
+
+var s = socket.tcp()
+wait(for=s.connect("127.0.0.1", 8080))  // Wait for connection
+s.send("Hello")
+var response = wait(for=s.recv(1024))
+print("Got: " + response)
+s.close()
+```
+
+**TCP Echo Server:**
+```php
+import socket
+
+var server = socket.tcp()
+server.setsockopt("reuseaddr", true)
+server.bind("0.0.0.0", 8080)
+server.listen(5)
+
+while true:
+  client_hostport = server.accept()
+  wait(for=client_hostport)
+  [client, hostport] = client_hostport
+  [host,port] = hostport
+  print("Connection from {host}:{port}")
+  var data = client.recv(1024)
+  wait(for=data)
+  client.send("Echo: " + data)
+  client.close()
+```
+
+**UDP Send/Receive:**
+```php
+import socket
+
+// Sender
+var sender = socket.udp()
+sender.sendto("hello", "127.0.0.1", 9000)
+sender.close()
+
+// Receiver
+var receiver = socket.udp()
+receiver.bind("0.0.0.0", 9000)
+var data_host_port = receiver.recvfrom(1024)
+wait(for=data_host_port)
+[data, host, port] = data_host_port
+print("Received '{data}' from {host}:{port}")
+receiver.close()
+```
+
+**DNS Lookup:**
+```php
+import socket
+
+var ip = socket.gethostbyname("example.com")
+wait(for=ip)
+
+print("IP: " + ip)  // e.g., "104.18.26.120"
+```

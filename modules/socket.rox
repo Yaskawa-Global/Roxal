@@ -1,0 +1,175 @@
+// Socket module - Python-style socket API with future-based async operations
+// Blocking operations (accept, connect, recv, recvfrom) return futures
+
+@builtin
+func tcp():
+  """Create a TCP socket (SOCK_STREAM).
+
+  Example:
+    var s = socket.tcp()
+    wait(for=s.connect("127.0.0.1", 8080))
+    s.send("hello")
+    var data = wait(for=s.recv(1024))
+    s.close()
+  """
+
+@builtin
+func udp():
+  """Create a UDP socket (SOCK_DGRAM).
+
+  Example:
+    var s = socket.udp()
+    s.bind("0.0.0.0", 9000)
+    s.sendto("hello", "192.168.1.1", 9000)
+    [data, host, port] = wait(for=s.recvfrom(1024))
+    s.close()
+  """
+
+@builtin
+func gethostbyname(hostname:string):
+  """Resolve hostname to IP address. Returns future<string>.
+
+  Example:
+    var ip = wait(for=socket.gethostbyname("example.com"))
+    print(ip)  // "93.184.216.34"
+  """
+
+@builtin
+type Socket object:
+  """Socket object for TCP or UDP communication.
+
+  Created via socket.tcp() or socket.udp().
+  Blocking operations return futures that can be awaited with wait().
+  """
+
+  @builtin
+  func bind(host:string, port:int) -> bool:
+    """Bind socket to local address. Returns true on success.
+
+    Example:
+      server.bind("0.0.0.0", 8080)
+    """
+
+  @builtin
+  func listen(backlog:int=5) -> bool:
+    """Start listening for connections (TCP only). Returns true on success.
+
+    Example:
+      server.listen(10)
+    """
+
+  @builtin
+  func accept():
+    """Accept incoming connection (TCP only). Returns future<[Socket, [host, port]]>.
+
+    Blocks until a connection arrives.
+
+    Example:
+      [client, [host, port]] = wait(for=server.accept())
+      print("Connection from {host}:{port}")
+    """
+
+  @builtin
+  func connect(host:string, port:int):
+    """Connect to remote address (TCP). Returns future<bool>.
+
+    Blocks until connection is established or fails.
+
+    Example:
+      wait(for=client.connect("127.0.0.1", 8080))
+    """
+
+  @builtin
+  func send(data:string) -> int:
+    """Send data on connected socket. Returns bytes sent (immediate).
+
+    Example:
+      var sent = client.send("hello world")
+    """
+
+  @builtin
+  func recv(size:int=4096):
+    """Receive data from connected socket. Returns future<string>.
+
+    Blocks until data is available.
+
+    Example:
+      var data = wait(for=client.recv(1024))
+    """
+
+  @builtin
+  func sendto(data:string, host:string, port:int) -> int:
+    """Send data to specific address (UDP). Returns bytes sent (immediate).
+
+    Example:
+      udp.sendto("hello", "192.168.1.100", 5000)
+    """
+
+  @builtin
+  func recvfrom(size:int=4096):
+    """Receive data with sender address (UDP). Returns future<[data, host, port]>.
+
+    Blocks until data is available.
+
+    Example:
+      [data, host, port] = wait(for=udp.recvfrom(1024))
+    """
+
+  @builtin
+  proc close():
+    """Close the socket.
+
+    Example:
+      client.close()
+    """
+
+  @builtin
+  proc settimeout(seconds:real):
+    """Set timeout for blocking operations in seconds.
+
+    0 = non-blocking (operations return immediately)
+    nil = blocking indefinitely (default)
+
+    Example:
+      client.settimeout(5.0)  // 5 second timeout
+    """
+
+  @builtin
+  func setsockopt(option:string, value) -> bool:
+    """Set socket option. Returns true on success.
+
+    Options:
+      'reuseaddr' - bool: Allow address reuse (SO_REUSEADDR)
+      'broadcast' - bool: Allow broadcast (SO_BROADCAST, UDP)
+      'keepalive' - bool: Enable keepalive (SO_KEEPALIVE, TCP)
+      'nodelay'   - bool: Disable Nagle algorithm (TCP_NODELAY, TCP)
+      'rcvbuf'    - int: Receive buffer size
+      'sndbuf'    - int: Send buffer size
+
+    Example:
+      server.setsockopt("reuseaddr", true)
+    """
+
+  @builtin
+  func getsockname() -> list:
+    """Get local address as [host, port].
+
+    Example:
+      [host, port] = server.getsockname()
+    """
+
+  @builtin
+  func getpeername() -> list:
+    """Get remote address as [host, port] (connected sockets only).
+
+    Example:
+      [host, port] = client.getpeername()
+    """
+
+  @builtin
+  func fileno() -> int:
+    """Get underlying file descriptor.
+
+    Example:
+      var fd = sock.fileno()
+    """

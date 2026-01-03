@@ -1,0 +1,11 @@
+TCP socket created
+UDP socket created
+TCP sockname host: 0.0.0.0
+TCP sockname port zero: true
+Timeout set
+setsockopt reuseaddr: true
+TCP fd valid: true
+UDP bound host: 127.0.0.1
+UDP port assigned: true
+Sockets closed
+PASS

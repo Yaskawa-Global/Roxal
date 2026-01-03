@@ -28,6 +28,9 @@
 #ifdef ROXAL_ENABLE_REGEX
 #include "ModuleRegex.h"
 #endif
+#ifdef ROXAL_ENABLE_SOCKET
+#include "ModuleSocket.h"
+#endif
 #include <ffi.h>
 #include <vector>
 

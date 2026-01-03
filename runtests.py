@@ -138,10 +138,12 @@ fileio_tests = [
 ]
 dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok', 'dds_array_struct', 'dds_array_multi']
 regex_tests = ['regex_test']
+socket_tests = ['socket_basic']
 
 # Add feature-specific tests to the full list; feature gating happens later.
 tests += dds_tests
 tests += regex_tests
+tests += socket_tests
 
 long_running_tests = [
     'gc_stress',
@@ -218,6 +220,7 @@ has_grpc = 'grpc' in features
 has_fileio = 'fileio' in features
 has_dds = 'dds' in features
 has_regex = 'regex' in features
+has_socket = 'socket' in features
 if not has_grpc and any(test in tests for test in grpc_tests):
     print("Skipping gRPC tests (feature not enabled).")
     tests = [t for t in tests if t not in grpc_tests]
@@ -232,6 +235,10 @@ if not has_regex:
     if any(test in tests for test in regex_tests):
         print("Skipping regex tests (feature not enabled).")
         tests = [t for t in tests if t not in regex_tests]
+if not has_socket:
+    if any(test in tests for test in socket_tests):
+        print("Skipping socket tests (feature not enabled).")
+        tests = [t for t in tests if t not in socket_tests]
 needs_grpc_server = has_grpc and any(test in tests for test in grpc_server_tests)
 
 env_base = os.environ.copy()
