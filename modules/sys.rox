@@ -223,4 +223,15 @@ func _df_graphdot(title:string='') -> string:
 func loadlib(path:string):
   """load a native library at path"""
 
+@builtin
+func filter(items, predicate) -> list:
+  """return a new list containing elements for which predicate(element) returns true"""
+
+@builtin
+func map(items, transform) -> list:
+  """return a new list with transform(element) applied to each element"""
+
+@builtin
+func reduce(items, reducer, initial):
+  """reduce items to a single value by calling reducer(accumulator, element) for each element"""
 

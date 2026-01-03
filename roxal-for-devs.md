@@ -1035,6 +1035,9 @@ The functions in the sys module are always globally available (- as if `import s
 * `deserialize(bytes, protocol='default')` - deserialize bytes using protocol
 * `to_json(value, indent=true)` - convert value to a JSON string
 * `from_json(json)` - parse JSON string into a value
+* `filter(items, predicate)` - return a new list containing elements for which `predicate(element)` returns true; predicate can optionally take `(element, index)`
+* `map(items, transform)` - return a new list with `transform(element)` applied to each element; transform can optionally take `(element, index)`
+* `reduce(items, reducer, initial)` - reduce list to a single value by calling `reducer(accumulator, element)` for each element; reducer can optionally take `(accumulator, element, index)`
 * `Time` - timestamp object; use `Time.wall_now(tz='local')`, `Time.steady_now()`, or `Time.parse(...)` to construct and call instance methods like `format(...)`, `components(...)`, `diff(other)`, `seconds()`, and `microseconds()`
 * `TimeSpan` - duration object; construct via `TimeSpan(...)` or `TimeSpan.from_fields(...)`, query parts with `split()`, `seconds()`, `microseconds()`, and totals such as `total_seconds()` or `human()`
 * `clock(freq)` - create a clock signal at `freq`

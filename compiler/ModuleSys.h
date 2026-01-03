@@ -41,6 +41,9 @@ public:
     Value deserialize_builtin(VM& vm, ArgsView args);
     Value to_json_builtin(VM& vm, ArgsView args);
     Value from_json_builtin(VM& vm, ArgsView args);
+    Value filter_builtin(VM& vm, ArgsView args);
+    Value map_builtin(VM& vm, ArgsView args);
+    Value reduce_builtin(VM& vm, ArgsView args);
 
     // Time type natives
     Value time_init_native(VM& vm, ArgsView args);
