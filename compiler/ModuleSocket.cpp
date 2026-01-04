@@ -221,9 +221,6 @@ void ModuleSocket::registerBuiltins(VM& vm)
 {
     setVM(vm);
 
-    // Start the async worker thread
-    startAsyncThread();
-
     // Module-level functions
     link("tcp", [this](VM&, ArgsView a) { return socket_tcp_builtin(a); });
     link("udp", [this](VM&, ArgsView a) { return socket_udp_builtin(a); });
@@ -244,6 +241,18 @@ void ModuleSocket::registerBuiltins(VM& vm)
     linkMethod("Socket", "getsockname", [this](VM&, ArgsView a) { return socket_getsockname_builtin(a); });
     linkMethod("Socket", "getpeername", [this](VM&, ArgsView a) { return socket_getpeername_builtin(a); });
     linkMethod("Socket", "fileno", [this](VM&, ArgsView a) { return socket_fileno_builtin(a); });
+}
+
+void ModuleSocket::onModuleLoaded(VM& vm)
+{
+    // Start the async worker thread when module is loaded
+    startAsyncThread();
+}
+
+void ModuleSocket::onModuleUnloading(VM& vm)
+{
+    // Stop the async worker thread when module is unloaded
+    stopAsyncThread();
 }
 
 SocketState* ModuleSocket::getSocketState(ObjectInstance* inst)

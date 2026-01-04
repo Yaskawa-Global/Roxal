@@ -70,6 +70,12 @@ void ModuleGrpc::registerBuiltins(VM& vm)
     setVM(vm);
 }
 
+void ModuleGrpc::onModuleLoaded(VM& vm)
+{
+    // Register this module with VM for proto import support
+    vm.grpcModule = this;
+}
+
 void ModuleGrpc::setTarget(const std::string& addr)
 {
     targetAddress = addr;

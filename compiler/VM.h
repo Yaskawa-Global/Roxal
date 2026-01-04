@@ -16,6 +16,7 @@
 #include "InterpretResult.h"
 #include "Thread.h"
 #include "BuiltinModule.h"
+#include "LazyModuleRegistry.h"
 #ifdef ROXAL_ENABLE_FILEIO
 #include "ModuleFileIO.h"
 #endif
@@ -232,6 +233,8 @@ public:
     void defineBuiltinFunctions();
 
 protected:
+    friend class LazyModuleRegistry;  // For lazy module loading
+
     VM();
     ~VM();
 
@@ -291,8 +294,10 @@ protected:
     // global vars cannot be created in the language, but represent builtin symbols available in all modules
     VariablesMap globals;
 
-    // builtin modules
+    // builtin modules (eagerly loaded, e.g. sys)
     std::vector<ptr<BuiltinModule>> builtinModules;
+    // lazy-loaded builtin modules (loaded on first import)
+    LazyModuleRegistry lazyModuleRegistry;
 #ifdef ROXAL_ENABLE_GRPC
     ModuleGrpc* grpcModule { nullptr };
 #endif
