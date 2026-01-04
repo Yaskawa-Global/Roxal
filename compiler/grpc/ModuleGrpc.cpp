@@ -74,6 +74,8 @@ void ModuleGrpc::onModuleLoaded(VM& vm)
 {
     // Register this module with VM for proto import support
     vm.grpcModule = this;
+    for (const auto& path : vm.modulePaths)
+        addProtoPath(path);
 }
 
 void ModuleGrpc::setTarget(const std::string& addr)

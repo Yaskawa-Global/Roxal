@@ -7000,6 +7000,8 @@ void VM::registerBuiltinModule(ptr<BuiltinModule> module)
 Value VM::importProtoModule(const std::string& path)
 {
     if (!grpcModule)
+        lazyModuleRegistry.ensureLoaded(toUnicodeString("grpc"), *this);
+    if (!grpcModule)
         throw std::runtime_error("gRPC module not initialized");
     return grpcModule->importProto(path);
 }
@@ -7007,6 +7009,8 @@ Value VM::importProtoModule(const std::string& path)
 #ifdef ROXAL_ENABLE_DDS
 Value VM::importIdlModule(const std::string& path)
 {
+    if (!ddsModule)
+        lazyModuleRegistry.ensureLoaded(toUnicodeString("dds"), *this);
     if (!ddsModule)
         throw std::runtime_error("DDS module not initialized");
     return ddsModule->importIdl(path);
