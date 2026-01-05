@@ -2434,6 +2434,8 @@ std::any ASTGenerator::visitArgs_or_index_or_accessor(RoxalParser::Args_or_index
             ident = UnicodeString("when");
         else if (context->EMIT())
             ident = UnicodeString("emit");
+        else if (context->MATCH())
+            ident = UnicodeString("match");
         info->accessed = ident;
 
         if (context->OPEN_PAREN()) {

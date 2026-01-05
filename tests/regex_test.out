@@ -1,0 +1,23 @@
+true
+false
+user@host
+["user", "host"]
+0
+nil
+6
+-1
+foo baz
+hellO world
+["a", "b", "c"]
+["one", "two", "three"]
+["hello"]
+["123", "123"]
+["ll"]
+3
+["foo", "bar", "baz"]
+hello there
+fOO bar bOO
+true
+true
+2024-03
+{"month": "03", "year": "2024"}

@@ -1141,3 +1141,197 @@ Use `import fileio` or `import fileio.*`.  See `fileio.sys`.
 * `file_without_extension(path)` - path without the extension
 * `delete_file(path)` - delete a file, returning true if it existed
 * `delete_dir(path, recurse=false)` - delete a directory, optionally recursively
+
+### regex
+
+Regular expression support using PCRE2.
+Use `import regex` or `import regex.*`. See `regex.rox`.
+(only available when built with cmake option ROXAL_ENABLE_REGEX is on)
+
+#### Module Functions
+
+* `compile(pattern, flags='')` - compile a regex pattern and return a `Regex` object
+
+#### Regex Type
+
+The `Regex` type represents a compiled regular expression pattern.
+
+**Constructor:**
+* `Regex(pattern, flags='')` - create a new Regex from pattern string and optional flags
+
+**Methods:**
+* `test(str)` - return `true` if pattern matches anywhere in `str`
+* `exec(str)` - execute match and return a dict with match details, or `nil` if no match
+
+**Flags:**
+| Flag | Description |
+|------|-------------|
+| `'i'` | Case-insensitive matching |
+| `'m'` | Multiline mode (`^` and `$` match line boundaries) |
+| `'s'` | Dotall mode (`.` matches newlines) |
+| `'g'` | Global mode (affects `replace` behavior) |
+
+**exec() Result:**
+
+When `exec()` finds a match, it returns a dict containing:
+* `'match'` - the full matched string
+* `'index'` - the starting position of the match in the input string
+* `'groups'` - a list of captured groups (excluding the full match)
+* `'named'` - a dict of named capture groups (if any)
+
+```php
+import regex.*
+
+var re = Regex('(\\w+)@(\\w+)')
+var m = re.exec('user@host')
+print(m['match'])   // "user@host"
+print(m['index'])   // 0
+print(m['groups'])  // ["user", "host"]
+
+// Named capture groups
+var reNamed = Regex('(?<year>\\d{4})-(?<month>\\d{2})')
+var mNamed = reNamed.exec('2024-03-15')
+print(mNamed['match'])  // "2024-03"
+print(mNamed['named'])  // {"year": "2024", "month": "03"}
+```
+
+#### String Methods
+
+When the regex module is enabled, strings gain the following methods that accept either a `Regex` object or a plain string pattern (which is auto-compiled):
+
+* `match(pattern)` - find matches and return a list, or `nil` if no match
+* `search(pattern)` - return the index of the first match, or `-1` if not found
+* `replace(pattern, replacement)` - replace matches with `replacement` string
+* `split(pattern)` - split string by pattern and return a list
+
+```php
+import regex.*
+
+var str = 'hello world'
+
+// Using Regex objects
+print(str.search(Regex('world')))           // 6
+print(str.match(Regex('\\w+')))             // ["hello"]
+print(str.replace(Regex('world'), 'there')) // "hello there"
+
+// Using plain string patterns (auto-compiled)
+print('a,b,c'.split(','))                   // ["a", "b", "c"]
+print('test123'.match('\\d+'))              // ["123"]
+print('foo bar'.replace('bar', 'baz'))      // "foo baz"
+
+// Global flag for replace-all
+var str2 = 'foo bar boo'
+print(str2.replace(Regex('o', 'g'), 'O'))   // "fOO bar bOO"
+```
+
+### socket
+
+TCP and UDP socket networking support using POSIX sockets.
+Use `import socket` or `import socket.*`. See `socket.rox`.
+(only available when built with cmake option ROXAL_ENABLE_SOCKET is on - enabled by default)
+
+**Key Design**: Blocking operations (`accept`, `connect`, `recv`, `recvfrom`, `gethostbyname`) return futures to avoid blocking. Use `wait(for=future)` or type conversion to resolve/wait.
+
+#### Module Functions
+
+* `tcp()` - create a TCP socket (SOCK_STREAM)
+* `udp()` - create a UDP socket (SOCK_DGRAM)
+* `gethostbyname(hostname)` - resolve hostname to IP address, returns `future<string>`
+
+#### Socket Type
+
+The `Socket` type represents a network socket for TCP or UDP communication.
+
+**Methods:**
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `bind(host, port)` | bool | Bind socket to local address |
+| `listen(backlog=5)` | bool | Start listening for connections (TCP) |
+| `accept()` | future<[Socket, [host, port]]> | Accept incoming connection (TCP) |
+| `connect(host, port)` | future<bool> | Connect to remote address (TCP) |
+| `send(data)` | int | Send data on connected socket (immediate) |
+| `recv(size=4096)` | future<string> | Receive data from connected socket |
+| `sendto(data, host, port)` | int | Send data to address (UDP, immediate) |
+| `recvfrom(size=4096)` | future<[data, host, port]> | Receive data with sender address (UDP) |
+| `close()` | nil | Close the socket |
+| `settimeout(seconds)` | nil | Set timeout (nil=blocking, 0=non-blocking) |
+| `setsockopt(option, value)` | bool | Set socket option |
+| `getsockname()` | [host, port] | Get local address |
+| `getpeername()` | [host, port] | Get remote address |
+| `fileno()` | int | Get underlying file descriptor |
+
+**Socket Options** (for `setsockopt`):
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `'reuseaddr'` | bool | Allow address reuse (SO_REUSEADDR) |
+| `'broadcast'` | bool | Allow broadcast (SO_BROADCAST, UDP) |
+| `'keepalive'` | bool | Enable keepalive (SO_KEEPALIVE, TCP) |
+| `'nodelay'` | bool | Disable Nagle algorithm (TCP_NODELAY) |
+| `'rcvbuf'` | int | Receive buffer size |
+| `'sndbuf'` | int | Send buffer size |
+
+#### Examples
+
+**TCP Echo Client:**
+```php
+import socket
+
+var s = socket.tcp()
+wait(for=s.connect("127.0.0.1", 8080))  // Wait for connection
+s.send("Hello")
+var response = wait(for=s.recv(1024))
+print("Got: " + response)
+s.close()
+```
+
+**TCP Echo Server:**
+```php
+import socket
+
+var server = socket.tcp()
+server.setsockopt("reuseaddr", true)
+server.bind("0.0.0.0", 8080)
+server.listen(5)
+
+while true:
+  client_hostport = server.accept()
+  wait(for=client_hostport)
+  [client, hostport] = client_hostport
+  [host,port] = hostport
+  print("Connection from {host}:{port}")
+  var data = client.recv(1024)
+  wait(for=data)
+  client.send("Echo: " + data)
+  client.close()
+```
+
+**UDP Send/Receive:**
+```php
+import socket
+
+// Sender
+var sender = socket.udp()
+sender.sendto("hello", "127.0.0.1", 9000)
+sender.close()
+
+// Receiver
+var receiver = socket.udp()
+receiver.bind("0.0.0.0", 9000)
+var data_host_port = receiver.recvfrom(1024)
+wait(for=data_host_port)
+[data, host, port] = data_host_port
+print("Received '{data}' from {host}:{port}")
+receiver.close()
+```
+
+**DNS Lookup:**
+```php
+import socket
+
+var ip = socket.gethostbyname("example.com")
+wait(for=ip)
+
+print("IP: " + ip)  // e.g., "104.18.26.120"
+```

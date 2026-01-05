@@ -1,0 +1,68 @@
+import regex.*
+
+// Test Regex constructor and test()
+var re = Regex('foo\\d+', 'i')
+print(re.test('FOO123'))
+print(re.test('bar'))
+
+// Test Regex.exec()
+var m = Regex('(\\w+)@(\\w+)').exec('user@host')
+print(m['match'])
+print(m['groups'])
+print(m['index'])
+
+// Test exec with no match
+var m2 = Regex('xyz').exec('abc')
+print(m2)
+
+// Test string methods with variables (string literals can't have methods called directly)
+var str1 = 'hello world'
+print(str1.search(Regex('world')))
+print(str1.search(Regex('xyz')))
+
+var str2 = 'foo bar'
+print(str2.replace(Regex('bar'), 'baz'))
+
+var str3 = 'hello world'
+print(str3.replace(Regex('o'), 'O'))
+
+var str4 = 'a,b,c'
+print(str4.split(Regex(',')))
+
+var str5 = 'one  two   three'
+print(str5.split(Regex('\\s+')))
+
+var str6 = 'hello world'
+print(str6.match(Regex('\\w+')))
+
+var str7 = 'test123'
+print(str7.match(Regex('(\\d+)')))
+
+// Test with plain string patterns (auto-compile)
+var str8 = 'hello'
+print(str8.match('l+'))
+
+var str9 = 'abc123def'
+print(str9.search('\\d+'))
+
+var str10 = 'foo-bar-baz'
+print(str10.split('-'))
+
+var str11 = 'hello world'
+print(str11.replace('world', 'there'))
+
+// Test global flag for replace
+var reGlobal = Regex('o', 'g')
+var str12 = 'foo bar boo'
+print(str12.replace(reGlobal, 'O'))
+
+// Test case-insensitive flag
+var reCase = Regex('hello', 'i')
+print(reCase.test('HELLO'))
+print(reCase.test('HeLLo'))
+
+// Test named capture groups
+var reNamed = Regex('(?<year>\\d{4})-(?<month>\\d{2})')
+var mNamed = reNamed.exec('2024-03-15')
+print(mNamed['match'])
+print(mNamed['named'])

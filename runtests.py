@@ -197,12 +197,18 @@ fileio_tests = [
     'string_concat_roundtrip', 'actor_concat_stress'
 ]
 dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok', 'dds_array_struct', 'dds_array_multi']
+# UI tests are only added when --ui or --all is passed
+# (feature gating happens later)
 ui_tests = ['ui/label_basic', 'ui/button', 'ui/checkbox', 'ui/switch', 'ui/textarea', 'ui/slider', 'ui/image']
 
 # Add feature-specific tests to the full list; feature gating happens later.
 tests += dds_tests
-# UI tests are only added when --ui or --all is passed
-# (feature gating happens later)
+regex_tests = ['regex_test']
+socket_tests = ['socket_basic']
+
+# Add feature-specific tests to the full list; feature gating happens later.
+tests += regex_tests
+tests += socket_tests
 
 long_running_tests = [
     'gc_stress',
@@ -286,6 +292,8 @@ features = detect_features(roxal)
 has_grpc = 'grpc' in features
 has_fileio = 'fileio' in features
 has_dds = 'dds' in features
+has_regex = 'regex' in features
+has_socket = 'socket' in features
 if not has_grpc and any(test in tests for test in grpc_tests):
     print("Skipping gRPC tests (feature not enabled).")
     tests = [t for t in tests if t not in grpc_tests]
@@ -301,10 +309,18 @@ if not has_ui:
     if any(test in tests for test in ui_tests):
         print("Skipping UI tests (feature not enabled).")
         tests = [t for t in tests if t not in ui_tests]
+if not has_regex:
+    if any(test in tests for test in regex_tests):
+        print("Skipping regex tests (feature not enabled).")
+        tests = [t for t in tests if t not in regex_tests]
+if not has_socket:
+    if any(test in tests for test in socket_tests):
+        print("Skipping socket tests (feature not enabled).")
+        tests = [t for t in tests if t not in socket_tests]
 needs_grpc_server = has_grpc and any(test in tests for test in grpc_server_tests)
 
 env_base = os.environ.copy()
-env_base['ROXALPATH'] = test_dir
+env_base['ROXALPATH'] = project_root + os.pathsep + test_dir
 
 def start_grpc_test_server(env) -> subprocess.Popen:
     script_path = os.path.join(project_root, 'scripts', 'grpc_everything_server.py')
@@ -403,11 +419,9 @@ try:
 
         timeout_secs = GC_STRESS_TIMEOUT_SECS if test == 'gc_stress' else TEST_TIMEOUT_SECS
 
-        # UI tests need project root in ROXALPATH for ui module
         test_env = env_base
         if is_ui_test:
             test_env = env_base.copy()
-            test_env['ROXALPATH'] = project_root + os.pathsep + test_dir
             if args.software_gl:
                 test_env['LIBGL_ALWAYS_SOFTWARE'] = '1'
 

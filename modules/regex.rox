@@ -1,0 +1,50 @@
+@builtin
+func compile(pattern:string, flags:string=''):
+  """Compile a regex pattern. Returns a Regex object.
+
+  Flags:
+    'i' - case-insensitive matching
+    'm' - multiline mode (^ and $ match line boundaries)
+    's' - dotall mode (. matches newlines)
+    'g' - global (affects iteration behavior)
+  """
+
+@builtin
+type Regex object:
+
+  @builtin
+  proc init(pattern:string, flags:string=''):
+    """Create a new Regex from pattern and optional flags.
+
+    Example:
+      var re = Regex('\\d+')
+      var re2 = Regex('hello', 'i')  // case-insensitive
+    """
+
+  @builtin
+  func test(str:string) -> bool:
+    """Return true if pattern matches anywhere in str.
+
+    Example:
+      var re = Regex('\\d+')
+      print(re.test('abc123'))  // true
+      print(re.test('abc'))     // false
+    """
+
+  @builtin
+  func exec(str:string):
+    """Execute match and return details, or nil if no match.
+
+    Returns a dict with:
+      'match' - the full matched string
+      'index' - starting position of match
+      'groups' - list of captured groups
+      'named' - dict of named capture groups (if any)
+
+    Example:
+      var re = Regex('(\\w+)@(\\w+)')
+      var m = re.exec('user@host')
+      print(m['match'])   // 'user@host'
+      print(m['groups'])  // ['user', 'host']
+      print(m['index'])   // 0
+    """

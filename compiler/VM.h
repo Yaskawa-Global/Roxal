@@ -28,6 +28,12 @@
 #ifdef ROXAL_ENABLE_DDS
 #include "dds/ModuleDDS.h"
 #endif
+#ifdef ROXAL_ENABLE_REGEX
+#include "ModuleRegex.h"
+#endif
+#ifdef ROXAL_ENABLE_SOCKET
+#include "ModuleSocket.h"
+#endif
 #include <ffi.h>
 #include <vector>
 
@@ -462,6 +468,13 @@ public:
     Value list_filter_builtin(ArgsView args);
     Value list_map_builtin(ArgsView args);
     Value list_reduce_builtin(ArgsView args);
+
+#ifdef ROXAL_ENABLE_REGEX
+    Value string_match_builtin(ArgsView args);
+    Value string_search_builtin(ArgsView args);
+    Value string_replace_builtin(ArgsView args);
+    Value string_split_builtin(ArgsView args);
+#endif
 
     Value signal_run_builtin(ArgsView args);
     Value signal_stop_builtin(ArgsView args);

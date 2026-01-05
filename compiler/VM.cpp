@@ -43,6 +43,9 @@
 #ifdef ROXAL_ENABLE_DDS
 #include "dds/ModuleDDS.h"
 #endif
+#ifdef ROXAL_ENABLE_REGEX
+#include "RegexWrapper.h"
+#endif
 #include "SimpleMarkSweepGC.h"
 #include <Eigen/Dense>
 #include <core/types.h>
@@ -550,6 +553,12 @@ VM::VM()
     #ifdef ROXAL_ENABLE_DDS
     registerBuiltinModule(make_ptr<ModuleDDS>());
     #endif
+    #ifdef ROXAL_ENABLE_REGEX
+    registerBuiltinModule(make_ptr<ModuleRegex>());
+    #endif
+    #ifdef ROXAL_ENABLE_SOCKET
+    registerBuiltinModule(make_ptr<ModuleSocket>());
+    #endif
 
     #if ENABLE_UI
         registerBuiltinModule(make_ptr<ModuleUI>());
@@ -568,7 +577,6 @@ VM::VM()
     thread = initThread;
     executeBuiltinModuleScript("sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
     executeBuiltinModuleScript("math.rox", getBuiltinModuleType(toUnicodeString("math")));
-
     #ifdef ROXAL_ENABLE_FILEIO
         executeBuiltinModuleScript("fileio.rox", getBuiltinModuleType(toUnicodeString("fileio")));
     #endif
@@ -579,6 +587,12 @@ VM::VM()
 
     #ifdef ROXAL_ENABLE_DDS
         executeBuiltinModuleScript("dds.rox", getBuiltinModuleType(toUnicodeString("dds")));
+    #endif
+    #ifdef ROXAL_ENABLE_REGEX
+        executeBuiltinModuleScript("regex.rox", getBuiltinModuleType(toUnicodeString("regex")));
+    #endif
+    #ifdef ROXAL_ENABLE_SOCKET
+        executeBuiltinModuleScript("socket.rox", getBuiltinModuleType(toUnicodeString("socket")));
     #endif
 
     thread = nullptr;
@@ -5953,6 +5967,13 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::List, "map", std::mem_fn(&VM::list_map_builtin));
     defineBuiltinMethod(ValueType::List, "reduce", std::mem_fn(&VM::list_reduce_builtin));
 
+#ifdef ROXAL_ENABLE_REGEX
+    defineBuiltinMethod(ValueType::String, "match", std::mem_fn(&VM::string_match_builtin));
+    defineBuiltinMethod(ValueType::String, "search", std::mem_fn(&VM::string_search_builtin));
+    defineBuiltinMethod(ValueType::String, "replace", std::mem_fn(&VM::string_replace_builtin));
+    defineBuiltinMethod(ValueType::String, "split", std::mem_fn(&VM::string_split_builtin));
+#endif
+
     defineBuiltinMethod(ValueType::Signal, "run", std::mem_fn(&VM::signal_run_builtin));
     defineBuiltinMethod(ValueType::Signal, "stop", std::mem_fn(&VM::signal_stop_builtin));
     defineBuiltinMethod(ValueType::Signal, "tick", std::mem_fn(&VM::signal_tick_builtin));
@@ -6484,6 +6505,259 @@ Value VM::list_reduce_builtin(ArgsView args)
 
     return accumulator;
 }
+
+#ifdef ROXAL_ENABLE_REGEX
+Value VM::string_match_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isString(args[0]))
+        throw std::invalid_argument("string.match expects regex pattern argument");
+
+    std::string subject = toUTF8StdString(asStringObj(args[0])->s);
+
+    // Get the regex wrapper - either from a Regex object or compile a string pattern
+    RegexWrapper* wrapper = nullptr;
+    bool ownsWrapper = false;
+
+    if (isObjectInstance(args[1])) {
+        ObjectInstance* inst = asObjectInstance(args[1]);
+        Value fpVal = inst->getProperty("_this");
+        if (!fpVal.isNil() && isForeignPtr(fpVal)) {
+            wrapper = static_cast<RegexWrapper*>(asForeignPtr(fpVal)->ptr);
+        }
+    } else if (isString(args[1])) {
+        std::string pattern = toUTF8StdString(asStringObj(args[1])->s);
+        wrapper = ModuleRegex::compilePattern(pattern, "");
+        ownsWrapper = true;
+    }
+
+    if (!wrapper)
+        throw std::invalid_argument("string.match expects Regex object or pattern string");
+
+    pcre2_match_data* matchData = pcre2_match_data_create_from_pattern(wrapper->code, nullptr);
+    int rc = pcre2_match(
+        wrapper->code,
+        reinterpret_cast<PCRE2_SPTR>(subject.c_str()),
+        subject.length(),
+        0, 0, matchData, nullptr
+    );
+
+    if (rc < 0) {
+        pcre2_match_data_free(matchData);
+        if (ownsWrapper) delete wrapper;
+        return Value::nilVal();
+    }
+
+    PCRE2_SIZE* ovector = pcre2_get_ovector_pointer(matchData);
+
+    // Build result list with the match and groups
+    Value resultVal = Value::listVal();
+    ObjList* result = asList(resultVal);
+
+    for (int i = 0; i < rc; i++) {
+        PCRE2_SIZE start = ovector[2*i];
+        PCRE2_SIZE end = ovector[2*i + 1];
+        if (start == PCRE2_UNSET) {
+            result->elts.push_back(Value::nilVal());
+        } else {
+            std::string matchStr = subject.substr(start, end - start);
+            result->elts.push_back(Value::stringVal(toUnicodeString(matchStr)));
+        }
+    }
+
+    pcre2_match_data_free(matchData);
+    if (ownsWrapper) delete wrapper;
+    return resultVal;
+}
+
+Value VM::string_search_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isString(args[0]))
+        throw std::invalid_argument("string.search expects regex pattern argument");
+
+    std::string subject = toUTF8StdString(asStringObj(args[0])->s);
+
+    RegexWrapper* wrapper = nullptr;
+    bool ownsWrapper = false;
+
+    if (isObjectInstance(args[1])) {
+        ObjectInstance* inst = asObjectInstance(args[1]);
+        Value fpVal = inst->getProperty("_this");
+        if (!fpVal.isNil() && isForeignPtr(fpVal)) {
+            wrapper = static_cast<RegexWrapper*>(asForeignPtr(fpVal)->ptr);
+        }
+    } else if (isString(args[1])) {
+        std::string pattern = toUTF8StdString(asStringObj(args[1])->s);
+        wrapper = ModuleRegex::compilePattern(pattern, "");
+        ownsWrapper = true;
+    }
+
+    if (!wrapper)
+        throw std::invalid_argument("string.search expects Regex object or pattern string");
+
+    pcre2_match_data* matchData = pcre2_match_data_create_from_pattern(wrapper->code, nullptr);
+    int rc = pcre2_match(
+        wrapper->code,
+        reinterpret_cast<PCRE2_SPTR>(subject.c_str()),
+        subject.length(),
+        0, 0, matchData, nullptr
+    );
+
+    int64_t index = -1;
+    if (rc >= 0) {
+        PCRE2_SIZE* ovector = pcre2_get_ovector_pointer(matchData);
+        index = static_cast<int64_t>(ovector[0]);
+    }
+
+    pcre2_match_data_free(matchData);
+    if (ownsWrapper) delete wrapper;
+    return Value::intVal(index);
+}
+
+Value VM::string_replace_builtin(ArgsView args)
+{
+    if (args.size() != 3 || !isString(args[0]))
+        throw std::invalid_argument("string.replace expects pattern and replacement arguments");
+
+    std::string subject = toUTF8StdString(asStringObj(args[0])->s);
+
+    RegexWrapper* wrapper = nullptr;
+    bool ownsWrapper = false;
+
+    if (isObjectInstance(args[1])) {
+        ObjectInstance* inst = asObjectInstance(args[1]);
+        Value fpVal = inst->getProperty("_this");
+        if (!fpVal.isNil() && isForeignPtr(fpVal)) {
+            wrapper = static_cast<RegexWrapper*>(asForeignPtr(fpVal)->ptr);
+        }
+    } else if (isString(args[1])) {
+        std::string pattern = toUTF8StdString(asStringObj(args[1])->s);
+        wrapper = ModuleRegex::compilePattern(pattern, "");
+        ownsWrapper = true;
+    }
+
+    if (!wrapper)
+        throw std::invalid_argument("string.replace expects Regex object or pattern string");
+
+    if (!isString(args[2]))
+        throw std::invalid_argument("string.replace expects replacement string");
+
+    std::string replacement = toUTF8StdString(asStringObj(args[2])->s);
+
+    // Use PCRE2 substitute for replacement
+    uint32_t options = PCRE2_SUBSTITUTE_OVERFLOW_LENGTH;
+    if (wrapper->global)
+        options |= PCRE2_SUBSTITUTE_GLOBAL;
+
+    PCRE2_SIZE outlen = subject.length() * 2 + replacement.length() + 1;
+    std::vector<PCRE2_UCHAR> output(outlen);
+
+    int rc = pcre2_substitute(
+        wrapper->code,
+        reinterpret_cast<PCRE2_SPTR>(subject.c_str()),
+        subject.length(),
+        0,  // start offset
+        options,
+        nullptr,  // match data
+        nullptr,  // match context
+        reinterpret_cast<PCRE2_SPTR>(replacement.c_str()),
+        replacement.length(),
+        output.data(),
+        &outlen
+    );
+
+    if (rc == PCRE2_ERROR_NOMEMORY) {
+        // Retry with larger buffer
+        output.resize(outlen + 1);
+        rc = pcre2_substitute(
+            wrapper->code,
+            reinterpret_cast<PCRE2_SPTR>(subject.c_str()),
+            subject.length(),
+            0, options, nullptr, nullptr,
+            reinterpret_cast<PCRE2_SPTR>(replacement.c_str()),
+            replacement.length(),
+            output.data(),
+            &outlen
+        );
+    }
+
+    if (ownsWrapper) delete wrapper;
+
+    if (rc < 0) {
+        // On error, return original string
+        return args[0];
+    }
+
+    std::string result(reinterpret_cast<char*>(output.data()), outlen);
+    return Value::stringVal(toUnicodeString(result));
+}
+
+Value VM::string_split_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isString(args[0]))
+        throw std::invalid_argument("string.split expects regex pattern argument");
+
+    std::string subject = toUTF8StdString(asStringObj(args[0])->s);
+
+    RegexWrapper* wrapper = nullptr;
+    bool ownsWrapper = false;
+
+    if (isObjectInstance(args[1])) {
+        ObjectInstance* inst = asObjectInstance(args[1]);
+        Value fpVal = inst->getProperty("_this");
+        if (!fpVal.isNil() && isForeignPtr(fpVal)) {
+            wrapper = static_cast<RegexWrapper*>(asForeignPtr(fpVal)->ptr);
+        }
+    } else if (isString(args[1])) {
+        std::string pattern = toUTF8StdString(asStringObj(args[1])->s);
+        wrapper = ModuleRegex::compilePattern(pattern, "");
+        ownsWrapper = true;
+    }
+
+    if (!wrapper)
+        throw std::invalid_argument("string.split expects Regex object or pattern string");
+
+    Value resultVal = Value::listVal();
+    ObjList* result = asList(resultVal);
+
+    pcre2_match_data* matchData = pcre2_match_data_create_from_pattern(wrapper->code, nullptr);
+    PCRE2_SIZE offset = 0;
+
+    while (offset < subject.length()) {
+        int rc = pcre2_match(
+            wrapper->code,
+            reinterpret_cast<PCRE2_SPTR>(subject.c_str()),
+            subject.length(),
+            offset, 0, matchData, nullptr
+        );
+
+        if (rc < 0) {
+            // No more matches - add rest of string
+            std::string rest = subject.substr(offset);
+            result->elts.push_back(Value::stringVal(toUnicodeString(rest)));
+            break;
+        }
+
+        PCRE2_SIZE* ovector = pcre2_get_ovector_pointer(matchData);
+        PCRE2_SIZE matchStart = ovector[0];
+        PCRE2_SIZE matchEnd = ovector[1];
+
+        // Add part before match
+        std::string part = subject.substr(offset, matchStart - offset);
+        result->elts.push_back(Value::stringVal(toUnicodeString(part)));
+
+        // Handle zero-length matches
+        if (matchEnd == matchStart) {
+            offset = matchEnd + 1;
+        } else {
+            offset = matchEnd;
+        }
+    }
+
+    pcre2_match_data_free(matchData);
+    if (ownsWrapper) delete wrapper;
+    return resultVal;
+}
+#endif // ROXAL_ENABLE_REGEX
 
 Value VM::signal_run_builtin(ArgsView args)
 {
