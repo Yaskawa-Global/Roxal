@@ -61,6 +61,12 @@ void ModuleDDS::registerBuiltins(VM& vm)
     }
 }
 
+void ModuleDDS::onModuleLoaded(VM& vm)
+{
+    // Register this module with VM for IDL import support
+    vm.ddsModule = this;
+}
+
 Value ModuleDDS::importIdl(const std::string& idlFilename)
 {
     if (!functionsLinked) {

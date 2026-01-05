@@ -33,6 +33,8 @@ public:
     virtual ~ModuleSocket();
 
     void registerBuiltins(VM& vm) override;
+    void onModuleLoaded(VM& vm) override;
+    void onModuleUnloading(VM& vm) override;
 
     inline Value moduleType() const { return moduleTypeValue; }
 

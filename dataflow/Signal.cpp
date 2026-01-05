@@ -324,11 +324,11 @@ ptr<Signal> Signal::indexedSignal(int index)
 
     Value initial;
     try {
-        auto engine = DataflowEngine::instance(false);
-        std::optional<TimePoint> currentTick = std::nullopt;
-        if (engine)
-            currentTick = engine->tickStart();
-        initial = valueAtIndex(index, currentTick);
+        // Use the signal's latest sample time as reference, not the engine's
+        // tickStart. The tickStart is the *next* tick boundary, but we want to
+        // index relative to the signal's actual current value.
+        TimePoint reference = latestSampleTime();
+        initial = valueAtIndex(index, reference);
     } catch(...) {
         initial = Value();
     }

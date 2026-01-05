@@ -97,6 +97,9 @@ public:
     // The last value before a specific time
     Value lastValueBefore(TimePoint t) const;
 
+    // number of stored history values
+    size_t valuesCount() const { return values.size(); }
+
 protected:
     Signal(double freq, Value initial, std::optional<std::string> name = {});
 
