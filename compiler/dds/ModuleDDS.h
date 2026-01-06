@@ -25,6 +25,7 @@ public:
     ~ModuleDDS() override;
 
     void registerBuiltins(VM& vm) override;
+    void onModuleLoaded(VM& vm) override;
     void initialize() override {};
     Value moduleType() const override { return moduleTypeValue; }
 

@@ -17,7 +17,10 @@ public:
     ModuleGrpc();
     ~ModuleGrpc() override;
 
+    virtual bool hasModuleScript() const { return false; }
+
     void registerBuiltins(VM& vm) override;
+    void onModuleLoaded(VM& vm) override;
 
     inline Value moduleType() const override { return moduleTypeValue; }
 

@@ -540,28 +540,30 @@ VM::VM()
     thread = nullptr;
     initString = Value::stringVal(UnicodeString("init"));
 
+    // Eagerly load sys & math modules
     registerBuiltinModule(make_ptr<ModuleSys>());
     registerBuiltinModule(make_ptr<ModuleMath>());
 
+    // Register factories for lazy-loaded modules (loaded on first import)
     #ifdef ROXAL_ENABLE_FILEIO
-        registerBuiltinModule(make_ptr<ModuleFileIO>());
+    lazyModuleRegistry.registerFactory("fileio", []{ return make_ptr<ModuleFileIO>(); });
     #endif
 
     #ifdef ROXAL_ENABLE_GRPC
-    registerBuiltinModule(make_ptr<ModuleGrpc>());
+    lazyModuleRegistry.registerFactory("grpc", []{ return make_ptr<ModuleGrpc>(); });
     #endif
     #ifdef ROXAL_ENABLE_DDS
-    registerBuiltinModule(make_ptr<ModuleDDS>());
+    lazyModuleRegistry.registerFactory("dds", []{ return make_ptr<ModuleDDS>(); });
     #endif
     #ifdef ROXAL_ENABLE_REGEX
-    registerBuiltinModule(make_ptr<ModuleRegex>());
+    lazyModuleRegistry.registerFactory("regex", []{ return make_ptr<ModuleRegex>(); });
     #endif
     #ifdef ROXAL_ENABLE_SOCKET
-    registerBuiltinModule(make_ptr<ModuleSocket>());
+    lazyModuleRegistry.registerFactory("socket", []{ return make_ptr<ModuleSocket>(); });
     #endif
 
     #if ENABLE_UI
-        registerBuiltinModule(make_ptr<ModuleUI>());
+    lazyModuleRegistry.registerFactory("ui", []{ return make_ptr<ModuleUI>(); });
     #endif
 
     std::vector<std::string> stagedModulePaths;
@@ -572,36 +574,22 @@ VM::VM()
     appendModulePaths(stagedModulePaths);
     appendModulePaths(VM::defaultModuleSearchPaths());
 
-    // Execute builtin module scripts to attach declarations and docs
+    // Execute builtin module script for sys & math
+    // Other modules' .rox files are executed during lazy loading
     ptr<Thread> initThread = make_ptr<Thread>();
     thread = initThread;
     executeBuiltinModuleScript("sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
     executeBuiltinModuleScript("math.rox", getBuiltinModuleType(toUnicodeString("math")));
-    #ifdef ROXAL_ENABLE_FILEIO
-        executeBuiltinModuleScript("fileio.rox", getBuiltinModuleType(toUnicodeString("fileio")));
-    #endif
-
-    #if ENABLE_UI
-        executeBuiltinModuleScript("ui/ui.rox", getBuiltinModuleType(toUnicodeString("ui")));
-    #endif
-
-    #ifdef ROXAL_ENABLE_DDS
-        executeBuiltinModuleScript("dds.rox", getBuiltinModuleType(toUnicodeString("dds")));
-    #endif
-    #ifdef ROXAL_ENABLE_REGEX
-        executeBuiltinModuleScript("regex.rox", getBuiltinModuleType(toUnicodeString("regex")));
-    #endif
-    #ifdef ROXAL_ENABLE_SOCKET
-        executeBuiltinModuleScript("socket.rox", getBuiltinModuleType(toUnicodeString("socket")));
-    #endif
-
     thread = nullptr;
 
     // Reset thread ids so the first real VM thread starts at 2
     Thread::resetIdCounter(1);
 
     // Initialize dataflow engine as builtin actor
+    //  NB: the math module creates _vecSignal example, which may have created dataflow instance already
+    //      (which is the reason math is eagerly loaded still - the init order appears to impact clock signals)
     dataflowEngine = df::DataflowEngine::instance();
+    dataflowEngine->markNetworkModified();
     auto dataflowType = newObjectTypeObj(toUnicodeString("_DataflowEngine"), true);
     Value dataflowTypeVal { Value::objVal(std::move(dataflowType)) };
     dataflowEngineActor = Value::actorInstanceVal(dataflowTypeVal);
@@ -752,7 +740,13 @@ VM::~VM()
     }
     builtinMethods.clear();
 
+    // Call unloading hook for all loaded modules before clearing
+    for (auto& mod : builtinModules) {
+        if (mod)
+            mod->onModuleUnloading(*this);
+    }
     builtinModules.clear();
+    lazyModuleRegistry.clear();
 
     conditionalInterruptClosure = Value::nilVal();
 
@@ -6908,6 +6902,7 @@ Value VM::ffi_native(ArgsView args)
 
 ptr<BuiltinModule> VM::getBuiltinModule(const icu::UnicodeString& name)
 {
+    // Check eagerly-loaded modules first (e.g., sys)
     for (auto& m : builtinModules) {
         Value mt = m->moduleType();
         if (mt.isNil() || !isModuleType(mt))
@@ -6915,11 +6910,14 @@ ptr<BuiltinModule> VM::getBuiltinModule(const icu::UnicodeString& name)
         if (asModuleType(mt)->name == name)
             return m;
     }
-    return nullptr;
+
+    // Check lazy registry and trigger loading if registered
+    return lazyModuleRegistry.ensureLoaded(name, *this);
 }
 
 Value VM::getBuiltinModuleType(const icu::UnicodeString& name)
 {
+    // Check eagerly-loaded modules first
     for (auto& m : builtinModules) {
         Value mt = m->moduleType();
         if (mt.isNil() || !isModuleType(mt))
@@ -6927,6 +6925,14 @@ Value VM::getBuiltinModuleType(const icu::UnicodeString& name)
         if (asModuleType(mt)->name == name)
             return mt;
     }
+
+    // Check lazy registry and trigger loading if registered
+    if (lazyModuleRegistry.isRegistered(name)) {
+        auto mod = lazyModuleRegistry.ensureLoaded(name, *this);
+        if (mod)
+            return mod->moduleType();
+    }
+
     return Value::nilVal();
 }
 
@@ -7028,18 +7034,8 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
 
 void VM::registerBuiltinModule(ptr<BuiltinModule> module)
 {
-    #ifdef ROXAL_ENABLE_GRPC
-    if (!grpcModule) {
-        if (auto gm = dynamic_ptr_cast<ModuleGrpc>(module))
-            grpcModule = gm.get();
-    }
-    #endif
-    #ifdef ROXAL_ENABLE_DDS
-    if (!ddsModule) {
-        if (auto dm = dynamic_ptr_cast<ModuleDDS>(module))
-            ddsModule = dm.get();
-    }
-    #endif
+    // Note: Module-specific pointer registration (grpcModule, ddsModule) is now
+    // handled by onModuleLoaded() hooks, called during lazy loading
     builtinModules.push_back(module);
     if (module) {
         appendModulePaths(module->additionalModulePaths());
@@ -7112,6 +7108,8 @@ int64_t ModulePoller::minIntervalMicros() const
 Value VM::importProtoModule(const std::string& path)
 {
     if (!grpcModule)
+        lazyModuleRegistry.ensureLoaded(toUnicodeString("grpc"), *this);
+    if (!grpcModule)
         throw std::runtime_error("gRPC module not initialized");
     return grpcModule->importProto(path);
 }
@@ -7119,6 +7117,8 @@ Value VM::importProtoModule(const std::string& path)
 #ifdef ROXAL_ENABLE_DDS
 Value VM::importIdlModule(const std::string& path)
 {
+    if (!ddsModule)
+        lazyModuleRegistry.ensureLoaded(toUnicodeString("dds"), *this);
     if (!ddsModule)
         throw std::runtime_error("DDS module not initialized");
     return ddsModule->importIdl(path);

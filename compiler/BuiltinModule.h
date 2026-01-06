@@ -22,6 +22,13 @@ class BuiltinModule {
 public:
     virtual ~BuiltinModule() {};
 
+    // True if a <module-bame>.rox script for this module should be executed on import
+    virtual bool hasModuleScript() const { return true; }
+
+    // Optional override to customize the .rox script path for this module.
+    // Default is empty, which resolves to "<module-name>.rox".
+    virtual std::string moduleScriptPath() const { return {}; }
+
     // must call setVM(vm) then register builtin module funcs and methods
     virtual void registerBuiltins(VM& vm) = 0;
 
@@ -30,6 +37,14 @@ public:
 
     virtual Value moduleType() const = 0; // ObjModuleType
     virtual std::vector<std::string> additionalModulePaths() const { return {}; }
+
+    // Called after module is fully loaded (after registerBuiltins).
+    // Use for: registering special VM pointers, starting background threads.
+    virtual void onModuleLoaded(VM& vm) {}
+
+    // Called during VM shutdown, before destructor.
+    // Use for: stopping background threads, cleanup.
+    virtual void onModuleUnloading(VM& vm) {}
 
 protected:
     // only valid after call to setVM() in registerBuiltins(VM&)

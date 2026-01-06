@@ -53,6 +53,7 @@ public:
     virtual void initialize();
 
     inline Value moduleType() const { return moduleTypeValue; }
+    std::string moduleScriptPath() const override { return "ui/ui.rox"; }
 
     Value uiType(const std::string& typeName);
 

@@ -6,7 +6,7 @@
 
 namespace roxal {
 
-// Forward declaration - defined in ModuleRegex.cpp
+// Forward declaration
 struct RegexWrapper;
 
 class ModuleRegex : public BuiltinModule {
