@@ -5,6 +5,7 @@ import sys
 import socket
 import subprocess
 import argparse
+import fnmatch
 import re
 import time
 from typing import Set
@@ -25,6 +26,7 @@ parser.add_argument('--nocache', action='store_true', help='Disable reading and 
 parser.add_argument('--nogc', action='store_true', help='Disable Roxal garbage collection during tests')
 parser.add_argument('--recompile', action='store_true', help='Force Roxal to recompile input scripts on each run')
 parser.add_argument('--build', action='store_true', help='Invoke cmake --build before running the tests')
+parser.add_argument('--test', '-t', type=str, metavar='PATTERN', help='Only run tests matching PATTERN (shell-style wildcards: * ? [seq])')
 args = parser.parse_args()
 
 
@@ -167,6 +169,13 @@ if include_convs:
 
 if args.all:
     tests += long_running_tests
+
+# Filter tests by pattern if --test is specified
+if args.test:
+    pattern = args.test
+    tests = [t for t in tests if fnmatch.fnmatch(t, pattern)]
+    if not tests:
+        raise SystemExit(f"No tests match pattern: {pattern}")
 
 project_root = os.path.dirname(os.path.abspath(__file__))
 test_dir = os.path.join(project_root, 'tests')
@@ -429,8 +438,10 @@ finally:
 
 total_duration = time.perf_counter() - total_start_time
 failed_unexpected_count = len(unexpected_failures)
+expected_fail_count = len([t for t in failing_tests if t in tests])
+expected_fail_msg = f" ({expected_fail_count} were expected to fail)" if expected_fail_count > 0 else ""
 print()
-print(f"{passed_count} tests passed, {failed_unexpected_count} "+('FAILED' if failed_unexpected_count>0 else 'failed')+f" unexpectedly ({len(failing_tests)} were expected to fail)")
+print(f"{passed_count} tests passed, {failed_unexpected_count} "+('FAILED' if failed_unexpected_count>0 else 'failed')+f" unexpectedly{expected_fail_msg}")
 if unexpected_failures:
     print(f"Unexpected failures: {', '.join(unexpected_failures)}")
 print(f"Total time {total_duration:.2f} s")
