@@ -167,6 +167,7 @@ list(APPEND COMPILER_SOURCES compiler/ModuleMath.cpp)
 list(APPEND COMPILER_SOURCES compiler/ModuleSys.cpp)
 list(APPEND COMPILER_SOURCES compiler/LazyModuleRegistry.cpp)
 list(APPEND COMPILER_SOURCES compiler/RuntimeConfig.cpp)
+list(APPEND COMPILER_SOURCES compiler/RTCallbackManager.cpp)
 
 if(ROXAL_ENABLE_FILEIO)
     list(APPEND COMPILER_SOURCES compiler/ModuleFileIO.cpp)

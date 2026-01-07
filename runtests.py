@@ -147,6 +147,7 @@ tests += socket_tests
 
 long_running_tests = [
     'gc_stress',
+    'rtcallback_test',
 ]
 
 # implementation doesn't yet allow these tests to pass (do not add to this list without human consent)

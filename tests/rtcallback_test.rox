@@ -1,0 +1,26 @@
+// RT Callback timing test
+// Tests the RTCallbackManager by registering a callback and measuring jitter
+// The callback runs during VM loop execution, invoked between instructions
+
+print('Running RT callback timing test...')
+
+// Register the test callback (1ms interval)
+_runtests('rtcallback_start')
+
+// Simulate realistic workload: computation loop with periodic short waits
+// This exercises the VM instruction loop while callbacks should fire
+var sum = 0
+for i in range(..<100):
+  // Do some computation (pure VM bytecode execution)
+  for j in range(..<1000):
+    sum = sum + j * i
+  // Short wait to allow time to pass (5ms each, ~500ms total)
+  wait(ms=5)
+
+// Final short wait to ensure last callbacks complete
+wait(ms=50)
+
+// Get results and check pass/fail
+_runtests('rtcallback_results')
+
+print('RT callback test complete')

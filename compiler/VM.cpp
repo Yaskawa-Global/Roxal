@@ -47,6 +47,7 @@
 #include "RegexWrapper.h"
 #endif
 #include "SimpleMarkSweepGC.h"
+#include "RTCallbackManager.h"
 #include <Eigen/Dense>
 #include <core/types.h>
 #include <core/common.h>
@@ -954,6 +955,13 @@ InterpretResult VM::interpretLine(std::istream& linestream,
     }
 
     thread = replThread;
+
+    // Establish RT main thread for REPL mode (runs on current C++ thread, not spawned)
+    auto& rtMgr = RTCallbackManager::instance();
+    if (!rtMgr.isMainThreadSet()) {
+        rtMgr.setMainThread();
+    }
+
     resetStack();
 
     auto resultPair = callAndExec(asClosure(closure), {});
@@ -2994,6 +3002,9 @@ std::pair<InterpretResult,Value> VM::execute()
     // Track execution depth for nested calls
     thread->execute_depth++;
     size_t frame_depth_on_entry = thread->frames.size();
+
+    // Reference to RT callback manager for instruction loop callback checks
+    auto& rtMgr = RTCallbackManager::instance();
 
     auto frame { thread->frames.end()-1 };
 
@@ -5299,6 +5310,12 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
         }
 
+        // RT Callback check - after every instruction for ±10μs accuracy
+        // mayNeedInvocation() returns false immediately if not main thread or no callbacks
+        if (rtMgr.mayNeedInvocation()) {
+            rtMgr.checkAndInvokeCallbacks(TimePoint::currentTime());
+        }
+
         postInstructionDispatch:
 
         if (valueGC.isCollectionRequested()) {
@@ -5309,13 +5326,34 @@ std::pair<InterpretResult,Value> VM::execute()
         //  or until we get a wakeup signal (for a possible event)
         // if we've slept for long enough, reset the flag and continue execution
         if (thread->threadSleep) {
-            if (TimePoint::currentTime() >= thread->threadSleepUntil) {
+            auto now = TimePoint::currentTime();
+            if (now >= thread->threadSleepUntil) {
                 thread->threadSleep = false;
             }
             else {
-                auto remainingSleepTime = thread->threadSleepUntil - TimePoint::currentTime();
-                std::unique_lock<std::mutex> lk(thread->sleepMutex);
-                bool timedout = (thread->sleepCondVar.wait_for(lk, std::chrono::microseconds(remainingSleepTime.microSecs())) == std::cv_status::timeout);
+                auto sleepTarget = thread->threadSleepUntil.load();
+
+                // If RT callbacks are registered, wake at their deadline instead
+                // so we can service them promptly even while sleeping
+                if (rtMgr.hasCallbacks()) {
+                    auto rtDeadline = rtMgr.nextDeadline();
+                    if (rtDeadline < sleepTarget) {
+                        sleepTarget = rtDeadline;
+                    }
+                }
+
+                auto waitTime = sleepTarget - now;
+                if (waitTime.microSecs() > 0) {
+                    std::unique_lock<std::mutex> lk(thread->sleepMutex);
+                    thread->sleepCondVar.wait_for(lk,
+                        std::chrono::microseconds(waitTime.microSecs()));
+                }
+
+                // Invoke any due RT callbacks after waking
+                if (rtMgr.hasCallbacks()) {
+                    rtMgr.checkAndInvokeCallbacks(TimePoint::currentTime());
+                }
+                // Note: threadSleep stays true if we haven't reached original sleep target
             }
         }
 

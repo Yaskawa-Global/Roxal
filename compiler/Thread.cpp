@@ -1,6 +1,7 @@
 #include "Thread.h"
 #include "VM.h"
 #include "Object.h"
+#include "RTCallbackManager.h"
 #include <algorithm>
 #include <iostream>
 
@@ -106,6 +107,13 @@ void Thread::spawn(Value closure)
             auto& vm { VM::instance() };
 
             vm.thread = ptr_from_this(); // set thread local storage member
+
+            // Establish this spawned thread as the RT main thread for callbacks
+            // (only for non-actor threads, and only if not already set)
+            auto& rtMgr = RTCallbackManager::instance();
+            if (!rtMgr.isMainThreadSet() && !isActorThread()) {
+                rtMgr.setMainThread();
+            }
 
             vm.resetStack();
             push(closure);

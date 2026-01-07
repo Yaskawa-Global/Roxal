@@ -1,0 +1,4 @@
+Running RT callback timing test...
+rtcallback_start: registered 1ms callback
+rtcallback PASSED
+RT callback test complete

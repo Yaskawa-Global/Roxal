@@ -3,6 +3,7 @@
 #include "Object.h"
 #include "Chunk.h"
 #include "SimpleMarkSweepGC.h"
+#include "RTCallbackManager.h"
 #include "core/AST.h"
 #include <core/json11.h>
 #include <core/TimePoint.h>
@@ -26,6 +27,7 @@
 #include <locale>
 #include <stdexcept>
 #include <future>
+#include <numeric>
 
 using namespace roxal;
 
@@ -987,6 +989,122 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
         }
 
         std::cout << "Passed " << passes << " failed " << fails << std::endl;
+    }
+    else if (suite == "rtcallback_start" || suite == "rtcallback_results") {
+        // RT Callback timing test
+        // rtcallback_start: Registers a callback that collects timing data
+        // rtcallback_results: Unregisters callback and reports final statistics
+        // The Roxal script should call wait() between start and results
+
+        auto& rtMgr = RTCallbackManager::instance();
+
+        // Shared state between start and results (static persists across calls)
+        static const int64_t intervalUs = 1000;      // 1ms interval
+        static const int64_t maxAcceptableJitterUs = 500; // Output error if lateness > 500us (non-RT system)
+
+        struct TimingSample {
+            int64_t scheduledUs;
+            int64_t actualUs;
+            int64_t latenessUs;
+        };
+        static std::vector<TimingSample> samples;
+        static std::mutex sampleMutex;
+        static RTCallbackHandle testHandle = InvalidRTCallbackHandle;
+        static bool hadError = false;
+
+        if (suite == "rtcallback_start") {
+            // Clear any previous test data
+            {
+                std::lock_guard<std::mutex> lock(sampleMutex);
+                samples.clear();
+                samples.reserve(1000);  // Pre-allocate for ~1 second of samples
+                hadError = false;
+            }
+
+            // Unregister any previous callback
+            if (testHandle != InvalidRTCallbackHandle) {
+                rtMgr.unregisterCallback(testHandle);
+                testHandle = InvalidRTCallbackHandle;
+            }
+
+            // Register the test callback
+            testHandle = rtMgr.registerCallback(
+                [](TimePoint scheduledTime) {
+                    auto now = TimePoint::currentTime();
+                    int64_t scheduledUs = scheduledTime.microSecs();
+                    int64_t actualUs = now.microSecs();
+                    int64_t latenessUs = actualUs - scheduledUs;
+
+                    std::lock_guard<std::mutex> lock(sampleMutex);
+                    samples.push_back({scheduledUs, actualUs, latenessUs});
+
+                    // Output error immediately if jitter is too high
+                    if (latenessUs > maxAcceptableJitterUs) {
+                        std::cerr << "RT JITTER ERROR: lateness=" << latenessUs
+                                  << "us > " << maxAcceptableJitterUs << "us threshold" << std::endl;
+                        hadError = true;
+                    }
+                },
+                intervalUs,
+                0  // No abort on lateness for testing
+            );
+
+            std::cout << "rtcallback_start: registered 1ms callback" << std::endl;
+        }
+        else { // rtcallback_results
+            // Unregister the callback
+            if (testHandle != InvalidRTCallbackHandle) {
+                rtMgr.unregisterCallback(testHandle);
+                testHandle = InvalidRTCallbackHandle;
+            }
+
+            // Analyze results
+            std::lock_guard<std::mutex> lock(sampleMutex);
+
+            if (samples.empty()) {
+                std::cerr << "rtcallback FAILED: No callback invocations recorded" << std::endl;
+                return Value::nilVal();
+            }
+
+            // Calculate statistics
+            int64_t minLateness = std::numeric_limits<int64_t>::max();
+            int64_t maxLateness = std::numeric_limits<int64_t>::min();
+            int64_t sumLateness = 0;
+
+            for (const auto& s : samples) {
+                minLateness = std::min(minLateness, s.latenessUs);
+                maxLateness = std::max(maxLateness, s.latenessUs);
+                sumLateness += s.latenessUs;
+            }
+
+            double meanLateness = static_cast<double>(sumLateness) / samples.size();
+
+            // Calculate standard deviation (jitter)
+            double sumSquaredDiff = 0;
+            for (const auto& s : samples) {
+                double diff = s.latenessUs - meanLateness;
+                sumSquaredDiff += diff * diff;
+            }
+            double stddevLateness = std::sqrt(sumSquaredDiff / samples.size());
+
+            // Final pass/fail based on max lateness
+            bool passed = (maxLateness < maxAcceptableJitterUs) && !hadError;
+            if (passed) {
+                // On success, output fixed string to stdout (for .out matching)
+                std::cout << "rtcallback PASSED" << std::endl;
+            } else {
+                // On failure, output detailed stats to stderr (test will fail)
+                std::cerr << "rtcallback FAILED" << std::endl;
+                std::cerr << "  Invocations: " << samples.size() << std::endl;
+                std::cerr << "  Min lateness: " << minLateness << " us" << std::endl;
+                std::cerr << "  Max lateness: " << maxLateness << " us" << std::endl;
+                std::cerr << "  Mean lateness: " << std::fixed << std::setprecision(1)
+                          << meanLateness << " us" << std::endl;
+                std::cerr << "  Jitter (stddev): " << std::fixed << std::setprecision(1)
+                          << stddevLateness << " us" << std::endl;
+                std::cerr << "  Threshold: " << maxAcceptableJitterUs << " us" << std::endl;
+            }
+        }
     }
 
     return Value::nilVal();
