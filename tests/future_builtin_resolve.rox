@@ -1,0 +1,34 @@
+// Test that builtin functions (len, filter, map, reduce) correctly
+// handle future arguments via the resolveArgMask mechanism.
+// An actor method returns a list after a short delay, so the caller
+// receives a future.  Passing that future directly to builtins should
+// block (non-blocking yield) until the list is available.
+
+type Provider actor:
+
+  func getList() -> list:
+    wait(ms=100)
+    return [10, 20, 30, 40, 50]
+
+p = Provider()
+futList = p.getList()
+
+// len() on a future list
+print('len='+len(futList))
+
+// filter() on a future list
+futList2 = p.getList()
+evens = filter(futList2, func(x): x > 20)
+print('filter='+evens)
+
+// map() on a future list
+futList3 = p.getList()
+doubled = map(futList3, func(x): x * 2)
+print('map='+doubled)
+
+// reduce() on a future list
+futList4 = p.getList()
+total = reduce(futList4, func(acc, x): acc + x, 0)
+print('reduce='+total)
+
+print('done')

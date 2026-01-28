@@ -102,7 +102,7 @@ tests = [
     'annot1', 'generic', 'objscopes',
     'threads1', 'fork_upvalue_error', 'fork_no_upvalues',
     'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8', 'actor9',
-    'actor_init', 'actor_stack', 'actor_future', 'future_ready',
+    'actor_init', 'actor_stack', 'actor_future', 'future_ready', 'future_builtin_resolve',
     'actor_method_order',
     'actor_closure1', 'actor_closure2', 'actor_closure3',
     'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4',
