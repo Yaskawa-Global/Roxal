@@ -2590,6 +2590,11 @@ Value VM::opReturn()
 {
     auto returningFrame { thread->frames.back() };
 
+    // Flag event handler return so processEventDispatch() can advance
+    // to the next handler.
+    if (returningFrame.isEventHandler)
+        thread->eventHandlerJustReturned = true;
+
     Value result = pop();
     closeUpvalues(returningFrame.slots);
 
@@ -4990,8 +4995,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                     ObjSignal* sigObj = asSignal(eventVal);
                     ev = sigObj->ensureChangeEventType();
+                    Value signalVal = eventVal; // save signal ref before overwriting
                     eventVal = sigObj->changeEventType;
-                    thread->eventToSignal[eventVal.weakRef()] = eventVal.weakRef();
+                    thread->eventToSignal[eventVal.weakRef()] = signalVal.weakRef();
                 } else if (isEventType(eventVal)) {
                     if (matchOnBecomes) {
                         runtimeError("'becomes' is only valid with signals");
@@ -5371,11 +5377,11 @@ std::pair<InterpretResult,Value> VM::execute()
             }
         }
 
-        if (!processPendingEvents())
+        if (!processEventDispatch())
             return errorReturn;
 
-        // Refresh frame pointer after processing events, as nested execute() calls
-        // from event handlers may have modified the frame stack
+        // Refresh frame pointer after processing events, as event handler
+        // frames may have been pushed onto or popped from the frame stack
         if (!thread->frames.empty())
             frame = thread->frames.end()-1;
 
@@ -5522,9 +5528,211 @@ bool VM::processPendingEvents()
     return true;
 }
 
+
+bool VM::invokeNextEventHandler()
+{
+    auto& dispatch = thread->eventDispatch;
+    auto& tev = dispatch.currentEvent;
+
+    while (dispatch.nextHandlerIndex < dispatch.handlerSnapshot.size()) {
+        const auto& handler = dispatch.handlerSnapshot[dispatch.nextHandlerIndex];
+        dispatch.nextHandlerIndex++;
+
+        // Check target filter before invoking handler
+        if (handler.targetFilter.has_value() && isEventInstance(tev.instance)) {
+            auto* inst = asEventInstance(tev.instance);
+            static const int32_t targetHash = toUnicodeString("target").hashCode();
+            auto it = inst->payload.find(targetHash);
+            if (it == inst->payload.end()) {
+                continue;  // No target property, skip this handler
+            }
+            const Value& eventTarget = it->second;
+            if (!eventTarget.equals(handler.targetFilter.value(), /*strict=*/false)) {
+                continue;  // Target doesn't match filter, skip this handler
+            }
+        }
+
+        // Check matchValue filter for 'becomes' handlers
+        if (handler.matchValue.has_value() && isEventInstance(tev.instance)) {
+            auto* inst = asEventInstance(tev.instance);
+            static const int32_t valueHash = toUnicodeString("value").hashCode();
+            auto it = inst->payload.find(valueHash);
+            if (it == inst->payload.end()) {
+                continue;
+            }
+            const Value& sample = it->second;
+            if (!sample.equals(handler.matchValue.value(), /*strict=*/false)) {
+                continue;
+            }
+        }
+
+        // ConditionalInterrupt: handle inline (no frame push needed)
+        if (handler.closure == conditionalInterruptClosure) {
+            bool raise = true;
+            auto sigIt = thread->eventToSignal.find(tev.eventType);
+            if (sigIt != thread->eventToSignal.end()) {
+                Value sigVal = sigIt->second;
+                if (!sigVal.isAlive()) {
+                    thread->eventToSignal.erase(sigIt);
+                    raise = false;
+                } else {
+                    Value sigStrong = sigVal.strongRef();
+                    if (!sigStrong.isNil() && isSignal(sigStrong)) {
+                        ObjSignal* sigObj = asSignal(sigStrong);
+                        Value cur = sigObj->signal->lastValue();
+                        if (cur.isBool() && cur.asBool()) {
+                            raise = true;
+                        } else {
+                            raise = false;
+                        }
+                    } else {
+                        raise = false;
+                    }
+                }
+            }
+            if (raise) {
+                // Finish the dispatch before raising the exception so that
+                // unwindFrame does not need to clear it redundantly.
+                dispatch.active = false;
+                // Clear threadSleep so the exception handler runs immediately
+                // (matches original processPendingEvents behaviour where
+                // threadSleep was set to false before every handler).
+                thread->threadSleep = false;
+                Value excType = globals.load(toUnicodeString("ConditionalInterrupt")).value();
+                Value exc = Value::exceptionVal(Value::nilVal(), excType);
+                raiseException(exc);
+                // raiseException modified the frame/IP state directly;
+                // return true so execute() continues with the exception handler.
+                return true;
+            }
+            continue;
+        }
+
+        auto closureObj = asClosure(handler.closure);
+
+        // Skip handler if closure has been cleaned up (function is nil)
+        if (closureObj->function.isNil()) {
+            continue;
+        }
+
+        // Save sleep state before invoking handler
+        dispatch.prevThreadSleep = thread->threadSleep.load();
+        dispatch.prevThreadSleepUntil = thread->threadSleepUntil.load();
+        thread->threadSleep = false;
+
+        // Push closure + args (same stack layout as callAndExec / OpCode::Call)
+        int arity = asFunction(closureObj->function)->arity;
+        push(Value::objRef(closureObj));
+        if (arity > 0) {
+            if (tev.instance.isNil()) {
+                pop(); // pop closure
+                continue;
+            }
+            Value strongInstance = tev.instance.strongRef();
+            if (strongInstance.isNil() || !isEventInstance(strongInstance)) {
+                pop(); // pop closure
+                continue;
+            }
+            push(strongInstance);
+        }
+
+        CallSpec spec(arity > 0 ? 1 : 0);
+        if (!call(closureObj, spec))
+            return false;
+
+        // Mark the new frame as an event handler so opReturn can flag it
+        thread->frames.back().isEventHandler = true;
+        return true;  // frame pushed; main loop will execute it
+    }
+
+    return false;  // no more applicable handlers
+}
+
+
+bool VM::processEventDispatch()
+{
+    if (exitRequested.load()) return false;
+
+    auto& dispatch = thread->eventDispatch;
+
+    // Phase 1: If an event handler just returned, clean up and try the next handler
+    if (thread->eventHandlerJustReturned) {
+        thread->eventHandlerJustReturned = false;
+
+        // Discard the handler's return value (event handlers are procs → nil)
+        pop();
+
+        assert(!thread->threadSleep);
+
+        // Restore sleep state that was saved before the handler was invoked
+        thread->threadSleep = dispatch.prevThreadSleep;
+        thread->threadSleepUntil = dispatch.prevThreadSleepUntil;
+
+        // Try to invoke the next handler for the current event
+        if (invokeNextEventHandler())
+            return true;  // next handler frame pushed
+
+        // All handlers for this event have been processed
+        dispatch.active = false;
+    }
+
+    // Phase 2: Check for new pending events
+    if (thread->pendingEventCount.load(std::memory_order_acquire) == 0)
+        return true;
+
+    Thread::PendingEvent tev;
+
+    // Drop events that are no longer alive or have no handlers
+    while(thread->pendingEvents.pop_if([&](const Thread::PendingEvent& e){
+                return !e.eventType.isAlive() ||
+                        thread->eventHandlers.count(e.eventType) == 0;
+            }, tev)) {
+        size_t previous = thread->pendingEventCount.fetch_sub(1, std::memory_order_acq_rel);
+        assert(previous > 0);
+        thread->eventHandlers.erase(tev.eventType);
+    }
+
+    if (thread->pendingEventCount.load(std::memory_order_acquire) == 0)
+        return true;
+
+    auto now = TimePoint::currentTime();
+    if (thread->pendingEvents.pop_if([&](const Thread::PendingEvent& e){
+            return e.when <= now && e.eventType.isAlive() &&
+                    thread->eventHandlers.count(e.eventType) > 0;
+        }, tev)) {
+        size_t previous = thread->pendingEventCount.fetch_sub(1, std::memory_order_acq_rel);
+        assert(previous > 0);
+        auto handlersIt = thread->eventHandlers.find(tev.eventType);
+        if (handlersIt != thread->eventHandlers.end()) {
+            // Start a new event dispatch: snapshot the handler list and invoke
+            // the first applicable handler.
+            dispatch.active = true;
+            dispatch.currentEvent = tev;
+            dispatch.handlerSnapshot = handlersIt->second;
+            dispatch.nextHandlerIndex = 0;
+
+            if (invokeNextEventHandler())
+                return true;  // first handler frame pushed
+
+            // No applicable handlers after filtering
+            dispatch.active = false;
+        }
+    }
+
+    return true;
+}
+
+
 void VM::unwindFrame()
 {
     auto f = thread->frames.back();
+    // If an event handler frame is being unwound (e.g. by raiseException),
+    // clear the dispatch state so the event dispatch machinery does not
+    // attempt to invoke the next handler for the same event.
+    if (f.isEventHandler && thread->eventDispatch.active) {
+        thread->eventDispatch.active = false;
+        thread->eventHandlerJustReturned = false;
+    }
     closeUpvalues(f.slots);
     size_t popCount = &(*thread->stackTop) - f.slots;
     for(size_t i = 0; i < popCount; i++) pop();
@@ -6839,7 +7047,7 @@ Value VM::signal_on_changed_builtin(ArgsView args)
     ev->subscribers.push_back(closureVal.weakRef());
 
     // Track the signal for this event
-        thread->eventToSignal[eventVal.weakRef()] = eventVal.weakRef();
+        thread->eventToSignal[eventVal.weakRef()] = signalVal.weakRef();
 
     return Value::nilVal();
 }

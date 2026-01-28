@@ -59,6 +59,8 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
             visitStrongValue(visitor, reg.closure);
             if (reg.matchValue.has_value())
                 visitStrongValue(visitor, reg.matchValue.value());
+            if (reg.targetFilter.has_value())
+                visitStrongValue(visitor, reg.targetFilter.value());
         }
     }
 
@@ -73,6 +75,19 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
             visitStrongValue(visitor, pending.instance);
         }
     });
+
+    // Trace event dispatch state (active handler dispatch in progress)
+    if (thread.eventDispatch.active) {
+        visitStrongValue(visitor, thread.eventDispatch.currentEvent.eventType);
+        visitStrongValue(visitor, thread.eventDispatch.currentEvent.instance);
+        for (const auto& reg : thread.eventDispatch.handlerSnapshot) {
+            visitStrongValue(visitor, reg.closure);
+            if (reg.matchValue.has_value())
+                visitStrongValue(visitor, reg.matchValue.value());
+            if (reg.targetFilter.has_value())
+                visitStrongValue(visitor, reg.targetFilter.value());
+        }
+    }
 
     visitStrongValue(visitor, thread.currentActorCall);
     visitStrongValue(visitor, thread.currentBoundCall);

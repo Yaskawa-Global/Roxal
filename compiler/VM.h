@@ -51,9 +51,9 @@ typedef std::vector<CallFrame> CallFrames;
 
 struct CallFrame {
     #ifdef DEBUG_BUILD
-    CallFrame() : closure(Value::nilVal()), slots(nullptr), strict(false) {}
+    CallFrame() : closure(Value::nilVal()), slots(nullptr), strict(false), isEventHandler(false) {}
     #else
-    CallFrame() : closure(Value::nilVal()), strict(false) {}
+    CallFrame() : closure(Value::nilVal()), strict(false), isEventHandler(false) {}
     #endif
     Value closure; // ObjClosure
     Chunk::iterator startIp;
@@ -77,6 +77,8 @@ struct CallFrame {
         size_t frameDepth;
     };
     std::vector<ExceptionHandler> exceptionHandlers;
+
+    bool isEventHandler { false }; // true for event handler frames (pushed by processEventDispatch)
 };
 
 
@@ -354,6 +356,10 @@ public:
     std::unordered_map<ValueType, std::unordered_map<int32_t, BuiltinMethodInfo>> builtinMethods;
 
     bool processPendingEvents();
+
+    // Event handler closures are pushed as regular call frames (like func call).
+    bool processEventDispatch();
+    bool invokeNextEventHandler();
 
     void resetStack();
     void freeObjects();

@@ -126,6 +126,19 @@ public:
 
     int execute_depth;
 
+    // State event handler dispatch within execute().
+    // Handlers are pushed as regular call frames one at a time.
+    struct EventDispatchState {
+        bool active = false;
+        PendingEvent currentEvent;
+        std::vector<HandlerRegistration> handlerSnapshot; // copy of handlers at dispatch start
+        size_t nextHandlerIndex = 0;
+        bool prevThreadSleep { false };
+        TimePoint prevThreadSleepUntil;
+    };
+    EventDispatchState eventDispatch;
+    bool eventHandlerJustReturned { false };
+
     void pruneEventRegistrations();
 
     // Keeps the currently executing actor call target alive while the
