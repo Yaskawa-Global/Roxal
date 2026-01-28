@@ -92,6 +92,7 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
     visitStrongValue(visitor, thread.currentActorCall);
     visitStrongValue(visitor, thread.currentBoundCall);
     visitStrongValue(visitor, thread.pendingWaitFor);
+    visitStrongValue(visitor, thread.awaitedFuture);
 }
 
 } // namespace

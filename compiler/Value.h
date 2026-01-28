@@ -32,6 +32,9 @@ namespace df {
 
 namespace roxal {
 
+/// Result of a non-blocking future resolution attempt.
+enum class FutureStatus { Resolved, Pending, Error };
+
 class VM;
 class Value;
 struct Obj;
@@ -474,6 +477,13 @@ public:
     // @brief if this Value wraps a future, block until it resolves and replace with the result.
     // @return false if resolving raised a Roxal exception (handled or not).
     bool resolveFuture();
+
+    /// @brief Non-blocking future resolution attempt.  If this Value wraps a
+    /// future that is already ready, resolve it in-place and return Resolved.
+    /// If not ready, register the current thread as a waiter and return Pending.
+    /// If resolving produced an exception, raise it and return Error.
+    FutureStatus tryResolveFuture();
+
     void resolveSignal();
     void resolve();
 

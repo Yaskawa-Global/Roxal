@@ -153,6 +153,11 @@ public:
     // any requested sleep completes.
     Value pendingWaitFor { Value::nilVal() };
 
+    // Tracks the future this thread is waiting on inside execute().
+    // When set, the dispatch loop gates on this (like threadSleep) and
+    // sleeps on the condvar until the future resolves or 1ms elapses.
+    Value awaitedFuture { Value::nilVal() };
+
     std::atomic_bool exceptionJumpPending;
     int nativeCallDepth;
 

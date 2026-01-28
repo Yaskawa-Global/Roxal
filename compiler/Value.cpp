@@ -1316,6 +1316,28 @@ bool Value::resolveFuture()
     return true;
 }
 
+FutureStatus Value::tryResolveFuture()
+{
+    if (!isFuture(*this))
+        return FutureStatus::Resolved;
+
+    ObjFuture* fut = asFuture(*this);
+    if (fut->future.wait_for(std::chrono::microseconds(0)) != std::future_status::ready) {
+        // Not ready — register this thread as a waiter so wakeWaiters() wakes us
+        fut->addWaiter(VM::thread);
+        return FutureStatus::Pending;
+    }
+
+    // Ready — resolve in-place
+    Value resolved = fut->asValue();
+    *this = resolved;
+    if (isException(resolved)) {
+        VM::instance().raiseException(resolved);
+        return FutureStatus::Error;
+    }
+    return FutureStatus::Resolved;
+}
+
 void Value::resolveSignal()
 {
     if (isSignal(*this))

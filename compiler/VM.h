@@ -449,6 +449,7 @@ public:
     Value captureStacktrace();
 
     bool resolveValue(Value& value);
+    FutureStatus tryResolveValue(Value& value);
 
 
 
