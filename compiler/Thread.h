@@ -158,6 +158,10 @@ public:
     // sleeps on the condvar until the future resolves or 1ms elapses.
     Value awaitedFuture { Value::nilVal() };
 
+    // Saved instruction pointer before opcode read, used by tryAwait*
+    // helpers to rewind the IP when yielding on an unresolved future.
+    Chunk::iterator instructionStart;
+
     std::atomic_bool exceptionJumpPending;
     int nativeCallDepth;
 

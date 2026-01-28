@@ -1147,6 +1147,7 @@ struct ObjNative : public Obj
     void* data;
     ptr<roxal::type::Type> funcType;
     std::vector<Value> defaultValues;
+    uint32_t resolveArgMask {0}; // bit N set → resolve arg N before call
 
     unique_ptr<Obj, UnreleasedObj> clone() const override;
 

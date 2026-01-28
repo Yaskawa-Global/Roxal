@@ -169,7 +169,8 @@ public:
     void defineEnumLabel(ObjString* name);
     void defineNative(const std::string& name, NativeFn function,
                       ptr<type::Type> funcType = nullptr,
-                      std::vector<Value> defaults = {});
+                      std::vector<Value> defaults = {},
+                      uint32_t resolveArgMask = 0);
 
     // Helper used by builtin call marshalling
     size_t marshalArgs(ptr<type::Type> funcType,
@@ -185,7 +186,8 @@ public:
                       const CallSpec& callSpec,
                       bool includeReceiver = false,
                       const Value& receiver = Value::nilVal(),
-                      const Value& declFunction = Value::nilVal());
+                      const Value& declFunction = Value::nilVal(),
+                      uint32_t resolveArgMask = 0);
 
     // Expose a simple helper to keep track of active threads.  Actor
     // deserialization needs this to prevent the thread object from being
@@ -334,14 +336,17 @@ public:
         ptr<type::Type> funcType;
         std::vector<Value> defaultValues;
         Value declFunction;
+        uint32_t resolveArgMask {0}; // bit N set → resolve arg N before call
 
         BuiltinMethodInfo() : isProc(false), declFunction(Value::nilVal()) {}
         BuiltinMethodInfo(NativeFn fn, bool proc = false,
                           ptr<type::Type> type=nullptr,
                           std::vector<Value> defaults = {},
-                          Value declFn = Value::nilVal())
+                          Value declFn = Value::nilVal(),
+                          uint32_t resolveMask = 0)
             : function(fn), isProc(proc), funcType(type),
-              defaultValues(std::move(defaults)), declFunction(declFn) {}
+              defaultValues(std::move(defaults)), declFunction(declFn),
+              resolveArgMask(resolveMask) {}
 
         void trace(ValueVisitor& visitor) const
         {
@@ -450,6 +455,13 @@ public:
 
     bool resolveValue(Value& value);
     FutureStatus tryResolveValue(Value& value);
+
+    // Non-blocking await helpers for opcode handlers.
+    // On Pending, each sets thread->awaitedFuture and rewinds the IP.
+    inline FutureStatus tryAwaitFuture(Value& v);
+    inline FutureStatus tryAwaitFutures(Value& a, Value& b);
+    inline FutureStatus tryAwaitValue(Value& v);
+    inline FutureStatus tryAwaitValues(Value& a, Value& b);
 
 
 

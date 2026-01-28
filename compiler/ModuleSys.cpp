@@ -476,9 +476,10 @@ void ModuleSys::registerBuiltins(VM& vm)
 
     auto addSys = [&](const std::string& name, NativeFn fn,
                       ptr<type::Type> funcType = nullptr,
-                      std::vector<Value> defaults = {}){
+                      std::vector<Value> defaults = {},
+                      uint32_t resolveArgMask = 0){
         if (!vm.loadGlobal(toUnicodeString(name)).has_value())
-            vm.defineNative(name, fn, funcType, defaults);
+            vm.defineNative(name, fn, funcType, defaults, resolveArgMask);
         link(name, fn, defaults);
     };
 
@@ -489,7 +490,7 @@ void ModuleSys::registerBuiltins(VM& vm)
             Value::falseVal()
         };
         addSys("print", [this](VM& vm, ArgsView a){ return print_builtin(vm,a); }, nullptr, pdefaults);
-        addSys("len", [this](VM& vm, ArgsView a){ return len_builtin(vm,a); });
+        addSys("len", [this](VM& vm, ArgsView a){ return len_builtin(vm,a); }, nullptr, {}, 0x1);
         addSys("help", [this](VM& vm, ArgsView a){ return help_builtin(vm,a); });
         addSys("clone", [this](VM& vm, ArgsView a){ return clone_builtin(vm,a); });
         {
@@ -535,9 +536,9 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("deserialize", [this](VM& vm, ArgsView a){ return deserialize_builtin(vm,a); });
         addSys("to_json", [this](VM& vm, ArgsView a){ return to_json_builtin(vm,a); });
         addSys("from_json", [this](VM& vm, ArgsView a){ return from_json_builtin(vm,a); });
-        addSys("filter", [this](VM& vm, ArgsView a){ return filter_builtin(vm,a); });
-        addSys("map", [this](VM& vm, ArgsView a){ return map_builtin(vm,a); });
-        addSys("reduce", [this](VM& vm, ArgsView a){ return reduce_builtin(vm,a); });
+        addSys("filter", [this](VM& vm, ArgsView a){ return filter_builtin(vm,a); }, nullptr, {}, 0x1);
+        addSys("map", [this](VM& vm, ArgsView a){ return map_builtin(vm,a); }, nullptr, {}, 0x1);
+        addSys("reduce", [this](VM& vm, ArgsView a){ return reduce_builtin(vm,a); }, nullptr, {}, 0x1);
     }
 
     if (!vm.loadGlobal(toUnicodeString("_clock")).has_value()) {
@@ -723,8 +724,6 @@ Value ModuleSys::len_builtin(VM& vm, ArgsView args)
         throw std::invalid_argument("len expects single argument");
 
     Value v (args[0]);
-    if (!v.resolveFuture())
-        return Value::nilVal();
     int32_t len {1};
 
     switch (v.type()) {
@@ -1988,8 +1987,6 @@ Value ModuleSys::filter_builtin(VM& vm, ArgsView args)
         throw std::invalid_argument("filter expects 2 arguments: list and predicate");
 
     Value listVal = args[0];
-    if (!listVal.resolveFuture())
-        return Value::nilVal();
     if (!isList(listVal))
         throw std::invalid_argument("filter: first argument must be a list");
 
@@ -2030,8 +2027,6 @@ Value ModuleSys::map_builtin(VM& vm, ArgsView args)
         throw std::invalid_argument("map expects 2 arguments: list and transform");
 
     Value listVal = args[0];
-    if (!listVal.resolveFuture())
-        return Value::nilVal();
     if (!isList(listVal))
         throw std::invalid_argument("map: first argument must be a list");
 
@@ -2071,8 +2066,6 @@ Value ModuleSys::reduce_builtin(VM& vm, ArgsView args)
         throw std::invalid_argument("reduce expects 3 arguments: list, reducer, and initial value");
 
     Value listVal = args[0];
-    if (!listVal.resolveFuture())
-        return Value::nilVal();
     if (!isList(listVal))
         throw std::invalid_argument("reduce: first argument must be a list");
 

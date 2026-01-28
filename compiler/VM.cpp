@@ -357,7 +357,8 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                       const CallSpec& callSpec,
                       bool includeReceiver,
                       const Value& receiver,
-                      const Value& declFunction)
+                      const Value& declFunction,
+                      uint32_t resolveArgMask)
 {
     Thread* currentThread = thread.get();
     auto stackDepthBefore = thread ? static_cast<size_t>(thread->stackTop - thread->stack.begin()) : 0;
@@ -388,6 +389,21 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
             static const std::map<int32_t, Value> emptyDefaults;
             const auto& paramDefaults = declFunction.isNonNil() ? asFunction(declFunction)->paramDefaultFunc : emptyDefaults;
             size_t actual = marshalArgs(funcType, defaults, callSpec, buf, includeReceiver, receiver, paramDefaults);
+
+            // Non-blocking resolution of future args indicated by mask
+            if (resolveArgMask) {
+                for (size_t i = 0; i < actual && resolveArgMask >> i; ++i) {
+                    if ((resolveArgMask & (1u << i)) && isFuture(buf[i])) {
+                        auto s = buf[i].tryResolveFuture();
+                        if (s == FutureStatus::Pending) {
+                            thread->awaitedFuture = buf[i];
+                            return true;
+                        }
+                        if (s == FutureStatus::Error) return false;
+                    }
+                }
+            }
+
             ArgsView view{buf, actual};
             Value result { fn(*this, view) };
             bool unwound = false;
@@ -405,7 +421,23 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
             return true;
         } else {
             Value* base = &(*thread->stackTop) - callSpec.argCount - (includeReceiver ? 1 : 0);
-            ArgsView view{base, static_cast<size_t>(callSpec.argCount + (includeReceiver ? 1 : 0))};
+            size_t actual = static_cast<size_t>(callSpec.argCount + (includeReceiver ? 1 : 0));
+
+            // Non-blocking resolution of future args indicated by mask
+            if (resolveArgMask) {
+                for (size_t i = 0; i < actual && resolveArgMask >> i; ++i) {
+                    if ((resolveArgMask & (1u << i)) && isFuture(base[i])) {
+                        auto s = base[i].tryResolveFuture();
+                        if (s == FutureStatus::Pending) {
+                            thread->awaitedFuture = base[i];
+                            return true;
+                        }
+                        if (s == FutureStatus::Error) return false;
+                    }
+                }
+            }
+
+            ArgsView view{base, actual};
             Value result { fn(*this, view) };
             bool unwound = false;
             if (thread) {
@@ -1981,7 +2013,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 NativeFn native = nativeObj->function;
                 return callNativeFn(native, nativeObj->funcType,
                                     nativeObj->defaultValues, callSpec,
-                                    false, Value::nilVal(), Value::nilVal());
+                                    false, Value::nilVal(), Value::nilVal(),
+                                    nativeObj->resolveArgMask);
             }
             case ObjType::BoundNative: {
                 Value boundValue = callee;
@@ -2151,10 +2184,12 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                     if (methodInfo.funcType) {
                         return callNativeFn(fn, methodInfo.funcType,
                                             methodInfo.defaultValues, callSpec,
-                                            true, receiver, methodInfo.declFunction);
+                                            true, receiver, methodInfo.declFunction,
+                                            methodInfo.resolveArgMask);
                     } else {
                         return callNativeFn(fn, nullptr, {}, callSpec,
-                                            true, receiver, methodInfo.declFunction);
+                                            true, receiver, methodInfo.declFunction,
+                                            methodInfo.resolveArgMask);
                     }
                 } else {
                     // Different thread - queue the call
@@ -2185,10 +2220,12 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                     if (methodInfo.funcType) {
                         return callNativeFn(fn, methodInfo.funcType,
                                             methodInfo.defaultValues, callSpec,
-                                            true, receiver, methodInfo.declFunction);
+                                            true, receiver, methodInfo.declFunction,
+                                            methodInfo.resolveArgMask);
                     } else {
                         return callNativeFn(fn, nullptr, {}, callSpec,
-                                            true, receiver, methodInfo.declFunction);
+                                            true, receiver, methodInfo.declFunction,
+                                            methodInfo.resolveArgMask);
                     }
                 }
             }
@@ -2825,10 +2862,13 @@ void VM::defineEnumLabel(ObjString* name)
 
 void VM::defineNative(const std::string& name, NativeFn function,
                       ptr<type::Type> funcType,
-                      std::vector<Value> defaults)
+                      std::vector<Value> defaults,
+                      uint32_t resolveArgMask)
 {
     UnicodeString uname { toUnicodeString(name) };
     Value funcVal { Value::nativeVal(function, nullptr, funcType, defaults) };
+    if (resolveArgMask)
+        asNative(funcVal)->resolveArgMask = resolveArgMask;
     globals.storeGlobal(uname,funcVal);
 }
 
@@ -3087,9 +3127,9 @@ std::pair<InterpretResult,Value> VM::execute()
 
     for(;;) {
 
-        // Declared here (before any goto) to avoid "crosses initialization" errors.
-        // Assigned the actual value just before the opcode read below.
-        decltype(frame->ip) instructionStart;
+        // Local alias for the Thread field so existing handler code can use the
+        // same name.  The Thread field is also accessed by tryAwait* helpers.
+        auto& instructionStart = thread->instructionStart;
 
         if (runtimeErrorFlag.load())
             return errorReturn;
@@ -3248,12 +3288,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 ObjString* name = readString();
 
                 {
-                    auto s = tryResolveValue(inst);
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = inst;
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
+                    auto s = tryAwaitValue(inst);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
                     if (s == FutureStatus::Error) return errorReturn;
                 }
 
@@ -3351,12 +3387,8 @@ std::pair<InterpretResult,Value> VM::execute()
 
                 // Resolve futures first (but NOT signals - we need to check for signal properties)
                 {
-                    auto s = inst.tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = inst;
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
+                    auto s = tryAwaitFuture(inst);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
                     if (s == FutureStatus::Error) return errorReturn;
                 }
 
@@ -3611,12 +3643,8 @@ std::pair<InterpretResult,Value> VM::execute()
 
                 // Resolve futures first (but NOT signals - we need to check for signal properties)
                 {
-                    auto s = inst.tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = inst;
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
+                    auto s = tryAwaitFuture(inst);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
                     if (s == FutureStatus::Error) return errorReturn;
                 }
 
@@ -3902,12 +3930,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
 
                 {
-                    auto s = tryResolveValue(inst);
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = inst;
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
+                    auto s = tryAwaitValue(inst);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
                     if (s == FutureStatus::Error) return errorReturn;
                 }
                 if (isDict(inst)) {
@@ -4064,12 +4088,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
 
                 {
-                    auto s = tryResolveValue(inst);
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = inst;
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
+                    auto s = tryAwaitValue(inst);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
                     if (s == FutureStatus::Error) return errorReturn;
                 }
                 if (isEventInstance(inst)) {
@@ -4233,16 +4253,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Equal: {
-                {
-                    auto s = peek(0).tryResolveFuture();
-                    if (s == FutureStatus::Resolved) s = peek(1).tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = isFuture(peek(0)) ? peek(0) : peek(1);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([&](Value a, Value b) -> Value { return equal(a, b, frame->strict); });
@@ -4254,13 +4266,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::Is: {
                 {
-                    auto s = tryResolveValue(peek(0));
-                    if (s == FutureStatus::Resolved) s = tryResolveValue(peek(1));
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = isFuture(peek(0)) ? peek(0) : peek(1);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
+                    auto s = tryAwaitValues(peek(0), peek(1));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
                     if (s == FutureStatus::Error) return errorReturn;
                 }
                 Value b = pop();
@@ -4270,13 +4277,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::In: {
                 {
-                    auto s = tryResolveValue(peek(0));
-                    if (s == FutureStatus::Resolved) s = tryResolveValue(peek(1));
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = isFuture(peek(0)) ? peek(0) : peek(1);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
+                    auto s = tryAwaitValues(peek(0), peek(1));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
                     if (s == FutureStatus::Error) return errorReturn;
                 }
                 Value container = pop();
@@ -4349,16 +4351,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Greater: {
-                {
-                    auto s = peek(0).tryResolveFuture();
-                    if (s == FutureStatus::Resolved) s = peek(1).tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = isFuture(peek(0)) ? peek(0) : peek(1);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value a, Value b) -> Value { return greater(a,b); });
@@ -4369,16 +4363,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Less: {
-                {
-                    auto s = peek(0).tryResolveFuture();
-                    if (s == FutureStatus::Resolved) s = peek(1).tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = isFuture(peek(0)) ? peek(0) : peek(1);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value a, Value b) -> Value { return less(a,b); });
@@ -4389,16 +4375,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Add: {
-                {
-                    auto s = peek(0).tryResolveFuture();
-                    if (s == FutureStatus::Resolved) s = peek(1).tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = isFuture(peek(0)) ? peek(0) : peek(1);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
 
                 if (isString(peek(1))) {
                     concatenate();
@@ -4413,16 +4391,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Subtract: {
-                {
-                    auto s = peek(0).tryResolveFuture();
-                    if (s == FutureStatus::Resolved) s = peek(1).tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = isFuture(peek(0)) ? peek(0) : peek(1);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value l, Value r) -> Value { return subtract(l, r); });
@@ -4433,16 +4403,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Multiply: {
-                {
-                    auto s = peek(0).tryResolveFuture();
-                    if (s == FutureStatus::Resolved) s = peek(1).tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = isFuture(peek(0)) ? peek(0) : peek(1);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value l, Value r) -> Value { return multiply(l, r); });
@@ -4453,16 +4415,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Divide: {
-                {
-                    auto s = peek(0).tryResolveFuture();
-                    if (s == FutureStatus::Resolved) s = peek(1).tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = isFuture(peek(0)) ? peek(0) : peek(1);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value l, Value r) -> Value { return divide(l, r); });
@@ -4474,15 +4428,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::Negate: {
                 Value& operand { peek(0) };
-                {
-                    auto s = operand.tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = operand;
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFuture(operand) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
 
                 try {
                     push(negate(pop()));
@@ -4494,16 +4441,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::Modulo: {
                 // TODO: support decimal
-                {
-                    auto s = peek(0).tryResolveFuture();
-                    if (s == FutureStatus::Resolved) s = peek(1).tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = isFuture(peek(0)) ? peek(0) : peek(1);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
 
                 try {
                     binaryOp([](Value a, Value b) -> Value { return mod(a,b); });
@@ -4514,16 +4453,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::And: {
-                {
-                    auto s = peek(0).tryResolveFuture();
-                    if (s == FutureStatus::Resolved) s = peek(1).tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = isFuture(peek(0)) ? peek(0) : peek(1);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
                 if (!peek(0).isBool() && !isSignal(peek(0))) {
                     runtimeError("Operand of 'and' must be a bool");
                     return errorReturn;
@@ -4541,16 +4472,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Or: {
-                {
-                    auto s = peek(0).tryResolveFuture();
-                    if (s == FutureStatus::Resolved) s = peek(1).tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = isFuture(peek(0)) ? peek(0) : peek(1);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
                 if (!peek(0).isBool() && !isSignal(peek(0))) {
                     runtimeError("Operand of 'or' must be a bool");
                     return errorReturn;
@@ -4568,16 +4491,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::BitAnd: {
-                {
-                    auto s = peek(0).tryResolveFuture();
-                    if (s == FutureStatus::Resolved) s = peek(1).tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = isFuture(peek(0)) ? peek(0) : peek(1);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
                 try {
                     binaryOp([](Value a, Value b) -> Value { return band(a,b); });
                 } catch (std::exception& e) {
@@ -4587,16 +4502,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::BitOr: {
-                {
-                    auto s = peek(0).tryResolveFuture();
-                    if (s == FutureStatus::Resolved) s = peek(1).tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = isFuture(peek(0)) ? peek(0) : peek(1);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
                 try {
                     binaryOp([](Value a, Value b) -> Value { return bor(a,b); });
                 } catch (std::exception& e) {
@@ -4606,16 +4513,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::BitXor: {
-                {
-                    auto s = peek(0).tryResolveFuture();
-                    if (s == FutureStatus::Resolved) s = peek(1).tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = isFuture(peek(0)) ? peek(0) : peek(1);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
                 try {
                     binaryOp([](Value a, Value b) -> Value { return bxor(a,b); });
                 } catch (std::exception& e) {
@@ -4626,15 +4525,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::BitNot: {
                 Value& operand { peek(0) };
-                {
-                    auto s = operand.tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = operand;
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFuture(operand) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
                 try {
                     push(bnot(pop()));
                 } catch (std::exception& e) {
@@ -4682,12 +4574,8 @@ std::pair<InterpretResult,Value> VM::execute()
             case OpCode::JumpIfFalse: {
                 uint16_t jumpDist = readShort();
                 {
-                    auto s = tryResolveValue(peek(0));
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = peek(0);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
+                    auto s = tryAwaitValue(peek(0));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
                     if (s == FutureStatus::Error) return errorReturn;
                 }
                 if (isFalsey(peek(0)))
@@ -4697,12 +4585,8 @@ std::pair<InterpretResult,Value> VM::execute()
             case OpCode::JumpIfTrue: {
                 uint16_t jumpDist = readShort();
                 {
-                    auto s = tryResolveValue(peek(0));
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = peek(0);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
+                    auto s = tryAwaitValue(peek(0));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
                     if (s == FutureStatus::Error) return errorReturn;
                 }
                 if (isTruthy(peek(0)))
@@ -4723,16 +4607,19 @@ std::pair<InterpretResult,Value> VM::execute()
                 CallSpec callSpec{frame->ip};
                 Value& callee { peek(callSpec.argCount) };
                 {
-                    auto s = tryResolveValue(callee);
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = callee;
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
+                    auto s = tryAwaitValue(callee);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
                     if (s == FutureStatus::Error) return errorReturn;
                 }
                 if (!callValue(callee, callSpec))
                     return errorReturn;
+
+                // Check if a native function needs a future arg resolved
+                if (thread->awaitedFuture.isNonNil()) {
+                    frame->ip = instructionStart;
+                    goto postInstructionDispatch;
+                }
+
                 frame = thread->frames.end()-1;
 
                 // Constructor setter cleanup: if callValue() pushed setter frames,
@@ -4745,15 +4632,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::Index: {
                 uint8_t argCount = readByte();
-                { // don't resolve signals here
-                    auto s = peek(argCount).tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = peek(argCount);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFuture(peek(argCount)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
                 if (!indexValue(peek(argCount), argCount))
                     return errorReturn;
                 break;
@@ -4765,6 +4645,13 @@ std::pair<InterpretResult,Value> VM::execute()
                 CallSpec callSpec{frame->ip};
                 if (!invoke(method, callSpec))
                     return errorReturn;
+
+                // Check if a native function needs a future arg resolved
+                if (thread->awaitedFuture.isNonNil()) {
+                    frame->ip = instructionStart;
+                    goto postInstructionDispatch;
+                }
+
                 frame = thread->frames.end()-1;
                 break;
             }
@@ -4909,15 +4796,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::SetIndex: {
                 uint8_t argCount = readByte();
-                { // don't resolve signals here
-                    auto s = peek(argCount).tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = peek(argCount);
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) goto postInstructionDispatch;
-                }
+                if (tryAwaitFuture(peek(argCount)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
                 try {
                     Value& indexable { peek(argCount) };
                     Value& value { peek(argCount+1) };
@@ -4966,12 +4846,8 @@ std::pair<InterpretResult,Value> VM::execute()
 
                 // If the value is a future that resolves to a signal, resolve it first
                 if (isFuture(value)) {
-                    auto s = value.tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = value;
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
+                    auto s = tryAwaitFuture(value);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
                     if (s == FutureStatus::Error) return errorReturn;
                     // Update the module variable with the resolved value
                     if (isSignal(value)) {
@@ -5119,12 +4995,8 @@ std::pair<InterpretResult,Value> VM::execute()
             case OpCode::IfDictToKeys: {
                 Value& maybeDict = peek(0);
                 if (!isDict(maybeDict)) {
-                    auto s = tryResolveValue(maybeDict);
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = maybeDict;
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
+                    auto s = tryAwaitValue(maybeDict);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
                     if (s == FutureStatus::Error) return errorReturn;
                 }
                 if (isDict(maybeDict)) {
@@ -5138,12 +5010,8 @@ std::pair<InterpretResult,Value> VM::execute()
             case OpCode::IfDictToItems: {
                 Value& maybeDict = peek(0);
                 if (!isDict(maybeDict)) {
-                    auto s = tryResolveValue(maybeDict);
-                    if (s == FutureStatus::Pending) {
-                        thread->awaitedFuture = maybeDict;
-                        frame->ip = instructionStart;
-                        goto postInstructionDispatch;
-                    }
+                    auto s = tryAwaitValue(maybeDict);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
                     if (s == FutureStatus::Error) return errorReturn;
                 }
                 if (isDict(maybeDict)) {
@@ -6605,6 +6473,50 @@ FutureStatus VM::tryResolveValue(Value& value)
     if (status == FutureStatus::Resolved)
         value.resolveSignal();
     return status;
+}
+
+FutureStatus VM::tryAwaitFuture(Value& v)
+{
+    auto s = v.tryResolveFuture();
+    if (s == FutureStatus::Pending) {
+        thread->awaitedFuture = v;
+        (thread->frames.end() - 1)->ip = thread->instructionStart;
+    }
+    return s;
+}
+
+FutureStatus VM::tryAwaitFutures(Value& a, Value& b)
+{
+    auto s = a.tryResolveFuture();
+    if (s == FutureStatus::Resolved)
+        s = b.tryResolveFuture();
+    if (s == FutureStatus::Pending) {
+        thread->awaitedFuture = isFuture(a) ? a : b;
+        (thread->frames.end() - 1)->ip = thread->instructionStart;
+    }
+    return s;
+}
+
+FutureStatus VM::tryAwaitValue(Value& v)
+{
+    auto s = tryResolveValue(v);
+    if (s == FutureStatus::Pending) {
+        thread->awaitedFuture = v;
+        (thread->frames.end() - 1)->ip = thread->instructionStart;
+    }
+    return s;
+}
+
+FutureStatus VM::tryAwaitValues(Value& a, Value& b)
+{
+    auto s = tryResolveValue(a);
+    if (s == FutureStatus::Resolved)
+        s = tryResolveValue(b);
+    if (s == FutureStatus::Pending) {
+        thread->awaitedFuture = isFuture(a) ? a : b;
+        (thread->frames.end() - 1)->ip = thread->instructionStart;
+    }
+    return s;
 }
 
 Value VM::event_emit_builtin(ArgsView args)
