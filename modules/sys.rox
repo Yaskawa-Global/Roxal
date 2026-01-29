@@ -63,6 +63,10 @@ func _strongref(value):
   """return a strong reference from a weak reference"""
 
 @builtin
+func _arity(fn) -> int:
+  """return the number of parameters a function expects"""
+
+@builtin
 func serialize(value, protocol:string='default') -> list:
   """serialize value using protocol and return list of bytes"""
 
@@ -223,15 +227,44 @@ func _df_graphdot(title:string='') -> string:
 func loadlib(path:string):
   """load a native library at path"""
 
-@builtin
 func filter(items, predicate) -> list:
-  """return a new list containing elements for which predicate(element) returns true"""
+  """return a new list containing elements for which predicate(element) returns true; predicate can optionally take (element, index)"""
+  var result = []
+  var arity = _arity(predicate)
+  var i = 0
+  for item in items:
+    if arity >= 2:
+      if predicate(item, i):
+        result.append(item)
+    else:
+      if predicate(item):
+        result.append(item)
+    i = i + 1
+  return result
 
-@builtin
 func map(items, transform) -> list:
-  """return a new list with transform(element) applied to each element"""
+  """return a new list with transform(element) applied to each element; transform can optionally take (element, index)"""
+  var result = []
+  var arity = _arity(transform)
+  var i = 0
+  for item in items:
+    if arity >= 2:
+      result.append(transform(item, i))
+    else:
+      result.append(transform(item))
+    i = i + 1
+  return result
 
-@builtin
 func reduce(items, reducer, initial):
-  """reduce items to a single value by calling reducer(accumulator, element) for each element"""
+  """reduce items to a single value by calling reducer(accumulator, element) for each element; reducer can optionally take (accumulator, element, index)"""
+  var acc = initial
+  var arity = _arity(reducer)
+  var i = 0
+  for item in items:
+    if arity >= 3:
+      acc = reducer(acc, item, i)
+    else:
+      acc = reducer(acc, item)
+    i = i + 1
+  return acc
 

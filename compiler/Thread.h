@@ -139,6 +139,33 @@ public:
     EventDispatchState eventDispatch;
     bool eventHandlerJustReturned { false };
 
+    // Continuation for native functions that need to call Roxal closures
+    // without re-entering execute() (e.g., list.filter/map/reduce)
+    struct NativeContinuation {
+        // Handler called when the closure returns
+        // Parameters: VM reference, closure return value
+        // Returns: true to continue (may push another frame), false on error
+        std::function<bool(class VM&, Value)> onComplete;
+
+        // Arbitrary state data for the continuation (e.g., iteration state)
+        Value state { Value::nilVal() };
+
+        bool active { false };
+
+        // Stack cleanup: where to write final result and stack position to restore
+        Value* resultSlot { nullptr };
+        ValueStack::iterator stackBase;
+
+        void clear() {
+            onComplete = nullptr;
+            state = Value::nilVal();
+            active = false;
+            resultSlot = nullptr;
+        }
+    };
+    NativeContinuation nativeContinuation;
+    bool continuationCallbackReturned { false };
+
     void pruneEventRegistrations();
 
     // Keeps the currently executing actor call target alive while the

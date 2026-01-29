@@ -1,0 +1,73 @@
+# Test that exceptions thrown from callbacks in list.filter/map/reduce
+# are properly caught by try/except blocks.
+
+import sys
+
+func throw_at_two(x):
+  if x == 2:
+    raise "error at element 2"
+  return x > 0
+
+func throw_at_two_map(x):
+  if x == 2:
+    raise "error at element 2"
+  return x * 10
+
+func throw_at_two_reduce(acc, x):
+  if x == 2:
+    raise "error at element 2"
+  return acc + x
+
+# Test 1: Exception in filter callback is caught
+var caught1 = false
+try:
+  var result = [1, 2, 3].filter(throw_at_two)
+except e:
+  caught1 = true
+
+if not caught1:
+  sys.exit(1)
+print("filter exception: PASS")
+
+# Test 2: Exception in map callback is caught
+var caught2 = false
+try:
+  var result = [1, 2, 3].map(throw_at_two_map)
+except e:
+  caught2 = true
+
+if not caught2:
+  sys.exit(1)
+print("map exception: PASS")
+
+# Test 3: Exception in reduce callback is caught
+var caught3 = false
+try:
+  var result = [1, 2, 3].reduce(throw_at_two_reduce, 0)
+except e:
+  caught3 = true
+
+if not caught3:
+  sys.exit(1)
+print("reduce exception: PASS")
+
+# Test 4: Stack is clean after exception - verify locals aren't corrupted
+var a = 100
+var b = 200
+try:
+  [1, 2, 3].map(throw_at_two_map)
+except:
+  _
+var c = 300
+
+if a != 100 or b != 200 or c != 300:
+  sys.exit(1)
+print("stack clean: PASS")
+
+# Test 5: Normal operation still works after exception
+var result = [1, 3, 5].map(func(x): x * 2)
+if result != [2, 6, 10]:
+  sys.exit(1)
+print("normal after exception: PASS")
+
+print("PASS")

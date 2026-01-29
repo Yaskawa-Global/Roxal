@@ -412,7 +412,7 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 auto frameDepthAfter = thread->frames.size();
                 unwound = stackDepthAfter < stackDepthBefore || frameDepthAfter < frameDepthBefore;
             }
-            if (currentThread && (currentThread->exceptionJumpPending.load(std::memory_order_relaxed) || unwound)) {
+            if (currentThread && (currentThread->exceptionJumpPending.load(std::memory_order_relaxed) || unwound || currentThread->nativeContinuation.active)) {
                 currentThread->exceptionJumpPending.store(false, std::memory_order_relaxed);
                 return true;
             }
@@ -445,7 +445,7 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 auto frameDepthAfter = thread->frames.size();
                 unwound = stackDepthAfter < stackDepthBefore || frameDepthAfter < frameDepthBefore;
             }
-            if (currentThread && (currentThread->exceptionJumpPending.load(std::memory_order_relaxed) || unwound)) {
+            if (currentThread && (currentThread->exceptionJumpPending.load(std::memory_order_relaxed) || unwound || currentThread->nativeContinuation.active)) {
                 currentThread->exceptionJumpPending.store(false, std::memory_order_relaxed);
                 return true;
             }
@@ -607,6 +607,20 @@ VM::VM()
     ptr<Thread> initThread = make_ptr<Thread>();
     thread = initThread;
     executeBuiltinModuleScript("sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
+
+    // Export pure Roxal functions from sys module to globals
+    // (sys predates the module system and registers symbols directly as globals)
+    {
+        Value sysModule = getBuiltinModuleType(toUnicodeString("sys"));
+        auto& sysVars = asModuleType(sysModule)->vars;
+        for (const char* name : {"filter", "map", "reduce"}) {
+            auto maybeFunc = sysVars.load(toUnicodeString(name));
+            if (maybeFunc.has_value() && isClosure(maybeFunc.value())) {
+                globals.storeGlobal(toUnicodeString(name), maybeFunc.value());
+            }
+        }
+    }
+
     executeBuiltinModuleScript("math.rox", getBuiltinModuleType(toUnicodeString("math")));
     thread = nullptr;
 
@@ -2631,6 +2645,11 @@ Value VM::opReturn()
     // to the next handler.
     if (returningFrame.isEventHandler)
         thread->eventHandlerJustReturned = true;
+
+    // Flag continuation callback return so processContinuationDispatch() can
+    // process the result and continue iteration or finalize.
+    if (returningFrame.isContinuationCallback)
+        thread->continuationCallbackReturned = true;
 
     Value result = pop();
     closeUpvalues(returningFrame.slots);
@@ -5510,7 +5529,10 @@ std::pair<InterpretResult,Value> VM::execute()
         if (!processEventDispatch())
             return errorReturn;
 
-        // Refresh frame pointer after processing events, as event handler
+        if (!processContinuationDispatch())
+            return errorReturn;
+
+        // Refresh frame pointer after processing events/continuations, as
         // frames may have been pushed onto or popped from the frame stack
         if (!thread->frames.empty())
             frame = thread->frames.end()-1;
@@ -5853,6 +5875,65 @@ bool VM::processEventDispatch()
 }
 
 
+bool VM::pushContinuationCall(ObjClosure* closure, const std::vector<Value>& args)
+{
+    push(Value::objRef(closure));
+    for (const auto& arg : args)
+        push(arg);
+
+    CallSpec spec(args.size());
+    if (!call(closure, spec))
+        return false;
+
+    thread->frames.back().isContinuationCallback = true;
+    return true;
+}
+
+void VM::clearContinuation()
+{
+    thread->nativeContinuation.clear();
+    thread->continuationCallbackReturned = false;
+}
+
+bool VM::processContinuationDispatch()
+{
+    if (!thread->continuationCallbackReturned)
+        return true;
+
+    thread->continuationCallbackReturned = false;
+    auto& cont = thread->nativeContinuation;
+
+    if (!cont.active || !cont.onComplete)
+        return true;  // No active continuation
+
+    // Get closure return value from stack
+    Value result = pop();
+
+    // Invoke handler - it may push another frame or finalize
+    bool ok = cont.onComplete(*this, result);
+
+    // If handler didn't push another continuation frame, we're done
+    if (thread->frames.empty() ||
+        !thread->frames.back().isContinuationCallback) {
+        // Write final result to the original call's result slot and restore stack
+        if (cont.resultSlot) {
+            // The handler pushed the final result; pop it, then pop the original
+            // method call's args and receiver (to properly clean up Values),
+            // then push the final result back
+            Value finalResult = pop();
+            // Pop items from current position down to (and including) the result slot
+            // stackBase is one past resultSlot, so we pop (stackTop - stackBase + 1) items
+            size_t itemsToPop = static_cast<size_t>(thread->stackTop - cont.stackBase) + 1;
+            popN(itemsToPop);
+            push(finalResult);
+        }
+        clearContinuation();
+    }
+
+    return ok;
+}
+
+
 void VM::unwindFrame()
 {
     auto f = thread->frames.back();
@@ -5862,6 +5943,21 @@ void VM::unwindFrame()
     if (f.isEventHandler && thread->eventDispatch.active) {
         thread->eventDispatch.active = false;
         thread->eventHandlerJustReturned = false;
+    }
+    // If a continuation callback frame is being unwound, clear the continuation state
+    // and clean up the original method call's stack area (receiver + args)
+    if (f.isContinuationCallback && thread->nativeContinuation.active) {
+        auto& cont = thread->nativeContinuation;
+        if (cont.resultSlot) {
+            // The original method call's args are below this frame's slots.
+            // We need to mark them for cleanup. We can't pop them now (frame's stack
+            // area hasn't been popped yet), so we adjust the frame's slots pointer
+            // to include the original args. This way, the normal unwinding will
+            // pop everything including the original args.
+            // Calculate: slots should be at resultSlot (to include receiver)
+            f.slots = cont.resultSlot;
+        }
+        clearContinuation();
     }
     closeUpvalues(f.slots);
     size_t popCount = &(*thread->stackTop) - f.slots;
@@ -6789,28 +6885,71 @@ Value VM::list_filter_builtin(ArgsView args)
     ObjList* inputList = asList(args[0]);
     ObjClosure* predicate = asClosure(args[1]);
 
+    // Empty list - return immediately
+    if (inputList->elts.get().empty())
+        return Value::listVal();
+
     // Detect callback arity
     int arity = asFunction(predicate->function)->arity;
 
-    Value resultVal = Value::listVal();
-    ObjList* result = asList(resultVal);
+    // Create continuation state: {list, pred, result, index, arity}
+    Value state = Value::dictVal();
+    asDict(state)->store(Value::stringVal(toUnicodeString("list")), args[0]);
+    asDict(state)->store(Value::stringVal(toUnicodeString("pred")), args[1]);
+    asDict(state)->store(Value::stringVal(toUnicodeString("result")), Value::listVal());
+    asDict(state)->store(Value::stringVal(toUnicodeString("index")), Value::intVal(0));
+    asDict(state)->store(Value::stringVal(toUnicodeString("arity")), Value::intVal(arity));
 
+    auto& cont = thread->nativeContinuation;
+    cont.active = true;
+    cont.state = state;
+    // Set up stack cleanup: result goes to receiver slot, stack shrinks by arg count
+    cont.resultSlot = &*(thread->stackTop - args.size());  // receiver position
+    cont.stackBase = thread->stackTop - (args.size() - 1); // one past result slot
+    cont.onComplete = [](VM& vm, Value callbackResult) -> bool {
+        auto& st = vm.thread->nativeContinuation.state;
+        auto* d = asDict(st);
+        ObjList* list = asList(d->at(Value::stringVal(toUnicodeString("list"))));
+        ObjList* result = asList(d->at(Value::stringVal(toUnicodeString("result"))));
+        int idx = d->at(Value::stringVal(toUnicodeString("index"))).asInt();
+        int arity = d->at(Value::stringVal(toUnicodeString("arity"))).asInt();
+
+        // Process result - append element if predicate returned true
+        auto elts = list->elts.get();
+        if (isTruthy(callbackResult))
+            result->append(elts[idx]);
+
+        // Advance index
+        idx++;
+        d->store(Value::stringVal(toUnicodeString("index")), Value::intVal(idx));
+
+        // More iterations?
+        if (static_cast<size_t>(idx) < elts.size()) {
+            ObjClosure* pred = asClosure(d->at(Value::stringVal(toUnicodeString("pred"))));
+            std::vector<Value> callArgs;
+            callArgs.push_back(elts[idx]);
+            if (arity >= 2)
+                callArgs.push_back(Value::intVal(idx));
+            return vm.pushContinuationCall(pred, callArgs);
+        }
+
+        // Done - push final result
+        vm.push(d->at(Value::stringVal(toUnicodeString("result"))));
+        return true;
+    };
+
+    // Push first callback
     auto elts = inputList->elts.get();
-    for (size_t i = 0; i < elts.size(); ++i) {
-        std::vector<Value> callArgs;
-        callArgs.push_back(elts[i]);
-        if (arity >= 2)
-            callArgs.push_back(Value::intVal(static_cast<int32_t>(i)));
+    std::vector<Value> callArgs;
+    callArgs.push_back(elts[0]);
+    if (arity >= 2)
+        callArgs.push_back(Value::intVal(0));
 
-        auto [interpResult, returnValue] = callAndExec(predicate, callArgs);
-        if (interpResult != InterpretResult::OK)
-            throw std::runtime_error("list.filter: predicate callback failed");
+    if (!pushContinuationCall(predicate, callArgs))
+        throw std::runtime_error("list.filter: failed to invoke predicate");
 
-        if (isTruthy(returnValue))
-            result->append(elts[i]);
-    }
-
-    return resultVal;
+    // Return nil placeholder - actual result pushed by continuation
+    return Value::nilVal();
 }
 
 Value VM::list_map_builtin(ArgsView args)
@@ -6824,27 +6963,70 @@ Value VM::list_map_builtin(ArgsView args)
     ObjList* inputList = asList(args[0]);
     ObjClosure* transform = asClosure(args[1]);
 
+    // Empty list - return immediately
+    if (inputList->elts.get().empty())
+        return Value::listVal();
+
     // Detect callback arity
     int arity = asFunction(transform->function)->arity;
 
-    Value resultVal = Value::listVal();
-    ObjList* result = asList(resultVal);
+    // Create continuation state: {list, transform, result, index, arity}
+    Value state = Value::dictVal();
+    asDict(state)->store(Value::stringVal(toUnicodeString("list")), args[0]);
+    asDict(state)->store(Value::stringVal(toUnicodeString("transform")), args[1]);
+    asDict(state)->store(Value::stringVal(toUnicodeString("result")), Value::listVal());
+    asDict(state)->store(Value::stringVal(toUnicodeString("index")), Value::intVal(0));
+    asDict(state)->store(Value::stringVal(toUnicodeString("arity")), Value::intVal(arity));
 
+    auto& cont = thread->nativeContinuation;
+    cont.active = true;
+    cont.state = state;
+    // Set up stack cleanup: result goes to receiver slot, stack shrinks by arg count
+    cont.resultSlot = &*(thread->stackTop - args.size());  // receiver position
+    cont.stackBase = thread->stackTop - (args.size() - 1); // one past result slot
+    cont.onComplete = [](VM& vm, Value callbackResult) -> bool {
+        auto& st = vm.thread->nativeContinuation.state;
+        auto* d = asDict(st);
+        ObjList* list = asList(d->at(Value::stringVal(toUnicodeString("list"))));
+        ObjList* result = asList(d->at(Value::stringVal(toUnicodeString("result"))));
+        int idx = d->at(Value::stringVal(toUnicodeString("index"))).asInt();
+        int arity = d->at(Value::stringVal(toUnicodeString("arity"))).asInt();
+
+        // Process result - append transformed value
+        result->append(callbackResult);
+
+        // Advance index
+        idx++;
+        d->store(Value::stringVal(toUnicodeString("index")), Value::intVal(idx));
+
+        // More iterations?
+        auto elts = list->elts.get();
+        if (static_cast<size_t>(idx) < elts.size()) {
+            ObjClosure* transform = asClosure(d->at(Value::stringVal(toUnicodeString("transform"))));
+            std::vector<Value> callArgs;
+            callArgs.push_back(elts[idx]);
+            if (arity >= 2)
+                callArgs.push_back(Value::intVal(idx));
+            return vm.pushContinuationCall(transform, callArgs);
+        }
+
+        // Done - push final result
+        vm.push(d->at(Value::stringVal(toUnicodeString("result"))));
+        return true;
+    };
+
+    // Push first callback
     auto elts = inputList->elts.get();
-    for (size_t i = 0; i < elts.size(); ++i) {
-        std::vector<Value> callArgs;
-        callArgs.push_back(elts[i]);
-        if (arity >= 2)
-            callArgs.push_back(Value::intVal(static_cast<int32_t>(i)));
+    std::vector<Value> callArgs;
+    callArgs.push_back(elts[0]);
+    if (arity >= 2)
+        callArgs.push_back(Value::intVal(0));
 
-        auto [interpResult, returnValue] = callAndExec(transform, callArgs);
-        if (interpResult != InterpretResult::OK)
-            throw std::runtime_error("list.map: transform callback failed");
+    if (!pushContinuationCall(transform, callArgs))
+        throw std::runtime_error("list.map: failed to invoke transform");
 
-        result->append(returnValue);
-    }
-
-    return resultVal;
+    // Return nil placeholder - actual result pushed by continuation
+    return Value::nilVal();
 }
 
 Value VM::list_reduce_builtin(ArgsView args)
@@ -6858,27 +7040,71 @@ Value VM::list_reduce_builtin(ArgsView args)
     ObjList* inputList = asList(args[0]);
     ObjClosure* reducer = asClosure(args[1]);
 
+    // Empty list - return initial value immediately
+    if (inputList->elts.get().empty())
+        return args[2];
+
     // Detect callback arity
     int arity = asFunction(reducer->function)->arity;
 
-    Value accumulator = args[2];
+    // Create continuation state: {list, reducer, accumulator, index, arity}
+    Value state = Value::dictVal();
+    asDict(state)->store(Value::stringVal(toUnicodeString("list")), args[0]);
+    asDict(state)->store(Value::stringVal(toUnicodeString("reducer")), args[1]);
+    asDict(state)->store(Value::stringVal(toUnicodeString("accumulator")), args[2]);
+    asDict(state)->store(Value::stringVal(toUnicodeString("index")), Value::intVal(0));
+    asDict(state)->store(Value::stringVal(toUnicodeString("arity")), Value::intVal(arity));
 
+    auto& cont = thread->nativeContinuation;
+    cont.active = true;
+    cont.state = state;
+    // Set up stack cleanup: result goes to receiver slot, stack shrinks by arg count
+    cont.resultSlot = &*(thread->stackTop - args.size());  // receiver position
+    cont.stackBase = thread->stackTop - (args.size() - 1); // one past result slot
+    cont.onComplete = [](VM& vm, Value callbackResult) -> bool {
+        auto& st = vm.thread->nativeContinuation.state;
+        auto* d = asDict(st);
+        ObjList* list = asList(d->at(Value::stringVal(toUnicodeString("list"))));
+        int idx = d->at(Value::stringVal(toUnicodeString("index"))).asInt();
+        int arity = d->at(Value::stringVal(toUnicodeString("arity"))).asInt();
+
+        // Process result - update accumulator
+        d->store(Value::stringVal(toUnicodeString("accumulator")), callbackResult);
+
+        // Advance index
+        idx++;
+        d->store(Value::stringVal(toUnicodeString("index")), Value::intVal(idx));
+
+        // More iterations?
+        auto elts = list->elts.get();
+        if (static_cast<size_t>(idx) < elts.size()) {
+            ObjClosure* reducer = asClosure(d->at(Value::stringVal(toUnicodeString("reducer"))));
+            std::vector<Value> callArgs;
+            callArgs.push_back(callbackResult);  // new accumulator
+            callArgs.push_back(elts[idx]);
+            if (arity >= 3)
+                callArgs.push_back(Value::intVal(idx));
+            return vm.pushContinuationCall(reducer, callArgs);
+        }
+
+        // Done - push final accumulator
+        vm.push(callbackResult);
+        return true;
+    };
+
+    // Push first callback
     auto elts = inputList->elts.get();
-    for (size_t i = 0; i < elts.size(); ++i) {
-        std::vector<Value> callArgs;
-        callArgs.push_back(accumulator);
-        callArgs.push_back(elts[i]);
-        if (arity >= 3)
-            callArgs.push_back(Value::intVal(static_cast<int32_t>(i)));
+    std::vector<Value> callArgs;
+    callArgs.push_back(args[2]);  // initial accumulator
+    callArgs.push_back(elts[0]);
+    if (arity >= 3)
+        callArgs.push_back(Value::intVal(0));
 
-        auto [interpResult, returnValue] = callAndExec(reducer, callArgs);
-        if (interpResult != InterpretResult::OK)
-            throw std::runtime_error("list.reduce: reducer callback failed");
+    if (!pushContinuationCall(reducer, callArgs))
+        throw std::runtime_error("list.reduce: failed to invoke reducer");
 
-        accumulator = returnValue;
-    }
-
-    return accumulator;
+    // Return nil placeholder - actual result pushed by continuation
+    return Value::nilVal();
 }
 
 #ifdef ROXAL_ENABLE_REGEX

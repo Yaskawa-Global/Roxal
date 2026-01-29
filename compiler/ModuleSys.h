@@ -35,15 +35,14 @@ public:
     Value weakref_builtin(VM& vm, ArgsView args);
     Value weak_alive_builtin(VM& vm, ArgsView args);
     Value strongref_builtin(VM& vm, ArgsView args);
+    Value arity_builtin(VM& vm, ArgsView args);
     Value gc_builtin(VM& vm, ArgsView args);
     Value gc_config_builtin(VM& vm, ArgsView args);
     Value serialize_builtin(VM& vm, ArgsView args);
     Value deserialize_builtin(VM& vm, ArgsView args);
     Value to_json_builtin(VM& vm, ArgsView args);
     Value from_json_builtin(VM& vm, ArgsView args);
-    Value filter_builtin(VM& vm, ArgsView args);
-    Value map_builtin(VM& vm, ArgsView args);
-    Value reduce_builtin(VM& vm, ArgsView args);
+    // filter_builtin, map_builtin, reduce_builtin removed - now in sys.rox
 
     // Time type natives
     Value time_init_native(VM& vm, ArgsView args);

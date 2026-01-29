@@ -51,9 +51,9 @@ typedef std::vector<CallFrame> CallFrames;
 
 struct CallFrame {
     #ifdef DEBUG_BUILD
-    CallFrame() : closure(Value::nilVal()), slots(nullptr), strict(false), isEventHandler(false) {}
+    CallFrame() : closure(Value::nilVal()), slots(nullptr), strict(false), isEventHandler(false), isContinuationCallback(false) {}
     #else
-    CallFrame() : closure(Value::nilVal()), strict(false), isEventHandler(false) {}
+    CallFrame() : closure(Value::nilVal()), strict(false), isEventHandler(false), isContinuationCallback(false) {}
     #endif
     Value closure; // ObjClosure
     Chunk::iterator startIp;
@@ -79,6 +79,7 @@ struct CallFrame {
     std::vector<ExceptionHandler> exceptionHandlers;
 
     bool isEventHandler { false }; // true for event handler frames (pushed by processEventDispatch)
+    bool isContinuationCallback { false }; // true for native continuation callback frames (e.g., filter/map/reduce)
 };
 
 
@@ -365,6 +366,12 @@ public:
     // Event handler closures are pushed as regular call frames (like func call).
     bool processEventDispatch();
     bool invokeNextEventHandler();
+
+    // Native continuation support - allows native functions to call Roxal closures
+    // without re-entering execute() (e.g., list.filter/map/reduce)
+    bool processContinuationDispatch();
+    bool pushContinuationCall(ObjClosure* closure, const std::vector<Value>& args);
+    void clearContinuation();
 
     void resetStack();
     void freeObjects();
