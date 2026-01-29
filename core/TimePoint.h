@@ -25,6 +25,7 @@ public:
     static constexpr TimePoint secs(double s) { return TimePoint(static_cast<int64_t>(s*1000000.0)); }
 
     static constexpr TimePoint zero() { return TimePoint(0); }
+    static constexpr TimePoint max() { return TimePoint(INT64_MAX); }
 
     static TimePoint currentTime();
     void sleepUntil() const;

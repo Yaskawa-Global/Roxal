@@ -507,7 +507,7 @@ Values FuncNode::operator()(const Values& inputValues)
     if (nativeFunc) {
         return nativeFunc(args);
     }
-    auto result = vm.callAndExec(roxal::asClosure(closure), args);
+    auto result = vm.invokeClosureSync(roxal::asClosure(closure), args);
 
     if (!m_outputNames.empty() && m_outputNames.size() > 1) {
         if (roxal::isList(result.second)) {

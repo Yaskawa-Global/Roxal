@@ -331,7 +331,7 @@ size_t VM::marshalArgs(ptr<type::Type> funcType,
             if (it != paramDefaultFuncs.end()) {
                 Value defFunc = it->second;
                 Value defClosure = Value::closureVal(defFunc);
-                auto res = callAndExec(asClosure(defClosure), {});
+                auto res = invokeClosureSync(asClosure(defClosure), {});
                 if (res.first != InterpretResult::OK)
                     throw std::runtime_error("failed to evaluate default parameter");
                 arg = res.second;
@@ -878,6 +878,40 @@ bool VM::cacheWritesEnabled() const
 
 InterpretResult VM::interpret(std::istream& source, const std::string& name)
 {
+    // Setup: compile and prepare the initial call frame
+    InterpretResult setupResult = setup(source, name);
+    if (setupResult != InterpretResult::OK)
+        return setupResult;
+
+    // Execute directly on the host thread (no spawn)
+    auto [result, value] = execute();
+
+    // Join any other threads spawned during execution (actors, etc.)
+    InterpretResult joinResult = joinAllThreads();
+
+    if (joinResult != InterpretResult::OK || runtimeErrorFlag.load())
+        result = InterpretResult::RuntimeError;
+
+    if (exitRequested.load())
+        result = InterpretResult::OK;
+
+    #if defined(DEBUG_TRACE_EXECUTION)
+    if (globals.size() > 0) {
+        std::cout << std::endl << "== globals ==" << std::endl;
+        for(const auto& global : globals.get())
+            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second.value) << std::endl;
+    }
+    #endif
+
+    thread.reset();
+    freeObjects();
+
+    return result;
+}
+
+
+InterpretResult VM::setup(std::istream& source, const std::string& name)
+{
     Value function { Value::nilVal() }; // ObjFunction
 
     runtimeErrorFlag = false;
@@ -925,39 +959,44 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
 
     Value closureValue { Value::closureVal(function) };
 
-    ptr<Thread> firstThread = make_ptr<Thread>();
-    threads.store(firstThread->id(), firstThread);
+    ptr<Thread> mainThread = make_ptr<Thread>();
+    threads.store(mainThread->id(), mainThread);
+    thread = mainThread;
 
-    // go
-    firstThread->spawn(closureValue);
+    resetStack();
+    push(closureValue);
+    if (!call(asClosure(closureValue), CallSpec(0)))
+        return InterpretResult::RuntimeError;
 
-    // Transfer execution ownership to the spawned thread. Drop our local strong
-    // references so they cannot outlive the running closure and get collected
-    // out from underneath us.
-    closureValue = Value::nilVal();
-    function = Value::nilVal();
+    return InterpretResult::OK;
+}
 
-    // join all threads (they may spawn additional threads while running)
-    InterpretResult joinResult = joinAllThreads();
-    InterpretResult result = firstThread->result;
 
-    if (joinResult != InterpretResult::OK || runtimeErrorFlag.load())
-        result = InterpretResult::RuntimeError;
-
-    if (exitRequested.load())
-        result = InterpretResult::OK;
-
-    #if defined(DEBUG_TRACE_EXECUTION)
-    if (globals.size() > 0) {
-        std::cout << std::endl << "== globals ==" << std::endl;
-        for(const auto& global : globals.get())
-            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second.value) << std::endl;
-    }
-    #endif
-
-    freeObjects();
-
+InterpretResult VM::runFor(TimeDuration duration)
+{
+    auto deadline = TimePoint::currentTime() + duration;
+    auto [result, value] = execute(deadline);
     return result;
+}
+
+bool VM::hasMoreWork() const
+{
+    if (!thread) return false;
+    if (thread->frames.empty()) return false;
+    return true;
+}
+
+bool VM::isBlocked() const
+{
+    if (!thread) return false;
+    return thread->threadSleep.load() || thread->awaitedFuture.isNonNil();
+}
+
+TimePoint VM::blockedUntil() const
+{
+    if (!thread) return TimePoint::max();
+    if (thread->threadSleep.load()) return thread->threadSleepUntil.load();
+    return TimePoint::max();  // future-blocked has no known deadline
 }
 
 
@@ -1010,7 +1049,7 @@ InterpretResult VM::interpretLine(std::istream& linestream,
 
     resetStack();
 
-    auto resultPair = callAndExec(asClosure(closure), {});
+    auto resultPair = invokeClosureSync(asClosure(closure), {});
     InterpretResult result = resultPair.first;
     if (runtimeErrorFlag.load())
         result = InterpretResult::RuntimeError;
@@ -2093,7 +2132,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
     return false;
 }
 
-std::pair<InterpretResult,Value> VM::callAndExec(ObjClosure* closure, const std::vector<Value>& args)
+std::pair<InterpretResult,Value> VM::invokeClosureSync(ObjClosure* closure, const std::vector<Value>& args)
 {
 
     // Push closure first, then arguments (to match OpCode::Call stack layout)
@@ -3046,7 +3085,7 @@ void VM::writeOpcodeProfile()
 }
 
 
-std::pair<InterpretResult,Value> VM::execute()
+std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
 {
     if (thread->frames.empty() ||
         asFunction(asClosure(thread->frames.back().closure)->function)->chunk->code.size() == 0)
@@ -3066,6 +3105,10 @@ std::pair<InterpretResult,Value> VM::execute()
     // Track execution depth for nested calls
     thread->execute_depth++;
     size_t frame_depth_on_entry = thread->frames.size();
+
+    // Deadline-based yielding support
+    const bool hasDeadline = (deadline != TimePoint::max());
+    auto yieldReturn = std::make_pair(InterpretResult::Yielded, Value::nilVal());
 
     // Reference to RT callback manager for instruction loop callback checks
     auto& rtMgr = RTCallbackManager::instance();
@@ -5435,9 +5478,18 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
         }
 
-        // RT Callback check - after every instruction for ±10μs accuracy
+        // RT Callback check and deadline check - after every instruction
         // mayNeedInvocation() returns false immediately if not main thread or no callbacks
-        if (rtMgr.mayNeedInvocation()) {
+        if (hasDeadline) {
+            auto now = TimePoint::currentTime();
+            if (rtMgr.mayNeedInvocation()) {
+                rtMgr.checkAndInvokeCallbacks(now);
+            }
+            if (now >= deadline) {
+                if (thread->execute_depth > 0) thread->execute_depth--;
+                return yieldReturn;
+            }
+        } else if (rtMgr.mayNeedInvocation()) {
             rtMgr.checkAndInvokeCallbacks(TimePoint::currentTime());
         }
 
@@ -5456,6 +5508,12 @@ std::pair<InterpretResult,Value> VM::execute()
                 thread->threadSleep = false;
             }
             else {
+                // If deadline-limited, yield instead of blocking
+                if (hasDeadline) {
+                    if (thread->execute_depth > 0) thread->execute_depth--;
+                    return yieldReturn;
+                }
+
                 auto sleepTarget = thread->threadSleepUntil.load();
 
                 // If RT callbacks are registered, wake at their deadline instead
@@ -5490,6 +5548,11 @@ std::pair<InterpretResult,Value> VM::execute()
             if (fut->future.wait_for(std::chrono::microseconds(0)) == std::future_status::ready) {
                 thread->awaitedFuture = Value::nilVal();
             } else {
+                // If deadline-limited, yield instead of blocking
+                if (hasDeadline) {
+                    if (thread->execute_depth > 0) thread->execute_depth--;
+                    return yieldReturn;
+                }
                 std::unique_lock<std::mutex> lk(thread->sleepMutex);
                 thread->sleepCondVar.wait_for(lk, std::chrono::milliseconds(1));
             }
@@ -5665,7 +5728,7 @@ bool VM::processPendingEvents()
                         }
                         handlerArgs.push_back(strongInstance);
                     }
-                    auto result = callAndExec(closureObj, handlerArgs);
+                    auto result = invokeClosureSync(closureObj, handlerArgs);
                     assert(!thread->threadSleep);
 
                     if (result.first != InterpretResult::OK)
@@ -5772,7 +5835,7 @@ bool VM::invokeNextEventHandler()
         dispatch.prevThreadSleepUntil = thread->threadSleepUntil.load();
         thread->threadSleep = false;
 
-        // Push closure + args (same stack layout as callAndExec / OpCode::Call)
+        // Push closure + args (same stack layout as invokeClosureSync / OpCode::Call)
         int arity = asFunction(closureObj->function)->arity;
         push(Value::objRef(closureObj));
         if (arity > 0) {
@@ -7636,7 +7699,7 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
     ptr<Thread> t = make_ptr<Thread>();
     thread = t;
     resetStack();
-    callAndExec(asClosure(closure), {});
+    invokeClosureSync(asClosure(closure), {});
     thread = nullptr;
 }
 

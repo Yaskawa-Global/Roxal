@@ -136,11 +136,46 @@ public:
     Value importIdlModule(const std::string& path);
 #endif
 
+    // =========================================================================
+    // Execution API
+    // =========================================================================
+
+    // --- One-shot execution ---
+    /// Compile and run source to completion. Suitable for simple scripts.
     InterpretResult interpret(std::istream& source, const std::string& sourceName);
+
+    /// REPL mode: compile and execute a single line/expression.
     InterpretResult interpretLine(std::istream& linestream,
                                   bool replMode=true,
                                   const std::string& sourceNameOverride="");
 
+    // --- Incremental execution ---
+    // Use setup() + runFor() when you need control over execution timing,
+    // e.g., running Roxal within a host application's main loop.
+
+    /// Compile source and set up initial call frame, but don't execute.
+    /// Returns CompileError on failure, OK on success.
+    /// After setup(), call runFor() repeatedly to execute incrementally.
+    InterpretResult setup(std::istream& source, const std::string& sourceName);
+
+    /// Execute for up to the given duration, then yield.
+    /// Returns: OK if completed, Yielded if budget exhausted or blocked,
+    /// RuntimeError on error. Call repeatedly to continue execution.
+    InterpretResult runFor(TimeDuration duration);
+
+    /// Check if the current thread has more work to do (not completed).
+    bool hasMoreWork() const;
+
+    /// Check if the current thread is blocked (sleeping or awaiting future).
+    bool isBlocked() const;
+
+    /// Get the earliest time the blocked thread could make progress.
+    /// Returns TimePoint::max() if not blocked or if blocked on future.
+    TimePoint blockedUntil() const;
+
+    // =========================================================================
+    // Internal call mechanics (used by the above APIs)
+    // =========================================================================
 
     bool call(ObjClosure* closure, const CallSpec& callSpec);
     bool call(ValueType builtinType, const CallSpec& callSpec);
@@ -148,8 +183,9 @@ public:
     bool invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec);
     bool invoke(ObjString* name, const CallSpec& callSpec);
 
-    // Convenience for C++ callers: execute closure with arguments
-    std::pair<InterpretResult,Value> callAndExec(ObjClosure* closure, const std::vector<Value>& args);
+    /// Internal: invoke a closure with arguments and execute to completion.
+    /// Used by REPL, event dispatch, module execution, etc.
+    std::pair<InterpretResult,Value> invokeClosureSync(ObjClosure* closure, const std::vector<Value>& args);
     bool indexValue(const Value& indexable, int subscriptCount);
     bool setIndexValue(const Value& indexable, int subscriptCount, Value& value);
     enum class BindResult {
@@ -248,7 +284,10 @@ protected:
 
     void ensureDataflowEngineStopped();
 
-    std::pair<InterpretResult,Value> execute();
+    /// Low-level dispatch loop. Runs until completion, error, or deadline.
+    /// Prefer runFor() for incremental execution; this is used internally
+    /// by interpret(), runFor(), and invokeClosureSync().
+    std::pair<InterpretResult,Value> execute(TimePoint deadline = TimePoint::max());
 
     bool outputBytecodeDisassembly;
     bool lineMode;
