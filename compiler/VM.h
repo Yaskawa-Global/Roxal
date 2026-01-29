@@ -142,10 +142,10 @@ public:
 
     // --- One-shot execution ---
     /// Compile and run source to completion. Suitable for simple scripts.
-    InterpretResult interpret(std::istream& source, const std::string& sourceName);
+    InterpretResult run(std::istream& source, const std::string& sourceName);
 
     /// REPL mode: compile and execute a single line/expression.
-    InterpretResult interpretLine(std::istream& linestream,
+    InterpretResult runLine(std::istream& linestream,
                                   bool replMode=true,
                                   const std::string& sourceNameOverride="");
 
@@ -286,7 +286,7 @@ protected:
 
     /// Low-level dispatch loop. Runs until completion, error, or deadline.
     /// Prefer runFor() for incremental execution; this is used internally
-    /// by interpret(), runFor(), and invokeClosureSync().
+    /// by run(), runFor(), and invokeClosureSync().
     std::pair<InterpretResult,Value> execute(TimePoint deadline = TimePoint::max());
 
     bool outputBytecodeDisassembly;

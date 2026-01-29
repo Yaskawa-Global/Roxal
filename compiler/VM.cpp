@@ -876,7 +876,7 @@ bool VM::cacheWritesEnabled() const
 
 
 
-InterpretResult VM::interpret(std::istream& source, const std::string& name)
+InterpretResult VM::run(std::istream& source, const std::string& name)
 {
     // Setup: compile and prepare the initial call frame
     InterpretResult setupResult = setup(source, name);
@@ -1000,7 +1000,7 @@ TimePoint VM::blockedUntil() const
 }
 
 
-InterpretResult VM::interpretLine(std::istream& linestream,
+InterpretResult VM::runLine(std::istream& linestream,
                                   bool replMode,
                                   const std::string& sourceNameOverride)
 {

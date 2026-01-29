@@ -407,7 +407,7 @@ static int repl()
                     std::stringstream scriptStream;
                     scriptStream << script.rdbuf();
                     try {
-                        vm.interpretLine(scriptStream, false, displayPath);
+                        vm.runLine(scriptStream, false, displayPath);
                     } catch (std::exception& e) {
                         std::cerr << "Error: " << e.what() << std::endl;
                     }
@@ -447,7 +447,7 @@ static int repl()
                 stream.str("");
                 stream.clear();
                 stream << buffer << std::flush;
-                vm.interpretLine(stream);
+                vm.runLine(stream);
             } catch (std::exception& e) {
                 std::cerr << "Error: " << e.what() << std::endl;
             }
@@ -509,9 +509,9 @@ static InterpretResult runFile(const std::string& path,
         // Add the folder containing the script to the search paths
         vm->appendModulePaths({relativePath.string()});
         vm->appendModulePaths(modulePaths);
-        return vm->interpret(sourcestream, filePath.string());
+        return vm->run(sourcestream, filePath.string());
     } catch (std::exception& e) {
-        throw std::runtime_error("Error interpreting file '" + filePath.string() + "': " + e.what());
+        throw std::runtime_error("Error running file '" + filePath.string() + "': " + e.what());
     }
 }
 
@@ -524,7 +524,7 @@ static InterpretResult runString(const std::string& source,
     std::signal(SIGINT, sigint_handler);
     vm.setDisassemblyOutput(outputBytecodeDisassembly);
     vm.appendModulePaths(modulePaths);
-    return vm.interpret(sourcestream, "cli");
+    return vm.run(sourcestream, "cli");
 }
 
 
