@@ -304,6 +304,82 @@ void VM::setStackLimits(size_t stackSize, size_t callFrameLimitValue)
 }
 
 
+// Identifies which param indices require closure default evaluation.
+// Returns vector of param indices that need closure evaluation (empty if none).
+std::vector<size_t> VM::getClosureDefaultParamIndices(
+    ptr<type::Type> funcType,
+    const std::vector<Value>& defaults,
+    const CallSpec& callSpec,
+    const std::map<int32_t, Value>& paramDefaultFuncs)
+{
+    std::vector<size_t> indices;
+    const auto& params = funcType->func.value().params;
+    auto paramPositions = callSpec.paramPositions(funcType, true);
+
+    for (size_t pi = 0; pi < params.size(); ++pi) {
+        int pos = paramPositions[pi];
+        // If arg is supplied explicitly (pos >= 0) or has static default (pi < defaults.size()),
+        // no closure evaluation needed
+        if (pos >= 0 || pi < defaults.size())
+            continue;
+        // Check if this param has a closure default
+        auto it = paramDefaultFuncs.find(params[pi]->nameHashCode);
+        if (it != paramDefaultFuncs.end())
+            indices.push_back(pi);
+    }
+    return indices;
+}
+
+// Marshal args without evaluating closure defaults.
+// For params that need closure evaluation, stores nilVal() placeholder.
+size_t VM::marshalArgsPartial(ptr<type::Type> funcType,
+                              const std::vector<Value>& defaults,
+                              const CallSpec& callSpec,
+                              Value* out,
+                              bool includeReceiver,
+                              const Value& receiver,
+                              const std::map<int32_t, Value>& paramDefaultFuncs)
+{
+    const auto& params = funcType->func.value().params;
+    auto paramPositions = callSpec.paramPositions(funcType, true);
+
+    size_t idx = 0;
+    if (includeReceiver)
+        out[idx++] = receiver;
+
+    for (size_t pi = 0; pi < params.size(); ++pi) {
+        Value arg;
+        bool needsClosureDefault = false;
+        int pos = paramPositions[pi];
+        if (pos >= 0)
+            arg = *(&(*thread->stackTop) - callSpec.argCount + pos);
+        else if (pi < defaults.size())
+            arg = defaults[pi];
+        else {
+            // Check if this param has a closure default
+            auto it = paramDefaultFuncs.find(params[pi]->nameHashCode);
+            if (it != paramDefaultFuncs.end()) {
+                // Closure default - store placeholder (will be filled by continuation)
+                arg = Value::nilVal();
+                needsClosureDefault = true;
+            } else {
+                arg = Value::nilVal();
+            }
+        }
+
+        // Skip type conversion for params that will be filled by closure evaluation
+        if (!needsClosureDefault && params[pi].has_value() && params[pi]->type.has_value()) {
+            ValueType vt = builtinToValueType(params[pi]->type.value()->builtin);
+            bool strictConv = false;
+            if (thread->frames.size() >= 1)
+                strictConv = (thread->frames.end()-1)->strict;
+            arg = toType(vt, arg, strictConv);
+        }
+        out[idx++] = arg;
+    }
+    return idx;
+}
+
 size_t VM::marshalArgs(ptr<type::Type> funcType,
                        const std::vector<Value>& defaults,
                        const CallSpec& callSpec,
@@ -378,6 +454,71 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
     try {
         if (funcType) {
             size_t paramCount = funcType->func.value().params.size() + (includeReceiver ? 1 : 0);
+            static const std::map<int32_t, Value> emptyDefaults;
+            const auto& paramDefaults = declFunction.isNonNil() ? asFunction(declFunction)->paramDefaultFunc : emptyDefaults;
+
+            // Check if any params need closure default evaluation
+            auto closureIndices = getClosureDefaultParamIndices(funcType, defaults, callSpec, paramDefaults);
+
+            if (!closureIndices.empty()) {
+                // Defer native call: set up state and push first closure default frame
+                auto& state = thread->nativeDefaultParamState;
+                state.active = true;
+                state.nativeFunc = fn;
+                state.funcType = funcType;
+                state.staticDefaults = defaults;
+                state.callSpec = callSpec;
+                state.includeReceiver = includeReceiver;
+                state.receiver = receiver;
+                state.declFunction = declFunction;
+                state.resolveArgMask = resolveArgMask;
+                state.closureParamIndices = std::move(closureIndices);
+                state.nextClosureIndex = 0;
+                state.paramDefaultFuncs = paramDefaults;
+                state.originalArgCount = callSpec.argCount;
+
+                // Partially marshal args (without evaluating closure defaults)
+                state.argsBuffer.resize(paramCount);
+                marshalArgsPartial(funcType, defaults, callSpec, state.argsBuffer.data(),
+                                   includeReceiver, receiver, paramDefaults);
+
+                // Push first closure default frame
+                size_t paramIdx = state.closureParamIndices[0];
+                const auto& params = funcType->func.value().params;
+                auto it = paramDefaults.find(params[paramIdx]->nameHashCode);
+                Value defFunc = it->second;
+                Value defClosure = Value::closureVal(defFunc);
+
+                // Check for captured variables (not allowed in default params)
+                if (asClosure(defClosure)->upvalues.size() > 0) {
+                    state.clear();
+                    auto paramName = params[paramIdx]->name;
+                    runtimeError("Captured variables in default parameter '" + toUTF8StdString(paramName) +
+                                "' value expressions are not allowed.");
+                    return false;
+                }
+
+                // Set up continuation callback that will process each default value
+                auto& cont = thread->nativeContinuation;
+                cont.active = true;
+                cont.state = Value::nilVal();  // State is in nativeDefaultParamState
+                cont.resultSlot = nullptr;     // We handle stack cleanup ourselves
+                cont.onComplete = [](VM& vm, Value defaultValue) -> bool {
+                    return vm.processNativeDefaultParamDispatch(defaultValue);
+                };
+
+                // Push closure and call it using continuation mechanism
+                push(defClosure);
+                if (!call(asClosure(defClosure), CallSpec(0))) {
+                    state.clear();
+                    cont.clear();
+                    return false;
+                }
+                thread->frames.back().isContinuationCallback = true;
+                return true;  // Deferred - execute() will continue with closure frame
+            }
+
+            // No closure defaults - proceed with immediate call (original code path)
             constexpr size_t Small = 8;
             Value stackArgs[Small];
             std::vector<Value> heapArgs;
@@ -386,8 +527,6 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 heapArgs.resize(paramCount);
                 buf = heapArgs.data();
             }
-            static const std::map<int32_t, Value> emptyDefaults;
-            const auto& paramDefaults = declFunction.isNonNil() ? asFunction(declFunction)->paramDefaultFunc : emptyDefaults;
             size_t actual = marshalArgs(funcType, defaults, callSpec, buf, includeReceiver, receiver, paramDefaults);
 
             // Non-blocking resolution of future args indicated by mask
@@ -1592,7 +1731,9 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             }
                             *(thread->stackTop - callSpec.argCount - 1) = calleeVal;
                             bool ok = callValue(calleeVal, callSpec);
-                            if (isNative)
+                            // Skip instance restoration if native call was deferred (continuation active)
+                            // In deferred case, processNativeDefaultParamDispatch handles this
+                            if (isNative && !thread->nativeContinuation.active)
                                 *(thread->stackTop - 1) = inst; // native init returns instance
                             return ok;
                         } else {
@@ -2680,6 +2821,7 @@ Value VM::opReturn()
 {
     auto returningFrame { thread->frames.back() };
 
+
     // Flag event handler return so processEventDispatch() can advance
     // to the next handler.
     if (returningFrame.isEventHandler)
@@ -2697,6 +2839,7 @@ Value VM::opReturn()
     thread->popFrame();
 
     if (!thread->frames.empty()) {
+        auto slotsOffset = returningFrame.slots - &*thread->stack.begin();
         auto popCount = &(*thread->stackTop) - returningFrame.slots;
         //stackTop -= popCount;
         // loop to ensure stack Values unref'd
@@ -2987,8 +3130,7 @@ void VM::enableOpcodeProfiling(std::string filePath)
         std::error_code ec;
         if (std::filesystem::exists(opcodeProfilePath, ec)) {
             if (ec) {
-                std::cerr << "Warning: unable to check opcode profile file '" << opcodeProfilePath
-                          << "': " << ec.message() << std::endl;
+                std::cerr << "Warning: unable to check opcode profile file '" << opcodeProfilePath << "': " << ec.message() << std::endl;
             } else {
                 std::ifstream in(opcodeProfilePath);
                 if (in) {
@@ -3026,17 +3168,14 @@ void VM::enableOpcodeProfiling(std::string filePath)
                             opcodeProfileCounts[opcodeIndex].store(value, std::memory_order_relaxed);
                         }
                     } else if (!err.empty()) {
-                        std::cerr << "Warning: failed to parse opcode profile file '" << opcodeProfilePath
-                                  << "': " << err << std::endl;
+                        std::cerr << "Warning: failed to parse opcode profile file '" << opcodeProfilePath << "': " << err << std::endl;
                     }
                 } else {
-                    std::cerr << "Warning: failed to open opcode profile file '" << opcodeProfilePath
-                              << "' for reading." << std::endl;
+                    std::cerr << "Warning: failed to open opcode profile file '" << opcodeProfilePath << "' for reading" << std::endl;
                 }
             }
         } else if (ec) {
-            std::cerr << "Warning: unable to check opcode profile file '" << opcodeProfilePath
-                      << "': " << ec.message() << std::endl;
+            std::cerr << "Warning: unable to check opcode profile file '" << opcodeProfilePath << "': " << ec.message() << std::endl;
         }
     }
 
@@ -4747,7 +4886,6 @@ std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
 
                 try {
                     Value result = opReturn();
-
                     push(result);
 
                     // For nested execute() calls, only terminate when we return BELOW the entry depth.
@@ -4790,7 +4928,6 @@ std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::ReturnStore: {
-
                 try {
                     Value result = opReturn();
 
@@ -4813,6 +4950,16 @@ std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
 
                         if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(InterpretResult::OK,result);
+                    }
+
+                    // For continuation callbacks, push result to stack like OpCode::Return
+                    // so processContinuationDispatch can pop it
+                    if (thread->continuationCallbackReturned) {
+                        push(result);
+                        frame = thread->frames.end() - 1;
+                        if (frame->ip == frame->startIp)
+                            thread->frameStart = true;
+                        break;
                     }
 
                     CallFrames::iterator parentFrame = frame->parent;
@@ -5994,6 +6141,114 @@ bool VM::processContinuationDispatch()
     }
 
     return ok;
+}
+
+bool VM::processNativeDefaultParamDispatch(Value defaultValue)
+{
+
+    auto& state = thread->nativeDefaultParamState;
+    if (!state.active)
+        return true;
+
+    // Store the result in the args buffer at the correct position
+    size_t paramIdx = state.closureParamIndices[state.nextClosureIndex];
+    size_t bufferIdx = paramIdx + (state.includeReceiver ? 1 : 0);
+    state.argsBuffer[bufferIdx] = defaultValue;
+
+    // Apply type conversion if needed
+    const auto& params = state.funcType->func.value().params;
+    if (params[paramIdx].has_value() && params[paramIdx]->type.has_value()) {
+        ValueType vt = builtinToValueType(params[paramIdx]->type.value()->builtin);
+        bool strictConv = false;
+        if (thread->frames.size() >= 1)
+            strictConv = (thread->frames.end()-1)->strict;
+        state.argsBuffer[bufferIdx] = toType(vt, state.argsBuffer[bufferIdx], strictConv);
+    }
+
+    // Move to next closure default
+    state.nextClosureIndex++;
+
+    // More closure defaults to evaluate?
+    if (state.nextClosureIndex < state.closureParamIndices.size()) {
+        size_t nextParamIdx = state.closureParamIndices[state.nextClosureIndex];
+        auto it = state.paramDefaultFuncs.find(params[nextParamIdx]->nameHashCode);
+        Value defFunc = it->second;
+        Value defClosure = Value::closureVal(defFunc);
+
+        // Check for captured variables (not allowed in default params)
+        if (asClosure(defClosure)->upvalues.size() > 0) {
+            auto paramName = params[nextParamIdx]->name;
+            state.clear();
+            runtimeError("Captured variables in default parameter '" + toUTF8StdString(paramName) +
+                        "' value expressions are not allowed.");
+            return false;
+        }
+
+        // Push closure and call it using continuation mechanism
+        push(defClosure);
+        if (!call(asClosure(defClosure), CallSpec(0))) {
+            state.clear();
+            clearContinuation();
+            return false;
+        }
+        thread->frames.back().isContinuationCallback = true;
+        return true;  // Continue with next closure frame
+    }
+
+    // All defaults evaluated - clear continuation and call the native function
+    clearContinuation();
+    NativeFn fn = state.nativeFunc;
+    size_t actual = state.argsBuffer.size();
+    Value* buf = state.argsBuffer.data();
+
+    // Non-blocking resolution of future args indicated by mask
+    if (state.resolveArgMask) {
+        for (size_t i = 0; i < actual && state.resolveArgMask >> i; ++i) {
+            if ((state.resolveArgMask & (1u << i)) && isFuture(buf[i])) {
+                auto s = buf[i].tryResolveFuture();
+                if (s == FutureStatus::Pending) {
+                    thread->awaitedFuture = buf[i];
+                    // Can't defer further - state is consumed. This is an edge case.
+                    // For now, clear and error.
+                    state.clear();
+                    runtimeError("Cannot await future in native function with deferred default params");
+                    return false;
+                }
+                if (s == FutureStatus::Error) {
+                    state.clear();
+                    return false;
+                }
+            }
+        }
+    }
+
+    ArgsView view{buf, actual};
+    Value result { fn(*this, view) };
+
+    // For init methods (proc that returns void on ObjectInstance), the result should be the instance
+    // Native init returns nil, but we want to leave the instance on the stack
+    // Check if this is a proc (not func) - init is always a proc
+    bool isInitMethod = state.includeReceiver &&
+                        isObjectInstance(state.receiver) &&
+                        state.funcType &&
+                        state.funcType->func.has_value() &&
+                        state.funcType->func.value().isProc;
+    Value finalResult = result;
+    if (isInitMethod) {
+        finalResult = state.receiver;
+    } else {
+    }
+
+    // Clean up original call args from stack and store result.
+    // After processContinuationDispatch pops the closure result, the stack has the
+    // receiver and original args. We need to replace them with the final result.
+    size_t argCount = state.originalArgCount;
+    // Stack: [receiver, <args>...] - write result to receiver slot, pop args
+    *(thread->stackTop - argCount - 1) = finalResult;
+    popN(argCount);
+
+    state.clear();
+    return true;
 }
 
 

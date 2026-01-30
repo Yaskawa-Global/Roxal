@@ -79,7 +79,7 @@ struct CallFrame {
     std::vector<ExceptionHandler> exceptionHandlers;
 
     bool isEventHandler { false }; // true for event handler frames (pushed by processEventDispatch)
-    bool isContinuationCallback { false }; // true for native continuation callback frames (e.g., filter/map/reduce)
+    bool isContinuationCallback { false }; // true for native continuation callback frames (e.g., filter/map/reduce, native default params)
 };
 
 
@@ -217,6 +217,26 @@ public:
                        bool includeReceiver = false,
                        const Value& receiver = Value::nilVal(),
                        const std::map<int32_t, Value>& paramDefaultFuncs = {});
+
+    // Identifies which params need closure default evaluation (returns param indices)
+    std::vector<size_t> getClosureDefaultParamIndices(
+        ptr<type::Type> funcType,
+        const std::vector<Value>& defaults,
+        const CallSpec& callSpec,
+        const std::map<int32_t, Value>& paramDefaultFuncs);
+
+    // Marshal args without evaluating closure defaults (stores nil placeholders)
+    size_t marshalArgsPartial(ptr<type::Type> funcType,
+                              const std::vector<Value>& defaults,
+                              const CallSpec& callSpec,
+                              Value* out,
+                              bool includeReceiver = false,
+                              const Value& receiver = Value::nilVal(),
+                              const std::map<int32_t, Value>& paramDefaultFuncs = {});
+
+    // Process native default param continuation after a closure default returns
+    // Called by the nativeContinuation.onComplete callback
+    bool processNativeDefaultParamDispatch(Value defaultValue);
 
     bool callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                       const std::vector<Value>& defaults,

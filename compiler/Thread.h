@@ -166,6 +166,53 @@ public:
     NativeContinuation nativeContinuation;
     bool continuationCallbackReturned { false };
 
+    // State for deferred native function call when default params need closure evaluation.
+    // We push closure frames and use this state to complete the native call after all defaults are evaluated.
+    struct NativeDefaultParamState {
+        bool active { false };
+
+        // Native function to call after all defaults are evaluated
+        NativeFn nativeFunc;
+        ptr<type::Type> funcType;
+        std::vector<Value> staticDefaults;
+        CallSpec callSpec;
+        bool includeReceiver { false };
+        Value receiver { Value::nilVal() };
+        Value declFunction { Value::nilVal() };
+        uint32_t resolveArgMask { 0 };
+
+        // Args buffer being built (heap-allocated when needed)
+        std::vector<Value> argsBuffer;
+
+        // Param indices that need closure default evaluation (in order)
+        std::vector<size_t> closureParamIndices;
+        size_t nextClosureIndex { 0 };
+
+        // Map from param name hash to default closure
+        std::map<int32_t, Value> paramDefaultFuncs;
+
+        // Stack state for cleanup
+        size_t originalArgCount { 0 };
+
+        void clear() {
+            active = false;
+            nativeFunc = nullptr;
+            funcType = nullptr;
+            staticDefaults.clear();
+            callSpec = CallSpec(0);
+            includeReceiver = false;
+            receiver = Value::nilVal();
+            declFunction = Value::nilVal();
+            resolveArgMask = 0;
+            argsBuffer.clear();
+            closureParamIndices.clear();
+            nextClosureIndex = 0;
+            paramDefaultFuncs.clear();
+            originalArgCount = 0;
+        }
+    };
+    NativeDefaultParamState nativeDefaultParamState;
+
     void pruneEventRegistrations();
 
     // Keeps the currently executing actor call target alive while the

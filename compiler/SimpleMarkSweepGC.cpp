@@ -98,6 +98,18 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
     if (thread.nativeContinuation.active) {
         visitStrongValue(visitor, thread.nativeContinuation.state);
     }
+
+    // Trace native default param state (deferred native call with closure defaults)
+    if (thread.nativeDefaultParamState.active) {
+        visitStrongValue(visitor, thread.nativeDefaultParamState.receiver);
+        visitStrongValue(visitor, thread.nativeDefaultParamState.declFunction);
+        for (const auto& val : thread.nativeDefaultParamState.argsBuffer) {
+            visitStrongValue(visitor, val);
+        }
+        for (const auto& entry : thread.nativeDefaultParamState.paramDefaultFuncs) {
+            visitStrongValue(visitor, entry.second);
+        }
+    }
 }
 
 } // namespace
