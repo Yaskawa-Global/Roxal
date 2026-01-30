@@ -29,6 +29,14 @@ The `RoxalCompiler` visits the AST and generates custom VM (Virtual Machine) byt
 
 The `VM` class executes the Chunk OpCodes.  It supports multiple threads via the `Thread` class and each `Thread` maintains its own stack.
 
+The main execution loop is `VM::execute(TimePoint deadline)`, which processes bytecode instructions until one of the following conditions:
+- The outermost frame returns (`OpCode::Return`)
+- A runtime error occurs
+- The deadline is reached (returns `InterpretResult::Yielded`)
+- An exit is requested
+
+The deadline parameter enables incremental execution for real-time integration, where the VM can be run for a bounded time period and then yield control back to the caller with its state preserved for later resumption.
+
 
 ## Types & Values
 
@@ -89,3 +97,119 @@ that shared references and cycles are preserved.  Actor instances only persist
 their declared properties—runtime queues and threads are reinitialised when the
 actor is restored.  Functions and closures serialise their `Chunk` bytecode and
 captured upvalues so they can be executed after being deserialised.
+
+
+## Continuations
+
+The VM uses continuation-based execution to handle operations that require
+calling Roxal closures from native code. Rather than recursively calling
+`execute()`, native code sets up continuation state and returns control to
+the main `execute()` loop. When the closure completes, a handler processes
+the result.
+
+Three continuation mechanisms exist in the `Thread` class:
+
+### EventDispatchState
+
+Handles event handler dispatch. When an event is emitted, `processEventDispatch()`
+captures a snapshot of registered handlers and pushes each handler closure as a
+call frame (marked with `isEventHandler = true`). After each handler returns,
+the next handler is pushed until all have executed.
+
+```cpp
+struct EventDispatchState {
+    bool active;
+    PendingEvent currentEvent;
+    std::vector<HandlerRegistration> handlerSnapshot;
+    size_t nextHandlerIndex;
+    bool prevThreadSleep;
+    TimePoint prevThreadSleepUntil;
+};
+```
+
+### NativeContinuation
+
+A general-purpose continuation for native functions that call Roxal closures
+iteratively, such as `list.filter()`, `list.map()`, and `list.reduce()`.
+
+```cpp
+struct NativeContinuation {
+    std::function<bool(VM&, Value)> onComplete;  // Called when closure returns
+    Value state;                                  // Iteration state (e.g., index)
+    bool active;
+    Value* resultSlot;                           // Where to write final result
+    ValueStack::iterator stackBase;              // Stack position for cleanup
+};
+```
+
+The native function sets up state, pushes a closure frame with
+`isContinuationCallback = true`, and returns. When the closure returns,
+`processContinuationDispatch()` invokes `onComplete`, which either pushes
+another closure frame or completes with the final result.
+
+### NativeDefaultParamState
+
+Handles closure-based default parameter evaluation for native functions.
+When a native function has parameters with closure defaults (computed at
+call time), this mechanism evaluates each default before invoking the
+native function.
+
+```cpp
+struct NativeDefaultParamState {
+    bool active;
+    NativeFn nativeFunc;                         // Native function to invoke
+    ptr<type::Type> funcType;
+    std::vector<Value> staticDefaults;
+    CallSpec callSpec;
+    bool includeReceiver;
+    Value receiver;
+    Value declFunction;
+    uint32_t resolveArgMask;
+    std::vector<Value> argsBuffer;               // Args being built
+    std::vector<size_t> closureParamIndices;     // Params needing evaluation
+    size_t nextClosureIndex;
+    std::map<int32_t, Value> paramDefaultFuncs;  // Param hash -> closure
+    size_t originalArgCount;
+};
+```
+
+`callNativeFn()` detects closure defaults via `getClosureDefaultParamIndices()`,
+partially marshals args with `marshalArgsPartial()`, and pushes default closure
+frames one at a time. `processNativeDefaultParamDispatch()` stores each result
+and either pushes the next closure or invokes the native function with
+complete args.
+
+### CallFrame Flags
+
+Call frames use flags to identify their role:
+- `isEventHandler`: Return triggers next event handler
+- `isContinuationCallback`: Return triggers `onComplete` handler
+
+After `OpCode::Return`/`OpCode::ReturnStore`, `execute()` checks
+`thread->continuationCallbackReturned` to dispatch to the appropriate handler.
+
+
+## Real-Time Integration
+
+The VM supports incremental execution for real-time control loops via the
+deadline parameter to `execute()`.
+
+### execute() with Deadline
+
+```cpp
+std::pair<InterpretResult, Value> VM::execute(TimePoint deadline = TimePoint::max())
+```
+
+The dispatch loop checks `TimePoint::currentTime()` against the deadline.
+When reached, `execute()` returns `InterpretResult::Yielded` with all state
+preserved. The caller can resume by calling `execute()` again.
+
+### Blocking Operations
+
+Operations that can block the thread:
+- `wait(ms=N)`: Sleeps on condition variable
+- Future awaiting: Polls/waits for resolution
+- Actor method calls: Cross-thread calls return futures
+
+Blocked threads yield at the deadline and resume when the blocking condition
+clears or time elapses.
