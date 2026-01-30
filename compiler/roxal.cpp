@@ -515,6 +515,55 @@ static InterpretResult runFile(const std::string& path,
     }
 }
 
+// Compile a script and all its transitive imports without executing.
+// This ensures all .roc cache files exist for RT deployment.
+static InterpretResult precompileFile(const std::string& path,
+                                      const std::vector<std::string>& modulePaths,
+                                      bool outputBytecodeDisassembly=false)
+{
+    std::filesystem::path filePath(path);
+    std::ifstream sourcestream(filePath); // assumed UTF-8
+    if (!sourcestream.is_open()) {
+        for(const auto& modPath : modulePaths) {
+            std::filesystem::path candidate = std::filesystem::path(modPath) / filePath;
+            sourcestream.open(candidate);
+            if (sourcestream.is_open()) {
+                filePath = candidate;
+                break;
+            }
+        }
+    }
+
+    if (!sourcestream.is_open())
+        throw std::runtime_error("file not found: " + path);
+
+    std::filesystem::path fileAndPath(filePath);
+
+    // construct a relative directory path containing the file, from the current working directory
+    std::filesystem::path absolutePath = std::filesystem::absolute(filePath);
+    std::filesystem::path currentPath = std::filesystem::current_path();
+    std::filesystem::path parentPath = absolutePath.parent_path();
+    std::filesystem::path relativePath = std::filesystem::relative(parentPath, currentPath);
+
+    VM* vm { nullptr };
+    try {
+        vm = &VM::instance();
+    } catch (std::exception& e) {
+        throw std::runtime_error("Failed to initialize VM: " + std::string(e.what()));
+    }
+
+    try {
+        vm->setDisassemblyOutput(outputBytecodeDisassembly);
+        // Add the folder containing the script to the search paths
+        vm->appendModulePaths({relativePath.string()});
+        vm->appendModulePaths(modulePaths);
+        // Use setup() to compile without executing
+        return vm->setup(sourcestream, filePath.string());
+    } catch (std::exception& e) {
+        throw std::runtime_error("Error precompiling file '" + filePath.string() + "': " + e.what());
+    }
+}
+
 static InterpretResult runString(const std::string& source,
                                  const std::vector<std::string>& modulePaths,
                                  bool outputBytecodeDisassembly=false)
@@ -646,6 +695,7 @@ int main(int argc, const char* argv[])
         ("nocache", "disable reading and writing .roc cache files")
         ("recompile", "ignore existing .roc cache files but write new ones")
         ("dis", "output dissasembly of VM bytecodes during compilation")
+        ("precompile", "compile script and all imports without executing (ensures .roc cache files exist)")
         ("ast", "parse only and output text Abstract Syntax Tree (AST)")
         ("astgraph", po::value< std::vector<std::string> >(), "parse only and output GraphViz dot file")
         ("gc-threshold", po::value<long long>(), gcOptionHelp.c_str())
@@ -861,6 +911,15 @@ int main(int argc, const char* argv[])
                 generateAST(filename, false);
             else if (vmap.count("astgraph"))
                 generateAST(filename, true, vmap["astgraph"].as<std::vector<std::string>>().at(0));
+            else if (vmap.count("precompile")) {
+                bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
+                VM::instance().setCacheMode(cacheMode);
+                InterpretResult res =
+                    precompileFile(filename, modulePaths, outputBytecodeDisassembly);
+                if (res != InterpretResult::OK)
+                    return 1;
+                std::cout << "Precompilation successful: " << filename << std::endl;
+            }
             else {
                 bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
                 VM::instance().setCacheMode(cacheMode);
