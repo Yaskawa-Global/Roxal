@@ -9,6 +9,7 @@
 #include <core/TimePoint.h>
 #include <core/TimeDuration.h>
 #include "dataflow/Signal.h"
+#include "dataflow/FuncNode.h"
 #include "dataflow/DataflowEngine.h"
 #include "FFI.h"
 #include "Introspection.h"
@@ -1103,6 +1104,633 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                 std::cerr << "  Threshold: " << maxAcceptableJitterUs << " us" << std::endl;
             }
         }
+    }
+    else if (suite == "rt_execution") {
+        // RT Execution tests for tickFor() deadline-aware execution
+        int passes = 0;
+        int fails = 0;
+
+        auto reportTest = [&](const std::string& name, bool passed, const std::string& detail = "") {
+            std::cout << "Test: " << name << " " << (passed ? "passed" : "FAILED");
+            if (!detail.empty()) std::cout << " - " << detail;
+            std::cout << std::endl;
+            if (passed) passes++; else fails++;
+        };
+
+        auto& engine = *df::DataflowEngine::instance();
+        engine.clear();
+
+        // Test 1: hasYieldedWork accessor - initially no work
+        {
+            bool initiallyNoWork = !engine.hasYieldedWork();
+            reportTest("hasYieldedWork_initial", initiallyNoWork,
+                initiallyNoWork ? "" : "Expected no yielded work initially");
+        }
+
+        // Test 2: tickFor with native func that takes time
+        {
+            engine.clear();
+
+            // Create a simple signal at 100Hz
+            auto inputSignal = df::Signal::newSourceSignal(100.0, Value::intVal(0), "test_input");
+
+            // Create a native func that busy-waits for a bit
+            auto slowNativeFunc = [](const df::Values& inputs) -> df::Values {
+                // Busy wait for about 1ms
+                auto start = TimePoint::currentTime();
+                volatile int sum = 0;
+                while ((TimePoint::currentTime() - start) < TimeDuration::milliSecs(1)) {
+                    sum = sum + 1;  // Avoid deprecated ++ on volatile
+                }
+                return { inputs.empty() ? Value::intVal(0) : inputs[0] };
+            };
+
+            ptr<df::FuncNode> funcNode = make_ptr<df::FuncNode>(
+                "slowNativeFunc",
+                slowNativeFunc,
+                std::vector<std::string>{"x"},
+                df::FuncNode::ConstArgMap{},
+                std::vector<ptr<df::Signal>>{ inputSignal },
+                df::Names{"result"}
+            );
+            funcNode->addToEngine();
+
+            // Tick with reasonable budget - native funcs don't yield, so should complete
+            auto result1 = engine.tickFor(TimeDuration::milliSecs(10));
+            bool completed = (result1 == df::DataflowEngine::TickResult::Complete);
+            reportTest("tickFor_native_func", completed,
+                "Native func result: " + std::to_string(static_cast<int>(result1)));
+        }
+
+        // Test 3: tickFor with empty network returns Complete
+        {
+            engine.clear();
+            auto result = engine.tickFor(TimeDuration::milliSecs(1));
+            bool completed = (result == df::DataflowEngine::TickResult::Complete);
+            reportTest("tickFor_empty_network", completed,
+                completed ? "" : "Expected Complete for empty network");
+        }
+
+        // Test 4: Network modification during yield returns Error
+        // (Simulate by manually setting yield state)
+        {
+            engine.clear();
+
+            // Create a signal to make tick period non-zero
+            auto sig = df::Signal::newSourceSignal(100.0, Value::intVal(0), "mod_test");
+
+            // First tick to set up state
+            engine.tickFor(TimeDuration::milliSecs(1));
+
+            // Now test: if we had yielded and network was modified, resume returns error
+            // We can't easily force a yield with native funcs, but we can verify
+            // that hasYieldedWork returns false after a complete tick
+            bool noYieldAfterComplete = !engine.hasYieldedWork();
+            reportTest("no_yield_after_complete", noYieldAfterComplete,
+                noYieldAfterComplete ? "" : "Expected no yielded work after complete tick");
+        }
+
+        // Test 5: Multiple ticks work correctly
+        {
+            engine.clear();
+
+            auto sig = df::Signal::newSourceSignal(100.0, Value::intVal(1), "multi_tick_test");
+
+            auto nativeFunc = [](const df::Values& inputs) -> df::Values {
+                return { inputs.empty() ? Value::intVal(0) : inputs[0] };
+            };
+
+            ptr<df::FuncNode> funcNode = make_ptr<df::FuncNode>(
+                "multiTickFunc",
+                nativeFunc,
+                std::vector<std::string>{"x"},
+                df::FuncNode::ConstArgMap{},
+                std::vector<ptr<df::Signal>>{ sig },
+                df::Names{"result"}
+            );
+            funcNode->addToEngine();
+
+            // Do multiple ticks
+            bool allComplete = true;
+            for (int i = 0; i < 3; i++) {
+                auto result = engine.tickFor(TimeDuration::milliSecs(10));
+                if (result != df::DataflowEngine::TickResult::Complete) {
+                    allComplete = false;
+                    break;
+                }
+            }
+            reportTest("multiple_ticks", allComplete,
+                allComplete ? "" : "One of the ticks didn't complete");
+        }
+
+        // Test 6: Verify TickResult enum values exist
+        {
+            bool enumsExist = true;
+            auto complete = df::DataflowEngine::TickResult::Complete;
+            auto yielded = df::DataflowEngine::TickResult::Yielded;
+            auto overrun = df::DataflowEngine::TickResult::Overrun;
+            auto error = df::DataflowEngine::TickResult::Error;
+            (void)complete; (void)yielded; (void)overrun; (void)error;
+            reportTest("tick_result_enum", enumsExist);
+        }
+
+        // Test 7: Direct invokeClosure yields on short deadline
+        // Test the VM's invokeClosure directly rather than through FuncNode
+        {
+            // Save the current thread state - setup() will replace it
+            auto savedThread = VM::thread;
+
+            // Compile and execute a script that defines a slow function
+            std::stringstream source;
+            source << "func slowFunc(x: int) -> int:\n"
+                   << "  var sum = 0\n"
+                   << "  for i in range(..<10000):\n"
+                   << "    sum = sum + i\n"
+                   << "  return sum + x\n";
+
+            auto setupResult = vm.setup(source, "rt_closure_yield");
+            if (setupResult != ExecutionStatus::OK) {
+                VM::thread = savedThread;
+                reportTest("invokeClosure_yields", false, "Failed to compile");
+            } else {
+                // Get module type from the thread's frame BEFORE execute completes
+                // After setup(), thread has one frame with the main closure
+                ObjModuleType* modType = vm.moduleType();
+
+                // Execute the script to define the function
+                auto [execResult, _] = vm.execute();
+                if (execResult != ExecutionStatus::OK) {
+                    VM::thread = savedThread;
+                    reportTest("invokeClosure_yields", false,
+                        "execute failed: " + std::to_string(static_cast<int>(execResult)));
+                } else {
+                    // Get the function from saved module type's vars
+                    auto closureOpt = modType->vars.load(toUnicodeString("slowFunc"));
+                    if (!closureOpt.has_value() || !isClosure(closureOpt.value())) {
+                        VM::thread = savedThread;
+                        reportTest("invokeClosure_yields", false,
+                            "closure not found in moduleVars, hasValue=" + std::to_string(closureOpt.has_value()));
+                    } else {
+                        Value closureVal = closureOpt.value();
+                        // Now invoke the closure with a short deadline
+                        auto deadline = TimePoint::currentTime() + TimeDuration::microSecs(50);
+                        auto [result, retVal] = vm.invokeClosure(asClosure(closureVal), {Value::intVal(42)}, deadline);
+
+                        bool yielded = (result == ExecutionStatus::Yielded);
+                        VM::thread = savedThread;
+                        reportTest("invokeClosure_yields", yielded,
+                            "result=" + std::to_string(static_cast<int>(result)));
+                    }
+                }
+            }
+        }
+
+        // Test 8: invokeClosure resume completes
+        {
+            auto savedThread = VM::thread;
+
+            std::stringstream source;
+            source << "func slowFunc2(x: int) -> int:\n"
+                   << "  var sum = 0\n"
+                   << "  for i in range(..<10000):\n"
+                   << "    sum = sum + i\n"
+                   << "  return sum + x\n";
+
+            auto setupResult = vm.setup(source, "rt_closure_resume");
+            if (setupResult != ExecutionStatus::OK) {
+                VM::thread = savedThread;
+                reportTest("invokeClosure_resume_completes", false, "Failed to compile");
+            } else {
+                ObjModuleType* modType = vm.moduleType();
+                auto [execResult, _] = vm.execute();
+                if (execResult != ExecutionStatus::OK) {
+                    VM::thread = savedThread;
+                    reportTest("invokeClosure_resume_completes", false, "execute failed");
+                } else {
+                    auto closureOpt = modType->vars.load(toUnicodeString("slowFunc2"));
+                    if (!closureOpt.has_value() || !isClosure(closureOpt.value())) {
+                        VM::thread = savedThread;
+                        reportTest("invokeClosure_resume_completes", false, "closure not found");
+                    } else {
+                        Value closureVal = closureOpt.value();
+                        // First invoke with short deadline - should yield
+                        auto deadline1 = TimePoint::currentTime() + TimeDuration::microSecs(50);
+                        auto [result1, retVal1] = vm.invokeClosure(asClosure(closureVal), {Value::intVal(42)}, deadline1);
+
+                        if (result1 != ExecutionStatus::Yielded) {
+                            VM::thread = savedThread;
+                            reportTest("invokeClosure_resume_completes", true, "Completed without yield (fast)");
+                        } else {
+                            // Resume with generous deadline - should complete
+                            // 10000 iterations may take 200-500ms, so give plenty of time
+                            auto [remaining, _] = vm.runFor(TimeDuration::milliSecs(1000));
+                            bool completed = (remaining == ExecutionStatus::OK);
+
+                            VM::thread = savedThread;
+                            reportTest("invokeClosure_resume_completes", completed,
+                                "resume_result=" + std::to_string(static_cast<int>(remaining)));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Test 9: Multi-resume with many small time slices
+        {
+            auto savedThread = VM::thread;
+
+            std::stringstream source;
+            source << "func slowFunc3(x: int) -> int:\n"
+                   << "  var sum = 0\n"
+                   << "  for i in range(..<10000):\n"  // Same as other tests
+                   << "    sum = sum + i\n"
+                   << "  return sum + x\n";
+
+            auto setupResult = vm.setup(source, "rt_multi_resume");
+            if (setupResult != ExecutionStatus::OK) {
+                VM::thread = savedThread;
+                reportTest("invokeClosure_multi_resume", false, "Failed to compile");
+            } else {
+                ObjModuleType* modType = vm.moduleType();
+                auto [execResult, _] = vm.execute();
+                if (execResult != ExecutionStatus::OK) {
+                    VM::thread = savedThread;
+                    reportTest("invokeClosure_multi_resume", false, "execute failed");
+                } else {
+                    auto closureOpt = modType->vars.load(toUnicodeString("slowFunc3"));
+                    if (!closureOpt.has_value() || !isClosure(closureOpt.value())) {
+                        VM::thread = savedThread;
+                        reportTest("invokeClosure_multi_resume", false, "closure not found");
+                    } else {
+                        Value closureVal = closureOpt.value();
+                        // First invoke with short deadline
+                        auto deadline1 = TimePoint::currentTime() + TimeDuration::microSecs(50);
+                        auto [result, retVal] = vm.invokeClosure(asClosure(closureVal), {Value::intVal(1)}, deadline1);
+
+                        int yieldCount = (result == ExecutionStatus::Yielded) ? 1 : 0;
+                        const int maxIterations = 10000; // 50000 iterations needs more resume cycles
+
+                        for (int i = 0; i < maxIterations && result == ExecutionStatus::Yielded; ++i) {
+                            auto [res, _] = vm.runFor(TimeDuration::microSecs(100)); // Give more time per cycle
+                            result = res;
+                            if (result == ExecutionStatus::Yielded)
+                                yieldCount++;
+                        }
+
+                        bool completed = (result == ExecutionStatus::OK);
+                        bool multipleYields = (yieldCount > 1);
+
+                        VM::thread = savedThread;
+                        // Output deterministic result (yieldCount varies by machine speed)
+                        reportTest("invokeClosure_multi_resume", completed && multipleYields,
+                            "multipleYields=" + std::to_string(multipleYields) + ", completed=" + std::to_string(completed));
+                    }
+                }
+            }
+        }
+
+        // Test 10: Closure state preserved across yields (correct sum)
+        {
+            auto savedThread = VM::thread;
+
+            std::stringstream source;
+            source << "func computeSum(x: int) -> int:\n"
+                   << "  var sum = 0\n"
+                   << "  for i in range(..<1000):\n"
+                   << "    sum = sum + i\n"
+                   << "  return sum\n";
+
+            auto setupResult = vm.setup(source, "rt_state_preserve");
+            if (setupResult != ExecutionStatus::OK) {
+                VM::thread = savedThread;
+                reportTest("closure_state_preserved", false, "Failed to compile");
+            } else {
+                ObjModuleType* modType = vm.moduleType();
+                auto [execResult, _] = vm.execute();
+                if (execResult != ExecutionStatus::OK) {
+                    VM::thread = savedThread;
+                    reportTest("closure_state_preserved", false, "execute failed");
+                } else {
+                    auto closureOpt = modType->vars.load(toUnicodeString("computeSum"));
+                    if (!closureOpt.has_value() || !isClosure(closureOpt.value())) {
+                        VM::thread = savedThread;
+                        reportTest("closure_state_preserved", false, "closure not found");
+                    } else {
+                        Value closureVal = closureOpt.value();
+                        // Invoke with short deadline
+                        auto deadline = TimePoint::currentTime() + TimeDuration::microSecs(50);
+                        auto [result, returnVal] = vm.invokeClosure(asClosure(closureVal), {Value::intVal(0)}, deadline);
+
+                        const int maxIterations = 1000;
+                        for (int i = 0; i < maxIterations && result == ExecutionStatus::Yielded; ++i) {
+                            auto [res, val] = vm.runFor(TimeDuration::microSecs(100));
+                            result = res;
+                            returnVal = val;  // Capture return value when completed
+                        }
+
+                        if (result != ExecutionStatus::OK) {
+                            VM::thread = savedThread;
+                            reportTest("closure_state_preserved", false,
+                                "Did not complete, result=" + std::to_string(static_cast<int>(result)));
+                        } else {
+                            // Return value is now captured from runFor()
+                            int64_t expectedSum = 499500; // sum of 0..999
+
+                            bool correctValue = returnVal.isInt() && returnVal.asInt() == expectedSum;
+                            VM::thread = savedThread;
+                            reportTest("closure_state_preserved", correctValue,
+                                "output=" + (returnVal.isInt() ? std::to_string(returnVal.asInt()) : "non-int") +
+                                ", expected=" + std::to_string(expectedSum));
+                        }
+                    }
+                }
+            }
+        }
+
+        // =========================================================================
+        // Tests 11-14: Full DataflowEngine → FuncNode → VM path with closures
+        // These tests verify that tickFor() correctly yields and resumes when
+        // FuncNodes use Roxal closures instead of native functions.
+        // =========================================================================
+
+        // Test 11: FuncNode with closure yields on short deadline via tickFor
+        {
+            engine.clear();
+            auto savedThread = VM::thread;
+
+            // Compile a slow Roxal function
+            std::stringstream source;
+            source << "func dfSlowFunc(x: int) -> int:\n"
+                   << "  var sum = 0\n"
+                   << "  for i in range(..<10000):\n"
+                   << "    sum = sum + i\n"
+                   << "  return sum + x\n";
+
+            auto setupResult = vm.setup(source, "df_closure_yield");
+            if (setupResult != ExecutionStatus::OK) {
+                VM::thread = savedThread;
+                reportTest("df_closure_yields", false, "Failed to compile");
+            } else {
+                ObjModuleType* modType = vm.moduleType();
+                auto [execResult, _] = vm.execute();
+                if (execResult != ExecutionStatus::OK) {
+                    VM::thread = savedThread;
+                    reportTest("df_closure_yields", false, "execute failed");
+                } else {
+                    auto closureOpt = modType->vars.load(toUnicodeString("dfSlowFunc"));
+                    if (!closureOpt.has_value() || !isClosure(closureOpt.value())) {
+                        VM::thread = savedThread;
+                        reportTest("df_closure_yields", false, "closure not found");
+                    } else {
+                        Value closureVal = closureOpt.value();
+                        // DON'T restore savedThread here - let engine operations use fresh thread
+
+                        // Create input signal at 100Hz
+                        auto inputSignal = df::Signal::newSourceSignal(100.0, Value::intVal(42), "df_closure_input");
+
+                        // Create FuncNode with the closure (not a native function)
+                        ptr<df::FuncNode> funcNode = make_ptr<df::FuncNode>(
+                            "dfSlowClosureFunc",
+                            closureVal,  // Roxal closure
+                            df::FuncNode::ConstArgMap{},
+                            std::vector<ptr<df::Signal>>{ inputSignal }
+                        );
+                        funcNode->addToEngine();
+
+                        // Tick with very short budget - should yield mid-closure
+                        auto result = engine.tickFor(TimeDuration::microSecs(50));
+                        bool yielded = (result == df::DataflowEngine::TickResult::Yielded);
+                        bool hasWork = engine.hasYieldedWork();
+
+                        // Restore thread AFTER engine operations
+                        VM::thread = savedThread;
+                        reportTest("df_closure_yields", yielded && hasWork,
+                            "result=" + std::to_string(static_cast<int>(result)) +
+                            ", hasWork=" + std::to_string(hasWork));
+                    }
+                }
+            }
+        }
+
+        // Test 12: FuncNode closure resumes and completes via tickFor
+        {
+            engine.clear();
+            auto savedThread = VM::thread;
+
+            std::stringstream source;
+            source << "func dfSlowFunc2(x: int) -> int:\n"
+                   << "  var sum = 0\n"
+                   << "  for i in range(..<10000):\n"
+                   << "    sum = sum + i\n"
+                   << "  return sum + x\n";
+
+            auto setupResult = vm.setup(source, "df_closure_resume");
+            if (setupResult != ExecutionStatus::OK) {
+                VM::thread = savedThread;
+                reportTest("df_closure_resume_completes", false, "Failed to compile");
+            } else {
+                ObjModuleType* modType = vm.moduleType();
+                auto [execResult, _] = vm.execute();
+                if (execResult != ExecutionStatus::OK) {
+                    VM::thread = savedThread;
+                    reportTest("df_closure_resume_completes", false, "execute failed");
+                } else {
+                    auto closureOpt = modType->vars.load(toUnicodeString("dfSlowFunc2"));
+                    if (!closureOpt.has_value() || !isClosure(closureOpt.value())) {
+                        VM::thread = savedThread;
+                        reportTest("df_closure_resume_completes", false, "closure not found");
+                    } else {
+                        Value closureVal = closureOpt.value();
+                        // DON'T restore savedThread here - let engine operations use fresh thread
+
+                        auto inputSignal = df::Signal::newSourceSignal(100.0, Value::intVal(42), "df_resume_input");
+
+                        ptr<df::FuncNode> funcNode = make_ptr<df::FuncNode>(
+                            "dfResumeClosureFunc",
+                            closureVal,
+                            df::FuncNode::ConstArgMap{},
+                            std::vector<ptr<df::Signal>>{ inputSignal }
+                        );
+                        funcNode->addToEngine();
+
+                        // First tick with short budget - should yield
+                        auto result = engine.tickFor(TimeDuration::microSecs(50));
+
+                        if (result != df::DataflowEngine::TickResult::Yielded) {
+                            // Completed immediately (very fast machine)
+                            VM::thread = savedThread;
+                            reportTest("df_closure_resume_completes", true, "Completed without yield");
+                        } else {
+                            // Resume with generous budget - should complete
+                            result = engine.tickFor(TimeDuration::milliSecs(1000));
+                            bool completed = (result == df::DataflowEngine::TickResult::Complete);
+                            bool noMoreWork = !engine.hasYieldedWork();
+
+                            VM::thread = savedThread;
+                            reportTest("df_closure_resume_completes", completed && noMoreWork,
+                                "result=" + std::to_string(static_cast<int>(result)) +
+                                ", noMoreWork=" + std::to_string(noMoreWork));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Test 13: FuncNode closure multi-resume with small time slices
+        {
+            engine.clear();
+            auto savedThread = VM::thread;
+
+            std::stringstream source;
+            // Use 1000 iterations - enough to yield multiple times but completes within tick period
+            source << "func dfSlowFunc3(x: int) -> int:\n"
+                   << "  var sum = 0\n"
+                   << "  for i in range(..<1000):\n"
+                   << "    sum = sum + i\n"
+                   << "  return sum + x\n";
+
+            auto setupResult = vm.setup(source, "df_multi_resume");
+            if (setupResult != ExecutionStatus::OK) {
+                VM::thread = savedThread;
+                reportTest("df_closure_multi_resume", false, "Failed to compile");
+            } else {
+                ObjModuleType* modType = vm.moduleType();
+                auto [execResult, _] = vm.execute();
+                if (execResult != ExecutionStatus::OK) {
+                    VM::thread = savedThread;
+                    reportTest("df_closure_multi_resume", false, "execute failed");
+                } else {
+                    auto closureOpt = modType->vars.load(toUnicodeString("dfSlowFunc3"));
+                    if (!closureOpt.has_value() || !isClosure(closureOpt.value())) {
+                        VM::thread = savedThread;
+                        reportTest("df_closure_multi_resume", false, "closure not found");
+                    } else {
+                        Value closureVal = closureOpt.value();
+                        // DON'T restore savedThread here - let engine operations use fresh thread
+
+                        // Use 10Hz (100ms period) to allow time for multiple small time slices
+                        auto inputSignal = df::Signal::newSourceSignal(10.0, Value::intVal(1), "df_multi_input");
+
+                        ptr<df::FuncNode> funcNode = make_ptr<df::FuncNode>(
+                            "dfMultiResumeFunc",
+                            closureVal,
+                            df::FuncNode::ConstArgMap{},
+                            std::vector<ptr<df::Signal>>{ inputSignal }
+                        );
+                        funcNode->addToEngine();
+
+                        // First tick with short budget - use 500us to be short but not too tiny
+                        auto result = engine.tickFor(TimeDuration::microSecs(500));
+                        int yieldCount = (result == df::DataflowEngine::TickResult::Yielded) ? 1 : 0;
+
+                        // Use 2ms per iteration - small enough to yield multiple times,
+                        // but large enough to make progress and complete within tick period (100ms)
+                        const int maxIterations = 100;
+                        for (int i = 0; i < maxIterations && result == df::DataflowEngine::TickResult::Yielded; ++i) {
+                            result = engine.tickFor(TimeDuration::milliSecs(2));
+                            if (result == df::DataflowEngine::TickResult::Yielded)
+                                yieldCount++;
+                        }
+
+                        bool completed = (result == df::DataflowEngine::TickResult::Complete);
+                        bool multipleYields = (yieldCount > 1);
+
+                        VM::thread = savedThread;
+                        reportTest("df_closure_multi_resume", completed && multipleYields,
+                            "multipleYields=" + std::to_string(multipleYields) +
+                            ", completed=" + std::to_string(completed));
+                    }
+                }
+            }
+        }
+
+        // Test 14: FuncNode closure output signal has correct value after yield/resume
+        {
+            engine.clear();
+            auto savedThread = VM::thread;
+
+            std::stringstream source;
+            source << "func dfComputeSum(x: int) -> int:\n"
+                   << "  var sum = 0\n"
+                   << "  for i in range(..<1000):\n"
+                   << "    sum = sum + i\n"
+                   << "  return sum + x\n";
+
+            auto setupResult = vm.setup(source, "df_output_check");
+            if (setupResult != ExecutionStatus::OK) {
+                VM::thread = savedThread;
+                reportTest("df_closure_output_correct", false, "Failed to compile");
+            } else {
+                ObjModuleType* modType = vm.moduleType();
+                auto [execResult, _] = vm.execute();
+                if (execResult != ExecutionStatus::OK) {
+                    VM::thread = savedThread;
+                    reportTest("df_closure_output_correct", false, "execute failed");
+                } else {
+                    auto closureOpt = modType->vars.load(toUnicodeString("dfComputeSum"));
+                    if (!closureOpt.has_value() || !isClosure(closureOpt.value())) {
+                        VM::thread = savedThread;
+                        reportTest("df_closure_output_correct", false, "closure not found");
+                    } else {
+                        Value closureVal = closureOpt.value();
+                        // DON'T restore savedThread here - let engine operations use fresh thread
+
+                        int64_t inputValue = 42;
+                        // Use 10Hz (100ms period) to allow time for yield/resume without overrun
+                        auto inputSignal = df::Signal::newSourceSignal(10.0, Value::intVal(inputValue), "df_output_input");
+
+                        ptr<df::FuncNode> funcNode = make_ptr<df::FuncNode>(
+                            "dfOutputCheckFunc",
+                            closureVal,
+                            df::FuncNode::ConstArgMap{},
+                            std::vector<ptr<df::Signal>>{ inputSignal }
+                        );
+                        funcNode->addToEngine();
+
+                        // Get output signal
+                        auto outputs = funcNode->outputs();
+                        if (outputs.empty()) {
+                            VM::thread = savedThread;
+                            reportTest("df_closure_output_correct", false, "No output signals");
+                        } else {
+                            auto outputSignal = outputs[0];
+
+                            // Tick with short budget, then resume until complete
+                            // Use reasonable time budgets to complete within tick period (100ms)
+                            auto result = engine.tickFor(TimeDuration::microSecs(500));
+                            const int maxIterations = 100;
+                            for (int i = 0; i < maxIterations && result == df::DataflowEngine::TickResult::Yielded; ++i) {
+                                result = engine.tickFor(TimeDuration::milliSecs(2));
+                            }
+
+                            if (result != df::DataflowEngine::TickResult::Complete) {
+                                VM::thread = savedThread;
+                                reportTest("df_closure_output_correct", false,
+                                    "Did not complete, result=" + std::to_string(static_cast<int>(result)));
+                            } else {
+                                // Check output signal value
+                                // Expected: sum of 0..999 (499500) + input (42) = 499542
+                                int64_t expectedOutput = 499500 + inputValue;
+                                Value outputVal = outputSignal->lastValue();
+
+                                bool correctValue = outputVal.isInt() &&
+                                                    outputVal.asInt() == expectedOutput;
+
+                                VM::thread = savedThread;
+                                reportTest("df_closure_output_correct", correctValue,
+                                    "output=" + (outputVal.isInt()
+                                        ? std::to_string(outputVal.asInt())
+                                        : "non-int") +
+                                    ", expected=" + std::to_string(expectedOutput));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        engine.clear();
+        std::cout << "RT Execution tests: Passed " << passes << " failed " << fails << std::endl;
     }
 
     return Value::nilVal();

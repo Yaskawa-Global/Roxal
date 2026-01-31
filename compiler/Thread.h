@@ -12,7 +12,7 @@
 #include "core/TimePoint.h"
 #include "Value.h"
 #include "Object.h"
-#include "InterpretResult.h"
+#include "ExecutionStatus.h"
 
 namespace roxal {
 
@@ -28,7 +28,7 @@ public:
         thisid = nextId.fetch_add(1);
         actor = false;
         quit = false;
-        result = InterpretResult::OK;
+        result = ExecutionStatus::OK;
         frames.reserve(256);
         actorInstanceRaw.store(nullptr, std::memory_order_relaxed);
     }
@@ -77,7 +77,7 @@ public:
     std::atomic_bool threadSleep;
     std::atomic<TimePoint> threadSleepUntil;
 
-    InterpretResult result;
+    ExecutionStatus result;
 
     // list of open UpValue (Value* pointers into the stack) in stack address order
     std::list<Value> openUpvalues; // ObjUpvalue

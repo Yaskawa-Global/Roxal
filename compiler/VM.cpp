@@ -403,17 +403,13 @@ size_t VM::marshalArgs(ptr<type::Type> funcType,
         else if (pi < defaults.size())
             arg = defaults[pi];
         else {
+            // Closure defaults are handled via continuation mechanism in callNativeFn()
+            // before marshalArgs() is called. If we reach here with a closure default,
+            // something is wrong.
             auto it = paramDefaultFuncs.find(params[pi]->nameHashCode);
-            if (it != paramDefaultFuncs.end()) {
-                Value defFunc = it->second;
-                Value defClosure = Value::closureVal(defFunc);
-                auto res = invokeClosureSync(asClosure(defClosure), {});
-                if (res.first != InterpretResult::OK)
-                    throw std::runtime_error("failed to evaluate default parameter");
-                arg = res.second;
-            } else {
-                arg = Value::nilVal();
-            }
+            assert(it == paramDefaultFuncs.end() &&
+                   "Closure default params should be handled via continuation, not marshalArgs");
+            arg = Value::nilVal();
         }
 
         if (params[pi].has_value() && params[pi]->type.has_value()) {
@@ -1015,24 +1011,24 @@ bool VM::cacheWritesEnabled() const
 
 
 
-InterpretResult VM::run(std::istream& source, const std::string& name)
+ExecutionStatus VM::run(std::istream& source, const std::string& name)
 {
     // Setup: compile and prepare the initial call frame
-    InterpretResult setupResult = setup(source, name);
-    if (setupResult != InterpretResult::OK)
+    ExecutionStatus setupResult = setup(source, name);
+    if (setupResult != ExecutionStatus::OK)
         return setupResult;
 
     // Execute directly on the host thread (no spawn)
     auto [result, value] = execute();
 
     // Join any other threads spawned during execution (actors, etc.)
-    InterpretResult joinResult = joinAllThreads();
+    ExecutionStatus joinResult = joinAllThreads();
 
-    if (joinResult != InterpretResult::OK || runtimeErrorFlag.load())
-        result = InterpretResult::RuntimeError;
+    if (joinResult != ExecutionStatus::OK || runtimeErrorFlag.load())
+        result = ExecutionStatus::RuntimeError;
 
     if (exitRequested.load())
-        result = InterpretResult::OK;
+        result = ExecutionStatus::OK;
 
     #if defined(DEBUG_TRACE_EXECUTION)
     if (globals.size() > 0) {
@@ -1049,7 +1045,7 @@ InterpretResult VM::run(std::istream& source, const std::string& name)
 }
 
 
-InterpretResult VM::setup(std::istream& source, const std::string& name)
+ExecutionStatus VM::setup(std::istream& source, const std::string& name)
 {
     Value function { Value::nilVal() }; // ObjFunction
 
@@ -1090,11 +1086,11 @@ InterpretResult VM::setup(std::istream& source, const std::string& name)
         }
 
     } catch (std::exception& e) {
-        return InterpretResult::CompileError;
+        return ExecutionStatus::CompileError;
     }
 
     if (function.isNil())
-        return InterpretResult::CompileError;
+        return ExecutionStatus::CompileError;
 
     Value closureValue { Value::closureVal(function) };
 
@@ -1105,17 +1101,16 @@ InterpretResult VM::setup(std::istream& source, const std::string& name)
     resetStack();
     push(closureValue);
     if (!call(asClosure(closureValue), CallSpec(0)))
-        return InterpretResult::RuntimeError;
+        return ExecutionStatus::RuntimeError;
 
-    return InterpretResult::OK;
+    return ExecutionStatus::OK;
 }
 
 
-InterpretResult VM::runFor(TimeDuration duration)
+std::pair<ExecutionStatus, Value> VM::runFor(TimeDuration duration)
 {
     auto deadline = TimePoint::currentTime() + duration;
-    auto [result, value] = execute(deadline);
-    return result;
+    return execute(deadline);
 }
 
 bool VM::hasMoreWork() const
@@ -1139,7 +1134,7 @@ TimePoint VM::blockedUntil() const
 }
 
 
-InterpretResult VM::runLine(std::istream& linestream,
+ExecutionStatus VM::runLine(std::istream& linestream,
                                   bool replMode,
                                   const std::string& sourceNameOverride)
 {
@@ -1159,11 +1154,11 @@ InterpretResult VM::runLine(std::istream& linestream,
         function = compiler.compile(linestream, "cli", replModuleValue, sourceNameOverride);
 
     } catch (std::exception& e) {
-        return InterpretResult::CompileError;
+        return ExecutionStatus::CompileError;
     }
 
     if (function.isNil())
-        return InterpretResult::CompileError;
+        return ExecutionStatus::CompileError;
 
     if (replModuleValue.isNil())
         replModuleValue = asFunction(function)->moduleType.strongRef();
@@ -1188,10 +1183,10 @@ InterpretResult VM::runLine(std::istream& linestream,
 
     resetStack();
 
-    auto resultPair = invokeClosureSync(asClosure(closure), {});
-    InterpretResult result = resultPair.first;
+    auto resultPair = invokeClosure(asClosure(closure), {});
+    ExecutionStatus result = resultPair.first;
     if (runtimeErrorFlag.load())
-        result = InterpretResult::RuntimeError;
+        result = ExecutionStatus::RuntimeError;
 
     #if defined(DEBUG_TRACE_EXECUTION)
     if (globals.size() > 0) {
@@ -2273,18 +2268,19 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
     return false;
 }
 
-std::pair<InterpretResult,Value> VM::invokeClosureSync(ObjClosure* closure, const std::vector<Value>& args)
+std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
+                                                    const std::vector<Value>& args,
+                                                    TimePoint deadline)
 {
-
     // Push closure first, then arguments (to match OpCode::Call stack layout)
     push(Value::objRef(closure));
     for(const auto& a : args)
         push(a);
     CallSpec spec(args.size());
     if(!call(closure, spec))
-        return { InterpretResult::RuntimeError, Value::nilVal() };
+        return { ExecutionStatus::RuntimeError, Value::nilVal() };
 
-    auto result = execute();
+    auto result = execute(deadline);  // Pass deadline to execute()
 
     // Note: execute() should have handled the cleanup when the function returned,
     // but for safety in nested calls, we don't need additional cleanup here
@@ -3224,11 +3220,11 @@ void VM::writeOpcodeProfile()
 }
 
 
-std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
+std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 {
     if (thread->frames.empty() ||
         asFunction(asClosure(thread->frames.back().closure)->function)->chunk->code.size() == 0)
-        return std::make_pair(InterpretResult::OK, Value::nilVal()); // nothing to execute
+        return std::make_pair(ExecutionStatus::OK, Value::nilVal()); // nothing to execute
 
     SimpleMarkSweepGC& valueGC = SimpleMarkSweepGC::instance();
     valueGC.onThreadEnter();
@@ -3247,7 +3243,7 @@ std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
 
     // Deadline-based yielding support
     const bool hasDeadline = (deadline != TimePoint::max());
-    auto yieldReturn = std::make_pair(InterpretResult::Yielded, Value::nilVal());
+    auto yieldReturn = std::make_pair(ExecutionStatus::Yielded, Value::nilVal());
 
     // Reference to RT callback manager for instruction loop callback checks
     auto& rtMgr = RTCallbackManager::instance();
@@ -3320,7 +3316,7 @@ std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
     std::cout << std::endl << "== executing ==" << std::endl;
     #endif
 
-    auto errorReturn = std::make_pair(InterpretResult::RuntimeError,Value::nilVal());
+    auto errorReturn = std::make_pair(ExecutionStatus::RuntimeError,Value::nilVal());
 
 
     //
@@ -3346,7 +3342,7 @@ std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
         }
 
         if (exitRequested.load())
-            return std::make_pair(InterpretResult::OK,Value::nilVal());
+            return std::make_pair(ExecutionStatus::OK,Value::nilVal());
 
         // if we're 'sleeping' don't execute any instructions
         //  (we may have been woken up by an event or a spurious wakeup, in which case we'll re-block below)
@@ -3372,7 +3368,7 @@ std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
             }
             else {
                 std::cout << "          <end of chunk>" << std::endl;
-                return std::make_pair(InterpretResult::RuntimeError,nilVal());
+                return std::make_pair(ExecutionStatus::RuntimeError,nilVal());
             }
         #endif
 
@@ -3424,7 +3420,7 @@ std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
                             *(frame->slots + 1 + pi) = toType(vt, *(frame->slots + 1 + pi), strictConv);
                         } catch(std::exception& e) {
                             runtimeError(e.what());
-                            return std::make_pair(InterpretResult::RuntimeError,Value::nilVal());
+                            return std::make_pair(ExecutionStatus::RuntimeError,Value::nilVal());
                         }
                     }
                 }
@@ -4449,7 +4445,7 @@ std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
                 ObjObjectType* superType = asObjectType(pop());
                 auto br = bindMethod(superType,name);
                 if (br != BindResult::Bound)
-                    return std::make_pair(InterpretResult::RuntimeError,Value::nilVal());
+                    return std::make_pair(ExecutionStatus::RuntimeError,Value::nilVal());
 
                 break;
             }
@@ -4901,7 +4897,7 @@ std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
                         }
 
                         if (thread->execute_depth > 0) thread->execute_depth--;
-                        return std::make_pair(InterpretResult::OK,returnVal);
+                        return std::make_pair(ExecutionStatus::OK,returnVal);
                     }
 
                     // For top-level execute(), use original termination logic
@@ -4913,7 +4909,7 @@ std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
                         }
 
                         if (thread->execute_depth > 0) thread->execute_depth--;
-                        return std::make_pair(InterpretResult::OK,returnVal);
+                        return std::make_pair(ExecutionStatus::OK,returnVal);
                     }
 
                     frame = thread->frames.end() -1;
@@ -4939,7 +4935,7 @@ std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
                         }
 
                         if (thread->execute_depth > 0) thread->execute_depth--;
-                        return std::make_pair(InterpretResult::OK,result);
+                        return std::make_pair(ExecutionStatus::OK,result);
                     }
 
                     // For top-level execute(), use original termination logic
@@ -4949,7 +4945,7 @@ std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
                         }
 
                         if (thread->execute_depth > 0) thread->execute_depth--;
-                        return std::make_pair(InterpretResult::OK,result);
+                        return std::make_pair(ExecutionStatus::OK,result);
                     }
 
                     // For continuation callbacks, push result to stack like OpCode::Return
@@ -5621,7 +5617,7 @@ std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
                 #ifdef DEBUG_BUILD
                 runtimeError("Invalid instruction "+std::to_string(int(instruction)));
                 #endif
-                return std::make_pair(InterpretResult::RuntimeError,Value::nilVal());
+                return std::make_pair(ExecutionStatus::RuntimeError,Value::nilVal());
                 break;
         }
 
@@ -5754,7 +5750,7 @@ std::pair<InterpretResult,Value> VM::execute(TimePoint deadline)
     } // for
 
     if (thread->execute_depth > 0) thread->execute_depth--;
-    return std::make_pair(InterpretResult::OK, Value::nilVal());
+    return std::make_pair(ExecutionStatus::OK, Value::nilVal());
 
 }
 
@@ -5875,10 +5871,10 @@ bool VM::processPendingEvents()
                         }
                         handlerArgs.push_back(strongInstance);
                     }
-                    auto result = invokeClosureSync(closureObj, handlerArgs);
+                    auto result = invokeClosure(closureObj, handlerArgs);
                     assert(!thread->threadSleep);
 
-                    if (result.first != InterpretResult::OK)
+                    if (result.first != ExecutionStatus::OK)
                         return false;
 
                     thread->threadSleep = prevThreadSleep;
@@ -5982,7 +5978,7 @@ bool VM::invokeNextEventHandler()
         dispatch.prevThreadSleepUntil = thread->threadSleepUntil.load();
         thread->threadSleep = false;
 
-        // Push closure + args (same stack layout as invokeClosureSync / OpCode::Call)
+        // Push closure + args (same stack layout as invokeClosure / OpCode::Call)
         int arity = asFunction(closureObj->function)->arity;
         push(Value::objRef(closureObj));
         if (arity > 0) {
@@ -7954,7 +7950,7 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
     ptr<Thread> t = make_ptr<Thread>();
     thread = t;
     resetStack();
-    invokeClosureSync(asClosure(closure), {});
+    invokeClosure(asClosure(closure), {});
     thread = nullptr;
 }
 
@@ -8016,9 +8012,9 @@ void VM::dumpStackTraces()
     fflush(stderr);
 }
 
-InterpretResult VM::joinAllThreads(uint64_t skipId)
+ExecutionStatus VM::joinAllThreads(uint64_t skipId)
 {
-    InterpretResult combined = InterpretResult::OK;
+    ExecutionStatus combined = ExecutionStatus::OK;
     for (;;) {
         auto ids = threads.keys();
         bool joinedAny = false;
@@ -8035,8 +8031,8 @@ InterpretResult VM::joinAllThreads(uint64_t skipId)
 
             if (t) {
                 t->join();
-                if (t->result != InterpretResult::OK)
-                    combined = InterpretResult::RuntimeError;
+                if (t->result != ExecutionStatus::OK)
+                    combined = ExecutionStatus::RuntimeError;
             }
 
             threads.erase(id);

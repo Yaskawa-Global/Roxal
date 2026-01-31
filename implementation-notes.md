@@ -32,7 +32,7 @@ The `VM` class executes the Chunk OpCodes.  It supports multiple threads via the
 The main execution loop is `VM::execute(TimePoint deadline)`, which processes bytecode instructions until one of the following conditions:
 - The outermost frame returns (`OpCode::Return`)
 - A runtime error occurs
-- The deadline is reached (returns `InterpretResult::Yielded`)
+- The deadline is reached (returns `ExecutionStatus::Yielded`)
 - An exit is requested
 
 The deadline parameter enables incremental execution for real-time integration, where the VM can be run for a bounded time period and then yield control back to the caller with its state preserved for later resumption.
@@ -197,11 +197,11 @@ deadline parameter to `execute()`.
 ### execute() with Deadline
 
 ```cpp
-std::pair<InterpretResult, Value> VM::execute(TimePoint deadline = TimePoint::max())
+std::pair<ExecutionStatus, Value> VM::execute(TimePoint deadline = TimePoint::max())
 ```
 
 The dispatch loop checks `TimePoint::currentTime()` against the deadline.
-When reached, `execute()` returns `InterpretResult::Yielded` with all state
+When reached, `execute()` returns `ExecutionStatus::Yielded` with all state
 preserved. The caller can resume by calling `execute()` again.
 
 ### Blocking Operations

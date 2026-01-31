@@ -137,7 +137,7 @@ void Thread::spawn(Value closure)
                     entry.second->wake();
             });
 
-            result = InterpretResult::RuntimeError;
+            result = ExecutionStatus::RuntimeError;
             stack.clear();
             state = State::Completed;
             actor = false;
@@ -314,7 +314,7 @@ void Thread::act(Value actorInstance)
                         auto resultPair = vm.execute();
                         result = resultPair.first;
 
-                    if (resultPair.first == InterpretResult::OK) {
+                    if (resultPair.first == ExecutionStatus::OK) {
                         if (callInfo.returnPromise != nullptr) {
                             Value ret = resultPair.second;
                             if (!ret.isPrimitive() && !isException(ret))
@@ -419,7 +419,7 @@ void Thread::act(Value actorInstance)
                     entry.second->wake();
             });
 
-            result = InterpretResult::RuntimeError;
+            result = ExecutionStatus::RuntimeError;
             stack.clear();
             state = State::Completed;
             actorInstanceRaw.store(nullptr, std::memory_order_release);

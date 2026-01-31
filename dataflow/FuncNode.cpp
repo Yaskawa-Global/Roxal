@@ -3,6 +3,7 @@
 #include "core/common.h"
 #include <algorithm>
 #include "compiler/VM.h"
+#include "compiler/Thread.h"
 #include "DataflowEngine.h"
 #include <stdexcept>
 #include <iostream>
@@ -393,8 +394,15 @@ bool FuncNode::inputsAvailableAt(TimePoint time) const
     return true;
 }
 
-bool FuncNode::conditionallyExecute(TimePoint time)
+FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline)
 {
+    using roxal::VM;
+    using roxal::Value;
+    using roxal::ExecutionStatus;
+    using roxal::asClosure;
+    using roxal::isList;
+    using roxal::asList;
+
     if (!m_operatorSignalsCalled && !inputNames().empty())
         throw std::runtime_error("FuncNode '"+name()+"' not all inputs connected");
 
@@ -445,28 +453,161 @@ bool FuncNode::conditionallyExecute(TimePoint time)
     // NB: don't compare inputs if unnecessary (expensive)
     bool execute = !isPure() || (previousInputValues != inputValues);
 
-    if (execute) {
-        Values outputValues;
-        try {
-          outputValues = operator()(inputValues);
-        } catch (std::exception& e) {
-            throw std::runtime_error("FuncNode '"+name()+"' operator() threw exception: "+std::string(e.what()));
-        }
-        if (outputValues.size() != m_outputs.size())
-            throw std::runtime_error("FuncNode '"+name()+"' operator returned "+std::to_string(outputValues.size())+" values, expected "+std::to_string(m_outputs.size())+" values");
-        previousOutputValues = outputValues;
-        invokeExecutionCallbacks(time, inputValues, outputValues);
+    if (!execute) {
+        previousInputValues = inputValues;
+        return FuncExecResult::NotExecuted;
+    }
 
-        // now update the outputs
-        int index = 0;
-        for (const auto& output : m_outputs) {
-            output.signal->setValueAt(time, outputValues[index]);
-            index++;
+    Values outputValues;
+
+    if (nativeFunc) {
+        // Native functions complete immediately - no deadline concern
+        try {
+            outputValues = operator()(inputValues);
+        } catch (std::exception& e) {
+            throw std::runtime_error("FuncNode '"+name()+"' nativeFunc threw exception: "+std::string(e.what()));
+        }
+    } else {
+        // Closure execution - pass deadline to VM
+        auto& vm = VM::instance();
+
+        // Build args from inputValues (same logic as operator())
+        std::vector<Value> args;
+        size_t sigIdx = 0;
+        for (const auto& pname : paramNames) {
+            auto cit = constArgs.find(pname);
+            if (cit != constArgs.end()) {
+                args.push_back(cit->second);
+            } else {
+                if (sigIdx < inputValues.size())
+                    args.push_back(inputValues[sigIdx++]);
+                else
+                    args.push_back(Value::nilVal());
+            }
+        }
+
+        auto result = vm.invokeClosure(asClosure(closure), args, deadline);
+
+        if (result.first == ExecutionStatus::Yielded) {
+            // VM yielded due to deadline - save state for resumption
+            m_funcYieldState.active = true;
+            m_funcYieldState.inputValues = inputValues;
+            m_funcYieldState.executionThread = VM::thread;
+            m_funcYieldState.executionTime = time;
+            return FuncExecResult::Yielded;
+        }
+
+        if (result.first != ExecutionStatus::OK) {
+            return FuncExecResult::Error;
+        }
+
+        // Process return value into output values (same logic as operator())
+        if (!m_outputNames.empty() && m_outputNames.size() > 1) {
+            if (isList(result.second)) {
+                auto list = asList(result.second);
+                for (size_t i = 0; i < m_outputNames.size(); ++i) {
+                    if (i < list->elts.size())
+                        outputValues.push_back(list->elts.at(i));
+                    else
+                        outputValues.push_back(Value::nilVal());
+                }
+            } else {
+                outputValues.push_back(result.second);
+            }
+        } else {
+            outputValues.push_back(result.second);
         }
     }
-    previousInputValues = inputValues;
 
-    return execute;
+    if (outputValues.size() != m_outputs.size())
+        throw std::runtime_error("FuncNode '"+name()+"' returned "+std::to_string(outputValues.size())+" values, expected "+std::to_string(m_outputs.size())+" values");
+
+    previousOutputValues = outputValues;
+    previousInputValues = inputValues;
+    invokeExecutionCallbacks(time, inputValues, outputValues);
+
+    // Update the outputs
+    int index = 0;
+    for (const auto& output : m_outputs) {
+        output.signal->setValueAt(time, outputValues[index]);
+        index++;
+    }
+
+    return FuncExecResult::Completed;
+}
+
+FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
+{
+    using roxal::VM;
+    using roxal::Value;
+    using roxal::ExecutionStatus;
+    using roxal::isList;
+    using roxal::asList;
+
+    if (!m_funcYieldState.active) {
+        return FuncExecResult::Error;
+    }
+
+    auto& vm = VM::instance();
+
+    // Switch to the saved execution thread and resume
+    auto savedThread = VM::thread;
+    VM::thread = m_funcYieldState.executionThread;
+
+    auto remaining = deadline - TimePoint::currentTime();
+    auto [result, returnValue] = vm.runFor(remaining);
+
+    if (result == ExecutionStatus::Yielded) {
+        // Still not complete - keep yield state active
+        VM::thread = savedThread;
+        return FuncExecResult::Yielded;
+    }
+
+    // Execution completed - process outputs
+    m_funcYieldState.active = false;
+    TimePoint time = m_funcYieldState.executionTime;
+    Values inputValues = m_funcYieldState.inputValues;
+
+    if (result != ExecutionStatus::OK) {
+        VM::thread = savedThread;
+        return FuncExecResult::Error;
+    }
+
+    VM::thread = savedThread;
+
+    // Process return value into output values
+    Values outputValues;
+    if (!m_outputNames.empty() && m_outputNames.size() > 1) {
+        if (isList(returnValue)) {
+            auto list = asList(returnValue);
+            for (size_t i = 0; i < m_outputNames.size(); ++i) {
+                if (i < list->elts.size())
+                    outputValues.push_back(list->elts.at(i));
+                else
+                    outputValues.push_back(Value::nilVal());
+            }
+        } else {
+            outputValues.push_back(returnValue);
+        }
+    } else {
+        outputValues.push_back(returnValue);
+    }
+
+    if (outputValues.size() != m_outputs.size())
+        throw std::runtime_error("FuncNode '"+name()+"' returned "+std::to_string(outputValues.size())+" values, expected "+std::to_string(m_outputs.size())+" values");
+
+    previousOutputValues = outputValues;
+    previousInputValues = inputValues;
+    invokeExecutionCallbacks(time, inputValues, outputValues);
+
+    // Update the outputs
+    int index = 0;
+    for (const auto& output : m_outputs) {
+        output.signal->setValueAt(time, outputValues[index]);
+        index++;
+    }
+
+    return FuncExecResult::Completed;
 }
 
 void FuncNode::invokeExecutionCallbacks(TimePoint time, const Values& inputValues, const Values& outputValues)
@@ -507,7 +648,7 @@ Values FuncNode::operator()(const Values& inputValues)
     if (nativeFunc) {
         return nativeFunc(args);
     }
-    auto result = vm.invokeClosureSync(roxal::asClosure(closure), args);
+    auto result = vm.invokeClosure(roxal::asClosure(closure), args);
 
     if (!m_outputNames.empty() && m_outputNames.size() > 1) {
         if (roxal::isList(result.second)) {

@@ -23,6 +23,14 @@ public:
         BestEffort  // warn, but continue executing if FuncNode execution falls behind (may catch up if caused by transient longer func execution times)
     };
 
+    // Result of time-limited tick execution
+    enum class TickResult {
+        Complete,      // All funcs evaluated for this tick
+        Yielded,       // Time budget exhausted mid-evaluation, more work pending
+        Overrun,       // Tick exceeded its period - error condition
+        Error          // Runtime error during execution
+    };
+
     // Access the singleton instance. If \p create is false and the engine has
     // not yet been instantiated, a null pointer is returned instead of
     // creating a new instance. This is useful during shutdown where creating a
@@ -57,6 +65,15 @@ public:
     //  (if waitForTickStart==true and TimePoint::currentTime() is not yet tick-number*tick-period, wait until then)
     //  will rebuild network and restart tick count if network modified
     void tick(bool waitForTickStart = true);
+
+    // Time-limited tick execution for RT control loop integration.
+    // Handles both starting new ticks and resuming yielded ones.
+    // Returns: Complete when tick finished, Yielded if budget exhausted,
+    //          Overrun if tick exceeded its period, Error on failure.
+    TickResult tickFor(TimeDuration budget);
+
+    // Check if there's pending work from a yielded tick
+    bool hasYieldedWork() const { return m_yieldState.active; }
 
     // evaluate the network without advancing time or ticking clocks
     // useful for initializing signal values when new nodes are added
@@ -150,6 +167,21 @@ private:
     std::atomic<bool> m_networkModified;
     std::atomic<bool> m_shouldStop{false};
 
+    // State for resuming a yielded tick execution
+    struct YieldState {
+        bool active { false };
+        size_t islandIndex { 0 };
+        size_t funcIndex { 0 };
+        size_t periodIndex { 0 };
+        TimePoint tickTime;
+        bool funcWasExecuting { false };
+        ptr<FuncNode> yieldedFunc;
+    };
+    YieldState m_yieldState;
+
+    // Resume a previously yielded tick evaluation
+    TickResult resumeTickEvaluation(TimePoint deadline);
+
     void addSignal(ptr<Signal> signal);
     void addFunc(ptr<FuncNode> func);
 
@@ -197,7 +229,11 @@ private:
 
     // execute functions whose inputs are available, without advancing time
     void evaluateNetwork(TimePoint evaluationTime);
-    void evaluateIsland(const NetworkIsland& island, TimePoint evaluationTime);
+    TickResult evaluateIsland(const NetworkIsland& island,
+                              TimePoint evaluationTime,
+                              TimePoint deadline = TimePoint::max(),
+                              size_t startPeriodIndex = 0,
+                              size_t startFuncIndex = 0);
     void refreshDerivedSignals(const NetworkIsland& island, TimePoint time);
     TimePoint resolveEvaluationTime(const NetworkIsland& island, TimePoint candidate) const;
 

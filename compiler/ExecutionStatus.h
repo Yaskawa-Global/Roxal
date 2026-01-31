@@ -2,7 +2,7 @@
 
 namespace roxal {
 
-enum class InterpretResult {
+enum class ExecutionStatus {
     OK,
     CompileError,
     RuntimeError,

@@ -465,7 +465,7 @@ static int repl()
 }
 
 
-static InterpretResult runFile(const std::string& path,
+static ExecutionStatus runFile(const std::string& path,
                                const std::vector<std::string>& modulePaths,
                                bool outputBytecodeDisassembly=false)
 {
@@ -517,7 +517,7 @@ static InterpretResult runFile(const std::string& path,
 
 // Compile a script and all its transitive imports without executing.
 // This ensures all .roc cache files exist for RT deployment.
-static InterpretResult precompileFile(const std::string& path,
+static ExecutionStatus precompileFile(const std::string& path,
                                       const std::vector<std::string>& modulePaths,
                                       bool outputBytecodeDisassembly=false)
 {
@@ -564,7 +564,7 @@ static InterpretResult precompileFile(const std::string& path,
     }
 }
 
-static InterpretResult runString(const std::string& source,
+static ExecutionStatus runString(const std::string& source,
                                  const std::vector<std::string>& modulePaths,
                                  bool outputBytecodeDisassembly=false)
 {
@@ -885,12 +885,12 @@ int main(int argc, const char* argv[])
         VM::instance().setCacheMode(cacheMode);
         VM::instance().setScriptArguments(scriptArgs);
         bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
-        InterpretResult res =
+        ExecutionStatus res =
             runString(vmap["execute"].as<std::string>(), modulePaths,
                       outputBytecodeDisassembly);
         if (VM::instance().isExitRequested())
             return VM::instance().exitCode();
-        if (res != InterpretResult::OK)
+        if (res != ExecutionStatus::OK)
             return 1;
     }
     else if (vmap.count("input-file") == 0) {
@@ -914,9 +914,9 @@ int main(int argc, const char* argv[])
             else if (vmap.count("precompile")) {
                 bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
                 VM::instance().setCacheMode(cacheMode);
-                InterpretResult res =
+                ExecutionStatus res =
                     precompileFile(filename, modulePaths, outputBytecodeDisassembly);
-                if (res != InterpretResult::OK)
+                if (res != ExecutionStatus::OK)
                     return 1;
                 std::cout << "Precompilation successful: " << filename << std::endl;
             }
@@ -924,11 +924,11 @@ int main(int argc, const char* argv[])
                 bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
                 VM::instance().setCacheMode(cacheMode);
                 VM::instance().setScriptArguments(scriptArgs);
-                InterpretResult res =
+                ExecutionStatus res =
                     runFile(filename, modulePaths, outputBytecodeDisassembly);
                 if (VM::instance().isExitRequested())
                     return VM::instance().exitCode();
-                if (res != InterpretResult::OK)
+                if (res != ExecutionStatus::OK)
                     return 1;
             }
         } catch (std::exception& e) {

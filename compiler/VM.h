@@ -13,7 +13,7 @@
 #include "Chunk.h"
 #include "Value.h"
 #include "ArgsView.h"
-#include "InterpretResult.h"
+#include "ExecutionStatus.h"
 #include "Thread.h"
 #include "BuiltinModule.h"
 #include "LazyModuleRegistry.h"
@@ -142,10 +142,10 @@ public:
 
     // --- One-shot execution ---
     /// Compile and run source to completion. Suitable for simple scripts.
-    InterpretResult run(std::istream& source, const std::string& sourceName);
+    ExecutionStatus run(std::istream& source, const std::string& sourceName);
 
     /// REPL mode: compile and execute a single line/expression.
-    InterpretResult runLine(std::istream& linestream,
+    ExecutionStatus runLine(std::istream& linestream,
                                   bool replMode=true,
                                   const std::string& sourceNameOverride="");
 
@@ -156,12 +156,12 @@ public:
     /// Compile source and set up initial call frame, but don't execute.
     /// Returns CompileError on failure, OK on success.
     /// After setup(), call runFor() repeatedly to execute incrementally.
-    InterpretResult setup(std::istream& source, const std::string& sourceName);
+    ExecutionStatus setup(std::istream& source, const std::string& sourceName);
 
     /// Execute for up to the given duration, then yield.
-    /// Returns: OK if completed, Yielded if budget exhausted or blocked,
-    /// RuntimeError on error. Call repeatedly to continue execution.
-    InterpretResult runFor(TimeDuration duration);
+    /// Returns: {OK, returnValue} if completed, {Yielded, nil} if budget exhausted or blocked,
+    /// {RuntimeError, nil} on error. Call repeatedly to continue execution.
+    std::pair<ExecutionStatus, Value> runFor(TimeDuration duration);
 
     /// Check if the current thread has more work to do (not completed).
     bool hasMoreWork() const;
@@ -183,9 +183,13 @@ public:
     bool invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec);
     bool invoke(ObjString* name, const CallSpec& callSpec);
 
-    /// Internal: invoke a closure with arguments and execute to completion.
-    /// Used by REPL, event dispatch, module execution, etc.
-    std::pair<InterpretResult,Value> invokeClosureSync(ObjClosure* closure, const std::vector<Value>& args);
+    /// Invoke a closure with arguments. Executes until completion or deadline.
+    /// Returns {OK, value} on completion, {Yielded, nil} if deadline exceeded,
+    /// {RuntimeError, nil} on error.
+    /// Used by REPL, module execution, dataflow func nodes, event handlers.
+    std::pair<ExecutionStatus,Value> invokeClosure(ObjClosure* closure,
+                                                    const std::vector<Value>& args,
+                                                    TimePoint deadline = TimePoint::max());
     bool indexValue(const Value& indexable, int subscriptCount);
     bool setIndexValue(const Value& indexable, int subscriptCount, Value& value);
     enum class BindResult {
@@ -259,8 +263,8 @@ public:
     inline int exitCode() const { return exitCodeValue.load(); }
 
     // Join all currently tracked threads, optionally skipping one by id.
-    // Returns InterpretResult::RuntimeError if any joined thread failed.
-    InterpretResult joinAllThreads(uint64_t skipId = 0);
+    // Returns ExecutionStatus::RuntimeError if any joined thread failed.
+    ExecutionStatus joinAllThreads(uint64_t skipId = 0);
 
 
     static constexpr size_t DefaultMaxStack = 1024;
@@ -306,8 +310,8 @@ protected:
 
     /// Low-level dispatch loop. Runs until completion, error, or deadline.
     /// Prefer runFor() for incremental execution; this is used internally
-    /// by run(), runFor(), and invokeClosureSync().
-    std::pair<InterpretResult,Value> execute(TimePoint deadline = TimePoint::max());
+    /// by run(), runFor(), and invokeClosure().
+    std::pair<ExecutionStatus,Value> execute(TimePoint deadline = TimePoint::max());
 
     bool outputBytecodeDisassembly;
     bool lineMode;

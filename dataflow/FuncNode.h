@@ -14,9 +14,29 @@ namespace roxal::type {
     struct Type;
 }
 
+namespace roxal {
+    class Thread;  // forward declaration
+}
+
 namespace df {
 
 typedef std::vector<std::string> Names;
+
+// Result of deadline-aware func node execution
+enum class FuncExecResult {
+    NotExecuted,   // Inputs unchanged (pure function optimization)
+    Completed,     // Executed and finished
+    Yielded,       // VM yielded mid-execution (deadline exceeded)
+    Error          // Runtime error during execution
+};
+
+// State for resuming a yielded func node execution
+struct FuncYieldState {
+    bool active { false };
+    Values inputValues;                    // Preserved inputs for output processing
+    ptr<roxal::Thread> executionThread;    // Thread with preserved VM state
+    TimePoint executionTime;               // The tick time when execution started
+};
 
 class FuncNode
   : public roxal::enable_ptr_from_this<FuncNode>
@@ -128,8 +148,16 @@ protected:
     // gather inputs from signals we consume, and execute the function if they have changed,
     //  or we're impure
     // if executed, update output signal values
-    //  return true, if executed
-    bool conditionallyExecute(TimePoint time);
+    // Returns: NotExecuted if inputs unchanged, Completed if executed, Yielded if deadline exceeded, Error on failure
+    // deadline defaults to unlimited (TimePoint::max())
+    FuncExecResult conditionallyExecute(TimePoint time, TimePoint deadline = TimePoint::max());
+
+    // Resume a previously yielded execution
+    // Returns Yielded if still not complete, Completed if finished
+    FuncExecResult resumeExecution(TimePoint deadline);
+
+    // Check if this func has yielded work pending
+    bool hasYieldedWork() const { return m_funcYieldState.active; }
 
     void invokeExecutionCallbacks(TimePoint time, const Values& inputValues, const Values& outputValues);
 
@@ -137,6 +165,9 @@ private:
     Names m_inputNames;
     std::vector<ptr<Signal>> m_overrideOutputSignals;
     std::vector<std::optional<roxal::Value>> m_outputDefaults;
+
+    // State for resuming yielded execution
+    FuncYieldState m_funcYieldState;
 
     friend class DataflowEngine;
 
