@@ -1,0 +1,15 @@
+Test: hasYieldedWork_initial passed
+Test: tickFor_native_func passed - Native func result: 0
+Test: tickFor_empty_network passed
+Test: no_yield_after_complete passed
+Test: multiple_ticks passed
+Test: tick_result_enum passed
+Test: invokeClosure_yields passed - result=3
+Test: invokeClosure_resume_completes passed - resume_result=0
+Test: invokeClosure_multi_resume passed - multipleYields=1, completed=1
+Test: closure_state_preserved passed - output=499500, expected=499500
+Test: df_closure_yields passed - result=1, hasWork=1
+Test: df_closure_resume_completes passed - result=0, noMoreWork=1
+Test: df_closure_multi_resume passed - multipleYields=1, completed=1
+Test: df_closure_output_correct passed - output=499542, expected=499542
+RT Execution tests: Passed 14 failed 0
