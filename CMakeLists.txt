@@ -185,6 +185,7 @@ if(ROXAL_ENABLE_DDS)
     list(APPEND COMPILER_SOURCES
         compiler/dds/DdsAdapter.cpp
         compiler/dds/ModuleDDS.cpp
+        compiler/dds/AsyncDDSManager.cpp
     )
 endif()
 if(ROXAL_ENABLE_REGEX)
