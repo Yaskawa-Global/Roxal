@@ -1142,6 +1142,9 @@ Use `import fileio` or `import fileio.*`.  See `fileio.sys`.
 * `delete_file(path)` - delete a file, returning true if it existed
 * `delete_dir(path, recurse=false)` - delete a directory, optionally recursively
 
+**Note:** `read`, `read_line`, `read_file`, and `write` do not block, but return futures that are automatically resolved when used.
+
+
 ### regex
 
 Regular expression support using PCRE2.

@@ -171,6 +171,7 @@ list(APPEND COMPILER_SOURCES compiler/RTCallbackManager.cpp)
 
 if(ROXAL_ENABLE_FILEIO)
     list(APPEND COMPILER_SOURCES compiler/ModuleFileIO.cpp)
+    list(APPEND COMPILER_SOURCES compiler/AsyncIOManager.cpp)
 endif()
 if(ROXAL_ENABLE_GRPC)
     list(APPEND COMPILER_SOURCES

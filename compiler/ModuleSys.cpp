@@ -490,7 +490,7 @@ void ModuleSys::registerBuiltins(VM& vm)
             Value::stringVal(toUnicodeString("\n")),
             Value::falseVal()
         };
-        addSys("print", [this](VM& vm, ArgsView a){ return print_builtin(vm,a); }, nullptr, pdefaults);
+        addSys("print", [this](VM& vm, ArgsView a){ return print_builtin(vm,a); }, nullptr, pdefaults, 0x1);
         addSys("len", [this](VM& vm, ArgsView a){ return len_builtin(vm,a); }, nullptr, {}, 0x1);
         addSys("help", [this](VM& vm, ArgsView a){ return help_builtin(vm,a); });
         addSys("clone", [this](VM& vm, ArgsView a){ return clone_builtin(vm,a); });

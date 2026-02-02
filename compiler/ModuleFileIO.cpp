@@ -1,4 +1,5 @@
 #include "ModuleFileIO.h"
+#include "AsyncIOManager.h"
 #include "VM.h"
 #include "Object.h"
 #include <sstream>
@@ -157,7 +158,24 @@ Value ModuleFileIO::fileio_close_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isFile(args[0]))
         throw std::invalid_argument("fileio.close expects file handle");
-    ObjFile* f = asFile(args[0]);
+
+    const Value& fileValue = args[0];
+    ObjFile* f = asFile(fileValue);
+
+    // Check if there are pending async operations - returns future if pending, nil if not
+    Value pendingFuture = AsyncIOManager::instance().getPendingFuture(fileValue);
+
+    if (pendingFuture.isNonNil()) {
+        // There are pending operations - submit async close that waits for them
+        PendingIOOp op;
+        op.type = PendingIOOp::Type::FileClose;
+        op.file = f;
+        // The pending future will be waited on by the async worker
+        op.pendingFutures.push_back(asFuture(pendingFuture)->future);
+        return AsyncIOManager::instance().submit(std::move(op));
+    }
+
+    // No pending operations - close synchronously
     {
         std::lock_guard<std::mutex> lock(f->mutex);
         if (f->file && f->file->is_open())
@@ -191,20 +209,15 @@ Value ModuleFileIO::fileio_read_builtin(ArgsView args)
     if (args.size() != 1 || !isFile(args[0]))
         throw std::invalid_argument("fileio.read expects file handle");
     ObjFile* f = asFile(args[0]);
-    std::lock_guard<std::mutex> lock(f->mutex);
-    if (!f->file || !f->file->is_open()) return Value::nilVal();
-    char buf[4096];
-    f->file->read(buf, sizeof(buf));
-    std::streamsize n = f->file->gcount();
-    if (f->binary) {
-        Value lst { Value::listVal() };
-        asList(lst)->elts.reserve(static_cast<size_t>(n));
-        for (std::streamsize i = 0; i < n; ++i)
-            asList(lst)->elts.push_back(Value::byteVal(static_cast<uint8_t>(buf[i])));
-        return lst;
-    }
-    std::string s(buf, static_cast<size_t>(n));
-    return Value::stringVal(toUnicodeString(s));
+
+    // Submit async read operation
+    PendingIOOp op;
+    op.type = PendingIOOp::Type::FileRead;
+    op.file = f;
+    op.maxBytes = 4096;
+    op.binary = f->binary;
+
+    return AsyncIOManager::instance().submit(std::move(op));
 }
 
 Value ModuleFileIO::fileio_read_line_builtin(ArgsView args)
@@ -212,8 +225,8 @@ Value ModuleFileIO::fileio_read_line_builtin(ArgsView args)
     if (args.size() != 1 || !isFile(args[0]))
         throw std::invalid_argument("fileio.read_line expects file handle");
     ObjFile* f = asFile(args[0]);
-    std::lock_guard<std::mutex> lock(f->mutex);
-    if (!f->file || !f->file->is_open()) return Value::nilVal();
+
+    // Check binary mode synchronously (throws exception)
     if (f->binary) {
         Value exType = vm().loadGlobal(toUnicodeString("FileIOException")).value();
         Value msg = Value::stringVal(toUnicodeString("read_line requires text mode"));
@@ -221,10 +234,14 @@ Value ModuleFileIO::fileio_read_line_builtin(ArgsView args)
         vm().raiseException(exc);
         return Value::nilVal();
     }
-    std::string line;
-    if (!std::getline(*f->file, line))
-        return Value::nilVal();
-    return Value::stringVal(toUnicodeString(line));
+
+    // Submit async read line operation
+    PendingIOOp op;
+    op.type = PendingIOOp::Type::FileReadLine;
+    op.file = f;
+    op.binary = false;
+
+    return AsyncIOManager::instance().submit(std::move(op));
 }
 
 Value ModuleFileIO::fileio_read_file_builtin(ArgsView args)
@@ -237,31 +254,18 @@ Value ModuleFileIO::fileio_read_file_builtin(ArgsView args)
             throw std::invalid_argument("fileio.read_file format must be 'text' or 'binary'");
         format = toUTF8StdString(asStringObj(args[1])->s);
     }
-    std::ios_base::openmode mode = std::ios::in;
-    if (format == "binary")
-        mode |= std::ios::binary;
-    else if (format != "text")
+    if (format != "text" && format != "binary")
         throw std::invalid_argument("fileio.read_file format must be 'text' or 'binary'");
-    std::filesystem::path path = std::filesystem::path(toUTF8StdString(asStringObj(args[0])->s));
-    std::ifstream in(path, mode);
-    if (!in.is_open()) {
-        Value exType = vm().loadGlobal(toUnicodeString("FileIOException")).value();
-        Value msg = Value::stringVal(toUnicodeString("open failed"));
-        Value exc = Value::exceptionVal(msg, exType);
-        vm().raiseException(exc);
-        return Value::nilVal();
-    }
-    std::stringstream ss;
-    ss << in.rdbuf();
-    std::string data = ss.str();
-    if (format == "binary") {
-        Value lst { Value::listVal() };
-        asList(lst)->elts.reserve(data.size());
-        for (char c : data)
-            asList(lst)->elts.push_back(Value::byteVal(static_cast<uint8_t>(c)));
-        return lst;
-    }
-    return Value::stringVal(toUnicodeString(data));
+
+    std::string path = toUTF8StdString(asStringObj(args[0])->s);
+
+    // Submit async read all operation
+    PendingIOOp op;
+    op.type = PendingIOOp::Type::FileReadAll;
+    op.path = path;
+    op.binary = (format == "binary");
+
+    return AsyncIOManager::instance().submit(std::move(op));
 }
 
 Value ModuleFileIO::fileio_write_builtin(ArgsView args)
@@ -269,12 +273,14 @@ Value ModuleFileIO::fileio_write_builtin(ArgsView args)
     if (args.size() != 2 || !isFile(args[0]))
         throw std::invalid_argument("fileio.write expects file handle and data");
     ObjFile* f = asFile(args[0]);
-    std::lock_guard<std::mutex> lock(f->mutex);
-    if (!f->file || !f->file->is_open()) return Value::nilVal();
+
+    // Prepare write data synchronously (validation happens here)
+    std::string writeData;
     if (f->binary) {
         if (!isList(args[1]))
             throw std::invalid_argument("fileio.write expects list of bytes in binary mode");
         ObjList* lst = asList(args[1]);
+        writeData.reserve(static_cast<size_t>(lst->length()));
         for (int i = 0; i < lst->length(); ++i) {
             const Value& v = lst->elts.at(i);
             uint8_t b;
@@ -288,20 +294,44 @@ Value ModuleFileIO::fileio_write_builtin(ArgsView args)
             } else {
                 throw std::invalid_argument("fileio.write expects list of bytes or ints");
             }
-            f->file->put(static_cast<char>(b));
+            writeData.push_back(static_cast<char>(b));
         }
     } else {
-        std::string s = toString(args[1]);
-        (*f->file) << s;
+        writeData = toString(args[1]);
     }
-    return Value::nilVal();
+
+    // Submit async write operation
+    PendingIOOp op;
+    op.type = PendingIOOp::Type::FileWrite;
+    op.file = f;
+    op.writeData = std::move(writeData);
+    op.binary = f->binary;
+
+    return AsyncIOManager::instance().submit(std::move(op));
 }
 
 Value ModuleFileIO::fileio_flush_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isFile(args[0]))
         throw std::invalid_argument("fileio.flush expects file handle");
-    ObjFile* f = asFile(args[0]);
+
+    const Value& fileValue = args[0];
+    ObjFile* f = asFile(fileValue);
+
+    // Check if there are pending async operations - returns future if pending, nil if not
+    Value pendingFuture = AsyncIOManager::instance().getPendingFuture(fileValue);
+
+    if (pendingFuture.isNonNil()) {
+        // There are pending operations - submit async flush that waits for them
+        PendingIOOp op;
+        op.type = PendingIOOp::Type::FileSyncFlush;
+        op.file = f;
+        // The pending future will be waited on by the async worker
+        op.pendingFutures.push_back(asFuture(pendingFuture)->future);
+        return AsyncIOManager::instance().submit(std::move(op));
+    }
+
+    // No pending operations - flush synchronously
     std::lock_guard<std::mutex> lock(f->mutex);
     if (!f->file || !f->file->is_open()) return Value::falseVal();
     f->file->flush();
