@@ -1851,7 +1851,7 @@ void ObjFunction::write(std::ostream& out, roxal::ptr<SerializationContext> ctx)
 
     // Serialize whether this function has a native implementation
     // The pointer itself can't be serialized, but we need to know to re-link it
-    uint8_t hasNativeImpl = (nativeImpl != nullptr) ? 1 : 0;
+    uint8_t hasNativeImpl = (builtinInfo != nullptr) ? 1 : 0;
     out.write(reinterpret_cast<char*>(&hasNativeImpl), 1);
 }
 
@@ -1930,14 +1930,15 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
                 ObjClosure* liveClosure = asClosure(liveVarOpt.value());
                 if (isFunction(liveClosure->function)) {
                     ObjFunction* liveFunc = asFunction(liveClosure->function);
-                    if (liveFunc->nativeImpl) {
-                        nativeImpl = liveFunc->nativeImpl;
-                        nativeDefaults = liveFunc->nativeDefaults;
+                    if (liveFunc->builtinInfo) {
+                        const auto& srcInfo = *liveFunc->builtinInfo;
+                        builtinInfo = make_ptr<BuiltinFuncInfo>(
+                            srcInfo.function, srcInfo.defaultValues, srcInfo.resolveArgMask);
                     }
                 }
             }
         }
-        if (nativeImpl == nullptr) {
+        if (!builtinInfo) {
             throw std::runtime_error("Unable to relink native function '" +
                                      toUTF8StdString(name) + "' for module '" +
                                      toUTF8StdString(chunk->moduleName) + "'");
@@ -1949,8 +1950,10 @@ void ObjFunction::trace(ValueVisitor& visitor) const
 {
     visitor.visit(ownerType);
     visitor.visit(moduleType);
-    for (const auto& def : nativeDefaults) {
-        visitor.visit(def);
+    if (builtinInfo) {
+        for (const auto& def : builtinInfo->defaultValues) {
+            visitor.visit(def);
+        }
     }
     for (const auto& entry : paramDefaultFunc) {
         visitor.visit(entry.second);
@@ -1976,7 +1979,7 @@ void ObjFunction::dropReferences()
         chunk.reset();
     }
 
-    nativeDefaults.clear();
+    builtinInfo.reset();
     paramDefaultFunc.clear();
 }
 
@@ -3681,7 +3684,7 @@ void ObjFunction::clear()
         delete static_cast<FFIWrapper*>(nativeSpec);
         nativeSpec = nullptr;
     }
-    nativeDefaults.clear();
+    builtinInfo.reset();
 }
 
 ObjFunction::~ObjFunction()

@@ -62,13 +62,15 @@ protected:
 
     // Attach C++ implementation to function declared in builtin .rox module
     void link(const std::string& name, NativeFn fn,
-              std::vector<Value> defaults = {});
+              std::vector<Value> defaults = {},
+              uint32_t resolveArgMask = 0);
 
     // Attach C++ implementation to object method declared in builtin .rox module
     void linkMethod(const std::string& typeName,
                     const std::string& methodName,
                     NativeFn fn,
-                    std::vector<Value> defaults = {});
+                    std::vector<Value> defaults = {},
+                    uint32_t resolveArgMask = 0);
 
     // Fetch a module-level source signal declared in the builtin .rox file.
     // If \p required is false, returns nullptr when the signal cannot be found.
@@ -161,20 +163,22 @@ BuiltinModule::makeFuncType(const std::vector<std::pair<std::string,
 }
 
 inline void BuiltinModule::link(const std::string& name, NativeFn fn,
-                                std::vector<Value> defaults)
+                                std::vector<Value> defaults,
+                                uint32_t resolveArgMask)
 {
     auto val = asModuleType(moduleType())->vars.load(toUnicodeString(name));
     if (val.has_value() && isClosure(val.value())) {
         ObjClosure* cl = asClosure(val.value());
-        asFunction(cl->function)->nativeImpl = fn;
-        asFunction(cl->function)->nativeDefaults = std::move(defaults);
+        asFunction(cl->function)->builtinInfo = make_ptr<BuiltinFuncInfo>(
+            fn, std::move(defaults), resolveArgMask);
     }
 }
 
 inline void BuiltinModule::linkMethod(const std::string& typeName,
                                       const std::string& methodName,
                                       NativeFn fn,
-                                      std::vector<Value> defaults)
+                                      std::vector<Value> defaults,
+                                      uint32_t resolveArgMask)
 {
     auto typeVal = asModuleType(moduleType())->vars.load(toUnicodeString(typeName));
     if (typeVal.has_value() && isObjectType(typeVal.value())) {
@@ -184,8 +188,8 @@ inline void BuiltinModule::linkMethod(const std::string& typeName,
             Value val = it->second.closure;
             if (isClosure(val)) {
                 ObjClosure* cl = asClosure(val);
-                asFunction(cl->function)->nativeImpl = fn;
-                asFunction(cl->function)->nativeDefaults = std::move(defaults);
+                asFunction(cl->function)->builtinInfo = make_ptr<BuiltinFuncInfo>(
+                    fn, std::move(defaults), resolveArgMask);
             }
         }
         else {

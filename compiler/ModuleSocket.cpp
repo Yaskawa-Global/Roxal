@@ -224,20 +224,20 @@ void ModuleSocket::registerBuiltins(VM& vm)
     // Module-level functions
     link("tcp", [this](VM&, ArgsView a) { return socket_tcp_builtin(a); });
     link("udp", [this](VM&, ArgsView a) { return socket_udp_builtin(a); });
-    link("gethostbyname", [this](VM&, ArgsView a) { return socket_gethostbyname_builtin(a); });
+    link("gethostbyname", [this](VM&, ArgsView a) { return socket_gethostbyname_builtin(a); }, {}, 0x1);
 
-    // Socket object methods
-    linkMethod("Socket", "bind", [this](VM&, ArgsView a) { return socket_bind_builtin(a); });
-    linkMethod("Socket", "listen", [this](VM&, ArgsView a) { return socket_listen_builtin(a); });
+    // Socket object methods (arg 0 is receiver, so masks start from bit 1 for first real arg)
+    linkMethod("Socket", "bind", [this](VM&, ArgsView a) { return socket_bind_builtin(a); }, {}, 0x6);       // args 1,2: host, port
+    linkMethod("Socket", "listen", [this](VM&, ArgsView a) { return socket_listen_builtin(a); }, {}, 0x2);   // arg 1: backlog
     linkMethod("Socket", "accept", [this](VM&, ArgsView a) { return socket_accept_builtin(a); });
-    linkMethod("Socket", "connect", [this](VM&, ArgsView a) { return socket_connect_builtin(a); });
-    linkMethod("Socket", "send", [this](VM&, ArgsView a) { return socket_send_builtin(a); });
-    linkMethod("Socket", "recv", [this](VM&, ArgsView a) { return socket_recv_builtin(a); });
-    linkMethod("Socket", "sendto", [this](VM&, ArgsView a) { return socket_sendto_builtin(a); });
-    linkMethod("Socket", "recvfrom", [this](VM&, ArgsView a) { return socket_recvfrom_builtin(a); });
+    linkMethod("Socket", "connect", [this](VM&, ArgsView a) { return socket_connect_builtin(a); }, {}, 0x6); // args 1,2: host, port
+    linkMethod("Socket", "send", [this](VM&, ArgsView a) { return socket_send_builtin(a); }, {}, 0x2);       // arg 1: data
+    linkMethod("Socket", "recv", [this](VM&, ArgsView a) { return socket_recv_builtin(a); }, {}, 0x2);       // arg 1: size
+    linkMethod("Socket", "sendto", [this](VM&, ArgsView a) { return socket_sendto_builtin(a); }, {}, 0xE);   // args 1,2,3: data, host, port
+    linkMethod("Socket", "recvfrom", [this](VM&, ArgsView a) { return socket_recvfrom_builtin(a); }, {}, 0x2); // arg 1: size
     linkMethod("Socket", "close", [this](VM&, ArgsView a) { return socket_close_builtin(a); });
-    linkMethod("Socket", "settimeout", [this](VM&, ArgsView a) { return socket_settimeout_builtin(a); });
-    linkMethod("Socket", "setsockopt", [this](VM&, ArgsView a) { return socket_setsockopt_builtin(a); });
+    linkMethod("Socket", "settimeout", [this](VM&, ArgsView a) { return socket_settimeout_builtin(a); }, {}, 0x2); // arg 1: seconds
+    linkMethod("Socket", "setsockopt", [this](VM&, ArgsView a) { return socket_setsockopt_builtin(a); }, {}, 0x6); // args 1,2: option, value
     linkMethod("Socket", "getsockname", [this](VM&, ArgsView a) { return socket_getsockname_builtin(a); });
     linkMethod("Socket", "getpeername", [this](VM&, ArgsView a) { return socket_getpeername_builtin(a); });
     linkMethod("Socket", "fileno", [this](VM&, ArgsView a) { return socket_fileno_builtin(a); });

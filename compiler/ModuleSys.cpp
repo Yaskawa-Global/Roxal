@@ -492,7 +492,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         };
         addSys("print", [this](VM& vm, ArgsView a){ return print_builtin(vm,a); }, nullptr, pdefaults, 0x1);
         addSys("len", [this](VM& vm, ArgsView a){ return len_builtin(vm,a); }, nullptr, {}, 0x1);
-        addSys("help", [this](VM& vm, ArgsView a){ return help_builtin(vm,a); });
+        addSys("help", [this](VM& vm, ArgsView a){ return help_builtin(vm,a); }, nullptr, {}, 0x1);
         addSys("clone", [this](VM& vm, ArgsView a){ return clone_builtin(vm,a); });
         {
             ptr<type::Type> t = make_ptr<type::Type>(type::BuiltinType::Func);
@@ -513,7 +513,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         }
         addSys("is_ready", [this](VM& vm, ArgsView a){ return is_ready_builtin(vm,a); });
         addSys("fork", [this](VM& vm, ArgsView a){ return fork_builtin(vm,a); });
-        addSys("join", [this](VM& vm, ArgsView a){ return join_builtin(vm,a); });
+        addSys("join", [this](VM& vm, ArgsView a){ return join_builtin(vm,a); }, nullptr, {}, 0x1);
         {
             ptr<type::Type> t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
@@ -522,7 +522,7 @@ void ModuleSys::registerBuiltins(VM& vm)
             auto params = BuiltinModule::constructParams({{"ret", type::BuiltinType::Int}}, defaults);
             t->func->params.resize(params.size());
             for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
-            addSys("exit", [this](VM& vm, ArgsView a){ return exit_builtin(vm,a); }, t, defaults);
+            addSys("exit", [this](VM& vm, ArgsView a){ return exit_builtin(vm,a); }, t, defaults, 0x1);
         }
         addSys("stacktrace", [this](VM& vm, ArgsView a){ return stacktrace_builtin(vm,a); });
         addSys("_threadid", [this](VM& vm, ArgsView a){ return threadid_builtin(vm,a); });
@@ -534,10 +534,10 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("_arity", [this](VM& vm, ArgsView a){ return arity_builtin(vm,a); });
         addSys("gc", [this](VM& vm, ArgsView a){ return gc_builtin(vm,a); });
         addSys("gc_config", [this](VM& vm, ArgsView a){ return gc_config_builtin(vm,a); });
-        addSys("serialize", [this](VM& vm, ArgsView a){ return serialize_builtin(vm,a); });
-        addSys("deserialize", [this](VM& vm, ArgsView a){ return deserialize_builtin(vm,a); });
-        addSys("to_json", [this](VM& vm, ArgsView a){ return to_json_builtin(vm,a); });
-        addSys("from_json", [this](VM& vm, ArgsView a){ return from_json_builtin(vm,a); });
+        addSys("serialize", [this](VM& vm, ArgsView a){ return serialize_builtin(vm,a); }, nullptr, {}, 0x1);
+        addSys("deserialize", [this](VM& vm, ArgsView a){ return deserialize_builtin(vm,a); }, nullptr, {}, 0x1);
+        addSys("to_json", [this](VM& vm, ArgsView a){ return to_json_builtin(vm,a); }, nullptr, {}, 0x1);
+        addSys("from_json", [this](VM& vm, ArgsView a){ return from_json_builtin(vm,a); }, nullptr, {}, 0x1);
         // filter, map, reduce are now implemented in pure Roxal in sys.rox
     }
 
@@ -560,7 +560,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("_df_graph", [this](VM& vm, ArgsView a){ return df_graph_native(vm,a); });
         addSys("_df_islands", [this](VM& vm, ArgsView a){ return df_islands_native(vm,a); });
         addSys("_df_graphdot", [this](VM& vm, ArgsView a){ return df_graphdot_native(vm,a); });
-        addSys("loadlib", [this](VM& vm, ArgsView a){ return loadlib_native(vm,a); });
+        addSys("loadlib", [this](VM& vm, ArgsView a){ return loadlib_native(vm,a); }, nullptr, {}, 0x1);
 
     }
 

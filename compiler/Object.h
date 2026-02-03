@@ -940,6 +940,17 @@ class VM; // forward for native functions
 struct ArgsView; // forward for native functions
 //using NativeFn = std::function<Value(VM&, ArgsView)>;
 
+// Info for functions declared in .rox with C++ native implementation attached via link()
+struct BuiltinFuncInfo {
+    NativeFn function;
+    std::vector<Value> defaultValues;
+    uint32_t resolveArgMask {0};  // bit N set → resolve future arg N before native call
+
+    BuiltinFuncInfo() = default;
+    BuiltinFuncInfo(NativeFn fn, std::vector<Value> defaults = {}, uint32_t mask = 0)
+        : function(fn), defaultValues(std::move(defaults)), resolveArgMask(mask) {}
+};
+
 struct ObjFunction : public Obj
 {
     ObjFunction(const icu::UnicodeString& name,
@@ -956,8 +967,7 @@ struct ObjFunction : public Obj
     std::vector<ptr<ast::Annotation>> annotations;
     icu::UnicodeString doc;
     void* nativeSpec { nullptr }; // for ffi or other native info
-    NativeFn nativeImpl;
-    std::vector<Value> nativeDefaults;
+    unique_ptr<BuiltinFuncInfo> builtinInfo;  // non-null when C++ impl attached via link()
 
     bool strict;        // true if function was compiled in strict mode
 

@@ -482,7 +482,7 @@ void ModuleGrpc::addNativeMethod(ObjObjectType* type,
                                                toUnicodeString("grpc"),
                                                toUnicodeString("grpc")));
     ObjFunction* of = asFunction(fnVal);
-    of->nativeImpl = fn;
+    of->builtinInfo = make_ptr<BuiltinFuncInfo>(fn, defaultValues);
     of->ownerType = Value::objRef(type);
     of->fnType = FunctionType::Method;
     of->access = ast::Access::Public;
@@ -497,7 +497,6 @@ void ModuleGrpc::addNativeMethod(ObjObjectType* type,
     if (!returnTypes.empty())
         t->func->returnTypes = returnTypes;
     of->funcType = t;
-    of->nativeDefaults = defaultValues;
 
     Value closure = Value::closureVal(fnVal);
     ObjObjectType::Method m;

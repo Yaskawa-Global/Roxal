@@ -25,66 +25,27 @@ ModuleFileIO::~ModuleFileIO()
 void ModuleFileIO::registerBuiltins(VM& vm)
 {
     setVM(vm);
-    {
-        link("open", [this](VM&, ArgsView a){ return fileio_open_builtin(a); });
-    }
-    {
-        link("close", [this](VM&, ArgsView a){ return fileio_close_builtin(a); });
-    }
-    {
-        link("flush", [this](VM&, ArgsView a){ return fileio_flush_builtin(a); });
-    }
-    {
-        link("is_open", [this](VM&, ArgsView a){ return fileio_is_open_builtin(a); });
-    }
-    {
-        link("more_data", [this](VM&, ArgsView a){ return fileio_more_data_builtin(a); });
-    }
-    {
-        link("read", [this](VM&, ArgsView a){ return fileio_read_builtin(a); });
-    }
-    {
-        link("read_line", [this](VM&, ArgsView a){ return fileio_read_line_builtin(a); });
-    }
-    {
-        link("read_file", [this](VM&, ArgsView a){ return fileio_read_file_builtin(a); });
-    }
-    {
-        link("write", [this](VM&, ArgsView a){ return fileio_write_builtin(a); });
-    }
-    {
-        link("file_exists", [this](VM&, ArgsView a){ return fileio_file_exists_builtin(a); });
-    }
-    {
-        link("delete_file", [this](VM&, ArgsView a){ return fileio_delete_file_builtin(a); });
-    }
-    {
-        link("create_dir", [this](VM&, ArgsView a){ return fileio_create_dir_builtin(a); });
-    }
-    {
-        link("dir_exists", [this](VM&, ArgsView a){ return fileio_dir_exists_builtin(a); });
-    }
-    {
-        link("delete_dir", [this](VM&, ArgsView a){ return fileio_delete_dir_builtin(a); });
-    }
-    {
-        link("file_size", [this](VM&, ArgsView a){ return fileio_file_size_builtin(a); });
-    }
-    {
-        link("absolute_file_path", [this](VM&, ArgsView a){ return fileio_absolute_file_path_builtin(a); });
-    }
-    {
-        link("path_directory", [this](VM&, ArgsView a){ return fileio_path_directory_builtin(a); });
-    }
-    {
-        link("path_file", [this](VM&, ArgsView a){ return fileio_path_file_builtin(a); });
-    }
-    {
-        link("file_extension", [this](VM&, ArgsView a){ return fileio_file_extension_builtin(a); });
-    }
-    {
-        link("file_without_extension", [this](VM&, ArgsView a){ return fileio_file_without_extension_builtin(a); });
-    }
+    // resolve arg 0 (path/file) for all functions, and arg 1 (data) for write
+    link("open", [this](VM&, ArgsView a){ return fileio_open_builtin(a); }, {}, 0x1);
+    link("close", [this](VM&, ArgsView a){ return fileio_close_builtin(a); }, {}, 0x1);
+    link("flush", [this](VM&, ArgsView a){ return fileio_flush_builtin(a); }, {}, 0x1);
+    link("is_open", [this](VM&, ArgsView a){ return fileio_is_open_builtin(a); }, {}, 0x1);
+    link("more_data", [this](VM&, ArgsView a){ return fileio_more_data_builtin(a); }, {}, 0x1);
+    link("read", [this](VM&, ArgsView a){ return fileio_read_builtin(a); }, {}, 0x1);
+    link("read_line", [this](VM&, ArgsView a){ return fileio_read_line_builtin(a); }, {}, 0x1);
+    link("read_file", [this](VM&, ArgsView a){ return fileio_read_file_builtin(a); }, {}, 0x1);
+    link("write", [this](VM&, ArgsView a){ return fileio_write_builtin(a); }, {}, 0x3);  // resolve file and data
+    link("file_exists", [this](VM&, ArgsView a){ return fileio_file_exists_builtin(a); }, {}, 0x1);
+    link("delete_file", [this](VM&, ArgsView a){ return fileio_delete_file_builtin(a); }, {}, 0x1);
+    link("create_dir", [this](VM&, ArgsView a){ return fileio_create_dir_builtin(a); }, {}, 0x1);
+    link("dir_exists", [this](VM&, ArgsView a){ return fileio_dir_exists_builtin(a); }, {}, 0x1);
+    link("delete_dir", [this](VM&, ArgsView a){ return fileio_delete_dir_builtin(a); }, {}, 0x1);
+    link("file_size", [this](VM&, ArgsView a){ return fileio_file_size_builtin(a); }, {}, 0x1);
+    link("absolute_file_path", [this](VM&, ArgsView a){ return fileio_absolute_file_path_builtin(a); }, {}, 0x1);
+    link("path_directory", [this](VM&, ArgsView a){ return fileio_path_directory_builtin(a); }, {}, 0x1);
+    link("path_file", [this](VM&, ArgsView a){ return fileio_path_file_builtin(a); }, {}, 0x1);
+    link("file_extension", [this](VM&, ArgsView a){ return fileio_file_extension_builtin(a); }, {}, 0x1);
+    link("file_without_extension", [this](VM&, ArgsView a){ return fileio_file_without_extension_builtin(a); }, {}, 0x1);
 }
 
 Value ModuleFileIO::fileio_open_builtin(ArgsView args)

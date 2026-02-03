@@ -270,13 +270,13 @@ void Thread::act(Value actorInstance)
                         auto function = asFunction(closure->function);
 
                         // Check if this is a native method wrapped in a BoundMethod
-                        if (function->nativeImpl) {
+                        if (function->builtinInfo) {
                             // For native methods, we need to pass receiver as first arg
                             push(boundMethod->receiver);
                             for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
                                 push(*it);
 
-                            NativeFn native = function->nativeImpl;
+                            NativeFn native = function->builtinInfo->function;
                             ArgsView view{&(*vm.thread->stackTop) - callInfo.callSpec.argCount - 1,
                                           static_cast<size_t>(callInfo.callSpec.argCount + 1)};
                             Value ret{};

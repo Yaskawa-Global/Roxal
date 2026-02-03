@@ -1709,17 +1709,17 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
                     if (initClosureObj != nullptr && !(dictArg && !initAcceptsDict)) {
                         if (!type->isActor) {
-                            bool isNative = initFuncObj != nullptr && initFuncObj->nativeImpl;
+                            bool isNative = initFuncObj != nullptr && initFuncObj->builtinInfo;
                             Value calleeVal;
                             if (isNative) {
-                                NativeFn fn = initFuncObj->nativeImpl;
-                                calleeVal = Value::boundNativeVal(inst, fn,
+                                const auto& info = *initFuncObj->builtinInfo;
+                                calleeVal = Value::boundNativeVal(inst, info.function,
                                                                   initFuncObj->funcType.has_value() &&
                                                                      initFuncObj->funcType.value()->func.has_value() ?
                                                                      initFuncObj->funcType.value()->func->isProc : false,
                                                                   initFuncObj->funcType.has_value() ?
                                                                      initFuncObj->funcType.value() : nullptr,
-                                                                  initFuncObj->nativeDefaults,
+                                                                  info.defaultValues,
                                                                   Value::objRef(initFuncObj));
                             } else {
                                 calleeVal = Value::boundMethodVal(inst, initMethod->closure);
@@ -1732,11 +1732,11 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 *(thread->stackTop - 1) = inst; // native init returns instance
                             return ok;
                         } else {
-                        bool isNativeInit = initFuncObj != nullptr && initFuncObj->nativeImpl;
+                        bool isNativeInit = initFuncObj != nullptr && initFuncObj->builtinInfo;
                         Value calleeVal;
                         if (isNativeInit) {
-                            NativeFn fn = initFuncObj->nativeImpl;
-                            calleeVal = Value::boundNativeVal(inst, fn,
+                            const auto& info = *initFuncObj->builtinInfo;
+                            calleeVal = Value::boundNativeVal(inst, info.function,
                                                               initFuncObj->funcType.has_value() &&
                                                                   initFuncObj->funcType.value()->func.has_value()
                                                                   ? initFuncObj->funcType.value()->func->isProc
@@ -1744,7 +1744,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                                               initFuncObj->funcType.has_value()
                                                                   ? initFuncObj->funcType.value()
                                                                   : nullptr,
-                                                              initFuncObj->nativeDefaults,
+                                                              info.defaultValues,
                                                               Value::objRef(initFuncObj));
                         } else {
                             auto boundInit = newBoundMethodObj(inst, initMethod->closure);
@@ -2171,13 +2171,14 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             case ObjType::Closure: {
                 ObjClosure* closure = asClosure(callee);
                 ObjFunction* function = asFunction(closure->function);
-                if (function->nativeImpl) {
-                    NativeFn native = function->nativeImpl;
+                if (function->builtinInfo) {
+                    const auto& info = *function->builtinInfo;
                     ptr<type::Type> funcType = function->funcType.has_value()
                         ? function->funcType.value() : nullptr;
-                    return callNativeFn(native, funcType,
-                                        function->nativeDefaults, callSpec,
-                                        false, Value::nilVal(), closure->function);
+                    return callNativeFn(info.function, funcType,
+                                        info.defaultValues, callSpec,
+                                        false, Value::nilVal(), closure->function,
+                                        info.resolveArgMask);
                 } else {
                     bool cfunc = false;
                     for(const auto& annot : function->annotations) {
@@ -2209,6 +2210,14 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 Value boundValue = callee;
                 ObjBoundNative* bound { asBoundNative(boundValue) };
 
+                // Extract resolveArgMask from declFunction if it has builtinInfo
+                uint32_t resolveMask = 0;
+                if (isFunction(bound->declFunction)) {
+                    ObjFunction* declFunc = asFunction(bound->declFunction);
+                    if (declFunc->builtinInfo)
+                        resolveMask = declFunc->builtinInfo->resolveArgMask;
+                }
+
                 if (!isActorInstance(bound->receiver)) {
                     thread->currentBoundCall = boundValue;
                     BoundCallGuard guard(thread.get());
@@ -2217,7 +2226,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     return callNativeFn(native, bound->funcType,
                                         bound->defaultValues, callSpec,
                                         true, bound->receiver,
-                                        bound->declFunction);
+                                        bound->declFunction, resolveMask);
                 }
                 else {
                     // call to actor native method.
@@ -2236,7 +2245,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         return callNativeFn(native, bound->funcType,
                                             bound->defaultValues, callSpec,
                                             true, bound->receiver,
-                                            bound->declFunction);
+                                            bound->declFunction, resolveMask);
                     } else {
                         // call to other actor
                         Value future = inst->queueCall(callee, callSpec, &(*thread->stackTop) );
@@ -2750,17 +2759,17 @@ VM::BindResult VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
 
     Value method { methodInfo.closure };
 
-    if (isClosure(method) && asFunction(asClosure(method)->function)->nativeImpl) {
+    if (isClosure(method) && asFunction(asClosure(method)->function)->builtinInfo) {
         ObjClosure* cl = asClosure(method);
         ObjFunction* func = asFunction(cl->function);
-        NativeFn fn = func->nativeImpl;
-        Value boundNative { Value::boundNativeVal(peek(0), fn,
+        const auto& info = *func->builtinInfo;
+        Value boundNative { Value::boundNativeVal(peek(0), info.function,
                                                   func->funcType.has_value() &&
                                                       func->funcType.value()->func.has_value() ?
                                                       func->funcType.value()->func->isProc : false,
                                                   func->funcType.has_value() ?
                                                       func->funcType.value() : nullptr,
-                                                  func->nativeDefaults,
+                                                  info.defaultValues,
                                                   cl->function) };
         pop();
         push(boundNative);

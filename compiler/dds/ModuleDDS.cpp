@@ -252,11 +252,11 @@ void ModuleDDS::registerNativeTypes()
 void ModuleDDS::linkNativeFunctions()
 {
     ObjModuleType* mod = asModuleType(moduleTypeValue);
-    auto linkFn = [&](const char* name, NativeFn fn) {
+    auto linkFn = [&](const char* name, NativeFn fn, uint32_t resolveArgMask = 0) {
         auto val = mod->vars.load(toUnicodeString(name));
         if (val.has_value() && isClosure(val.value())) {
             ObjClosure* cl = asClosure(val.value());
-            asFunction(cl->function)->nativeImpl = fn;
+            asFunction(cl->function)->builtinInfo = make_ptr<BuiltinFuncInfo>(fn, std::vector<Value>{}, resolveArgMask);
         }
     };
 
