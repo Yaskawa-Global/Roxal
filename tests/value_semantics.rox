@@ -1,0 +1,32 @@
+# Test: vector/matrix/tensor value semantics on assignment
+# Assignment should create a copy, so modifying one doesn't affect the other
+
+# Vector test
+var v = [1.0 2.0 3.0]
+var v2 = v
+v2[0] = 99
+print(v[0])   # Should be 1 (unaffected)
+print(v2[0])  # Should be 99
+
+# Matrix test
+var m = matrix([[1,2],[3,4]])
+var m2 = m
+m2[0,0] = 99
+print(m[0,0])   # Should be 1 (unaffected)
+print(m2[0,0])  # Should be 99
+
+# Tensor test
+var t = tensor(3, data=[1.0, 2.0, 3.0])
+var t2 = t
+t2[0] = 99
+print(t[0])   # Should be 1 (unaffected)
+print(t2[0])  # Should be 99
+
+# Chained assignment test
+var a = [5.0 6.0]
+var b = a
+var c = b
+c[0] = 100
+print(a[0])   # Should be 5 (unaffected)
+print(b[0])   # Should be 5 (unaffected)
+print(c[0])   # Should be 100

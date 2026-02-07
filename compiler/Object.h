@@ -765,6 +765,19 @@ private:
 inline bool isTensor(const Value& v) { return isObjType(v, ObjType::Tensor); }
 inline ObjTensor* asTensor(const Value& v) { return static_cast<ObjTensor*>(v.asObj()); }
 
+/// @brief Clone values with value semantics that require explicit cloning.
+/// @param v The value to potentially clone.
+/// @return A cloned value if v is an object with value semantics (vector/matrix/tensor),
+///         otherwise returns v unchanged. Primitives and immutable objects (strings) don't need cloning.
+inline Value cloneIfValueSemantics(const Value& v) {
+    // Only clone mutable objects that should have value semantics
+    // Primitives are copied by value naturally, ObjPrimitive (strings) are immutable
+    if (v.isObj() && v.valueSemantics() && !isObjPrimitive(v)) {
+        return Value(v.asObj()->clone());
+    }
+    return v;
+}
+
 unique_ptr<ObjTensor, UnreleasedObj> newTensorObj();
 unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(const std::vector<int64_t>& shape,
                                                    TensorDType dtype = TensorDType::Float64);

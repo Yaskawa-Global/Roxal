@@ -4374,7 +4374,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     }
 
 
-                    objInst->properties[name->hash].assign(value);
+                    // Clone vector/matrix/tensor for by-value semantics
+                    objInst->properties[name->hash].assign(cloneIfValueSemantics(value));
                     popN(2); // pop original value & instance
                     push(value); // value (possibly converted)
                     break;
@@ -4406,7 +4407,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         }
                     }
 
-                    actorInst->properties[name->hash].assign(value);
+                    // Clone vector/matrix/tensor for by-value semantics
+                    actorInst->properties[name->hash].assign(cloneIfValueSemantics(value));
                     popN(2);
                     push(value);
                     break;
@@ -4426,7 +4428,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     if (vars.exists(name->hash)) {
                         Value value { peek(0) };
 
-                        vars.store(name->hash, name->s, value, /*overwrite=*/true);
+                        // Clone vector/matrix/tensor for by-value semantics
+                        vars.store(name->hash, name->s, cloneIfValueSemantics(value), /*overwrite=*/true);
                         popN(2); // pop original value & instance
                         push(value); // value (possibly converted)
                     }
@@ -4542,7 +4545,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         return errorReturn;
                     }
 
-                    objInst->properties[name->hash].assign(value);
+                    // Clone vector/matrix/tensor for by-value semantics
+                    objInst->properties[name->hash].assign(cloneIfValueSemantics(value));
                     popN(2);
                     push(value);
                     break;
@@ -4587,7 +4591,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         return errorReturn;
                     }
 
-                    actorInst->properties[name->hash].assign(value);
+                    // Clone vector/matrix/tensor for by-value semantics
+                    actorInst->properties[name->hash].assign(cloneIfValueSemantics(value));
                     popN(2);
                     push(value);
                     break;
@@ -4604,7 +4609,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     if (vars.exists(name->hash)) {
                         Value value { peek(0) };
 
-                        vars.store(name->hash, name->s, value, /*overwrite=*/true);
+                        // Clone vector/matrix/tensor for by-value semantics
+                        vars.store(name->hash, name->s, cloneIfValueSemantics(value), /*overwrite=*/true);
                         popN(2);
                         push(value);
                     } else {
@@ -5178,7 +5184,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 if (stackIndex >= thread->stack.size())
                     throw std::runtime_error("Stack overflow access");
                 #endif
-                frame->slots[slot] = peek(0);
+                frame->slots[slot] = cloneIfValueSemantics(peek(0));
                 break;
             }
             case OpCode::SetIndex: {
@@ -5198,12 +5204,14 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             case OpCode::DefineModuleConst: {
                 ObjString* name = readString();
                 moduleType()->constVars.insert(name->hash);
-                moduleVars().store(name->hash, name->s,pop());
+                // Clone vector/matrix/tensor for by-value semantics
+                moduleVars().store(name->hash, name->s, cloneIfValueSemantics(pop()));
                 break;
             }
             case OpCode::DefineModuleVar: {
                 ObjString* name = readString();
-                moduleVars().store(name->hash, name->s,pop());
+                // Clone vector/matrix/tensor for by-value semantics
+                moduleVars().store(name->hash, name->s, cloneIfValueSemantics(pop()));
                 break;
             }
             case OpCode::GetModuleVar: {
@@ -5263,7 +5271,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 auto& vars { moduleVars() };
                 // set new value, but leave it on stack (as assignment is an expression)
-                bool stored = vars.storeIfExists(name->hash, name->s,peek(0));
+                // Clone vector/matrix/tensor for by-value semantics
+                bool stored = vars.storeIfExists(name->hash, name->s, cloneIfValueSemantics(peek(0)));
                 if (!stored) { // not stored, since not existing
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
                     return errorReturn;
@@ -5289,7 +5298,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     return errorReturn;
                 }
 
-                vars.store(name->hash, name->s,peek(0), /*overwrite=*/true);
+                // Clone vector/matrix/tensor for by-value semantics
+                vars.store(name->hash, name->s, cloneIfValueSemantics(peek(0)), /*overwrite=*/true);
 
                 break;
             }
@@ -5300,7 +5310,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             }
             case OpCode::SetUpvalue: {
                 uint16_t slot = singleByteArg ? readByte() : readShort();
-                *(asUpvalue(asClosure(frame->closure)->upvalues[slot])->location) = peek(0);
+                // Clone vector/matrix/tensor for by-value semantics
+                *(asUpvalue(asClosure(frame->closure)->upvalues[slot])->location) = cloneIfValueSemantics(peek(0));
                 break;
             }
             case OpCode::NewRange: {
