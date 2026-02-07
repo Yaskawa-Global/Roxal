@@ -1,0 +1,16 @@
+# Test: math.argmax function
+import math
+
+# Vector tests
+var v1 = [1.0 5.0 3.0]
+print(math.argmax(v1))  # max is 5.0 at index 1
+
+var v2 = [9.0 2.0 3.0]
+print(math.argmax(v2))  # max is 9.0 at index 0
+
+var v3 = [1.0 2.0 7.0]
+print(math.argmax(v3))  # max is 7.0 at index 2
+
+# Tensor test
+var t = tensor(4, data=[3.0, 1.0, 4.0, 1.0])
+print(math.argmax(t))  # max is 4.0 at index 2

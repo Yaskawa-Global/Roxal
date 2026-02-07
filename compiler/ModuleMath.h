@@ -22,6 +22,9 @@ public:
     Value math_dot_builtin(ArgsView args);
     Value math_cross_builtin(ArgsView args);
     Value math_setVecSignal_builtin(ArgsView args);
+    Value math_relu_builtin(ArgsView args);
+    Value math_softmax_builtin(ArgsView args);
+    Value math_argmax_builtin(ArgsView args);
 
 
     // Example for implementing a builtin type (math.Counter) that wraps a C++ class

@@ -1,0 +1,23 @@
+# Test: math.softmax function
+import math
+
+# Vector test - simple case
+var v1 = [1.0 2.0 3.0]
+var s1 = math.softmax(v1)
+print(s1)
+
+# Verify sum is 1.0
+print(s1[0] + s1[1] + s1[2])
+
+# Vector test - uniform values (should give equal probabilities)
+var v2 = [2.0 2.0 2.0]
+var s2 = math.softmax(v2)
+print(s2)
+
+# Tensor test
+var t = tensor(3, data=[1.0, 2.0, 3.0])
+var st = math.softmax(t)
+print(st)
+print(st[0])
+print(st[1])
+print(st[2])

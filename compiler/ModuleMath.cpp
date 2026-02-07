@@ -105,6 +105,9 @@ void ModuleMath::registerBuiltins(VM& vm)
     link("dot", [this](VM&, ArgsView a){ return math_dot_builtin(a); });
     link("cross", [this](VM&, ArgsView a){ return math_cross_builtin(a); });
     link("_setVecSignal", [this](VM&, ArgsView a){ return math_setVecSignal_builtin(a); });
+    link("relu", [this](VM&, ArgsView a){ return math_relu_builtin(a); });
+    link("softmax", [this](VM&, ArgsView a){ return math_softmax_builtin(a); });
+    link("argmax", [this](VM&, ArgsView a){ return math_argmax_builtin(a); });
 
     // Link builtin Counter methods
     linkMethod("_Counter", "init", [this](VM&, ArgsView a){ return counter_init_builtin(a); });
@@ -251,4 +254,127 @@ Value ModuleMath::math_setVecSignal_builtin(ArgsView args)
     setModuleSourceSignalValue("_vecSignal", args[0]);
 
     return Value::nilVal();
+}
+
+Value ModuleMath::math_relu_builtin(ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("math.relu expects one argument");
+
+    const Value& x = args[0];
+
+    if (x.isNumber()) {
+        // Scalar
+        double val = toType(ValueType::Real, x, false).asReal();
+        return Value::realVal(std::max(0.0, val));
+    }
+    else if (isVector(x)) {
+        // Vector
+        ObjVector* v = asVector(x);
+        Eigen::VectorXd result = v->vec.cwiseMax(0.0);
+        return Value::vectorVal(result);
+    }
+    else if (isMatrix(x)) {
+        // Matrix
+        ObjMatrix* m = asMatrix(x);
+        Eigen::MatrixXd result = m->mat.cwiseMax(0.0);
+        return Value::matrixVal(result);
+    }
+    else if (isTensor(x)) {
+        // Tensor
+        ObjTensor* t = asTensor(x);
+        const std::vector<int64_t>& shape = t->shape();
+        std::vector<double> resultData(t->numel());
+        const double* src = t->data();
+        for (int64_t i = 0; i < t->numel(); ++i) {
+            resultData[i] = std::max(0.0, src[i]);
+        }
+        return Value::tensorVal(shape, resultData, t->dtype());
+    }
+    else {
+        throw std::invalid_argument("math.relu expects scalar, vector, matrix, or tensor");
+    }
+}
+
+Value ModuleMath::math_softmax_builtin(ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("math.softmax expects one argument");
+
+    const Value& x = args[0];
+
+    if (isVector(x)) {
+        ObjVector* v = asVector(x);
+        // Subtract max for numerical stability
+        double maxVal = v->vec.maxCoeff();
+        Eigen::VectorXd expVec = (v->vec.array() - maxVal).exp();
+        double sum = expVec.sum();
+        Eigen::VectorXd result = expVec / sum;
+        return Value::vectorVal(result);
+    }
+    else if (isTensor(x)) {
+        ObjTensor* t = asTensor(x);
+        if (t->rank() != 1)
+            throw std::invalid_argument("math.softmax requires a 1D tensor");
+
+        int64_t n = t->numel();
+        const double* src = t->data();
+
+        // Find max for numerical stability
+        double maxVal = src[0];
+        for (int64_t i = 1; i < n; ++i) {
+            maxVal = std::max(maxVal, src[i]);
+        }
+
+        // Compute exp, sum, and normalize
+        std::vector<double> resultData(n);
+        double sum = 0.0;
+        for (int64_t i = 0; i < n; ++i) {
+            resultData[i] = std::exp(src[i] - maxVal);
+            sum += resultData[i];
+        }
+        for (int64_t i = 0; i < n; ++i) {
+            resultData[i] /= sum;
+        }
+
+        return Value::tensorVal(t->shape(), resultData, t->dtype());
+    }
+    else {
+        throw std::invalid_argument("math.softmax expects vector or 1D tensor");
+    }
+}
+
+Value ModuleMath::math_argmax_builtin(ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("math.argmax expects one argument");
+
+    const Value& x = args[0];
+
+    if (isVector(x)) {
+        ObjVector* v = asVector(x);
+        Eigen::Index maxIdx;
+        v->vec.maxCoeff(&maxIdx);
+        return Value::intVal(static_cast<int64_t>(maxIdx));
+    }
+    else if (isTensor(x)) {
+        ObjTensor* t = asTensor(x);
+        if (t->rank() != 1)
+            throw std::invalid_argument("math.argmax requires a 1D tensor");
+
+        int64_t n = t->numel();
+        const double* data = t->data();
+        int64_t maxIdx = 0;
+        double maxVal = data[0];
+        for (int64_t i = 1; i < n; ++i) {
+            if (data[i] > maxVal) {
+                maxVal = data[i];
+                maxIdx = i;
+            }
+        }
+        return Value::intVal(maxIdx);
+    }
+    else {
+        throw std::invalid_argument("math.argmax expects vector or 1D tensor");
+    }
 }

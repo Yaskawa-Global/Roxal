@@ -194,6 +194,18 @@ func dot(a:vector, b:vector) -> real:
 func cross(a:vector, b:vector) -> vector:
   """cross product of two 3-element vectors"""
 
+@builtin
+func relu(x):
+  """rectified linear unit: max(0, x) applied element-wise (works on scalar, vector, matrix, or tensor)"""
+
+@builtin
+func softmax(x):
+  """softmax function: exp(x_i) / sum(exp(x_j)) (works on vector or 1D tensor)"""
+
+@builtin
+func argmax(x):
+  """index of maximum element (works on vector or 1D tensor)"""
+
 
 // Example only: source signal updated from native code
 var _vecSignal :signal = signal(freq=20, initial=[0.0 0.0 0.0])
