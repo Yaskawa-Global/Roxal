@@ -3003,15 +3003,106 @@ int64_t ObjTensor::flatIndex(const std::vector<int64_t>& indices) const
 
 Value ObjTensor::index(const std::vector<Value>& indices) const
 {
-    std::vector<int64_t> idxs;
-    idxs.reserve(indices.size());
+    if (indices.size() != shape_.size())
+        throw std::runtime_error("Tensor index rank mismatch: expected " +
+            std::to_string(shape_.size()) + " indices, got " + std::to_string(indices.size()));
+
+    // Check if any index is a range
+    bool hasRange = false;
     for (const auto& v : indices) {
-        if (!v.isInt())
-            throw std::runtime_error("Tensor index must be integer");
-        idxs.push_back(v.asInt());
+        if (isRange(v)) {
+            hasRange = true;
+            break;
+        }
     }
-    int64_t flatIdx = flatIndex(idxs);
-    return Value::realVal(data_[flatIdx]);
+
+    if (!hasRange) {
+        // All integer indices - return scalar
+        std::vector<int64_t> idxs;
+        idxs.reserve(indices.size());
+        for (const auto& v : indices) {
+            if (!v.isInt())
+                throw std::runtime_error("Tensor index must be integer or range");
+            idxs.push_back(v.asInt());
+        }
+        int64_t flatIdx = flatIndex(idxs);
+        return Value::realVal(data_[flatIdx]);
+    }
+
+    // Has ranges - build sub-tensor
+    // For each dimension, collect the list of indices to extract
+    std::vector<std::vector<int64_t>> dimIndices;
+    dimIndices.reserve(indices.size());
+    std::vector<int64_t> resultShape;
+
+    for (size_t d = 0; d < indices.size(); ++d) {
+        const Value& idx = indices[d];
+        int64_t dimSize = shape_[d];
+
+        if (idx.isInt()) {
+            int64_t i = idx.asInt();
+            if (i < 0 || i >= dimSize)
+                throw std::runtime_error("Tensor index out of bounds at dimension " + std::to_string(d));
+            dimIndices.push_back({i});
+            // Single index - dimension is squeezed out (not added to result shape)
+        } else if (isRange(idx)) {
+            ObjRange* r = asRange(idx);
+            int64_t rangeLen = r->length(dimSize);
+            std::vector<int64_t> dimIdx;
+            dimIdx.reserve(rangeLen);
+            for (int64_t j = 0; j < rangeLen; ++j) {
+                int64_t target = r->targetIndex(j, dimSize);
+                if (target >= 0 && target < dimSize)
+                    dimIdx.push_back(target);
+            }
+            dimIndices.push_back(dimIdx);
+            // Range - add dimension to result shape
+            resultShape.push_back(dimIdx.size());
+        } else {
+            throw std::runtime_error("Tensor index must be integer or range");
+        }
+    }
+
+    // If all ranges resulted in single elements, we still return a tensor (not scalar)
+    // This preserves type through indexing
+    if (resultShape.empty()) {
+        // All indices were single values - return 0D tensor? Or scalar?
+        // For consistency, return scalar since all indices were explicit
+        std::vector<int64_t> idxs;
+        for (const auto& di : dimIndices)
+            idxs.push_back(di[0]);
+        int64_t flatIdx = flatIndex(idxs);
+        return Value::realVal(data_[flatIdx]);
+    }
+
+    // Build result tensor
+    int64_t resultNumel = 1;
+    for (auto s : resultShape) resultNumel *= s;
+    std::vector<double> resultData;
+    resultData.reserve(resultNumel);
+
+    // Recursive helper to iterate through all combinations of indices
+    std::function<void(size_t, std::vector<int64_t>&)> collectData;
+    collectData = [&](size_t dim, std::vector<int64_t>& currentIdx) {
+        if (dim == dimIndices.size()) {
+            // Compute flat index in source tensor
+            int64_t srcIdx = 0;
+            for (size_t i = 0; i < currentIdx.size(); ++i)
+                srcIdx += currentIdx[i] * strides_[i];
+            resultData.push_back(data_[srcIdx]);
+            return;
+        }
+        for (int64_t i : dimIndices[dim]) {
+            currentIdx.push_back(i);
+            collectData(dim + 1, currentIdx);
+            currentIdx.pop_back();
+        }
+    };
+
+    std::vector<int64_t> currentIdx;
+    collectData(0, currentIdx);
+
+    return Value::tensorVal(resultShape, resultData, dtype_);
 }
 
 void ObjTensor::setIndex(const std::vector<Value>& indices, const Value& v)
