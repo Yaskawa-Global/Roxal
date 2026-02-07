@@ -36,6 +36,7 @@ Reference types:
     * insertion order preserved
   * `vector` - [number number number] - arbitrary n dim real scalar elements
   * `matrix` - [num num num; num num num] - arbitrary n x m dim real scalar elements (can use newline between rows in literals)
+  * `tensor` - multi-dimensional array with arbitrary shape (see tensor section below)
   * `object` - user-defined object type (aka class)
   * `actor` - user-defined actor type (similar to object type)
 
@@ -306,6 +307,76 @@ print( s[:-1] )       // "Hello worl" (all but last)
 m = [1 2 3            // 2x3 matrix
      4 5 6]
 print( m[0..1,0..1] ) // [1 2; 4 5] submatrix
+```
+
+## Vectors, Matrices & Tensors
+
+Roxal provides three types for numerical arrays: `vector` (1D), `matrix` (2D), and `tensor` (arbitrary dimensions).
+
+### Vector and Matrix Literals
+
+```php
+var v = [1.0 2.0 3.0]      // 3-element vector (space-separated)
+var m = [1 2 3; 4 5 6]     // 2x3 matrix (semicolon separates rows)
+var m2 = [1 2              // can also use newlines between rows
+          3 4]
+```
+
+### Tensor Creation
+
+Tensors are created using the `tensor()` constructor:
+
+```php
+var t1 = tensor(10)                           // 1D tensor with 10 elements (zeros)
+var t2 = tensor(2, 3, 4)                      // 3D tensor with shape [2, 3, 4]
+var t3 = tensor(3, data=[1.0, 2.0, 3.0])      // 1D tensor with initial data
+var t4 = tensor(2, 3, dtype='float32')        // specify data type
+```
+
+Supported `dtype` values: `'float16'`, `'float32'`, `'float64'` (default), `'int8'`, `'int16'`, `'int32'`, `'int64'`, `'uint8'`, `'bool'`
+
+### Tensor Indexing and Properties
+
+```php
+var t = tensor(2, 3, data=[1,2,3,4,5,6])
+print(t[0, 1])       // element at row 0, col 1
+t[1, 2] = 99         // assign element
+print(t.shape())     // [2, 3]
+print(t.rank())      // 2
+print(len(t))        // 6 (total elements)
+print(t.dtype())     // 'float64'
+```
+
+### Value Semantics
+
+Unlike `list` and `dict`, the mathematical types `vector`, `matrix`, and `tensor` have *value semantics*. Assignment creates an independent copy, matching mathematical intuition:
+
+```php
+var v = [1.0 2.0 3.0]
+var v2 = v           // v2 is an independent copy
+v2[0] = 99
+print(v[0])          // 1 (original unchanged)
+print(v2[0])         // 99
+
+var t = tensor(3, data=[1.0, 2.0, 3.0])
+var t2 = t           // t2 is an independent copy
+t2[0] = 99
+print(t[0])          // 1 (original unchanged)
+```
+
+### Arithmetic Operations
+
+Element-wise arithmetic works with +, -, *, / for same-shaped tensors. Vectors and matrices also support matrix multiplication:
+
+```php
+var v1 = [1.0 2.0 3.0]
+var v2 = [4.0 5.0 6.0]
+print(v1 + v2)       // [5 7 9]
+print(v1 * v2)       // dot product: 32
+
+var t1 = tensor(3, data=[1.0, 2.0, 3.0])
+var t2 = tensor(3, data=[1.0, 1.0, 1.0])
+print(t1 + t2)       // element-wise addition
 ```
 
 ## Control Statements
@@ -1114,6 +1185,9 @@ Use `import math` or `import math.*`.  See `math.rox`.
 * `ones(r, c)` - `r` by `c` matrix of ones
 * `dot(a, b)` - dot product of two vectors
 * `cross(a, b)` - cross product of two 3-element vectors
+* `relu(x)` - rectified linear unit: `max(0, x)` applied element-wise (works on scalar, vector, matrix, or tensor)
+* `softmax(x)` - softmax function: `exp(x_i) / sum(exp(x_j))` (works on vector or 1D tensor)
+* `argmax(x)` - index of maximum element (works on vector or 1D tensor)
 
 ### fileio
 
