@@ -1,5 +1,7 @@
 # Tensor math operations test
 
+# === Basic arithmetic with 2x2 tensors ===
+
 var t1 = tensor([2, 2], [1, 2, 3, 4])
 var t2 = tensor([2, 2], [5, 6, 7, 8])
 
@@ -32,3 +34,57 @@ print(t7[1, 1])
 var t8 = -t1
 print(t8[0, 0])
 print(t8[1, 1])
+
+# === Arithmetic with varargs-constructed tensors ===
+
+var v1 = tensor(2, 3, data=[1, 2, 3, 4, 5, 6])
+var v2 = tensor(2, 3, data=[10, 20, 30, 40, 50, 60])
+
+# Addition
+var v3 = v1 + v2
+print(v3[0, 0])
+print(v3[1, 2])
+
+# Scalar ops
+var v4 = v1 * 3.0
+print(v4[0, 1])
+print(v4[1, 0])
+
+# === 3D tensor operations ===
+
+var d1 = tensor(2, 2, 2, data=[1, 2, 3, 4, 5, 6, 7, 8])
+var d2 = tensor(2, 2, 2, data=[8, 7, 6, 5, 4, 3, 2, 1])
+
+# Addition
+var d3 = d1 + d2
+print(d3[0, 0, 0])
+print(d3[1, 1, 1])
+
+# Subtraction
+var d4 = d1 - d2
+print(d4[0, 0, 0])
+print(d4[1, 1, 1])
+
+# === 1D tensor (vector-like) ===
+
+var vec1 = tensor(4, data=[1, 2, 3, 4])
+var vec2 = tensor(4, data=[10, 20, 30, 40])
+
+var vec3 = vec1 + vec2
+print(vec3[0])
+print(vec3[3])
+
+var vec4 = vec1 * 5.0
+print(vec4[0])
+print(vec4[3])
+
+# === Chained operations ===
+
+var a = tensor(2, 2, data=[1, 2, 3, 4])
+var b = tensor(2, 2, data=[5, 6, 7, 8])
+var c = tensor(2, 2, data=[10, 10, 10, 10])
+
+# (a + b) * 2 - c
+var result = (a + b) * 2.0 - c
+print(result[0, 0])
+print(result[1, 1])

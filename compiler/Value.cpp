@@ -1705,7 +1705,40 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
             if (isVector(arg)) {
                 return Value(asVector(arg)->clone());
             }
-            throw std::runtime_error("vector constructor expects int length, list of reals, or vector");
+            if (isMatrix(arg)) {
+                // Only allow 1×n or n×1 matrices
+                auto mat = asMatrix(arg);
+                int rows = mat->mat.rows();
+                int cols = mat->mat.cols();
+                if (rows == 1) {
+                    // Row vector
+                    Eigen::VectorXd vals(cols);
+                    for (int c = 0; c < cols; ++c)
+                        vals[c] = mat->mat(0, c);
+                    return Value::vectorVal(vals);
+                } else if (cols == 1) {
+                    // Column vector
+                    Eigen::VectorXd vals(rows);
+                    for (int r = 0; r < rows; ++r)
+                        vals[r] = mat->mat(r, 0);
+                    return Value::vectorVal(vals);
+                } else {
+                    throw std::runtime_error("vector(matrix) requires a 1×n or n×1 matrix, got " +
+                        std::to_string(rows) + "×" + std::to_string(cols));
+                }
+            }
+            if (isTensor(arg)) {
+                // Only allow 1D tensors
+                auto t = asTensor(arg);
+                if (t->rank() != 1)
+                    throw std::runtime_error("vector(tensor) requires a 1D tensor, got rank " +
+                        std::to_string(t->rank()));
+                Eigen::VectorXd vals(t->numel());
+                for (int64_t i = 0; i < t->numel(); ++i)
+                    vals[i] = t->data()[i];
+                return Value::vectorVal(vals);
+            }
+            throw std::runtime_error("vector constructor expects int length, list of reals, vector, 1-row/col matrix, or 1D tensor");
         } else {
             throw std::runtime_error("vector constructor with >1 arg unimplemented");
         }
@@ -1777,7 +1810,30 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
             if (isMatrix(arg)) {
                 return Value(asMatrix(arg)->clone());
             }
-            throw std::runtime_error("matrix constructor expects list, vector, or matrix");
+            if (isTensor(arg)) {
+                // Only allow 1D or 2D tensors
+                auto t = asTensor(arg);
+                if (t->rank() == 1) {
+                    // 1D tensor → 1-row matrix
+                    Eigen::MatrixXd vals(1, t->numel());
+                    for (int64_t c = 0; c < t->numel(); ++c)
+                        vals(0, c) = t->data()[c];
+                    return Value::matrixVal(vals);
+                } else if (t->rank() == 2) {
+                    // 2D tensor → matrix
+                    int64_t rows = t->shape()[0];
+                    int64_t cols = t->shape()[1];
+                    Eigen::MatrixXd vals(rows, cols);
+                    for (int64_t r = 0; r < rows; ++r)
+                        for (int64_t c = 0; c < cols; ++c)
+                            vals(r, c) = t->data()[r * cols + c];
+                    return Value::matrixVal(vals);
+                } else {
+                    throw std::runtime_error("matrix(tensor) requires a 1D or 2D tensor, got rank " +
+                        std::to_string(t->rank()));
+                }
+            }
+            throw std::runtime_error("matrix constructor expects list, vector, matrix, or 1D/2D tensor");
         } else {
             throw std::runtime_error("matrix constructor with incorrect arg count");
         }
@@ -1815,8 +1871,26 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
             } else if (isTensor(*it)) {
                 // tensor(existingTensor) - copy
                 return Value(asTensor(*it)->clone());
+            } else if (isVector(*it)) {
+                // tensor(vector) → 1D tensor
+                auto vec = asVector(*it);
+                std::vector<int64_t> vecShape = { static_cast<int64_t>(vec->length()) };
+                std::vector<double> vecData(vec->vec.data(), vec->vec.data() + vec->length());
+                return Value::tensorVal(vecShape, vecData, TensorDType::Float64);
+            } else if (isMatrix(*it)) {
+                // tensor(matrix) → 2D tensor
+                auto mat = asMatrix(*it);
+                int64_t rows = mat->mat.rows();
+                int64_t cols = mat->mat.cols();
+                std::vector<int64_t> matShape = { rows, cols };
+                std::vector<double> matData;
+                matData.reserve(rows * cols);
+                for (int64_t r = 0; r < rows; ++r)
+                    for (int64_t c = 0; c < cols; ++c)
+                        matData.push_back(mat->mat(r, c));
+                return Value::tensorVal(matShape, matData, TensorDType::Float64);
             } else {
-                throw std::runtime_error("tensor constructor expects shape list, dimension ints, or tensor");
+                throw std::runtime_error("tensor constructor expects shape list, dimension ints, tensor, vector, or matrix");
             }
 
             // Process remaining arguments (data list and/or dtype string)

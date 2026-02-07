@@ -1,23 +1,86 @@
 # Basic tensor tests
 
-# Create tensor with shape
+# === Constructor variations ===
+
+# List shape (original syntax)
 var t1 = tensor([2, 3])
 print(len(t1))
 
-# Set and get elements
-t1[0, 0] = 1.0
-t1[0, 1] = 2.0
-t1[0, 2] = 3.0
-t1[1, 0] = 4.0
-t1[1, 1] = 5.0
-t1[1, 2] = 6.0
-print(t1[0, 0])
-print(t1[1, 2])
+# Varargs shape
+var t2 = tensor(2, 3)
+print(len(t2))
 
-# Create tensor with data
-var t2 = tensor([2, 3], [1, 2, 3, 4, 5, 6])
-print(t2[0, 0])
-print(t2[1, 2])
+# Varargs shape (3D)
+var t3 = tensor(2, 3, 4)
+print(len(t3))
 
-# Print tensor representation
-print(t2)
+# List shape with data
+var t4 = tensor([2, 3], [1, 2, 3, 4, 5, 6])
+print(t4[0, 0])
+print(t4[1, 2])
+
+# Varargs shape with named dtype
+var t5 = tensor(2, 2, dtype='float32')
+print(t5)
+
+# Named dtype first, then varargs shape
+var t6 = tensor(dtype='float32', 3, 3)
+print(t6)
+
+# Varargs shape with named data
+var t7 = tensor(2, 2, data=[10, 20, 30, 40])
+print(t7[0, 0])
+print(t7[1, 1])
+
+# Named data first, then varargs shape
+var t8 = tensor(data=[1, 2, 3, 4, 5, 6], 2, 3)
+print(t8[0, 2])
+print(t8[1, 0])
+
+# All named params
+var t9 = tensor(shape=[2, 2], data=[100, 200, 300, 400], dtype='float64')
+print(t9[0, 1])
+print(t9[1, 0])
+
+# Named shape only
+var t10 = tensor(shape=[3, 4])
+print(len(t10))
+
+# Named shape with named dtype
+var t11 = tensor(shape=[2, 2], dtype='int8')
+print(t11)
+
+# Varargs with both named params
+var t12 = tensor(2, 3, data=[1, 2, 3, 4, 5, 6], dtype='float32')
+print(t12[0, 0])
+print(t12[1, 2])
+print(t12)
+
+# === Element access ===
+
+var t_access = tensor([2, 3])
+t_access[0, 0] = 1.0
+t_access[0, 1] = 2.0
+t_access[0, 2] = 3.0
+t_access[1, 0] = 4.0
+t_access[1, 1] = 5.0
+t_access[1, 2] = 6.0
+print(t_access[0, 0])
+print(t_access[1, 2])
+
+# === Copy constructor ===
+
+var t_orig = tensor([2, 2], [1, 2, 3, 4])
+var t_copy = tensor(t_orig)
+print(t_copy[0, 0])
+print(t_copy[1, 1])
+
+# Verify it's a copy (modifying copy doesn't affect original)
+t_copy[0, 0] = 99
+print(t_orig[0, 0])
+print(t_copy[0, 0])
+
+# === Tensor representation ===
+
+var t_repr = tensor([2, 3], [1, 2, 3, 4, 5, 6])
+print(t_repr)

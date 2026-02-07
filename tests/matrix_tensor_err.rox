@@ -1,0 +1,4 @@
+# Test: matrix(tensor) with 3D tensor should error
+var t = tensor(2, 3, 4)
+var m = matrix(t)
+print(m)

@@ -3489,8 +3489,9 @@ Value ObjMatrix::index(const Value& row) const
         int r = row.asInt();
         if (r < 0 || r >= rows())
             throw std::invalid_argument("Matrix row index out-of-range.");
-        Eigen::VectorXd vals = mat.row(r);
-        return Value::vectorVal(vals);
+        // Return a 1-row matrix (preserves type - use vector(matrix[i]) to get a vector)
+        Eigen::MatrixXd rowMat = mat.row(r);
+        return Value::matrixVal(rowMat);
     } else if (isRange(row)) {
         ObjRange* rr = asRange(row);
         int rowCount = rr->length(rows());

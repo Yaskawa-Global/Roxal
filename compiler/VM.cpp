@@ -1449,6 +1449,128 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
     auto argBegin = thread->stackTop - callSpec.argCount;
     auto argEnd = thread->stackTop;
     try {
+        // Special handling for tensor - supports varargs ints + named params
+        if (builtinType == ValueType::Tensor && callSpec.argCount > 0) {
+            // Hash codes for named param lookup
+            static const uint16_t dtypeHash = toUnicodeString("dtype").hashCode() & 0x7fff;
+            static const uint16_t dataHash = toUnicodeString("data").hashCode() & 0x7fff;
+            static const uint16_t shapeHash = toUnicodeString("shape").hashCode() & 0x7fff;
+
+            std::vector<int64_t> shape;
+            std::vector<double> data;
+            TensorDType dtype = TensorDType::Float64;
+            bool hasData = false;
+
+            // Process all arguments
+            for (size_t i = 0; i < callSpec.argCount; ++i) {
+                Value arg = *(argBegin + i);
+                bool isNamed = !callSpec.allPositional && !callSpec.args[i].positional;
+
+                if (isNamed) {
+                    uint16_t hash = callSpec.args[i].paramNameHash & 0x7fff;
+                    if (hash == dtypeHash) {
+                        if (isString(arg))
+                            dtype = tensorDTypeFromString(toUTF8StdString(asStringObj(arg)->s));
+                        else
+                            throw std::runtime_error("tensor dtype must be a string");
+                    } else if (hash == dataHash) {
+                        if (isList(arg)) {
+                            auto dataList = asList(arg)->elts.get();
+                            data.reserve(dataList.size());
+                            for (const auto& v : dataList) {
+                                if (!v.isNumber())
+                                    throw std::runtime_error("tensor data elements must be numeric");
+                                data.push_back(v.isInt() ? static_cast<double>(v.asInt()) : v.asReal());
+                            }
+                            hasData = true;
+                        } else {
+                            throw std::runtime_error("tensor data must be a list");
+                        }
+                    } else if (hash == shapeHash) {
+                        if (isList(arg)) {
+                            auto shapeList = asList(arg)->elts.get();
+                            shape.reserve(shapeList.size());
+                            for (const auto& v : shapeList) {
+                                if (!v.isInt())
+                                    throw std::runtime_error("tensor shape elements must be integers");
+                                shape.push_back(v.asInt());
+                            }
+                        } else {
+                            throw std::runtime_error("tensor shape must be a list");
+                        }
+                    }
+                    // Ignore unknown named params (or could throw)
+                } else {
+                    // Positional argument
+                    if (arg.isInt()) {
+                        // Int -> shape dimension
+                        shape.push_back(arg.asInt());
+                    } else if (isList(arg) && shape.empty()) {
+                        // First positional list -> shape list
+                        auto shapeList = asList(arg)->elts.get();
+                        shape.reserve(shapeList.size());
+                        for (const auto& v : shapeList) {
+                            if (!v.isInt())
+                                throw std::runtime_error("tensor shape elements must be integers");
+                            shape.push_back(v.asInt());
+                        }
+                    } else if (isList(arg)) {
+                        // Subsequent list -> data (backward compat)
+                        auto dataList = asList(arg)->elts.get();
+                        data.reserve(dataList.size());
+                        for (const auto& v : dataList) {
+                            if (!v.isNumber())
+                                throw std::runtime_error("tensor data elements must be numeric");
+                            data.push_back(v.isInt() ? static_cast<double>(v.asInt()) : v.asReal());
+                        }
+                        hasData = true;
+                    } else if (isString(arg)) {
+                        // Positional string -> dtype (backward compat)
+                        dtype = tensorDTypeFromString(toUTF8StdString(asStringObj(arg)->s));
+                    } else if (isTensor(arg) && shape.empty()) {
+                        // Copy constructor
+                        *(thread->stackTop - callSpec.argCount - 1) = Value(asTensor(arg)->clone());
+                        popN(callSpec.argCount);
+                        return true;
+                    } else if (isVector(arg) && shape.empty()) {
+                        // tensor(vector) → 1D tensor
+                        auto vec = asVector(arg);
+                        std::vector<int64_t> vecShape = { static_cast<int64_t>(vec->length()) };
+                        std::vector<double> vecData(vec->vec.data(), vec->vec.data() + vec->length());
+                        *(thread->stackTop - callSpec.argCount - 1) = Value::tensorVal(vecShape, vecData, TensorDType::Float64);
+                        popN(callSpec.argCount);
+                        return true;
+                    } else if (isMatrix(arg) && shape.empty()) {
+                        // tensor(matrix) → 2D tensor
+                        auto mat = asMatrix(arg);
+                        int64_t rows = mat->mat.rows();
+                        int64_t cols = mat->mat.cols();
+                        std::vector<int64_t> matShape = { rows, cols };
+                        std::vector<double> matData;
+                        matData.reserve(rows * cols);
+                        for (int64_t r = 0; r < rows; ++r)
+                            for (int64_t c = 0; c < cols; ++c)
+                                matData.push_back(mat->mat(r, c));
+                        *(thread->stackTop - callSpec.argCount - 1) = Value::tensorVal(matShape, matData, TensorDType::Float64);
+                        popN(callSpec.argCount);
+                        return true;
+                    } else {
+                        throw std::runtime_error("tensor constructor: unexpected argument type");
+                    }
+                }
+            }
+
+            if (shape.empty())
+                throw std::runtime_error("tensor constructor requires shape");
+
+            Value result = hasData
+                ? Value::tensorVal(shape, data, dtype)
+                : Value::tensorVal(shape, dtype);
+            *(thread->stackTop - callSpec.argCount - 1) = result;
+            popN(callSpec.argCount);
+            return true;
+        }
+
         if (!callSpec.allPositional) {
             auto ctorType = builtinConstructorType(builtinType);
             if (!ctorType)
