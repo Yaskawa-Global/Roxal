@@ -1,0 +1,34 @@
+# Tensor math operations test
+
+var t1 = tensor([2, 2], [1, 2, 3, 4])
+var t2 = tensor([2, 2], [5, 6, 7, 8])
+
+# Addition
+var t3 = t1 + t2
+print(t3[0, 0])
+print(t3[1, 1])
+
+# Subtraction
+var t4 = t2 - t1
+print(t4[0, 0])
+print(t4[1, 1])
+
+# Scalar multiplication
+var t5 = t1 * 2.0
+print(t5[0, 0])
+print(t5[1, 1])
+
+# Scalar division
+var t6 = t2 / 2.0
+print(t6[0, 0])
+print(t6[1, 1])
+
+# Element-wise multiplication
+var t7 = t1 * t2
+print(t7[0, 0])
+print(t7[1, 1])
+
+# Negation
+var t8 = -t1
+print(t8[0, 0])
+print(t8[1, 1])

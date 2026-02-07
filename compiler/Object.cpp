@@ -247,6 +247,7 @@ ValueType Obj::valueType() const
         case ObjType::Dict: return ValueType::Dict;
         case ObjType::Vector: return ValueType::Vector;
         case ObjType::Matrix: return ValueType::Matrix;
+        case ObjType::Tensor: return ValueType::Tensor;
         case ObjType::Signal: return ValueType::Signal;
         case ObjType::File: return ValueType::Object;
         case ObjType::EventType: return ValueType::Event;
@@ -2920,6 +2921,246 @@ void ObjMatrix::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         }
 }
 
+
+//
+// ObjTensor implementation
+//
+
+std::string roxal::to_string(TensorDType dtype)
+{
+    switch (dtype) {
+        case TensorDType::Float16: return "float16";
+        case TensorDType::Float32: return "float32";
+        case TensorDType::Float64: return "float64";
+        case TensorDType::Int8:    return "int8";
+        case TensorDType::Int16:   return "int16";
+        case TensorDType::Int32:   return "int32";
+        case TensorDType::Int64:   return "int64";
+        case TensorDType::UInt8:   return "uint8";
+        case TensorDType::Bool:    return "bool";
+        default: return "unknown";
+    }
+}
+
+TensorDType roxal::tensorDTypeFromString(const std::string& s)
+{
+    if (s == "float16" || s == "half") return TensorDType::Float16;
+    if (s == "float32" || s == "float") return TensorDType::Float32;
+    if (s == "float64" || s == "double") return TensorDType::Float64;
+    if (s == "int8") return TensorDType::Int8;
+    if (s == "int16") return TensorDType::Int16;
+    if (s == "int32" || s == "int") return TensorDType::Int32;
+    if (s == "int64" || s == "long") return TensorDType::Int64;
+    if (s == "uint8" || s == "byte") return TensorDType::UInt8;
+    if (s == "bool") return TensorDType::Bool;
+    throw std::runtime_error("Unknown tensor dtype: " + s);
+}
+
+ObjTensor::ObjTensor(const std::vector<int64_t>& shape, TensorDType dtype)
+    : shape_(shape), dtype_(dtype)
+{
+    type = ObjType::Tensor;
+    computeStrides();
+    int64_t n = numel();
+    data_.resize(n, 0.0);
+}
+
+void ObjTensor::computeStrides()
+{
+    strides_.resize(shape_.size());
+    if (shape_.empty()) return;
+
+    // Row-major strides (C-order)
+    int64_t stride = 1;
+    for (int64_t i = static_cast<int64_t>(shape_.size()) - 1; i >= 0; --i) {
+        strides_[i] = stride;
+        stride *= shape_[i];
+    }
+}
+
+int64_t ObjTensor::numel() const
+{
+    if (shape_.empty()) return 0;
+    int64_t n = 1;
+    for (auto s : shape_) n *= s;
+    return n;
+}
+
+int64_t ObjTensor::flatIndex(const std::vector<int64_t>& indices) const
+{
+    if (indices.size() != shape_.size())
+        throw std::runtime_error("Tensor index rank mismatch");
+
+    int64_t idx = 0;
+    for (size_t i = 0; i < indices.size(); ++i) {
+        int64_t ix = indices[i];
+        if (ix < 0 || ix >= shape_[i])
+            throw std::runtime_error("Tensor index out of bounds");
+        idx += ix * strides_[i];
+    }
+    return idx;
+}
+
+Value ObjTensor::index(const std::vector<Value>& indices) const
+{
+    std::vector<int64_t> idxs;
+    idxs.reserve(indices.size());
+    for (const auto& v : indices) {
+        if (!v.isInt())
+            throw std::runtime_error("Tensor index must be integer");
+        idxs.push_back(v.asInt());
+    }
+    int64_t flatIdx = flatIndex(idxs);
+    return Value::realVal(data_[flatIdx]);
+}
+
+void ObjTensor::setIndex(const std::vector<Value>& indices, const Value& v)
+{
+    std::vector<int64_t> idxs;
+    idxs.reserve(indices.size());
+    for (const auto& idx : indices) {
+        if (!idx.isInt())
+            throw std::runtime_error("Tensor index must be integer");
+        idxs.push_back(idx.asInt());
+    }
+    int64_t flatIdx = flatIndex(idxs);
+
+    if (!v.isNumber())
+        throw std::runtime_error("Tensor element must be numeric");
+    data_[flatIdx] = v.isInt() ? static_cast<double>(v.asInt()) : v.asReal();
+}
+
+Value ObjTensor::reshape(const std::vector<int64_t>& newShape) const
+{
+    int64_t newNumel = 1;
+    for (auto s : newShape) newNumel *= s;
+    if (newNumel != numel())
+        throw std::runtime_error("Tensor reshape: total elements must match");
+
+    auto result = newTensorObj(newShape, data_, dtype_);
+    return Value::objVal(std::move(result));
+}
+
+bool ObjTensor::equals(const ObjTensor* other, double eps) const
+{
+    if (shape_ != other->shape_) return false;
+    if (dtype_ != other->dtype_) return false;
+    for (size_t i = 0; i < data_.size(); ++i) {
+        if (std::abs(data_[i] - other->data_[i]) > eps)
+            return false;
+    }
+    return true;
+}
+
+void ObjTensor::set(const ObjTensor* other)
+{
+    shape_ = other->shape_;
+    strides_ = other->strides_;
+    dtype_ = other->dtype_;
+    data_ = other->data_;
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjTensor::clone() const
+{
+    auto newt = newTensorObj(shape_, data_, dtype_);
+    return newt;
+}
+
+void ObjTensor::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
+{
+    // Write dtype
+    uint8_t dt = static_cast<uint8_t>(dtype_);
+    out.write(reinterpret_cast<char*>(&dt), 1);
+
+    // Write rank
+    uint32_t rank = static_cast<uint32_t>(shape_.size());
+    out.write(reinterpret_cast<char*>(&rank), 4);
+
+    // Write shape
+    for (auto s : shape_) {
+        int64_t dim = s;
+        out.write(reinterpret_cast<char*>(&dim), 8);
+    }
+
+    // Write data
+    for (double d : data_) {
+        out.write(reinterpret_cast<const char*>(&d), 8);
+    }
+}
+
+void ObjTensor::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
+{
+    // Read dtype
+    uint8_t dt;
+    in.read(reinterpret_cast<char*>(&dt), 1);
+    dtype_ = static_cast<TensorDType>(dt);
+
+    // Read rank
+    uint32_t rank;
+    in.read(reinterpret_cast<char*>(&rank), 4);
+
+    // Read shape
+    shape_.resize(rank);
+    for (uint32_t i = 0; i < rank; ++i) {
+        int64_t dim;
+        in.read(reinterpret_cast<char*>(&dim), 8);
+        shape_[i] = dim;
+    }
+
+    computeStrides();
+
+    // Read data
+    int64_t n = numel();
+    data_.resize(n);
+    for (int64_t i = 0; i < n; ++i) {
+        double d;
+        in.read(reinterpret_cast<char*>(&d), 8);
+        data_[i] = d;
+    }
+}
+
+unique_ptr<ObjTensor, UnreleasedObj> roxal::newTensorObj()
+{
+    #ifdef DEBUG_BUILD
+    return newObj<ObjTensor>(__func__, __FILE__, __LINE__);
+    #else
+    return newObj<ObjTensor>();
+    #endif
+}
+
+unique_ptr<ObjTensor, UnreleasedObj> roxal::newTensorObj(const std::vector<int64_t>& shape, TensorDType dtype)
+{
+    #ifdef DEBUG_BUILD
+    return newObj<ObjTensor>(__func__, __FILE__, __LINE__, shape, dtype);
+    #else
+    return newObj<ObjTensor>(shape, dtype);
+    #endif
+}
+
+unique_ptr<ObjTensor, UnreleasedObj> roxal::newTensorObj(const std::vector<int64_t>& shape,
+                                                          const std::vector<double>& data,
+                                                          TensorDType dtype)
+{
+    auto t = newTensorObj(shape, dtype);
+    if (data.size() != static_cast<size_t>(t->numel()))
+        throw std::runtime_error("Tensor data size mismatch");
+    std::copy(data.begin(), data.end(), t->data());
+    return t;
+}
+
+std::string roxal::objTensorToString(const ObjTensor* ot)
+{
+    std::ostringstream os;
+    os << "tensor(shape=[";
+    for (size_t i = 0; i < ot->shape().size(); ++i) {
+        if (i > 0) os << ", ";
+        os << ot->shape()[i];
+    }
+    os << "], dtype='" << to_string(ot->dtype()) << "')";
+    return os.str();
+}
+
+
 ObjSignal::ObjSignal(ptr<df::Signal> s)
     : signal(s), engine(nullptr), changeEventType(Value::nilVal())
 {
@@ -3573,6 +3814,9 @@ std::string roxal::objToString(const Value& v)
         }
         case ObjType::Matrix: {
             return objMatrixToString(asMatrix(v));
+        }
+        case ObjType::Tensor: {
+            return objTensorToString(asTensor(v));
         }
         case ObjType::Signal: {
             return objSignalToString(asSignal(v));

@@ -241,6 +241,24 @@ static ptr<type::Type> builtinConstructorType(ValueType t)
             }
             return sigType;
         }
+        case ValueType::Tensor: {
+            static ptr<type::Type> tensorType;
+            if (!tensorType) {
+                tensorType = make_ptr<type::Type>(type::BuiltinType::Func);
+                tensorType->func = type::Type::FuncType();
+                PT pShape(toUnicodeString("shape"));
+                pShape.type = make_ptr<type::Type>(type::BuiltinType::List);
+                pShape.hasDefault = false;
+                PT pData(toUnicodeString("data"));
+                pData.type = make_ptr<type::Type>(type::BuiltinType::List);
+                pData.hasDefault = true;
+                PT pDtype(toUnicodeString("dtype"));
+                pDtype.type = make_ptr<type::Type>(type::BuiltinType::String);
+                pDtype.hasDefault = true;
+                tensorType->func->params = {pShape, pData, pDtype};
+            }
+            return tensorType;
+        }
         default:
             return nullptr;
     }
@@ -2555,6 +2573,23 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                     return false;
                 }
             }
+            case ObjType::Tensor: {
+                ObjTensor* t = asTensor(indexable);
+                std::vector<Value> indices;
+                indices.reserve(subscriptCount);
+                for (int i = 0; i < subscriptCount; ++i)
+                    indices.push_back(pop());
+                std::reverse(indices.begin(), indices.end());
+                try {
+                    Value elt = t->index(indices);
+                    pop(); // discard indexable
+                    push(elt);
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return false;
+                }
+                return true;
+            }
             case ObjType::Dict: {
                 if (subscriptCount != 1) {
                     runtimeError("Dict lookup requires a single key index.");
@@ -2610,10 +2645,10 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
             default:
                 break;
         }
-        runtimeError("Only strings, lists, ranges, [vectors, dicts, matrices, tensors - unimplemented], and signals can be indexed, not type "+objTypeName(indexable.asObj())+".");
+        runtimeError("Only strings, lists, ranges, vectors, dicts, matrices, tensors, and signals can be indexed, not type "+objTypeName(indexable.asObj())+".");
         return false;
     }
-    runtimeError("Only strings, lists, ranges,[vectors, dicts, matrices, tensors - unimplemented], and signals can be indexed, not type "+indexable.typeName()+".");
+    runtimeError("Only strings, lists, ranges,vectors, dicts, matrices, tensors, and signals can be indexed, not type "+indexable.typeName()+".");
     return false;
 }
 
@@ -2708,6 +2743,22 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                     return false;
                 }
             } break;
+            case ObjType::Tensor: {
+                ObjTensor* t = asTensor(indexable);
+                std::vector<Value> indices;
+                indices.reserve(subscriptCount);
+                for (int i = 0; i < subscriptCount; ++i)
+                    indices.push_back(pop());
+                std::reverse(indices.begin(), indices.end());
+                try {
+                    t->setIndex(indices, value);
+                    pop(); // discard indexable
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return false;
+                }
+                return true;
+            } break;
             case ObjType::Dict: {
                 if (subscriptCount != 1) {
                     runtimeError("Dict indexing requires a single index.");
@@ -2727,11 +2778,11 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
             default:
                 break;
         }
-        runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented], and signals can be indexed for assignment, not type "+objTypeName(indexable.asObj())+".");
+        runtimeError("Only strings, lists, vectors, dicts, matrices, tensors, and signals can be indexed for assignment, not type "+objTypeName(indexable.asObj())+".");
         return false;
     }
 
-    runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented], and signals can be indexed for assignment, not type "+indexable.typeName()+".");
+    runtimeError("Only strings, lists, vectors, dicts, matrices, tensors, and signals can be indexed for assignment, not type "+indexable.typeName()+".");
     return false;
 }
 

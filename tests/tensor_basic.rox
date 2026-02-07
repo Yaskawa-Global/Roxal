@@ -1,0 +1,23 @@
+# Basic tensor tests
+
+# Create tensor with shape
+var t1 = tensor([2, 3])
+print(len(t1))
+
+# Set and get elements
+t1[0, 0] = 1.0
+t1[0, 1] = 2.0
+t1[0, 2] = 3.0
+t1[1, 0] = 4.0
+t1[1, 1] = 5.0
+t1[1, 2] = 6.0
+print(t1[0, 0])
+print(t1[1, 2])
+
+# Create tensor with data
+var t2 = tensor([2, 3], [1, 2, 3, 4, 5, 6])
+print(t2[0, 0])
+print(t2[1, 2])
+
+# Print tensor representation
+print(t2)

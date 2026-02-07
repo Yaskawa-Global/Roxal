@@ -731,6 +731,7 @@ Value ModuleSys::len_builtin(VM& vm, ArgsView args)
         case ValueType::List: len = asList(v)->length(); break;
         case ValueType::Dict: len = asDict(v)->length(); break;
         case ValueType::Vector: len = asVector(v)->length(); break;
+        case ValueType::Tensor: len = asTensor(v)->numel(); break;
         case ValueType::Range: {
             len = asRange(v)->length();
             if (len<0) return Value::nilVal(); // has no defined length

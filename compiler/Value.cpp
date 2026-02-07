@@ -225,6 +225,21 @@ Value Value::matrixVal(const Eigen::MatrixXd& values)
     return Value::objVal(newMatrixObj(values));
 }
 
+Value Value::tensorVal()
+{
+    return Value::objVal(newTensorObj());
+}
+
+Value Value::tensorVal(const std::vector<int64_t>& shape, TensorDType dtype)
+{
+    return Value::objVal(newTensorObj(shape, dtype));
+}
+
+Value Value::tensorVal(const std::vector<int64_t>& shape, const std::vector<double>& data, TensorDType dtype)
+{
+    return Value::objVal(newTensorObj(shape, data, dtype));
+}
+
 Value Value::signalVal(roxal::ptr<df::Signal> s)
 {
     return Value::objVal(newSignalObj(s));
@@ -1698,6 +1713,15 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
 
     if (type == ValueType::Matrix) {
         size_t count = end - begin;
+        if (count == 0) {
+            return Value::matrixVal();
+        }
+        if (count == 2 && begin->isInt() && (begin + 1)->isInt()) {
+            // matrix(rows, cols) - create zero matrix of given size
+            int32_t rows = begin->asInt();
+            int32_t cols = (begin + 1)->asInt();
+            return Value::matrixVal(rows, cols);
+        }
         if (count == 1) {
             Value arg = *begin;
             if (isList(arg)) {
@@ -1757,6 +1781,76 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
         } else {
             throw std::runtime_error("matrix constructor with incorrect arg count");
         }
+    }
+
+    if (type == ValueType::Tensor) {
+        size_t count = end - begin;
+        if (count == 0) {
+            return Value::tensorVal();
+        }
+        if (count >= 1) {
+            std::vector<int64_t> shape;
+            TensorDType dtype = TensorDType::Float64;
+            std::vector<double> data;
+            bool hasData = false;
+            auto it = begin;
+
+            // Check if first arg is a list (old syntax) or int (new varargs syntax)
+            if (isList(*it)) {
+                // tensor([shape], ...) - list-based shape
+                auto shapeList = asList(*it)->elts.get();
+                shape.reserve(shapeList.size());
+                for (const auto& v : shapeList) {
+                    if (!v.isInt())
+                        throw std::runtime_error("tensor shape elements must be integers");
+                    shape.push_back(v.asInt());
+                }
+                ++it;
+            } else if (it->isInt()) {
+                // tensor(dim1, dim2, ...) - varargs shape
+                while (it != end && it->isInt()) {
+                    shape.push_back(it->asInt());
+                    ++it;
+                }
+            } else if (isTensor(*it)) {
+                // tensor(existingTensor) - copy
+                return Value(asTensor(*it)->clone());
+            } else {
+                throw std::runtime_error("tensor constructor expects shape list, dimension ints, or tensor");
+            }
+
+            // Process remaining arguments (data list and/or dtype string)
+            // When named params are used, missing optional args come as nil
+            for (; it != end; ++it) {
+                Value arg = *it;
+                if (arg.isNil()) {
+                    // Skip nil (default value for missing named param)
+                    continue;
+                } else if (isList(arg)) {
+                    // Data list
+                    auto dataList = asList(arg)->elts.get();
+                    data.reserve(dataList.size());
+                    for (const auto& v : dataList) {
+                        if (!v.isNumber())
+                            throw std::runtime_error("tensor data elements must be numeric");
+                        data.push_back(v.isInt() ? static_cast<double>(v.asInt()) : v.asReal());
+                    }
+                    hasData = true;
+                } else if (isString(arg)) {
+                    // dtype string
+                    dtype = tensorDTypeFromString(toUTF8StdString(asStringObj(arg)->s));
+                } else {
+                    throw std::runtime_error("tensor constructor: unexpected argument after shape");
+                }
+            }
+
+            if (hasData) {
+                return Value::tensorVal(shape, data, dtype);
+            } else {
+                return Value::tensorVal(shape, dtype);
+            }
+        }
+        throw std::runtime_error("tensor constructor: invalid arguments");
     }
 
     if (end - 1 == begin)
@@ -1827,6 +1921,13 @@ Value roxal::negate(Value v)
         const ObjMatrix* mat = asMatrix(v);
         Eigen::MatrixXd result = -mat->mat;
         return Value::matrixVal(result);
+    }
+    else if (isTensor(v)) {
+        const ObjTensor* t = asTensor(v);
+        auto result = newTensorObj(t->shape(), t->dtype());
+        for (int64_t i = 0; i < t->numel(); ++i)
+            result->setAt(i, -t->at(i));
+        return Value::objVal(std::move(result));
     }
     else if (v.isBool())
         return Value::boolVal(!v.asBool());
@@ -1940,6 +2041,32 @@ Value roxal::add(Value l, Value r)
         Eigen::MatrixXd result = lm->mat + rm->mat;
         return Value::matrixVal(result);
     }
+    else if (isTensor(l) && isTensor(r)) {
+        const ObjTensor* lt = asTensor(l);
+        const ObjTensor* rt = asTensor(r);
+        if (lt->shape() != rt->shape())
+            throw std::invalid_argument("Tensor addition requires tensors of same shape");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) + rt->at(i));
+        return Value::objVal(std::move(result));
+    }
+    else if (isTensor(l) && r.isNumber()) {
+        const ObjTensor* lt = asTensor(l);
+        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) + scalar);
+        return Value::objVal(std::move(result));
+    }
+    else if (l.isNumber() && isTensor(r)) {
+        const ObjTensor* rt = asTensor(r);
+        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
+        auto result = newTensorObj(rt->shape(), rt->dtype());
+        for (int64_t i = 0; i < rt->numel(); ++i)
+            result->setAt(i, scalar + rt->at(i));
+        return Value::objVal(std::move(result));
+    }
     else if (isSignal(l) || isSignal(r)) {
         return signalBinaryOp("add",
                               [](Value a, Value b) { return add(a, b); },
@@ -1985,6 +2112,32 @@ Value roxal::subtract(Value l, Value r)
             throw std::invalid_argument("Matrix subtraction requires matrices of same size");
         Eigen::MatrixXd result = lm->mat - rm->mat;
         return Value::matrixVal(result);
+    }
+    else if (isTensor(l) && isTensor(r)) {
+        const ObjTensor* lt = asTensor(l);
+        const ObjTensor* rt = asTensor(r);
+        if (lt->shape() != rt->shape())
+            throw std::invalid_argument("Tensor subtraction requires tensors of same shape");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) - rt->at(i));
+        return Value::objVal(std::move(result));
+    }
+    else if (isTensor(l) && r.isNumber()) {
+        const ObjTensor* lt = asTensor(l);
+        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) - scalar);
+        return Value::objVal(std::move(result));
+    }
+    else if (l.isNumber() && isTensor(r)) {
+        const ObjTensor* rt = asTensor(r);
+        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
+        auto result = newTensorObj(rt->shape(), rt->dtype());
+        for (int64_t i = 0; i < rt->numel(); ++i)
+            result->setAt(i, scalar - rt->at(i));
+        return Value::objVal(std::move(result));
     }
     else if (isSignal(l) || isSignal(r)) {
         return signalBinaryOp("subtract",
@@ -2072,6 +2225,33 @@ Value roxal::multiply(Value l, Value r)
         Eigen::MatrixXd result = scalar * rm->mat;
         return Value::matrixVal(result);
     }
+    if (isTensor(l) && isTensor(r)) {
+        // Element-wise multiplication
+        const ObjTensor* lt = asTensor(l);
+        const ObjTensor* rt = asTensor(r);
+        if (lt->shape() != rt->shape())
+            throw std::invalid_argument("Tensor element-wise multiplication requires tensors of same shape");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) * rt->at(i));
+        return Value::objVal(std::move(result));
+    }
+    if (isTensor(l) && r.isNumber()) {
+        const ObjTensor* lt = asTensor(l);
+        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) * scalar);
+        return Value::objVal(std::move(result));
+    }
+    if (l.isNumber() && isTensor(r)) {
+        const ObjTensor* rt = asTensor(r);
+        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
+        auto result = newTensorObj(rt->shape(), rt->dtype());
+        for (int64_t i = 0; i < rt->numel(); ++i)
+            result->setAt(i, scalar * rt->at(i));
+        return Value::objVal(std::move(result));
+    }
     if (isSignal(l) || isSignal(r)) {
         return signalBinaryOp("multiply",
                               [](Value a, Value b) { return multiply(a, b); },
@@ -2102,6 +2282,41 @@ Value roxal::multiply(Value l, Value r)
 
 Value roxal::divide(Value l, Value r)
 {
+    if (isTensor(l) && isTensor(r)) {
+        // Element-wise division
+        const ObjTensor* lt = asTensor(l);
+        const ObjTensor* rt = asTensor(r);
+        if (lt->shape() != rt->shape())
+            throw std::invalid_argument("Tensor element-wise division requires tensors of same shape");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i) {
+            if (rt->at(i) == 0.0)
+                throw std::invalid_argument("Tensor division by zero");
+            result->setAt(i, lt->at(i) / rt->at(i));
+        }
+        return Value::objVal(std::move(result));
+    }
+    if (isTensor(l) && r.isNumber()) {
+        const ObjTensor* lt = asTensor(l);
+        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
+        if (scalar == 0.0)
+            throw std::invalid_argument("Tensor division by zero");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) / scalar);
+        return Value::objVal(std::move(result));
+    }
+    if (l.isNumber() && isTensor(r)) {
+        const ObjTensor* rt = asTensor(r);
+        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
+        auto result = newTensorObj(rt->shape(), rt->dtype());
+        for (int64_t i = 0; i < rt->numel(); ++i) {
+            if (rt->at(i) == 0.0)
+                throw std::invalid_argument("Tensor division by zero");
+            result->setAt(i, scalar / rt->at(i));
+        }
+        return Value::objVal(std::move(result));
+    }
     if (isSignal(l) || isSignal(r)) {
         return signalBinaryOp("divide",
                               [](Value a, Value b) { return divide(a, b); },

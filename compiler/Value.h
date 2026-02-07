@@ -35,6 +35,9 @@ namespace roxal {
 /// Result of a non-blocking future resolution attempt.
 enum class FutureStatus { Resolved, Pending, Error };
 
+// Forward declaration for tensor dtype
+enum class TensorDType : uint8_t;
+
 class VM;
 class Value;
 struct Obj;
@@ -222,6 +225,10 @@ public:
     static Value matrixVal(); // ObjMatrix
     static Value matrixVal(int32_t rows, int32_t cols);
     static Value matrixVal(const Eigen::MatrixXd& values);
+
+    static Value tensorVal(); // ObjTensor
+    static Value tensorVal(const std::vector<int64_t>& shape, TensorDType dtype);
+    static Value tensorVal(const std::vector<int64_t>& shape, const std::vector<double>& data, TensorDType dtype);
 
     static Value signalVal(roxal::ptr<df::Signal> s); // ObjSignal
 

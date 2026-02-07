@@ -83,6 +83,7 @@ enum class ObjType {
     Dict,
     Vector,
     Matrix,
+    Tensor,
     Signal,
     Library,
     ForeignPtr,
@@ -694,6 +695,85 @@ unique_ptr<ObjMatrix, UnreleasedObj> newMatrixObj(int32_t rows, int32_t cols);
 unique_ptr<ObjMatrix, UnreleasedObj> newMatrixObj(const Eigen::MatrixXd& values);
 
 std::string objMatrixToString(const ObjMatrix* om);
+
+
+//
+// tensor
+
+enum class TensorDType : uint8_t {
+    Float16 = 0,
+    Float32 = 1,
+    Float64 = 2,   // default, matches double storage
+    Int8    = 3,
+    Int16   = 4,
+    Int32   = 5,
+    Int64   = 6,
+    UInt8   = 7,
+    Bool    = 8
+};
+
+std::string to_string(TensorDType dtype);
+TensorDType tensorDTypeFromString(const std::string& s);
+
+struct ObjTensor : public Obj
+{
+    ObjTensor() { type = ObjType::Tensor; }
+    ObjTensor(const std::vector<int64_t>& shape, TensorDType dtype = TensorDType::Float64);
+    virtual ~ObjTensor() {}
+
+    // Shape and dtype accessors
+    const std::vector<int64_t>& shape() const { return shape_; }
+    int64_t rank() const { return static_cast<int64_t>(shape_.size()); }
+    int64_t numel() const;  // total number of elements
+    TensorDType dtype() const { return dtype_; }
+
+    // Element access (multi-dimensional indexing)
+    Value index(const std::vector<Value>& indices) const;
+    void setIndex(const std::vector<Value>& indices, const Value& v);
+
+    // Single flat index access (internal use)
+    double at(int64_t flatIdx) const { return data_[flatIdx]; }
+    void setAt(int64_t flatIdx, double v) { data_[flatIdx] = v; }
+
+    // Reshape (returns new tensor)
+    Value reshape(const std::vector<int64_t>& newShape) const;
+
+    // Data access for Eigen interop
+    double* data() { return data_.data(); }
+    const double* data() const { return data_.data(); }
+
+    bool equals(const ObjTensor* other, double eps = 1e-15) const;
+    void set(const ObjTensor* other);
+
+    unique_ptr<Obj, UnreleasedObj> clone() const override;
+
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(ValueVisitor& visitor) const override { (void)visitor; }  // no Value refs
+
+private:
+    std::vector<int64_t> shape_;
+    std::vector<int64_t> strides_;
+    TensorDType dtype_ = TensorDType::Float64;
+    std::vector<double> data_;
+
+    void computeStrides();
+    int64_t flatIndex(const std::vector<int64_t>& indices) const;
+};
+
+inline bool isTensor(const Value& v) { return isObjType(v, ObjType::Tensor); }
+inline ObjTensor* asTensor(const Value& v) { return static_cast<ObjTensor*>(v.asObj()); }
+
+unique_ptr<ObjTensor, UnreleasedObj> newTensorObj();
+unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(const std::vector<int64_t>& shape,
+                                                   TensorDType dtype = TensorDType::Float64);
+unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(const std::vector<int64_t>& shape,
+                                                   const std::vector<double>& data,
+                                                   TensorDType dtype = TensorDType::Float64);
+
+std::string objTensorToString(const ObjTensor* ot);
+
 
 //
 // signal (dataflow signal wrapper)
