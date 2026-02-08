@@ -824,7 +824,7 @@ bool Value::equals(const Value& rhs, bool strict) const
             if (lhsVec->length() != rhsList->length())
                 return false;
             for (int i = 0; i < rhsList->length(); i++) {
-                if (std::abs(lhsVec->vec[i] - rhsList->elts.at(i).asReal()) > 1e-15)
+                if (std::abs(lhsVec->vec()[i] - rhsList->elts.at(i).asReal()) > 1e-15)
                     return false;
             }
             return true;
@@ -877,7 +877,7 @@ bool Value::equals(const Value& rhs, bool strict) const
                     return (lhsMat->rows() == 0 && lhsMat->cols() == 0);
                 } else if (expectedSize == 1) {
                     return (lhsMat->rows() == 1 && lhsMat->cols() == 1 &&
-                            std::abs(lhsMat->mat(0,0) - rhsList->elts.at(0).asReal()) <= 1e-15);
+                            std::abs(lhsMat->mat()(0,0) - rhsList->elts.at(0).asReal()) <= 1e-15);
                 }
             }
         }
@@ -1193,8 +1193,8 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
     roundTrip("dict_val", d);
 
     Value vec { Value::vectorVal(2) };
-    asVector(vec)->vec[0] = 1.0;
-    asVector(vec)->vec[1] = 2.0;
+    asVector(vec)->vecMut()[0] = 1.0;
+    asVector(vec)->vecMut()[1] = 2.0;
     roundTrip("vector_val", vec);
 
     Eigen::MatrixXd mat(1,2);
@@ -1708,19 +1708,19 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
             if (isMatrix(arg)) {
                 // Only allow 1×n or n×1 matrices
                 auto mat = asMatrix(arg);
-                int rows = mat->mat.rows();
-                int cols = mat->mat.cols();
+                int rows = mat->mat().rows();
+                int cols = mat->mat().cols();
                 if (rows == 1) {
                     // Row vector
                     Eigen::VectorXd vals(cols);
                     for (int c = 0; c < cols; ++c)
-                        vals[c] = mat->mat(0, c);
+                        vals[c] = mat->mat()(0, c);
                     return Value::vectorVal(vals);
                 } else if (cols == 1) {
                     // Column vector
                     Eigen::VectorXd vals(rows);
                     for (int r = 0; r < rows; ++r)
-                        vals[r] = mat->mat(r, 0);
+                        vals[r] = mat->mat()(r, 0);
                     return Value::vectorVal(vals);
                 } else {
                     throw std::runtime_error("vector(matrix) requires a 1×n or n×1 matrix, got " +
@@ -1793,7 +1793,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                         if (vec->length() != colCount)
                             throw std::runtime_error("matrix rows must have equal length");
                         for(int c=0; c<colCount; ++c)
-                            vals(r,c) = vec->vec[c];
+                            vals(r,c) = vec->vec()[c];
                     } else {
                         throw std::runtime_error("matrix constructor expects list of lists or vectors");
                     }
@@ -1804,7 +1804,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 auto vec = asVector(arg);
                 Eigen::MatrixXd vals(1, vec->length());
                 for(int c=0; c<vec->length(); ++c)
-                    vals(0,c) = vec->vec[c];
+                    vals(0,c) = vec->vec()[c];
                 return Value::matrixVal(vals);
             }
             if (isMatrix(arg)) {
@@ -1875,19 +1875,19 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 // tensor(vector) → 1D tensor
                 auto vec = asVector(*it);
                 std::vector<int64_t> vecShape = { static_cast<int64_t>(vec->length()) };
-                std::vector<double> vecData(vec->vec.data(), vec->vec.data() + vec->length());
+                std::vector<double> vecData(vec->vec().data(), vec->vec().data() + vec->length());
                 return Value::tensorVal(vecShape, vecData, TensorDType::Float64);
             } else if (isMatrix(*it)) {
                 // tensor(matrix) → 2D tensor
                 auto mat = asMatrix(*it);
-                int64_t rows = mat->mat.rows();
-                int64_t cols = mat->mat.cols();
+                int64_t rows = mat->mat().rows();
+                int64_t cols = mat->mat().cols();
                 std::vector<int64_t> matShape = { rows, cols };
                 std::vector<double> matData;
                 matData.reserve(rows * cols);
                 for (int64_t r = 0; r < rows; ++r)
                     for (int64_t c = 0; c < cols; ++c)
-                        matData.push_back(mat->mat(r, c));
+                        matData.push_back(mat->mat()(r, c));
                 return Value::tensorVal(matShape, matData, TensorDType::Float64);
             } else {
                 throw std::runtime_error("tensor constructor expects shape list, dimension ints, tensor, vector, or matrix");
@@ -1988,12 +1988,12 @@ Value roxal::negate(Value v)
         return Value::realVal(-v.asReal());
     else if (isVector(v)) {
         const ObjVector* vec = asVector(v);
-        Eigen::VectorXd result = -vec->vec;
+        Eigen::VectorXd result = -vec->vec();
         return Value::vectorVal(result);
     }
     else if (isMatrix(v)) {
         const ObjMatrix* mat = asMatrix(v);
-        Eigen::MatrixXd result = -mat->mat;
+        Eigen::MatrixXd result = -mat->mat();
         return Value::matrixVal(result);
     }
     else if (isTensor(v)) {
@@ -2104,7 +2104,7 @@ Value roxal::add(Value l, Value r)
         const ObjVector* rv = asVector(r);
         if (lv->length() != rv->length())
             throw std::invalid_argument("Vector addition requires vectors of same length");
-        Eigen::VectorXd result = lv->vec + rv->vec;
+        Eigen::VectorXd result = lv->vec() + rv->vec();
         return Value::vectorVal(result);
     }
     else if (isMatrix(l) && isMatrix(r)) {
@@ -2112,7 +2112,7 @@ Value roxal::add(Value l, Value r)
         const ObjMatrix* rm = asMatrix(r);
         if (lm->rows() != rm->rows() || lm->cols() != rm->cols())
             throw std::invalid_argument("Matrix addition requires matrices of same size");
-        Eigen::MatrixXd result = lm->mat + rm->mat;
+        Eigen::MatrixXd result = lm->mat() + rm->mat();
         return Value::matrixVal(result);
     }
     else if (isTensor(l) && isTensor(r)) {
@@ -2176,7 +2176,7 @@ Value roxal::subtract(Value l, Value r)
         const ObjVector* rv = asVector(r);
         if (lv->length() != rv->length())
             throw std::invalid_argument("Vector subtraction requires vectors of same length");
-        Eigen::VectorXd result = lv->vec - rv->vec;
+        Eigen::VectorXd result = lv->vec() - rv->vec();
         return Value::vectorVal(result);
     }
     else if (isMatrix(l) && isMatrix(r)) {
@@ -2184,7 +2184,7 @@ Value roxal::subtract(Value l, Value r)
         const ObjMatrix* rm = asMatrix(r);
         if (lm->rows() != rm->rows() || lm->cols() != rm->cols())
             throw std::invalid_argument("Matrix subtraction requires matrices of same size");
-        Eigen::MatrixXd result = lm->mat - rm->mat;
+        Eigen::MatrixXd result = lm->mat() - rm->mat();
         return Value::matrixVal(result);
     }
     else if (isTensor(l) && isTensor(r)) {
@@ -2248,19 +2248,19 @@ Value roxal::multiply(Value l, Value r)
         const ObjVector* rv = asVector(r);
         if (lv->length() != rv->length())
             throw std::invalid_argument("Vector dot product requires vectors of same length");
-        double dot = lv->vec.dot(rv->vec);
+        double dot = lv->vec().dot(rv->vec());
         return Value::realVal(dot);
     }
     if (isVector(l) && r.isNumber()) {
         const ObjVector* lv = asVector(l);
         double scalar = toType(ValueType::Real, r, false).asReal();
-        Eigen::VectorXd result = lv->vec * scalar;
+        Eigen::VectorXd result = lv->vec() * scalar;
         return Value::vectorVal(result);
     }
     if (l.isNumber() && isVector(r)) {
         const ObjVector* rv = asVector(r);
         double scalar = toType(ValueType::Real, l, false).asReal();
-        Eigen::VectorXd result = rv->vec * scalar;
+        Eigen::VectorXd result = rv->vec() * scalar;
         return Value::vectorVal(result);
     }
     if (isMatrix(l) && isMatrix(r)) {
@@ -2268,7 +2268,7 @@ Value roxal::multiply(Value l, Value r)
         const ObjMatrix* rm = asMatrix(r);
         if (lm->cols() != rm->rows())
             throw std::invalid_argument("Matrix multiplication dimension mismatch");
-        Eigen::MatrixXd result = lm->mat * rm->mat;
+        Eigen::MatrixXd result = lm->mat() * rm->mat();
         return Value::matrixVal(result);
     }
     if (isMatrix(l) && isVector(r)) {
@@ -2276,7 +2276,7 @@ Value roxal::multiply(Value l, Value r)
         const ObjVector* rv = asVector(r);
         if (lm->cols() != rv->length())
             throw std::invalid_argument("Matrix and vector dimension mismatch");
-        Eigen::VectorXd result = lm->mat * rv->vec;
+        Eigen::VectorXd result = lm->mat() * rv->vec();
         return Value::vectorVal(result);
     }
     if (isVector(l) && isMatrix(r)) {
@@ -2284,19 +2284,19 @@ Value roxal::multiply(Value l, Value r)
         const ObjMatrix* rm = asMatrix(r);
         if (lv->length() != rm->rows())
             throw std::invalid_argument("Vector and matrix dimension mismatch");
-        Eigen::VectorXd result = lv->vec.transpose() * rm->mat;
+        Eigen::VectorXd result = lv->vec().transpose() * rm->mat();
         return Value::vectorVal(result);
     }
     if (isMatrix(l) && r.isNumber()) {
         const ObjMatrix* lm = asMatrix(l);
         double scalar = toType(ValueType::Real, r, false).asReal();
-        Eigen::MatrixXd result = lm->mat * scalar;
+        Eigen::MatrixXd result = lm->mat() * scalar;
         return Value::matrixVal(result);
     }
     if (l.isNumber() && isMatrix(r)) {
         const ObjMatrix* rm = asMatrix(r);
         double scalar = toType(ValueType::Real, l, false).asReal();
-        Eigen::MatrixXd result = scalar * rm->mat;
+        Eigen::MatrixXd result = scalar * rm->mat();
         return Value::matrixVal(result);
     }
     if (isTensor(l) && isTensor(r)) {

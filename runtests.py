@@ -117,7 +117,7 @@ tests = [
     'tensor_convert_err', 'matrix_tensor_err', 'vector_tensor_err',
     'tensor_slice',
     'math_relu', 'math_softmax', 'math_argmax',
-    'value_semantics',
+    'value_semantics', 'value_semantics_cow',
     'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_relative', 'ffi_toupper', 'ffi_primptr', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3', 'cstruct_byval', 'cstruct_array',
     'nested_cstruct', 'nested_cstruct_ptr', 'nested_cstruct_byval',
     'weakref', 'strongref', 'is_operator', 'in_operator', 'stackdepth', 'modulevar2',

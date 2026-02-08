@@ -106,7 +106,7 @@ public:
     }
 
   //void swap(ptr& other) noexcept { sp_.swap(other.sp_); }
-  //long use_count() const noexcept { return sp_.use_count(); }
+  long use_count() const noexcept { return sp_.use_count(); }
   //std::shared_ptr<T> as_shared() const noexcept { return sp_; }
 
   // ensure weak_ptr::lock() can build a ptr from a shared_ptr

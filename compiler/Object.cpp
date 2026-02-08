@@ -559,16 +559,16 @@ void ObjRange::dropReferences()
 }
 
 ObjVector::ObjVector(const Eigen::VectorXd& values)
-    : vec(values)
+    : vec_(make_ptr<Eigen::VectorXd>(values))
 {
     type = ObjType::Vector;
 }
 
 ObjVector::ObjVector(int32_t size)
-    : vec(size)
+    : vec_(make_ptr<Eigen::VectorXd>(size))
 {
     type = ObjType::Vector;
-    vec.setZero();
+    vec_->setZero();
 }
 
 Value ObjVector::index(const Value& i) const
@@ -577,7 +577,7 @@ Value ObjVector::index(const Value& i) const
         auto index = i.asInt();
         if (index < 0 || index >= length())
             throw std::invalid_argument("Vector index out-of-range.");
-        return Value::realVal(vec[index]);
+        return Value::realVal(vec()[index]);
     }
     else if (isRange(i)) {
         auto r = asRange(i);
@@ -588,7 +588,7 @@ Value ObjVector::index(const Value& i) const
         for(int32_t j=0; j<rangeLen; ++j) {
             auto targetIndex = r->targetIndex(j, vecLen);
             if ((targetIndex >= 0) && (targetIndex < vecLen))
-                elts.push_back(vec[targetIndex]);
+                elts.push_back(vec()[targetIndex]);
         }
         Eigen::VectorXd vals(elts.size());
         for(size_t k=0; k<elts.size(); ++k)
@@ -602,12 +602,13 @@ Value ObjVector::index(const Value& i) const
 
 void ObjVector::setIndex(const Value& i, const Value& v)
 {
+    ensureUnique();  // COW: copy before mutation
     if (i.isNumber()) {
         auto index = i.asInt();
         if (index < 0 || index >= length())
             throw std::invalid_argument("Vector index out-of-range.");
         Value rv = toType(ValueType::Real, v, /*strict=*/false);
-        vec[index] = rv.asReal();
+        (*vec_)[index] = rv.asReal();
     }
     else if (isRange(i)) {
         if (!isVector(v))
@@ -622,7 +623,7 @@ void ObjVector::setIndex(const Value& i, const Value& v)
             auto targetIndex = r->targetIndex(j, vecLen);
             if ((targetIndex >= 0) && (targetIndex < vecLen)) {
                 if (j < rhsVec->length())
-                    vec[targetIndex] = rhsVec->vec[j];
+                    (*vec_)[targetIndex] = rhsVec->vec()[j];
             }
         }
     }
@@ -1272,14 +1273,14 @@ unique_ptr<ObjVector, UnreleasedObj> roxal::newVectorObj(const Eigen::VectorXd& 
 
 unique_ptr<Obj, UnreleasedObj> ObjVector::clone() const
 {
-    auto newv = newVectorObj(vec.size());
-    newv->vec = vec;
+    auto newv = newVectorObj(0);  // create minimal vector
+    newv->vec_ = vec_;  // COW: share the data ptr
     return newv;
 }
 
 void ObjVector::set(const ObjVector* other)
 {
-    vec = other->vec;
+    vec_ = other->vec_;  // COW: share the data ptr
 }
 
 
@@ -1287,9 +1288,9 @@ std::string roxal::objVectorToString(const ObjVector* ov)
 {
     std::ostringstream os;
     os << "[";
-    for(int i=0; i<ov->vec.size(); ++i) {
-        os << ov->vec[i];
-        if (i != ov->vec.size()-1)
+    for(int i=0; i<ov->vec().size(); ++i) {
+        os << ov->vec()[i];
+        if (i != ov->vec().size()-1)
             os << ' ';
     }
     os << "]";
@@ -1302,19 +1303,19 @@ bool ObjVector::equals(const ObjVector* other, double eps) const
         return false;
 
     // Check if dimensions match
-    if (vec.size() != other->vec.size())
+    if (vec().size() != other->vec().size())
         return false;
 
     // Use Eigen's isApprox for element-wise comparison with tolerance
-    return vec.isApprox(other->vec, eps);
+    return vec().isApprox(other->vec(), eps);
 }
 
 void ObjVector::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
-    uint32_t len = vec.size();
+    uint32_t len = vec().size();
     out.write(reinterpret_cast<char*>(&len), 4);
     for(uint32_t i=0;i<len;i++) {
-        double d = vec[i];
+        double d = vec()[i];
         out.write(reinterpret_cast<char*>(&d), 8);
     }
 }
@@ -1323,25 +1324,25 @@ void ObjVector::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     uint32_t len;
     in.read(reinterpret_cast<char*>(&len), 4);
-    vec.resize(len);
+    vec_ = make_ptr<Eigen::VectorXd>(len);  // create new storage for deserialization
     for(uint32_t i=0;i<len;i++) {
         double d; in.read(reinterpret_cast<char*>(&d), 8);
-        vec[i] = d;
+        (*vec_)[i] = d;
     }
 }
 
 
 ObjMatrix::ObjMatrix(const Eigen::MatrixXd& values)
-    : mat(values)
+    : mat_(make_ptr<Eigen::MatrixXd>(values))
 {
     type = ObjType::Matrix;
 }
 
 ObjMatrix::ObjMatrix(int32_t rows, int32_t cols)
-    : mat(rows, cols)
+    : mat_(make_ptr<Eigen::MatrixXd>(rows, cols))
 {
     type = ObjType::Matrix;
-    mat.setZero();
+    mat_->setZero();
 }
 
 unique_ptr<ObjMatrix, UnreleasedObj> roxal::newMatrixObj()
@@ -1393,13 +1394,14 @@ static ObjMatrix* valueToMatrix(const Value& v)
 
 unique_ptr<Obj, UnreleasedObj> ObjMatrix::clone() const
 {
-    auto newm = newMatrixObj(mat);
+    auto newm = newMatrixObj(0, 0);  // create minimal matrix
+    newm->mat_ = mat_;  // COW: share the data ptr
     return newm;
 }
 
 void ObjMatrix::set(const ObjMatrix* other)
 {
-    mat = other->mat;
+    mat_ = other->mat_;  // COW: share the data ptr
 }
 
 unique_ptr<Obj, UnreleasedObj> ObjPrimitive::clone() const
@@ -2897,13 +2899,13 @@ Value ActorInstance::ensurePropertySignal(int32_t nameHash, const std::string& s
 
 void ObjMatrix::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
-    uint32_t rows = mat.rows();
-    uint32_t cols = mat.cols();
+    uint32_t rows = mat().rows();
+    uint32_t cols = mat().cols();
     out.write(reinterpret_cast<char*>(&rows), 4);
     out.write(reinterpret_cast<char*>(&cols), 4);
     for(uint32_t r=0;r<rows;r++)
         for(uint32_t c=0;c<cols;c++) {
-            double d = mat(r,c);
+            double d = mat()(r,c);
             out.write(reinterpret_cast<char*>(&d), 8);
         }
 }
@@ -2913,11 +2915,11 @@ void ObjMatrix::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     uint32_t rows, cols;
     in.read(reinterpret_cast<char*>(&rows), 4);
     in.read(reinterpret_cast<char*>(&cols), 4);
-    mat.resize(rows, cols);
+    mat_ = make_ptr<Eigen::MatrixXd>(rows, cols);  // create new storage for deserialization
     for(uint32_t r=0;r<rows;r++)
         for(uint32_t c=0;c<cols;c++) {
             double d; in.read(reinterpret_cast<char*>(&d), 8);
-            mat(r,c) = d;
+            (*mat_)(r,c) = d;
         }
 }
 
@@ -2957,12 +2959,12 @@ TensorDType roxal::tensorDTypeFromString(const std::string& s)
 }
 
 ObjTensor::ObjTensor(const std::vector<int64_t>& shape, TensorDType dtype)
-    : shape_(shape), dtype_(dtype)
+    : shape_(shape), dtype_(dtype), data_(make_ptr<std::vector<double>>())
 {
     type = ObjType::Tensor;
     computeStrides();
     int64_t n = numel();
-    data_.resize(n, 0.0);
+    data_->resize(n, 0.0);
 }
 
 void ObjTensor::computeStrides()
@@ -3026,7 +3028,7 @@ Value ObjTensor::index(const std::vector<Value>& indices) const
             idxs.push_back(v.asInt());
         }
         int64_t flatIdx = flatIndex(idxs);
-        return Value::realVal(data_[flatIdx]);
+        return Value::realVal((*data_)[flatIdx]);
     }
 
     // Has ranges - build sub-tensor
@@ -3072,7 +3074,7 @@ Value ObjTensor::index(const std::vector<Value>& indices) const
         for (const auto& di : dimIndices)
             idxs.push_back(di[0]);
         int64_t flatIdx = flatIndex(idxs);
-        return Value::realVal(data_[flatIdx]);
+        return Value::realVal((*data_)[flatIdx]);
     }
 
     // Build result tensor
@@ -3089,7 +3091,7 @@ Value ObjTensor::index(const std::vector<Value>& indices) const
             int64_t srcIdx = 0;
             for (size_t i = 0; i < currentIdx.size(); ++i)
                 srcIdx += currentIdx[i] * strides_[i];
-            resultData.push_back(data_[srcIdx]);
+            resultData.push_back((*data_)[srcIdx]);
             return;
         }
         for (int64_t i : dimIndices[dim]) {
@@ -3118,7 +3120,8 @@ void ObjTensor::setIndex(const std::vector<Value>& indices, const Value& v)
 
     if (!v.isNumber())
         throw std::runtime_error("Tensor element must be numeric");
-    data_[flatIdx] = v.isInt() ? static_cast<double>(v.asInt()) : v.asReal();
+    ensureUnique();
+    (*data_)[flatIdx] = v.isInt() ? static_cast<double>(v.asInt()) : v.asReal();
 }
 
 Value ObjTensor::reshape(const std::vector<int64_t>& newShape) const
@@ -3128,7 +3131,7 @@ Value ObjTensor::reshape(const std::vector<int64_t>& newShape) const
     if (newNumel != numel())
         throw std::runtime_error("Tensor reshape: total elements must match");
 
-    auto result = newTensorObj(newShape, data_, dtype_);
+    auto result = newTensorObj(newShape, *data_, dtype_);
     return Value::objVal(std::move(result));
 }
 
@@ -3136,8 +3139,8 @@ bool ObjTensor::equals(const ObjTensor* other, double eps) const
 {
     if (shape_ != other->shape_) return false;
     if (dtype_ != other->dtype_) return false;
-    for (size_t i = 0; i < data_.size(); ++i) {
-        if (std::abs(data_[i] - other->data_[i]) > eps)
+    for (size_t i = 0; i < data_->size(); ++i) {
+        if (std::abs((*data_)[i] - (*other->data_)[i]) > eps)
             return false;
     }
     return true;
@@ -3148,12 +3151,16 @@ void ObjTensor::set(const ObjTensor* other)
     shape_ = other->shape_;
     strides_ = other->strides_;
     dtype_ = other->dtype_;
-    data_ = other->data_;
+    data_ = other->data_;  // COW: share the data
 }
 
 unique_ptr<Obj, UnreleasedObj> ObjTensor::clone() const
 {
-    auto newt = newTensorObj(shape_, data_, dtype_);
+    auto newt = newTensorObj();
+    newt->shape_ = shape_;
+    newt->strides_ = strides_;
+    newt->dtype_ = dtype_;
+    newt->data_ = data_;  // COW: share the data
     return newt;
 }
 
@@ -3174,7 +3181,7 @@ void ObjTensor::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) c
     }
 
     // Write data
-    for (double d : data_) {
+    for (double d : *data_) {
         out.write(reinterpret_cast<const char*>(&d), 8);
     }
 }
@@ -3202,11 +3209,11 @@ void ObjTensor::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
     // Read data
     int64_t n = numel();
-    data_.resize(n);
+    data_ = make_ptr<std::vector<double>>(n);
     for (int64_t i = 0; i < n; ++i) {
         double d;
         in.read(reinterpret_cast<char*>(&d), 8);
-        data_[i] = d;
+        (*data_)[i] = d;
     }
 }
 
@@ -3581,7 +3588,7 @@ Value ObjMatrix::index(const Value& row) const
         if (r < 0 || r >= rows())
             throw std::invalid_argument("Matrix row index out-of-range.");
         // Return a 1-row matrix (preserves type - use vector(matrix[i]) to get a vector)
-        Eigen::MatrixXd rowMat = mat.row(r);
+        Eigen::MatrixXd rowMat = mat().row(r);
         return Value::matrixVal(rowMat);
     } else if (isRange(row)) {
         ObjRange* rr = asRange(row);
@@ -3590,7 +3597,7 @@ Value ObjMatrix::index(const Value& row) const
         for(int i=0;i<rowCount;++i) {
             int target = rr->targetIndex(i, rows());
             if (target >=0 && target < rows())
-                m.row(i) = mat.row(target);
+                m.row(i) = mat().row(target);
         }
         return Value::matrixVal(m);
     }
@@ -3608,7 +3615,7 @@ Value ObjMatrix::index(const Value& row, const Value& col) const
         int c = col.asInt();
         if (r < 0 || r >= rows() || c < 0 || c >= cols())
             throw std::invalid_argument("Matrix index out-of-range.");
-        return Value::realVal(mat(r,c));
+        return Value::realVal(mat()(r,c));
     }
 
     std::vector<int> rowIdx;
@@ -3650,22 +3657,22 @@ Value ObjMatrix::index(const Value& row, const Value& col) const
     }
 
     if (rowIdx.size()==1 && colIdx.size()==1) {
-        return Value::realVal(mat(rowIdx[0], colIdx[0]));
+        return Value::realVal(mat()(rowIdx[0], colIdx[0]));
     } else if (rowIdx.size()==1 && colIdx.size()>1) {
         Eigen::VectorXd vals(colIdx.size());
         for(size_t j=0;j<colIdx.size();++j)
-            vals[j] = mat(rowIdx[0], colIdx[j]);
+            vals[j] = mat()(rowIdx[0], colIdx[j]);
         return Value::vectorVal(vals);
     } else if (rowIdx.size()>1 && colIdx.size()==1) {
         Eigen::VectorXd vals(rowIdx.size());
         for(size_t i=0;i<rowIdx.size();++i)
-            vals[i] = mat(rowIdx[i], colIdx[0]);
+            vals[i] = mat()(rowIdx[i], colIdx[0]);
         return Value::vectorVal(vals);
     } else {
         Eigen::MatrixXd sub(rowIdx.size(), colIdx.size());
         for(size_t i=0;i<rowIdx.size();++i)
             for(size_t j=0;j<colIdx.size();++j)
-                sub(i,j) = mat(rowIdx[i], colIdx[j]);
+                sub(i,j) = mat()(rowIdx[i], colIdx[j]);
         return Value::matrixVal(sub);
     }
     return Value::nilVal();
@@ -3673,6 +3680,7 @@ Value ObjMatrix::index(const Value& row, const Value& col) const
 
 void ObjMatrix::setIndex(const Value& row, const Value& value)
 {
+    ensureUnique();  // COW: copy before mutation
     std::vector<int> rowIdx;
     if (row.isNumber()) {
         int r = row.asInt();
@@ -3697,7 +3705,7 @@ void ObjMatrix::setIndex(const Value& row, const Value& value)
         if (vec->length() != cols())
             throw std::invalid_argument("Assignment to matrix row requires vector length " + std::to_string(cols()));
         for(int c=0;c<cols();++c)
-            mat(rowIdx[0], c) = vec->vec[c];
+            (*mat_)(rowIdx[0], c) = vec->vec()[c];
         return;
     }
 
@@ -3706,11 +3714,12 @@ void ObjMatrix::setIndex(const Value& row, const Value& value)
         throw std::invalid_argument("Assignment to matrix rows requires a matrix of size ("+std::to_string(rowIdx.size())+","+std::to_string(cols())+")");
 
     for(size_t i=0;i<rowIdx.size();++i)
-        mat.row(rowIdx[i]) = rhs->mat.row(i);
+        mat_->row(rowIdx[i]) = rhs->mat().row(i);
 }
 
 void ObjMatrix::setIndex(const Value& row, const Value& col, const Value& value)
 {
+    ensureUnique();
     bool rowRange = isRange(row);
     bool colRange = isRange(col);
 
@@ -3754,7 +3763,7 @@ void ObjMatrix::setIndex(const Value& row, const Value& col, const Value& value)
 
     if (rowIdx.size()==1 && colIdx.size()==1) {
         double scalar = toType(ValueType::Real, value, false).asReal();
-        mat(rowIdx[0], colIdx[0]) = scalar;
+        (*mat_)(rowIdx[0], colIdx[0]) = scalar;
         return;
     }
 
@@ -3763,14 +3772,14 @@ void ObjMatrix::setIndex(const Value& row, const Value& col, const Value& value)
         if (vec->length() != (int)colIdx.size())
             throw std::invalid_argument("Assignment to matrix subrow requires vector length " + std::to_string(colIdx.size()));
         for(size_t j=0;j<colIdx.size();++j)
-            mat(rowIdx[0], colIdx[j]) = vec->vec[j];
+            (*mat_)(rowIdx[0], colIdx[j]) = vec->vec()[j];
         return;
     } else if (colIdx.size()==1) {
         ObjVector* vec = valueToVector(value);
         if (vec->length() != (int)rowIdx.size())
             throw std::invalid_argument("Assignment to matrix subcolumn requires vector length " + std::to_string(rowIdx.size()));
         for(size_t i=0;i<rowIdx.size();++i)
-            mat(rowIdx[i], colIdx[0]) = vec->vec[i];
+            (*mat_)(rowIdx[i], colIdx[0]) = vec->vec()[i];
         return;
     } else {
         ObjMatrix* rhs = valueToMatrix(value);
@@ -3778,7 +3787,7 @@ void ObjMatrix::setIndex(const Value& row, const Value& col, const Value& value)
             throw std::invalid_argument("Assignment to matrix submatrix requires matrix of size ("+std::to_string(rowIdx.size())+","+std::to_string(colIdx.size())+")");
         for(size_t i=0;i<rowIdx.size();++i)
             for(size_t j=0;j<colIdx.size();++j)
-                mat(rowIdx[i], colIdx[j]) = rhs->mat(i,j);
+                (*mat_)(rowIdx[i], colIdx[j]) = rhs->mat()(i,j);
     }
 }
 
@@ -3788,19 +3797,19 @@ bool ObjMatrix::equals(const ObjMatrix* other, double eps) const
         return false;
 
     // Check if dimensions match
-    if (mat.rows() != other->mat.rows() || mat.cols() != other->mat.cols())
+    if (mat().rows() != other->mat().rows() || mat().cols() != other->mat().cols())
         return false;
 
     // Use Eigen's isApprox for element-wise comparison with tolerance
-    return mat.isApprox(other->mat, eps);
+    return mat().isApprox(other->mat(), eps);
 }
 
 std::string roxal::objMatrixToString(const ObjMatrix* om)
 {
     using std::min;
 
-    const int rows = om->mat.rows();
-    const int cols = om->mat.cols();
+    const int rows = om->mat().rows();
+    const int cols = om->mat().cols();
 
     const int firstRows = min(rows, 16);
     const int lastRows  = rows > 32 ? 16 : (rows - firstRows);
@@ -3812,11 +3821,11 @@ std::string roxal::objMatrixToString(const ObjMatrix* om)
 
     auto updateWidths = [&](int r) {
         for(int c=0; c<firstCols; ++c) {
-            std::string s = format("%g", om->mat(r,c));
+            std::string s = format("%g", om->mat()(r,c));
             colWidthFirst[c] = std::max(colWidthFirst[c], s.size());
         }
         for(int c=0; c<lastCols; ++c) {
-            std::string s = format("%g", om->mat(r, cols-lastCols+c));
+            std::string s = format("%g", om->mat()(r, cols-lastCols+c));
             colWidthLast[c] = std::max(colWidthLast[c], s.size());
         }
     };
@@ -3831,7 +3840,7 @@ std::string roxal::objMatrixToString(const ObjMatrix* om)
         if(r > 0)
             os << "\n ";
         for(int c=0; c<firstCols; ++c) {
-            std::string s = format("%g", om->mat(r,c));
+            std::string s = format("%g", om->mat()(r,c));
             os << std::left << std::setw(colWidthFirst[c]) << s;
             if(c != firstCols-1 || cols > firstCols)
                 os << ' ';
@@ -3839,7 +3848,7 @@ std::string roxal::objMatrixToString(const ObjMatrix* om)
         if(cols > 32)
             os << "... ";
         for(int c=0; c<lastCols; ++c) {
-            std::string s = format("%g", om->mat(r, cols-lastCols+c));
+            std::string s = format("%g", om->mat()(r, cols-lastCols+c));
             os << std::left << std::setw(colWidthLast[c]) << s;
             if(c != lastCols-1)
                 os << ' ';

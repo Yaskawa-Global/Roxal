@@ -161,7 +161,7 @@ Value ModuleMath::math_dot_builtin(ArgsView args)
     if (v1->length() != v2->length())
         throw std::invalid_argument("math.dot requires vectors of same length");
 
-    double d = v1->vec.dot(v2->vec);
+    double d = v1->vec().dot(v2->vec());
     return Value::realVal(d);
 }
 
@@ -175,7 +175,7 @@ Value ModuleMath::math_cross_builtin(ArgsView args)
     if (v1->length() != 3 || v2->length() != 3)
         throw std::invalid_argument("math.cross requires 3 element vectors");
 
-    Eigen::Vector3d r = v1->vec.head<3>().cross(v2->vec.head<3>());
+    Eigen::Vector3d r = v1->vec().head<3>().cross(v2->vec().head<3>());
     Eigen::VectorXd res = r;
     return Value::vectorVal(res);
 }
@@ -271,13 +271,13 @@ Value ModuleMath::math_relu_builtin(ArgsView args)
     else if (isVector(x)) {
         // Vector
         ObjVector* v = asVector(x);
-        Eigen::VectorXd result = v->vec.cwiseMax(0.0);
+        Eigen::VectorXd result = v->vec().cwiseMax(0.0);
         return Value::vectorVal(result);
     }
     else if (isMatrix(x)) {
         // Matrix
         ObjMatrix* m = asMatrix(x);
-        Eigen::MatrixXd result = m->mat.cwiseMax(0.0);
+        Eigen::MatrixXd result = m->mat().cwiseMax(0.0);
         return Value::matrixVal(result);
     }
     else if (isTensor(x)) {
@@ -306,8 +306,8 @@ Value ModuleMath::math_softmax_builtin(ArgsView args)
     if (isVector(x)) {
         ObjVector* v = asVector(x);
         // Subtract max for numerical stability
-        double maxVal = v->vec.maxCoeff();
-        Eigen::VectorXd expVec = (v->vec.array() - maxVal).exp();
+        double maxVal = v->vec().maxCoeff();
+        Eigen::VectorXd expVec = (v->vec().array() - maxVal).exp();
         double sum = expVec.sum();
         Eigen::VectorXd result = expVec / sum;
         return Value::vectorVal(result);
@@ -354,7 +354,7 @@ Value ModuleMath::math_argmax_builtin(ArgsView args)
     if (isVector(x)) {
         ObjVector* v = asVector(x);
         Eigen::Index maxIdx;
-        v->vec.maxCoeff(&maxIdx);
+        v->vec().maxCoeff(&maxIdx);
         return Value::intVal(static_cast<int64_t>(maxIdx));
     }
     else if (isTensor(x)) {

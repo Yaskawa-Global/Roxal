@@ -615,12 +615,12 @@ std::string objDictToString(const ObjDict* od);
 
 struct ObjVector : public Obj
 {
-    ObjVector() { type = ObjType::Vector; }
+    ObjVector() : vec_(make_ptr<Eigen::VectorXd>()) { type = ObjType::Vector; }
     ObjVector(const Eigen::VectorXd& values);
     ObjVector(int32_t size);
     virtual ~ObjVector() {}
 
-    int32_t length() const { return vec.size(); }
+    int32_t length() const { return vec_->size(); }
 
     Value index(const Value& i) const;
     void setIndex(const Value& i, const Value& v);
@@ -629,7 +629,9 @@ struct ObjVector : public Obj
 
     void set(const ObjVector* other); // Shallow copy from other vector
 
-    Eigen::VectorXd vec;
+    // COW accessors
+    const Eigen::VectorXd& vec() const { return *vec_; }
+    Eigen::VectorXd& vecMut() { ensureUnique(); return *vec_; }
 
     unique_ptr<Obj, UnreleasedObj> clone() const override;
 
@@ -637,6 +639,13 @@ struct ObjVector : public Obj
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override { (void)visitor; }
+
+private:
+    ptr<Eigen::VectorXd> vec_;
+    void ensureUnique() {
+        if (vec_.use_count() > 1)
+            vec_ = make_ptr<Eigen::VectorXd>(*vec_);
+    }
 };
 
 inline bool isVector(const Value& v) { return isObjType(v, ObjType::Vector); }
@@ -654,13 +663,13 @@ std::string objVectorToString(const ObjVector* ov);
 
 struct ObjMatrix : public Obj
 {
-    ObjMatrix() { type = ObjType::Matrix; }
+    ObjMatrix() : mat_(make_ptr<Eigen::MatrixXd>()) { type = ObjType::Matrix; }
     ObjMatrix(const Eigen::MatrixXd& values);
     ObjMatrix(int32_t rows, int32_t cols);
     virtual ~ObjMatrix() {}
 
-    int32_t rows() const { return mat.rows(); }
-    int32_t cols() const { return mat.cols(); }
+    int32_t rows() const { return mat_->rows(); }
+    int32_t cols() const { return mat_->cols(); }
 
     // single index returns a row (or range of rows)
     Value index(const Value& row) const;
@@ -677,7 +686,9 @@ struct ObjMatrix : public Obj
 
     void set(const ObjMatrix* other); // Shallow copy from other matrix
 
-    Eigen::MatrixXd mat;
+    // COW accessors
+    const Eigen::MatrixXd& mat() const { return *mat_; }
+    Eigen::MatrixXd& matMut() { ensureUnique(); return *mat_; }
 
     unique_ptr<Obj, UnreleasedObj> clone() const override;
 
@@ -685,6 +696,13 @@ struct ObjMatrix : public Obj
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override { (void)visitor; }
+
+private:
+    ptr<Eigen::MatrixXd> mat_;
+    void ensureUnique() {
+        if (mat_.use_count() > 1)
+            mat_ = make_ptr<Eigen::MatrixXd>(*mat_);
+    }
 };
 
 inline bool isMatrix(const Value& v) { return isObjType(v, ObjType::Matrix); }
@@ -717,7 +735,7 @@ TensorDType tensorDTypeFromString(const std::string& s);
 
 struct ObjTensor : public Obj
 {
-    ObjTensor() { type = ObjType::Tensor; }
+    ObjTensor() : data_(make_ptr<std::vector<double>>()) { type = ObjType::Tensor; }
     ObjTensor(const std::vector<int64_t>& shape, TensorDType dtype = TensorDType::Float64);
     virtual ~ObjTensor() {}
 
@@ -732,15 +750,16 @@ struct ObjTensor : public Obj
     void setIndex(const std::vector<Value>& indices, const Value& v);
 
     // Single flat index access (internal use)
-    double at(int64_t flatIdx) const { return data_[flatIdx]; }
-    void setAt(int64_t flatIdx, double v) { data_[flatIdx] = v; }
+    double at(int64_t flatIdx) const { return (*data_)[flatIdx]; }
+    void setAt(int64_t flatIdx, double v) { ensureUnique(); (*data_)[flatIdx] = v; }
 
     // Reshape (returns new tensor)
     Value reshape(const std::vector<int64_t>& newShape) const;
 
-    // Data access for Eigen interop
-    double* data() { return data_.data(); }
-    const double* data() const { return data_.data(); }
+    // Data access for Eigen interop (COW accessors)
+    const std::vector<double>& dataVec() const { return *data_; }
+    double* data() { ensureUnique(); return data_->data(); }
+    const double* data() const { return data_->data(); }
 
     bool equals(const ObjTensor* other, double eps = 1e-15) const;
     void set(const ObjTensor* other);
@@ -756,8 +775,12 @@ private:
     std::vector<int64_t> shape_;
     std::vector<int64_t> strides_;
     TensorDType dtype_ = TensorDType::Float64;
-    std::vector<double> data_;
+    ptr<std::vector<double>> data_;
 
+    void ensureUnique() {
+        if (data_.use_count() > 1)
+            data_ = make_ptr<std::vector<double>>(*data_);
+    }
     void computeStrides();
     int64_t flatIndex(const std::vector<int64_t>& indices) const;
 };
@@ -769,9 +792,12 @@ inline ObjTensor* asTensor(const Value& v) { return static_cast<ObjTensor*>(v.as
 /// @param v The value to potentially clone.
 /// @return A cloned value if v is an object with value semantics (vector/matrix/tensor),
 ///         otherwise returns v unchanged. Primitives and immutable objects (strings) don't need cloning.
+/// @note Clone is cheap for vector/matrix/tensor due to copy-on-write (COW) -
+///       data is shared until mutation, when it's copied lazily.
 inline Value cloneIfValueSemantics(const Value& v) {
     // Only clone mutable objects that should have value semantics
     // Primitives are copied by value naturally, ObjPrimitive (strings) are immutable
+    // Note: clone() uses COW for vector/matrix/tensor - data is shared, not copied
     if (v.isObj() && v.valueSemantics() && !isObjPrimitive(v)) {
         return Value(v.asObj()->clone());
     }

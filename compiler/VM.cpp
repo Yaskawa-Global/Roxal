@@ -1536,21 +1536,21 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
                         // tensor(vector) → 1D tensor
                         auto vec = asVector(arg);
                         std::vector<int64_t> vecShape = { static_cast<int64_t>(vec->length()) };
-                        std::vector<double> vecData(vec->vec.data(), vec->vec.data() + vec->length());
+                        std::vector<double> vecData(vec->vec().data(), vec->vec().data() + vec->length());
                         *(thread->stackTop - callSpec.argCount - 1) = Value::tensorVal(vecShape, vecData, TensorDType::Float64);
                         popN(callSpec.argCount);
                         return true;
                     } else if (isMatrix(arg) && shape.empty()) {
                         // tensor(matrix) → 2D tensor
                         auto mat = asMatrix(arg);
-                        int64_t rows = mat->mat.rows();
-                        int64_t cols = mat->mat.cols();
+                        int64_t rows = mat->mat().rows();
+                        int64_t cols = mat->mat().cols();
                         std::vector<int64_t> matShape = { rows, cols };
                         std::vector<double> matData;
                         matData.reserve(rows * cols);
                         for (int64_t r = 0; r < rows; ++r)
                             for (int64_t c = 0; c < cols; ++c)
-                                matData.push_back(mat->mat(r, c));
+                                matData.push_back(mat->mat()(r, c));
                         *(thread->stackTop - callSpec.argCount - 1) = Value::tensorVal(matShape, matData, TensorDType::Float64);
                         popN(callSpec.argCount);
                         return true;
@@ -5384,7 +5384,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         return errorReturn;
                     }
                     for(int c=0; c<colCount; ++c)
-                        mat(r,c) = vec->vec[c];
+                        mat(r,c) = vec->vec()[c];
                 }
                 for(int i=0; i<rowCount; ++i) pop();
                 push(Value::matrixVal(mat));
@@ -7247,7 +7247,7 @@ Value VM::vector_norm_builtin(ArgsView args)
         throw std::invalid_argument("vector.norm expects no arguments");
 
     ObjVector* vec = asVector(args[0]);
-    double n = vec->vec.norm();
+    double n = vec->vec().norm();
     return Value::realVal(n);
 }
 
@@ -7257,7 +7257,7 @@ Value VM::vector_sum_builtin(ArgsView args)
         throw std::invalid_argument("vector.sum expects no arguments");
 
     ObjVector* vec = asVector(args[0]);
-    double s = vec->vec.sum();
+    double s = vec->vec().sum();
     return Value::realVal(s);
 }
 
@@ -7267,7 +7267,7 @@ Value VM::vector_normalized_builtin(ArgsView args)
         throw std::invalid_argument("vector.normalized expects no arguments");
 
     ObjVector* vec = asVector(args[0]);
-    Eigen::VectorXd nvec = vec->vec.normalized();
+    Eigen::VectorXd nvec = vec->vec().normalized();
     return Value::vectorVal(nvec);
 }
 
@@ -7281,7 +7281,7 @@ Value VM::vector_dot_builtin(ArgsView args)
     if (v1->length() != v2->length())
         throw std::invalid_argument("vector.dot requires vectors of same length");
 
-    double d = v1->vec.dot(v2->vec);
+    double d = v1->vec().dot(v2->vec());
     return Value::realVal(d);
 }
 
@@ -7309,7 +7309,7 @@ Value VM::matrix_transpose_builtin(ArgsView args)
         throw std::invalid_argument("matrix.transpose expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
-    Eigen::MatrixXd tr = mat->mat.transpose();
+    Eigen::MatrixXd tr = mat->mat().transpose();
     return Value::matrixVal(tr);
 }
 
@@ -7322,7 +7322,7 @@ Value VM::matrix_determinant_builtin(ArgsView args)
     if (mat->rows() != mat->cols())
         throw std::invalid_argument("matrix.determinant requires a square matrix");
 
-    double det = mat->mat.determinant();
+    double det = mat->mat().determinant();
     return Value::realVal(det);
 }
 
@@ -7335,7 +7335,7 @@ Value VM::matrix_inverse_builtin(ArgsView args)
     if (mat->rows() != mat->cols())
         throw std::invalid_argument("matrix.inverse requires a square matrix");
 
-    Eigen::MatrixXd inv = mat->mat.inverse();
+    Eigen::MatrixXd inv = mat->mat().inverse();
     return Value::matrixVal(inv);
 }
 
@@ -7345,7 +7345,7 @@ Value VM::matrix_trace_builtin(ArgsView args)
         throw std::invalid_argument("matrix.trace expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
-    double tr = mat->mat.trace();
+    double tr = mat->mat().trace();
     return Value::realVal(tr);
 }
 
@@ -7355,7 +7355,7 @@ Value VM::matrix_norm_builtin(ArgsView args)
         throw std::invalid_argument("matrix.norm expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
-    double n = mat->mat.norm();
+    double n = mat->mat().norm();
     return Value::realVal(n);
 }
 
@@ -7365,7 +7365,7 @@ Value VM::matrix_sum_builtin(ArgsView args)
         throw std::invalid_argument("matrix.sum expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
-    double s = mat->mat.sum();
+    double s = mat->mat().sum();
     return Value::realVal(s);
 }
 

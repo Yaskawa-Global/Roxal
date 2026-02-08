@@ -1,0 +1,78 @@
+# Test: value semantics with COW and GC pressure
+# Verifies that copy-on-write maintains value semantics correctly
+
+# Test that copies remain independent after original goes out of scope
+func test_scope():
+    var copy = nil
+    if true:
+        var original = [1.0 2.0 3.0]
+        copy = original
+        # original goes out of scope here
+    gc()  # Force GC to collect original
+    copy[0] = 99
+    print(copy[0])  # Should be 99
+    return copy
+
+var result = test_scope()
+print(result[0])  # Should still be 99
+
+# Test multiple copies sharing data, then diverging
+var a = [10.0 20.0 30.0]
+var b = a
+var c = a
+gc()
+b[0] = 100
+gc()
+print(a[0])   # Should be 10 (unchanged)
+print(b[0])   # Should be 100 (modified)
+print(c[0])   # Should be 10 (unchanged)
+
+# Test with matrix
+var m1 = matrix([[1, 2], [3, 4]])
+var m2 = m1
+gc()
+m2[0, 0] = 999
+print(m1[0, 0])  # Should be 1
+print(m2[0, 0])  # Should be 999
+
+# Test with tensor
+var t1 = tensor(3, data=[1.0, 2.0, 3.0])
+var t2 = t1
+gc()
+t2[0] = 888
+print(t1[0])  # Should be 1
+print(t2[0])  # Should be 888
+
+# Test multiple copies with GC pressure
+var copies = []
+for i in range(..<100):
+    var v = [1.0 2.0 3.0]
+    copies.append(v)
+
+gc()
+
+# Modify alternating copies (even indices)
+for i in range(..<100 by 2):
+    copies[i][0] = real(i)
+
+gc()
+
+# Verify odd copies unchanged
+print(copies[1][0])   # Should be 1
+print(copies[99][0])  # Should be 1
+
+# Verify even copies changed
+print(copies[0][0])   # Should be 0
+print(copies[50][0])  # Should be 50
+
+# Test deeply nested sharing
+var base = [100.0 200.0 300.0]
+var level1 = base
+var level2 = level1
+var level3 = level2
+gc()
+level3[2] = 999
+print(base[2])    # Should be 300
+print(level1[2])  # Should be 300
+print(level2[2])  # Should be 300
+print(level3[2])  # Should be 999

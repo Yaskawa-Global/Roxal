@@ -36,8 +36,8 @@ inline bool equals(const Value& a, const Value& b, double eps = 1e-15) {
         return std::abs(a.asReal() - b.asReal()) < eps;
     if (roxal::asVector(a)->length() != roxal::asVector(b)->length())
         return false;
-    const auto& va = roxal::asVector(a)->vec;
-    const auto& vb = roxal::asVector(b)->vec;
+    const auto& va = roxal::asVector(a)->vec();
+    const auto& vb = roxal::asVector(b)->vec();
     for (int i = 0; i < va.size(); ++i)
         if (std::abs(va[i] - vb[i]) >= eps)
             return false;
@@ -46,25 +46,25 @@ inline bool equals(const Value& a, const Value& b, double eps = 1e-15) {
 
 inline Value vecMult(double s, const Value& v) {
     assert(roxal::isVector(v));
-    auto result = roxal::asVector(v)->vec * s;
+    auto result = roxal::asVector(v)->vec() * s;
     return Value::vectorVal(result);
 }
 
 inline Value vecMult(int32_t s, const Value& v) {
     assert(roxal::isVector(v));
-    auto result = roxal::asVector(v)->vec * static_cast<double>(s);
+    auto result = roxal::asVector(v)->vec() * static_cast<double>(s);
     return Value::vectorVal(result);
 }
 
 inline Value vecAdd(const Value& v1, const Value& v2) {
     assert(roxal::isVector(v1) && roxal::isVector(v2));
-    auto result = roxal::asVector(v1)->vec + roxal::asVector(v2)->vec;
+    auto result = roxal::asVector(v1)->vec() + roxal::asVector(v2)->vec();
     return Value::vectorVal(result);
 }
 
 inline Value vecSub(const Value& v1, const Value& v2) {
     assert(roxal::isVector(v1) && roxal::isVector(v2));
-    auto result = roxal::asVector(v1)->vec - roxal::asVector(v2)->vec;
+    auto result = roxal::asVector(v1)->vec() - roxal::asVector(v2)->vec();
     return Value::vectorVal(result);
 }
 
