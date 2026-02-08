@@ -2429,6 +2429,24 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
     for(const auto& a : args)
         push(a);
     CallSpec spec(args.size());
+
+    // Native closures (builtinInfo) must go through callNativeFn, not call(),
+    // because call() sets up a bytecode frame but native closures have no bytecodes.
+    ObjFunction* function = asFunction(closure->function);
+    if (function->builtinInfo) {
+        const auto& info = *function->builtinInfo;
+        ptr<type::Type> funcType = function->funcType.has_value()
+            ? function->funcType.value() : nullptr;
+        if (!callNativeFn(info.function, funcType, info.defaultValues, spec,
+                          false, Value::nilVal(), closure->function))
+            return { ExecutionStatus::RuntimeError, Value::nilVal() };
+        // callNativeFn stores result in the closure slot and pops args.
+        // The result is now at the top of the stack.
+        Value result = peek(0);
+        pop();
+        return { ExecutionStatus::OK, result };
+    }
+
     if(!call(closure, spec))
         return { ExecutionStatus::RuntimeError, Value::nilVal() };
 

@@ -80,6 +80,35 @@ t_copy[0, 0] = 99
 print(t_orig[0, 0])
 print(t_copy[0, 0])
 
+# === Equality comparison ===
+
+# Same data, separate tensors (no shared reference)
+var t_eq_a = tensor([2, 2], [1, 2, 3, 4])
+var t_eq_b = tensor([2, 2], [1, 2, 3, 4])
+print(t_eq_a == t_eq_b)
+print(t_eq_a != t_eq_b)
+
+# COW shared reference (assignment shares data until mutation)
+var t_eq_c = t_eq_a
+print(t_eq_a == t_eq_c)
+
+# After mutating the copy, COW triggers a deep copy — but data still equal
+t_eq_c[0, 0] = 1.0
+print(t_eq_a == t_eq_c)
+
+# After making data actually differ
+t_eq_c[0, 0] = 99.0
+print(t_eq_a == t_eq_c)
+
+# Different shapes, same element count
+var t_eq_d = tensor([1, 4], [1, 2, 3, 4])
+print(t_eq_a == t_eq_d)
+
+# Zero tensor equality
+var t_eq_z1 = tensor(3, 3)
+var t_eq_z2 = tensor(3, 3)
+print(t_eq_z1 == t_eq_z2)
+
 # === Tensor representation ===
 
 var t_repr = tensor([2, 3], [1, 2, 3, 4, 5, 6])

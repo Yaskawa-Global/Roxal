@@ -205,6 +205,9 @@ Value ModuleNN::createModelObject(const std::shared_ptr<ModelWrapper>& wrapper)
     func->arity = 1;
     func->upvalueCount = 0;
     func->builtinInfo = make_ptr<BuiltinFuncInfo>(predictFn);
+    // funcType is required for signal/dataflow integration: the VM uses it
+    // to map signal arguments to FuncNode inputs when predict is called with a signal.
+    func->funcType = makeFuncType({{"input", type::BuiltinType::Tensor}});
 
     Value funcVal = Value::objVal(std::move(funcObj));
     Value closureVal = Value::objVal(newClosureObj(funcVal));

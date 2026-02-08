@@ -147,7 +147,7 @@ fileio_tests = [
 dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok', 'dds_array_struct', 'dds_array_multi']
 regex_tests = ['regex_test']
 socket_tests = ['socket_basic']
-nn_tests = ['nn_mnist']
+nn_tests = ['nn_mnist', 'nn_signal']
 
 # Add feature-specific tests to the full list; feature gating happens later.
 tests += dds_tests

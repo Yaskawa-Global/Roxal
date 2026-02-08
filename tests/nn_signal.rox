@@ -1,0 +1,62 @@
+# ai.nn signal/dataflow test: predict via reactive signals
+import ai.nn
+
+var model = ai.nn.load("../modules/ai/mnist-8.onnx")
+var empty = tensor(1, 1, 28, 28, dtype='float32')
+
+# Create source signal and derived prediction signal
+var input_sig = signal(10, empty)
+var output_sig = model.predict(input_sig)
+print(typeof(output_sig))
+
+# Collect predictions
+var predictions = []
+
+when output_sig changes as evt:
+  var out = evt.value
+  var best = 0
+  var best_score = out[0, 0]
+  var i = 1
+  while i < 10:
+    if out[0, i] > best_score:
+      best = i
+      best_score = out[0, i]
+    i = i + 1
+  predictions.append(best)
+
+# Start signal processing
+input_sig.run()
+wait(ms=150)
+
+# Set to digit "1"
+var img1 = tensor(1, 1, 28, 28, dtype='float32')
+var r = 4
+while r <= 23:
+  img1[0, 0, r, 13] = 1.0
+  img1[0, 0, r, 14] = 1.0
+  r = r + 1
+
+input_sig.set(img1)
+wait(ms=200)
+
+# Set to digit "0"
+var img0 = tensor(1, 1, 28, 28, dtype='float32')
+var c = 10
+while c <= 17:
+  img0[0, 0, 5, c] = 1.0
+  img0[0, 0, 21, c] = 1.0
+  c = c + 1
+r = 6
+while r <= 21:
+  img0[0, 0, r, 9] = 1.0
+  img0[0, 0, r, 17] = 1.0
+  r = r + 1
+
+input_sig.set(img0)
+wait(ms=200)
+
+# Print collected predictions
+for p in predictions:
+  print(p)
+
+print("done")

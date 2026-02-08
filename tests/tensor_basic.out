@@ -22,4 +22,11 @@ tensor(shape=[2, 3], dtype='float32')
 4
 1
 99
+true
+false
+true
+true
+false
+false
+true
 tensor(shape=[2, 3], dtype='float64')
