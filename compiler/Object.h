@@ -30,6 +30,10 @@
 #include "SimpleMarkSweepGC.h"
 #include <Eigen/Dense>
 
+#ifdef ROXAL_ENABLE_ONNX
+#include <onnxruntime_cxx_api.h>
+#endif
+
 
 // forward decls
 namespace roxal::type {
@@ -735,9 +739,28 @@ TensorDType tensorDTypeFromString(const std::string& s);
 
 struct ObjTensor : public Obj
 {
-    ObjTensor() : data_(make_ptr<std::vector<double>>()) { type = ObjType::Tensor; }
+    ObjTensor();
     ObjTensor(const std::vector<int64_t>& shape, TensorDType dtype = TensorDType::Float64);
     virtual ~ObjTensor() {}
+
+#ifdef ROXAL_ENABLE_ONNX
+    /// Construct from an ONNX Runtime value (takes ownership, zero-copy).
+    /// Shape and dtype are read from the Ort::Value.
+    explicit ObjTensor(Ort::Value&& ortValue);
+
+    /// True when the tensor data lives inside an Ort::Value.
+    bool isOrtBacked() const { return ort_value_ != nullptr; }
+
+    /// Return a const reference to the underlying Ort::Value.
+    /// Throws if not ORT-backed.
+    const Ort::Value& ortValue() const;
+
+    /// Return a mutable Ort::Value (e.g. for pre-allocated inference output).
+    /// Triggers COW if shared.
+    Ort::Value& ortValueMut();
+#else
+    bool isOrtBacked() const { return false; }
+#endif
 
     // Shape and dtype accessors
     const std::vector<int64_t>& shape() const { return shape_; }
@@ -749,17 +772,19 @@ struct ObjTensor : public Obj
     Value index(const std::vector<Value>& indices) const;
     void setIndex(const std::vector<Value>& indices, const Value& v);
 
-    // Single flat index access (internal use)
-    double at(int64_t flatIdx) const { return (*data_)[flatIdx]; }
-    void setAt(int64_t flatIdx, double v) { ensureUnique(); (*data_)[flatIdx] = v; }
+    // Single flat index access - works with both native and ORT storage.
+    // Reads from ORT buffer directly without copying when ORT-backed.
+    double at(int64_t flatIdx) const;
+    void setAt(int64_t flatIdx, double v);
 
     // Reshape (returns new tensor)
     Value reshape(const std::vector<int64_t>& newShape) const;
 
-    // Data access for Eigen interop (COW accessors)
-    const std::vector<double>& dataVec() const { return *data_; }
-    double* data() { ensureUnique(); return data_->data(); }
-    const double* data() const { return data_->data(); }
+    // Raw data pointer access (COW).
+    // For ORT-backed tensors this returns the ORT buffer directly
+    // (only valid when dtype is Float64; use at() for type-safe access).
+    const double* data() const;
+    double* dataMut();
 
     bool equals(const ObjTensor* other, double eps = 1e-15) const;
     void set(const ObjTensor* other);
@@ -775,12 +800,24 @@ private:
     std::vector<int64_t> shape_;
     std::vector<int64_t> strides_;
     TensorDType dtype_ = TensorDType::Float64;
+
+#ifdef ROXAL_ENABLE_ONNX
+    // ORT-backed storage.  Wrapped in shared_ptr for COW (Ort::Value is move-only).
+    // When non-null, this is the authoritative data source.
+    std::shared_ptr<Ort::Value> ort_value_;
+
+    /// COW guard for the Ort::Value (deep-copies if shared).
+    void ensureOrtUnique();
+#else
+    // Native storage (used when ONNX Runtime is not available)
     ptr<std::vector<double>> data_;
 
     void ensureUnique() {
         if (data_.use_count() > 1)
             data_ = make_ptr<std::vector<double>>(*data_);
     }
+#endif
+
     void computeStrides();
     int64_t flatIndex(const std::vector<int64_t>& indices) const;
 };
@@ -810,6 +847,10 @@ unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(const std::vector<int64_t>& sh
 unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(const std::vector<int64_t>& shape,
                                                    const std::vector<double>& data,
                                                    TensorDType dtype = TensorDType::Float64);
+#ifdef ROXAL_ENABLE_ONNX
+/// Create a tensor that takes ownership of an Ort::Value (zero-copy).
+unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(Ort::Value&& ortValue);
+#endif
 
 std::string objTensorToString(const ObjTensor* ot);
 

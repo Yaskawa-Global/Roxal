@@ -2958,13 +2958,216 @@ TensorDType roxal::tensorDTypeFromString(const std::string& s)
     throw std::runtime_error("Unknown tensor dtype: " + s);
 }
 
+#ifdef ROXAL_ENABLE_ONNX
+// Forward declarations of helpers (defined below)
+static ONNXTensorElementDataType tensorDTypeToOrt(TensorDType dtype);
+static TensorDType tensorDTypeFromOrt(ONNXTensorElementDataType ortType);
+static size_t tensorDTypeSize(TensorDType dtype);
+static double ortElementAsDouble(const Ort::Value& val, TensorDType dtype, int64_t idx);
+static void ortSetElementFromDouble(Ort::Value& val, TensorDType dtype, int64_t idx, double v);
+#endif
+
+ObjTensor::ObjTensor()
+#ifndef ROXAL_ENABLE_ONNX
+    : data_(make_ptr<std::vector<double>>())
+#endif
+{
+    type = ObjType::Tensor;
+}
+
 ObjTensor::ObjTensor(const std::vector<int64_t>& shape, TensorDType dtype)
-    : shape_(shape), dtype_(dtype), data_(make_ptr<std::vector<double>>())
+    : shape_(shape), dtype_(dtype)
 {
     type = ObjType::Tensor;
     computeStrides();
     int64_t n = numel();
-    data_->resize(n, 0.0);
+
+#ifdef ROXAL_ENABLE_ONNX
+    // Allocate via ONNX Runtime (ORT-owned memory)
+    Ort::AllocatorWithDefaultOptions allocator;
+    auto ortDtype = tensorDTypeToOrt(dtype);
+    ort_value_ = std::make_shared<Ort::Value>(
+        Ort::Value::CreateTensor(allocator, shape_.data(), shape_.size(), ortDtype));
+    // Zero-initialize
+    auto elemSize = tensorDTypeSize(dtype);
+    std::memset(ort_value_->GetTensorMutableRawData(), 0, n * elemSize);
+#else
+    data_ = make_ptr<std::vector<double>>(n, 0.0);
+#endif
+}
+
+#ifdef ROXAL_ENABLE_ONNX
+
+// Mapping helpers between TensorDType and ONNXTensorElementDataType
+
+static ONNXTensorElementDataType tensorDTypeToOrt(TensorDType dtype)
+{
+    switch (dtype) {
+        case TensorDType::Float16: return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
+        case TensorDType::Float32: return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
+        case TensorDType::Float64: return ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE;
+        case TensorDType::Int8:    return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8;
+        case TensorDType::Int16:   return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16;
+        case TensorDType::Int32:   return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32;
+        case TensorDType::Int64:   return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64;
+        case TensorDType::UInt8:   return ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8;
+        case TensorDType::Bool:    return ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL;
+        default: throw std::runtime_error("Unsupported TensorDType for ORT conversion");
+    }
+}
+
+static TensorDType tensorDTypeFromOrt(ONNXTensorElementDataType ortType)
+{
+    switch (ortType) {
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16: return TensorDType::Float16;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:   return TensorDType::Float32;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE:  return TensorDType::Float64;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:    return TensorDType::Int8;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16:   return TensorDType::Int16;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:   return TensorDType::Int32;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:   return TensorDType::Int64;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:   return TensorDType::UInt8;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:    return TensorDType::Bool;
+        default: throw std::runtime_error("Unsupported ORT element type");
+    }
+}
+
+static size_t tensorDTypeSize(TensorDType dtype)
+{
+    switch (dtype) {
+        case TensorDType::Float16: return 2;
+        case TensorDType::Float32: return 4;
+        case TensorDType::Float64: return 8;
+        case TensorDType::Int8:    return 1;
+        case TensorDType::Int16:   return 2;
+        case TensorDType::Int32:   return 4;
+        case TensorDType::Int64:   return 8;
+        case TensorDType::UInt8:   return 1;
+        case TensorDType::Bool:    return 1;
+        default: return 0;
+    }
+}
+
+ObjTensor::ObjTensor(Ort::Value&& ortValue)
+    : ort_value_(std::make_shared<Ort::Value>(std::move(ortValue)))
+{
+    type = ObjType::Tensor;
+
+    // Read shape and dtype from the Ort::Value
+    auto info = ort_value_->GetTensorTypeAndShapeInfo();
+    shape_ = info.GetShape();
+    dtype_ = tensorDTypeFromOrt(info.GetElementType());
+    computeStrides();
+}
+
+const Ort::Value& ObjTensor::ortValue() const
+{
+    if (!ort_value_)
+        throw std::runtime_error("Tensor is not ORT-backed");
+    return *ort_value_;
+}
+
+Ort::Value& ObjTensor::ortValueMut()
+{
+    if (!ort_value_)
+        throw std::runtime_error("Tensor is not ORT-backed");
+    ensureOrtUnique();
+    return *ort_value_;
+}
+
+void ObjTensor::ensureOrtUnique()
+{
+    if (ort_value_ && ort_value_.use_count() > 1) {
+        // Deep-copy: allocate a new ORT tensor and copy the raw data
+        auto info = ort_value_->GetTensorTypeAndShapeInfo();
+        auto ortDtype = info.GetElementType();
+        auto shape = info.GetShape();
+        size_t byteCount = info.GetElementCount() * tensorDTypeSize(dtype_);
+
+        Ort::AllocatorWithDefaultOptions allocator;
+        auto newVal = Ort::Value::CreateTensor(allocator, shape.data(), shape.size(), ortDtype);
+        std::memcpy(newVal.GetTensorMutableRawData(),
+                     ort_value_->GetTensorData<void>(), byteCount);
+        ort_value_ = std::make_shared<Ort::Value>(std::move(newVal));
+    }
+}
+
+// Helper: read a single element from ORT buffer as double
+static double ortElementAsDouble(const Ort::Value& val, TensorDType dtype, int64_t idx)
+{
+    switch (dtype) {
+        case TensorDType::Float32: return static_cast<double>(val.GetTensorData<float>()[idx]);
+        case TensorDType::Float64: return val.GetTensorData<double>()[idx];
+        case TensorDType::Int32:   return static_cast<double>(val.GetTensorData<int32_t>()[idx]);
+        case TensorDType::Int64:   return static_cast<double>(val.GetTensorData<int64_t>()[idx]);
+        case TensorDType::Int8:    return static_cast<double>(val.GetTensorData<int8_t>()[idx]);
+        case TensorDType::Int16:   return static_cast<double>(val.GetTensorData<int16_t>()[idx]);
+        case TensorDType::UInt8:   return static_cast<double>(val.GetTensorData<uint8_t>()[idx]);
+        case TensorDType::Bool:    return val.GetTensorData<bool>()[idx] ? 1.0 : 0.0;
+        default: throw std::runtime_error("Unsupported dtype for element access");
+    }
+}
+
+// Helper: write a single element to ORT buffer from double
+static void ortSetElementFromDouble(Ort::Value& val, TensorDType dtype, int64_t idx, double v)
+{
+    switch (dtype) {
+        case TensorDType::Float32: val.GetTensorMutableData<float>()[idx] = static_cast<float>(v); break;
+        case TensorDType::Float64: val.GetTensorMutableData<double>()[idx] = v; break;
+        case TensorDType::Int32:   val.GetTensorMutableData<int32_t>()[idx] = static_cast<int32_t>(v); break;
+        case TensorDType::Int64:   val.GetTensorMutableData<int64_t>()[idx] = static_cast<int64_t>(v); break;
+        case TensorDType::Int8:    val.GetTensorMutableData<int8_t>()[idx] = static_cast<int8_t>(v); break;
+        case TensorDType::Int16:   val.GetTensorMutableData<int16_t>()[idx] = static_cast<int16_t>(v); break;
+        case TensorDType::UInt8:   val.GetTensorMutableData<uint8_t>()[idx] = static_cast<uint8_t>(v); break;
+        case TensorDType::Bool:    val.GetTensorMutableData<bool>()[idx] = (v != 0.0); break;
+        default: throw std::runtime_error("Unsupported dtype for element write");
+    }
+}
+
+#endif // ROXAL_ENABLE_ONNX
+
+double ObjTensor::at(int64_t flatIdx) const
+{
+#ifdef ROXAL_ENABLE_ONNX
+    return ortElementAsDouble(*ort_value_, dtype_, flatIdx);
+#else
+    return (*data_)[flatIdx];
+#endif
+}
+
+void ObjTensor::setAt(int64_t flatIdx, double v)
+{
+#ifdef ROXAL_ENABLE_ONNX
+    ensureOrtUnique();
+    ortSetElementFromDouble(*ort_value_, dtype_, flatIdx, v);
+#else
+    ensureUnique();
+    (*data_)[flatIdx] = v;
+#endif
+}
+
+const double* ObjTensor::data() const
+{
+#ifdef ROXAL_ENABLE_ONNX
+    if (dtype_ != TensorDType::Float64)
+        throw std::runtime_error("data() requires Float64 dtype; use at() for type-safe access");
+    return ort_value_->GetTensorData<double>();
+#else
+    return data_->data();
+#endif
+}
+
+double* ObjTensor::dataMut()
+{
+#ifdef ROXAL_ENABLE_ONNX
+    if (dtype_ != TensorDType::Float64)
+        throw std::runtime_error("dataMut() requires Float64 dtype; use setAt() for type-safe access");
+    ensureOrtUnique();
+    return ort_value_->GetTensorMutableData<double>();
+#else
+    ensureUnique();
+    return data_->data();
+#endif
 }
 
 void ObjTensor::computeStrides()
@@ -3028,7 +3231,7 @@ Value ObjTensor::index(const std::vector<Value>& indices) const
             idxs.push_back(v.asInt());
         }
         int64_t flatIdx = flatIndex(idxs);
-        return Value::realVal((*data_)[flatIdx]);
+        return Value::realVal(at(flatIdx));
     }
 
     // Has ranges - build sub-tensor
@@ -3074,7 +3277,7 @@ Value ObjTensor::index(const std::vector<Value>& indices) const
         for (const auto& di : dimIndices)
             idxs.push_back(di[0]);
         int64_t flatIdx = flatIndex(idxs);
-        return Value::realVal((*data_)[flatIdx]);
+        return Value::realVal(at(flatIdx));
     }
 
     // Build result tensor
@@ -3091,7 +3294,7 @@ Value ObjTensor::index(const std::vector<Value>& indices) const
             int64_t srcIdx = 0;
             for (size_t i = 0; i < currentIdx.size(); ++i)
                 srcIdx += currentIdx[i] * strides_[i];
-            resultData.push_back((*data_)[srcIdx]);
+            resultData.push_back(at(srcIdx));
             return;
         }
         for (int64_t i : dimIndices[dim]) {
@@ -3120,8 +3323,8 @@ void ObjTensor::setIndex(const std::vector<Value>& indices, const Value& v)
 
     if (!v.isNumber())
         throw std::runtime_error("Tensor element must be numeric");
-    ensureUnique();
-    (*data_)[flatIdx] = v.isInt() ? static_cast<double>(v.asInt()) : v.asReal();
+    double dv = v.isInt() ? static_cast<double>(v.asInt()) : v.asReal();
+    setAt(flatIdx, dv);
 }
 
 Value ObjTensor::reshape(const std::vector<int64_t>& newShape) const
@@ -3131,7 +3334,10 @@ Value ObjTensor::reshape(const std::vector<int64_t>& newShape) const
     if (newNumel != numel())
         throw std::runtime_error("Tensor reshape: total elements must match");
 
-    auto result = newTensorObj(newShape, *data_, dtype_);
+    // Create result and copy data element-by-element (works with both backends)
+    auto result = newTensorObj(newShape, dtype_);
+    for (int64_t i = 0; i < newNumel; ++i)
+        result->setAt(i, at(i));
     return Value::objVal(std::move(result));
 }
 
@@ -3139,8 +3345,9 @@ bool ObjTensor::equals(const ObjTensor* other, double eps) const
 {
     if (shape_ != other->shape_) return false;
     if (dtype_ != other->dtype_) return false;
-    for (size_t i = 0; i < data_->size(); ++i) {
-        if (std::abs((*data_)[i] - (*other->data_)[i]) > eps)
+    int64_t n = numel();
+    for (int64_t i = 0; i < n; ++i) {
+        if (std::abs(at(i) - other->at(i)) > eps)
             return false;
     }
     return true;
@@ -3151,7 +3358,11 @@ void ObjTensor::set(const ObjTensor* other)
     shape_ = other->shape_;
     strides_ = other->strides_;
     dtype_ = other->dtype_;
+#ifdef ROXAL_ENABLE_ONNX
+    ort_value_ = other->ort_value_;  // COW: share the data
+#else
     data_ = other->data_;  // COW: share the data
+#endif
 }
 
 unique_ptr<Obj, UnreleasedObj> ObjTensor::clone() const
@@ -3160,7 +3371,11 @@ unique_ptr<Obj, UnreleasedObj> ObjTensor::clone() const
     newt->shape_ = shape_;
     newt->strides_ = strides_;
     newt->dtype_ = dtype_;
+#ifdef ROXAL_ENABLE_ONNX
+    newt->ort_value_ = ort_value_;  // COW: share the data
+#else
     newt->data_ = data_;  // COW: share the data
+#endif
     return newt;
 }
 
@@ -3180,8 +3395,10 @@ void ObjTensor::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) c
         out.write(reinterpret_cast<char*>(&dim), 8);
     }
 
-    // Write data
-    for (double d : *data_) {
+    // Write data (always serialized as doubles for portability)
+    int64_t n = numel();
+    for (int64_t i = 0; i < n; ++i) {
+        double d = at(i);
         out.write(reinterpret_cast<const char*>(&d), 8);
     }
 }
@@ -3209,12 +3426,24 @@ void ObjTensor::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
     // Read data
     int64_t n = numel();
+#ifdef ROXAL_ENABLE_ONNX
+    Ort::AllocatorWithDefaultOptions allocator;
+    auto ortDtype = tensorDTypeToOrt(dtype_);
+    ort_value_ = std::make_shared<Ort::Value>(
+        Ort::Value::CreateTensor(allocator, shape_.data(), shape_.size(), ortDtype));
+    for (int64_t i = 0; i < n; ++i) {
+        double d;
+        in.read(reinterpret_cast<char*>(&d), 8);
+        ortSetElementFromDouble(*ort_value_, dtype_, i, d);
+    }
+#else
     data_ = make_ptr<std::vector<double>>(n);
     for (int64_t i = 0; i < n; ++i) {
         double d;
         in.read(reinterpret_cast<char*>(&d), 8);
         (*data_)[i] = d;
     }
+#endif
 }
 
 unique_ptr<ObjTensor, UnreleasedObj> roxal::newTensorObj()
@@ -3242,9 +3471,21 @@ unique_ptr<ObjTensor, UnreleasedObj> roxal::newTensorObj(const std::vector<int64
     auto t = newTensorObj(shape, dtype);
     if (data.size() != static_cast<size_t>(t->numel()))
         throw std::runtime_error("Tensor data size mismatch");
-    std::copy(data.begin(), data.end(), t->data());
+    for (int64_t i = 0; i < static_cast<int64_t>(data.size()); ++i)
+        t->setAt(i, data[i]);
     return t;
 }
+
+#ifdef ROXAL_ENABLE_ONNX
+unique_ptr<ObjTensor, UnreleasedObj> roxal::newTensorObj(Ort::Value&& ortValue)
+{
+    #ifdef DEBUG_BUILD
+    return newObj<ObjTensor>(__func__, __FILE__, __LINE__, std::move(ortValue));
+    #else
+    return newObj<ObjTensor>(std::move(ortValue));
+    #endif
+}
+#endif
 
 std::string roxal::objTensorToString(const ObjTensor* ot)
 {

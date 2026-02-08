@@ -18,6 +18,8 @@ option(ROXAL_ENABLE_DDS "Enable CycloneDDS support" OFF)
 set(ROXAL_DDS_ROOT "/usr/share" CACHE PATH "CycloneDDS install prefix when ROXAL_ENABLE_DDS is ON")
 option(ROXAL_ENABLE_REGEX "Enable regex module (requires libpcre2)" OFF)
 option(ROXAL_ENABLE_SOCKET "Enable socket module (POSIX sockets)" ON)
+option(ROXAL_ENABLE_ONNX "Enable ONNX Runtime backend for tensor type" OFF)
+set(ROXAL_ONNX_ROOT "${CMAKE_SOURCE_DIR}/deps/onnxruntime" CACHE PATH "ONNX Runtime install prefix")
 
 # Expose the project version and git hash to the codebase
 set(ROXAL_PROJECT_VERSION "${PROJECT_VERSION}")
@@ -124,6 +126,34 @@ endif()
 if(ROXAL_ENABLE_REGEX)
     pkg_check_modules(PCRE2 REQUIRED libpcre2-8)
     include_directories(${PCRE2_INCLUDE_DIRS})
+endif()
+
+# ONNX Runtime (CPU; GPU support can be added later)
+#   Download a release from https://github.com/microsoft/onnxruntime/releases
+#   and extract into deps/onnxruntime (see install-deps2.sh).
+if(ROXAL_ENABLE_ONNX)
+    find_path(ONNXRUNTIME_INCLUDE_DIR
+        NAMES onnxruntime_cxx_api.h
+        PATHS ${ROXAL_ONNX_ROOT}/include
+              /usr/local/include/onnxruntime
+              /usr/include/onnxruntime
+        NO_DEFAULT_PATH
+    )
+    find_library(ONNXRUNTIME_LIBRARY
+        NAMES onnxruntime
+        PATHS ${ROXAL_ONNX_ROOT}/lib
+              /usr/local/lib
+              /usr/lib
+        NO_DEFAULT_PATH
+    )
+    if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
+        message(FATAL_ERROR
+            "ONNX Runtime not found. Set ROXAL_ONNX_ROOT to the install prefix "
+            "(default: deps/onnxruntime) or disable with -DROXAL_ENABLE_ONNX=OFF")
+    endif()
+    message(STATUS "Found ONNX Runtime: ${ONNXRUNTIME_LIBRARY}")
+    message(STATUS "ONNX Runtime include: ${ONNXRUNTIME_INCLUDE_DIR}")
+    include_directories(${ONNXRUNTIME_INCLUDE_DIR})
 endif()
 
 # Detect libffi via pkg-config so that include and library paths
@@ -277,6 +307,7 @@ target_link_libraries(roxalcore
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::libidlc>
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::idl>
         $<$<BOOL:${ROXAL_ENABLE_REGEX}>:${PCRE2_LIBRARIES}>
+        $<$<BOOL:${ROXAL_ENABLE_ONNX}>:${ONNXRUNTIME_LIBRARY}>
 )
 
 
@@ -294,6 +325,7 @@ target_compile_definitions(roxalcore PRIVATE
     $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
     $<$<BOOL:${ROXAL_ENABLE_REGEX}>:ROXAL_ENABLE_REGEX>
     $<$<BOOL:${ROXAL_ENABLE_SOCKET}>:ROXAL_ENABLE_SOCKET>
+    $<$<BOOL:${ROXAL_ENABLE_ONNX}>:ROXAL_ENABLE_ONNX>
     ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
     ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
     ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
@@ -314,6 +346,7 @@ if(ROXAL_BUILD_MAIN)
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
         $<$<BOOL:${ROXAL_ENABLE_REGEX}>:ROXAL_ENABLE_REGEX>
         $<$<BOOL:${ROXAL_ENABLE_SOCKET}>:ROXAL_ENABLE_SOCKET>
+        $<$<BOOL:${ROXAL_ENABLE_ONNX}>:ROXAL_ENABLE_ONNX>
         ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
         ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
         ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"

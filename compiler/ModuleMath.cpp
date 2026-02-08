@@ -284,10 +284,10 @@ Value ModuleMath::math_relu_builtin(ArgsView args)
         // Tensor
         ObjTensor* t = asTensor(x);
         const std::vector<int64_t>& shape = t->shape();
-        std::vector<double> resultData(t->numel());
-        const double* src = t->data();
-        for (int64_t i = 0; i < t->numel(); ++i) {
-            resultData[i] = std::max(0.0, src[i]);
+        int64_t n = t->numel();
+        std::vector<double> resultData(n);
+        for (int64_t i = 0; i < n; ++i) {
+            resultData[i] = std::max(0.0, t->at(i));
         }
         return Value::tensorVal(shape, resultData, t->dtype());
     }
@@ -318,19 +318,18 @@ Value ModuleMath::math_softmax_builtin(ArgsView args)
             throw std::invalid_argument("math.softmax requires a 1D tensor");
 
         int64_t n = t->numel();
-        const double* src = t->data();
 
         // Find max for numerical stability
-        double maxVal = src[0];
+        double maxVal = t->at(0);
         for (int64_t i = 1; i < n; ++i) {
-            maxVal = std::max(maxVal, src[i]);
+            maxVal = std::max(maxVal, t->at(i));
         }
 
         // Compute exp, sum, and normalize
         std::vector<double> resultData(n);
         double sum = 0.0;
         for (int64_t i = 0; i < n; ++i) {
-            resultData[i] = std::exp(src[i] - maxVal);
+            resultData[i] = std::exp(t->at(i) - maxVal);
             sum += resultData[i];
         }
         for (int64_t i = 0; i < n; ++i) {
@@ -363,12 +362,12 @@ Value ModuleMath::math_argmax_builtin(ArgsView args)
             throw std::invalid_argument("math.argmax requires a 1D tensor");
 
         int64_t n = t->numel();
-        const double* data = t->data();
         int64_t maxIdx = 0;
-        double maxVal = data[0];
+        double maxVal = t->at(0);
         for (int64_t i = 1; i < n; ++i) {
-            if (data[i] > maxVal) {
-                maxVal = data[i];
+            double v = t->at(i);
+            if (v > maxVal) {
+                maxVal = v;
                 maxIdx = i;
             }
         }

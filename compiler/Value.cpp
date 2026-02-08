@@ -1735,7 +1735,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                         std::to_string(t->rank()));
                 Eigen::VectorXd vals(t->numel());
                 for (int64_t i = 0; i < t->numel(); ++i)
-                    vals[i] = t->data()[i];
+                    vals[i] = t->at(i);
                 return Value::vectorVal(vals);
             }
             throw std::runtime_error("vector constructor expects int length, list of reals, vector, 1-row/col matrix, or 1D tensor");
@@ -1817,7 +1817,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                     // 1D tensor → 1-row matrix
                     Eigen::MatrixXd vals(1, t->numel());
                     for (int64_t c = 0; c < t->numel(); ++c)
-                        vals(0, c) = t->data()[c];
+                        vals(0, c) = t->at(c);
                     return Value::matrixVal(vals);
                 } else if (t->rank() == 2) {
                     // 2D tensor → matrix
@@ -1826,7 +1826,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                     Eigen::MatrixXd vals(rows, cols);
                     for (int64_t r = 0; r < rows; ++r)
                         for (int64_t c = 0; c < cols; ++c)
-                            vals(r, c) = t->data()[r * cols + c];
+                            vals(r, c) = t->at(r * cols + c);
                     return Value::matrixVal(vals);
                 } else {
                     throw std::runtime_error("matrix(tensor) requires a 1D or 2D tensor, got rank " +
