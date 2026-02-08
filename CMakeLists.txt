@@ -20,6 +20,10 @@ option(ROXAL_ENABLE_REGEX "Enable regex module (requires libpcre2)" OFF)
 option(ROXAL_ENABLE_SOCKET "Enable socket module (POSIX sockets)" ON)
 option(ROXAL_ENABLE_ONNX "Enable ONNX Runtime backend for tensor type" OFF)
 set(ROXAL_ONNX_ROOT "${CMAKE_SOURCE_DIR}/deps/onnxruntime" CACHE PATH "ONNX Runtime install prefix")
+option(ROXAL_ENABLE_AI_NN "Enable ai.nn neural network inference module (requires ONNX Runtime)" OFF)
+if(ROXAL_ENABLE_AI_NN)
+    set(ROXAL_ENABLE_ONNX ON CACHE BOOL "Enabled implicitly by ROXAL_ENABLE_AI_NN" FORCE)
+endif()
 
 # Expose the project version and git hash to the codebase
 set(ROXAL_PROJECT_VERSION "${PROJECT_VERSION}")
@@ -224,6 +228,9 @@ endif()
 if(ROXAL_ENABLE_SOCKET)
     list(APPEND COMPILER_SOURCES compiler/ModuleSocket.cpp)
 endif()
+if(ROXAL_ENABLE_AI_NN)
+    list(APPEND COMPILER_SOURCES compiler/ModuleNN.cpp)
+endif()
 
 set(MAIN_SOURCE compiler/roxal.cpp)
 
@@ -326,6 +333,7 @@ target_compile_definitions(roxalcore PRIVATE
     $<$<BOOL:${ROXAL_ENABLE_REGEX}>:ROXAL_ENABLE_REGEX>
     $<$<BOOL:${ROXAL_ENABLE_SOCKET}>:ROXAL_ENABLE_SOCKET>
     $<$<BOOL:${ROXAL_ENABLE_ONNX}>:ROXAL_ENABLE_ONNX>
+    $<$<BOOL:${ROXAL_ENABLE_AI_NN}>:ROXAL_ENABLE_AI_NN>
     ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
     ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
     ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
@@ -347,6 +355,7 @@ if(ROXAL_BUILD_MAIN)
         $<$<BOOL:${ROXAL_ENABLE_REGEX}>:ROXAL_ENABLE_REGEX>
         $<$<BOOL:${ROXAL_ENABLE_SOCKET}>:ROXAL_ENABLE_SOCKET>
         $<$<BOOL:${ROXAL_ENABLE_ONNX}>:ROXAL_ENABLE_ONNX>
+        $<$<BOOL:${ROXAL_ENABLE_AI_NN}>:ROXAL_ENABLE_AI_NN>
         ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
         ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
         ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"

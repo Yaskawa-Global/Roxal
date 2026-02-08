@@ -676,14 +676,21 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     //  for the specified module
     ModuleInfo module = findImport(ast->packages);
     bool builtinModule = false;
+    icu::UnicodeString builtinRegistryKey;  // dotted name for lazy registry lookup
     if (module.isProto || module.isIdl)
         currentModuleHasDynamicImport = true;
 
-    // Check if this is a builtin module (even if a file also exists)
-    if (ast->packages.size() == 1) {
-        icu::UnicodeString modName { ast->packages[0] };
-        if (VM::instance().getBuiltinModuleType(modName).isNonNil()) {
-            module.name = modName;
+    // Check if this is a builtin module (even if a file also exists).
+    // Support both single-component (e.g., "regex") and dotted (e.g., "ai.nn") names.
+    {
+        icu::UnicodeString joinedModName;
+        for (size_t i = 0; i < ast->packages.size(); ++i) {
+            if (i > 0) joinedModName += ".";
+            joinedModName += ast->packages[i];
+        }
+        if (VM::instance().getBuiltinModuleType(joinedModName).isNonNil()) {
+            builtinRegistryKey = joinedModName;
+            module.name = ast->packages.back();  // leaf name for module hierarchy
             builtinModule = true;
         }
     }
@@ -724,9 +731,11 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 
     if (!imported) {  // import it
         if (builtinModule) {
-            ptr<BuiltinModule> importedModule = VM::instance().getBuiltinModule(module.name);
+            // Use the full dotted registry key (e.g. "ai.nn") for lazy module lookup
+            auto registryKey = builtinRegistryKey.isEmpty() ? module.name : builtinRegistryKey;
+            ptr<BuiltinModule> importedModule = VM::instance().getBuiltinModule(registryKey);
             if (!importedModule)
-                throw std::runtime_error("builtin module '" + toUTF8StdString(module.name) + "' not registered");
+                throw std::runtime_error("builtin module '" + toUTF8StdString(registryKey) + "' not registered");
             importedModuleType = importedModule->moduleType();
             importedModuleType = importedModuleType.strongRef();
             importedModules[module] = importedModuleType;

@@ -2,6 +2,7 @@
 #include "BuiltinModule.h"
 #include "VM.h"
 #include "Object.h"
+#include <algorithm>
 
 namespace roxal {
 
@@ -89,7 +90,10 @@ void LazyModuleRegistry::doLoad(ModuleEntry& entry, VM& vm, const std::string& n
 
     if (entry.instance->hasModuleScript()) {
         // 4. Parse the .rox file to populate type declarations
-        std::string roxFile = name + ".rox";
+        //    Convert dots to path separators for nested modules (e.g. "ai.nn" → "ai/nn.rox")
+        std::string roxFile = name;
+        std::replace(roxFile.begin(), roxFile.end(), '.', '/');
+        roxFile += ".rox";
         vm.executeBuiltinModuleScript(roxFile, entry.instance->moduleType());
     }
 

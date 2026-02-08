@@ -1,0 +1,26 @@
+@builtin
+func load(path:string):
+  """Load an ONNX model from the given file path. Returns a Model object."""
+
+@builtin
+type Model object:
+
+  @builtin
+  func run(input:tensor):
+    """Run inference with the given input tensor. Returns output tensor (or list if multiple outputs)."""
+
+  @builtin
+  func inputs():
+    """Return list of input descriptors [{name, shape, dtype}, ...]."""
+
+  @builtin
+  func outputs():
+    """Return list of output descriptors [{name, shape, dtype}, ...]."""
+
+  @builtin
+  func device():
+    """Return current execution device string."""
+
+  @builtin
+  proc close():
+    """Release model session and free resources."""

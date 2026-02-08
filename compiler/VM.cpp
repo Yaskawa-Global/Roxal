@@ -746,6 +746,9 @@ VM::VM()
     #ifdef ROXAL_ENABLE_SOCKET
     lazyModuleRegistry.registerFactory("socket", []{ return make_ptr<ModuleSocket>(); });
     #endif
+    #ifdef ROXAL_ENABLE_AI_NN
+    lazyModuleRegistry.registerFactory("ai.nn", []{ return make_ptr<ModuleNN>(); });
+    #endif
 
     std::vector<std::string> stagedModulePaths;
     {

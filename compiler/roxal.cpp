@@ -754,6 +754,9 @@ int main(int argc, const char* argv[])
         #ifdef ROXAL_ENABLE_SOCKET
             features.push_back("socket");
         #endif
+        #ifdef ROXAL_ENABLE_AI_NN
+            features.push_back("nn");
+        #endif
         if (!features.empty()) {
             std::cout << " [";
             for (size_t i = 0; i < features.size(); ++i) {

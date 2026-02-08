@@ -32,6 +32,9 @@
 #ifdef ROXAL_ENABLE_SOCKET
 #include "ModuleSocket.h"
 #endif
+#ifdef ROXAL_ENABLE_AI_NN
+#include "ModuleNN.h"
+#endif
 #include <ffi.h>
 #include <vector>
 
