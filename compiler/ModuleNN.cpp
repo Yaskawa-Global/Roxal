@@ -109,13 +109,54 @@ static ModelWrapper* getModelWrapper(ObjectInstance* inst) {
     return sp->get();
 }
 
+// Check if a tensor shape is compatible with a model's expected shape.
+// Dynamic dimensions (-1) in the expected shape accept any positive value.
+static bool isShapeCompatible(const std::vector<int64_t>& actual,
+                              const std::vector<int64_t>& expected)
+{
+    if (actual.size() != expected.size())
+        return false;
+    for (size_t i = 0; i < expected.size(); ++i) {
+        if (expected[i] < 0)
+            continue; // dynamic dimension, any positive value is fine
+        if (actual[i] != expected[i])
+            return false;
+    }
+    return true;
+}
+
+static std::string shapeToString(const std::vector<int64_t>& shape)
+{
+    std::string s = "[";
+    for (size_t i = 0; i < shape.size(); ++i) {
+        if (i > 0) s += ", ";
+        if (shape[i] < 0)
+            s += "?";
+        else
+            s += std::to_string(shape[i]);
+    }
+    return s + "]";
+}
+
 static Value runInference(ModelWrapper* wrapper, ObjTensor* inputTensor) {
 #ifdef ROXAL_ENABLE_ONNX
     if (wrapper->closed)
-        throw std::runtime_error("ai.nn: Model session is closed");
+        throw std::invalid_argument("ai.nn: Model session is closed");
 
     if (!inputTensor->isOrtBacked())
         throw std::runtime_error("ai.nn: input tensor is not ORT-backed");
+
+    // Validate input shape against model's expected shape
+    if (!wrapper->inputShapes.empty()) {
+        const auto& expectedShape = wrapper->inputShapes[0];
+        const auto& actualShape = inputTensor->shape();
+        if (!isShapeCompatible(actualShape, expectedShape)) {
+            throw std::invalid_argument(
+                "ai.nn: shape mismatch for input '" + wrapper->inputNames[0] +
+                "': model expects " + shapeToString(expectedShape) +
+                " but got " + shapeToString(actualShape));
+        }
+    }
 
     // Input ORT value
     const Ort::Value& inputOrt = inputTensor->ortValue();
@@ -172,6 +213,18 @@ static Value runInference(ModelWrapper* wrapper, ObjTensor* inputTensor) {
 #endif
 }
 
+// Wrapper that catches std::invalid_argument from runInference and converts
+// it into a Roxal exception catchable by try/except.
+static Value safeRunInference(VM& vm, ModelWrapper* wrapper, ObjTensor* inputTensor) {
+    try {
+        return runInference(wrapper, inputTensor);
+    } catch (const std::invalid_argument& e) {
+        Value msg = Value::stringVal(toUnicodeString(e.what()));
+        vm.raiseException(Value::exceptionVal(msg));
+        return Value::nilVal();
+    }
+}
+
 // ============================================================
 // ModuleNN lifecycle
 // ============================================================
@@ -198,12 +251,12 @@ void ModuleNN::registerBuiltins(VM& vm)
     // Model object methods
     // predict is declared here for help()/docstring visibility; the instance property
     // closure (set in createModelObject) shadows this for actual calls and signal integration.
-    linkMethod("Model", "predict", [](VM&, ArgsView a) -> Value {
+    linkMethod("Model", "predict", [](VM& vm, ArgsView a) -> Value {
         if (a.size() < 2 || !isObjectInstance(a[0]))
             throw std::invalid_argument("predict expects a tensor argument");
         if (!isTensor(a[1]))
             throw std::invalid_argument("predict expects a tensor argument");
-        return runInference(getModelWrapper(asObjectInstance(a[0])), asTensor(a[1]));
+        return safeRunInference(vm, getModelWrapper(asObjectInstance(a[0])), asTensor(a[1]));
     });
     linkMethod("Model", "inputs",  [this](VM&, ArgsView a) { return nn_model_inputs_builtin(a); });
     linkMethod("Model", "outputs", [this](VM&, ArgsView a) { return nn_model_outputs_builtin(a); });
@@ -238,10 +291,10 @@ Value ModuleNN::createModelObject(const std::shared_ptr<ModelWrapper>& wrapper)
     // This is a standalone closure (not a method) that captures the model wrapper
     // and can be used in dataflow signal expressions like any other func.
     std::shared_ptr<ModelWrapper> capturedWrapper = wrapper;
-    NativeFn predictFn = [capturedWrapper](VM&, ArgsView args) -> Value {
+    NativeFn predictFn = [capturedWrapper](VM& vm, ArgsView args) -> Value {
         if (args.size() < 1 || !isTensor(args[0]))
             throw std::invalid_argument("predict expects a tensor argument");
-        return runInference(capturedWrapper.get(), asTensor(args[0]));
+        return safeRunInference(vm, capturedWrapper.get(), asTensor(args[0]));
     };
 
     auto funcObj = newFunctionObj(

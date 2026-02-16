@@ -1,0 +1,62 @@
+# ai.nn dynamic shape test: model with dynamic batch dimension
+# The double-dynamic.onnx model multiplies input by 2, with shape [N, 4]
+import ai.nn
+
+var model = ai.nn.load("../modules/ai/double-dynamic.onnx")
+
+# verify inputs() reports dynamic dimension as -1
+var inp_info = model.inputs()[0]
+print(inp_info['name'])
+print(inp_info['shape'])
+print(inp_info['dtype'])
+
+# --- batch size 1 ---
+var t1 = tensor(1, 4, dtype='float32')
+t1[0, 0] = 1.0
+t1[0, 1] = 2.0
+t1[0, 2] = 3.0
+t1[0, 3] = 4.0
+
+var out1 = model.predict(t1)
+print(out1[0, 0])
+print(out1[0, 1])
+print(out1[0, 2])
+print(out1[0, 3])
+
+# --- batch size 3 ---
+var t3 = tensor(3, 4, dtype='float32')
+t3[0, 0] = 10.0
+t3[1, 1] = 20.0
+t3[2, 2] = 30.0
+t3[2, 3] = 0.5
+
+var out3 = model.predict(t3)
+print(out3[0, 0])
+print(out3[1, 1])
+print(out3[2, 2])
+print(out3[2, 3])
+
+# --- batch size 5 (larger batch) ---
+var t5 = tensor(5, 4, dtype='float32')
+t5[4, 3] = 100.0
+var out5 = model.predict(t5)
+print(out5[4, 3])
+
+# --- shape mismatch: wrong number of features (catchable) ---
+try:
+  var bad = tensor(1, 5, dtype='float32')
+  model.predict(bad)
+  print("ERROR: should have thrown")
+except e:
+  print("caught shape error")
+
+# --- shape mismatch: wrong rank (catchable) ---
+try:
+  var bad2 = tensor(4, dtype='float32')
+  model.predict(bad2)
+  print("ERROR: should have thrown")
+except e:
+  print("caught rank error")
+
+model.close()
+print("done")
