@@ -1,6 +1,6 @@
 @builtin
-func load(path:string):
-  """Load an ONNX model from the given file path. Returns a Model object."""
+func load(path:string, warmup:bool=true):
+  """Load an ONNX model from the given file path. Returns a Model object. Set warmup=false to skip the initial warm-up inference."""
 
 @builtin
 func tensor_device(t:tensor):

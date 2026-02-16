@@ -26,6 +26,9 @@ Value types:
   * `real` - IEEE 64bit float (aka C double)
   * `decimal` - (unimplemented) fixed point (designed for no roundoff error for fractions in base 10)
   * `enum` - enumerated int labelled (similar to C)
+  * `vector` - [number number number] - arbitrary n dim real scalar elements
+  * `matrix` - [num num num; num num num] - arbitrary n x m dim real scalar elements (can use newline between rows in literals)
+  * `tensor` - multi-dimensional array with arbitrary shape (see tensor section below)
 
 Reference types:
   * `string` - Unicode (UTF-8) (literals are interned)
@@ -34,9 +37,6 @@ Reference types:
   * `list` - [list, of, values] - heterogeneous
   * `dict` - {key:value,key2:value2} - heterogeneous (hash, map)
     * insertion order preserved
-  * `vector` - [number number number] - arbitrary n dim real scalar elements
-  * `matrix` - [num num num; num num num] - arbitrary n x m dim real scalar elements (can use newline between rows in literals)
-  * `tensor` - multi-dimensional array with arbitrary shape (see tensor section below)
   * `object` - user-defined object type (aka class)
   * `actor` - user-defined actor type (similar to object type)
 

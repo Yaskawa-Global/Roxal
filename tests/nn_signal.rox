@@ -4,9 +4,6 @@ import ai.nn
 var model = ai.nn.load("../modules/ai/mnist-8.onnx")
 var empty = tensor(1, 1, 28, 28, dtype='float32')
 
-# Warm up the model (initializes CUDA context if GPU is available)
-model.predict(empty)
-
 # Create source signal and derived prediction signal
 var input_sig = signal(10, empty)
 var output_sig = model.predict(input_sig)

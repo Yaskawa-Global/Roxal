@@ -280,6 +280,7 @@ Value ModuleNN::nn_load_builtin(ArgsView args)
         throw std::invalid_argument("ai.nn.load expects a model path string");
 
     std::string path = toUTF8StdString(asStringObj(args[0])->s);
+    bool doWarmup = (args.size() < 2) || args[1].asBool();
 
 #ifdef ROXAL_ENABLE_ONNX
     auto& ortEnv = OnnxEnvironment::instance();
@@ -313,6 +314,18 @@ Value ModuleNN::nn_load_builtin(ArgsView args)
         auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
         wrapper->outputShapes.push_back(tensorInfo.GetShape());
         wrapper->outputDtypes.push_back(ortDtypeToString(tensorInfo.GetElementType()));
+    }
+
+    // Auto-warmup: run one inference with a zero tensor to initialize the CUDA
+    // context and trigger ORT graph optimization.  This makes the first real
+    // predict() call fast and consistent.
+    if (doWarmup && !wrapper->inputShapes.empty()) {
+        auto warmupShape = wrapper->inputShapes[0];
+        for (auto& d : warmupShape)
+            if (d < 0) d = 1;  // replace dynamic dimensions with 1
+        Value warmup = Value::tensorVal(warmupShape,
+            tensorDTypeFromString(wrapper->inputDtypes[0]));
+        runInference(wrapper.get(), asTensor(warmup));
     }
 
     return createModelObject(wrapper);
