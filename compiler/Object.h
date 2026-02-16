@@ -758,6 +758,13 @@ struct ObjTensor : public Obj
     /// Return a mutable Ort::Value (e.g. for pre-allocated inference output).
     /// Triggers COW if shared.
     Ort::Value& ortValueMut();
+
+    /// True when the underlying Ort::Value resides in GPU memory.
+    bool isOnGpu() const;
+
+    /// If the tensor is on GPU, copy data to CPU (lazy materialization).
+    /// Logically const — tensor value unchanged, only memory location.
+    void ensureCpu() const;
 #else
     bool isOrtBacked() const { return false; }
 #endif
@@ -804,7 +811,9 @@ private:
 #ifdef ROXAL_ENABLE_ONNX
     // ORT-backed storage.  Wrapped in shared_ptr for COW (Ort::Value is move-only).
     // When non-null, this is the authoritative data source.
-    std::shared_ptr<Ort::Value> ort_value_;
+    // Mutable so ensureCpu() can lazily materialize a CPU copy while remaining
+    // logically const (the tensor value is unchanged).
+    mutable std::shared_ptr<Ort::Value> ort_value_;
 
     /// COW guard for the Ort::Value (deep-copies if shared).
     void ensureOrtUnique();

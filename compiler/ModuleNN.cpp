@@ -117,27 +117,45 @@ static Value runInference(ModelWrapper* wrapper, ObjTensor* inputTensor) {
     if (!inputTensor->isOrtBacked())
         throw std::runtime_error("ai.nn: input tensor is not ORT-backed");
 
-    // Prepare input name pointers
-    std::vector<const char*> inputNamePtrs;
-    inputNamePtrs.reserve(wrapper->inputNames.size());
-    for (auto& name : wrapper->inputNames)
-        inputNamePtrs.push_back(name.c_str());
-
-    // Input ORT value (pointer to contiguous array of size 1)
+    // Input ORT value
     const Ort::Value& inputOrt = inputTensor->ortValue();
 
-    // Prepare output name pointers
-    std::vector<const char*> outputNamePtrs;
-    outputNamePtrs.reserve(wrapper->outputNames.size());
-    for (auto& name : wrapper->outputNames)
-        outputNamePtrs.push_back(name.c_str());
+    std::vector<Ort::Value> outputs;
 
-    // Run inference
-    auto outputs = wrapper->session->Run(
-        Ort::RunOptions{nullptr},
-        inputNamePtrs.data(), &inputOrt, 1,
-        outputNamePtrs.data(), outputNamePtrs.size()
-    );
+    if (wrapper->device == "cuda") {
+        // IoBinding path: keeps outputs on GPU for zero-copy model chaining.
+        // Input tensors (CPU or GPU) are handled transparently by ORT.
+        Ort::IoBinding binding(*wrapper->session);
+
+        // Bind input(s)
+        for (auto& name : wrapper->inputNames)
+            binding.BindInput(name.c_str(), inputOrt);
+
+        // Bind outputs to CUDA memory so they stay on GPU
+        Ort::MemoryInfo cudaMemInfo("Cuda", OrtDeviceAllocator, 0, OrtMemTypeDefault);
+        for (auto& name : wrapper->outputNames)
+            binding.BindOutput(name.c_str(), cudaMemInfo);
+
+        wrapper->session->Run(Ort::RunOptions{nullptr}, binding);
+        outputs = binding.GetOutputValues();
+    } else {
+        // CPU path: standard Session::Run()
+        std::vector<const char*> inputNamePtrs;
+        inputNamePtrs.reserve(wrapper->inputNames.size());
+        for (auto& name : wrapper->inputNames)
+            inputNamePtrs.push_back(name.c_str());
+
+        std::vector<const char*> outputNamePtrs;
+        outputNamePtrs.reserve(wrapper->outputNames.size());
+        for (auto& name : wrapper->outputNames)
+            outputNamePtrs.push_back(name.c_str());
+
+        outputs = wrapper->session->Run(
+            Ort::RunOptions{nullptr},
+            inputNamePtrs.data(), &inputOrt, 1,
+            outputNamePtrs.data(), outputNamePtrs.size()
+        );
+    }
 
     if (outputs.size() == 1) {
         return Value::objVal(newTensorObj(std::move(outputs[0])));

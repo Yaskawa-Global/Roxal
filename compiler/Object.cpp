@@ -13,6 +13,10 @@
 #include <utility>
 #include <core/AST.h>
 
+#if defined(ROXAL_ENABLE_ONNX) && defined(ROXAL_ENABLE_CUDA)
+#include <cuda_runtime_api.h>
+#endif
+
 #include <core/types.h>
 #include "VM.h"
 #include "FFI.h"
@@ -3078,6 +3082,9 @@ Ort::Value& ObjTensor::ortValueMut()
 void ObjTensor::ensureOrtUnique()
 {
     if (ort_value_ && ort_value_.use_count() > 1) {
+        // Callers must call ensureCpu() first — COW deep-copy is CPU-only
+        assert(!isOnGpu() && "ensureOrtUnique() called on GPU tensor; call ensureCpu() first");
+
         // Deep-copy: allocate a new ORT tensor and copy the raw data
         auto info = ort_value_->GetTensorTypeAndShapeInfo();
         auto ortDtype = info.GetElementType();
@@ -3090,6 +3097,39 @@ void ObjTensor::ensureOrtUnique()
                      ort_value_->GetTensorData<void>(), byteCount);
         ort_value_ = std::make_shared<Ort::Value>(std::move(newVal));
     }
+}
+
+bool ObjTensor::isOnGpu() const
+{
+    if (!ort_value_) return false;
+    auto memInfo = ort_value_->GetTensorMemoryInfo();
+    return memInfo.GetDeviceType() == OrtMemoryInfoDeviceType_GPU;
+}
+
+void ObjTensor::ensureCpu() const
+{
+    if (!isOnGpu()) return;
+
+#ifdef ROXAL_ENABLE_CUDA
+    auto info = ort_value_->GetTensorTypeAndShapeInfo();
+    auto ortDtype = info.GetElementType();
+    auto shape = info.GetShape();
+    size_t byteCount = info.GetElementCount() * tensorDTypeSize(dtype_);
+
+    // Allocate a new CPU tensor and copy data from GPU
+    Ort::AllocatorWithDefaultOptions cpuAllocator;
+    auto cpuVal = Ort::Value::CreateTensor(cpuAllocator, shape.data(), shape.size(), ortDtype);
+    cudaError_t err = cudaMemcpy(cpuVal.GetTensorMutableRawData(),
+                                 ort_value_->GetTensorData<void>(),
+                                 byteCount, cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess)
+        throw std::runtime_error(std::string("cudaMemcpy D2H failed: ") + cudaGetErrorString(err));
+
+    ort_value_ = std::make_shared<Ort::Value>(std::move(cpuVal));
+#else
+    throw std::runtime_error("GPU tensor element access requires CUDA support "
+                             "(build with CUDA toolkit installed)");
+#endif
 }
 
 // Helper: read a single element from ORT buffer as double
@@ -3129,6 +3169,7 @@ static void ortSetElementFromDouble(Ort::Value& val, TensorDType dtype, int64_t 
 double ObjTensor::at(int64_t flatIdx) const
 {
 #ifdef ROXAL_ENABLE_ONNX
+    ensureCpu();
     return ortElementAsDouble(*ort_value_, dtype_, flatIdx);
 #else
     return (*data_)[flatIdx];
@@ -3138,6 +3179,7 @@ double ObjTensor::at(int64_t flatIdx) const
 void ObjTensor::setAt(int64_t flatIdx, double v)
 {
 #ifdef ROXAL_ENABLE_ONNX
+    ensureCpu();
     ensureOrtUnique();
     ortSetElementFromDouble(*ort_value_, dtype_, flatIdx, v);
 #else
@@ -3151,6 +3193,7 @@ const double* ObjTensor::data() const
 #ifdef ROXAL_ENABLE_ONNX
     if (dtype_ != TensorDType::Float64)
         throw std::runtime_error("data() requires Float64 dtype; use at() for type-safe access");
+    ensureCpu();
     return ort_value_->GetTensorData<double>();
 #else
     return data_->data();
@@ -3162,6 +3205,7 @@ double* ObjTensor::dataMut()
 #ifdef ROXAL_ENABLE_ONNX
     if (dtype_ != TensorDType::Float64)
         throw std::runtime_error("dataMut() requires Float64 dtype; use setAt() for type-safe access");
+    ensureCpu();
     ensureOrtUnique();
     return ort_value_->GetTensorMutableData<double>();
 #else
