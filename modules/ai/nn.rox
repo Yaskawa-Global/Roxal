@@ -10,8 +10,8 @@ func tensor_device(t:tensor):
 type Model object:
 
   @builtin
-  func run(input:tensor):
-    """Run inference with the given input tensor. Returns output tensor (or list if multiple outputs)."""
+  func predict(input:tensor):
+    """Run inference on the given tensor. Returns output tensor (or list if multiple outputs). Also works with signals for reactive dataflow."""
 
   @builtin
   func inputs():

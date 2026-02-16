@@ -196,7 +196,15 @@ void ModuleNN::registerBuiltins(VM& vm)
     link("tensor_device", [this](VM&, ArgsView a) { return nn_tensor_device_builtin(a); });
 
     // Model object methods
-    linkMethod("Model", "run",     [this](VM&, ArgsView a) { return nn_model_run_builtin(a); });
+    // predict is declared here for help()/docstring visibility; the instance property
+    // closure (set in createModelObject) shadows this for actual calls and signal integration.
+    linkMethod("Model", "predict", [](VM&, ArgsView a) -> Value {
+        if (a.size() < 2 || !isObjectInstance(a[0]))
+            throw std::invalid_argument("predict expects a tensor argument");
+        if (!isTensor(a[1]))
+            throw std::invalid_argument("predict expects a tensor argument");
+        return runInference(getModelWrapper(asObjectInstance(a[0])), asTensor(a[1]));
+    });
     linkMethod("Model", "inputs",  [this](VM&, ArgsView a) { return nn_model_inputs_builtin(a); });
     linkMethod("Model", "outputs", [this](VM&, ArgsView a) { return nn_model_outputs_builtin(a); });
     linkMethod("Model", "device",  [this](VM&, ArgsView a) { return nn_model_device_builtin(a); });
@@ -246,6 +254,9 @@ Value ModuleNN::createModelObject(const std::shared_ptr<ModelWrapper>& wrapper)
     func->arity = 1;
     func->upvalueCount = 0;
     func->builtinInfo = make_ptr<BuiltinFuncInfo>(predictFn);
+    func->doc = toUnicodeString(
+        "Run inference on the given tensor. Returns output tensor "
+        "(or list if multiple outputs). Also works with signals for reactive dataflow.");
     // funcType is required for signal/dataflow integration: the VM uses it
     // to map signal arguments to FuncNode inputs when predict is called with a signal.
     func->funcType = makeFuncType({{"input", type::BuiltinType::Tensor}});
@@ -309,21 +320,6 @@ Value ModuleNN::nn_load_builtin(ArgsView args)
     (void)path;
     throw std::runtime_error("ai.nn.load requires ONNX Runtime (build with -DROXAL_ENABLE_ONNX=ON)");
 #endif
-}
-
-// ============================================================
-// Model.run(input_tensor) → tensor | list
-// ============================================================
-
-Value ModuleNN::nn_model_run_builtin(ArgsView args)
-{
-    if (args.size() < 2 || !isObjectInstance(args[0]))
-        throw std::invalid_argument("Model.run expects a tensor argument");
-    if (!isTensor(args[1]))
-        throw std::invalid_argument("Model.run expects a tensor argument");
-
-    ModelWrapper* wrapper = getModelWrapper(asObjectInstance(args[0]));
-    return runInference(wrapper, asTensor(args[1]));
 }
 
 // ============================================================

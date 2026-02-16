@@ -30,7 +30,7 @@ while c <= 17:
   img1[0, 0, 24, c] = 1.0
   c = c + 1
 
-var out1 = model.run(img1)
+var out1 = model.predict(img1)
 # argmax
 var best1 = 0
 var best1_score = out1[0, 0]
@@ -59,7 +59,7 @@ while r <= 21:
   img0[0, 0, r, 18] = 0.8
   r = r + 1
 
-var out0 = model.run(img0)
+var out0 = model.predict(img0)
 var best0 = 0
 var best0_score = out0[0, 0]
 i = 1
@@ -70,7 +70,7 @@ while i < 10:
   i = i + 1
 print(best0)
 
-# --- predict closure ---
+# --- predict as standalone closure ---
 var predict = model.predict
 var out_p = predict(img1)
 var best_p = 0

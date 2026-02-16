@@ -3389,6 +3389,25 @@ bool ObjTensor::equals(const ObjTensor* other, double eps) const
 {
     if (shape_ != other->shape_) return false;
     if (dtype_ != other->dtype_) return false;
+
+#ifdef ROXAL_ENABLE_ONNX
+    // COW identity: if both tensors share the same underlying Ort::Value,
+    // their data is identical — no need for element comparison.
+    if (ort_value_ && other->ort_value_ && ort_value_.get() == other->ort_value_.get())
+        return true;
+
+    // For GPU-resident tensors, avoid expensive GPU→CPU copy for comparison.
+    // Use identity comparison only — different ORT values are conservatively
+    // considered unequal.  This is correct for signal change detection (each
+    // inference produces a new ORT value) and avoids PCIe transfer overhead.
+    if (isOnGpu() || other->isOnGpu())
+        return false;  // different pointers already checked above
+#else
+    // COW identity: shared data_ pointer means identical contents.
+    if (data_ && other->data_ && data_.get() == other->data_.get())
+        return true;
+#endif
+
     int64_t n = numel();
     for (int64_t i = 0; i < n; ++i) {
         if (std::abs(at(i) - other->at(i)) > eps)

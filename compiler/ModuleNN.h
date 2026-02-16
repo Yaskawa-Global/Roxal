@@ -23,7 +23,6 @@ public:
     Value nn_tensor_device_builtin(ArgsView args);
 
     // Model object methods
-    Value nn_model_run_builtin(ArgsView args);
     Value nn_model_inputs_builtin(ArgsView args);
     Value nn_model_outputs_builtin(ArgsView args);
     Value nn_model_device_builtin(ArgsView args);

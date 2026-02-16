@@ -7,8 +7,8 @@ var model_b = ai.nn.load("../modules/ai/identity-10.onnx")
 
 # warmup (needed for CUDA context init)
 var warmup = tensor(1, 10, dtype='float32')
-model_a.run(warmup)
-model_b.run(warmup)
+model_a.predict(warmup)
+model_b.predict(warmup)
 
 # prepare input with known values
 var input = tensor(1, 10, dtype='float32')
@@ -25,14 +25,14 @@ print(dev == "cpu" or dev == "cuda")
 print(ai.nn.tensor_device(input))
 
 # chain: model_a -> model_b
-var mid = model_a.run(input)
+var mid = model_a.predict(input)
 
 # intermediate tensor must match the model's device:
 # on GPU systems mid is on cuda (IoBinding), on CPU systems mid is on cpu
 var mid_dev = ai.nn.tensor_device(mid)
 print(mid_dev == dev)
 
-var out = model_b.run(mid)
+var out = model_b.predict(mid)
 var out_dev = ai.nn.tensor_device(out)
 print(out_dev == dev)
 
