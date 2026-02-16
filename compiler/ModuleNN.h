@@ -20,6 +20,7 @@ public:
 
     // Module-level functions
     Value nn_load_builtin(ArgsView args);
+    Value nn_tensor_device_builtin(ArgsView args);
 
     // Model object methods
     Value nn_model_run_builtin(ArgsView args);

@@ -3,6 +3,10 @@ func load(path:string):
   """Load an ONNX model from the given file path. Returns a Model object."""
 
 @builtin
+func tensor_device(t:tensor):
+  """Return the device where a tensor's data resides ('cpu' or 'cuda')."""
+
+@builtin
 type Model object:
 
   @builtin

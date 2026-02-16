@@ -193,6 +193,7 @@ void ModuleNN::registerBuiltins(VM& vm)
 
     // Module-level functions
     link("load", [this](VM&, ArgsView a) { return nn_load_builtin(a); });
+    link("tensor_device", [this](VM&, ArgsView a) { return nn_tensor_device_builtin(a); });
 
     // Model object methods
     linkMethod("Model", "run",     [this](VM&, ArgsView a) { return nn_model_run_builtin(a); });
@@ -392,6 +393,23 @@ Value ModuleNN::nn_model_device_builtin(ArgsView args)
 
     ModelWrapper* wrapper = getModelWrapper(asObjectInstance(args[0]));
     return Value::stringVal(toUnicodeString(wrapper->device));
+}
+
+// ============================================================
+// ai.nn.tensor_device(t) → string
+// ============================================================
+
+Value ModuleNN::nn_tensor_device_builtin(ArgsView args)
+{
+    if (args.size() < 1 || !isTensor(args[0]))
+        throw std::invalid_argument("ai.nn.tensor_device expects a tensor argument");
+
+#ifdef ROXAL_ENABLE_ONNX
+    ObjTensor* t = asTensor(args[0]);
+    if (t->isOrtBacked() && t->isOnGpu())
+        return Value::stringVal(toUnicodeString("cuda"));
+#endif
+    return Value::stringVal(toUnicodeString("cpu"));
 }
 
 // ============================================================
