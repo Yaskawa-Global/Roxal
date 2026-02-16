@@ -12,7 +12,7 @@ print(ins[0]["dtype"])
 var outs = model.outputs()
 print(len(outs))
 print(outs[0]["name"])
-print(model.device())
+print(model.device() == "cpu" or model.device() == "cuda")
 
 # --- digit "1": vertical stroke in center ---
 var img1 = tensor(1, 1, 28, 28, dtype='float32')

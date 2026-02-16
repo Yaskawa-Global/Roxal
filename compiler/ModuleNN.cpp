@@ -25,17 +25,39 @@ public:
 
     Ort::Env& env() { return env_; }
 
-    Ort::SessionOptions createSessionOptions(const std::string& /*device*/ = "cpu") {
+    Ort::SessionOptions createSessionOptions(bool requestGpu = true) {
         Ort::SessionOptions opts;
         opts.SetIntraOpNumThreads(1);
         opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
-        // GPU execution providers will be added in Phase 2
+        if (requestGpu && cudaAvailable_) {
+            try {
+                OrtCUDAProviderOptions cuda_opts{};
+                cuda_opts.device_id = 0;
+                opts.AppendExecutionProvider_CUDA(cuda_opts);
+            } catch (...) {
+                // CUDA provider not available; fall through to CPU
+            }
+        }
         return opts;
     }
 
+    bool cudaAvailable() const { return cudaAvailable_; }
+
 private:
-    OnnxEnvironment() : env_(ORT_LOGGING_LEVEL_WARNING, "roxal-nn") {}
+    OnnxEnvironment() : env_(ORT_LOGGING_LEVEL_WARNING, "roxal-nn") {
+        // Probe for CUDA by trying to create a session options with CUDA provider
+        try {
+            Ort::SessionOptions probe;
+            OrtCUDAProviderOptions cuda_opts{};
+            cuda_opts.device_id = 0;
+            probe.AppendExecutionProvider_CUDA(cuda_opts);
+            cudaAvailable_ = true;
+        } catch (...) {
+            cudaAvailable_ = false;
+        }
+    }
     Ort::Env env_;
+    bool cudaAvailable_ = false;
 };
 
 static std::string ortDtypeToString(ONNXTensorElementDataType dt) {
@@ -235,7 +257,7 @@ Value ModuleNN::nn_load_builtin(ArgsView args)
 
     auto wrapper = std::make_shared<ModelWrapper>();
     wrapper->session = std::make_unique<Ort::Session>(ortEnv.env(), path.c_str(), opts);
-    wrapper->device = "cpu";
+    wrapper->device = ortEnv.cudaAvailable() ? "cuda" : "cpu";
 
     Ort::AllocatorWithDefaultOptions allocator;
 
