@@ -138,65 +138,55 @@ static std::string shapeToString(const std::vector<int64_t>& shape)
     return s + "]";
 }
 
-static Value runInference(ModelWrapper* wrapper, ObjTensor* inputTensor) {
+// Core inference with multiple named inputs.
+// Each entry in inputTensors is (inputName, ObjTensor*).
+static Value runInferenceMulti(ModelWrapper* wrapper,
+                               const std::vector<std::pair<std::string, ObjTensor*>>& inputTensors) {
 #ifdef ROXAL_ENABLE_ONNX
     if (wrapper->closed)
         throw std::invalid_argument("ai.nn: Model session is closed");
 
-    if (!inputTensor->isOrtBacked())
-        throw std::runtime_error("ai.nn: input tensor is not ORT-backed");
+    // Validate each input
+    for (auto& [name, tensor] : inputTensors) {
+        if (!tensor->isOrtBacked())
+            throw std::runtime_error("ai.nn: input tensor '" + name + "' is not ORT-backed");
 
-    // Validate input shape against model's expected shape
-    if (!wrapper->inputShapes.empty()) {
-        const auto& expectedShape = wrapper->inputShapes[0];
-        const auto& actualShape = inputTensor->shape();
-        if (!isShapeCompatible(actualShape, expectedShape)) {
-            throw std::invalid_argument(
-                "ai.nn: shape mismatch for input '" + wrapper->inputNames[0] +
-                "': model expects " + shapeToString(expectedShape) +
-                " but got " + shapeToString(actualShape));
+        // Find the expected shape for this input name
+        for (size_t i = 0; i < wrapper->inputNames.size(); ++i) {
+            if (wrapper->inputNames[i] == name) {
+                if (!isShapeCompatible(tensor->shape(), wrapper->inputShapes[i])) {
+                    throw std::invalid_argument(
+                        "ai.nn: shape mismatch for input '" + name +
+                        "': model expects " + shapeToString(wrapper->inputShapes[i]) +
+                        " but got " + shapeToString(tensor->shape()));
+                }
+                break;
+            }
         }
     }
 
-    // Input ORT value
-    const Ort::Value& inputOrt = inputTensor->ortValue();
+    // Use IoBinding for both CPU and CUDA: it allows binding each input
+    // individually by name (ORT's Session::Run requires a contiguous array
+    // of Ort::Value which we can't form from separate ObjTensor objects).
+    Ort::IoBinding binding(*wrapper->session);
+
+    for (auto& [name, tensor] : inputTensors)
+        binding.BindInput(name.c_str(), tensor->ortValue());
 
     std::vector<Ort::Value> outputs;
 
     if (wrapper->device == "cuda") {
-        // IoBinding path: keeps outputs on GPU for zero-copy model chaining.
-        // Input tensors (CPU or GPU) are handled transparently by ORT.
-        Ort::IoBinding binding(*wrapper->session);
-
-        // Bind input(s)
-        for (auto& name : wrapper->inputNames)
-            binding.BindInput(name.c_str(), inputOrt);
-
-        // Bind outputs to CUDA memory so they stay on GPU
         Ort::MemoryInfo cudaMemInfo("Cuda", OrtDeviceAllocator, 0, OrtMemTypeDefault);
         for (auto& name : wrapper->outputNames)
             binding.BindOutput(name.c_str(), cudaMemInfo);
-
-        wrapper->session->Run(Ort::RunOptions{nullptr}, binding);
-        outputs = binding.GetOutputValues();
     } else {
-        // CPU path: standard Session::Run()
-        std::vector<const char*> inputNamePtrs;
-        inputNamePtrs.reserve(wrapper->inputNames.size());
-        for (auto& name : wrapper->inputNames)
-            inputNamePtrs.push_back(name.c_str());
-
-        std::vector<const char*> outputNamePtrs;
-        outputNamePtrs.reserve(wrapper->outputNames.size());
+        Ort::MemoryInfo cpuMemInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
         for (auto& name : wrapper->outputNames)
-            outputNamePtrs.push_back(name.c_str());
-
-        outputs = wrapper->session->Run(
-            Ort::RunOptions{nullptr},
-            inputNamePtrs.data(), &inputOrt, 1,
-            outputNamePtrs.data(), outputNamePtrs.size()
-        );
+            binding.BindOutput(name.c_str(), cpuMemInfo);
     }
+
+    wrapper->session->Run(Ort::RunOptions{nullptr}, binding);
+    outputs = binding.GetOutputValues();
 
     if (outputs.size() == 1) {
         return Value::objVal(newTensorObj(std::move(outputs[0])));
@@ -208,9 +198,16 @@ static Value runInference(ModelWrapper* wrapper, ObjTensor* inputTensor) {
         asList(list)->elts.push_back(Value::objVal(newTensorObj(std::move(out))));
     return list;
 #else
-    (void)wrapper; (void)inputTensor;
+    (void)wrapper; (void)inputTensors;
     throw std::runtime_error("ai.nn requires ONNX Runtime (build with -DROXAL_ENABLE_ONNX=ON)");
 #endif
+}
+
+// Convenience: single-tensor input (most common case)
+static Value runInference(ModelWrapper* wrapper, ObjTensor* inputTensor) {
+    if (wrapper->inputNames.empty())
+        throw std::runtime_error("ai.nn: model has no inputs");
+    return runInferenceMulti(wrapper, {{wrapper->inputNames[0], inputTensor}});
 }
 
 // Wrapper that catches std::invalid_argument from runInference and converts
@@ -218,6 +215,58 @@ static Value runInference(ModelWrapper* wrapper, ObjTensor* inputTensor) {
 static Value safeRunInference(VM& vm, ModelWrapper* wrapper, ObjTensor* inputTensor) {
     try {
         return runInference(wrapper, inputTensor);
+    } catch (const std::invalid_argument& e) {
+        Value msg = Value::stringVal(toUnicodeString(e.what()));
+        vm.raiseException(Value::exceptionVal(msg));
+        return Value::nilVal();
+    }
+}
+
+// Multi-input wrapper: accepts a dict {name: tensor} or list [tensor, ...].
+static Value safeRunInferenceFromValue(VM& vm, ModelWrapper* wrapper, const Value& arg) {
+    try {
+        if (isTensor(arg)) {
+            return runInference(wrapper, asTensor(arg));
+        }
+        else if (isDict(arg)) {
+            ObjDict* dict = asDict(arg);
+            auto items = dict->items();
+            std::vector<std::pair<std::string, ObjTensor*>> inputs;
+            inputs.reserve(items.size());
+            for (auto& [key, val] : items) {
+                if (!isString(key))
+                    throw std::invalid_argument("ai.nn: predict dict keys must be strings");
+                if (!isTensor(val))
+                    throw std::invalid_argument(
+                        "ai.nn: predict dict value for '" +
+                        toUTF8StdString(asStringObj(key)->s) + "' is not a tensor");
+                inputs.emplace_back(toUTF8StdString(asStringObj(key)->s), asTensor(val));
+            }
+            return runInferenceMulti(wrapper, inputs);
+        }
+        else if (isList(arg)) {
+            ObjList* list = asList(arg);
+            if (static_cast<size_t>(list->length()) != wrapper->inputNames.size()) {
+                throw std::invalid_argument(
+                    "ai.nn: predict list has " + std::to_string(list->length()) +
+                    " elements but model expects " + std::to_string(wrapper->inputNames.size()) +
+                    " inputs");
+            }
+            std::vector<std::pair<std::string, ObjTensor*>> inputs;
+            inputs.reserve(list->length());
+            for (size_t i = 0; i < static_cast<size_t>(list->length()); ++i) {
+                Value elem = list->elts.at(i);
+                if (!isTensor(elem))
+                    throw std::invalid_argument(
+                        "ai.nn: predict list element " + std::to_string(i) + " is not a tensor");
+                inputs.emplace_back(wrapper->inputNames[i], asTensor(elem));
+            }
+            return runInferenceMulti(wrapper, inputs);
+        }
+        else {
+            throw std::invalid_argument(
+                "ai.nn: predict expects a tensor, dict of tensors, or list of tensors");
+        }
     } catch (const std::invalid_argument& e) {
         Value msg = Value::stringVal(toUnicodeString(e.what()));
         vm.raiseException(Value::exceptionVal(msg));
@@ -253,10 +302,8 @@ void ModuleNN::registerBuiltins(VM& vm)
     // closure (set in createModelObject) shadows this for actual calls and signal integration.
     linkMethod("Model", "predict", [](VM& vm, ArgsView a) -> Value {
         if (a.size() < 2 || !isObjectInstance(a[0]))
-            throw std::invalid_argument("predict expects a tensor argument");
-        if (!isTensor(a[1]))
-            throw std::invalid_argument("predict expects a tensor argument");
-        return safeRunInference(vm, getModelWrapper(asObjectInstance(a[0])), asTensor(a[1]));
+            throw std::invalid_argument("predict expects an input argument");
+        return safeRunInferenceFromValue(vm, getModelWrapper(asObjectInstance(a[0])), a[1]);
     });
     linkMethod("Model", "inputs",  [this](VM&, ArgsView a) { return nn_model_inputs_builtin(a); });
     linkMethod("Model", "outputs", [this](VM&, ArgsView a) { return nn_model_outputs_builtin(a); });
@@ -292,9 +339,9 @@ Value ModuleNN::createModelObject(const std::shared_ptr<ModelWrapper>& wrapper)
     // and can be used in dataflow signal expressions like any other func.
     std::shared_ptr<ModelWrapper> capturedWrapper = wrapper;
     NativeFn predictFn = [capturedWrapper](VM& vm, ArgsView args) -> Value {
-        if (args.size() < 1 || !isTensor(args[0]))
-            throw std::invalid_argument("predict expects a tensor argument");
-        return safeRunInference(vm, capturedWrapper.get(), asTensor(args[0]));
+        if (args.size() < 1)
+            throw std::invalid_argument("predict expects an input argument");
+        return safeRunInferenceFromValue(vm, capturedWrapper.get(), args[0]);
     };
 
     auto funcObj = newFunctionObj(
@@ -308,11 +355,13 @@ Value ModuleNN::createModelObject(const std::shared_ptr<ModelWrapper>& wrapper)
     func->upvalueCount = 0;
     func->builtinInfo = make_ptr<BuiltinFuncInfo>(predictFn);
     func->doc = toUnicodeString(
-        "Run inference on the given tensor. Returns output tensor "
-        "(or list if multiple outputs). Also works with signals for reactive dataflow.");
+        "Run inference. Input may be a tensor, a dict {name: tensor}, or a list "
+        "of tensors. Returns output tensor (or list if multiple outputs). "
+        "Also works with signals for reactive dataflow.");
     // funcType is required for signal/dataflow integration: the VM uses it
     // to map signal arguments to FuncNode inputs when predict is called with a signal.
-    func->funcType = makeFuncType({{"input", type::BuiltinType::Tensor}});
+    // Parameter is untyped (nullopt) so the VM doesn't coerce dict/list to tensor.
+    func->funcType = makeFuncType({{"input", std::nullopt}});
 
     Value funcVal = Value::objVal(std::move(funcObj));
     Value closureVal = Value::objVal(newClosureObj(funcVal));
@@ -369,16 +418,23 @@ Value ModuleNN::nn_load_builtin(ArgsView args)
         wrapper->outputDtypes.push_back(ortDtypeToString(tensorInfo.GetElementType()));
     }
 
-    // Auto-warmup: run one inference with a zero tensor to initialize the CUDA
+    // Auto-warmup: run one inference with zero tensors to initialize the CUDA
     // context and trigger ORT graph optimization.  This makes the first real
     // predict() call fast and consistent.
     if (doWarmup && !wrapper->inputShapes.empty()) {
-        auto warmupShape = wrapper->inputShapes[0];
-        for (auto& d : warmupShape)
-            if (d < 0) d = 1;  // replace dynamic dimensions with 1
-        Value warmup = Value::tensorVal(warmupShape,
-            tensorDTypeFromString(wrapper->inputDtypes[0]));
-        runInference(wrapper.get(), asTensor(warmup));
+        std::vector<Value> warmupTensors;
+        std::vector<std::pair<std::string, ObjTensor*>> warmupInputs;
+        warmupTensors.reserve(wrapper->inputShapes.size());
+        warmupInputs.reserve(wrapper->inputShapes.size());
+        for (size_t i = 0; i < wrapper->inputShapes.size(); ++i) {
+            auto shape = wrapper->inputShapes[i];
+            for (auto& d : shape)
+                if (d < 0) d = 1;  // replace dynamic dimensions with 1
+            warmupTensors.push_back(
+                Value::tensorVal(shape, tensorDTypeFromString(wrapper->inputDtypes[i])));
+            warmupInputs.emplace_back(wrapper->inputNames[i], asTensor(warmupTensors.back()));
+        }
+        runInferenceMulti(wrapper.get(), warmupInputs);
     }
 
     return createModelObject(wrapper);
