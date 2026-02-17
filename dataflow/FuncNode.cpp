@@ -324,10 +324,12 @@ void FuncNode::createOutputSignals(double freq)
         for(size_t i=0;i<count;++i) {
             auto sig = m_overrideOutputSignals[i];
             sig->setFrequency(freq);
+            sig->m_suppressInitialChange = true;
             addOutput(names[i], sig);
         }
         for(size_t i=count;i<names.size();++i) {
             auto outputSignal = Signal::newSignal(freq, initialValueForOutput(i), names[i]);
+            outputSignal->m_suppressInitialChange = true;
             addOutput(names[i], outputSignal);
         }
         m_overrideOutputSignals.clear();
@@ -335,6 +337,7 @@ void FuncNode::createOutputSignals(double freq)
         // create output signals(freq may be updated as inputs added)
         for(size_t i=0;i<names.size();++i) {
             auto outputSignal = Signal::newSignal(freq, initialValueForOutput(i), names[i]);
+            outputSignal->m_suppressInitialChange = true;
             addOutput(names[i], outputSignal);
         }
     }
@@ -402,6 +405,14 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
     using roxal::asClosure;
     using roxal::isList;
     using roxal::asList;
+    using roxal::isFuture;
+
+    // If we have a pending future-based yield (e.g. from a previous tick where
+    // the non-budgeted evaluateNetwork() path didn't handle the Yielded result),
+    // try to resume it instead of re-executing.
+    if (m_funcYieldState.active && !m_funcYieldState.pendingOutputFutures.empty()) {
+        return resumeExecution(deadline);
+    }
 
     if (!m_operatorSignalsCalled && !inputNames().empty())
         throw std::runtime_error("FuncNode '"+name()+"' not all inputs connected");
@@ -519,6 +530,21 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
         }
     }
 
+    // Check if any output is a future (async native fn like predict).
+    // If so, yield and let resumeExecution() poll for completion.
+    bool hasPendingFuture = false;
+    for (const auto& v : outputValues) {
+        if (isFuture(v)) { hasPendingFuture = true; break; }
+    }
+    if (hasPendingFuture) {
+        m_funcYieldState.active = true;
+        m_funcYieldState.inputValues = inputValues;
+        m_funcYieldState.executionTime = time;
+        m_funcYieldState.pendingOutputFutures = outputValues;
+        m_funcYieldState.executionThread = nullptr;  // no VM thread for future-based yield
+        return FuncExecResult::Yielded;
+    }
+
     if (outputValues.size() != m_outputs.size())
         throw std::runtime_error("FuncNode '"+name()+"' returned "+std::to_string(outputValues.size())+" values, expected "+std::to_string(m_outputs.size())+" values");
 
@@ -543,11 +569,56 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
     using roxal::ExecutionStatus;
     using roxal::isList;
     using roxal::asList;
+    using roxal::isFuture;
+    using roxal::asFuture;
 
     if (!m_funcYieldState.active) {
         return FuncExecResult::Error;
     }
 
+    // Case 1: Future-based yield (async native fn like predict)
+    if (!m_funcYieldState.pendingOutputFutures.empty()) {
+        // Check if all futures are ready (non-blocking)
+        for (auto& v : m_funcYieldState.pendingOutputFutures) {
+            if (isFuture(v)) {
+                auto* fut = asFuture(v);
+                if (fut->future.wait_for(std::chrono::microseconds(0))
+                        != std::future_status::ready)
+                    return FuncExecResult::Yielded;  // still pending
+            }
+        }
+
+        // All resolved — extract values
+        Values outputValues;
+        for (auto& v : m_funcYieldState.pendingOutputFutures) {
+            if (isFuture(v))
+                outputValues.push_back(asFuture(v)->asValue());
+            else
+                outputValues.push_back(v);
+        }
+
+        TimePoint time = m_funcYieldState.executionTime;
+        Values inputValues = m_funcYieldState.inputValues;
+        m_funcYieldState.active = false;
+        m_funcYieldState.pendingOutputFutures.clear();
+
+        if (outputValues.size() != m_outputs.size())
+            throw std::runtime_error("FuncNode '"+name()+"' returned "+std::to_string(outputValues.size())+" values, expected "+std::to_string(m_outputs.size())+" values");
+
+        previousOutputValues = outputValues;
+        previousInputValues = inputValues;
+        invokeExecutionCallbacks(time, inputValues, outputValues);
+
+        int index = 0;
+        for (const auto& output : m_outputs) {
+            output.signal->setValueAt(time, outputValues[index]);
+            index++;
+        }
+
+        return FuncExecResult::Completed;
+    }
+
+    // Case 2: VM thread yield (existing code)
     auto& vm = VM::instance();
 
     // Switch to the saved execution thread and resume

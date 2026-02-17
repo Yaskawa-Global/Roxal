@@ -34,8 +34,9 @@ enum class FuncExecResult {
 struct FuncYieldState {
     bool active { false };
     Values inputValues;                    // Preserved inputs for output processing
-    ptr<roxal::Thread> executionThread;    // Thread with preserved VM state
+    ptr<roxal::Thread> executionThread;    // Thread with preserved VM state (null for future-based yields)
     TimePoint executionTime;               // The tick time when execution started
+    Values pendingOutputFutures;           // Future values awaiting resolution (async native fn)
 };
 
 class FuncNode

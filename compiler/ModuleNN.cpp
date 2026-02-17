@@ -3,6 +3,13 @@
 #include "Object.h"
 #include <stdexcept>
 #include <memory>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+#include <queue>
+#include <future>
+#include <functional>
 
 #ifdef ROXAL_ENABLE_ONNX
 #include <onnxruntime_cxx_api.h>
@@ -78,6 +85,82 @@ static std::string ortDtypeToString(ONNXTensorElementDataType dt) {
 #endif // ROXAL_ENABLE_ONNX
 
 // ============================================================
+// InferenceWorker — per-model background thread for async inference
+// ============================================================
+// Follows the AsyncIOManager pattern: submit work, get future.
+// Each model has its own worker to naturally serialize Session::Run()
+// calls (ONNX sessions are NOT thread-safe for concurrent Run()).
+
+class InferenceWorker {
+    std::thread workerThread;
+    std::mutex queueMutex;
+    std::condition_variable queueCV;
+    std::atomic<bool> running{false};
+
+    struct Job {
+        std::function<Value()> work;
+        ptr<std::promise<Value>> promise;
+        std::vector<Value> heldValues;  // prevent GC of input tensors
+    };
+    std::queue<Job> pendingJobs;
+
+    void workerLoop() {
+        while (running) {
+            Job job;
+            {
+                std::unique_lock<std::mutex> lock(queueMutex);
+                queueCV.wait(lock, [&]{ return !pendingJobs.empty() || !running; });
+                if (!running && pendingJobs.empty()) break;
+                job = std::move(pendingJobs.front());
+                pendingJobs.pop();
+            }
+            try {
+                Value result = job.work();
+                job.promise->set_value(result);
+            } catch (const std::exception& e) {
+                std::cerr << "ai.nn InferenceWorker error: " << e.what() << std::endl;
+                job.promise->set_value(Value::nilVal());
+            } catch (...) {
+                std::cerr << "ai.nn InferenceWorker: unknown error" << std::endl;
+                job.promise->set_value(Value::nilVal());
+            }
+        }
+    }
+
+public:
+    Value submit(std::function<Value()> work, std::vector<Value> heldValues = {}) {
+        auto promise = make_ptr<std::promise<Value>>();
+        auto future = promise->get_future().share();
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            Job job;
+            job.work = std::move(work);
+            job.promise = std::move(promise);
+            job.heldValues = std::move(heldValues);
+            pendingJobs.push(std::move(job));
+        }
+        queueCV.notify_one();
+        return Value::futureVal(future);
+    }
+
+    void start() {
+        running = true;
+        workerThread = std::thread(&InferenceWorker::workerLoop, this);
+    }
+
+    void stop() {
+        running = false;
+        queueCV.notify_all();
+        if (workerThread.joinable())
+            workerThread.join();
+    }
+
+    ~InferenceWorker() {
+        stop();
+    }
+};
+
+// ============================================================
 // ModelWrapper — per-model native state
 // ============================================================
 
@@ -95,6 +178,8 @@ struct ModelWrapper {
 
     std::string device = "cpu";
     bool closed = false;
+
+    std::unique_ptr<InferenceWorker> inferenceWorker;
 };
 
 // ============================================================
@@ -107,6 +192,13 @@ static ModelWrapper* getModelWrapper(ObjectInstance* inst) {
         throw std::runtime_error("Model not properly initialized");
     auto* sp = static_cast<std::shared_ptr<ModelWrapper>*>(asForeignPtr(fpVal)->ptr);
     return sp->get();
+}
+
+static std::shared_ptr<ModelWrapper> getModelWrapperShared(ObjectInstance* inst) {
+    Value fpVal = inst->getProperty("_this");
+    if (fpVal.isNil() || !isForeignPtr(fpVal))
+        throw std::runtime_error("Model not properly initialized");
+    return *static_cast<std::shared_ptr<ModelWrapper>*>(asForeignPtr(fpVal)->ptr);
 }
 
 // Check if a tensor shape is compatible with a model's expected shape.
@@ -274,6 +366,97 @@ static Value safeRunInferenceFromValue(VM& vm, ModelWrapper* wrapper, const Valu
     }
 }
 
+// Async multi-input predict: validates synchronously, submits inference to worker thread.
+// Input validation (type, shape) happens on the calling thread so errors are catchable
+// by Roxal try/except. The actual ORT Session::Run happens on the worker thread.
+static Value safeRunInferenceFromValueAsync(VM& vm,
+                                            const std::shared_ptr<ModelWrapper>& wrapper,
+                                            const Value& arg) {
+    try {
+        if (wrapper->closed)
+            throw std::invalid_argument("ai.nn: Model session is closed");
+        if (!wrapper->inferenceWorker)
+            throw std::runtime_error("ai.nn: Model inference worker not initialized");
+
+        // Build inputs vector (type validation — synchronous)
+        std::vector<std::pair<std::string, ObjTensor*>> inputs;
+        std::vector<Value> heldValues;
+        heldValues.push_back(arg);  // Keep arg alive during async inference
+
+        if (isTensor(arg)) {
+            if (wrapper->inputNames.empty())
+                throw std::runtime_error("ai.nn: model has no inputs");
+            inputs.emplace_back(wrapper->inputNames[0], asTensor(arg));
+        }
+        else if (isDict(arg)) {
+            ObjDict* dict = asDict(arg);
+            auto items = dict->items();
+            inputs.reserve(items.size());
+            for (auto& [key, val] : items) {
+                if (!isString(key))
+                    throw std::invalid_argument("ai.nn: predict dict keys must be strings");
+                if (!isTensor(val))
+                    throw std::invalid_argument(
+                        "ai.nn: predict dict value for '" +
+                        toUTF8StdString(asStringObj(key)->s) + "' is not a tensor");
+                inputs.emplace_back(toUTF8StdString(asStringObj(key)->s), asTensor(val));
+                heldValues.push_back(val);
+            }
+        }
+        else if (isList(arg)) {
+            ObjList* list = asList(arg);
+            if (static_cast<size_t>(list->length()) != wrapper->inputNames.size()) {
+                throw std::invalid_argument(
+                    "ai.nn: predict list has " + std::to_string(list->length()) +
+                    " elements but model expects " + std::to_string(wrapper->inputNames.size()) +
+                    " inputs");
+            }
+            inputs.reserve(list->length());
+            for (size_t i = 0; i < static_cast<size_t>(list->length()); ++i) {
+                Value elem = list->elts.at(i);
+                if (!isTensor(elem))
+                    throw std::invalid_argument(
+                        "ai.nn: predict list element " + std::to_string(i) + " is not a tensor");
+                inputs.emplace_back(wrapper->inputNames[i], asTensor(elem));
+                heldValues.push_back(elem);
+            }
+        }
+        else {
+            throw std::invalid_argument(
+                "ai.nn: predict expects a tensor, dict of tensors, or list of tensors");
+        }
+
+        // Shape validation (synchronous — so errors are catchable by try/except)
+        for (auto& [name, tensor] : inputs) {
+            if (!tensor->isOrtBacked())
+                throw std::runtime_error("ai.nn: input tensor '" + name + "' is not ORT-backed");
+            for (size_t i = 0; i < wrapper->inputNames.size(); ++i) {
+                if (wrapper->inputNames[i] == name) {
+                    if (!isShapeCompatible(tensor->shape(), wrapper->inputShapes[i])) {
+                        throw std::invalid_argument(
+                            "ai.nn: shape mismatch for input '" + name +
+                            "': model expects " + shapeToString(wrapper->inputShapes[i]) +
+                            " but got " + shapeToString(tensor->shape()));
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Submit to worker thread (returns future immediately).
+        // Capture shared_ptr to keep model alive during inference.
+        auto work = [wrapper, inputs]() -> Value {
+            return runInferenceMulti(wrapper.get(), inputs);
+        };
+        return wrapper->inferenceWorker->submit(std::move(work), std::move(heldValues));
+
+    } catch (const std::invalid_argument& e) {
+        Value msg = Value::stringVal(toUnicodeString(e.what()));
+        vm.raiseException(Value::exceptionVal(msg));
+        return Value::nilVal();
+    }
+}
+
 // ============================================================
 // ModuleNN lifecycle
 // ============================================================
@@ -295,7 +478,8 @@ void ModuleNN::registerBuiltins(VM& vm)
 
     // Module-level functions
     link("load", [this](VM&, ArgsView a) { return nn_load_builtin(a); });
-    link("tensor_device", [this](VM&, ArgsView a) { return nn_tensor_device_builtin(a); });
+    link("tensor_device", [this](VM&, ArgsView a) { return nn_tensor_device_builtin(a); },
+         /*defaults=*/{}, /*resolveArgMask=*/0x1);
 
     // Model object methods
     // predict is declared here for help()/docstring visibility; the instance property
@@ -303,7 +487,7 @@ void ModuleNN::registerBuiltins(VM& vm)
     linkMethod("Model", "predict", [](VM& vm, ArgsView a) -> Value {
         if (a.size() < 2 || !isObjectInstance(a[0]))
             throw std::invalid_argument("predict expects an input argument");
-        return safeRunInferenceFromValue(vm, getModelWrapper(asObjectInstance(a[0])), a[1]);
+        return safeRunInferenceFromValueAsync(vm, getModelWrapperShared(asObjectInstance(a[0])), a[1]);
     });
     linkMethod("Model", "inputs",  [this](VM&, ArgsView a) { return nn_model_inputs_builtin(a); });
     linkMethod("Model", "outputs", [this](VM&, ArgsView a) { return nn_model_outputs_builtin(a); });
@@ -337,11 +521,12 @@ Value ModuleNN::createModelObject(const std::shared_ptr<ModelWrapper>& wrapper)
     // Create the `predict` closure property.
     // This is a standalone closure (not a method) that captures the model wrapper
     // and can be used in dataflow signal expressions like any other func.
+    // predict returns a future (async inference on worker thread).
     std::shared_ptr<ModelWrapper> capturedWrapper = wrapper;
     NativeFn predictFn = [capturedWrapper](VM& vm, ArgsView args) -> Value {
         if (args.size() < 1)
             throw std::invalid_argument("predict expects an input argument");
-        return safeRunInferenceFromValue(vm, capturedWrapper.get(), args[0]);
+        return safeRunInferenceFromValueAsync(vm, capturedWrapper, args[0]);
     };
 
     auto funcObj = newFunctionObj(
@@ -353,7 +538,10 @@ Value ModuleNN::createModelObject(const std::shared_ptr<ModelWrapper>& wrapper)
     ObjFunction* func = funcObj.get();
     func->arity = 1;
     func->upvalueCount = 0;
-    func->builtinInfo = make_ptr<BuiltinFuncInfo>(predictFn);
+    // resolveArgMask = 0x1: resolve future arg 0 before calling NativeFn.
+    // This enables chained predict: model_b.predict(model_a.predict(t))
+    // — the inner future is resolved before model_b's predict runs.
+    func->builtinInfo = make_ptr<BuiltinFuncInfo>(predictFn, std::vector<Value>{}, 0x1);
     func->doc = toUnicodeString(
         "Run inference. Input may be a tensor, a dict {name: tensor}, or a list "
         "of tensors. Returns output tensor (or list if multiple outputs). "
@@ -417,6 +605,11 @@ Value ModuleNN::nn_load_builtin(ArgsView args)
         wrapper->outputShapes.push_back(tensorInfo.GetShape());
         wrapper->outputDtypes.push_back(ortDtypeToString(tensorInfo.GetElementType()));
     }
+
+    // Start the inference worker thread (must be before warmup since warmup
+    // is synchronous and doesn't use the worker).
+    wrapper->inferenceWorker = std::make_unique<InferenceWorker>();
+    wrapper->inferenceWorker->start();
 
     // Auto-warmup: run one inference with zero tensors to initialize the CUDA
     // context and trigger ORT graph optimization.  This makes the first real
@@ -541,6 +734,9 @@ Value ModuleNN::nn_model_close_builtin(ArgsView args)
 
     ModelWrapper* wrapper = getModelWrapper(asObjectInstance(args[0]));
     if (!wrapper->closed) {
+        // Stop worker thread first (waits for in-flight inference to complete)
+        if (wrapper->inferenceWorker)
+            wrapper->inferenceWorker->stop();
         wrapper->closed = true;
 #ifdef ROXAL_ENABLE_ONNX
         wrapper->session.reset();

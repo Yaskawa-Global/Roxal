@@ -1,0 +1,54 @@
+# ai.nn signal chain test: wire two identity models via signal graph
+# and verify intermediate tensors stay on the model's device
+import ai.nn
+
+var model_a = ai.nn.load("../modules/ai/identity-10.onnx")
+var model_b = ai.nn.load("../modules/ai/identity-10.onnx")
+
+var dev = model_a.device()
+print(dev == "cpu" or dev == "cuda")
+
+# Build signal chain: input → model_a → model_b
+var initial = tensor(1, 10, dtype='float32')
+var input_sig = signal(10, initial)
+var mid_sig = model_a.predict(input_sig)
+var output_sig = model_b.predict(mid_sig)
+
+var mid_dev = "none"
+var out_val = initial
+
+when mid_sig changes as evt:
+  mid_dev = ai.nn.tensor_device(evt.value)
+
+when output_sig changes as evt:
+  out_val = evt.value
+
+input_sig.run()
+wait(ms=150)
+
+# Set input with known values
+var input = tensor(1, 10, dtype='float32')
+input[0, 0] = 1.0
+input[0, 3] = 42.0
+input[0, 7] = -3.5
+input[0, 9] = 99.0
+
+input_sig.set(input)
+wait(ms=300)
+
+# Intermediate tensor device must match model device
+# (on GPU systems this verifies the dataflow engine didn't copy to CPU)
+print(mid_dev == dev)
+
+# Values survived the signal chain
+print(out_val[0, 0])
+print(out_val[0, 3])
+print(out_val[0, 7])
+print(out_val[0, 9])
+
+# After element access, output is on CPU
+print(ai.nn.tensor_device(out_val))
+
+model_a.close()
+model_b.close()
+print("done")

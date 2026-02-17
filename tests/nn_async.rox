@@ -1,0 +1,33 @@
+# ai.nn async inference test: verify procedural predict returns correct results
+# (exercises the future auto-resolution mechanism via OpCode::Index)
+import ai.nn
+
+var model = ai.nn.load("../modules/ai/identity-10.onnx")
+
+# Basic async predict — result is a future that auto-resolves on subscript
+var input = tensor(1, 10, dtype='float32')
+input[0, 0] = 1.0
+input[0, 3] = 42.0
+input[0, 7] = -3.5
+input[0, 9] = 99.0
+
+var out = model.predict(input)
+print(out[0, 0])
+print(out[0, 3])
+print(out[0, 7])
+print(out[0, 9])
+
+# Chained predict — inner future resolved via resolveArgMask before outer predict
+var model_b = ai.nn.load("../modules/ai/identity-10.onnx")
+var chained = model_b.predict(model.predict(input))
+print(chained[0, 0])
+print(chained[0, 9])
+
+# Future resolved for tensor_device via resolveArgMask
+var result = model.predict(input)
+var dev = ai.nn.tensor_device(result)
+print(dev == "cpu" or dev == "cuda")
+
+model.close()
+model_b.close()
+print("done")

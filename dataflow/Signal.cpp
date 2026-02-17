@@ -213,8 +213,12 @@ void Signal::setValueAt(TimePoint t, const Value& v)
 
     values[t] = v;
 
-    if (valueChanged)
-        invokeValueChangedCallbacks(t, v);
+    if (valueChanged) {
+        if (m_suppressInitialChange)
+            m_suppressInitialChange = false;  // first value is initialization, not a change
+        else
+            invokeValueChangedCallbacks(t, v);
+    }
 
     if (m_eventDriven) {
         engine->updateSignalConsumerInputAvailability(ptr_from_this(), t);

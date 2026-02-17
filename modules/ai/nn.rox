@@ -3,7 +3,7 @@ func load(path:string, warmup:bool=true):
   """Load an ONNX model from the given file path. Returns a Model object. Set warmup=false to skip the initial warm-up inference."""
 
 @builtin
-func tensor_device(t:tensor):
+func tensor_device(t):
   """Return the device where a tensor's data resides ('cpu' or 'cuda')."""
 
 @builtin

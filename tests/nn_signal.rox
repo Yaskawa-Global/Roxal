@@ -37,7 +37,7 @@ while r <= 23:
   r = r + 1
 
 input_sig.set(img1)
-wait(ms=200)
+wait(ms=500)
 
 # Set to digit "0"
 var img0 = tensor(1, 1, 28, 28, dtype='float32')
@@ -53,7 +53,7 @@ while r <= 21:
   r = r + 1
 
 input_sig.set(img0)
-wait(ms=200)
+wait(ms=500)
 
 # Print collected predictions
 for p in predictions:
