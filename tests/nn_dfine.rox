@@ -1,0 +1,35 @@
+# ai.nn D-FINE Nano object detection: multi-output, FP32/INT8/FP16 quantization
+import ai.nn
+
+var models = ["../modules/ai/dfine_nano_fp32.onnx", "../modules/ai/dfine_nano_int8.onnx", "../modules/ai/dfine_nano_fp16.onnx"]
+var names = ["FP32", "INT8", "FP16"]
+
+var i = 0
+for path in models:
+  var model = ai.nn.load(path, warmup=false)
+
+  # Verify 1 input, 2 outputs
+  var ins = model.inputs()
+  var outs = model.outputs()
+  print(names[i] + " inputs=" + string(len(ins)) + " outputs=" + string(len(outs)))
+  print("  in: " + ins[0]['name'] + " dtype=" + ins[0]['dtype'])
+  print("  out0: " + outs[0]['name'] + " dtype=" + outs[0]['dtype'])
+  print("  out1: " + outs[1]['name'] + " dtype=" + outs[1]['dtype'])
+
+  # Run inference on a dummy 640x640 image
+  var img = tensor(1, 3, 640, 640, dtype='float32')
+  var result = model.predict(img)
+
+  # Multi-output: result is a list of 2 tensors
+  print("  result count=" + string(len(result)))
+
+  # Verify both outputs are tensors with values
+  var logits = result[0]
+  var boxes = result[1]
+  print("  logits type=" + typeof(logits))
+  print("  boxes type=" + typeof(boxes))
+
+  model.close()
+  i = i + 1
+
+print("done")

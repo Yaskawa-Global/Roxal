@@ -13,6 +13,7 @@ from typing import Set
 # Maximum time in seconds to allow each test to run
 TEST_TIMEOUT_SECS = 5
 GC_STRESS_TIMEOUT_SECS = 20
+NN_LFS_TIMEOUT_SECS = 60
 # Width of the test name column when printing results
 TEST_NAME_WIDTH = 32
 GRPC_TEST_ADDR = "127.0.0.1:50051"
@@ -44,6 +45,15 @@ def detect_features(roxal_binary: str) -> Set[str]:
         return set()
     entries = [fragment.strip() for fragment in match.group(1).split(',')]
     return {entry for entry in entries if entry}
+
+
+def is_lfs_pointer(path: str) -> bool:
+    """Check if a file is a Git LFS pointer rather than actual content."""
+    try:
+        with open(path, 'rb') as f:
+            return f.read(48).startswith(b'version https://git-lfs.github.com/spec/v1')
+    except FileNotFoundError:
+        return True  # missing file should be treated as unavailable
 
 
 def is_debug_build(build_dir: str) -> bool:
@@ -148,6 +158,7 @@ dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_arr
 regex_tests = ['regex_test']
 socket_tests = ['socket_basic']
 nn_tests = ['nn_mnist', 'nn_signal', 'nn_chain', 'nn_signal_chain', 'nn_dynamic', 'nn_multi_io', 'nn_async']
+nn_lfs_tests = ['nn_dfine']  # require LFS model files (only run with --all)
 
 # Add feature-specific tests to the full list; feature gating happens later.
 tests += dds_tests
@@ -177,6 +188,7 @@ if include_convs:
 
 if args.all:
     tests += long_running_tests
+    tests += nn_lfs_tests
 
 # Filter tests by pattern if --test is specified
 if args.test:
@@ -259,9 +271,21 @@ if not has_socket:
         print("Skipping socket tests (feature not enabled).")
         tests = [t for t in tests if t not in socket_tests]
 if not has_nn:
-    if any(test in tests for test in nn_tests):
+    if any(test in tests for test in nn_tests + nn_lfs_tests):
         print("Skipping ai.nn tests (feature not enabled).")
-        tests = [t for t in tests if t not in nn_tests]
+        tests = [t for t in tests if t not in nn_tests and t not in nn_lfs_tests]
+if has_nn and any(test in tests for test in nn_lfs_tests):
+    # Check that all LFS-tracked model files are available (not pointers or missing).
+    # This covers any .onnx files tracked via .gitattributes LFS patterns.
+    lfs_model_dir = os.path.join(project_root, 'modules', 'ai')
+    lfs_models_available = True
+    for f in os.listdir(lfs_model_dir):
+        if f.endswith('.onnx') and is_lfs_pointer(os.path.join(lfs_model_dir, f)):
+            lfs_models_available = False
+            break
+    if not lfs_models_available:
+        print("Skipping LFS-dependent nn tests (model files not available; run 'git lfs pull').")
+        tests = [t for t in tests if t not in nn_lfs_tests]
 needs_grpc_server = has_grpc and any(test in tests for test in grpc_server_tests)
 
 env_base = os.environ.copy()
@@ -357,7 +381,12 @@ try:
 
         opt_expected = (" [expected]" if test in failing_tests else '')
 
-        timeout_secs = GC_STRESS_TIMEOUT_SECS if test == 'gc_stress' else TEST_TIMEOUT_SECS
+        if test == 'gc_stress':
+            timeout_secs = GC_STRESS_TIMEOUT_SECS
+        elif test in nn_lfs_tests:
+            timeout_secs = NN_LFS_TIMEOUT_SECS
+        else:
+            timeout_secs = TEST_TIMEOUT_SECS
 
         try:
             compProc = subprocess.run(
