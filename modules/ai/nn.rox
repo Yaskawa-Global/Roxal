@@ -32,3 +32,30 @@ type Model object:
   @builtin
   proc close():
     """Release model session and free resources."""
+
+@builtin
+type Tokenizer object:
+
+  @builtin
+  proc init(path:string):
+    """Load a HuggingFace tokenizer from a tokenizer.json file."""
+
+  @builtin
+  func encode(text:string) -> list:
+    """Encode text to a list of token IDs (integers)."""
+
+  @builtin
+  func decode(ids:list) -> string:
+    """Decode a list of token IDs back to text."""
+
+  @builtin
+  func vocab_size() -> int:
+    """Return the vocabulary size."""
+
+  @builtin
+  func special_tokens() -> dict:
+    """Return dict mapping special token content strings to their IDs."""
+
+  @builtin
+  proc close():
+    """Release tokenizer resources."""

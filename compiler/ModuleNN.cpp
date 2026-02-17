@@ -1,6 +1,7 @@
 #include "ModuleNN.h"
 #include "VM.h"
 #include "Object.h"
+#include "core/json11.h"
 #include <stdexcept>
 #include <memory>
 #include <thread>
@@ -10,6 +11,9 @@
 #include <queue>
 #include <future>
 #include <functional>
+#include <fstream>
+#include <sstream>
+#include <algorithm>
 #ifdef __linux__
 #include <sys/sysinfo.h>
 #endif
@@ -501,6 +505,14 @@ void ModuleNN::registerBuiltins(VM& vm)
     linkMethod("Model", "outputs", [this](VM&, ArgsView a) { return nn_model_outputs_builtin(a); });
     linkMethod("Model", "device",  [this](VM&, ArgsView a) { return nn_model_device_builtin(a); });
     linkMethod("Model", "close",   [this](VM&, ArgsView a) { return nn_model_close_builtin(a); });
+
+    // Tokenizer object methods
+    linkMethod("Tokenizer", "init",           [this](VM&, ArgsView a) { return nn_tokenizer_init_builtin(a); });
+    linkMethod("Tokenizer", "encode",         [this](VM&, ArgsView a) { return nn_tokenizer_encode_builtin(a); });
+    linkMethod("Tokenizer", "decode",         [this](VM&, ArgsView a) { return nn_tokenizer_decode_builtin(a); });
+    linkMethod("Tokenizer", "vocab_size",     [this](VM&, ArgsView a) { return nn_tokenizer_vocab_size_builtin(a); });
+    linkMethod("Tokenizer", "special_tokens", [this](VM&, ArgsView a) { return nn_tokenizer_special_tokens_builtin(a); });
+    linkMethod("Tokenizer", "close",          [this](VM&, ArgsView a) { return nn_tokenizer_close_builtin(a); });
 }
 
 // ============================================================
@@ -842,5 +854,709 @@ Value ModuleNN::nn_model_close_builtin(ArgsView args)
         wrapper->session.reset();
 #endif
     }
+    return Value::nilVal();
+}
+
+// ============================================================
+// TokenizerWrapper — per-tokenizer native state (no ONNX dependency)
+// ============================================================
+
+struct TokenizerWrapper {
+    // Vocab: token string → ID, and reverse
+    std::unordered_map<std::string, int> vocab;
+    std::unordered_map<int, std::string> id_to_token;
+    // BPE merge priority: "left right" → rank (lower = higher priority)
+    std::unordered_map<std::string, int> merge_rank;
+
+    // Added/special tokens
+    struct AddedToken {
+        int id;
+        std::string content;
+        bool special, lstrip, rstrip;
+    };
+    std::vector<AddedToken> added_tokens;
+    std::vector<AddedToken> added_tokens_sorted; // sorted by content length descending
+
+    // Byte fallback tables
+    std::unordered_map<uint8_t, int> byte_to_token_id;
+    std::unordered_map<std::string, uint8_t> byte_token_to_byte;
+    bool byte_fallback_enabled = false;
+
+    // Normalizer pipeline
+    struct NormalizerStep {
+        enum Type { Prepend, Replace, Lowercase, Strip, NFC, NFKC, NFD, NFKD } type;
+        std::string arg1, arg2;
+    };
+    std::vector<NormalizerStep> normalizer_steps;
+
+    // Pre-tokenizer
+    enum class PreTokenizerType { None, ByteLevel, Metaspace, Whitespace } pre_tokenizer_type = PreTokenizerType::None;
+    std::unordered_map<uint8_t, std::string> byte_to_unicode;   // GPT-2 byte↔unicode
+    std::unordered_map<std::string, uint8_t> unicode_to_byte;
+
+    // Decoder pipeline
+    struct DecoderStep {
+        enum Type { Replace, ByteFallback, Fuse, Strip, Metaspace, ByteLevel } type;
+        std::string arg1, arg2;
+    };
+    std::vector<DecoderStep> decoder_steps;
+
+    // Model config
+    std::string unk_token = "<unk>";
+    int unk_token_id = -1;
+    int vocab_size_count = 0;
+    bool closed = false;
+};
+
+// ============================================================
+// Tokenizer helpers
+// ============================================================
+
+static TokenizerWrapper* getTokenizerWrapper(ObjectInstance* inst) {
+    Value fpVal = inst->getProperty("_this");
+    if (fpVal.isNil() || !isForeignPtr(fpVal))
+        throw std::runtime_error("Tokenizer not properly initialized");
+    auto* sp = static_cast<std::shared_ptr<TokenizerWrapper>*>(asForeignPtr(fpVal)->ptr);
+    return sp->get();
+}
+
+// Split a UTF-8 string into individual UTF-8 code point strings
+static std::vector<std::string> utf8_chars(const std::string& s) {
+    icu::UnicodeString us = toUnicodeString(s);
+    std::vector<std::string> chars;
+    int32_t i = 0;
+    while (i < us.length()) {
+        UChar32 cp = us.char32At(i);
+        int32_t next = i + U16_LENGTH(cp);
+        std::string ch;
+        us.tempSubStringBetween(i, next).toUTF8String(ch);
+        chars.push_back(std::move(ch));
+        i = next;
+    }
+    return chars;
+}
+
+// Apply normalizer pipeline to text
+static std::string applyNormalizer(const TokenizerWrapper& tw, const std::string& text) {
+    std::string result = text;
+    for (const auto& step : tw.normalizer_steps) {
+        switch (step.type) {
+            case TokenizerWrapper::NormalizerStep::Prepend:
+                result = step.arg1 + result;
+                break;
+            case TokenizerWrapper::NormalizerStep::Replace: {
+                std::string out;
+                size_t pos = 0;
+                while (pos < result.size()) {
+                    size_t found = result.find(step.arg1, pos);
+                    if (found == std::string::npos) {
+                        out.append(result, pos, std::string::npos);
+                        break;
+                    }
+                    out.append(result, pos, found - pos);
+                    out.append(step.arg2);
+                    pos = found + step.arg1.size();
+                }
+                result = out;
+                break;
+            }
+            case TokenizerWrapper::NormalizerStep::Lowercase:
+                std::transform(result.begin(), result.end(), result.begin(), ::tolower);
+                break;
+            case TokenizerWrapper::NormalizerStep::Strip: {
+                size_t start = result.find_first_not_of(" \t\n\r");
+                size_t end = result.find_last_not_of(" \t\n\r");
+                if (start == std::string::npos) result.clear();
+                else result = result.substr(start, end - start + 1);
+                break;
+            }
+            default:
+                // NFC/NFKC/NFD/NFKD — skip for now (not used by Phi-3/Llama/GPT-2)
+                break;
+        }
+    }
+    return result;
+}
+
+// Build GPT-2 byte-to-unicode mapping table
+static void initByteToUnicode(TokenizerWrapper& tw) {
+    std::vector<int> bs;
+    for (int i = 33; i <= 126; ++i) bs.push_back(i);
+    for (int i = 161; i <= 172; ++i) bs.push_back(i);
+    for (int i = 174; i <= 255; ++i) bs.push_back(i);
+    std::vector<int> cs(bs.begin(), bs.end());
+    int n = 0;
+    for (int b = 0; b < 256; ++b) {
+        if (std::find(bs.begin(), bs.end(), b) == bs.end()) {
+            bs.push_back(b);
+            cs.push_back(256 + n);
+            ++n;
+        }
+    }
+    for (size_t i = 0; i < bs.size(); ++i) {
+        uint8_t byte_val = static_cast<uint8_t>(bs[i]);
+        char32_t cp = static_cast<char32_t>(cs[i]);
+        std::string utf8;
+        if (cp < 0x80) {
+            utf8 = std::string(1, static_cast<char>(cp));
+        } else if (cp < 0x800) {
+            utf8.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            utf8.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            utf8.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            utf8.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            utf8.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+        tw.byte_to_unicode[byte_val] = utf8;
+        tw.unicode_to_byte[utf8] = byte_val;
+    }
+}
+
+// BPE encode a single normalized text segment
+static std::vector<int> bpe_encode_segment(const TokenizerWrapper& tw,
+                                            const std::string& word) {
+    auto chars = utf8_chars(word);
+    if (chars.empty()) return {};
+
+    std::vector<std::string> tokens(chars.begin(), chars.end());
+
+    // Iteratively merge the best (lowest rank) pair
+    while (tokens.size() > 1) {
+        int best_rank = -1;
+        int best_idx = -1;
+        for (size_t j = 0; j < tokens.size() - 1; ++j) {
+            std::string pair_key = tokens[j] + " " + tokens[j + 1];
+            auto it = tw.merge_rank.find(pair_key);
+            if (it != tw.merge_rank.end()) {
+                if (best_rank < 0 || it->second < best_rank) {
+                    best_rank = it->second;
+                    best_idx = static_cast<int>(j);
+                }
+            }
+        }
+        if (best_idx < 0) break;
+
+        std::vector<std::string> new_tokens;
+        new_tokens.reserve(tokens.size() - 1);
+        for (size_t k = 0; k < tokens.size(); ) {
+            if (static_cast<int>(k) == best_idx) {
+                new_tokens.push_back(tokens[k] + tokens[k + 1]);
+                k += 2;
+            } else {
+                new_tokens.push_back(tokens[k]);
+                k += 1;
+            }
+        }
+        tokens = std::move(new_tokens);
+    }
+
+    // Map tokens to IDs with byte fallback
+    std::vector<int> ids;
+    for (const auto& tok : tokens) {
+        auto it = tw.vocab.find(tok);
+        if (it != tw.vocab.end()) {
+            ids.push_back(it->second);
+        } else if (tw.byte_fallback_enabled) {
+            for (unsigned char byte : tok) {
+                auto byte_it = tw.byte_to_token_id.find(byte);
+                if (byte_it != tw.byte_to_token_id.end()) {
+                    ids.push_back(byte_it->second);
+                } else if (tw.unk_token_id >= 0) {
+                    ids.push_back(tw.unk_token_id);
+                }
+            }
+        } else if (tw.unk_token_id >= 0) {
+            ids.push_back(tw.unk_token_id);
+        }
+    }
+    return ids;
+}
+
+// Full encode: split on special tokens, normalize + BPE each text segment
+static std::vector<int> tokenizer_encode(const TokenizerWrapper& tw,
+                                          const std::string& text) {
+    std::vector<int> all_ids;
+
+    // Split text on added/special tokens (greedy, longest match first)
+    struct Segment { bool is_special; std::string text; };
+    std::vector<Segment> segments;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        bool found = false;
+        for (const auto& at : tw.added_tokens_sorted) {
+            if (pos + at.content.size() <= text.size() &&
+                text.compare(pos, at.content.size(), at.content) == 0) {
+                segments.push_back({true, at.content});
+                pos += at.content.size();
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            if (segments.empty() || segments.back().is_special) {
+                segments.push_back({false, ""});
+            }
+            // Advance one UTF-8 code point
+            unsigned char c = text[pos];
+            size_t len = 1;
+            if ((c & 0xE0) == 0xC0) len = 2;
+            else if ((c & 0xF0) == 0xE0) len = 3;
+            else if ((c & 0xF8) == 0xF0) len = 4;
+            if (pos + len > text.size()) len = 1;
+            segments.back().text.append(text, pos, len);
+            pos += len;
+        }
+    }
+
+    // Process each segment
+    for (const auto& seg : segments) {
+        if (seg.is_special) {
+            // Look up special token ID
+            for (const auto& at : tw.added_tokens) {
+                if (at.content == seg.text) {
+                    all_ids.push_back(at.id);
+                    break;
+                }
+            }
+        } else {
+            // Apply normalizer, then BPE
+            std::string normalized = applyNormalizer(tw, seg.text);
+
+            // For ByteLevel pre-tokenizer: map bytes to GPT-2 unicode chars
+            if (tw.pre_tokenizer_type == TokenizerWrapper::PreTokenizerType::ByteLevel) {
+                std::string mapped;
+                for (unsigned char byte : normalized) {
+                    auto it = tw.byte_to_unicode.find(byte);
+                    if (it != tw.byte_to_unicode.end())
+                        mapped += it->second;
+                }
+                normalized = mapped;
+            }
+
+            auto ids = bpe_encode_segment(tw, normalized);
+            all_ids.insert(all_ids.end(), ids.begin(), ids.end());
+        }
+    }
+
+    return all_ids;
+}
+
+// Full decode: id→token, apply decoder pipeline
+static std::string tokenizer_decode(const TokenizerWrapper& tw,
+                                     const std::vector<int>& ids) {
+    // Step 1: Map IDs to token strings, skipping special tokens
+    std::vector<std::string> tokens;
+    tokens.reserve(ids.size());
+    for (int id : ids) {
+        // Skip special tokens during decode
+        bool is_special = false;
+        for (const auto& at : tw.added_tokens) {
+            if (at.id == id && at.special) {
+                is_special = true;
+                break;
+            }
+        }
+        if (is_special) continue;
+
+        auto it = tw.id_to_token.find(id);
+        if (it != tw.id_to_token.end()) {
+            tokens.push_back(it->second);
+        }
+    }
+
+    // Step 2: Apply decoder pipeline
+    static const std::string METASPACE = "\xe2\x96\x81"; // U+2581 "▁"
+    for (const auto& step : tw.decoder_steps) {
+        switch (step.type) {
+            case TokenizerWrapper::DecoderStep::ByteFallback: {
+                for (auto& tok : tokens) {
+                    auto it = tw.byte_token_to_byte.find(tok);
+                    if (it != tw.byte_token_to_byte.end()) {
+                        tok = std::string(1, static_cast<char>(it->second));
+                    }
+                }
+                break;
+            }
+            case TokenizerWrapper::DecoderStep::Replace: {
+                for (auto& tok : tokens) {
+                    size_t p = 0;
+                    while ((p = tok.find(step.arg1, p)) != std::string::npos) {
+                        tok.replace(p, step.arg1.size(), step.arg2);
+                        p += step.arg2.size();
+                    }
+                }
+                break;
+            }
+            case TokenizerWrapper::DecoderStep::Fuse: {
+                std::string fused;
+                for (const auto& tok : tokens) fused += tok;
+                tokens.clear();
+                tokens.push_back(std::move(fused));
+                break;
+            }
+            case TokenizerWrapper::DecoderStep::Strip: {
+                if (!tokens.empty()) {
+                    auto& first = tokens.front();
+                    if (!first.empty() && first[0] == ' ')
+                        first = first.substr(1);
+                }
+                break;
+            }
+            case TokenizerWrapper::DecoderStep::Metaspace: {
+                for (auto& tok : tokens) {
+                    size_t p = 0;
+                    while ((p = tok.find(METASPACE, p)) != std::string::npos) {
+                        tok.replace(p, METASPACE.size(), " ");
+                        p += 1;
+                    }
+                }
+                if (!tokens.empty()) {
+                    auto& first = tokens.front();
+                    if (!first.empty() && first[0] == ' ')
+                        first = first.substr(1);
+                }
+                break;
+            }
+            case TokenizerWrapper::DecoderStep::ByteLevel: {
+                for (auto& tok : tokens) {
+                    auto chars = utf8_chars(tok);
+                    std::string decoded;
+                    for (const auto& ch : chars) {
+                        auto it = tw.unicode_to_byte.find(ch);
+                        if (it != tw.unicode_to_byte.end())
+                            decoded.push_back(static_cast<char>(it->second));
+                        else
+                            decoded += ch;
+                    }
+                    tok = decoded;
+                }
+                break;
+            }
+        }
+    }
+
+    // Concatenate
+    std::string result;
+    for (const auto& tok : tokens) result += tok;
+    return result;
+}
+
+// ============================================================
+// nn_tokenizer_init_builtin — Tokenizer.init(path)
+// ============================================================
+
+Value ModuleNN::nn_tokenizer_init_builtin(ArgsView args)
+{
+    if (args.size() < 2 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("Tokenizer.init expects receiver");
+    if (!isString(args[1]))
+        throw std::invalid_argument("Tokenizer.init expects a path string");
+
+    ObjectInstance* inst = asObjectInstance(args[0]);
+    std::string path = toUTF8StdString(asStringObj(args[1])->s);
+
+    // Read file
+    std::ifstream ifs(path);
+    if (!ifs.is_open())
+        throw std::invalid_argument("ai.nn.load_tokenizer: cannot open '" + path + "'");
+    std::stringstream buf;
+    buf << ifs.rdbuf();
+    std::string contents = buf.str();
+
+    // Parse JSON
+    std::string err;
+    json11::Json root = json11::Json::parse(contents, err);
+    if (!err.empty())
+        throw std::invalid_argument("ai.nn.load_tokenizer: invalid JSON: " + err);
+
+    auto wrapper = std::make_shared<TokenizerWrapper>();
+
+    // --- Parse model ---
+    const auto& model = root["model"];
+    std::string model_type = model["type"].string_value();
+    if (model_type != "BPE")
+        throw std::invalid_argument("ai.nn.load_tokenizer: unsupported model type '" + model_type + "' (only BPE supported)");
+
+    // Vocab
+    const auto& vocab_obj = model["vocab"];
+    if (vocab_obj.is_object()) {
+        for (const auto& kv : vocab_obj.object_items()) {
+            int id = kv.second.int_value();
+            wrapper->vocab[kv.first] = id;
+            wrapper->id_to_token[id] = kv.first;
+        }
+    }
+    wrapper->vocab_size_count = static_cast<int>(wrapper->vocab.size());
+
+    // Merges
+    const auto& merges_arr = model["merges"];
+    if (merges_arr.is_array()) {
+        int rank = 0;
+        for (const auto& m : merges_arr.array_items()) {
+            wrapper->merge_rank[m.string_value()] = rank++;
+        }
+    }
+
+    // Byte fallback
+    wrapper->byte_fallback_enabled = model["byte_fallback"].bool_value();
+    if (wrapper->byte_fallback_enabled) {
+        const char* hex = "0123456789ABCDEF";
+        for (int b = 0; b < 256; ++b) {
+            std::string hex_token = "<0x";
+            hex_token += hex[b >> 4];
+            hex_token += hex[b & 0xF];
+            hex_token += ">";
+            auto it = wrapper->vocab.find(hex_token);
+            if (it != wrapper->vocab.end()) {
+                wrapper->byte_to_token_id[static_cast<uint8_t>(b)] = it->second;
+                wrapper->byte_token_to_byte[hex_token] = static_cast<uint8_t>(b);
+            }
+        }
+    }
+
+    // Unk token
+    if (!model["unk_token"].is_null()) {
+        wrapper->unk_token = model["unk_token"].string_value();
+        auto it = wrapper->vocab.find(wrapper->unk_token);
+        if (it != wrapper->vocab.end())
+            wrapper->unk_token_id = it->second;
+    }
+
+    // --- Parse added_tokens ---
+    const auto& added = root["added_tokens"];
+    if (added.is_array()) {
+        for (const auto& at : added.array_items()) {
+            TokenizerWrapper::AddedToken tok;
+            tok.id = at["id"].int_value();
+            tok.content = at["content"].string_value();
+            tok.special = at["special"].bool_value();
+            tok.lstrip = at["lstrip"].bool_value();
+            tok.rstrip = at["rstrip"].bool_value();
+            wrapper->added_tokens.push_back(tok);
+            // Ensure added tokens are in vocab/id_to_token
+            wrapper->vocab[tok.content] = tok.id;
+            wrapper->id_to_token[tok.id] = tok.content;
+        }
+        // Sort by content length descending for greedy matching
+        wrapper->added_tokens_sorted = wrapper->added_tokens;
+        std::sort(wrapper->added_tokens_sorted.begin(),
+                  wrapper->added_tokens_sorted.end(),
+                  [](const TokenizerWrapper::AddedToken& a,
+                     const TokenizerWrapper::AddedToken& b) {
+                      return a.content.size() > b.content.size();
+                  });
+    }
+
+    // Update vocab size to include added tokens
+    int max_id = wrapper->vocab_size_count;
+    for (const auto& at : wrapper->added_tokens)
+        if (at.id >= max_id) max_id = at.id + 1;
+    wrapper->vocab_size_count = max_id;
+
+    // --- Parse normalizer ---
+    const auto& normalizer = root["normalizer"];
+    if (!normalizer.is_null()) {
+        auto parseNormStep = [](const json11::Json& norm) -> std::optional<TokenizerWrapper::NormalizerStep> {
+            std::string ntype = norm["type"].string_value();
+            TokenizerWrapper::NormalizerStep step;
+            if (ntype == "Prepend") {
+                step.type = TokenizerWrapper::NormalizerStep::Prepend;
+                step.arg1 = norm["prepend"].string_value();
+            } else if (ntype == "Replace") {
+                step.type = TokenizerWrapper::NormalizerStep::Replace;
+                const auto& pat = norm["pattern"];
+                if (pat.is_object() && !pat["String"].is_null())
+                    step.arg1 = pat["String"].string_value();
+                else
+                    return std::nullopt; // skip regex patterns
+                step.arg2 = norm["content"].string_value();
+            } else if (ntype == "Lowercase") {
+                step.type = TokenizerWrapper::NormalizerStep::Lowercase;
+            } else if (ntype == "Strip") {
+                step.type = TokenizerWrapper::NormalizerStep::Strip;
+            } else {
+                return std::nullopt;
+            }
+            return step;
+        };
+
+        if (normalizer["type"].string_value() == "Sequence") {
+            for (const auto& item : normalizer["normalizers"].array_items()) {
+                auto step = parseNormStep(item);
+                if (step) wrapper->normalizer_steps.push_back(*step);
+            }
+        } else {
+            auto step = parseNormStep(normalizer);
+            if (step) wrapper->normalizer_steps.push_back(*step);
+        }
+    }
+
+    // --- Parse pre_tokenizer ---
+    const auto& pre_tok = root["pre_tokenizer"];
+    if (!pre_tok.is_null()) {
+        std::string pttype = pre_tok["type"].string_value();
+        if (pttype == "ByteLevel") {
+            wrapper->pre_tokenizer_type = TokenizerWrapper::PreTokenizerType::ByteLevel;
+            initByteToUnicode(*wrapper);
+        } else if (pttype == "Metaspace") {
+            wrapper->pre_tokenizer_type = TokenizerWrapper::PreTokenizerType::Metaspace;
+        } else if (pttype == "Whitespace") {
+            wrapper->pre_tokenizer_type = TokenizerWrapper::PreTokenizerType::Whitespace;
+        } else if (pttype == "Sequence") {
+            for (const auto& item : pre_tok["pretokenizers"].array_items()) {
+                if (item["type"].string_value() == "ByteLevel") {
+                    wrapper->pre_tokenizer_type = TokenizerWrapper::PreTokenizerType::ByteLevel;
+                    initByteToUnicode(*wrapper);
+                    break;
+                }
+            }
+        }
+    }
+
+    // --- Parse decoder ---
+    const auto& decoder = root["decoder"];
+    if (!decoder.is_null()) {
+        auto parseDecStep = [](const json11::Json& dec) -> std::optional<TokenizerWrapper::DecoderStep> {
+            std::string dtype = dec["type"].string_value();
+            TokenizerWrapper::DecoderStep step;
+            if (dtype == "Replace") {
+                step.type = TokenizerWrapper::DecoderStep::Replace;
+                const auto& pat = dec["pattern"];
+                if (pat.is_object() && !pat["String"].is_null())
+                    step.arg1 = pat["String"].string_value();
+                step.arg2 = dec["content"].string_value();
+            } else if (dtype == "ByteFallback") {
+                step.type = TokenizerWrapper::DecoderStep::ByteFallback;
+            } else if (dtype == "Fuse") {
+                step.type = TokenizerWrapper::DecoderStep::Fuse;
+            } else if (dtype == "Strip") {
+                step.type = TokenizerWrapper::DecoderStep::Strip;
+            } else if (dtype == "Metaspace") {
+                step.type = TokenizerWrapper::DecoderStep::Metaspace;
+            } else if (dtype == "ByteLevel") {
+                step.type = TokenizerWrapper::DecoderStep::ByteLevel;
+            } else {
+                return std::nullopt;
+            }
+            return step;
+        };
+
+        if (decoder["type"].string_value() == "Sequence") {
+            for (const auto& item : decoder["decoders"].array_items()) {
+                auto step = parseDecStep(item);
+                if (step) wrapper->decoder_steps.push_back(*step);
+            }
+        } else {
+            auto step = parseDecStep(decoder);
+            if (step) wrapper->decoder_steps.push_back(*step);
+        }
+    }
+
+    // Synthesize default decoder if none was specified
+    if (wrapper->decoder_steps.empty() && !wrapper->normalizer_steps.empty()) {
+        bool has_prepend = false;
+        for (const auto& s : wrapper->normalizer_steps)
+            if (s.type == TokenizerWrapper::NormalizerStep::Prepend) has_prepend = true;
+        if (has_prepend && wrapper->byte_fallback_enabled) {
+            wrapper->decoder_steps.push_back({TokenizerWrapper::DecoderStep::Replace,
+                                              "\xe2\x96\x81", " "});
+            wrapper->decoder_steps.push_back({TokenizerWrapper::DecoderStep::ByteFallback, "", ""});
+            wrapper->decoder_steps.push_back({TokenizerWrapper::DecoderStep::Fuse, "", ""});
+            wrapper->decoder_steps.push_back({TokenizerWrapper::DecoderStep::Strip, "", ""});
+        } else if (has_prepend) {
+            wrapper->decoder_steps.push_back({TokenizerWrapper::DecoderStep::Metaspace, "", ""});
+        }
+    }
+
+    // Store wrapper as ForeignPtr on the instance
+    auto* sharedWrapper = new std::shared_ptr<TokenizerWrapper>(wrapper);
+    Value fp = Value::foreignPtrVal(sharedWrapper);
+    asForeignPtr(fp)->registerCleanup([](void* p) {
+        delete static_cast<std::shared_ptr<TokenizerWrapper>*>(p);
+    });
+    inst->setProperty("_this", fp);
+
+    return Value::nilVal();
+}
+
+// ============================================================
+// Tokenizer method implementations
+// ============================================================
+
+Value ModuleNN::nn_tokenizer_encode_builtin(ArgsView args)
+{
+    if (args.size() < 2 || !isObjectInstance(args[0]) || !isString(args[1]))
+        throw std::invalid_argument("Tokenizer.encode expects a string argument");
+
+    TokenizerWrapper* tw = getTokenizerWrapper(asObjectInstance(args[0]));
+    if (tw->closed)
+        throw std::invalid_argument("ai.nn: Tokenizer is closed");
+
+    std::string text = toUTF8StdString(asStringObj(args[1])->s);
+    auto ids = tokenizer_encode(*tw, text);
+
+    Value list = Value::objVal(newListObj());
+    for (int id : ids)
+        asList(list)->elts.push_back(Value::intVal(id));
+    return list;
+}
+
+Value ModuleNN::nn_tokenizer_decode_builtin(ArgsView args)
+{
+    if (args.size() < 2 || !isObjectInstance(args[0]) || !isList(args[1]))
+        throw std::invalid_argument("Tokenizer.decode expects a list argument");
+
+    TokenizerWrapper* tw = getTokenizerWrapper(asObjectInstance(args[0]));
+    if (tw->closed)
+        throw std::invalid_argument("ai.nn: Tokenizer is closed");
+
+    ObjList* idList = asList(args[1]);
+    std::vector<int> ids;
+    ids.reserve(idList->length());
+    for (int i = 0; i < idList->length(); ++i)
+        ids.push_back(static_cast<int>(idList->elts.at(i).asInt()));
+
+    std::string result = tokenizer_decode(*tw, ids);
+    return Value::stringVal(toUnicodeString(result));
+}
+
+Value ModuleNN::nn_tokenizer_vocab_size_builtin(ArgsView args)
+{
+    if (args.size() < 1 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("Tokenizer.vocab_size expects receiver");
+    TokenizerWrapper* tw = getTokenizerWrapper(asObjectInstance(args[0]));
+    return Value::intVal(tw->vocab_size_count);
+}
+
+Value ModuleNN::nn_tokenizer_special_tokens_builtin(ArgsView args)
+{
+    if (args.size() < 1 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("Tokenizer.special_tokens expects receiver");
+    TokenizerWrapper* tw = getTokenizerWrapper(asObjectInstance(args[0]));
+
+    Value dict = Value::objVal(newDictObj());
+    for (const auto& at : tw->added_tokens) {
+        if (at.special) {
+            asDict(dict)->store(
+                Value::stringVal(toUnicodeString(at.content)),
+                Value::intVal(at.id));
+        }
+    }
+    return dict;
+}
+
+Value ModuleNN::nn_tokenizer_close_builtin(ArgsView args)
+{
+    if (args.size() < 1 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("Tokenizer.close expects receiver");
+    TokenizerWrapper* tw = getTokenizerWrapper(asObjectInstance(args[0]));
+    tw->closed = true;
+    tw->vocab.clear();
+    tw->id_to_token.clear();
+    tw->merge_rank.clear();
+    tw->added_tokens.clear();
+    tw->added_tokens_sorted.clear();
+    tw->byte_to_token_id.clear();
+    tw->byte_token_to_byte.clear();
     return Value::nilVal();
 }

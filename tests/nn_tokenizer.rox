@@ -1,0 +1,36 @@
+import ai.nn
+
+var tok = ai.nn.Tokenizer("../tests/test_tokenizer.json")
+
+# vocab size
+print(tok.vocab_size())
+
+# basic encode (BPE merges "hello world" → [▁hello, ▁world])
+var ids1 = tok.encode("hello world")
+print(ids1)
+
+# roundtrip
+print(tok.decode(ids1))
+
+# character-level fallback (no merges match)
+var ids2 = tok.encode("abc")
+print(ids2)
+print(tok.decode(ids2))
+
+# byte fallback (newline not in vocab → <0x0A>)
+var ids3 = tok.encode("\n")
+print(ids3)
+print(tok.decode(ids3) == "\n")
+
+# special tokens
+var special = tok.special_tokens()
+print("<|test|>" in special)
+print("<|end|>" in special)
+
+# encode with embedded special tokens
+var ids4 = tok.encode("<|test|>hello<|end|>")
+print(ids4)
+
+# close
+tok.close()
+print("done")

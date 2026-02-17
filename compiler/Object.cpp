@@ -3138,6 +3138,7 @@ static double ortElementAsDouble(const Ort::Value& val, TensorDType dtype, int64
     switch (dtype) {
         case TensorDType::Float32: return static_cast<double>(val.GetTensorData<float>()[idx]);
         case TensorDType::Float64: return val.GetTensorData<double>()[idx];
+        case TensorDType::Float16: return static_cast<double>(val.GetTensorData<Ort::Float16_t>()[idx].ToFloat());
         case TensorDType::Int32:   return static_cast<double>(val.GetTensorData<int32_t>()[idx]);
         case TensorDType::Int64:   return static_cast<double>(val.GetTensorData<int64_t>()[idx]);
         case TensorDType::Int8:    return static_cast<double>(val.GetTensorData<int8_t>()[idx]);
@@ -3154,6 +3155,7 @@ static void ortSetElementFromDouble(Ort::Value& val, TensorDType dtype, int64_t 
     switch (dtype) {
         case TensorDType::Float32: val.GetTensorMutableData<float>()[idx] = static_cast<float>(v); break;
         case TensorDType::Float64: val.GetTensorMutableData<double>()[idx] = v; break;
+        case TensorDType::Float16: val.GetTensorMutableData<Ort::Float16_t>()[idx] = Ort::Float16_t(static_cast<float>(v)); break;
         case TensorDType::Int32:   val.GetTensorMutableData<int32_t>()[idx] = static_cast<int32_t>(v); break;
         case TensorDType::Int64:   val.GetTensorMutableData<int64_t>()[idx] = static_cast<int64_t>(v); break;
         case TensorDType::Int8:    val.GetTensorMutableData<int8_t>()[idx] = static_cast<int8_t>(v); break;
