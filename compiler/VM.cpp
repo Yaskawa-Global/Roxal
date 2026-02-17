@@ -1039,7 +1039,13 @@ ExecutionStatus VM::run(std::istream& source, const std::string& name)
     if (setupResult != ExecutionStatus::OK)
         return setupResult;
 
-    // Execute directly on the host thread (no spawn)
+    // Establish RT main thread for script mode (runs on current C++ thread, not spawned)
+    auto& rtMgr = RTCallbackManager::instance();
+    if (!rtMgr.isMainThreadSet()) {
+        rtMgr.setMainThread();
+    }
+
+    // Execute directly on the host thread
     auto [result, value] = execute();
 
     // Join any other threads spawned during execution (actors, etc.)
