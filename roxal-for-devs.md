@@ -1086,6 +1086,206 @@ t = dds.create_topic(p, "QoSTopic", HelloWorldData.Msg, qos)
 
 
 
+## Advanced: Neural Network Inference (ai.nn)
+
+When Roxal is built with `ROXAL_ENABLE_AI_NN=ON` (which implies `ROXAL_ENABLE_ONNX=ON`), the `ai.nn` module provides neural network inference via ONNX Runtime. Models are loaded from `.onnx` files and can run on CPU or GPU (CUDA). Inference is asynchronous — `predict()` returns a future that auto-resolves when results are accessed. Model outputs are tensors that integrate directly with Roxal's signal/dataflow engine, enabling reactive model pipelines.
+
+### Loading and Running a Model
+
+```roxal
+import ai.nn
+
+var model = ai.nn.load("mnist-8.onnx")
+
+# Inspect the model
+print(model.inputs())   // [{name: "Input3", shape: [1, 1, 28, 28], dtype: "float32"}, ...]
+print(model.outputs())  // [{name: "Plus214_Output_0", shape: [1, 10], dtype: "float32"}, ...]
+print(model.device())   // "cpu" or "cuda"
+
+# Create a 28x28 input image (digit "1": vertical stroke)
+var img = tensor(1, 1, 28, 28, dtype='float32')
+var r = 4
+while r <= 23:
+  img[0, 0, r, 13] = 1.0
+  img[0, 0, r, 14] = 1.0
+  r = r + 1
+
+# Run inference
+var output = model.predict(img)
+
+# output is a tensor with shape [1, 10] — one score per digit
+# Find the predicted digit (argmax)
+var best = 0
+var best_score = output[0, 0]
+var i = 1
+while i < 10:
+  if output[0, i] > best_score:
+    best = i
+    best_score = output[0, i]
+  i = i + 1
+
+print(best)  // 1
+
+model.close()
+```
+
+### Device Selection
+
+By default, `load()` uses GPU (CUDA) when available, falling back to CPU. The `device` parameter overrides this:
+
+```roxal
+var model_gpu = ai.nn.load("model.onnx")                    // auto (GPU if available)
+var model_cpu = ai.nn.load("model.onnx", device='cpu')      // force CPU
+var model_cuda = ai.nn.load("model.onnx", device='cuda')    // request GPU (error if unavailable)
+```
+
+The `warmup` parameter (default `true`) runs an initial dummy inference to warm caches:
+
+```roxal
+var model = ai.nn.load("model.onnx", device='cpu', warmup=false)  // skip warm-up
+```
+
+### Multi-Input and Multi-Output Models
+
+For models with multiple inputs, pass a dict (by name) or a list (by position):
+
+```roxal
+var model = ai.nn.load("add-sub.onnx")  // inputs: a, b — outputs: sum_out, diff_out
+
+var a = tensor(1, 3, dtype='float32')
+a[0, 0] = 10.0
+a[0, 1] = 20.0
+
+var b = tensor(1, 3, dtype='float32')
+b[0, 0] = 1.0
+b[0, 1] = 2.0
+
+# Dict-based (by input name)
+var results = model.predict({'a': a, 'b': b})
+print(results[0][0, 0])  // 11 (sum)
+print(results[1][0, 0])  // 9  (diff)
+
+# List-based (by position)
+var results2 = model.predict([a, b])
+```
+
+When a model has multiple outputs, `predict()` returns a list of tensors. For single-output models, it returns a single tensor.
+
+### Chaining Models
+
+Model outputs are tensors that can be passed directly as inputs to another model. When both models run on GPU, intermediate tensors stay in GPU memory with no copies:
+
+```roxal
+var encoder = ai.nn.load("encoder.onnx")
+var decoder = ai.nn.load("decoder.onnx")
+
+var input = tensor(1, 10, dtype='float32')
+input[0, 0] = 1.0
+input[0, 3] = 42.0
+
+var mid = encoder.predict(input)     // output tensor (GPU if available)
+var result = decoder.predict(mid)    // GPU→GPU, zero-copy
+
+print(result[0, 0])
+print(result[0, 3])
+
+encoder.close()
+decoder.close()
+```
+
+### Reactive Inference with Signals
+
+The `predict()` method integrates with Roxal's signal/dataflow engine. When called with a signal argument, it creates a derived signal that automatically re-runs inference whenever the input signal changes:
+
+```roxal
+import ai.nn
+
+var model = ai.nn.load("mnist-8.onnx")
+
+# Create a source signal for input images (10 Hz)
+var empty = tensor(1, 1, 28, 28, dtype='float32')
+var input_sig = signal(10, empty)
+
+# Create a derived prediction signal — re-runs model automatically on input change
+var output_sig = model.predict(input_sig)
+
+# React to new predictions
+var predictions = []
+when output_sig changes as evt:
+  var out = evt.value
+  # ... compute argmax to get predicted digit ...
+  predictions.append(best)
+
+input_sig.run()
+
+# Update the input — the model re-runs automatically
+var img1 = tensor(1, 1, 28, 28, dtype='float32')
+# ... draw digit "1" ...
+input_sig.set(img1)
+wait(ms=500)
+
+# Update again — triggers another prediction
+var img0 = tensor(1, 1, 28, 28, dtype='float32')
+# ... draw digit "0" ...
+input_sig.set(img0)
+wait(ms=500)
+
+for p in predictions:
+  print(p)  // 1, 0
+```
+
+### Signal-Based Model Chains
+
+Signals chain naturally through multiple models, creating reactive GPU pipelines:
+
+```roxal
+import ai.nn
+
+var model_a = ai.nn.load("encoder.onnx")
+var model_b = ai.nn.load("decoder.onnx")
+
+# Build signal chain: input → model_a → model_b
+var initial = tensor(1, 10, dtype='float32')
+var input_sig = signal(10, initial)
+var mid_sig = model_a.predict(input_sig)      // derived signal
+var output_sig = model_b.predict(mid_sig)     // chained derived signal
+
+when output_sig changes as evt:
+  print(evt.value)
+
+input_sig.run()
+
+# Setting input propagates through the entire chain automatically
+var input = tensor(1, 10, dtype='float32')
+input[0, 3] = 42.0
+input_sig.set(input)
+wait(ms=300)
+```
+
+When models run on GPU, intermediate tensors stay on GPU throughout the signal chain — no CPU round-trip.
+
+
+### API Reference
+
+#### Module Functions
+
+| Function | Description |
+|----------|-------------|
+| `load(path, device='auto', warmup=true)` | Load an ONNX model. Device: `'auto'`, `'cpu'`, or `'cuda'`. Returns a Model. |
+| `tensor_device(t)` | Return the device where a tensor resides (`'cpu'` or `'cuda'`). |
+| `memory_info(device='auto')` | Return memory info dict: `{device, total, free, used}` (bytes). |
+
+#### Model Type
+
+| Method | Description |
+|--------|-------------|
+| `predict(input)` | Run inference. Input: tensor, dict `{name: tensor}`, list of tensors, or a signal. Returns tensor (or list if multiple outputs). With a signal input, returns a derived signal. |
+| `inputs()` | Return list of input descriptors: `[{name, shape, dtype}, ...]` |
+| `outputs()` | Return list of output descriptors: `[{name, shape, dtype}, ...]` |
+| `device()` | Return execution device string (`'cpu'` or `'cuda'`). |
+| `close()` | Release model session and free resources. |
+
+
 ## Builtin Modules & Functions Reference
 
 The functions in the sys module are always globally available (- as if `import sys.*` were used).  See `sys.rox`.
