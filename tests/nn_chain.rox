@@ -2,8 +2,8 @@
 # and verify it stays on GPU between inferences (when CUDA available)
 import ai.nn
 
-var model_a = ai.nn.load("../modules/ai/identity-10.onnx")
-var model_b = ai.nn.load("../modules/ai/identity-10.onnx")
+var model_a = ai.nn.Model("../modules/ai/identity-10.onnx")
+var model_b = ai.nn.Model("../modules/ai/identity-10.onnx")
 
 # prepare input with known values
 var input = tensor(1, 10, dtype='float32')

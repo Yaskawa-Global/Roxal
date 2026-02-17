@@ -6,7 +6,7 @@ var names = ["FP32", "INT8", "FP16"]
 
 var i = 0
 for path in models:
-  var model = ai.nn.load(path, warmup=false)
+  var model = ai.nn.Model(path, warmup=false)
 
   # Verify 1 input, 2 outputs
   var ins = model.inputs()

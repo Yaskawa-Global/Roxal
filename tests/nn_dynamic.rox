@@ -2,7 +2,7 @@
 # The double-dynamic.onnx model multiplies input by 2, with shape [N, 4]
 import ai.nn
 
-var model = ai.nn.load("../modules/ai/double-dynamic.onnx")
+var model = ai.nn.Model("../modules/ai/double-dynamic.onnx")
 
 # verify inputs() reports dynamic dimension as -1
 var inp_info = model.inputs()[0]

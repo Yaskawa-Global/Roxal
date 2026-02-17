@@ -488,14 +488,14 @@ void ModuleNN::registerBuiltins(VM& vm)
     setVM(vm);
 
     // Module-level functions
-    link("load", [this](VM&, ArgsView a) { return nn_load_builtin(a); });
     link("tensor_device", [this](VM&, ArgsView a) { return nn_tensor_device_builtin(a); },
          /*defaults=*/{}, /*resolveArgMask=*/0x1);
     link("memory_info", [this](VM&, ArgsView a) { return nn_memory_info_builtin(a); });
 
     // Model object methods
+    linkMethod("Model", "init", [this](VM&, ArgsView a) { return nn_model_init_builtin(a); });
     // predict is declared here for help()/docstring visibility; the instance property
-    // closure (set in createModelObject) shadows this for actual calls and signal integration.
+    // closure (set in Model.init) shadows this for actual calls and signal integration.
     linkMethod("Model", "predict", [](VM& vm, ArgsView a) -> Value {
         if (a.size() < 2 || !isObjectInstance(a[0]))
             throw std::invalid_argument("predict expects an input argument");
@@ -516,83 +516,21 @@ void ModuleNN::registerBuiltins(VM& vm)
 }
 
 // ============================================================
-// createModelObject — wraps a ModelWrapper in a Roxal Model instance
+// Model.init(path, device, warmup)
 // ============================================================
 
-Value ModuleNN::createModelObject(const std::shared_ptr<ModelWrapper>& wrapper)
+Value ModuleNN::nn_model_init_builtin(ArgsView args)
 {
-    // Look up the Model type declared in nn.rox
-    auto typeVal = asModuleType(moduleType())->vars.load(toUnicodeString("Model"));
-    if (!typeVal.has_value() || !isObjectType(typeVal.value()))
-        throw std::runtime_error("Model type not found in ai.nn module");
+    if (args.size() < 2 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("Model.init expects receiver");
+    if (!isString(args[1]))
+        throw std::invalid_argument("Model.init expects a model path string");
 
-    // Create object instance
-    Value instance = Value::objVal(newObjectInstance(typeVal.value()));
-    ObjectInstance* inst = asObjectInstance(instance);
-
-    // Store wrapper as foreignPtr with shared_ptr for safe sharing with predict closure
-    auto* sharedWrapper = new std::shared_ptr<ModelWrapper>(wrapper);
-    Value fp = Value::foreignPtrVal(sharedWrapper);
-    asForeignPtr(fp)->registerCleanup([](void* p) {
-        delete static_cast<std::shared_ptr<ModelWrapper>*>(p);
-    });
-    inst->setProperty("_this", fp);
-
-    // Create the `predict` closure property.
-    // This is a standalone closure (not a method) that captures the model wrapper
-    // and can be used in dataflow signal expressions like any other func.
-    // predict returns a future (async inference on worker thread).
-    std::shared_ptr<ModelWrapper> capturedWrapper = wrapper;
-    NativeFn predictFn = [capturedWrapper](VM& vm, ArgsView args) -> Value {
-        if (args.size() < 1)
-            throw std::invalid_argument("predict expects an input argument");
-        return safeRunInferenceFromValueAsync(vm, capturedWrapper, args[0]);
-    };
-
-    auto funcObj = newFunctionObj(
-        toUnicodeString("predict"),
-        toUnicodeString("ai"),
-        toUnicodeString("nn"),
-        toUnicodeString("<native>")
-    );
-    ObjFunction* func = funcObj.get();
-    func->arity = 1;
-    func->upvalueCount = 0;
-    // resolveArgMask = 0x1: resolve future arg 0 before calling NativeFn.
-    // This enables chained predict: model_b.predict(model_a.predict(t))
-    // — the inner future is resolved before model_b's predict runs.
-    func->builtinInfo = make_ptr<BuiltinFuncInfo>(predictFn, std::vector<Value>{}, 0x1);
-    func->doc = toUnicodeString(
-        "Run inference. Input may be a tensor, a dict {name: tensor}, or a list "
-        "of tensors. Returns output tensor (or list if multiple outputs). "
-        "Also works with signals for reactive dataflow.");
-    // funcType is required for signal/dataflow integration: the VM uses it
-    // to map signal arguments to FuncNode inputs when predict is called with a signal.
-    // Parameter is untyped (nullopt) so the VM doesn't coerce dict/list to tensor.
-    func->funcType = makeFuncType({{"input", std::nullopt}});
-
-    Value funcVal = Value::objVal(std::move(funcObj));
-    Value closureVal = Value::objVal(newClosureObj(funcVal));
-    inst->setProperty("predict", closureVal);
-
-    return instance;
-}
-
-// ============================================================
-// ai.nn.load(path) → Model
-// ============================================================
-
-Value ModuleNN::nn_load_builtin(ArgsView args)
-{
-    if (args.size() < 1)
-        throw std::invalid_argument("ai.nn.load expects a model path string");
-    if (!isString(args[0]))
-        throw std::invalid_argument("ai.nn.load expects a model path string");
-
-    std::string path = toUTF8StdString(asStringObj(args[0])->s);
-    std::string deviceArg = (args.size() >= 2 && isString(args[1]))
-        ? toUTF8StdString(asStringObj(args[1])->s) : "auto";
-    bool doWarmup = (args.size() < 3) || args[2].asBool();
+    ObjectInstance* inst = asObjectInstance(args[0]);
+    std::string path = toUTF8StdString(asStringObj(args[1])->s);
+    std::string deviceArg = (args.size() >= 3 && isString(args[2]))
+        ? toUTF8StdString(asStringObj(args[2])->s) : "auto";
+    bool doWarmup = (args.size() < 4) || args[3].asBool();
 
     bool requestGpu;
     if (deviceArg == "auto")
@@ -602,7 +540,7 @@ Value ModuleNN::nn_load_builtin(ArgsView args)
     else if (deviceArg == "cpu")
         requestGpu = false;
     else
-        throw std::invalid_argument("ai.nn.load: device must be 'auto', 'cpu', or 'cuda'");
+        throw std::invalid_argument("Model.init: device must be 'auto', 'cpu', or 'cuda'");
 
 #ifdef ROXAL_ENABLE_ONNX
     auto& ortEnv = OnnxEnvironment::instance();
@@ -612,7 +550,7 @@ Value ModuleNN::nn_load_builtin(ArgsView args)
     try {
         wrapper->session = std::make_unique<Ort::Session>(ortEnv.env(), path.c_str(), opts);
     } catch (const Ort::Exception& e) {
-        throw std::invalid_argument(std::string("ai.nn.load: failed to load '") + path + "': " + e.what());
+        throw std::invalid_argument(std::string("Model.init: failed to load '") + path + "': " + e.what());
     }
     wrapper->device = (requestGpu && ortEnv.cudaAvailable()) ? "cuda" : "cpu";
 
@@ -675,10 +613,49 @@ Value ModuleNN::nn_load_builtin(ArgsView args)
         }
     }
 
-    return createModelObject(wrapper);
+    // Store wrapper as foreignPtr on the instance
+    auto* sharedWrapper = new std::shared_ptr<ModelWrapper>(wrapper);
+    Value fp = Value::foreignPtrVal(sharedWrapper);
+    asForeignPtr(fp)->registerCleanup([](void* p) {
+        delete static_cast<std::shared_ptr<ModelWrapper>*>(p);
+    });
+    inst->setProperty("_this", fp);
+
+    // Create the `predict` closure property.
+    // This is a standalone closure (not a method) that captures the model wrapper
+    // and can be used in dataflow signal expressions like any other func.
+    // predict returns a future (async inference on worker thread).
+    std::shared_ptr<ModelWrapper> capturedWrapper = wrapper;
+    NativeFn predictFn = [capturedWrapper](VM& vm, ArgsView a) -> Value {
+        if (a.size() < 1)
+            throw std::invalid_argument("predict expects an input argument");
+        return safeRunInferenceFromValueAsync(vm, capturedWrapper, a[0]);
+    };
+
+    auto funcObj = newFunctionObj(
+        toUnicodeString("predict"),
+        toUnicodeString("ai"),
+        toUnicodeString("nn"),
+        toUnicodeString("<native>")
+    );
+    ObjFunction* func = funcObj.get();
+    func->arity = 1;
+    func->upvalueCount = 0;
+    func->builtinInfo = make_ptr<BuiltinFuncInfo>(predictFn, std::vector<Value>{}, 0x1);
+    func->doc = toUnicodeString(
+        "Run inference. Input may be a tensor, a dict {name: tensor}, or a list "
+        "of tensors. Returns output tensor (or list if multiple outputs). "
+        "Also works with signals for reactive dataflow.");
+    func->funcType = makeFuncType({{"input", std::nullopt}});
+
+    Value funcVal = Value::objVal(std::move(funcObj));
+    Value closureVal = Value::objVal(newClosureObj(funcVal));
+    inst->setProperty("predict", closureVal);
+
+    return Value::nilVal();
 #else
-    (void)path;
-    throw std::runtime_error("ai.nn.load requires ONNX Runtime (build with -DROXAL_ENABLE_ONNX=ON)");
+    (void)inst; (void)path;
+    throw std::runtime_error("Model.init requires ONNX Runtime (build with -DROXAL_ENABLE_ONNX=ON)");
 #endif
 }
 

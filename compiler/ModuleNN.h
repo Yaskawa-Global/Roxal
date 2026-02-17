@@ -20,11 +20,11 @@ public:
     inline Value moduleType() const override { return moduleTypeValue; }
 
     // Module-level functions
-    Value nn_load_builtin(ArgsView args);
     Value nn_tensor_device_builtin(ArgsView args);
     Value nn_memory_info_builtin(ArgsView args);
 
     // Model object methods
+    Value nn_model_init_builtin(ArgsView args);
     Value nn_model_inputs_builtin(ArgsView args);
     Value nn_model_outputs_builtin(ArgsView args);
     Value nn_model_device_builtin(ArgsView args);
@@ -40,9 +40,6 @@ public:
 
 private:
     Value moduleTypeValue; // ObjModuleType*
-
-    // Helper to create a Model object instance with a predict closure
-    Value createModelObject(const std::shared_ptr<ModelWrapper>& wrapper);
 
 };
 

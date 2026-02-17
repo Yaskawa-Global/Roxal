@@ -2,8 +2,8 @@
 # and verify intermediate tensors stay on the model's device
 import ai.nn
 
-var model_a = ai.nn.load("../modules/ai/identity-10.onnx")
-var model_b = ai.nn.load("../modules/ai/identity-10.onnx")
+var model_a = ai.nn.Model("../modules/ai/identity-10.onnx")
+var model_b = ai.nn.Model("../modules/ai/identity-10.onnx")
 
 var dev = model_a.device()
 print(dev == "cpu" or dev == "cuda")

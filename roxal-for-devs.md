@@ -1095,7 +1095,7 @@ When Roxal is built with `ROXAL_ENABLE_AI_NN=ON` (which implies `ROXAL_ENABLE_ON
 ```roxal
 import ai.nn
 
-var model = ai.nn.load("mnist-8.onnx")
+var model = ai.nn.Model("mnist-8.onnx")
 
 # Inspect the model
 print(model.inputs())   // [{name: "Input3", shape: [1, 1, 28, 28], dtype: "float32"}, ...]
@@ -1134,15 +1134,15 @@ model.close()
 By default, `load()` uses GPU (CUDA) when available, falling back to CPU. The `device` parameter overrides this:
 
 ```roxal
-var model_gpu = ai.nn.load("model.onnx")                    // auto (GPU if available)
-var model_cpu = ai.nn.load("model.onnx", device='cpu')      // force CPU
-var model_cuda = ai.nn.load("model.onnx", device='cuda')    // request GPU (error if unavailable)
+var model_gpu = ai.nn.Model("model.onnx")                    // auto (GPU if available)
+var model_cpu = ai.nn.Model("model.onnx", device='cpu')      // force CPU
+var model_cuda = ai.nn.Model("model.onnx", device='cuda')    // request GPU (error if unavailable)
 ```
 
 The `warmup` parameter (default `true`) runs an initial dummy inference to warm caches:
 
 ```roxal
-var model = ai.nn.load("model.onnx", device='cpu', warmup=false)  // skip warm-up
+var model = ai.nn.Model("model.onnx", device='cpu', warmup=false)  // skip warm-up
 ```
 
 ### Multi-Input and Multi-Output Models
@@ -1150,7 +1150,7 @@ var model = ai.nn.load("model.onnx", device='cpu', warmup=false)  // skip warm-u
 For models with multiple inputs, pass a dict (by name) or a list (by position):
 
 ```roxal
-var model = ai.nn.load("add-sub.onnx")  // inputs: a, b — outputs: sum_out, diff_out
+var model = ai.nn.Model("add-sub.onnx")  // inputs: a, b — outputs: sum_out, diff_out
 
 var a = tensor(1, 3, dtype='float32')
 a[0, 0] = 10.0
@@ -1176,8 +1176,8 @@ When a model has multiple outputs, `predict()` returns a list of tensors. For si
 Model outputs are tensors that can be passed directly as inputs to another model. When both models run on GPU, intermediate tensors stay in GPU memory with no copies:
 
 ```roxal
-var encoder = ai.nn.load("encoder.onnx")
-var decoder = ai.nn.load("decoder.onnx")
+var encoder = ai.nn.Model("encoder.onnx")
+var decoder = ai.nn.Model("decoder.onnx")
 
 var input = tensor(1, 10, dtype='float32')
 input[0, 0] = 1.0
@@ -1200,7 +1200,7 @@ The `predict()` method integrates with Roxal's signal/dataflow engine. When call
 ```roxal
 import ai.nn
 
-var model = ai.nn.load("mnist-8.onnx")
+var model = ai.nn.Model("mnist-8.onnx")
 
 # Create a source signal for input images (10 Hz)
 var empty = tensor(1, 1, 28, 28, dtype='float32')
@@ -1241,8 +1241,8 @@ Signals chain naturally through multiple models, creating reactive GPU pipelines
 ```roxal
 import ai.nn
 
-var model_a = ai.nn.load("encoder.onnx")
-var model_b = ai.nn.load("decoder.onnx")
+var model_a = ai.nn.Model("encoder.onnx")
+var model_b = ai.nn.Model("decoder.onnx")
 
 # Build signal chain: input → model_a → model_b
 var initial = tensor(1, 10, dtype='float32')
@@ -1271,7 +1271,6 @@ When models run on GPU, intermediate tensors stay on GPU throughout the signal c
 
 | Function | Description |
 |----------|-------------|
-| `load(path, device='auto', warmup=true)` | Load an ONNX model. Device: `'auto'`, `'cpu'`, or `'cuda'`. Returns a Model. |
 | `tensor_device(t)` | Return the device where a tensor resides (`'cpu'` or `'cuda'`). |
 | `memory_info(device='auto')` | Return memory info dict: `{device, total, free, used}` (bytes). |
 
@@ -1279,6 +1278,7 @@ When models run on GPU, intermediate tensors stay on GPU throughout the signal c
 
 | Method | Description |
 |--------|-------------|
+| `Model(path, device='auto', warmup=true)` | Load an ONNX model. Device: `'auto'`, `'cpu'`, or `'cuda'`. Set `warmup=false` to skip initial warm-up inference. |
 | `predict(input)` | Run inference. Input: tensor, dict `{name: tensor}`, list of tensors, or a signal. Returns tensor (or list if multiple outputs). With a signal input, returns a derived signal. |
 | `inputs()` | Return list of input descriptors: `[{name, shape, dtype}, ...]` |
 | `outputs()` | Return list of output descriptors: `[{name, shape, dtype}, ...]` |

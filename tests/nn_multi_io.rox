@@ -2,7 +2,7 @@
 # add-sub.onnx: sum_out = a + b, diff_out = a - b, shape [1, 3]
 import ai.nn
 
-var model = ai.nn.load("../modules/ai/add-sub.onnx")
+var model = ai.nn.Model("../modules/ai/add-sub.onnx")
 
 # verify 2 inputs and 2 outputs
 print(len(model.inputs()))

@@ -2,7 +2,7 @@
 # (exercises the future auto-resolution mechanism via OpCode::Index)
 import ai.nn
 
-var model = ai.nn.load("../modules/ai/identity-10.onnx")
+var model = ai.nn.Model("../modules/ai/identity-10.onnx")
 
 # Basic async predict — result is a future that auto-resolves on subscript
 var input = tensor(1, 10, dtype='float32')
@@ -18,7 +18,7 @@ print(out[0, 7])
 print(out[0, 9])
 
 # Chained predict — inner future resolved via resolveArgMask before outer predict
-var model_b = ai.nn.load("../modules/ai/identity-10.onnx")
+var model_b = ai.nn.Model("../modules/ai/identity-10.onnx")
 var chained = model_b.predict(model.predict(input))
 print(chained[0, 0])
 print(chained[0, 9])

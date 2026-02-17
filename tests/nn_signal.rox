@@ -1,7 +1,7 @@
 # ai.nn signal/dataflow test: predict via reactive signals
 import ai.nn
 
-var model = ai.nn.load("../modules/ai/mnist-8.onnx")
+var model = ai.nn.Model("../modules/ai/mnist-8.onnx")
 var empty = tensor(1, 1, 28, 28, dtype='float32')
 
 # Create source signal and derived prediction signal

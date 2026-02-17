@@ -1,8 +1,4 @@
 @builtin
-func load(path:string, device:string='auto', warmup:bool=true):
-  """Load an ONNX model from the given file path. Returns a Model object. Device: 'auto' (GPU if available), 'cpu', or 'cuda'. Set warmup=false to skip the initial warm-up inference."""
-
-@builtin
 func tensor_device(t):
   """Return the device where a tensor's data resides ('cpu' or 'cuda')."""
 
@@ -12,6 +8,10 @@ func memory_info(device:string='auto'):
 
 @builtin
 type Model object:
+
+  @builtin
+  proc init(path:string, device:string='auto', warmup:bool=true):
+    """Load an ONNX model from the given file path. Device: 'auto' (GPU if available), 'cpu', or 'cuda'. Set warmup=false to skip the initial warm-up inference."""
 
   @builtin
   func predict(input):
