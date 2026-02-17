@@ -10,9 +10,16 @@
 #include <queue>
 #include <future>
 #include <functional>
+#ifdef __linux__
+#include <sys/sysinfo.h>
+#endif
 
 #ifdef ROXAL_ENABLE_ONNX
 #include <onnxruntime_cxx_api.h>
+#endif
+
+#if defined(ROXAL_ENABLE_ONNX) && defined(ROXAL_ENABLE_CUDA)
+#include <cuda_runtime_api.h>
 #endif
 
 using namespace roxal;
@@ -480,6 +487,7 @@ void ModuleNN::registerBuiltins(VM& vm)
     link("load", [this](VM&, ArgsView a) { return nn_load_builtin(a); });
     link("tensor_device", [this](VM&, ArgsView a) { return nn_tensor_device_builtin(a); },
          /*defaults=*/{}, /*resolveArgMask=*/0x1);
+    link("memory_info", [this](VM&, ArgsView a) { return nn_memory_info_builtin(a); });
 
     // Model object methods
     // predict is declared here for help()/docstring visibility; the instance property
@@ -570,15 +578,31 @@ Value ModuleNN::nn_load_builtin(ArgsView args)
         throw std::invalid_argument("ai.nn.load expects a model path string");
 
     std::string path = toUTF8StdString(asStringObj(args[0])->s);
-    bool doWarmup = (args.size() < 2) || args[1].asBool();
+    std::string deviceArg = (args.size() >= 2 && isString(args[1]))
+        ? toUTF8StdString(asStringObj(args[1])->s) : "auto";
+    bool doWarmup = (args.size() < 3) || args[2].asBool();
+
+    bool requestGpu;
+    if (deviceArg == "auto")
+        requestGpu = true;
+    else if (deviceArg == "cuda")
+        requestGpu = true;
+    else if (deviceArg == "cpu")
+        requestGpu = false;
+    else
+        throw std::invalid_argument("ai.nn.load: device must be 'auto', 'cpu', or 'cuda'");
 
 #ifdef ROXAL_ENABLE_ONNX
     auto& ortEnv = OnnxEnvironment::instance();
-    auto opts = ortEnv.createSessionOptions();
+    auto opts = ortEnv.createSessionOptions(requestGpu);
 
     auto wrapper = std::make_shared<ModelWrapper>();
-    wrapper->session = std::make_unique<Ort::Session>(ortEnv.env(), path.c_str(), opts);
-    wrapper->device = ortEnv.cudaAvailable() ? "cuda" : "cpu";
+    try {
+        wrapper->session = std::make_unique<Ort::Session>(ortEnv.env(), path.c_str(), opts);
+    } catch (const Ort::Exception& e) {
+        throw std::invalid_argument(std::string("ai.nn.load: failed to load '") + path + "': " + e.what());
+    }
+    wrapper->device = (requestGpu && ortEnv.cudaAvailable()) ? "cuda" : "cpu";
 
     Ort::AllocatorWithDefaultOptions allocator;
 
@@ -730,6 +754,73 @@ Value ModuleNN::nn_tensor_device_builtin(ArgsView args)
         return Value::stringVal(toUnicodeString("cuda"));
 #endif
     return Value::stringVal(toUnicodeString("cpu"));
+}
+
+// ============================================================
+// ai.nn.memory_info(device='auto') → {device, total, free, used}
+// ============================================================
+
+Value ModuleNN::nn_memory_info_builtin(ArgsView args)
+{
+    std::string deviceArg = (args.size() >= 1 && isString(args[0]))
+        ? toUTF8StdString(asStringObj(args[0])->s) : "auto";
+
+    if (deviceArg != "auto" && deviceArg != "cpu" && deviceArg != "cuda")
+        throw std::invalid_argument("ai.nn.memory_info: device must be 'auto', 'cpu', or 'cuda'");
+
+    Value dict = Value::objVal(newDictObj());
+
+#if defined(ROXAL_ENABLE_ONNX) && defined(ROXAL_ENABLE_CUDA)
+    if (deviceArg != "cpu") {
+        auto& ortEnv = OnnxEnvironment::instance();
+        if (ortEnv.cudaAvailable()) {
+            size_t free = 0, total = 0;
+            if (cudaMemGetInfo(&free, &total) == cudaSuccess) {
+                asDict(dict)->store(Value::stringVal(toUnicodeString("device")),
+                                    Value::stringVal(toUnicodeString("cuda")));
+                asDict(dict)->store(Value::stringVal(toUnicodeString("total")),
+                                    Value::realVal(static_cast<double>(total)));
+                asDict(dict)->store(Value::stringVal(toUnicodeString("free")),
+                                    Value::realVal(static_cast<double>(free)));
+                asDict(dict)->store(Value::stringVal(toUnicodeString("used")),
+                                    Value::realVal(static_cast<double>(total - free)));
+                return dict;
+            }
+        }
+        if (deviceArg == "cuda")
+            throw std::invalid_argument("ai.nn.memory_info: CUDA not available");
+    }
+#else
+    if (deviceArg == "cuda")
+        throw std::invalid_argument("ai.nn.memory_info: CUDA not available");
+#endif
+
+    asDict(dict)->store(Value::stringVal(toUnicodeString("device")),
+                        Value::stringVal(toUnicodeString("cpu")));
+
+    // Report system RAM (Linux only; other platforms return 0)
+#ifdef __linux__
+    struct sysinfo si;
+    if (sysinfo(&si) == 0) {
+        double total = static_cast<double>(si.totalram) * si.mem_unit;
+        double free  = static_cast<double>(si.freeram)  * si.mem_unit;
+        asDict(dict)->store(Value::stringVal(toUnicodeString("total")),
+                            Value::realVal(total));
+        asDict(dict)->store(Value::stringVal(toUnicodeString("free")),
+                            Value::realVal(free));
+        asDict(dict)->store(Value::stringVal(toUnicodeString("used")),
+                            Value::realVal(total - free));
+    } else
+#endif
+    {
+        asDict(dict)->store(Value::stringVal(toUnicodeString("total")),
+                            Value::realVal(0));
+        asDict(dict)->store(Value::stringVal(toUnicodeString("free")),
+                            Value::realVal(0));
+        asDict(dict)->store(Value::stringVal(toUnicodeString("used")),
+                            Value::realVal(0));
+    }
+    return dict;
 }
 
 // ============================================================
