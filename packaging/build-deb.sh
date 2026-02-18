@@ -126,7 +126,22 @@ chmod 644 "${STAGING_DIR}/usr/share/roxal/"*.rox
 echo "  Modules: ${ROX_MODULES}"
 
 # ---------------------------------------------------------------------------
-# Step 3: Bundle CycloneDDS shared libraries
+# Step 3: Copy static libraries for VM integration
+# ---------------------------------------------------------------------------
+echo "Copying static libraries..."
+for lib in libroxal.a dataflow/libdataflow.a; do
+    libpath="${BUILD_DIR}/${lib}"
+    if [[ -f "${libpath}" ]]; then
+        cp "${libpath}" "${STAGING_DIR}/usr/lib/roxal/"
+        chmod 644 "${STAGING_DIR}/usr/lib/roxal/$(basename "${lib}")"
+        echo "  $(basename "${lib}") ($(du -sh "${libpath}" | cut -f1))"
+    else
+        echo "  WARNING: ${libpath} not found -- skipping"
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# Step 4: Bundle CycloneDDS shared libraries
 # ---------------------------------------------------------------------------
 echo "Bundling CycloneDDS libraries..."
 
@@ -166,7 +181,7 @@ if [[ "${DDS_FOUND}" == "false" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Step 4: Install ld.so.conf.d drop-in and maintainer scripts
+# Step 5: Install ld.so.conf.d drop-in and maintainer scripts
 # ---------------------------------------------------------------------------
 cp "${SCRIPT_DIR}/templates/roxal.conf" "${STAGING_DIR}/etc/ld.so.conf.d/roxal.conf"
 chmod 644 "${STAGING_DIR}/etc/ld.so.conf.d/roxal.conf"
@@ -177,7 +192,7 @@ chmod 755 "${STAGING_DIR}/DEBIAN/postinst"
 chmod 755 "${STAGING_DIR}/DEBIAN/postrm"
 
 # ---------------------------------------------------------------------------
-# Step 5: Generate copyright file
+# Step 6: Generate copyright file
 # ---------------------------------------------------------------------------
 cat > "${STAGING_DIR}/usr/share/doc/roxal/copyright" <<'COPY'
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
@@ -193,7 +208,7 @@ Comment: CycloneDDS - https://github.com/eclipse-cyclonedds/cyclonedds
 COPY
 
 # ---------------------------------------------------------------------------
-# Step 6: Generate DEBIAN/control
+# Step 7: Generate DEBIAN/control
 # ---------------------------------------------------------------------------
 DEPENDS=$(cat "${DEPS_FILE}" | tr -d '\n')
 INSTALLED_KB=$(du -sk "${STAGING_DIR}" | cut -f1)
@@ -215,7 +230,7 @@ Description: Roxal programming language runtime
 EOF
 
 # ---------------------------------------------------------------------------
-# Step 7: Build the .deb
+# Step 8: Build the .deb
 # ---------------------------------------------------------------------------
 echo ""
 echo "Building .deb package..."
