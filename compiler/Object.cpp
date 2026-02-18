@@ -13,8 +13,8 @@
 #include <utility>
 #include <core/AST.h>
 
-#if defined(ROXAL_ENABLE_ONNX) && defined(ROXAL_ENABLE_CUDA)
-#include <cuda_runtime_api.h>
+#ifdef ROXAL_ENABLE_ONNX
+#include "CudaRuntime.h"
 #endif
 
 #include <core/types.h>
@@ -3110,7 +3110,11 @@ void ObjTensor::ensureCpu() const
 {
     if (!isOnGpu()) return;
 
-#ifdef ROXAL_ENABLE_CUDA
+    auto& cuda = CudaRuntime::instance();
+    if (!cuda.available())
+        throw std::runtime_error("GPU tensor element access requires CUDA runtime "
+                                 "(libcudart.so not found)");
+
     auto info = ort_value_->GetTensorTypeAndShapeInfo();
     auto ortDtype = info.GetElementType();
     auto shape = info.GetShape();
@@ -3119,17 +3123,14 @@ void ObjTensor::ensureCpu() const
     // Allocate a new CPU tensor and copy data from GPU
     Ort::AllocatorWithDefaultOptions cpuAllocator;
     auto cpuVal = Ort::Value::CreateTensor(cpuAllocator, shape.data(), shape.size(), ortDtype);
-    cudaError_t err = cudaMemcpy(cpuVal.GetTensorMutableRawData(),
-                                 ort_value_->GetTensorData<void>(),
-                                 byteCount, cudaMemcpyDeviceToHost);
-    if (err != cudaSuccess)
-        throw std::runtime_error(std::string("cudaMemcpy D2H failed: ") + cudaGetErrorString(err));
+    constexpr int cudaMemcpyDeviceToHost = 2;
+    int err = cuda.memcpy(cpuVal.GetTensorMutableRawData(),
+                          ort_value_->GetTensorData<void>(),
+                          byteCount, cudaMemcpyDeviceToHost);
+    if (err != 0)
+        throw std::runtime_error(std::string("cudaMemcpy D2H failed: ") + cuda.getErrorString(err));
 
     ort_value_ = std::make_shared<Ort::Value>(std::move(cpuVal));
-#else
-    throw std::runtime_error("GPU tensor element access requires CUDA support "
-                             "(build with CUDA toolkit installed)");
-#endif
 }
 
 // Helper: read a single element from ORT buffer as double

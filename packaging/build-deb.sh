@@ -3,6 +3,7 @@
 # Build a .deb package for Roxal from an existing cmake build.
 #
 # Usage:  ./packaging/build-deb.sh [--distro noble] [--dds-lib-dir /usr/share/lib]
+#                                   [--ort-lib-dir deps/onnxruntime/lib]
 #                                   [--build-dir build] [--output-dir .]
 #
 # Run from the project root directory.
@@ -19,11 +20,13 @@ DISTRO="noble"
 BUILD_DIR="${PROJECT_ROOT}/build"
 MODULES_DIR="${PROJECT_ROOT}/modules"
 DDS_LIB_DIR="${DDS_LIB_DIR:-/usr/share/lib}"
+ORT_LIB_DIR="${ORT_LIB_DIR:-${PROJECT_ROOT}/deps/onnxruntime/lib}"
 OUTPUT_DIR="${PROJECT_ROOT}"
 ARCH="amd64"
 
 # Modules to include (explicit list -- no globs)
-ROX_MODULES="sys.rox math.rox fileio.rox regex.rox socket.rox dds.rox"
+# Paths relative to MODULES_DIR; subdirectories are preserved.
+ROX_MODULES="sys.rox math.rox fileio.rox regex.rox socket.rox dds.rox ai/nn.rox"
 
 # ---------------------------------------------------------------------------
 # Parse arguments
@@ -32,10 +35,12 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --distro)       DISTRO="$2";       shift 2 ;;
         --dds-lib-dir)  DDS_LIB_DIR="$2";  shift 2 ;;
+        --ort-lib-dir)  ORT_LIB_DIR="$2";  shift 2 ;;
         --build-dir)    BUILD_DIR="$2";     shift 2 ;;
         --output-dir)   OUTPUT_DIR="$2";    shift 2 ;;
         -h|--help)
             echo "Usage: $0 [--distro noble] [--dds-lib-dir /usr/share/lib]"
+            echo "          [--ort-lib-dir deps/onnxruntime/lib]"
             echo "          [--build-dir build] [--output-dir .]"
             exit 0
             ;;
@@ -119,9 +124,12 @@ for mod in ${ROX_MODULES}; do
     if [[ ! -f "${MODULES_DIR}/${mod}" ]]; then
         die "Module file not found: ${MODULES_DIR}/${mod}"
     fi
-    cp "${MODULES_DIR}/${mod}" "${STAGING_DIR}/usr/share/roxal/"
+    # Preserve subdirectory structure (e.g. ai/nn.rox → usr/share/roxal/ai/nn.rox)
+    mod_dest="${STAGING_DIR}/usr/share/roxal/${mod}"
+    mkdir -p "$(dirname "${mod_dest}")"
+    cp "${MODULES_DIR}/${mod}" "${mod_dest}"
+    chmod 644 "${mod_dest}"
 done
-chmod 644 "${STAGING_DIR}/usr/share/roxal/"*.rox
 
 echo "  Modules: ${ROX_MODULES}"
 
@@ -181,7 +189,64 @@ if [[ "${DDS_FOUND}" == "false" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Step 5: Install ld.so.conf.d drop-in and maintainer scripts
+# Step 5: Bundle ONNX Runtime shared libraries
+# ---------------------------------------------------------------------------
+echo "Bundling ONNX Runtime libraries..."
+
+ORT_FOUND=true
+bundle_lib_from() {
+    local soname="$1"
+    local srcdir="$2"
+    local soname_path="${srcdir}/${soname}"
+
+    if [[ ! -e "${soname_path}" ]]; then
+        echo "  WARNING: ${soname_path} not found -- skipping"
+        return 1
+    fi
+
+    local real_file
+    real_file=$(readlink -f "${soname_path}")
+    local real_name
+    real_name=$(basename "${real_file}")
+
+    cp "${real_file}" "${STAGING_DIR}/usr/lib/roxal/${real_name}"
+    chmod 644 "${STAGING_DIR}/usr/lib/roxal/${real_name}"
+
+    if [[ "${soname}" != "${real_name}" ]]; then
+        ln -sf "${real_name}" "${STAGING_DIR}/usr/lib/roxal/${soname}"
+    fi
+
+    echo "  ${soname} -> ${real_name} ($(du -sh "${real_file}" | cut -f1))"
+}
+
+# Core library (always required for ai.nn)
+bundle_lib_from "libonnxruntime.so.1" "${ORT_LIB_DIR}" || ORT_FOUND=false
+
+# Shared provider utilities (needed by CUDA/TensorRT providers)
+bundle_lib_from "libonnxruntime_providers_shared.so" "${ORT_LIB_DIR}" || true
+
+# CUDA provider (optional -- enables GPU acceleration when CUDA is installed)
+if [[ -f "${ORT_LIB_DIR}/libonnxruntime_providers_cuda.so" ]]; then
+    bundle_lib_from "libonnxruntime_providers_cuda.so" "${ORT_LIB_DIR}" || true
+else
+    echo "  (CUDA provider not present -- GPU acceleration not bundled)"
+fi
+
+# Also create the unversioned symlink for the linker
+if [[ "${ORT_FOUND}" == "true" && ! -e "${STAGING_DIR}/usr/lib/roxal/libonnxruntime.so" ]]; then
+    local_soname=$(ls "${STAGING_DIR}/usr/lib/roxal/libonnxruntime.so."* 2>/dev/null | head -1 | xargs basename)
+    if [[ -n "${local_soname}" ]]; then
+        ln -sf "${local_soname}" "${STAGING_DIR}/usr/lib/roxal/libonnxruntime.so"
+    fi
+fi
+
+if [[ "${ORT_FOUND}" == "false" ]]; then
+    echo "  WARNING: ONNX Runtime core library not found."
+    echo "  The ai.nn module will not work. Set --ort-lib-dir if libs are elsewhere."
+fi
+
+# ---------------------------------------------------------------------------
+# Step 6: Install ld.so.conf.d drop-in and maintainer scripts
 # ---------------------------------------------------------------------------
 cp "${SCRIPT_DIR}/templates/roxal.conf" "${STAGING_DIR}/etc/ld.so.conf.d/roxal.conf"
 chmod 644 "${STAGING_DIR}/etc/ld.so.conf.d/roxal.conf"
@@ -192,7 +257,7 @@ chmod 755 "${STAGING_DIR}/DEBIAN/postinst"
 chmod 755 "${STAGING_DIR}/DEBIAN/postrm"
 
 # ---------------------------------------------------------------------------
-# Step 6: Generate copyright file
+# Step 7: Generate copyright file
 # ---------------------------------------------------------------------------
 cat > "${STAGING_DIR}/usr/share/doc/roxal/copyright" <<'COPY'
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
@@ -205,10 +270,15 @@ Files: usr/lib/roxal/libddsc* usr/lib/roxal/libcycloneddsidl*
 Copyright: Eclipse Foundation
 License: EPL-2.0 OR BSD-3-Clause
 Comment: CycloneDDS - https://github.com/eclipse-cyclonedds/cyclonedds
+
+Files: usr/lib/roxal/libonnxruntime*
+Copyright: Microsoft Corporation
+License: MIT
+Comment: ONNX Runtime - https://github.com/microsoft/onnxruntime
 COPY
 
 # ---------------------------------------------------------------------------
-# Step 7: Generate DEBIAN/control
+# Step 8: Generate DEBIAN/control
 # ---------------------------------------------------------------------------
 DEPENDS=$(cat "${DEPS_FILE}" | tr -d '\n')
 INSTALLED_KB=$(du -sk "${STAGING_DIR}" | cut -f1)
@@ -226,11 +296,11 @@ Description: Roxal programming language runtime
  Roxal is a programming language designed for robotics applications.
  It includes a compiler and virtual machine with support for actors,
  signals, events, and modules for file I/O, regex, sockets, gRPC,
- and DDS communication.
+ DDS communication, and AI neural network inference (ONNX Runtime).
 EOF
 
 # ---------------------------------------------------------------------------
-# Step 8: Build the .deb
+# Step 9: Build the .deb
 # ---------------------------------------------------------------------------
 echo ""
 echo "Building .deb package..."

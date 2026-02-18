@@ -20,8 +20,7 @@ cmake -B build \
   -DROXAL_ENABLE_SOCKET=ON \
   -DROXAL_ENABLE_GRPC=ON \
   -DROXAL_ENABLE_DDS=ON \
-  -DROXAL_ENABLE_ONNX=OFF \
-  -DROXAL_ENABLE_AI_NN=OFF
+  -DROXAL_ENABLE_AI_NN=ON
 
 cmake --build build -j$(nproc)
 ```
@@ -41,6 +40,7 @@ The output `.deb` will be placed in the project root directory.
 | `--distro` | `noble` | Ubuntu codename (selects the dependency list from `templates/deps-<distro>.txt`) |
 | `--build-dir` | `build` | Path to the cmake build directory |
 | `--dds-lib-dir` | `/usr/share/lib` | Path to CycloneDDS shared libraries (bundled into the package) |
+| `--ort-lib-dir` | `deps/onnxruntime/lib` | Path to ONNX Runtime shared libraries (bundled into the package) |
 | `--output-dir` | `.` (project root) | Where to place the resulting `.deb` |
 
 ## Installing
@@ -99,6 +99,7 @@ printf "import math.*\nprint(sqrt(144))\n" | roxal
 printf "import fileio\nprint(fileio.file_exists('/etc/hostname'))\n" | roxal
 printf "import regex\nvar re = regex.Regex('[0-9]+')\nprint(re.test('abc123'))\n" | roxal
 printf "import socket\nvar s = socket.tcp()\nprint(s)\ns.close()\n" | roxal
+printf "import ai.nn\nprint('ai.nn loaded')\n" | roxal
 ```
 
 ## Adding support for another Ubuntu release
@@ -112,6 +113,7 @@ printf "import socket\nvar s = socket.tcp()\nprint(s)\ns.close()\n" | roxal
 | Path | Contents |
 |---|---|
 | `/usr/bin/roxal` | Stripped binary |
-| `/usr/share/roxal/*.rox` | Standard library modules (sys, math, fileio, regex, socket, dds) |
-| `/usr/lib/roxal/*.so*` | Bundled CycloneDDS libraries (not available from Ubuntu repos) |
+| `/usr/share/roxal/*.rox` | Standard library modules (sys, math, fileio, regex, socket, dds, ai.nn) |
+| `/usr/lib/roxal/libddsc*` | Bundled CycloneDDS libraries |
+| `/usr/lib/roxal/libonnxruntime*` | Bundled ONNX Runtime libraries (CPU; GPU if CUDA provider included) |
 | `/etc/ld.so.conf.d/roxal.conf` | Tells the dynamic linker about `/usr/lib/roxal` |

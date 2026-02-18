@@ -22,8 +22,8 @@
 #include <onnxruntime_cxx_api.h>
 #endif
 
-#if defined(ROXAL_ENABLE_ONNX) && defined(ROXAL_ENABLE_CUDA)
-#include <cuda_runtime_api.h>
+#ifdef ROXAL_ENABLE_ONNX
+#include "CudaRuntime.h"
 #endif
 
 using namespace roxal;
@@ -759,12 +759,12 @@ Value ModuleNN::nn_memory_info_builtin(ArgsView args)
 
     Value dict = Value::objVal(newDictObj());
 
-#if defined(ROXAL_ENABLE_ONNX) && defined(ROXAL_ENABLE_CUDA)
     if (deviceArg != "cpu") {
         auto& ortEnv = OnnxEnvironment::instance();
-        if (ortEnv.cudaAvailable()) {
+        auto& cuda = CudaRuntime::instance();
+        if (ortEnv.cudaAvailable() && cuda.available()) {
             size_t free = 0, total = 0;
-            if (cudaMemGetInfo(&free, &total) == cudaSuccess) {
+            if (cuda.memGetInfo(&free, &total) == 0) {
                 asDict(dict)->store(Value::stringVal(toUnicodeString("device")),
                                     Value::stringVal(toUnicodeString("cuda")));
                 asDict(dict)->store(Value::stringVal(toUnicodeString("total")),
@@ -779,10 +779,6 @@ Value ModuleNN::nn_memory_info_builtin(ArgsView args)
         if (deviceArg == "cuda")
             throw std::invalid_argument("ai.nn.memory_info: CUDA not available");
     }
-#else
-    if (deviceArg == "cuda")
-        throw std::invalid_argument("ai.nn.memory_info: CUDA not available");
-#endif
 
     asDict(dict)->store(Value::stringVal(toUnicodeString("device")),
                         Value::stringVal(toUnicodeString("cpu")));

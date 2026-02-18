@@ -159,11 +159,6 @@ if(ROXAL_ENABLE_ONNX)
     message(STATUS "ONNX Runtime include: ${ONNXRUNTIME_INCLUDE_DIR}")
     include_directories(${ONNXRUNTIME_INCLUDE_DIR})
 
-    # CUDA toolkit (optional) — enables GPU→CPU tensor transfer via cudaMemcpy
-    find_package(CUDAToolkit QUIET)
-    if(CUDAToolkit_FOUND)
-        message(STATUS "CUDA toolkit found: ${CUDAToolkit_VERSION} — enabling GPU tensor support")
-    endif()
 endif()
 
 # Detect libffi via pkg-config so that include and library paths
@@ -321,7 +316,6 @@ target_link_libraries(roxalcore
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::idl>
         $<$<BOOL:${ROXAL_ENABLE_REGEX}>:${PCRE2_LIBRARIES}>
         $<$<BOOL:${ROXAL_ENABLE_ONNX}>:${ONNXRUNTIME_LIBRARY}>
-        $<$<AND:$<BOOL:${ROXAL_ENABLE_ONNX}>,$<BOOL:${CUDAToolkit_FOUND}>>:CUDA::cudart>
 )
 
 
@@ -340,7 +334,6 @@ target_compile_definitions(roxalcore PRIVATE
     $<$<BOOL:${ROXAL_ENABLE_REGEX}>:ROXAL_ENABLE_REGEX>
     $<$<BOOL:${ROXAL_ENABLE_SOCKET}>:ROXAL_ENABLE_SOCKET>
     $<$<BOOL:${ROXAL_ENABLE_ONNX}>:ROXAL_ENABLE_ONNX>
-    $<$<AND:$<BOOL:${ROXAL_ENABLE_ONNX}>,$<BOOL:${CUDAToolkit_FOUND}>>:ROXAL_ENABLE_CUDA>
     $<$<BOOL:${ROXAL_ENABLE_AI_NN}>:ROXAL_ENABLE_AI_NN>
     ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
     ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
@@ -363,8 +356,7 @@ if(ROXAL_BUILD_MAIN)
         $<$<BOOL:${ROXAL_ENABLE_REGEX}>:ROXAL_ENABLE_REGEX>
         $<$<BOOL:${ROXAL_ENABLE_SOCKET}>:ROXAL_ENABLE_SOCKET>
         $<$<BOOL:${ROXAL_ENABLE_ONNX}>:ROXAL_ENABLE_ONNX>
-        $<$<AND:$<BOOL:${ROXAL_ENABLE_ONNX}>,$<BOOL:${CUDAToolkit_FOUND}>>:ROXAL_ENABLE_CUDA>
-        $<$<BOOL:${ROXAL_ENABLE_AI_NN}>:ROXAL_ENABLE_AI_NN>
+            $<$<BOOL:${ROXAL_ENABLE_AI_NN}>:ROXAL_ENABLE_AI_NN>
         ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
         ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
         ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
