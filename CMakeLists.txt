@@ -64,38 +64,31 @@ find_package(PkgConfig REQUIRED)
 
 
 #
-# vcpkg
-# (install at same level as project folder)
-
-# Set the relative path to vcpkg (assumed to be at same level as project folder)
-if(DEFINED ENV{VCPKG_ROOT})
-    set(VCPKG_ROOT $ENV{VCPKG_ROOT})
-else()
-#if VCPKG_ROOT isn't set for the environment then it is assumed to be at same level as project folder
-    set(VCPKG_ROOT "${CMAKE_SOURCE_DIR}/../vcpkg")
-endif()
-
-# Point CMake to the vcpkg toolchain file
-set(CMAKE_TOOLCHAIN_FILE "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
-
-# Add the vcpkg installation prefix to CMAKE_PREFIX_PATH
-list(APPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/x64-linux")
-
-
-#
 # ANTLR4
-
-# Install runtime first via:
-# $ ./vcpkg install antlr4
-# and tools using: (see https://github.com/antlr/antlr4-tools)
-# $ pip install antlr4-tools
-# (check they are compatible)
-
-# Set ANTLR4_ROOT to the location where ANTLR4 is installed by vcpkg
-set(ANTLR4_ROOT "${VCPKG_ROOT}/installed/x64-linux")
-
-# Find ANTLR4 package (if updated, adjust the -v command below)
-find_package(antlr4-runtime 4.13.1 CONFIG REQUIRED)
+#
+# Build the runtime from source (version must match the antlr4 tool):
+#   git clone --depth 1 --branch 4.13.1 https://github.com/antlr/antlr4.git /tmp/antlr4
+#   cmake -B /tmp/antlr4/build -S /tmp/antlr4/runtime/Cpp \
+#     -DCMAKE_INSTALL_PREFIX=$(pwd)/deps/antlr4 -DCMAKE_BUILD_TYPE=Release -DANTLR_BUILD_CPP_TESTS=OFF
+#   cmake --build /tmp/antlr4/build -j$(nproc) && cmake --install /tmp/antlr4/build
+#
+# Install the matching tool via: pip install antlr4-tools
+#   (the tool downloads the correct jar when invoked with -v 4.13.1)
+#
+set(ROXAL_ANTLR4_ROOT "${CMAKE_SOURCE_DIR}/deps/antlr4" CACHE PATH "ANTLR4 C++ runtime install prefix")
+list(APPEND CMAKE_PREFIX_PATH "${ROXAL_ANTLR4_ROOT}")
+# Try CONFIG mode first (available via vcpkg); fall back to manual detection
+# for from-source installs which don't ship cmake config files.
+find_package(antlr4-runtime 4.13.1 CONFIG QUIET)
+if(NOT antlr4-runtime_FOUND)
+    find_library(ANTLR4_LIB antlr4-runtime PATHS ${ROXAL_ANTLR4_ROOT}/lib NO_DEFAULT_PATH)
+    find_path(ANTLR4_INCLUDE antlr4-runtime.h PATHS ${ROXAL_ANTLR4_ROOT}/include/antlr4-runtime NO_DEFAULT_PATH)
+    if(NOT ANTLR4_LIB OR NOT ANTLR4_INCLUDE)
+        message(FATAL_ERROR "ANTLR4 runtime not found at ${ROXAL_ANTLR4_ROOT}. "
+            "Build from source or set -DROXAL_ANTLR4_ROOT=<prefix>.")
+    endif()
+    message(STATUS "Found ANTLR4 runtime: ${ANTLR4_LIB}")
+endif()
 
 #
 # Eigen
@@ -105,7 +98,6 @@ find_package(antlr4-runtime 4.13.1 CONFIG REQUIRED)
 # git checkout 3.4.0
 # mkdir build && cd build && make && sudo make install
 find_package( Eigen3 REQUIRED )
-set(EIGEN3_INCLUDE_DIR "/usr/local/include/eigen3/")
 include_directories(${EIGEN3_INCLUDE_DIR})
 
 if(ROXAL_ENABLE_GRPC)
@@ -273,7 +265,7 @@ include_directories(${CMAKE_HOME_DIRECTORY})
 
 # Add the include directories
 include_directories(
-    ${ANTLR4_ROOT}/include/antlr4-runtime
+    ${ROXAL_ANTLR4_ROOT}/include/antlr4-runtime
     compiler/cpp-gen
     ${CMAKE_SOURCE_DIR}/compiler
     ${CMAKE_SOURCE_DIR}/compiler/grpc
@@ -281,7 +273,7 @@ include_directories(
 )
 
 link_directories(
-    ${ANTLR4_ROOT}/lib
+    ${ROXAL_ANTLR4_ROOT}/lib
     ${CMAKE_SOURCE_DIR}/cpp-gen
     ${LIBFFI_LIBRARY_DIRS}
     ${PCRE2_LIBRARY_DIRS}

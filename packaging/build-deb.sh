@@ -2,9 +2,11 @@
 #
 # Build a .deb package for Roxal from an existing cmake build.
 #
-# Usage:  ./packaging/build-deb.sh [--distro noble] [--dds-lib-dir /usr/share/lib]
-#                                   [--ort-lib-dir deps/onnxruntime/lib]
-#                                   [--build-dir build] [--output-dir .]
+# Usage:  ./packaging/build-deb.sh [--distro noble]
+#           [--antlr4-lib-dir /opt/antlr4/lib]
+#           [--dds-lib-dir /usr/share/lib]
+#           [--ort-lib-dir deps/onnxruntime/lib]
+#           [--build-dir build] [--output-dir .]
 #
 # Run from the project root directory.
 
@@ -19,10 +21,11 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DISTRO="noble"
 BUILD_DIR="${PROJECT_ROOT}/build"
 MODULES_DIR="${PROJECT_ROOT}/modules"
+ANTLR4_LIB_DIR="${ANTLR4_LIB_DIR:-}"
 DDS_LIB_DIR="${DDS_LIB_DIR:-/usr/share/lib}"
 ORT_LIB_DIR="${ORT_LIB_DIR:-${PROJECT_ROOT}/deps/onnxruntime/lib}"
 OUTPUT_DIR="${PROJECT_ROOT}"
-ARCH="amd64"
+ARCH=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
 
 # Modules to include (explicit list -- no globs)
 # Paths relative to MODULES_DIR; subdirectories are preserved.
@@ -33,14 +36,15 @@ ROX_MODULES="sys.rox math.rox fileio.rox regex.rox socket.rox dds.rox ai/nn.rox"
 # ---------------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --distro)       DISTRO="$2";       shift 2 ;;
-        --dds-lib-dir)  DDS_LIB_DIR="$2";  shift 2 ;;
+        --distro)         DISTRO="$2";         shift 2 ;;
+        --antlr4-lib-dir) ANTLR4_LIB_DIR="$2"; shift 2 ;;
+        --dds-lib-dir)    DDS_LIB_DIR="$2";    shift 2 ;;
         --ort-lib-dir)  ORT_LIB_DIR="$2";  shift 2 ;;
         --build-dir)    BUILD_DIR="$2";     shift 2 ;;
         --output-dir)   OUTPUT_DIR="$2";    shift 2 ;;
         -h|--help)
-            echo "Usage: $0 [--distro noble] [--dds-lib-dir /usr/share/lib]"
-            echo "          [--ort-lib-dir deps/onnxruntime/lib]"
+            echo "Usage: $0 [--distro noble] [--antlr4-lib-dir /opt/antlr4/lib]"
+            echo "          [--dds-lib-dir /usr/share/lib] [--ort-lib-dir deps/onnxruntime/lib]"
             echo "          [--build-dir build] [--output-dir .]"
             exit 0
             ;;
@@ -149,16 +153,15 @@ for lib in libroxal.a dataflow/libdataflow.a; do
 done
 
 # ---------------------------------------------------------------------------
-# Step 4: Bundle CycloneDDS shared libraries
+# Helper: bundle a shared library + its SONAME symlink into usr/lib/roxal
 # ---------------------------------------------------------------------------
-echo "Bundling CycloneDDS libraries..."
-
 bundle_lib() {
-    local soname="$1"
-    local soname_path="${DDS_LIB_DIR}/${soname}"
+    local lib_dir="$1"
+    local soname="$2"
+    local soname_path="${lib_dir}/${soname}"
 
     if [[ ! -e "${soname_path}" ]]; then
-        echo "  WARNING: ${soname_path} not found -- skipping DDS bundling for ${soname}"
+        echo "  WARNING: ${soname_path} not found -- skipping"
         return 1
     fi
 
@@ -176,12 +179,42 @@ bundle_lib() {
         ln -sf "${real_name}" "${STAGING_DIR}/usr/lib/roxal/${soname}"
     fi
 
-    echo "  ${soname} -> ${real_name}"
+    local size
+    size=$(du -sh "${STAGING_DIR}/usr/lib/roxal/${real_name}" | cut -f1)
+    echo "  ${soname} -> ${real_name} (${size})"
 }
 
+# ---------------------------------------------------------------------------
+# Step 4a: Bundle ANTLR4 runtime shared library
+# ---------------------------------------------------------------------------
+if [[ -n "${ANTLR4_LIB_DIR}" ]]; then
+    echo "Bundling ANTLR4 runtime library..."
+    # ANTLR4 uses version-in-SONAME: libantlr4-runtime.so.4.13.1
+    antlr4_so=$(ls "${ANTLR4_LIB_DIR}"/libantlr4-runtime.so.* 2>/dev/null | sort -V | tail -1)
+    if [[ -n "${antlr4_so}" ]]; then
+        bundle_lib "${ANTLR4_LIB_DIR}" "$(basename "${antlr4_so}")"
+    else
+        echo "  WARNING: No libantlr4-runtime.so.* found in ${ANTLR4_LIB_DIR}"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 4b: Bundle CycloneDDS shared libraries
+# ---------------------------------------------------------------------------
+echo "Bundling CycloneDDS libraries..."
+
+# Auto-detect CycloneDDS SONAME (handles both old so.0 and new so.11+)
 DDS_FOUND=true
-bundle_lib "libddsc.so.0" || DDS_FOUND=false
-bundle_lib "libcycloneddsidl.so.0" || DDS_FOUND=false
+for pattern in "libddsc.so.*[0-9]" "libcycloneddsidl.so.*[0-9]"; do
+    # Find the SONAME symlink (e.g. libddsc.so.0 or libddsc.so.11)
+    soname=$(ls "${DDS_LIB_DIR}"/${pattern} 2>/dev/null | grep -v '\.so\.[0-9]*\.[0-9]' | head -1)
+    if [[ -n "${soname}" ]]; then
+        bundle_lib "${DDS_LIB_DIR}" "$(basename "${soname}")" || DDS_FOUND=false
+    else
+        echo "  WARNING: No ${pattern} found in ${DDS_LIB_DIR} -- skipping"
+        DDS_FOUND=false
+    fi
+done
 
 if [[ "${DDS_FOUND}" == "false" ]]; then
     echo "  WARNING: CycloneDDS libraries not fully bundled."
@@ -194,40 +227,16 @@ fi
 echo "Bundling ONNX Runtime libraries..."
 
 ORT_FOUND=true
-bundle_lib_from() {
-    local soname="$1"
-    local srcdir="$2"
-    local soname_path="${srcdir}/${soname}"
-
-    if [[ ! -e "${soname_path}" ]]; then
-        echo "  WARNING: ${soname_path} not found -- skipping"
-        return 1
-    fi
-
-    local real_file
-    real_file=$(readlink -f "${soname_path}")
-    local real_name
-    real_name=$(basename "${real_file}")
-
-    cp "${real_file}" "${STAGING_DIR}/usr/lib/roxal/${real_name}"
-    chmod 644 "${STAGING_DIR}/usr/lib/roxal/${real_name}"
-
-    if [[ "${soname}" != "${real_name}" ]]; then
-        ln -sf "${real_name}" "${STAGING_DIR}/usr/lib/roxal/${soname}"
-    fi
-
-    echo "  ${soname} -> ${real_name} ($(du -sh "${real_file}" | cut -f1))"
-}
 
 # Core library (always required for ai.nn)
-bundle_lib_from "libonnxruntime.so.1" "${ORT_LIB_DIR}" || ORT_FOUND=false
+bundle_lib "${ORT_LIB_DIR}" "libonnxruntime.so.1" || ORT_FOUND=false
 
 # Shared provider utilities (needed by CUDA/TensorRT providers)
-bundle_lib_from "libonnxruntime_providers_shared.so" "${ORT_LIB_DIR}" || true
+bundle_lib "${ORT_LIB_DIR}" "libonnxruntime_providers_shared.so" || true
 
 # CUDA provider (optional -- enables GPU acceleration when CUDA is installed)
 if [[ -f "${ORT_LIB_DIR}/libonnxruntime_providers_cuda.so" ]]; then
-    bundle_lib_from "libonnxruntime_providers_cuda.so" "${ORT_LIB_DIR}" || true
+    bundle_lib "${ORT_LIB_DIR}" "libonnxruntime_providers_cuda.so" || true
 else
     echo "  (CUDA provider not present -- GPU acceleration not bundled)"
 fi
@@ -265,6 +274,11 @@ Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Files: *
 Copyright: 2024-2026 David Jung
 License: Proprietary
+
+Files: usr/lib/roxal/libantlr4-runtime*
+Copyright: The ANTLR Project
+License: BSD-3-Clause
+Comment: ANTLR4 C++ Runtime - https://github.com/antlr/antlr4
 
 Files: usr/lib/roxal/libddsc* usr/lib/roxal/libcycloneddsidl*
 Copyright: Eclipse Foundation

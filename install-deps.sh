@@ -9,15 +9,28 @@ apt-get install -y \
     python3-pip \
     libpcre2-dev
 apt-get install -y \
-    libantlr4-runtime-dev \
     libicu-dev \
     libffi-dev \
     libboost-program-options-dev \
-    libeigen3-dev
+    libeigen3-dev \
+    git
 
 echo "installing python packages"
-# ANTLR tool (used at build time to generate the parser)
+# ANTLR4 command-line tool (Java-based parser generator, used at build time)
+# The pip package downloads the correct jar when invoked with -v 4.13.1.
 python3 -m pip install --user --upgrade antlr4-tools
+
+# ANTLR4 C++ runtime library (build from source for exact version match)
+# The runtime version MUST match the antlr4 tool version (4.13.1).
+# Ubuntu apt ships an older version that is incompatible with the parser.
+echo "building antlr4-runtime 4.13.1 from source into deps/antlr4"
+git clone --depth 1 --branch 4.13.1 https://github.com/antlr/antlr4.git /tmp/antlr4-build
+cmake -B /tmp/antlr4-build/build -S /tmp/antlr4-build/runtime/Cpp \
+    -DCMAKE_INSTALL_PREFIX="$(pwd)/deps/antlr4" -DCMAKE_BUILD_TYPE=Release \
+    -DANTLR_BUILD_CPP_TESTS=OFF
+cmake --build /tmp/antlr4-build/build -j$(nproc)
+cmake --install /tmp/antlr4-build/build
+rm -rf /tmp/antlr4-build
 
 # Optional features:
 #   gRPC/protobuf: apt-get install -y protobuf-compiler libprotobuf-dev libgrpc++-dev
