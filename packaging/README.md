@@ -39,6 +39,7 @@ The output `.deb` will be placed in the project root directory.
 |---|---|---|
 | `--distro` | `noble` | Ubuntu codename (selects the dependency list from `templates/deps-<distro>.txt`) |
 | `--build-dir` | `build` | Path to the cmake build directory |
+| `--antlr4-lib-dir` | *(none)* | Path to ANTLR4 runtime shared libraries (bundled into the package) |
 | `--dds-lib-dir` | `/usr/share/lib` | Path to CycloneDDS shared libraries (bundled into the package) |
 | `--ort-lib-dir` | `deps/onnxruntime/lib` | Path to ONNX Runtime shared libraries (bundled into the package) |
 | `--output-dir` | `.` (project root) | Where to place the resulting `.deb` |
@@ -71,14 +72,35 @@ The package version is assembled from several sources:
 └── version from CMakeLists.txt (project VERSION)
 ```
 
+## Building with Docker (recommended)
+
+`docker-build.sh` builds the `.deb` inside Docker — no host dependencies needed
+beyond Docker itself. It handles all build-time dependencies, cross-compilation,
+and packaging automatically.
+
+```bash
+# Build for the host architecture (default: arm64)
+./packaging/docker-build.sh
+
+# Build for a specific platform
+./packaging/docker-build.sh --platform linux/amd64
+./packaging/docker-build.sh --platform linux/arm64
+```
+
+The resulting `.deb` is placed in the project root directory.
+
+**Notes:**
+- The amd64 build includes GPU-enabled ONNX Runtime (CUDA + TensorRT providers).
+- The arm64 build uses CPU-only ONNX Runtime (no pre-built GPU variant available).
+- Cross-architecture builds use QEMU emulation and build with `-j1` for stability.
+  The Dockerfile includes retry logic to handle intermittent QEMU segfaults.
+- Native builds use half the available CPU cores.
+
 ## Testing with Docker
 
 Test the `.deb` on a clean Ubuntu 24.04 system using Docker:
 
 ```bash
-# Find the .deb filename
-DEB=$(ls roxal_*noble*.deb | head -1)
-
 # Start a container with the project mounted
 docker run --rm -it -v "$PWD":/pkg ubuntu:24.04 bash
 ```

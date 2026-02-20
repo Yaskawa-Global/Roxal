@@ -32,19 +32,31 @@ done
 echo "=== Building Roxal .deb for ${PLATFORM} ==="
 echo ""
 
-# Ensure QEMU is registered for cross-platform builds
-if [[ "${PLATFORM}" != "linux/$(dpkg --print-architecture 2>/dev/null || echo amd64)" ]]; then
+HOST_ARCH="linux/$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+
+# Determine parallel job count: use half cores for native, 1 for cross/QEMU
+if [[ "${PLATFORM}" == "${HOST_ARCH}" ]]; then
+    JOBS=$(( $(nproc) / 2 > 0 ? $(nproc) / 2 : 1 ))
+else
+    JOBS=1
+    echo "Cross-build detected — using -j1 (QEMU is crash-prone with parallelism)"
     echo "Setting up QEMU user-mode emulation..."
     docker run --rm --privileged multiarch/qemu-user-static --reset -p yes 2>/dev/null || true
 fi
 
+echo "Build jobs: ${JOBS}"
+echo ""
+
 docker buildx build \
     --platform "${PLATFORM}" \
+    --build-arg JOBS="${JOBS}" \
     -f "${SCRIPT_DIR}/Dockerfile" \
     --target output \
     --output "type=local,dest=${PROJECT_ROOT}" \
     "${PROJECT_ROOT}"
 
+DEB_ARCH="${PLATFORM#linux/}"
+
 echo ""
 echo "=== Done ==="
-ls -lh "${PROJECT_ROOT}"/roxal_*.deb 2>/dev/null || echo "WARNING: No .deb found in ${PROJECT_ROOT}"
+ls -lht "${PROJECT_ROOT}"/roxal_*_${DEB_ARCH}.deb 2>/dev/null | head -1 || echo "WARNING: No .deb found in ${PROJECT_ROOT}"

@@ -12,6 +12,10 @@ FROM ubuntu:24.04 AS deps
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Parallel job count for cmake --build.  Default 1 is safe for QEMU
+# cross-builds; docker-build.sh passes a higher value for native builds.
+ARG JOBS=1
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake pkg-config git wget ca-certificates \
     python3 python3-pip default-jre-headless \
@@ -24,11 +28,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --break-system-packages antlr4-tools
 
 # antlr4-runtime 4.13.1 C++ library (from source — version must match tool)
+# Retry loop: QEMU user-mode emulation can randomly segfault cc1plus.
+# cmake --build resumes from where it left off, so retries are cheap.
 RUN git clone --depth 1 --branch 4.13.1 https://github.com/antlr/antlr4.git /tmp/antlr4 \
     && cmake -B /tmp/antlr4/build -S /tmp/antlr4/runtime/Cpp \
        -DCMAKE_INSTALL_PREFIX=/opt/antlr4 -DCMAKE_INSTALL_LIBDIR=lib \
        -DCMAKE_BUILD_TYPE=Release -DANTLR_BUILD_CPP_TESTS=OFF \
-    && cmake --build /tmp/antlr4/build -j$(($(nproc)/2 > 0 ? $(nproc)/2 : 1)) \
+    && for attempt in 1 2 3 4 5; do \
+         echo "=== antlr4 build attempt ${attempt}/5 ===" && \
+         cmake --build /tmp/antlr4/build -j${JOBS} && break; \
+         [ $attempt -eq 5 ] && exit 1; \
+         echo "Build failed (likely QEMU segfault), retrying..."; \
+       done \
     && cmake --install /tmp/antlr4/build \
     && rm -rf /tmp/antlr4
 
@@ -37,15 +48,22 @@ RUN git clone --depth 1 \
       https://github.com/eclipse-cyclonedds/cyclonedds.git /tmp/cdds \
     && cmake -B /tmp/cdds/build -S /tmp/cdds \
        -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build /tmp/cdds/build -j$(($(nproc)/2 > 0 ? $(nproc)/2 : 1)) \
+    && for attempt in 1 2 3 4 5; do \
+         echo "=== CycloneDDS build attempt ${attempt}/5 ===" && \
+         cmake --build /tmp/cdds/build -j${JOBS} && break; \
+         [ $attempt -eq 5 ] && exit 1; \
+         echo "Build failed (likely QEMU segfault), retrying..."; \
+       done \
     && cmake --install /tmp/cdds/build \
     && rm -rf /tmp/cdds
 
-# ONNX Runtime pre-built binary (auto-detects aarch64 vs x64)
+# ONNX Runtime pre-built binary
+# x64: GPU build (includes CUDA + TensorRT providers)
+# aarch64: CPU-only (no pre-built GPU variant available)
 RUN ARCH=$(uname -m) && \
-    if [ "$ARCH" = "aarch64" ]; then ORT_SUFFIX="aarch64"; \
-    else ORT_SUFFIX="x64"; fi && \
-    wget -q "https://github.com/microsoft/onnxruntime/releases/download/v1.24.1/onnxruntime-linux-${ORT_SUFFIX}-1.24.1.tgz" \
+    if [ "$ARCH" = "aarch64" ]; then ORT_PKG="onnxruntime-linux-aarch64-1.24.1.tgz"; \
+    else ORT_PKG="onnxruntime-linux-x64-gpu-1.24.1.tgz"; fi && \
+    wget -q "https://github.com/microsoft/onnxruntime/releases/download/v1.24.1/${ORT_PKG}" \
       -O /tmp/ort.tgz && \
     mkdir -p /opt/onnxruntime && \
     tar -xzf /tmp/ort.tgz -C /opt/onnxruntime --strip-components=1 && \
@@ -55,6 +73,9 @@ RUN ARCH=$(uname -m) && \
 # Stage 2: builder — compile Roxal and package the .deb
 # ============================================================================
 FROM deps AS builder
+
+# Re-declare ARG so it's available in this stage
+ARG JOBS=1
 
 COPY . /src
 WORKDIR /src
@@ -71,7 +92,12 @@ RUN cmake -B build --fresh \
       -DROXAL_DDS_ROOT=/usr/local \
       -DROXAL_ENABLE_AI_NN=ON \
       -DROXAL_ONNX_ROOT=/opt/onnxruntime \
-    && cmake --build build -j$(($(nproc)/2 > 0 ? $(nproc)/2 : 1))
+    && for attempt in 1 2 3 4 5; do \
+         echo "=== Roxal build attempt ${attempt}/5 ===" && \
+         cmake --build build -j${JOBS} && break; \
+         [ $attempt -eq 5 ] && exit 1; \
+         echo "Build failed (likely QEMU segfault), retrying..."; \
+       done
 
 RUN mkdir -p /out && \
     ./packaging/build-deb.sh \
