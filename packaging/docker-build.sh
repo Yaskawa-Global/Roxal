@@ -17,12 +17,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 PLATFORM="linux/arm64"
+CUDA_ARCHITECTURES="70;75;80;86;87;89;90;100"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --platform) PLATFORM="$2"; shift 2 ;;
+        --cuda-arch) CUDA_ARCHITECTURES="$2"; shift 2 ;;
         -h|--help)
-            echo "Usage: $0 [--platform linux/arm64|linux/amd64]"
+            echo "Usage: $0 [--platform linux/arm64|linux/amd64] [--cuda-arch '80;90;100']"
             exit 0
             ;;
         *) echo "Unknown option: $1"; exit 1 ;;
@@ -47,9 +49,13 @@ fi
 echo "Build jobs: ${JOBS}"
 echo ""
 
+echo "CUDA architectures: ${CUDA_ARCHITECTURES}"
+echo ""
+
 docker buildx build \
     --platform "${PLATFORM}" \
     --build-arg JOBS="${JOBS}" \
+    --build-arg CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
     -f "${SCRIPT_DIR}/Dockerfile" \
     --target output \
     --output "type=local,dest=${PROJECT_ROOT}" \

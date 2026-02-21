@@ -131,6 +131,7 @@ if(ROXAL_ENABLE_ONNX)
     find_path(ONNXRUNTIME_INCLUDE_DIR
         NAMES onnxruntime_cxx_api.h
         PATHS ${ROXAL_ONNX_ROOT}/include
+              ${ROXAL_ONNX_ROOT}/include/onnxruntime/core/session
               /usr/local/include/onnxruntime
               /usr/include/onnxruntime
         NO_DEFAULT_PATH
