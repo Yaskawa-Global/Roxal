@@ -33,27 +33,48 @@ cmake --install /tmp/antlr4-build/build
 rm -rf /tmp/antlr4-build
 
 # Optional features:
-#   gRPC/protobuf: apt-get install -y protobuf-compiler libprotobuf-dev libgrpc++-dev
-#   CycloneDDS:    apt-get install -y libcyclonedds-dev
-#   ONNX Runtime (for ai.nn ML inference module):
-#     mkdir -p deps && cd deps
+#   gRPC/protobuf: apt-get install -y protobuf-compiler libprotobuf-dev libprotoc-dev libgrpc++-dev
+#   CycloneDDS:    build from source (see packaging/Dockerfile for reference)
 #
-#     CPU-only:
-#       wget https://github.com/microsoft/onnxruntime/releases/download/v1.24.1/onnxruntime-linux-x64-1.24.1.tgz
-#       tar -xzf onnxruntime-linux-x64-1.24.1.tgz
-#       mv onnxruntime-linux-x64-1.24.1 onnxruntime
-#       rm onnxruntime-linux-x64-1.24.1.tgz
+# ONNX Runtime (for ai.nn ML inference module):
 #
-#     GPU (CUDA) — requires NVIDIA driver, CUDA toolkit, and cuDNN 9:
-#       apt-get install -y nvidia-cuda-toolkit libcudnn9-cuda-12
-#       wget https://github.com/microsoft/onnxruntime/releases/download/v1.24.1/onnxruntime-linux-x64-gpu-1.24.1.tgz
-#       tar -xzf onnxruntime-linux-x64-gpu-1.24.1.tgz
-#       mv onnxruntime-linux-x64-gpu-1.24.1 onnxruntime
-#       rm onnxruntime-linux-x64-gpu-1.24.1.tgz
-
-# Download MNIST ONNX model from the official ONNX Model Zoo
-#  (added to repo)
-#echo "downloading MNIST ONNX model"
-#mkdir -p modules/ai && cd modules/ai
-#wget -N https://huggingface.co/onnxmodelzoo/mnist-8/resolve/main/mnist-8.onnx -O mnist-8.onnx
-#cd -
+#   x64 CPU-only:
+#     mkdir -p deps
+#     wget https://github.com/microsoft/onnxruntime/releases/download/v1.24.1/onnxruntime-linux-x64-1.24.1.tgz
+#     tar -xzf onnxruntime-linux-x64-1.24.1.tgz
+#     mv onnxruntime-linux-x64-1.24.1 deps/onnxruntime
+#     rm onnxruntime-linux-x64-1.24.1.tgz
+#
+#   x64 GPU (CUDA 12) — pre-built binary:
+#     mkdir -p deps
+#     wget https://github.com/microsoft/onnxruntime/releases/download/v1.24.1/onnxruntime-linux-x64-gpu-1.24.1.tgz
+#     tar -xzf onnxruntime-linux-x64-gpu-1.24.1.tgz
+#     mv onnxruntime-linux-x64-gpu-1.24.1 deps/onnxruntime
+#     rm onnxruntime-linux-x64-gpu-1.24.1.tgz
+#
+#   arm64 CPU-only — pre-built binary:
+#     mkdir -p deps
+#     wget https://github.com/microsoft/onnxruntime/releases/download/v1.24.1/onnxruntime-linux-aarch64-1.24.1.tgz
+#     tar -xzf onnxruntime-linux-aarch64-1.24.1.tgz
+#     mv onnxruntime-linux-aarch64-1.24.1 deps/onnxruntime
+#     rm onnxruntime-linux-aarch64-1.24.1.tgz
+#
+#   arm64 GPU (CUDA) — no pre-built binary; build from source:
+#     Requires: cmake 3.31+ (apt.kitware.com), CUDA toolkit, cuDNN 9 (apt install cudnn9-cuda-13)
+#     git clone --depth 1 --branch v1.24.1 --recursive https://github.com/microsoft/onnxruntime.git /tmp/ort-build
+#     cd /tmp/ort-build
+#     ./build.sh --config Release --parallel \
+#       --use_cuda --cuda_home /usr/local/cuda --cudnn_home /usr \
+#       --build_shared_lib --skip_tests \
+#       --cmake_extra_defines CMAKE_CUDA_ARCHITECTURES=native
+#     mkdir -p <roxal-dir>/deps/onnxruntime/lib
+#     cp -a build/Linux/Release/libonnxruntime*.so* <roxal-dir>/deps/onnxruntime/lib/
+#     rm -f <roxal-dir>/deps/onnxruntime/lib/libonnxruntime_runtime_path_test_shared_library.so
+#     cp -r include <roxal-dir>/deps/onnxruntime/
+#     # Flatten headers (from-source layout differs from pre-built tarballs)
+#     for f in <roxal-dir>/deps/onnxruntime/include/onnxruntime/core/session/*.h \
+#              <roxal-dir>/deps/onnxruntime/include/onnxruntime/core/providers/cpu/*.h \
+#              <roxal-dir>/deps/onnxruntime/include/onnxruntime/core/providers/cuda/*.h; do
+#       ln -sf "$f" <roxal-dir>/deps/onnxruntime/include/$(basename "$f")
+#     done
+#     cd - && rm -rf /tmp/ort-build

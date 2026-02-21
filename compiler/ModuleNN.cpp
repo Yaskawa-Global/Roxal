@@ -62,7 +62,7 @@ public:
     bool cudaAvailable() const { return cudaAvailable_; }
 
 private:
-    OnnxEnvironment() : env_(ORT_LOGGING_LEVEL_WARNING, "roxal-nn") {
+    OnnxEnvironment() : env_(ORT_LOGGING_LEVEL_ERROR, "roxal-nn") {
         // Probe for CUDA by trying to create a session options with CUDA provider
         try {
             Ort::SessionOptions probe;

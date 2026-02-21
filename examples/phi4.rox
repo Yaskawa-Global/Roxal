@@ -1,0 +1,199 @@
+# Phi-4 Chatbot (14B, INT4, ~9GB)
+# ONNX inference with interactive chat loop (KV-cached)
+#
+# Requires ~12GB of GPU memory for INT4 model.
+# Download model and tokenizer:
+#   mkdir -p modules/ai/phi4-int4-cuda/gpu/gpu-int4-rtn-block-32
+#   cd modules/ai/phi4-int4-cuda/gpu/gpu-int4-rtn-block-32
+#   wget https://huggingface.co/microsoft/phi-4-onnx/resolve/main/gpu/gpu-int4-rtn-block-32/model.onnx
+#   wget https://huggingface.co/microsoft/phi-4-onnx/resolve/main/gpu/gpu-int4-rtn-block-32/model.onnx.data
+#   wget https://huggingface.co/microsoft/phi-4-onnx/resolve/main/gpu/gpu-int4-rtn-block-32/tokenizer.json
+#   cd -
+
+import fileio
+import ai.nn
+
+# ============================================================
+# Load tokenizer & model
+# ============================================================
+
+print("loading tokenizer...")
+var tok = ai.nn.Tokenizer("modules/ai/phi4-int4-cuda/gpu/gpu-int4-rtn-block-32/tokenizer.json")
+print("  vocab size: " + string(tok.vocab_size()))
+
+var model_path = "modules/ai/phi4-int4-cuda/gpu/gpu-int4-rtn-block-32/model.onnx"
+print("loading model...")
+var model = ai.nn.Model(model_path, warmup=false)
+print("  device: " + model.device())
+
+# ============================================================
+# Model inference helpers
+# ============================================================
+
+var NUM_LAYERS = 40
+var NUM_KV_HEADS = 10
+var HEAD_SIZE = 128
+var VOCAB_SIZE = 100352
+var eos_ids = [100257, 100265]
+
+func argmax_vocab(logits, pos :int) -> int:
+  var best_id = 0
+  var best_score = logits[0, pos, 0]
+  var v = 1
+  while v < VOCAB_SIZE:
+    var score = logits[0, pos, v]
+    if score > best_score:
+      best_score = score
+      best_id = v
+    v = v + 1
+  return best_id
+
+func build_prefill_inputs(ids :list) -> dict:
+  var seq_len = len(ids)
+  var input_ids = tensor(1, seq_len, dtype='int64')
+  var attention_mask = tensor(1, seq_len, dtype='int64')
+  var position_ids = tensor(1, seq_len, dtype='int64')
+  var j = 0
+  while j < seq_len:
+    input_ids[0, j] = ids[j]
+    attention_mask[0, j] = 1
+    position_ids[0, j] = j
+    j = j + 1
+  var inputs = {
+    'input_ids': input_ids,
+    'attention_mask': attention_mask,
+    'position_ids': position_ids
+  }
+  var layer = 0
+  while layer < NUM_LAYERS:
+    inputs['past_key_values.' + string(layer) + '.key'] = tensor(1, NUM_KV_HEADS, 0, HEAD_SIZE, dtype='float16')
+    inputs['past_key_values.' + string(layer) + '.value'] = tensor(1, NUM_KV_HEADS, 0, HEAD_SIZE, dtype='float16')
+    layer = layer + 1
+  return inputs
+
+func build_decode_inputs(token_id :int, total_len :int, kv :list) -> dict:
+  var input_ids = tensor(1, 1, dtype='int64')
+  input_ids[0, 0] = token_id
+  var attention_mask = tensor(1, total_len, dtype='int64')
+  var j = 0
+  while j < total_len:
+    attention_mask[0, j] = 1
+    j = j + 1
+  var position_ids = tensor(1, 1, dtype='int64')
+  position_ids[0, 0] = total_len - 1
+  var inputs = {
+    'input_ids': input_ids,
+    'attention_mask': attention_mask,
+    'position_ids': position_ids
+  }
+  var layer = 0
+  while layer < NUM_LAYERS:
+    inputs['past_key_values.' + string(layer) + '.key'] = kv[layer * 2]
+    inputs['past_key_values.' + string(layer) + '.value'] = kv[layer * 2 + 1]
+    layer = layer + 1
+  return inputs
+
+# Generate response tokens with KV cache, streaming output
+func generate(token_ids :list, max_tokens :int) -> list:
+  var new_ids = []
+  var prev_text = ""
+
+  # Prefill: process entire prompt in one pass
+  var result = model.predict(build_prefill_inputs(token_ids))
+  var logits = result[0]
+  var total_len = len(token_ids)
+
+  # Extract KV cache from prefill result (indices 1..80 = present.*.key/value)
+  var kv = []
+  var ki = 1
+  while ki <= NUM_LAYERS * 2:
+    kv.append(result[ki])
+    ki = ki + 1
+
+  # Pick first token from last position of prefill logits
+  var best_id = argmax_vocab(logits, total_len - 1)
+
+  var n = 0
+  var generating = true
+  while generating and n < max_tokens:
+    # Check for EOS
+    var is_eos = false
+    for eid in eos_ids:
+      if best_id == eid:
+        is_eos = true
+
+    if is_eos:
+      generating = false
+    else:
+      token_ids.append(best_id)
+      new_ids.append(best_id)
+      total_len = total_len + 1
+
+      # Stream: decode all new tokens, print only the delta
+      var full_text = tok.decode(new_ids)
+      print(full_text[len(prev_text):], "", true)
+      prev_text = full_text
+
+      # Decode step: single token + KV cache
+      result = model.predict(build_decode_inputs(best_id, total_len, kv))
+      logits = result[0]
+
+      # Update KV cache from decode result
+      kv = []
+      ki = 1
+      while ki <= NUM_LAYERS * 2:
+        kv.append(result[ki])
+        ki = ki + 1
+
+      # Pick next token (position 0, since decode input is single token)
+      best_id = argmax_vocab(logits, 0)
+      n = n + 1
+
+  print("")  # newline after streaming
+  return new_ids
+
+# ============================================================
+# Interactive chat loop
+# ============================================================
+
+var max_new_tokens = 500
+var stdin = fileio.open("/dev/stdin")
+
+print("")
+print("Phi-4 Chat (greedy, KV-cached)")
+print("Type a message and press Enter. Type 'quit' to exit.")
+print("")
+
+# Accumulate conversation as token IDs for multi-turn context
+var system_prompt = "<|im_start|>system<|im_sep|>\nYou are a helpful assistant.<|im_end|>\n"
+var conversation_ids = tok.encode(system_prompt)
+
+var chatting = true
+while chatting:
+  print("You: ", "", true)
+  var user_input = fileio.read_line(stdin)
+
+  if user_input == "quit":
+    chatting = false
+  else:
+    # Build this turn in Phi-4 chat format and encode
+    var turn = "<|im_start|>user<|im_sep|>\n" + user_input + "<|im_end|>\n<|im_start|>assistant<|im_sep|>\n"
+    var turn_ids = tok.encode(turn)
+    for tid in turn_ids:
+      conversation_ids.append(tid)
+
+    print("")
+    print("Phi-4: ", "", true)
+    var response_ids = generate(conversation_ids, max_new_tokens)
+
+    # Append end token to conversation so model knows the turn ended
+    for tid in tok.encode("<|im_end|>"):
+      conversation_ids.append(tid)
+
+    print("  [" + string(len(response_ids)) + " tokens, " + string(len(conversation_ids)) + " total context]")
+    print("")
+
+fileio.close(stdin)
+tok.close()
+model.close()
+print("bye!")
