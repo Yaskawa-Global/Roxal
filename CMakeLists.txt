@@ -24,6 +24,7 @@ option(ROXAL_ENABLE_AI_NN "Enable ai.nn neural network inference module (require
 if(ROXAL_ENABLE_AI_NN)
     set(ROXAL_ENABLE_ONNX ON CACHE BOOL "Enabled implicitly by ROXAL_ENABLE_AI_NN" FORCE)
 endif()
+option(ROXAL_ENABLE_MEDIA "Enable media module (PNG/JPEG image I/O)" OFF)
 
 # Expose the project version and git hash to the codebase
 set(ROXAL_PROJECT_VERSION "${PROJECT_VERSION}")
@@ -154,6 +155,12 @@ if(ROXAL_ENABLE_ONNX)
 
 endif()
 
+# PNG / JPEG for media module
+if(ROXAL_ENABLE_MEDIA)
+    find_package(PNG REQUIRED)
+    find_package(JPEG REQUIRED)
+endif()
+
 # Detect libffi via pkg-config so that include and library paths
 # are recorded explicitly and the build fails clearly if libffi is
 # missing.
@@ -224,6 +231,9 @@ if(ROXAL_ENABLE_SOCKET)
 endif()
 if(ROXAL_ENABLE_AI_NN)
     list(APPEND COMPILER_SOURCES compiler/ModuleNN.cpp)
+endif()
+if(ROXAL_ENABLE_MEDIA)
+    list(APPEND COMPILER_SOURCES compiler/ModuleMedia.cpp)
 endif()
 
 set(MAIN_SOURCE compiler/roxal.cpp)
@@ -309,6 +319,8 @@ target_link_libraries(roxalcore
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::idl>
         $<$<BOOL:${ROXAL_ENABLE_REGEX}>:${PCRE2_LIBRARIES}>
         $<$<BOOL:${ROXAL_ENABLE_ONNX}>:${ONNXRUNTIME_LIBRARY}>
+        $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:PNG::PNG>
+        $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:JPEG::JPEG>
 )
 
 
@@ -328,6 +340,7 @@ target_compile_definitions(roxalcore PRIVATE
     $<$<BOOL:${ROXAL_ENABLE_SOCKET}>:ROXAL_ENABLE_SOCKET>
     $<$<BOOL:${ROXAL_ENABLE_ONNX}>:ROXAL_ENABLE_ONNX>
     $<$<BOOL:${ROXAL_ENABLE_AI_NN}>:ROXAL_ENABLE_AI_NN>
+    $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:ROXAL_ENABLE_MEDIA>
     ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
     ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
     ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
@@ -350,6 +363,7 @@ if(ROXAL_BUILD_MAIN)
         $<$<BOOL:${ROXAL_ENABLE_SOCKET}>:ROXAL_ENABLE_SOCKET>
         $<$<BOOL:${ROXAL_ENABLE_ONNX}>:ROXAL_ENABLE_ONNX>
             $<$<BOOL:${ROXAL_ENABLE_AI_NN}>:ROXAL_ENABLE_AI_NN>
+        $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:ROXAL_ENABLE_MEDIA>
         ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
         ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
         ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"

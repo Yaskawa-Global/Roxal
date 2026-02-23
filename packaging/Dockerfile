@@ -38,6 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip default-jre-headless \
     libicu-dev libffi-dev libboost-program-options-dev libeigen3-dev \
     libpcre2-dev protobuf-compiler libprotobuf-dev libprotoc-dev libgrpc++-dev \
+    libpng-dev libjpeg-dev \
     patchelf file \
     && rm -rf /var/lib/apt/lists/*
 
@@ -126,6 +127,7 @@ RUN cmake -B build --fresh \
       -DROXAL_DDS_ROOT=/usr/local \
       -DROXAL_ENABLE_AI_NN=ON \
       -DROXAL_ONNX_ROOT=/opt/onnxruntime \
+      -DROXAL_ENABLE_MEDIA=ON \
     && for attempt in 1 2 3 4 5; do \
          echo "=== Roxal build attempt ${attempt}/5 ===" && \
          cmake --build build -j${JOBS} && break; \

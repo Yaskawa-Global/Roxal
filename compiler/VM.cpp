@@ -749,6 +749,9 @@ VM::VM()
     #ifdef ROXAL_ENABLE_AI_NN
     lazyModuleRegistry.registerFactory("ai.nn", []{ return make_ptr<ModuleNN>(); });
     #endif
+    #ifdef ROXAL_ENABLE_MEDIA
+    lazyModuleRegistry.registerFactory("media", []{ return make_ptr<ModuleMedia>(); });
+    #endif
 
     std::vector<std::string> stagedModulePaths;
     {

@@ -35,6 +35,9 @@
 #ifdef ROXAL_ENABLE_AI_NN
 #include "ModuleNN.h"
 #endif
+#ifdef ROXAL_ENABLE_MEDIA
+#include "ModuleMedia.h"
+#endif
 #include <ffi.h>
 #include <vector>
 

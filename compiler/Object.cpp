@@ -3217,6 +3217,28 @@ double* ObjTensor::dataMut()
 #endif
 }
 
+const void* ObjTensor::rawData() const
+{
+#ifdef ROXAL_ENABLE_ONNX
+    ensureCpu();
+    return ort_value_->GetTensorData<void>();
+#else
+    return data_->data();
+#endif
+}
+
+void* ObjTensor::rawDataMut()
+{
+#ifdef ROXAL_ENABLE_ONNX
+    ensureCpu();
+    ensureOrtUnique();
+    return ort_value_->GetTensorMutableRawData();
+#else
+    ensureUnique();
+    return data_->data();
+#endif
+}
+
 void ObjTensor::computeStrides()
 {
     strides_.resize(shape_.size());

@@ -793,6 +793,11 @@ struct ObjTensor : public Obj
     const double* data() const;
     double* dataMut();
 
+    // Type-erased raw data access for bulk I/O (e.g., image read/write).
+    // Works with any dtype. For ORT-backed tensors returns ORT buffer directly.
+    const void* rawData() const;
+    void* rawDataMut();  // triggers COW
+
     bool equals(const ObjTensor* other, double eps = 1e-15) const;
     void set(const ObjTensor* other);
 

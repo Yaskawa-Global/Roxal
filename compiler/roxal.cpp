@@ -757,6 +757,9 @@ int main(int argc, const char* argv[])
         #ifdef ROXAL_ENABLE_AI_NN
             features.push_back("nn");
         #endif
+        #ifdef ROXAL_ENABLE_MEDIA
+            features.push_back("media");
+        #endif
         if (!features.empty()) {
             std::cout << " [";
             for (size_t i = 0; i < features.size(); ++i) {

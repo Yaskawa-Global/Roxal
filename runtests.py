@@ -159,12 +159,14 @@ regex_tests = ['regex_test']
 socket_tests = ['socket_basic']
 nn_tests = ['nn_mnist', 'nn_signal', 'nn_chain', 'nn_signal_chain', 'nn_dynamic', 'nn_multi_io', 'nn_async', 'nn_tokenizer']
 nn_lfs_tests = ['nn_dfine']  # require LFS model files (only run with --all)
+media_tests = ['media_read_write', 'media_manipulate', 'media_convert']
 
 # Add feature-specific tests to the full list; feature gating happens later.
 tests += dds_tests
 tests += regex_tests
 tests += socket_tests
 tests += nn_tests
+tests += media_tests
 
 long_running_tests = [
     'gc_stress',
@@ -274,6 +276,11 @@ if not has_nn:
     if any(test in tests for test in nn_tests + nn_lfs_tests):
         print("Skipping ai.nn tests (feature not enabled).")
         tests = [t for t in tests if t not in nn_tests and t not in nn_lfs_tests]
+has_media = 'media' in features
+if not has_media:
+    if any(test in tests for test in media_tests):
+        print("Skipping media tests (feature not enabled).")
+        tests = [t for t in tests if t not in media_tests]
 if has_nn and any(test in tests for test in nn_lfs_tests):
     # Check that all LFS-tracked model files are available (not pointers or missing).
     # This covers any .onnx files tracked via .gitattributes LFS patterns.

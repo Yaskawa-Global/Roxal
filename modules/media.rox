@@ -1,0 +1,76 @@
+@builtin
+type Image object:
+
+  var data   // tensor [H, W, C], dtype uint8 or float32
+
+  @builtin
+  proc init(path:string='', source=nil, channels:int=0):
+    """Create Image from file path or source tensor. channels: 0=auto, 1=gray, 3=RGB, 4=RGBA."""
+
+  @builtin
+  proc write(path:string, quality:int=95):
+    """Write to PNG or JPEG (detected from extension). quality applies to JPEG (1-100)."""
+
+  @builtin
+  func width() -> int:
+    """Image width (columns)."""
+
+  @builtin
+  func height() -> int:
+    """Image height (rows)."""
+
+  @builtin
+  func channels() -> int:
+    """Number of channels (1=gray, 3=RGB, 4=RGBA)."""
+
+  @builtin
+  proc resize(width:int, height:int):
+    """Resize using bilinear interpolation. Modifies image in-place."""
+
+  @builtin
+  proc crop(x:int, y:int, width:int, height:int):
+    """Crop rectangular region. (x,y) is top-left corner. Modifies image in-place."""
+
+  @builtin
+  proc flip_horizontal():
+    """Mirror left-right. Modifies image in-place."""
+
+  @builtin
+  proc flip_vertical():
+    """Mirror top-bottom. Modifies image in-place."""
+
+  @builtin
+  proc rotate90():
+    """Rotate 90 degrees clockwise. Modifies image in-place."""
+
+  @builtin
+  proc rotate180():
+    """Rotate 180 degrees. Modifies image in-place."""
+
+  @builtin
+  proc rotate270():
+    """Rotate 270 degrees clockwise. Modifies image in-place."""
+
+  @builtin
+  proc grayscale():
+    """Convert to single-channel grayscale (0.299R + 0.587G + 0.114B). Modifies image in-place."""
+
+  @builtin
+  proc brightness(factor:real):
+    """Adjust brightness (>1.0 brighter, <1.0 darker). Modifies image in-place."""
+
+  @builtin
+  proc contrast(factor:real):
+    """Adjust contrast around mean (>1.0 more, <1.0 less). Modifies image in-place."""
+
+  @builtin
+  proc saturation(factor:real):
+    """Adjust color saturation (0=grayscale, 1=unchanged, >1=more). Modifies image in-place."""
+
+  @builtin
+  proc to_float():
+    """Convert uint8 (0-255) to float32 (0.0-1.0). Modifies image in-place."""
+
+  @builtin
+  proc to_uint8():
+    """Convert float32 (0.0-1.0) to uint8 (0-255). Modifies image in-place."""
