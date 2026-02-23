@@ -1086,6 +1086,140 @@ t = dds.create_topic(p, "QoSTopic", HelloWorldData.Msg, qos)
 
 
 
+## Advanced: Image Processing (media)
+
+When Roxal is built with `ROXAL_ENABLE_MEDIA=ON`, the `media` module provides image loading, manipulation, and conversion for use with neural network inference pipelines or general image processing.
+
+### Loading and Saving Images
+
+```roxal
+import media
+
+var img = media.Image("photo.jpg")
+print(img.width())     // e.g. 640
+print(img.height())    // e.g. 480
+print(img.channels())  // 3 (RGB)
+
+img.write("output.png")             // save as PNG
+img.write("output.jpg", quality=90) // save as JPEG (quality 1-100)
+```
+
+Image format (PNG or JPEG) is detected from the file extension. Internally, images are stored as tensors with shape `[H, W, C]` in uint8 (0-255) or float32 (0.0-1.0) format.
+
+### Creating Images from Tensors
+
+You can create an image from a tensor (e.g. to save a neural network output as an image):
+
+```roxal
+import media
+
+// Create a 256x256 grayscale mask
+var mask_data = tensor(256, 256, 1, dtype='uint8')
+// ... fill in pixel values ...
+
+var mask_img = media.Image(source=mask_data)
+mask_img.write("mask.png")
+```
+
+### Geometric Transforms
+
+All transforms modify the image in-place:
+
+```roxal
+import media
+
+var img = media.Image("photo.jpg")
+
+img.resize(320, 240)        // resize to 320x240 (bilinear interpolation)
+img.crop(10, 20, 100, 100)  // crop 100x100 region from (10, 20)
+img.pad(1024, 1024)         // pad with zeros (black) to 1024x1024, original at top-left
+
+img.flip_horizontal()       // mirror left-right
+img.flip_vertical()         // mirror top-bottom
+img.rotate90()              // rotate 90 degrees clockwise
+img.rotate180()
+img.rotate270()
+```
+
+The `pad()` method is useful for neural networks that require fixed-size square inputs (e.g. SAM2 requires 1024x1024). Resize the longest side first, then pad to fill the remaining space:
+
+```roxal
+import media
+import math
+
+var img = media.Image("photo.jpg")
+var scale = 1024.0 / math.fmax(real(img.width()), real(img.height()))
+img.resize(int(real(img.width()) * scale), int(real(img.height()) * scale))
+img.pad(1024, 1024)
+```
+
+### Color and Brightness Adjustments
+
+```roxal
+img.grayscale()         // convert to single-channel grayscale
+img.brightness(1.5)     // brighter (>1.0) or darker (<1.0)
+img.contrast(1.2)       // more contrast (>1.0) or less (<1.0)
+img.saturation(0.0)     // desaturate (0=gray, 1=unchanged, >1=vivid)
+```
+
+### Format Conversion and Normalization
+
+```roxal
+img.to_float()           // uint8 (0-255) → float32 (0.0-1.0)
+img.to_uint8()           // float32 (0.0-1.0) → uint8 (0-255)
+img.normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  // ImageNet normalization (must be float32)
+```
+
+### Preparing Images for Neural Networks
+
+The `to_tensor()` method converts an image to the `[1, C, H, W]` tensor format expected by most neural networks, combining uint8→float32 conversion and optional normalization in one step:
+
+```roxal
+import media
+import ai.nn
+
+var img = media.Image("photo.jpg")
+img.resize(224, 224)
+
+// Without normalization (just converts to [1, 3, 224, 224] float32)
+var input = img.to_tensor()
+
+// With ImageNet normalization (common for ResNet, YOLO, DETR, SAM2, etc.)
+var input = img.to_tensor(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+var model = ai.nn.Model("classifier.onnx")
+var output = model.predict(input)
+```
+
+### API Reference
+
+#### Image Type
+
+| Method | Description |
+|--------|-------------|
+| `Image(path, source=nil, channels=0)` | Create from file path or source tensor. `channels`: 0=auto, 1=gray, 3=RGB, 4=RGBA. |
+| `write(path, quality=95)` | Save to PNG or JPEG (detected from extension). `quality` applies to JPEG. |
+| `width()` | Image width in pixels. |
+| `height()` | Image height in pixels. |
+| `channels()` | Number of channels (1=gray, 3=RGB, 4=RGBA). |
+| `resize(width, height)` | Resize using bilinear interpolation. In-place. |
+| `crop(x, y, width, height)` | Crop rectangular region. `(x,y)` is top-left. In-place. |
+| `pad(width, height)` | Pad with zeros to target size. Original at top-left. In-place. |
+| `flip_horizontal()` | Mirror left-right. In-place. |
+| `flip_vertical()` | Mirror top-bottom. In-place. |
+| `rotate90()` | Rotate 90 degrees clockwise. In-place. |
+| `rotate180()` | Rotate 180 degrees. In-place. |
+| `rotate270()` | Rotate 270 degrees clockwise. In-place. |
+| `grayscale()` | Convert to single-channel grayscale. In-place. |
+| `brightness(factor)` | Adjust brightness (>1 brighter, <1 darker). In-place. |
+| `contrast(factor)` | Adjust contrast (>1 more, <1 less). In-place. |
+| `saturation(factor)` | Adjust saturation (0=gray, 1=unchanged, >1=vivid). In-place. |
+| `to_float()` | Convert uint8 (0-255) to float32 (0.0-1.0). In-place. |
+| `to_uint8()` | Convert float32 (0.0-1.0) to uint8 (0-255). In-place. |
+| `normalize(mean, std)` | Per-channel normalization: `(pixel - mean[c]) / std[c]`. Must be float32. In-place. |
+| `to_tensor(mean=nil, std=nil)` | Return `[1, C, H, W]` float32 tensor for neural network input. Optional `mean`/`std` lists apply per-channel normalization. |
+
+
 ## Advanced: Neural Network Inference (ai.nn)
 
 When Roxal is built with `ROXAL_ENABLE_AI_NN=ON` (which implies `ROXAL_ENABLE_ONNX=ON`), the `ai.nn` module provides neural network inference via ONNX Runtime. Models are loaded from `.onnx` files and can run on CPU or GPU (CUDA). Inference is asynchronous — `predict()` returns a future that auto-resolves when results are accessed. Model outputs are tensors that integrate directly with Roxal's signal/dataflow engine, enabling reactive model pipelines.
