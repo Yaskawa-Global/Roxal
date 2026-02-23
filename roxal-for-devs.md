@@ -364,6 +364,39 @@ t2[0] = 99
 print(t[0])          // 1 (original unchanged)
 ```
 
+### Type Methods
+
+Vectors, matrices, and tensors have built-in methods:
+
+```php
+var v = [3.0 1.0 4.0 1.0 5.0]
+print(v.sum())        // 14
+print(v.min())        // 1
+print(v.max())        // 5
+print(v.norm())       // Euclidean norm
+print(v.normalized()) // unit vector
+print(v.dot([1.0 0.0 0.0 0.0 0.0]))  // 3
+
+var m = [1 2; 3 4]
+print(m.sum())        // 10
+print(m.min())        // 1
+print(m.max())        // 4
+print(m.rows())       // 2
+print(m.cols())       // 2
+print(m.transpose())  // [1 3; 2 4]
+print(m.determinant()) // -2
+print(m.trace())      // 5
+print(m.norm())       // Frobenius norm
+
+var t = tensor(2, 3, data=[3.0, 1.0, 4.0, 1.0, 5.0, 9.0])
+print(t.sum())        // 23
+print(t.min())        // 1
+print(t.max())        // 9
+print(t.shape())      // [2, 3]
+print(t.rank())       // 2
+print(t.dtype())      // 'float64'
+```
+
 ### Arithmetic Operations
 
 Element-wise arithmetic works with +, -, *, / for same-shaped tensors. Vectors and matrices also support matrix multiplication:
@@ -1522,6 +1555,9 @@ Use `import math` or `import math.*`.  See `math.rox`.
 * `relu(x)` - rectified linear unit: `max(0, x)` applied element-wise (works on scalar, vector, matrix, or tensor)
 * `softmax(x)` - softmax function: `exp(x_i) / sum(exp(x_j))` (works on vector or 1D tensor)
 * `argmax(x)` - index of maximum element (works on vector or 1D tensor)
+* `min(x)` - minimum element value (works on vector, matrix, tensor, or list)
+* `max(x)` - maximum element value (works on vector, matrix, tensor, or list)
+* `sum(x)` - sum of all elements (works on vector, matrix, tensor, or list)
 
 ### fileio
 
