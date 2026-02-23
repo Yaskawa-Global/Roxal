@@ -29,6 +29,7 @@ private:
     Value image_channels_builtin(ArgsView args);
     Value image_resize_builtin(ArgsView args);
     Value image_crop_builtin(ArgsView args);
+    Value image_pad_builtin(ArgsView args);
     Value image_flip_horizontal_builtin(ArgsView args);
     Value image_flip_vertical_builtin(ArgsView args);
     Value image_rotate90_builtin(ArgsView args);

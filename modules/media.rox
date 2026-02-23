@@ -32,6 +32,10 @@ type Image object:
     """Crop rectangular region. (x,y) is top-left corner. Modifies image in-place."""
 
   @builtin
+  proc pad(width:int, height:int):
+    """Pad image with zeros to target size. Original at top-left. Modifies image in-place."""
+
+  @builtin
   proc flip_horizontal():
     """Mirror left-right. Modifies image in-place."""
 

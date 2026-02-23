@@ -365,6 +365,7 @@ void ModuleMedia::registerBuiltins(VM& vm)
     linkMethod("Image", "channels",        [this](VM&, ArgsView a) { return image_channels_builtin(a); });
     linkMethod("Image", "resize",          [this](VM&, ArgsView a) { return image_resize_builtin(a); });
     linkMethod("Image", "crop",            [this](VM&, ArgsView a) { return image_crop_builtin(a); });
+    linkMethod("Image", "pad",             [this](VM&, ArgsView a) { return image_pad_builtin(a); });
     linkMethod("Image", "flip_horizontal", [this](VM&, ArgsView a) { return image_flip_horizontal_builtin(a); });
     linkMethod("Image", "flip_vertical",   [this](VM&, ArgsView a) { return image_flip_vertical_builtin(a); });
     linkMethod("Image", "rotate90",        [this](VM&, ArgsView a) { return image_rotate90_builtin(a); });
@@ -597,6 +598,41 @@ Value ModuleMedia::image_crop_builtin(ArgsView args)
             for (int c = 0; c < channels; ++c)
                 dst->setAt((y * cw + x) * channels + c,
                            src->at(((cy + y) * srcW + (cx + x)) * channels + c));
+
+    setImageData(args, Value::objVal(std::move(dst)));
+    return Value::nilVal();
+}
+
+// ============================================================
+// Pad (zero-pad to target size, original at top-left)
+// ============================================================
+
+Value ModuleMedia::image_pad_builtin(ArgsView args)
+{
+    ObjTensor* src = getImageTensor(args, "pad");
+    if (args.size() < 3)
+        throw std::invalid_argument("Image.pad expects width, height");
+
+    int padW = static_cast<int>(toType(ValueType::Int, args[1], false).asInt());
+    int padH = static_cast<int>(toType(ValueType::Int, args[2], false).asInt());
+
+    int srcH = static_cast<int>(src->shape()[0]);
+    int srcW = static_cast<int>(src->shape()[1]);
+    int channels = static_cast<int>(src->shape()[2]);
+
+    if (padW < srcW || padH < srcH)
+        throw std::invalid_argument("Image.pad: target size must be >= current size");
+
+    TensorDType dtype = src->dtype();
+    std::vector<int64_t> dstShape = {padH, padW, channels};
+    auto dst = newTensorObj(dstShape, dtype); // zero-filled by default
+
+    // Copy original image pixels into top-left corner
+    for (int y = 0; y < srcH; ++y)
+        for (int x = 0; x < srcW; ++x)
+            for (int c = 0; c < channels; ++c)
+                dst->setAt((y * padW + x) * channels + c,
+                           src->at((y * srcW + x) * channels + c));
 
     setImageData(args, Value::objVal(std::move(dst)));
     return Value::nilVal();
