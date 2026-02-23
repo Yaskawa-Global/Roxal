@@ -598,7 +598,10 @@ Value lor(Value l, Value r);
 
 Value greater(Value l, Value r);
 Value less(Value l, Value r);
+Value greaterEqual(Value l, Value r);
+Value lessEqual(Value l, Value r);
 Value equal(Value l, Value r, bool strict = false);
+Value notEqual(Value l, Value r, bool strict = false);
 
 std::string toString(const Value& v);
 

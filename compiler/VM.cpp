@@ -4789,6 +4789,42 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
+            case OpCode::GreaterEqual: {
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
+
+                try {
+                    binaryOp([](Value a, Value b) -> Value { return greaterEqual(a,b); });
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case OpCode::LessEqual: {
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
+
+                try {
+                    binaryOp([](Value a, Value b) -> Value { return lessEqual(a,b); });
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case OpCode::NotEqual: {
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
+
+                try {
+                    binaryOp([&](Value a, Value b) -> Value { return notEqual(a, b, frame->strict); });
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
             case OpCode::Add: {
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;

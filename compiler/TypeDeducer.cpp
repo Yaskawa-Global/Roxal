@@ -631,6 +631,8 @@ std::any TypeDeducer::visit(ptr<ast::BinaryOp> ast)
             case ast::BinaryOp::NotEqual:
             case ast::BinaryOp::LessThan:
             case ast::BinaryOp::GreaterThan:
+            case ast::BinaryOp::LessOrEqual:
+            case ast::BinaryOp::GreaterOrEqual:
                 supportsSignal = true;
                 break;
             default:
@@ -679,15 +681,21 @@ std::any TypeDeducer::visit(ptr<ast::BinaryOp> ast)
                 if (lhsType==BuiltinType::Bool && rhsType==BuiltinType::Bool)
                     ast->type = make_ptr<Type>(BuiltinType::Bool);
                 break;
-            case ast::BinaryOp::Equal:
-            case ast::BinaryOp::NotEqual:
             case ast::BinaryOp::In:
             case ast::BinaryOp::NotIn:
+                ast->type = make_ptr<Type>(BuiltinType::Bool);
+                break;
+            case ast::BinaryOp::Equal:
+            case ast::BinaryOp::NotEqual:
             case ast::BinaryOp::LessThan:
             case ast::BinaryOp::GreaterThan:
             case ast::BinaryOp::LessOrEqual:
             case ast::BinaryOp::GreaterOrEqual:
-                ast->type = make_ptr<Type>(BuiltinType::Bool);
+                // Tensor comparisons return a tensor; scalar comparisons return bool
+                if (lhsType == BuiltinType::Tensor || rhsType == BuiltinType::Tensor)
+                    ast->type = make_ptr<Type>(BuiltinType::Tensor);
+                else
+                    ast->type = make_ptr<Type>(BuiltinType::Bool);
                 break;
             default: break;
         }

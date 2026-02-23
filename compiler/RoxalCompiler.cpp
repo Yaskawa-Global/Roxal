@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 21;
+constexpr std::uint32_t ModuleCacheVersion = 22;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -2137,8 +2137,7 @@ std::any RoxalCompiler::visit(ptr<ast::MatchStatement> ast)
                     // Check lower bound: value >= start
                     emitByte(OpCode::Dup);
                     range->start->accept(*this);
-                    emitByte(OpCode::Less);
-                    emitByte(OpCode::Negate);
+                    emitByte(OpCode::GreaterEqual);
 
                     // Short-circuit if lower bound fails
                     auto lowerFail = emitJump(OpCode::JumpIfFalse);
@@ -2148,8 +2147,7 @@ std::any RoxalCompiler::visit(ptr<ast::MatchStatement> ast)
                     emitByte(OpCode::Dup);
                     range->stop->accept(*this);
                     if (range->closed) {
-                        emitByte(OpCode::Greater);
-                        emitByte(OpCode::Negate);
+                        emitByte(OpCode::LessEqual);
                     } else {
                         emitByte(OpCode::Less);
                     }
@@ -2172,8 +2170,7 @@ std::any RoxalCompiler::visit(ptr<ast::MatchStatement> ast)
                     // Only lower bound: start.. or start:
                     // Check: value >= start
                     range->start->accept(*this);
-                    emitByte(OpCode::Less);
-                    emitByte(OpCode::Negate);
+                    emitByte(OpCode::GreaterEqual);
                     caseMatchJumps.push_back(emitJump(OpCode::JumpIfTrue));
                     emitByte(OpCode::Pop);
 
@@ -2182,8 +2179,7 @@ std::any RoxalCompiler::visit(ptr<ast::MatchStatement> ast)
                     // Check: value <= stop (or < stop if half-open)
                     range->stop->accept(*this);
                     if (range->closed) {
-                        emitByte(OpCode::Greater);
-                        emitByte(OpCode::Negate);
+                        emitByte(OpCode::LessEqual);
                     } else {
                         emitByte(OpCode::Less);
                     }
@@ -2814,7 +2810,7 @@ std::any RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
             case BinaryOp::Multiply: emitByte(OpCode::Multiply); break;
             case BinaryOp::Divide: emitByte(OpCode::Divide); break;
             case BinaryOp::Equal: emitByte(OpCode::Equal); break;
-            case BinaryOp::NotEqual: emitByte(OpCode::Equal); emitByte(OpCode::Negate); break;
+            case BinaryOp::NotEqual: emitByte(OpCode::NotEqual); break;
             case BinaryOp::Is: emitByte(OpCode::Is); break;
             case BinaryOp::In: emitByte(OpCode::In); break;
             case BinaryOp::NotIn: emitByte(OpCode::In); emitByte(OpCode::Negate); break;
@@ -2824,8 +2820,8 @@ std::any RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
             case BinaryOp::BitXor: emitByte(OpCode::BitXor); break;
             case BinaryOp::LessThan: emitByte(OpCode::Less); break;
             case BinaryOp::GreaterThan: emitByte(OpCode::Greater); break;
-            case BinaryOp::LessOrEqual: emitByte(OpCode::Greater); emitByte(OpCode::Negate); break;
-            case BinaryOp::GreaterOrEqual: emitByte(OpCode::Less); emitByte(OpCode::Negate); break;
+            case BinaryOp::LessOrEqual: emitByte(OpCode::LessEqual); break;
+            case BinaryOp::GreaterOrEqual: emitByte(OpCode::GreaterEqual); break;
             default:
                 throw std::runtime_error("unimplemented binary opertor:"+ast->opString());
         }

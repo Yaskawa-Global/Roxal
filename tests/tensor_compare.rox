@@ -1,0 +1,97 @@
+# Tensor element-wise comparison operators test
+
+# === Setup: 2x2 tensors ===
+
+var t1 = tensor(2, 2, data=[1.0, 2.0, 3.0, 4.0])
+var t2 = tensor(2, 2, data=[2.0, 2.0, 1.0, 5.0])
+
+# === tensor > tensor ===
+var gt = t1 > t2
+print(gt[0, 0])
+print(gt[0, 1])
+print(gt[1, 0])
+print(gt[1, 1])
+
+# === tensor < tensor ===
+var lt = t1 < t2
+print(lt[0, 0])
+print(lt[0, 1])
+print(lt[1, 0])
+print(lt[1, 1])
+
+# === tensor >= tensor ===
+var ge = t1 >= t2
+print(ge[0, 0])
+print(ge[0, 1])
+print(ge[1, 0])
+print(ge[1, 1])
+
+# === tensor <= tensor ===
+var le = t1 <= t2
+print(le[0, 0])
+print(le[0, 1])
+print(le[1, 0])
+print(le[1, 1])
+
+# === tensor > scalar ===
+var gts = t1 > 2.0
+print(gts[0, 0])
+print(gts[0, 1])
+print(gts[1, 0])
+print(gts[1, 1])
+
+# === tensor < scalar ===
+var lts = t1 < 3.0
+print(lts[0, 0])
+print(lts[0, 1])
+print(lts[1, 0])
+print(lts[1, 1])
+
+# === tensor >= scalar ===
+var ges = t1 >= 2.0
+print(ges[0, 0])
+print(ges[0, 1])
+print(ges[1, 0])
+print(ges[1, 1])
+
+# === tensor <= scalar ===
+var les = t1 <= 3.0
+print(les[0, 0])
+print(les[0, 1])
+print(les[1, 0])
+print(les[1, 1])
+
+# === scalar > tensor ===
+var sgt = 2.5 > t1
+print(sgt[0, 0])
+print(sgt[0, 1])
+print(sgt[1, 0])
+print(sgt[1, 1])
+
+# === scalar < tensor ===
+var slt = 2.5 < t1
+print(slt[0, 0])
+print(slt[0, 1])
+print(slt[1, 0])
+print(slt[1, 1])
+
+# === 1D tensor comparison ===
+var v = tensor(3, data=[-1.0, 0.0, 1.0])
+var vgt = v > 0.0
+print(vgt[0])
+print(vgt[1])
+print(vgt[2])
+
+# === Verify scalar comparisons still work ===
+var a = 5 > 3
+var b = 5 < 3
+var c = 5 >= 5
+var d = 5 <= 4
+var e = 5 != 3
+var f = 5 != 5
+print(a)
+print(b)
+print(c)
+print(d)
+print(e)
+print(f)

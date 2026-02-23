@@ -221,6 +221,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("CONST_INT1", offset);
         case OpCode::Equal:
             return simpleInstruction("EQUAL", offset);
+        case OpCode::NotEqual:
+            return simpleInstruction("NOT_EQUAL", offset);
         case OpCode::Is:
             return simpleInstruction("IS", offset);
         case OpCode::In:
@@ -229,6 +231,10 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("GREATER", offset);
         case OpCode::Less:
             return simpleInstruction("LESS", offset);
+        case OpCode::GreaterEqual:
+            return simpleInstruction("GREATER_EQUAL", offset);
+        case OpCode::LessEqual:
+            return simpleInstruction("LESS_EQUAL", offset);
         case OpCode::Add:
             return simpleInstruction("ADD", offset);
         case OpCode::Subtract:

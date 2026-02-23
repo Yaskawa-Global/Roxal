@@ -2699,6 +2699,32 @@ Value roxal::greater(Value l, Value r)
             default: return Value::falseVal();
         }
     }
+    else if (isTensor(l) && isTensor(r)) {
+        const ObjTensor* lt = asTensor(l);
+        const ObjTensor* rt = asTensor(r);
+        if (lt->shape() != rt->shape())
+            throw std::invalid_argument("Tensor comparison requires tensors of same shape");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) > rt->at(i) ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (isTensor(l) && r.isNumber()) {
+        const ObjTensor* lt = asTensor(l);
+        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) > scalar ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (l.isNumber() && isTensor(r)) {
+        const ObjTensor* rt = asTensor(r);
+        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
+        auto result = newTensorObj(rt->shape(), rt->dtype());
+        for (int64_t i = 0; i < rt->numel(); ++i)
+            result->setAt(i, scalar > rt->at(i) ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
     else if (l.isObj() && r.isObj()) {
         if (isString(l) && isString(r)) {
             auto lstr = asStringObj(l);
@@ -2733,6 +2759,32 @@ Value roxal::less(Value l, Value r)
             default: return Value::falseVal();
         }
     }
+    else if (isTensor(l) && isTensor(r)) {
+        const ObjTensor* lt = asTensor(l);
+        const ObjTensor* rt = asTensor(r);
+        if (lt->shape() != rt->shape())
+            throw std::invalid_argument("Tensor comparison requires tensors of same shape");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) < rt->at(i) ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (isTensor(l) && r.isNumber()) {
+        const ObjTensor* lt = asTensor(l);
+        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) < scalar ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (l.isNumber() && isTensor(r)) {
+        const ObjTensor* rt = asTensor(r);
+        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
+        auto result = newTensorObj(rt->shape(), rt->dtype());
+        for (int64_t i = 0; i < rt->numel(); ++i)
+            result->setAt(i, scalar < rt->at(i) ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
     else if (l.isObj() && r.isObj()) {
         if (isString(l) && isString(r)) {
             auto lstr = asStringObj(l);
@@ -2749,6 +2801,114 @@ Value roxal::less(Value l, Value r)
 }
 
 
+Value roxal::greaterEqual(Value l, Value r)
+{
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("greaterEqual",
+                              [](Value a, Value b) { return greaterEqual(a, b); },
+                              l, r);
+    }
+
+    if (l.isNumber() && r.isNumber()) {
+        ValueType resultType(binaryOpType(l,r));
+        switch (resultType) {
+            case ValueType::Int: return Value::boolVal(l.asInt() >= r.asInt());
+            case ValueType::Real: return Value::boolVal(l.asReal() >= r.asReal());
+            case ValueType::Byte: return Value::boolVal(l.asByte() >= r.asByte());
+            default: return Value::falseVal();
+        }
+    }
+    else if (isTensor(l) && isTensor(r)) {
+        const ObjTensor* lt = asTensor(l);
+        const ObjTensor* rt = asTensor(r);
+        if (lt->shape() != rt->shape())
+            throw std::invalid_argument("Tensor comparison requires tensors of same shape");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) >= rt->at(i) ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (isTensor(l) && r.isNumber()) {
+        const ObjTensor* lt = asTensor(l);
+        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) >= scalar ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (l.isNumber() && isTensor(r)) {
+        const ObjTensor* rt = asTensor(r);
+        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
+        auto result = newTensorObj(rt->shape(), rt->dtype());
+        for (int64_t i = 0; i < rt->numel(); ++i)
+            result->setAt(i, scalar >= rt->at(i) ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (l.isObj() && r.isObj()) {
+        if (isString(l) && isString(r)) {
+            auto lstr = asStringObj(l);
+            auto rstr = asStringObj(r);
+            return Value::boolVal(lstr->s.compareCodePointOrder(rstr->s) >= 0);
+        }
+    }
+    throw std::invalid_argument("Invalid arguments to greaterEqual operator - "+l.typeName()+" and "+r.typeName());
+}
+
+
+Value roxal::lessEqual(Value l, Value r)
+{
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("lessEqual",
+                              [](Value a, Value b) { return lessEqual(a, b); },
+                              l, r);
+    }
+
+    if (l.isNumber() && r.isNumber()) {
+        ValueType resultType(binaryOpType(l,r));
+        switch (resultType) {
+            case ValueType::Int: return Value::boolVal(l.asInt() <= r.asInt());
+            case ValueType::Real: return Value::boolVal(l.asReal() <= r.asReal());
+            case ValueType::Byte: return Value::boolVal(l.asByte() <= r.asByte());
+            default: return Value::falseVal();
+        }
+    }
+    else if (isTensor(l) && isTensor(r)) {
+        const ObjTensor* lt = asTensor(l);
+        const ObjTensor* rt = asTensor(r);
+        if (lt->shape() != rt->shape())
+            throw std::invalid_argument("Tensor comparison requires tensors of same shape");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) <= rt->at(i) ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (isTensor(l) && r.isNumber()) {
+        const ObjTensor* lt = asTensor(l);
+        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) <= scalar ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (l.isNumber() && isTensor(r)) {
+        const ObjTensor* rt = asTensor(r);
+        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
+        auto result = newTensorObj(rt->shape(), rt->dtype());
+        for (int64_t i = 0; i < rt->numel(); ++i)
+            result->setAt(i, scalar <= rt->at(i) ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (l.isObj() && r.isObj()) {
+        if (isString(l) && isString(r)) {
+            auto lstr = asStringObj(l);
+            auto rstr = asStringObj(r);
+            return Value::boolVal(lstr->s.compareCodePointOrder(rstr->s) <= 0);
+        }
+    }
+    throw std::invalid_argument("Invalid arguments to lessEqual operator - "+l.typeName()+" and "+r.typeName());
+}
+
+
 Value roxal::equal(Value l, Value r, bool strict)
 {
     if (isSignal(l) || isSignal(r)) {
@@ -2758,6 +2918,18 @@ Value roxal::equal(Value l, Value r, bool strict)
     }
 
     return Value::boolVal(l.equals(r, strict));
+}
+
+
+Value roxal::notEqual(Value l, Value r, bool strict)
+{
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("notEqual",
+                              [strict](Value a, Value b) { return notEqual(a, b, strict); },
+                              l, r);
+    }
+
+    return Value::boolVal(!l.equals(r, strict));
 }
 
 
