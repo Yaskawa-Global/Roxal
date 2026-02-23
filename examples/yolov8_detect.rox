@@ -1,0 +1,230 @@
+# YOLOv8n Object Detection
+# Loads an image, runs YOLOv8n ONNX model, prints detected objects.
+#
+# Model (yolov8n.onnx, ~13MB):
+#   wget https://huggingface.co/SpotLab/YOLOv8Detection/resolve/main/yolov8n.onnx
+#
+# Or export from PyTorch (requires Python + ultralytics):
+#   pip install ultralytics
+#   yolo export model=yolov8n.pt format=onnx
+#
+# Usage:
+#   roxal examples/yolov8_detect.rox <image.jpg> [yolov8n.onnx]
+
+import media
+import ai.nn
+
+# ============================================================
+# COCO 80 class names
+# ============================================================
+
+var CLASSES = [
+  "person", "bicycle", "car", "motorcycle", "airplane",
+  "bus", "train", "truck", "boat", "traffic light",
+  "fire hydrant", "stop sign", "parking meter", "bench", "bird",
+  "cat", "dog", "horse", "sheep", "cow",
+  "elephant", "bear", "zebra", "giraffe", "backpack",
+  "umbrella", "handbag", "tie", "suitcase", "frisbee",
+  "skis", "snowboard", "sports ball", "kite", "baseball bat",
+  "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
+  "wine glass", "cup", "fork", "knife", "spoon",
+  "bowl", "banana", "apple", "sandwich", "orange",
+  "broccoli", "carrot", "hot dog", "pizza", "donut",
+  "cake", "chair", "couch", "potted plant", "bed",
+  "dining table", "toilet", "tv", "laptop", "mouse",
+  "remote", "keyboard", "cell phone", "microwave", "oven",
+  "toaster", "sink", "refrigerator", "book", "clock",
+  "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
+]
+
+var NUM_CLASSES = 80
+var NUM_DETECTIONS = 8400
+var CONF_THRESHOLD = 0.25
+var IOU_THRESHOLD = 0.45
+
+# ============================================================
+# Parse arguments
+# ============================================================
+
+if len(args) < 1:
+  print("Usage: roxal examples/yolov8_detect.rox <image> [model.onnx]")
+  exit(1)
+
+var image_path = args[0]
+var model_path = "yolov8n.onnx"
+if len(args) >= 2:
+  model_path = args[1]
+
+# ============================================================
+# Load image and preprocess
+# ============================================================
+
+print("Loading image: {image_path}")
+var img = media.Image(image_path)
+var orig_w = img.width()
+var orig_h = img.height()
+print("  Original size: {orig_w}x{orig_h}")
+
+img.resize(640, 640)
+var input = img.to_tensor()
+
+# ============================================================
+# Load model and run inference
+# ============================================================
+
+print("Loading model: {model_path}")
+var model = ai.nn.Model(model_path)
+print("  Device: {model.device()}")
+
+print("Running inference...")
+var output = model.predict(input)
+# output shape: [1, 84, 8400]
+# rows 0-3: cx, cy, w, h (in 640x640 pixel coords)
+# rows 4-83: class confidence scores
+
+# ============================================================
+# Post-process: extract detections above threshold
+# ============================================================
+
+var boxes = []     # list of [x1, y1, x2, y2, score, class_id]
+
+var i = 0
+while i < NUM_DETECTIONS:
+  # Find best class score for this detection
+  var best_class = 0
+  var best_score = output[0, 4, i]
+  var c = 1
+  while c < NUM_CLASSES:
+    var score = output[0, 4 + c, i]
+    if score > best_score:
+      best_score = score
+      best_class = c
+    c = c + 1
+
+  if best_score >= CONF_THRESHOLD:
+    # Convert cx, cy, w, h -> x1, y1, x2, y2
+    var cx = output[0, 0, i]
+    var cy = output[0, 1, i]
+    var bw = output[0, 2, i]
+    var bh = output[0, 3, i]
+    var x1 = cx - bw / 2.0
+    var y1 = cy - bh / 2.0
+    var x2 = cx + bw / 2.0
+    var y2 = cy + bh / 2.0
+
+    # Clamp to non-negative
+    if x1 < 0.0:
+      x1 = 0.0
+    if y1 < 0.0:
+      y1 = 0.0
+
+    boxes.append([x1, y1, x2, y2, best_score, best_class])
+
+  i = i + 1
+
+print("Detections above {CONF_THRESHOLD} threshold: {len(boxes)}")
+
+# ============================================================
+# NMS (Non-Maximum Suppression) per class
+# ============================================================
+
+func iou(a, b) -> real:
+  var ix1 = a[0]
+  if b[0] > ix1:
+    ix1 = b[0]
+  var iy1 = a[1]
+  if b[1] > iy1:
+    iy1 = b[1]
+  var ix2 = a[2]
+  if b[2] < ix2:
+    ix2 = b[2]
+  var iy2 = a[3]
+  if b[3] < iy2:
+    iy2 = b[3]
+
+  var iw = ix2 - ix1
+  if iw < 0.0:
+    iw = 0.0
+  var ih = iy2 - iy1
+  if ih < 0.0:
+    ih = 0.0
+  var inter = iw * ih
+
+  var area_a = (a[2] - a[0]) * (a[3] - a[1])
+  var area_b = (b[2] - b[0]) * (b[3] - b[1])
+  var union_area = area_a + area_b - inter
+  if union_area <= 0.0:
+    return 0.0
+  return inter / union_area
+
+# Sort by score descending (simple selection sort)
+var si = 0
+while si < len(boxes) - 1:
+  var max_idx = si
+  var max_score = boxes[si][4]
+  var sj = si + 1
+  while sj < len(boxes):
+    if boxes[sj][4] > max_score:
+      max_score = boxes[sj][4]
+      max_idx = sj
+    sj = sj + 1
+  if max_idx != si:
+    var tmp = boxes[si]
+    boxes[si] = boxes[max_idx]
+    boxes[max_idx] = tmp
+  si = si + 1
+
+# Greedy NMS
+var keep = []
+var ki = 0
+while ki < len(boxes):
+  var suppressed = false
+  var kj = 0
+  while kj < len(keep):
+    if boxes[ki][5] == keep[kj][5]:
+      if iou(boxes[ki], keep[kj]) > IOU_THRESHOLD:
+        suppressed = true
+    kj = kj + 1
+  if not suppressed:
+    keep.append(boxes[ki])
+  ki = ki + 1
+
+# ============================================================
+# Print results (scale boxes back to original image size)
+# ============================================================
+
+# Scale factor: output coords may be normalized [0,1] or in pixels [0,640]
+# Detect by checking if max coord value is > 2.0 (pixel) vs <= 1.0 (normalized)
+var max_coord = 0.0
+var mi = 0
+while mi < len(keep):
+  if keep[mi][2] > max_coord:
+    max_coord = keep[mi][2]
+  if keep[mi][3] > max_coord:
+    max_coord = keep[mi][3]
+  mi = mi + 1
+
+var sx = real(orig_w)
+var sy = real(orig_h)
+if max_coord > 2.0:
+  # Coordinates are in 640-pixel space
+  sx = real(orig_w) / 640.0
+  sy = real(orig_h) / 640.0
+
+print("")
+print("Detected {len(keep)} objects:")
+print("")
+
+var di = 0
+while di < len(keep):
+  var det = keep[di]
+  var name = CLASSES[int(det[5])]
+  var conf = int(det[4] * 100.0)
+  var bx1 = int(det[0] * sx)
+  var by1 = int(det[1] * sy)
+  var bx2 = int(det[2] * sx)
+  var by2 = int(det[3] * sy)
+  print("  {name} ({conf}%) [{bx1}, {by1}, {bx2}, {by2}]")
+  di = di + 1
+
+model.close()

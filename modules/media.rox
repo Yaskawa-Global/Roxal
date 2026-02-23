@@ -74,3 +74,7 @@ type Image object:
   @builtin
   proc to_uint8():
     """Convert float32 (0.0-1.0) to uint8 (0-255). Modifies image in-place."""
+
+  @builtin
+  func to_tensor():
+    """Return float32 tensor [1, C, H, W] in [0.0-1.0] range for neural network input."""

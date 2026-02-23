@@ -376,6 +376,7 @@ void ModuleMedia::registerBuiltins(VM& vm)
     linkMethod("Image", "saturation",      [this](VM&, ArgsView a) { return image_saturation_builtin(a); });
     linkMethod("Image", "to_float",        [this](VM&, ArgsView a) { return image_to_float_builtin(a); });
     linkMethod("Image", "to_uint8",        [this](VM&, ArgsView a) { return image_to_uint8_builtin(a); });
+    linkMethod("Image", "to_tensor",       [this](VM&, ArgsView a) { return image_to_tensor_builtin(a); });
 }
 
 // Helper: replace the receiver's data tensor in-place
@@ -894,5 +895,47 @@ Value ModuleMedia::image_to_uint8_builtin(ArgsView args)
 
     setImageData(args, Value::objVal(std::move(dst)));
     return Value::nilVal();
+}
+
+// ============================================================
+// to_tensor: [H, W, C] -> float32 [1, C, H, W] for NN input
+// ============================================================
+
+Value ModuleMedia::image_to_tensor_builtin(ArgsView args)
+{
+    ObjTensor* src = getImageTensor(args, "to_tensor");
+
+    int h  = static_cast<int>(src->shape()[0]);
+    int w  = static_cast<int>(src->shape()[1]);
+    int ch = static_cast<int>(src->shape()[2]);
+    bool isUint8 = (src->dtype() == TensorDType::UInt8);
+
+    std::vector<int64_t> dstShape = {1, ch, h, w};
+    auto dst = newTensorObj(dstShape, TensorDType::Float32);
+
+    // Fast path: ORT-backed uint8 source
+    const uint8_t* srcTyped = (isUint8 && hasTypedStorage(src))
+        ? static_cast<const uint8_t*>(src->rawData()) : nullptr;
+
+    // HWC → NCHW with /255 normalization for uint8
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            int srcBase = (y * w + x) * ch;
+            for (int c = 0; c < ch; ++c) {
+                double val;
+                if (srcTyped)
+                    val = srcTyped[srcBase + c] / 255.0;
+                else if (isUint8)
+                    val = src->at(srcBase + c) / 255.0;
+                else
+                    val = src->at(srcBase + c);  // already float
+
+                int dstIdx = ((c * h) + y) * w + x;  // NCHW with N=0
+                dst->setAt(dstIdx, val);
+            }
+        }
+    }
+
+    return Value::objVal(std::move(dst));
 }
 
