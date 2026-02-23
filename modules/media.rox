@@ -76,5 +76,10 @@ type Image object:
     """Convert float32 (0.0-1.0) to uint8 (0-255). Modifies image in-place."""
 
   @builtin
-  func to_tensor():
-    """Return float32 tensor [1, C, H, W] in [0.0-1.0] range for neural network input."""
+  proc normalize(mean, std):
+    """Per-channel normalization: (pixel - mean[c]) / std[c]. Image must be float32. Modifies image in-place."""
+
+  @builtin
+  func to_tensor(mean=nil, std=nil):
+    """Return float32 tensor [1, C, H, W] for neural network input.
+       Converts uint8 to float32 (0.0-1.0). Optional mean/std lists apply per-channel ImageNet-style normalization."""

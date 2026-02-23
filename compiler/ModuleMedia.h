@@ -40,6 +40,7 @@ private:
     Value image_saturation_builtin(ArgsView args);
     Value image_to_float_builtin(ArgsView args);
     Value image_to_uint8_builtin(ArgsView args);
+    Value image_normalize_builtin(ArgsView args);
     Value image_to_tensor_builtin(ArgsView args);
 };
 

@@ -376,6 +376,7 @@ void ModuleMedia::registerBuiltins(VM& vm)
     linkMethod("Image", "saturation",      [this](VM&, ArgsView a) { return image_saturation_builtin(a); });
     linkMethod("Image", "to_float",        [this](VM&, ArgsView a) { return image_to_float_builtin(a); });
     linkMethod("Image", "to_uint8",        [this](VM&, ArgsView a) { return image_to_uint8_builtin(a); });
+    linkMethod("Image", "normalize",       [this](VM&, ArgsView a) { return image_normalize_builtin(a); });
     linkMethod("Image", "to_tensor",       [this](VM&, ArgsView a) { return image_to_tensor_builtin(a); });
 }
 
@@ -898,7 +899,60 @@ Value ModuleMedia::image_to_uint8_builtin(ArgsView args)
 }
 
 // ============================================================
+// normalize: per-channel (pixel - mean[c]) / std[c], in-place
+// ============================================================
+
+// Helper: extract a list of exactly `n` doubles from a Value (must be a list)
+static std::vector<double> extractDoubleList(Value v, int n, const char* name)
+{
+    if (!isList(v))
+        throw std::invalid_argument(std::string(name) + " must be a list");
+    ObjList* lst = asList(v);
+    if (lst->length() != n)
+        throw std::invalid_argument(std::string(name) + " must have " +
+                                    std::to_string(n) + " elements, got " +
+                                    std::to_string(lst->length()));
+    std::vector<double> result(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i)
+        result[static_cast<size_t>(i)] = toType(ValueType::Real, lst->elts.at(i), false).asReal();
+    return result;
+}
+
+Value ModuleMedia::image_normalize_builtin(ArgsView args)
+{
+    ObjTensor* src = getImageTensor(args, "normalize");
+    if (src->dtype() != TensorDType::Float32 && src->dtype() != TensorDType::Float64)
+        throw std::invalid_argument("Image.normalize: image must be float (call to_float() first)");
+    if (args.size() < 3)
+        throw std::invalid_argument("Image.normalize expects mean and std arguments");
+
+    int h  = static_cast<int>(src->shape()[0]);
+    int w  = static_cast<int>(src->shape()[1]);
+    int ch = static_cast<int>(src->shape()[2]);
+
+    auto mean = extractDoubleList(args[1], ch, "mean");
+    auto std  = extractDoubleList(args[2], ch, "std");
+
+    auto dst = newTensorObj(src->shape(), src->dtype());
+
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            int base = (y * w + x) * ch;
+            for (int c = 0; c < ch; ++c) {
+                double val = (src->at(base + c) - mean[static_cast<size_t>(c)])
+                           / std[static_cast<size_t>(c)];
+                dst->setAt(base + c, val);
+            }
+        }
+    }
+
+    setImageData(args, Value::objVal(std::move(dst)));
+    return Value::nilVal();
+}
+
+// ============================================================
 // to_tensor: [H, W, C] -> float32 [1, C, H, W] for NN input
+// Optional mean/std for per-channel normalization.
 // ============================================================
 
 Value ModuleMedia::image_to_tensor_builtin(ArgsView args)
@@ -909,6 +963,17 @@ Value ModuleMedia::image_to_tensor_builtin(ArgsView args)
     int w  = static_cast<int>(src->shape()[1]);
     int ch = static_cast<int>(src->shape()[2]);
     bool isUint8 = (src->dtype() == TensorDType::UInt8);
+
+    // Optional mean/std normalization (args[1]=mean, args[2]=std)
+    bool hasNorm = false;
+    std::vector<double> mean, stddev;
+    if (args.size() >= 3 && !args[1].isNil() && !args[2].isNil()) {
+        mean   = extractDoubleList(args[1], ch, "mean");
+        stddev = extractDoubleList(args[2], ch, "std");
+        hasNorm = true;
+    } else if (args.size() >= 2 && !args[1].isNil()) {
+        throw std::invalid_argument("Image.to_tensor: must provide both mean and std, or neither");
+    }
 
     std::vector<int64_t> dstShape = {1, ch, h, w};
     auto dst = newTensorObj(dstShape, TensorDType::Float32);
@@ -929,6 +994,9 @@ Value ModuleMedia::image_to_tensor_builtin(ArgsView args)
                     val = src->at(srcBase + c) / 255.0;
                 else
                     val = src->at(srcBase + c);  // already float
+
+                if (hasNorm)
+                    val = (val - mean[static_cast<size_t>(c)]) / stddev[static_cast<size_t>(c)];
 
                 int dstIdx = ((c * h) + y) * w + x;  // NCHW with N=0
                 dst->setAt(dstIdx, val);
