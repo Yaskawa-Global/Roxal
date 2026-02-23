@@ -6942,6 +6942,8 @@ void VM::defineBuiltinMethods()
 
     defineBuiltinMethod(ValueType::Vector, "norm", std::mem_fn(&VM::vector_norm_builtin));
     defineBuiltinMethod(ValueType::Vector, "sum", std::mem_fn(&VM::vector_sum_builtin));
+    defineBuiltinMethod(ValueType::Vector, "min", std::mem_fn(&VM::vector_min_builtin));
+    defineBuiltinMethod(ValueType::Vector, "max", std::mem_fn(&VM::vector_max_builtin));
     defineBuiltinMethod(ValueType::Vector, "normalized", std::mem_fn(&VM::vector_normalized_builtin));
     defineBuiltinMethod(ValueType::Vector, "dot", std::mem_fn(&VM::vector_dot_builtin));
 
@@ -6953,6 +6955,12 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Matrix, "trace", std::mem_fn(&VM::matrix_trace_builtin));
     defineBuiltinMethod(ValueType::Matrix, "norm", std::mem_fn(&VM::matrix_norm_builtin));
     defineBuiltinMethod(ValueType::Matrix, "sum", std::mem_fn(&VM::matrix_sum_builtin));
+    defineBuiltinMethod(ValueType::Matrix, "min", std::mem_fn(&VM::matrix_min_builtin));
+    defineBuiltinMethod(ValueType::Matrix, "max", std::mem_fn(&VM::matrix_max_builtin));
+
+    defineBuiltinMethod(ValueType::Tensor, "min", std::mem_fn(&VM::tensor_min_builtin));
+    defineBuiltinMethod(ValueType::Tensor, "max", std::mem_fn(&VM::tensor_max_builtin));
+    defineBuiltinMethod(ValueType::Tensor, "sum", std::mem_fn(&VM::tensor_sum_builtin));
 
     defineBuiltinMethod(ValueType::List, "append", std::mem_fn(&VM::list_append_builtin));
     defineBuiltinMethod(ValueType::List, "filter", std::mem_fn(&VM::list_filter_builtin));
@@ -7432,6 +7440,83 @@ Value VM::matrix_sum_builtin(ArgsView args)
 
     ObjMatrix* mat = asMatrix(args[0]);
     double s = mat->mat().sum();
+    return Value::realVal(s);
+}
+
+Value VM::vector_min_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isVector(args[0]))
+        throw std::invalid_argument("vector.min expects no arguments");
+
+    ObjVector* vec = asVector(args[0]);
+    return Value::realVal(vec->vec().minCoeff());
+}
+
+Value VM::vector_max_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isVector(args[0]))
+        throw std::invalid_argument("vector.max expects no arguments");
+
+    ObjVector* vec = asVector(args[0]);
+    return Value::realVal(vec->vec().maxCoeff());
+}
+
+Value VM::matrix_min_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isMatrix(args[0]))
+        throw std::invalid_argument("matrix.min expects no arguments");
+
+    ObjMatrix* mat = asMatrix(args[0]);
+    return Value::realVal(mat->mat().minCoeff());
+}
+
+Value VM::matrix_max_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isMatrix(args[0]))
+        throw std::invalid_argument("matrix.max expects no arguments");
+
+    ObjMatrix* mat = asMatrix(args[0]);
+    return Value::realVal(mat->mat().maxCoeff());
+}
+
+Value VM::tensor_min_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.min expects no arguments");
+
+    ObjTensor* t = asTensor(args[0]);
+    int64_t n = t->numel();
+    if (n == 0) throw std::invalid_argument("tensor.min on empty tensor");
+    double minVal = t->at(0);
+    for (int64_t i = 1; i < n; ++i)
+        minVal = std::min(minVal, t->at(i));
+    return Value::realVal(minVal);
+}
+
+Value VM::tensor_max_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.max expects no arguments");
+
+    ObjTensor* t = asTensor(args[0]);
+    int64_t n = t->numel();
+    if (n == 0) throw std::invalid_argument("tensor.max on empty tensor");
+    double maxVal = t->at(0);
+    for (int64_t i = 1; i < n; ++i)
+        maxVal = std::max(maxVal, t->at(i));
+    return Value::realVal(maxVal);
+}
+
+Value VM::tensor_sum_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.sum expects no arguments");
+
+    ObjTensor* t = asTensor(args[0]);
+    int64_t n = t->numel();
+    double s = 0.0;
+    for (int64_t i = 0; i < n; ++i)
+        s += t->at(i);
     return Value::realVal(s);
 }
 

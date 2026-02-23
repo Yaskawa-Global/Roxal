@@ -25,6 +25,9 @@ public:
     Value math_relu_builtin(ArgsView args);
     Value math_softmax_builtin(ArgsView args);
     Value math_argmax_builtin(ArgsView args);
+    Value math_min_builtin(ArgsView args);
+    Value math_max_builtin(ArgsView args);
+    Value math_sum_builtin(ArgsView args);
 
 
     // Example for implementing a builtin type (math.Counter) that wraps a C++ class

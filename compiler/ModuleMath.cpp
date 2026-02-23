@@ -108,6 +108,9 @@ void ModuleMath::registerBuiltins(VM& vm)
     link("relu", [this](VM&, ArgsView a){ return math_relu_builtin(a); });
     link("softmax", [this](VM&, ArgsView a){ return math_softmax_builtin(a); });
     link("argmax", [this](VM&, ArgsView a){ return math_argmax_builtin(a); });
+    link("min", [this](VM&, ArgsView a){ return math_min_builtin(a); });
+    link("max", [this](VM&, ArgsView a){ return math_max_builtin(a); });
+    link("sum", [this](VM&, ArgsView a){ return math_sum_builtin(a); });
 
     // Link builtin Counter methods
     linkMethod("_Counter", "init", [this](VM&, ArgsView a){ return counter_init_builtin(a); });
@@ -375,5 +378,114 @@ Value ModuleMath::math_argmax_builtin(ArgsView args)
     }
     else {
         throw std::invalid_argument("math.argmax expects vector or 1D tensor");
+    }
+}
+
+Value ModuleMath::math_min_builtin(ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("math.min expects one argument");
+
+    const Value& x = args[0];
+
+    if (isVector(x)) {
+        ObjVector* v = asVector(x);
+        return Value::realVal(v->vec().minCoeff());
+    }
+    else if (isMatrix(x)) {
+        ObjMatrix* m = asMatrix(x);
+        return Value::realVal(m->mat().minCoeff());
+    }
+    else if (isTensor(x)) {
+        ObjTensor* t = asTensor(x);
+        int64_t n = t->numel();
+        if (n == 0) throw std::invalid_argument("math.min on empty tensor");
+        double minVal = t->at(0);
+        for (int64_t i = 1; i < n; ++i)
+            minVal = std::min(minVal, t->at(i));
+        return Value::realVal(minVal);
+    }
+    else if (isList(x)) {
+        auto elts = asList(x)->elts.get();
+        if (elts.empty()) throw std::invalid_argument("math.min on empty list");
+        double minVal = toType(ValueType::Real, elts[0], false).asReal();
+        for (size_t i = 1; i < elts.size(); ++i)
+            minVal = std::min(minVal, toType(ValueType::Real, elts[i], false).asReal());
+        return Value::realVal(minVal);
+    }
+    else {
+        throw std::invalid_argument("math.min expects vector, matrix, tensor, or list");
+    }
+}
+
+Value ModuleMath::math_max_builtin(ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("math.max expects one argument");
+
+    const Value& x = args[0];
+
+    if (isVector(x)) {
+        ObjVector* v = asVector(x);
+        return Value::realVal(v->vec().maxCoeff());
+    }
+    else if (isMatrix(x)) {
+        ObjMatrix* m = asMatrix(x);
+        return Value::realVal(m->mat().maxCoeff());
+    }
+    else if (isTensor(x)) {
+        ObjTensor* t = asTensor(x);
+        int64_t n = t->numel();
+        if (n == 0) throw std::invalid_argument("math.max on empty tensor");
+        double maxVal = t->at(0);
+        for (int64_t i = 1; i < n; ++i)
+            maxVal = std::max(maxVal, t->at(i));
+        return Value::realVal(maxVal);
+    }
+    else if (isList(x)) {
+        auto elts = asList(x)->elts.get();
+        if (elts.empty()) throw std::invalid_argument("math.max on empty list");
+        double maxVal = toType(ValueType::Real, elts[0], false).asReal();
+        for (size_t i = 1; i < elts.size(); ++i)
+            maxVal = std::max(maxVal, toType(ValueType::Real, elts[i], false).asReal());
+        return Value::realVal(maxVal);
+    }
+    else {
+        throw std::invalid_argument("math.max expects vector, matrix, tensor, or list");
+    }
+}
+
+Value ModuleMath::math_sum_builtin(ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("math.sum expects one argument");
+
+    const Value& x = args[0];
+
+    if (isVector(x)) {
+        ObjVector* v = asVector(x);
+        return Value::realVal(v->vec().sum());
+    }
+    else if (isMatrix(x)) {
+        ObjMatrix* m = asMatrix(x);
+        return Value::realVal(m->mat().sum());
+    }
+    else if (isTensor(x)) {
+        ObjTensor* t = asTensor(x);
+        int64_t n = t->numel();
+        double s = 0.0;
+        for (int64_t i = 0; i < n; ++i)
+            s += t->at(i);
+        return Value::realVal(s);
+    }
+    else if (isList(x)) {
+        auto elts = asList(x)->elts.get();
+        double s = 0.0;
+        for (size_t i = 0; i < elts.size(); ++i)
+            s += toType(ValueType::Real, elts[i], false).asReal();
+        return Value::realVal(s);
+    }
+    else {
+        throw std::invalid_argument("math.sum expects vector, matrix, tensor, or list");
     }
 }

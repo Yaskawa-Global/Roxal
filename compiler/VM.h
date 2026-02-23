@@ -489,6 +489,8 @@ public:
 
     Value vector_norm_builtin(ArgsView args);
     Value vector_sum_builtin(ArgsView args);
+    Value vector_min_builtin(ArgsView args);
+    Value vector_max_builtin(ArgsView args);
     Value vector_normalized_builtin(ArgsView args);
     Value vector_dot_builtin(ArgsView args);
     Value matrix_rows_builtin(ArgsView args);
@@ -499,6 +501,11 @@ public:
     Value matrix_trace_builtin(ArgsView args);
     Value matrix_norm_builtin(ArgsView args);
     Value matrix_sum_builtin(ArgsView args);
+    Value matrix_min_builtin(ArgsView args);
+    Value matrix_max_builtin(ArgsView args);
+    Value tensor_min_builtin(ArgsView args);
+    Value tensor_max_builtin(ArgsView args);
+    Value tensor_sum_builtin(ArgsView args);
 
     Value list_append_builtin(ArgsView args);
     Value list_filter_builtin(ArgsView args);

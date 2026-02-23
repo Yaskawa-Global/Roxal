@@ -206,6 +206,18 @@ func softmax(x):
 func argmax(x):
   """index of maximum element (works on vector or 1D tensor)"""
 
+@builtin
+func min(x) -> real:
+  """minimum element value (works on vector, matrix, tensor, or list)"""
+
+@builtin
+func max(x) -> real:
+  """maximum element value (works on vector, matrix, tensor, or list)"""
+
+@builtin
+func sum(x) -> real:
+  """sum of all elements (works on vector, matrix, tensor, or list)"""
+
 
 // Example only: source signal updated from native code
 var _vecSignal :signal = signal(freq=20, initial=[0.0 0.0 0.0])
