@@ -1118,6 +1118,10 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
             if (passed) passes++; else fails++;
         };
 
+        // Clear synchronous-execution guard so runFor() works from within
+        // this test builtin (no FC/RoxalLoop running during tests).
+        vm.setSynchronousExecution(false);
+
         auto& engine = *df::DataflowEngine::instance();
         engine.clear();
 
@@ -1731,6 +1735,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
         }
 
         engine.clear();
+        vm.setSynchronousExecution(true); // restore guard
         std::cout << "RT Execution tests: Passed " << passes << " failed " << fails << std::endl;
     }
 

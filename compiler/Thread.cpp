@@ -3,6 +3,10 @@
 #include "Object.h"
 #include <algorithm>
 #include <iostream>
+#ifdef __linux__
+#include <pthread.h>
+#include <sched.h>
+#endif
 
 using namespace roxal;
 
@@ -102,6 +106,28 @@ void Thread::spawn(Value closure)
 
     state = State::Spawned;
     osthread = make_ptr<std::thread>([this,closure]() {
+        // When running in an RT context, ensure actor threads don't run on the
+        // RT core and use normal (non-RT) scheduling policy.
+        #ifdef __linux__
+        {
+            int excludeCore = VM::instance().rtCoreExclusion();
+            if (excludeCore >= 0) {
+                cpu_set_t cpuset;
+                CPU_ZERO(&cpuset);
+                unsigned int numCpus = std::thread::hardware_concurrency();
+                for (unsigned int i = 0; i < numCpus; ++i) {
+                    if (static_cast<int>(i) != excludeCore)
+                        CPU_SET(i, &cpuset);
+                }
+                pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+
+                struct sched_param param {};
+                param.sched_priority = 0;
+                pthread_setschedparam(pthread_self(), SCHED_OTHER, &param);
+            }
+        }
+        #endif
+
         try {
             auto& vm { VM::instance() };
 

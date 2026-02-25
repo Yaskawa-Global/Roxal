@@ -6,6 +6,7 @@
 #include <map>
 #include <deque>
 #include <mutex>
+#include <condition_variable>
 #include <array>
 #include <filesystem>
 
@@ -178,6 +179,48 @@ public:
     /// Get the earliest time the blocked thread could make progress.
     /// Returns TimePoint::max() if not blocked or if blocked on future.
     TimePoint blockedUntil() const;
+
+    // --- RT REPL integration ---
+    // Use setupLine() on a non-RT thread to compile REPL input, then
+    // runFor() on an RT thread to execute incrementally with a time budget.
+    // setupLine() + runFor() can be used interchangeably with setup() + runFor().
+
+    enum class RTState : int { Idle, Ready, Executing, Yielded };
+
+    /// Compile a REPL line/script and enqueue the closure for execution via runFor().
+    /// Blocks if previous work is still executing (waits for Idle state).
+    /// Uses persistent REPL state (replThread, replModuleValue, compiler).
+    ExecutionStatus setupLine(std::istream& linestream,
+                              bool replMode = true,
+                              const std::string& sourceNameOverride = "");
+
+    /// Current RT coordination state (for diagnostics/coordination).
+    RTState rtState() const { return rtState_.load(std::memory_order_acquire); }
+
+    /// Block until rtState_ becomes Idle (RT thread finished executing).
+    void waitForRTCompletion();
+
+    /// Set the RT core index that actor threads should avoid.
+    /// Set to -1 (default) to disable actor thread affinity restrictions.
+    /// When set (e.g. to 3), spawned actor threads will be pinned to all cores
+    /// except this one and will use SCHED_OTHER (non-RT) scheduling.
+    void setRTCoreExclusion(int coreIndex) { rtCoreExclusion_ = coreIndex; }
+    int rtCoreExclusion() const { return rtCoreExclusion_; }
+
+    /// Control the synchronous-execution guard that prevents runFor() from
+    /// entering execute() while run()/runLine() owns the VM. Tests that call
+    /// runFor() from within a native builtin can temporarily clear this.
+    void setSynchronousExecution(bool sync) { inSynchronousExecution_.store(sync, std::memory_order_release); }
+
+    /// Enable timing instrumentation for native (C++) function calls.
+    /// When enabled, calls that exceed the remaining RT budget are logged
+    /// with the function name to help identify blocking builtins.
+    void setNativeCallTimingEnabled(bool enabled) { nativeCallTimingEnabled_ = enabled; }
+
+    /// After runFor() returns, check if a native call exceeded the RT budget.
+    /// Returns the function name and elapsed time, or empty string if no overrun.
+    /// Clears the stored overrun on read. Call from the same thread as runFor().
+    static std::string consumeNativeCallOverrun();
 
     // =========================================================================
     // Internal call mechanics (used by the above APIs)
@@ -386,6 +429,28 @@ protected:
 
     Value conditionalInterruptClosure {}; // ObjClosure
     Value replModuleValue { Value::nilVal() }; // ObjModuleType
+
+    // RT REPL synchronization
+    std::atomic<RTState> rtState_ { RTState::Idle };
+    std::mutex rtMutex_;
+    std::condition_variable rtCondVar_;
+    Value pendingRTClosure_ { Value::nilVal() }; // protected by rtMutex_
+    int rtCoreExclusion_ { -1 }; // -1 = disabled (desktop), >=0 = exclude this core for actor threads
+
+    // Guard: prevents runFor() from entering execute() while run()/runLine() is executing
+    // synchronously. Handles the case where ax.init() (inside a synchronous --setup script)
+    // starts the WC RoxalLoop whose callback calls runFor().
+    std::atomic<bool> inSynchronousExecution_ { false };
+
+    // Native call timing instrumentation.
+    // When enabled, callNativeFn() times each C++ native call and warns if it
+    // exceeds the remaining RT budget. Identifies blocking builtins by name.
+    // The deadline and call context are thread_local since execute() runs on
+    // multiple threads (RT main thread + non-RT actor threads).
+    bool nativeCallTimingEnabled_ { false };
+    static thread_local TimePoint nativeCallDeadline_;
+    static thread_local UnicodeString nativeCallContext_;
+    static thread_local std::string nativeCallOverrun_; // set by callNativeFn() on overrun
 
 
 
