@@ -60,6 +60,18 @@
 
 using namespace roxal;
 
+// Static thread_local definitions for native call timing instrumentation
+thread_local TimePoint VM::nativeCallDeadline_ { TimePoint::max() };
+thread_local UnicodeString VM::nativeCallContext_;
+thread_local std::string VM::nativeCallOverrun_;
+
+std::string VM::consumeNativeCallOverrun()
+{
+    std::string result;
+    result.swap(nativeCallOverrun_);
+    return result;
+}
+
 namespace {
 
 // Staging slots for CLI-provided limits. These are written before the VM
@@ -558,7 +570,21 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
             }
 
             ArgsView view{buf, actual};
-            Value result { fn(*this, view) };
+            Value result;
+            if (nativeCallTimingEnabled_ && nativeCallDeadline_ != TimePoint::max()) {
+                auto before = TimePoint::currentTime();
+                result = fn(*this, view);
+                auto elapsed = TimePoint::currentTime() - before;
+                auto remaining = nativeCallDeadline_ - before;
+                if (elapsed > remaining) {
+                    auto name = toUTF8StdString(nativeCallContext_);
+                    nativeCallOverrun_ = "'" + name + "' took "
+                        + std::to_string((long)elapsed.microSecs()) + "us (budget "
+                        + std::to_string((long)remaining.microSecs()) + "us)";
+                }
+            } else {
+                result = fn(*this, view);
+            }
             bool unwound = false;
             if (thread) {
                 auto stackDepthAfter = static_cast<size_t>(thread->stackTop - thread->stack.begin());
@@ -591,7 +617,21 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
             }
 
             ArgsView view{base, actual};
-            Value result { fn(*this, view) };
+            Value result;
+            if (nativeCallTimingEnabled_ && nativeCallDeadline_ != TimePoint::max()) {
+                auto before = TimePoint::currentTime();
+                result = fn(*this, view);
+                auto elapsed = TimePoint::currentTime() - before;
+                auto remaining = nativeCallDeadline_ - before;
+                if (elapsed > remaining) {
+                    auto name = toUTF8StdString(nativeCallContext_);
+                    nativeCallOverrun_ = "'" + name + "' took "
+                        + std::to_string((long)elapsed.microSecs()) + "us (budget "
+                        + std::to_string((long)remaining.microSecs()) + "us)";
+                }
+            } else {
+                result = fn(*this, view);
+            }
             bool unwound = false;
             if (thread) {
                 auto stackDepthAfter = static_cast<size_t>(thread->stackTop - thread->stack.begin());
@@ -1049,7 +1089,9 @@ ExecutionStatus VM::run(std::istream& source, const std::string& name)
     }
 
     // Execute directly on the host thread
+    inSynchronousExecution_.store(true, std::memory_order_release);
     auto [result, value] = execute();
+    inSynchronousExecution_.store(false, std::memory_order_release);
 
     // Join any other threads spawned during execution (actors, etc.)
     ExecutionStatus joinResult = joinAllThreads();
@@ -1139,8 +1181,75 @@ ExecutionStatus VM::setup(std::istream& source, const std::string& name)
 
 std::pair<ExecutionStatus, Value> VM::runFor(TimeDuration duration)
 {
+    // Guard: if run()/runLine() is executing synchronously (e.g. --setup script),
+    // don't enter execute() — the synchronous path already owns the VM.
+    if (inSynchronousExecution_.load(std::memory_order_acquire))
+        return { ExecutionStatus::OK, Value::nilVal() };
+
+    // Check for pending closure from setupLine()
+    auto state = rtState_.load(std::memory_order_acquire);
+
+    if (state == RTState::Ready) {
+        // Pick up the compiled closure
+        Value closure;
+        {
+            std::lock_guard<std::mutex> lk(rtMutex_);
+            closure = pendingRTClosure_;
+            pendingRTClosure_ = Value::nilVal();
+        }
+
+        // Use persistent REPL thread
+        if (!replThread)
+            replThread = make_ptr<Thread>();
+        thread = replThread;
+
+        auto& rtMgr = RTCallbackManager::instance();
+        if (!rtMgr.isMainThreadSet())
+            rtMgr.setMainThread();
+
+        resetStack();
+        push(closure);
+        if (!call(asClosure(closure), CallSpec(0))) {
+            rtState_.store(RTState::Idle, std::memory_order_release);
+            rtCondVar_.notify_one();
+            return { ExecutionStatus::RuntimeError, Value::nilVal() };
+        }
+        rtState_.store(RTState::Executing, std::memory_order_release);
+
+    } else if (state == RTState::Executing || state == RTState::Yielded) {
+        // Resume previous work
+        thread = replThread;
+
+    } else {
+        // Idle — fall through to check setup() path
+    }
+
+    // If no setupLine work, check for setup() path (existing behavior)
+    if (state == RTState::Idle) {
+        if (!hasMoreWork())
+            return { ExecutionStatus::OK, Value::nilVal() };
+        // thread is already set by setup()
+    }
+
+    // Execute with time budget
     auto deadline = TimePoint::currentTime() + duration;
-    return execute(deadline);
+    auto [status, value] = execute(deadline);
+
+    // Only manage RT state if we're in the setupLine path
+    if (state != RTState::Idle) {
+        if (status == ExecutionStatus::Yielded) {
+            rtState_.store(RTState::Yielded, std::memory_order_release);
+        } else {
+            // Completed or error — transition to Idle and wake setupLine()
+            rtState_.store(RTState::Idle, std::memory_order_release);
+            rtCondVar_.notify_one();
+        }
+    }
+
+    if (runtimeErrorFlag.load())
+        return { ExecutionStatus::RuntimeError, Value::nilVal() };
+
+    return { status, value };
 }
 
 bool VM::hasMoreWork() const
@@ -1213,7 +1322,10 @@ ExecutionStatus VM::runLine(std::istream& linestream,
 
     resetStack();
 
+    inSynchronousExecution_.store(true, std::memory_order_release);
     auto resultPair = invokeClosure(asClosure(closure), {});
+    inSynchronousExecution_.store(false, std::memory_order_release);
+
     ExecutionStatus result = resultPair.first;
     if (runtimeErrorFlag.load())
         result = ExecutionStatus::RuntimeError;
@@ -1229,6 +1341,61 @@ ExecutionStatus VM::runLine(std::istream& linestream,
     thread.reset();
 
     return result;
+}
+
+ExecutionStatus VM::setupLine(std::istream& linestream,
+                              bool replMode,
+                              const std::string& sourceNameOverride)
+{
+    // Persistent compiler (same pattern as runLine)
+    static RoxalCompiler compiler {};
+    compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
+    compiler.setCacheReadEnabled(cacheReadsEnabled());
+    compiler.setCacheWriteEnabled(cacheWritesEnabled());
+    compiler.setModulePaths(modulePaths);
+    compiler.setReplMode(replMode);
+    compiler.setModuleResolverVM(this);
+
+    Value function { Value::nilVal() };
+    runtimeErrorFlag = false;
+
+    try {
+        function = compiler.compile(linestream, "cli", replModuleValue, sourceNameOverride);
+    } catch (std::exception& e) {
+        return ExecutionStatus::CompileError;
+    }
+
+    if (function.isNil())
+        return ExecutionStatus::CompileError;
+
+    if (replModuleValue.isNil())
+        replModuleValue = asFunction(function)->moduleType.strongRef();
+
+    compiler.setReplMode(false);
+
+    Value closure = Value::closureVal(function);
+
+    // Hand off to RT thread
+    {
+        std::unique_lock<std::mutex> lk(rtMutex_);
+        // Wait for previous work to finish
+        rtCondVar_.wait(lk, [this]{
+            return rtState_.load(std::memory_order_acquire) == RTState::Idle;
+        });
+        pendingRTClosure_ = closure;
+        rtState_.store(RTState::Ready, std::memory_order_release);
+    }
+    rtCondVar_.notify_one();
+
+    return ExecutionStatus::OK;
+}
+
+void VM::waitForRTCompletion()
+{
+    std::unique_lock<std::mutex> lk(rtMutex_);
+    rtCondVar_.wait(lk, [this]{
+        return rtState_.load(std::memory_order_acquire) == RTState::Idle;
+    });
 }
 
 ObjModuleType* VM::replModuleType() const
@@ -2327,6 +2494,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     const auto& info = *function->builtinInfo;
                     ptr<type::Type> funcType = function->funcType.has_value()
                         ? function->funcType.value() : nullptr;
+                    if (nativeCallTimingEnabled_)
+                        nativeCallContext_ = function->name;
                     return callNativeFn(info.function, funcType,
                                         info.defaultValues, callSpec,
                                         false, Value::nilVal(), closure->function,
@@ -2353,6 +2522,8 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             case ObjType::Native: {
                 ObjNative* nativeObj = asNative(callee);
                 NativeFn native = nativeObj->function;
+                if (nativeCallTimingEnabled_)
+                    nativeCallContext_ = UnicodeString("native");
                 return callNativeFn(native, nativeObj->funcType,
                                     nativeObj->defaultValues, callSpec,
                                     false, Value::nilVal(), Value::nilVal(),
@@ -2368,6 +2539,13 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     ObjFunction* declFunc = asFunction(bound->declFunction);
                     if (declFunc->builtinInfo)
                         resolveMask = declFunc->builtinInfo->resolveArgMask;
+                }
+
+                if (nativeCallTimingEnabled_) {
+                    if (isFunction(bound->declFunction))
+                        nativeCallContext_ = asFunction(bound->declFunction)->name;
+                    else
+                        nativeCallContext_ = UnicodeString("bound-native");
                 }
 
                 if (!isActorInstance(bound->receiver)) {
@@ -2446,6 +2624,8 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
         const auto& info = *function->builtinInfo;
         ptr<type::Type> funcType = function->funcType.has_value()
             ? function->funcType.value() : nullptr;
+        if (nativeCallTimingEnabled_)
+            nativeCallContext_ = function->name;
         if (!callNativeFn(info.function, funcType, info.defaultValues, spec,
                           false, Value::nilVal(), closure->function))
             return { ExecutionStatus::RuntimeError, Value::nilVal() };
@@ -2547,6 +2727,8 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
             if (it != mit->second.end()) {
                 const BuiltinMethodInfo& methodInfo = it->second;
                 NativeFn fn = methodInfo.function;
+                if (nativeCallTimingEnabled_)
+                    nativeCallContext_ = name->s;
 
                 if (std::this_thread::get_id() == instance->thread_id) {
                     // Same thread - call directly
@@ -2586,6 +2768,8 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                 if (it != mit->second.end()) {
                     const BuiltinMethodInfo& methodInfo = it->second;
                     NativeFn fn = methodInfo.function;
+                    if (nativeCallTimingEnabled_)
+                        nativeCallContext_ = name->s;
                     if (methodInfo.funcType) {
                         return callNativeFn(fn, methodInfo.funcType,
                                             methodInfo.defaultValues, callSpec,
@@ -3456,6 +3640,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
     // Deadline-based yielding support
     const bool hasDeadline = (deadline != TimePoint::max());
     auto yieldReturn = std::make_pair(ExecutionStatus::Yielded, Value::nilVal());
+    nativeCallDeadline_ = deadline; // expose to callNativeFn() for timing
 
     // Reference to RT callback manager for instruction loop callback checks
     auto& rtMgr = RTCallbackManager::instance();

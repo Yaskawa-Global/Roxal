@@ -520,6 +520,10 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
     visitStrongValue(visitor, vm.conditionalInterruptClosure);
     visitStrongValue(visitor, vm.initString);
 
+    // RT REPL pending closure (in-flight between setupLine and runFor)
+    if (vm.pendingRTClosure_.isObj())
+        visitStrongValue(visitor, vm.pendingRTClosure_);
+
     for (const auto& typeEntry : vm.builtinMethods) {
         for (const auto& methodEntry : typeEntry.second) {
             methodEntry.second.trace(visitor);
