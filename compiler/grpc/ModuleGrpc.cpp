@@ -331,25 +331,28 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                     ObjObjectType* responseType = asObjectType(responseTypeVal);
                     size_t expectedArgs = fieldHashes.size() + 2;
 
-                    if (args.size() < 2 || args.size() > expectedArgs || !isActorInstance(args[0]))
+                    if (args.size() < 1 || args.size() > expectedArgs || !isActorInstance(args[0]))
                         throw std::invalid_argument(method.name + " expects receiver plus parameters");
                     ActorInstance* self = asActorInstance(args[0]);
-                    Value requestArg = args[1];
+                    Value requestArg = (args.size() >= 2) ? args[1] : Value::nilVal();
                     Value requestValue;
-                    if (!requestArg.isNil()) {
-                        if (!isObjectInstance(requestArg))
-                            throw std::invalid_argument(method.name + " expects request object instance");
-                        ObjectInstance* inst = asObjectInstance(requestArg);
-                        if (!inst->instanceType.is(requestTypeVal))
-                            throw std::invalid_argument(method.name + " expects request of type " +
-                                                        toUTF8StdString(asObjectType(requestTypeVal)->name));
+
+                    // Check if args[1] is a full request object of the expected type
+                    bool isRequestObj = !requestArg.isNil() && isObjectInstance(requestArg)
+                                        && asObjectInstance(requestArg)->instanceType.is(requestTypeVal);
+
+                    if (isRequestObj) {
                         requestValue = requestArg;
                     } else {
+                        // Build request from field arguments.
+                        // If args[1] is nil (defaulted/skipped), field args start at position 2.
+                        // Otherwise args[1] is the first field value (positional field args).
                         requestValue = Value::objectInstanceVal(requestTypeVal);
                         ObjectInstance* inst = asObjectInstance(requestValue);
-                        size_t providedFields = args.size() - 2;
+                        size_t fieldStart = requestArg.isNil() ? 2 : 1;
+                        size_t providedFields = (args.size() > fieldStart) ? args.size() - fieldStart : 0;
                         for (size_t i = 0; i < fieldHashes.size(); ++i) {
-                            Value argVal = (i < providedFields) ? args[2 + i] : Value::nilVal();
+                            Value argVal = (i < providedFields) ? args[fieldStart + i] : Value::nilVal();
                             if (argVal.isNil())
                                 continue;
                             auto propIt = requestType->properties.find(fieldHashes[i]);
