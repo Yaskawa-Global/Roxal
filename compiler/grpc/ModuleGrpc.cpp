@@ -343,6 +343,9 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
 
                     if (isRequestObj) {
                         requestValue = requestArg;
+                    } else if (fieldHashes.empty()) {
+                        // Empty request type — auto-construct with no fields needed
+                        requestValue = Value::objectInstanceVal(requestTypeVal);
                     } else {
                         // Build request from field arguments.
                         // If args[1] is nil (defaulted/skipped), field args start at position 2.

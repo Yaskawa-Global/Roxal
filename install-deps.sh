@@ -33,7 +33,11 @@ cmake --install /tmp/antlr4-build/build
 rm -rf /tmp/antlr4-build
 
 # Optional features:
-#   gRPC/protobuf: apt-get install -y protobuf-compiler libprotobuf-dev libprotoc-dev libgrpc++-dev
+#   media (PNG/JPEG): apt-get install -y libpng-dev libjpeg-dev
+#   gRPC/protobuf (C++ runtime):
+#     apt-get install -y protobuf-compiler libprotobuf-dev libprotoc-dev libgrpc++-dev
+#   gRPC/protobuf (Python, needed by runtests.py test server):
+#     python3 -m pip install --user --break-system-packages grpcio grpcio-tools
 #   CycloneDDS:    build from source (see packaging/Dockerfile for reference)
 #
 # ONNX Runtime (for ai.nn ML inference module):
