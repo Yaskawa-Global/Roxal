@@ -1,10 +1,21 @@
-# Roxal
 
-Robot Programming Language
+# Roxal - A Programming Language for AI & Robotics
 
-Bytecode compiler & Virtual Machine
+(Compiler, Bytecode Virtual Machine & Runtime)
 
-(Robot Standard Library not included; relocated repo)
+Features:
+  - Easy to learn syntax (similarities with Python)
+  - Static & Dynamic typing
+  - Builtin types aimed at AI and Robotics - vector/matrix/tensor
+  - Signals & Dataflow engine (signal & event types)
+  - Object-Oriented (object types, inheretance, interfaces)
+  - First class functions (closures)
+  - Builtin library support for DDS (ROS interop) & gRPC (no codegen required)
+  - Builtin library support for AI model inference (via ONNX Runtime)
+  - VM integratable into Real-time control loops
 
-See: roxal-for-devs.md
+See [Roxal-for-devs](roxal-for-devs.md) for an overview.
 
+Note: This is the core language and libraries without any actual proprietaty interface for robot control.
+
+In development.
