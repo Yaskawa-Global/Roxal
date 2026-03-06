@@ -18,4 +18,4 @@ See [Roxal-for-devs](roxal-for-devs.md) for an overview.
 
 Note: This is the core language and libraries without any actual proprietaty interface for robot control.
 
-In development.
+__IN DEVELOPMENT - BETA__
