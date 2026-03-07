@@ -813,9 +813,28 @@ std::string roxal::objRangeToString(const ObjRange* r)
     return oss.str();
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjRange::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjRange::clone(roxal::ptr<CloneContext> ctx) const
 {
-    return newRangeObj(start.clone(), stop.clone(), step.clone(), closed);
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
+    auto newr = newRangeObj();
+
+    if (ctx) {
+        ctx->originalToClone[this] = newr.get();
+    }
+
+    newr->start = start.clone(ctx);
+    newr->stop = stop.clone(ctx);
+    newr->step = step.clone(ctx);
+    newr->closed = closed;
+
+    return newr;
 }
 
 
@@ -1018,12 +1037,30 @@ unique_ptr<ObjList, UnreleasedObj> roxal::newListObj(const std::vector<Value>& e
     return l;
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjList::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjList::clone(roxal::ptr<CloneContext> ctx) const
 {
+    // Check if already cloned (preserves shared references and handles cycles)
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
+    // Create new clone
     auto newl = newListObj();
+
+    // Register BEFORE recursing (critical for cycle handling)
+    if (ctx) {
+        ctx->originalToClone[this] = newl.get();
+    }
+
+    // Clone children with context
     auto lsize = elts.size();
-    for(auto i=0; i<lsize; i++)
-        newl->elts.push_back(elts.at(i).clone());
+    for (auto i = 0; i < lsize; i++)
+        newl->elts.push_back(elts.at(i).clone(ctx));
+
     return newl;
 }
 
@@ -1154,12 +1191,30 @@ unique_ptr<ObjDict, UnreleasedObj> roxal::newDictObj(const std::vector<std::pair
     return d;
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjDict::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjDict::clone(roxal::ptr<CloneContext> ctx) const
 {
+    // Check if already cloned (preserves shared references and handles cycles)
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
+    // Create new clone
     auto newd = newDictObj();
+
+    // Register BEFORE recursing (critical for cycle handling)
+    if (ctx) {
+        ctx->originalToClone[this] = newd.get();
+    }
+
+    // Clone children with context
     const auto dkeys = keys();
-    for(const auto& dkey : dkeys)
-        newd->store(dkey.clone(), at(dkey).clone());
+    for (const auto& dkey : dkeys)
+        newd->store(dkey.clone(ctx), at(dkey).clone(ctx));
+
     return newd;
 }
 
@@ -1275,8 +1330,9 @@ unique_ptr<ObjVector, UnreleasedObj> roxal::newVectorObj(const Eigen::VectorXd& 
     return v;
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjVector::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjVector::clone(roxal::ptr<CloneContext> ctx) const
 {
+    (void)ctx; // vector has value semantics, no object references to track
     auto newv = newVectorObj(0);  // create minimal vector
     newv->vec_ = vec_;  // COW: share the data ptr
     return newv;
@@ -1396,8 +1452,9 @@ static ObjMatrix* valueToMatrix(const Value& v)
     return asMatrix(conv);
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjMatrix::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjMatrix::clone(roxal::ptr<CloneContext> ctx) const
 {
+    (void)ctx; // matrix has value semantics, no object references to track
     auto newm = newMatrixObj(0, 0);  // create minimal matrix
     newm->mat_ = mat_;  // COW: share the data ptr
     return newm;
@@ -1408,8 +1465,9 @@ void ObjMatrix::set(const ObjMatrix* other)
     mat_ = other->mat_;  // COW: share the data ptr
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjPrimitive::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjPrimitive::clone(roxal::ptr<CloneContext> ctx) const
 {
+    (void)ctx; // primitives are value types, no object references to track
     if (type == ObjType::Bool)
         return newBoolObj(as.boolean);
     else if (type == ObjType::Int)
@@ -1485,7 +1543,8 @@ void ObjPrimitive::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
 // Default serialization stubs for unsupported object types
 // Signals are shared state - cloning returns the same signal (like interned strings)
-unique_ptr<Obj, UnreleasedObj> ObjSignal::clone() const {
+unique_ptr<Obj, UnreleasedObj> ObjSignal::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // signals are shared, not cloned
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjSignal*>(this));
 }
 void ObjSignal::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -1523,8 +1582,8 @@ ObjEventType::ObjEventType(const icu::UnicodeString& typeName)
     type = ObjType::EventType;
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjEventType::clone() const {
-    // event type definitions are immutable once created; share reference
+unique_ptr<Obj, UnreleasedObj> ObjEventType::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // event type definitions are immutable once created; share reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjEventType*>(this));
 }
 
@@ -1671,15 +1730,16 @@ ObjEventInstance::ObjEventInstance(const Value& eventType)
                 if (isSignal(propInitialValue)) {
                     throw std::runtime_error("events cannot have signal members");
                 }
-                propInitialValue = propInitialValue.clone();
+                ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+                propInitialValue = propInitialValue.clone(cloneCtx);
             }
             payload[prop.name.hashCode()] = propInitialValue;
         }
     }
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjEventInstance::clone() const {
-    // event instances are immutable snapshots; share reference
+unique_ptr<Obj, UnreleasedObj> ObjEventInstance::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // event instances are immutable snapshots; share reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjEventInstance*>(this));
 }
 
@@ -1730,8 +1790,8 @@ void ObjEventInstance::dropReferences()
     payload.clear();
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjLibrary::clone() const {
-    // dynamic libraries are represented by handles; share the handle
+unique_ptr<Obj, UnreleasedObj> ObjLibrary::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // dynamic libraries are represented by handles; share the handle
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjLibrary*>(this));
 }
 void ObjLibrary::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -1750,19 +1810,19 @@ void ObjLibrary::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     handle = nullptr;
     type = ObjType::Library;
 }
-unique_ptr<Obj, UnreleasedObj> ObjForeignPtr::clone() const {
-    // foreign pointers are opaque handles; cloning would be unsafe
+unique_ptr<Obj, UnreleasedObj> ObjForeignPtr::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // foreign pointers are opaque handles; cloning would be unsafe
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjForeignPtr*>(this));
 }
 void ObjForeignPtr::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("Cannot serialize foreign pointers"); }
 void ObjForeignPtr::read(std::istream&, roxal::ptr<SerializationContext>) { throw std::runtime_error("Cannot deserialize foreign pointers"); }
-unique_ptr<Obj, UnreleasedObj> ObjFile::clone() const {
-    // files cannot be duplicated; share the underlying handle
+unique_ptr<Obj, UnreleasedObj> ObjFile::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // files cannot be duplicated; share the underlying handle
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjFile*>(this));
 }
 void ObjFile::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("Cannot serialize file handles"); }
 void ObjFile::read(std::istream&, roxal::ptr<SerializationContext>) { throw std::runtime_error("Cannot deserialize file handles"); }
-unique_ptr<Obj, UnreleasedObj> ObjException::clone() const { throw std::runtime_error("cannot clone exceptions"); }
+unique_ptr<Obj, UnreleasedObj> ObjException::clone(roxal::ptr<CloneContext> ctx) const { (void)ctx; throw std::runtime_error("cannot clone exceptions"); }
 void ObjException::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Exception);
@@ -1800,8 +1860,8 @@ void ObjException::dropReferences()
     stackTrace = Value::nilVal();
     detail = Value::nilVal();
 }
-unique_ptr<Obj, UnreleasedObj> ObjFunction::clone() const {
-    // function objects are immutable; share the reference
+unique_ptr<Obj, UnreleasedObj> ObjFunction::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // function objects are immutable; share the reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjFunction*>(this));
 }
 void ObjFunction::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -1990,10 +2050,23 @@ void ObjFunction::dropReferences()
     paramDefaultFunc.clear();
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjUpvalue::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjUpvalue::clone(roxal::ptr<CloneContext> ctx) const
 {
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
     auto newup = newUpvalueObj(location);
-    newup->closed = newup->location->clone();
+
+    if (ctx) {
+        ctx->originalToClone[this] = newup.get();
+    }
+
+    newup->closed = newup->location->clone(ctx);
     newup->location = &newup->closed;
     return newup;
 }
@@ -2034,12 +2107,25 @@ void ObjUpvalue::dropReferences()
     location = &closed;
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjClosure::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjClosure::clone(roxal::ptr<CloneContext> ctx) const
 {
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
     auto newc = newClosureObj(function);
+
+    if (ctx) {
+        ctx->originalToClone[this] = newc.get();
+    }
+
     newc->upvalues.resize(upvalues.size());
-    for(size_t i=0; i<upvalues.size(); i++)
-        newc->upvalues[i] = upvalues.at(i).clone();
+    for (size_t i = 0; i < upvalues.size(); i++)
+        newc->upvalues[i] = upvalues.at(i).clone(ctx);
     return newc;
 }
 
@@ -2100,8 +2186,9 @@ void ObjClosure::dropReferences()
     handlerThread.reset();
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjFuture::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjFuture::clone(roxal::ptr<CloneContext> ctx) const
 {
+    (void)ctx; // future resolves to a boxed primitive
     Value value = const_cast<ObjFuture*>(this)->asValue();
     value.box();
     assert(value.isBoxed() && value.isObj() && isObjPrimitive(value));
@@ -2172,8 +2259,8 @@ void ObjFuture::wakeWaiters()
     }
     for (auto& t : toWake) t->wake();
 }
-unique_ptr<Obj, UnreleasedObj> ObjNative::clone() const {
-    // native functions are immutable; share the reference
+unique_ptr<Obj, UnreleasedObj> ObjNative::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // native functions are immutable; share the reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjNative*>(this));
 }
 void ObjNative::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("ObjNative serialization not implemented"); }
@@ -2190,8 +2277,8 @@ void ObjNative::dropReferences()
 {
     defaultValues.clear();
 }
-unique_ptr<Obj, UnreleasedObj> ObjTypeSpec::clone() const {
-    // type metadata is immutable; share the reference
+unique_ptr<Obj, UnreleasedObj> ObjTypeSpec::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // type metadata is immutable; share the reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjTypeSpec*>(this));
 }
 void ObjTypeSpec::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -2206,8 +2293,8 @@ void ObjTypeSpec::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     in.read(reinterpret_cast<char*>(&tv), 1);
     typeValue = static_cast<ValueType>(tv);
 }
-unique_ptr<Obj, UnreleasedObj> ObjObjectType::clone() const {
-    // object type definitions are immutable once created; share reference
+unique_ptr<Obj, UnreleasedObj> ObjObjectType::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // object type definitions are immutable once created; share reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjObjectType*>(this));
 }
 void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -2435,8 +2522,8 @@ ObjObjectType::findPublicPropertyByHash15(uint16_t hash15, bool& ambiguous) cons
         return std::nullopt;
     return PublicPropertyView{key, match, static_cast<uint16_t>(key & 0x7fff)};
 }
-unique_ptr<Obj, UnreleasedObj> ObjPackageType::clone() const {
-    // package types contain no mutable state; share the reference
+unique_ptr<Obj, UnreleasedObj> ObjPackageType::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // package types contain no mutable state; share the reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjPackageType*>(this));
 }
 void ObjPackageType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -2452,8 +2539,8 @@ void ObjPackageType::read(std::istream& in, roxal::ptr<SerializationContext> ctx
         throw std::runtime_error("ObjPackageType::read mismatched tag");
     typeValue = ValueType::Type;
 }
-unique_ptr<Obj, UnreleasedObj> ObjModuleType::clone() const {
-    // module types are immutable; share the reference
+unique_ptr<Obj, UnreleasedObj> ObjModuleType::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // module types are immutable; share the reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjModuleType*>(this));
 }
 void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -2769,10 +2856,23 @@ void ObjectInstance::dropReferences()
     properties.clear();
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjBoundMethod::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjBoundMethod::clone(roxal::ptr<CloneContext> ctx) const
 {
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
     auto newmb = newBoundMethodObj(receiver, method);
-    newmb->receiver = newmb->receiver.clone();
+
+    if (ctx) {
+        ctx->originalToClone[this] = newmb.get();
+    }
+
+    newmb->receiver = newmb->receiver.clone(ctx);
     return newmb;
 }
 void ObjBoundMethod::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -2806,10 +2906,23 @@ void ObjBoundMethod::dropReferences()
     method = Value::nilVal();
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjBoundNative::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjBoundNative::clone(roxal::ptr<CloneContext> ctx) const
 {
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
     auto newbm = newBoundNativeObj(receiver, function, isProc, funcType, defaultValues, declFunction);
-    newbm->receiver = newbm->receiver.clone();
+
+    if (ctx) {
+        ctx->originalToClone[this] = newbm.get();
+    }
+
+    newbm->receiver = newbm->receiver.clone(ctx);
     return newbm;
 }
 void ObjBoundNative::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -3453,8 +3566,9 @@ void ObjTensor::set(const ObjTensor* other)
 #endif
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjTensor::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjTensor::clone(roxal::ptr<CloneContext> ctx) const
 {
+    (void)ctx; // tensor has value semantics, no object references to track
     auto newt = newTensorObj();
     newt->shape_ = shape_;
     newt->strides_ = strides_;
@@ -4484,7 +4598,8 @@ ObjectInstance::ObjectInstance(const Value& objectType)
                     throw std::runtime_error("cannot use derived signals as member defaults");
                 }
             } else {
-                propInitialvalue = propInitialvalue.clone();
+                ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+                propInitialvalue = propInitialvalue.clone(cloneCtx);
             }
         }
         auto hash = prop.name.hashCode();
@@ -4550,11 +4665,27 @@ unique_ptr<ObjectInstance, UnreleasedObj> roxal::newObjectInstance(const Value& 
 }
 
 
-unique_ptr<Obj, UnreleasedObj> ObjectInstance::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjectInstance::clone(roxal::ptr<CloneContext> ctx) const
 {
+    // Check if already cloned (preserves shared references and handles cycles)
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
+    // Create new clone
     auto newobj = newObjectInstance(instanceType);
 
-    for(const auto& index_value : properties) {
+    // Register BEFORE recursing (critical for cycle handling)
+    if (ctx) {
+        ctx->originalToClone[this] = newobj.get();
+    }
+
+    // Clone properties with context
+    for (const auto& index_value : properties) {
         const auto index { index_value.first };
         const auto& slot { index_value.second };
         const Value& value { slot.value };
@@ -4565,8 +4696,7 @@ unique_ptr<Obj, UnreleasedObj> ObjectInstance::clone() const
         if (isActorInstance(value))
             throw std::runtime_error("clone of type actor unsupported");
 
-        targetSlot.value = value.clone();
-
+        targetSlot.value = value.clone(ctx);
     }
 
     return newobj;
@@ -4619,7 +4749,8 @@ void ActorInstance::initialize(const Value& objectType)
                     throw std::runtime_error("cannot use derived signals as member defaults");
                 }
             } else {
-                propInitialvalue = propInitialvalue.clone();
+                ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+                propInitialvalue = propInitialvalue.clone(cloneCtx);
             }
         }
         auto hash = prop.name.hashCode();
@@ -4686,8 +4817,10 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
     callInfo.callSpec = callSpec;
     for(auto i=0; i<callSpec.argCount; i++) {
         Value arg = *(argsStackTop - i - 1);
-        if (!arg.isPrimitive())
-            arg = arg.clone();
+        if (!arg.isPrimitive()) {
+            ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+            arg = arg.clone(cloneCtx);
+        }
         callInfo.args.push_back(arg);
     }
     callInfo.returnPromise = nullptr;
@@ -4738,8 +4871,10 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
                 }
                 if (arg.isNil() && pi < bound->defaultValues.size())
                     arg = bound->defaultValues[pi];
-                if (!arg.isPrimitive())
-                    arg = arg.clone();
+                if (!arg.isPrimitive()) {
+                    ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+                    arg = arg.clone(cloneCtx);
+                }
                 normalized.push_back(arg);
             }
 

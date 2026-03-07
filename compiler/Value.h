@@ -98,6 +98,10 @@ struct SerializationContext {
     uint64_t nextId = 1;
 };
 
+struct CloneContext {
+    std::unordered_map<const Obj*, Obj*> originalToClone;
+};
+
 
 // If Values are real (IEEE C++ double), then no bit conversions necessary
 //  IEEE Quiet NAN values are used to place type tag in mantissa (bits 46..49)
@@ -512,9 +516,10 @@ public:
     static void testPrimitiveValues();
     #endif
 
-    /// @brief Creates a deep copy of the value.
+    /// @brief Creates a deep copy of the value, preserving object graph structure.
+    /// @param ctx Clone context for tracking already-cloned objects (handles cycles and shared refs).
     /// @return The cloned value.
-    Value clone() const;
+    Value clone(ptr<CloneContext> ctx) const;
 
     /// @brief Determine if this value's type can be converted to another type.
     bool convertibleTo(ValueType to, bool strict=true) const;

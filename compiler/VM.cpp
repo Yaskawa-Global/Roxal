@@ -1708,7 +1708,7 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
                         dtype = tensorDTypeFromString(toUTF8StdString(asStringObj(arg)->s));
                     } else if (isTensor(arg) && shape.empty()) {
                         // Copy constructor
-                        *(thread->stackTop - callSpec.argCount - 1) = Value(asTensor(arg)->clone());
+                        *(thread->stackTop - callSpec.argCount - 1) = Value(asTensor(arg)->clone(nullptr));
                         popN(callSpec.argCount);
                         return true;
                     } else if (isVector(arg) && shape.empty()) {

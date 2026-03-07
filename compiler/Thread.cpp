@@ -308,8 +308,10 @@ void Thread::act(Value actorInstance)
                             popN(callInfo.callSpec.argCount + 1);
 
                             if (callInfo.returnPromise != nullptr) {
-                                if (!ret.isPrimitive() && !isException(ret))
-                                    ret = ret.clone();
+                                if (!ret.isPrimitive() && !isException(ret)) {
+                                    ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+                                    ret = ret.clone(cloneCtx);
+                                }
                                 callInfo.returnPromise->set_value(ok ? ret : Value::nilVal());
                                 if (!callInfo.returnFuture.isNil()) {
                                     asFuture(callInfo.returnFuture)->wakeWaiters();
@@ -335,8 +337,10 @@ void Thread::act(Value actorInstance)
                     if (resultPair.first == ExecutionStatus::OK) {
                         if (callInfo.returnPromise != nullptr) {
                             Value ret = resultPair.second;
-                            if (!ret.isPrimitive() && !isException(ret))
-                                ret = ret.clone();
+                            if (!ret.isPrimitive() && !isException(ret)) {
+                                ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+                                ret = ret.clone(cloneCtx);
+                            }
                             callInfo.returnPromise->set_value(ret);
                             if (!callInfo.returnFuture.isNil()) {
                                 asFuture(callInfo.returnFuture)->wakeWaiters();
@@ -389,8 +393,10 @@ void Thread::act(Value actorInstance)
                         popN(callInfo.callSpec.argCount);
 
                         if (callInfo.returnPromise != nullptr) {
-                            if (!ret.isPrimitive() && !isException(ret))
-                                ret = ret.clone();
+                            if (!ret.isPrimitive() && !isException(ret)) {
+                                ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+                                ret = ret.clone(cloneCtx);
+                            }
                             // On failure, resolve to nil to avoid broken promises.
                             callInfo.returnPromise->set_value(ok ? ret : Value::nilVal());
                             if (!callInfo.returnFuture.isNil()) {

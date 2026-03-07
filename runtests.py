@@ -115,7 +115,7 @@ tests = [
     'actor_init', 'actor_stack', 'actor_future', 'future_ready', 'future_builtin_resolve',
     'actor_method_order',
     'actor_closure1', 'actor_closure2', 'actor_closure3',
-    'clone1', 'extends1', 'nothis', 'superprop', 'scopetest4',
+    'clone1', 'clone_shared', 'clone_cycle', 'extends1', 'nothis', 'superprop', 'scopetest4',
     'private_prop', 'private_method', 'private_inherit',
     'typededucer_binop', 'typededucer_ops', 'typededucer_until', 'typededucer_bitwise',
     'time_basic', 'mathfuncs',

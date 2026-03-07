@@ -799,7 +799,8 @@ Value ModuleSys::clone_builtin(VM& vm, ArgsView args)
     if (args.size() != 1)
         throw std::invalid_argument("clone takes a single argument (the value to deep-copy)");
 
-    return args[0].clone();
+    ptr<CloneContext> ctx = make_ptr<CloneContext>();
+    return args[0].clone(ctx);
 }
 
 Value ModuleSys::wait_builtin(VM& vm, ArgsView args)

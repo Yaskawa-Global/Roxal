@@ -121,7 +121,7 @@ struct Obj {
     // manual teardown.
     virtual void dropReferences();
 
-    virtual unique_ptr<Obj, UnreleasedObj> clone() const = 0; // deep copy
+    virtual unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const = 0; // deep copy preserving structure
 
     virtual void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const = 0;
     virtual void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) = 0;
@@ -323,7 +323,7 @@ struct ObjPrimitive : public Obj
         ValueType btype;
     } as;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -396,7 +396,7 @@ struct ObjString : public Obj
     // number of 16bit Unicode code units
     int32_t length() const { return s.length(); }
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override { return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjString*>(this)); } // strings are interned/immutable
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override { return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjString*>(this)); } // strings are interned/immutable
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -438,7 +438,7 @@ struct ObjRange : public Obj
     Value step;
     bool closed;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -498,7 +498,7 @@ struct ObjList : public Obj
 
     atomic_vector<Value> elts;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -594,7 +594,7 @@ private:
     std::map<Value,Value,ValueComparitor> entries;
 
 public:
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -637,7 +637,7 @@ struct ObjVector : public Obj
     const Eigen::VectorXd& vec() const { return *vec_; }
     Eigen::VectorXd& vecMut() { ensureUnique(); return *vec_; }
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -694,7 +694,7 @@ struct ObjMatrix : public Obj
     const Eigen::MatrixXd& mat() const { return *mat_; }
     Eigen::MatrixXd& matMut() { ensureUnique(); return *mat_; }
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -801,7 +801,7 @@ struct ObjTensor : public Obj
     bool equals(const ObjTensor* other, double eps = 1e-15) const;
     void set(const ObjTensor* other);
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -849,8 +849,9 @@ inline Value cloneIfValueSemantics(const Value& v) {
     // Only clone mutable objects that should have value semantics
     // Primitives are copied by value naturally, ObjPrimitive (strings) are immutable
     // Note: clone() uses COW for vector/matrix/tensor - data is shared, not copied
+    // nullptr context is fine here - value semantics types (vector/matrix/tensor) don't need cycle tracking
     if (v.isObj() && v.valueSemantics() && !isObjPrimitive(v)) {
-        return Value(v.asObj()->clone());
+        return Value(v.asObj()->clone(nullptr));
     }
     return v;
 }
@@ -886,7 +887,7 @@ struct ObjSignal : public Obj {
     // Optional callback invoked when signal.stop() is called (for gRPC streaming)
     std::function<void()> onStopCallback;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -933,7 +934,7 @@ struct ObjEventType : public Obj {
     std::optional<PayloadPropertyView> findPayloadPropertyByHash15(uint16_t hash15,
                                                                    bool& ambiguous) const;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -949,7 +950,7 @@ struct ObjEventInstance : public Obj {
     Value typeHandle;
     std::unordered_map<int32_t, Value> payload;  // keyed by property name hash
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -980,7 +981,7 @@ struct ObjLibrary : public Obj {
     virtual ~ObjLibrary();
     void* handle;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1006,7 +1007,7 @@ struct ObjForeignPtr : public Obj {
     void* ptr;
     std::function<void(void*)> cleanup;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1035,7 +1036,7 @@ struct ObjFile : public Obj {
     bool binary;
     mutable std::mutex mutex;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1075,7 +1076,7 @@ struct ObjException : public Obj {
     Value stackTrace; // list of stack frames when raised
     Value detail;     // auxiliary data provided by native code
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1158,7 +1159,7 @@ struct ObjFunction : public Obj
 
     void clear(); // reset to blank without other reference values
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1202,7 +1203,7 @@ struct ObjUpvalue : public Obj {
     Value* location;
     Value closed;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1245,7 +1246,7 @@ struct ObjClosure : public Obj
     // thread expected to execute this closure when used as an event handler
     weak_ptr<Thread> handlerThread;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1292,7 +1293,7 @@ struct ObjFuture : public Obj
     void addWaiter(const ptr<Thread>& t);
     void wakeWaiters();
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1333,7 +1334,7 @@ struct ObjNative : public Obj
     std::vector<Value> defaultValues;
     uint32_t resolveArgMask {0}; // bit N set → resolve arg N before call
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1367,7 +1368,7 @@ struct ObjTypeSpec : public Obj
 
     ValueType typeValue;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1447,7 +1448,7 @@ struct ObjObjectType : public ObjTypeSpec
     //  TODO: make thread safe?
     static std::unordered_map<uint16_t, ObjObjectType*> enumTypes;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1469,7 +1470,7 @@ struct ObjPackageType : public ObjTypeSpec
 {
     // TODO
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1504,7 +1505,7 @@ struct ObjModuleType : public ObjTypeSpec
 
     static atomic_vector<Value> allModules;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1548,7 +1549,7 @@ struct ObjectInstance : public Obj
     Value ensurePropertySignal(const icu::UnicodeString& name, const std::string& signalName)
       { return ensurePropertySignal(name.hashCode(), signalName); }
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1605,7 +1606,7 @@ struct ActorInstance : public Obj
     std::thread::id thread_id;
     weak_ptr<Thread> thread;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override { throw std::runtime_error("cannot clone actor instances"); }
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override { throw std::runtime_error("cannot clone actor instances"); }
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1633,7 +1634,7 @@ struct ObjBoundMethod : public Obj
     Value receiver;
     Value method;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1674,7 +1675,7 @@ struct ObjBoundNative : public Obj
     std::vector<Value> defaultValues;
     Value declFunction; // ObjFunction for default arg expressions
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;

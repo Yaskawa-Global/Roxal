@@ -1013,13 +1013,13 @@ size_t Value::hash() const {
 }
 
 
-// deep copy if reference type
-Value Value::clone() const
+// deep copy if reference type, preserving object graph structure
+Value Value::clone(ptr<CloneContext> ctx) const
 {
     if (isPrimitive()) // value type
         return *this;
     else if (isObj())
-        return Value(asObj()->clone());
+        return Value(asObj()->clone(ctx));
 
     throw std::runtime_error("unhandled clone()");
 }
@@ -1709,7 +1709,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 return Value::vectorVal(vals);
             }
             if (isVector(arg)) {
-                return Value(asVector(arg)->clone());
+                return Value(asVector(arg)->clone(nullptr));
             }
             if (isMatrix(arg)) {
                 // Only allow 1×n or n×1 matrices
@@ -1814,7 +1814,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 return Value::matrixVal(vals);
             }
             if (isMatrix(arg)) {
-                return Value(asMatrix(arg)->clone());
+                return Value(asMatrix(arg)->clone(nullptr));
             }
             if (isTensor(arg)) {
                 // Only allow 1D or 2D tensors
@@ -1876,7 +1876,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 }
             } else if (isTensor(*it)) {
                 // tensor(existingTensor) - copy
-                return Value(asTensor(*it)->clone());
+                return Value(asTensor(*it)->clone(nullptr));
             } else if (isVector(*it)) {
                 // tensor(vector) → 1D tensor
                 auto vec = asVector(*it);
@@ -2157,7 +2157,8 @@ Value roxal::add(Value l, Value r)
         ObjList* lv = asList(l);
         const ObjList* rv = asList(r);
 
-        auto result = lv->clone();  // Clone LHS for by-value semantics
+        ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+        auto result = lv->clone(cloneCtx);  // Clone LHS for by-value semantics
         static_cast<ObjList*>(result.get())->concatenate(rv);          // Concatenate RHS in-place
 
         return Value::objVal(std::move(result));
@@ -2166,7 +2167,8 @@ Value roxal::add(Value l, Value r)
         // List + anything → append (clone LHS, then append RHS)
         ObjList* lv = asList(l);
 
-        auto result = lv->clone();  // Clone LHS for by-value semantics
+        ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+        auto result = lv->clone(cloneCtx);  // Clone LHS for by-value semantics
         static_cast<ObjList*>(result.get())->append(r);                // Append RHS in-place
 
         return Value::objVal(std::move(result));
