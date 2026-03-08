@@ -1,0 +1,14 @@
+import math.*
+
+var max64 = 9223372036854775807
+print(max64)
+print(real(max64) > 0)
+print(log(max64) > 1)
+
+var min64 = -9223372036854775807 - 1
+print(min64)
+print(real(min64) < 0)
+
+var minLiteral = -9223372036854775808
+print(minLiteral)
+print(minLiteral == min64)

@@ -1,6 +1,8 @@
 
 #include <typeinfo>
 #include <vector>
+#include <charconv>
+#include <system_error>
 
 #include "ASTGenerator.h"
 
@@ -44,6 +46,18 @@ protected:
 };
 
 std::stack<std::pair<std::string,std::string>> ParseTracer::parseStack {};
+
+
+void ASTGenerator::reportError(antlr4::Token* token, const std::string& message)
+{
+    hadError = true;
+    if (token) {
+        compileError(std::to_string(token->getLine()) + ":" +
+                     std::to_string(token->getCharPositionInLine()) + " - " + message);
+    } else {
+        compileError(message);
+    }
+}
 
 
 
@@ -446,6 +460,8 @@ ptr<T> as(const std::any& a) {
 
 ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
 {
+    hadError = false;
+
     // store entire source string
     this->source = make_ptr<std::string>(std::string(std::istreambuf_iterator<char>(source), {}));
     source.seekg(0);
@@ -521,6 +537,9 @@ ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
             throw e;
         }
     }
+
+    if (hadError)
+        ast = nullptr;
 
     this->source = nullptr;
     this->sourceName.clear();
@@ -2323,6 +2342,45 @@ std::any ASTGenerator::visitUnary(RoxalParser::UnaryContext *context)
     visitStart();
 
     if (context->unary()) {
+        if (context->MINUS()) {
+            auto inner = context->unary();
+            if (inner && inner->call()) {
+                auto call = inner->call();
+                if (call->args_or_index_or_accessor().empty()) {
+                    auto primary = call->primary();
+                    if (primary && primary->num() && primary->num()->integer()) {
+                        auto intContext = primary->num()->integer();
+                        std::string text = intContext->getText();
+                        int base = 10;
+                        std::string digits = text;
+                        if (text.size() > 2 && text[0] == '0') {
+                            if (text[1] == 'x' || text[1] == 'X') {
+                                base = 16;
+                                digits = text.substr(2);
+                            } else if (text[1] == 'b' || text[1] == 'B') {
+                                base = 2;
+                                digits = text.substr(2);
+                            } else if (text[1] == 'o' || text[1] == 'O') {
+                                base = 8;
+                                digits = text.substr(2);
+                            }
+                        }
+                        if (!digits.empty()) {
+                            uint64_t value = 0;
+                            auto result = std::from_chars(digits.data(), digits.data() + digits.size(), value, base);
+                            if (result.ec == std::errc() && result.ptr == digits.data() + digits.size()) {
+                                if (value == static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1ULL) {
+                                    ptr<Num> num = make_ptr<Num>();
+                                    num->num = std::numeric_limits<int64_t>::min();
+                                    setSourceInfo(num, intContext);
+                                    return typeValue(num);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         auto arg = visitUnary(context->unary());
 
@@ -2335,14 +2393,26 @@ std::any ASTGenerator::visitUnary(RoxalParser::UnaryContext *context)
         }
         else if (context->MINUS() && isa<Num>(arg)) {
             auto numarg = as<Num>(arg);
-            if (std::holds_alternative<int32_t>(numarg->num))
-                numarg->num = -std::get<int32_t>(numarg->num);
-            else if (std::holds_alternative<int64_t>(numarg->num))
-                numarg->num = -std::get<int64_t>(numarg->num);
-            else if (std::holds_alternative<double>(numarg->num))
+            if (std::holds_alternative<int32_t>(numarg->num)) {
+                int64_t val = std::get<int32_t>(numarg->num);
+                int64_t neg = -val;
+                if (neg < std::numeric_limits<int32_t>::min() || neg > std::numeric_limits<int32_t>::max())
+                    numarg->num = static_cast<int64_t>(neg);
+                else
+                    numarg->num = static_cast<int32_t>(neg);
+            }
+            else if (std::holds_alternative<int64_t>(numarg->num)) {
+                int64_t val = std::get<int64_t>(numarg->num);
+                if (val == std::numeric_limits<int64_t>::min())
+                    throw std::runtime_error("integer negation overflow");
+                numarg->num = -val;
+            }
+            else if (std::holds_alternative<double>(numarg->num)) {
                 numarg->num = -std::get<double>(numarg->num);
-            else
+            }
+            else {
                 throw std::runtime_error("unhandled Num type");
+            }
             return typeValue(numarg);
         }
 
@@ -2988,60 +3058,55 @@ std::any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
 
     ptr<Num> num = make_ptr<Num>();
 
-    long long integer {0};
     auto fitsInt32 = [](long long v) {
         return v >= std::numeric_limits<int32_t>::min() && v <= std::numeric_limits<int32_t>::max();
     };
+    auto assignValue = [&](uint64_t value) {
+        int64_t signedVal = static_cast<int64_t>(value);
+        if (!fitsInt32(signedVal))
+            num->num = signedVal;
+        else
+            num->num = static_cast<int32_t>(signedVal);
+    };
+    auto invalidLiteral = [&](const std::string& message) {
+        reportError(context->start, message);
+        num->num = int32_t(0);
+    };
+    auto parseLiteral = [&](const std::string& digits, int base, const std::string& invalidMsg) -> bool {
+        uint64_t value = 0;
+        auto result = std::from_chars(digits.data(), digits.data() + digits.size(), value, base);
+        if (result.ec == std::errc::result_out_of_range ||
+            value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+            invalidLiteral("integer literal out of range for int64: " + context->getText());
+            return false;
+        }
+        if (result.ec != std::errc() || result.ptr != digits.data() + digits.size()) {
+            invalidLiteral(invalidMsg);
+            return false;
+        }
+        assignValue(value);
+        return true;
+    };
     if (context->DECIMAL_INTEGER()) {
-        try {
-            integer = std::stoll(context->getText());
-        } catch (...) {
-            throw std::runtime_error("Invalid integer literal");
-        }
-        if (!fitsInt32(integer)) {
-            num->num = int64_t(integer);
-        } else {
-            num->num = int32_t(integer);
-        }
+        parseLiteral(context->getText(), 10, "Invalid integer literal");
         setSourceInfo(num,context->DECIMAL_INTEGER());
     }
     else if (context->HEX_INTEGER()) {
-        char *p_end;
-        integer = std::strtoll(context->getText().c_str()+2, &p_end, 16);
-        if (errno == ERANGE)
-            throw std::runtime_error("Invalid hexadecimal integer literal");
+        std::string digits = context->getText().substr(2);
+        parseLiteral(digits, 16, "Invalid hexadecimal integer literal");
         // TODO: accept unsigned range and convert to twos-compliment
-        if (!fitsInt32(integer)) {
-            num->num = int64_t(integer);
-        } else {
-            num->num = int32_t(integer);
-        }
         setSourceInfo(num,context->HEX_INTEGER());
     }
     else if (context->OCT_INTEGER()) {
-        char *p_end;
-        integer = std::strtoll(context->getText().c_str()+2, &p_end, 8);
-        if (errno == ERANGE)
-            throw std::runtime_error("Invalid octal integer literal");
+        std::string digits = context->getText().substr(2);
+        parseLiteral(digits, 8, "Invalid octal integer literal");
         // TODO: accept unsigned range and convert to twos-compliment
-        if (!fitsInt32(integer)) {
-            num->num = int64_t(integer);
-        } else {
-            num->num = int32_t(integer);
-        }
         setSourceInfo(num,context->OCT_INTEGER());
     }
     else if (context->BIN_INTEGER()) {
-        char *p_end;
-        integer = std::strtoll(context->getText().c_str()+2, &p_end, 2);
-        if (errno == ERANGE)
-            throw std::runtime_error("Invalid binary integer literal");
+        std::string digits = context->getText().substr(2);
+        parseLiteral(digits, 2, "Invalid binary integer literal");
         // TODO: accept unsigned range and convert to twos-compliment
-        if (!fitsInt32(integer)) {
-            num->num = int64_t(integer);
-        } else {
-            num->num = int32_t(integer);
-        }
         setSourceInfo(num,context->BIN_INTEGER());
     }
     else

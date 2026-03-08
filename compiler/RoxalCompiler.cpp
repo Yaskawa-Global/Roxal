@@ -126,6 +126,11 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
         return function;
     }
 
+    if (ast == nullptr) {
+        clearCompileContext();
+        return function;
+    }
+
     if (!isa<File>(ast))
         throw std::runtime_error("ASTGenerator root node is not a File");
 

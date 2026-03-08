@@ -4,6 +4,9 @@
 #include <core/AST.h>
 #include "RoxalVisitor.h"
 
+namespace antlr4 {
+class Token;
+}
 
 namespace roxal {
 
@@ -175,6 +178,10 @@ protected:
     antlr4::Token* currentToken;
     ptr<std::string> source;
     std::string sourceName;
+
+private:
+    void reportError(antlr4::Token* token, const std::string& message);
+    bool hadError { false };
 };
 
 

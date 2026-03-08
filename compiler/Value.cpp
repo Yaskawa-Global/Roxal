@@ -379,18 +379,21 @@ void Value::unbox() {
     Obj* obj = asObj();
     ObjPrimitive* pobj = isObjPrimitive(*this) ? asObjPrimitive(*this) : nullptr;
 
-    if (isBool())
+    if (!pobj)
+        throw std::runtime_error("Unsupported type for auto-unboxing "+typeName());
+
+    if (pobj->isBool())
         *this = Value(pobj->as.boolean);
-    else if (isInt()) {
+    else if (pobj->isInt()) {
         int64_t v = pobj->as.integer;
         if (fitsInInt32(v))
             *this = Value(static_cast<int32_t>(v));
         else
             return; // keep boxed for out-of-range values
     }
-    else if (isReal())
+    else if (pobj->isReal())
         *this = Value(pobj->as.real);
-    else if (isType())
+    else if (pobj->isType())
         *this = Value(pobj->as.btype);
     else
         throw std::runtime_error("Unsupported type for auto-unboxing "+typeName());
@@ -1422,7 +1425,8 @@ Value roxal::toType(ValueType t, Value v, bool strict)
         }
         Value unboxedv { v };
         unboxedv.unbox();
-        return toType(t, unboxedv, strict);
+        if (!unboxedv.isBoxed())
+            return toType(t, unboxedv, strict);
     }
 
     switch (t) {
