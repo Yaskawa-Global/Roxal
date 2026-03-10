@@ -311,6 +311,41 @@ p1 is p3            # TRUE - same object
 
 ---
 
+## Changes from current const keyword use
+
+  * const is currently only allowed on primitive value types - this restriction will be removed by this new feature
+  * Calls to actor methods currently deep-copy arguments via clone().  With this new feature, this should use the same mechanism as all T -> const T implicit conversions.
+
+Note that, eager deep-copying on every call to a function with a const T parameter passed a T is unacceptably low performance.
+
+## Example
+
+The following should compile and work as indicated with the const feature:
+
+```roxal
+
+type Leaf object:
+  var i :int
+
+type Mid object:
+  var l :Leaf
+
+type Outer object:
+  var m :Mid
+
+var o = Outer(Mid(Leaf(1)))
+var m = o.m  // store mutable interior reference to Mid
+
+const c :Outer = o   // implicitly const c :const Outer
+
+m.l.i = 2 // mutation of leaf via mutable reference
+print(c.m.l.i) // should print 1
+print(o.m.l.i) // should print 2
+
+print(typeof(c.m.l)) // <type const object Leaf>
+print(typeof(o.m.l)) // <type object Leaf>
+```
+
 ## Summary
 
 1. **`const` on identifier** → Cannot reassign, and for reference types, implicitly applies `const` to the type
