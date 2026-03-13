@@ -398,4 +398,3 @@ The const/MVCC implementation is covered by an extensive test suite (all in `tes
 ### Known Gaps
 
 - **`move()` interior mutation gap**: the sole-ownership check in `createFrozenSnapshot()` examines only the root object's refcount. It does not detect mutable interior references held elsewhere, so a moved value could still have aliased sub-objects. A deeper reachability check or different approach is needed.
-- **Actor cloning and const actor refs**: what happens when an actor ref is passed as const and methods are called on it is unexplored. Currently `ActorInstance::clone()` throws.
