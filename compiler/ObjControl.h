@@ -94,6 +94,29 @@ struct ObjControl {
     SnapshotToken* snapshotToken{nullptr};           // non-null for frozen clones: the snapshot this clone belongs to
     std::atomic<ObjVersion*> versionChain{nullptr};  // linked list of older versions (newest first)
     uint64_t lastSaveEpoch{0};                       // for version save deduplication
+
+    // --- COW spinlock for cross-thread shallowClone safety ---
+    // Protects the COW ptr<> members (elts_, data_, properties_) during concurrent
+    // access from the owning thread (mutation via ensureUnique) and actor threads
+    // (resolveConstChild via shallowClone).  Only acquired when activeSnapshotCount > 0.
+    mutable std::atomic_flag cowLock_ = ATOMIC_FLAG_INIT;
+    void lockCow() const { while (cowLock_.test_and_set(std::memory_order_acquire)) { /* spin */ } }
+    void unlockCow() const { cowLock_.clear(std::memory_order_release); }
+};
+
+// RAII guard: locks cowLock_ on construction if activeSnapshotCount > 0, unlocks on destruction.
+// Use in mutation methods to protect the saveVersion + ensureUnique + mutation + epoch bump
+// sequence from concurrent cross-thread shallowClone access.
+struct CowGuard {
+    ObjControl* ctrl_;
+    bool active_;
+    CowGuard(ObjControl* c) : ctrl_(c), active_(activeSnapshotCount.load(std::memory_order_relaxed) > 0) {
+        if (active_) ctrl_->lockCow();
+    }
+    ~CowGuard() { if (active_) ctrl_->unlockCow(); }
+    bool active() const { return active_; }
+    CowGuard(const CowGuard&) = delete;
+    CowGuard& operator=(const CowGuard&) = delete;
 };
 
 }
