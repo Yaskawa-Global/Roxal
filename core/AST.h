@@ -492,7 +492,9 @@ struct VarDecl : public Declaration {
     std::optional<ptr<Expression>> initializer;
     std::optional<std::variant<BuiltinType,icu::UnicodeString>> varType;
     Access access { Access::Public };
-    bool isConst { false };
+    bool isConst { false };        // declaration is 'const' (cannot reassign)
+    bool isTypeConst { false };    // type is qualified with 'const' (e.g. var x: const T)
+    bool isTypeMutable { false };  // type is qualified with 'mutable' (e.g. const x: mutable T)
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -537,6 +539,7 @@ struct Function : public AST {
     std::optional<icu::UnicodeString> name; // none if lambda func
     std::vector<ptr<Parameter>> params;
     std::optional<std::vector<std::variant<BuiltinType,icu::UnicodeString>>> returnTypes;
+    std::vector<bool> returnTypeConst; // parallel to returnTypes: true if 'const' qualifier
     std::variant<ptr<Suite>, ptr<Expression>, std::monostate> body; // no body if abstract
     Access access { Access::Public };
 
@@ -552,6 +555,8 @@ struct Parameter : public AST {
     std::optional<std::variant<BuiltinType,icu::UnicodeString>> type;
     std::optional<ptr<Expression>> defaultValue;
     bool variadic = false;  // true if ...name syntax (collects remaining positional args)
+    bool isConst = false;   // true if parameter type is qualified with 'const'
+    bool isMutable = false; // true if parameter type is qualified with 'mutable'
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

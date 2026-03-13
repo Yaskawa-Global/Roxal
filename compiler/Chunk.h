@@ -101,6 +101,10 @@ enum class OpCode {
     EndExcept,
     Throw,
     CopyInto,
+    MakeConst,
+    MoveLocal,      // like GetLocal but nils the source slot (ownership transfer)
+    MoveModuleVar,  // like GetModuleVar but nils the source variable
+    MoveProp,       // like GetProp but nils the source property
     _Last
 };
 

@@ -1,0 +1,3 @@
+// const signal is not allowed (signals exist to change over time)
+import sys
+const s: signal = signal(1, range(0..10))

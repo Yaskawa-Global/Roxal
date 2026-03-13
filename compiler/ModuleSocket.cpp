@@ -132,12 +132,12 @@ void ModuleSocket::asyncWorker()
                                 // Create result: [Socket, [host, port]]
                                 Value clientSocket = const_cast<ModuleSocket*>(this)->createSocketObject(clientFd, SOCK_STREAM);
                                 Value addrList = Value::listVal();
-                                asList(addrList)->elts.push_back(Value::stringVal(toUnicodeString(ipstr)));
-                                asList(addrList)->elts.push_back(Value::intVal(port));
+                                asList(addrList)->append(Value::stringVal(toUnicodeString(ipstr)));
+                                asList(addrList)->append(Value::intVal(port));
 
                                 Value resultList = Value::listVal();
-                                asList(resultList)->elts.push_back(clientSocket);
-                                asList(resultList)->elts.push_back(addrList);
+                                asList(resultList)->append(clientSocket);
+                                asList(resultList)->append(addrList);
 
                                 op->promise->set_value(resultList);
                             } else {
@@ -183,9 +183,9 @@ void ModuleSocket::asyncWorker()
 
                                 // Return [data, host, port]
                                 Value resultList = Value::listVal();
-                                asList(resultList)->elts.push_back(Value::stringVal(toUnicodeString(data)));
-                                asList(resultList)->elts.push_back(Value::stringVal(toUnicodeString(ipstr)));
-                                asList(resultList)->elts.push_back(Value::intVal(port));
+                                asList(resultList)->append(Value::stringVal(toUnicodeString(data)));
+                                asList(resultList)->append(Value::stringVal(toUnicodeString(ipstr)));
+                                asList(resultList)->append(Value::intVal(port));
                                 op->promise->set_value(resultList);
                             } else {
                                 op->promise->set_value(Value::nilVal());
@@ -719,8 +719,8 @@ Value ModuleSocket::socket_getsockname_builtin(ArgsView args)
     int port = ntohs(addr.sin_port);
 
     Value result = Value::listVal();
-    asList(result)->elts.push_back(Value::stringVal(toUnicodeString(ipstr)));
-    asList(result)->elts.push_back(Value::intVal(port));
+    asList(result)->append(Value::stringVal(toUnicodeString(ipstr)));
+    asList(result)->append(Value::intVal(port));
 
     return result;
 }
@@ -746,8 +746,8 @@ Value ModuleSocket::socket_getpeername_builtin(ArgsView args)
     int port = ntohs(addr.sin_port);
 
     Value result = Value::listVal();
-    asList(result)->elts.push_back(Value::stringVal(toUnicodeString(ipstr)));
-    asList(result)->elts.push_back(Value::intVal(port));
+    asList(result)->append(Value::stringVal(toUnicodeString(ipstr)));
+    asList(result)->append(Value::intVal(port));
 
     return result;
 }

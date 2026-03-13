@@ -391,8 +391,8 @@ void ProtoAdapter::generateProtocSubRequest(Message* msg, ObjectInstance* instan
     for (int i = 0; i < desc->field_count(); i++) {
         auto* field = desc->field(i);
         int32_t hash = toUnicodeString(field->name()).hashCode();
-        auto it = instance->properties.find(hash);
-        Value v = (it != instance->properties.end()) ? it->second.value : Value::nilVal();
+        auto it = instance->findProperty(hash);
+        Value v = it ? it->value : Value::nilVal();
 
         if (field->is_repeated())
             buildRepeatedReqField(msg, field, v);
@@ -468,7 +468,7 @@ void ProtoAdapter::buildRepeatedReqField(Message* msg, const FieldDescriptor* fi
     ObjList* list = asList(arg);
     auto* refl = msg->GetReflection();
 
-    auto values = list->elts.get();
+    auto values = list->getElements();
     for (const auto& val : values) {
         switch(field->cpp_type())
         {
@@ -565,7 +565,7 @@ void ProtoAdapter::generateSubResponse(const Message& msg, ObjectInstance* insta
     for (int i = 0; i < desc->field_count(); i++) {
         auto* field = desc->field(i);
         int32_t hash = toUnicodeString(field->name()).hashCode();
-        auto& slot = instance->properties[hash];
+        auto& slot = instance->propertySlot(hash);
 
         if (field->is_repeated())
             buildRepeatedRespField(msg, field, slot);
@@ -658,21 +658,21 @@ void ProtoAdapter::buildRepeatedRespField(const Message& msg, const FieldDescrip
         case FieldDescriptor::CPPTYPE_INT32:
         {
             for (int i = 0; i < refl->FieldSize(msg, field); i++)
-                list->elts.push_back(Value::intVal(refl->GetRepeatedInt32(msg, field, i)));
+                list->append(Value::intVal(refl->GetRepeatedInt32(msg, field, i)));
         }
         break;
 
         case FieldDescriptor::CPPTYPE_INT64:
         {
             for (int i = 0; i < refl->FieldSize(msg, field); i++)
-                list->elts.push_back(Value::intVal(refl->GetRepeatedInt64(msg, field, i)));
+                list->append(Value::intVal(refl->GetRepeatedInt64(msg, field, i)));
         }
         break;
 
         case FieldDescriptor::CPPTYPE_UINT32:
         {
             for (int i = 0; i < refl->FieldSize(msg, field); i++)
-                list->elts.push_back(Value::intVal(static_cast<int64_t>(refl->GetRepeatedUInt32(msg, field, i))));
+                list->append(Value::intVal(static_cast<int64_t>(refl->GetRepeatedUInt32(msg, field, i))));
         }
         break;
 
@@ -680,7 +680,7 @@ void ProtoAdapter::buildRepeatedRespField(const Message& msg, const FieldDescrip
         {
             for (int i = 0; i < refl->FieldSize(msg, field); i++) {
                 uint64_t raw = refl->GetRepeatedUInt64(msg, field, i);
-                list->elts.push_back(Value::intVal(static_cast<int64_t>(raw)));
+                list->append(Value::intVal(static_cast<int64_t>(raw)));
             }
         }
         break;
@@ -688,7 +688,7 @@ void ProtoAdapter::buildRepeatedRespField(const Message& msg, const FieldDescrip
         case FieldDescriptor::CPPTYPE_BOOL:
         {
             for (int i = 0; i < refl->FieldSize(msg, field); i++)
-                list->elts.push_back(Value::boolVal(refl->GetRepeatedBool(msg, field, i)));
+                list->append(Value::boolVal(refl->GetRepeatedBool(msg, field, i)));
         }
         break;
 
@@ -696,7 +696,7 @@ void ProtoAdapter::buildRepeatedRespField(const Message& msg, const FieldDescrip
         {
             for (int i = 0; i < refl->FieldSize(msg, field); i++) {
                 int enumNumber = refl->GetRepeatedEnumValue(msg, field, i);
-                list->elts.push_back(enumValueFromNumber(field->enum_type(), enumNumber));
+                list->append(enumValueFromNumber(field->enum_type(), enumNumber));
             }
         }
         break;
@@ -704,21 +704,21 @@ void ProtoAdapter::buildRepeatedRespField(const Message& msg, const FieldDescrip
         case FieldDescriptor::CPPTYPE_FLOAT:
         {
             for (int i = 0; i < refl->FieldSize(msg, field); i++)
-                list->elts.push_back(Value::realVal(refl->GetRepeatedFloat(msg, field, i)));
+                list->append(Value::realVal(refl->GetRepeatedFloat(msg, field, i)));
         }
         break;
 
         case FieldDescriptor::CPPTYPE_DOUBLE:
         {
             for (int i = 0; i < refl->FieldSize(msg, field); i++)
-                list->elts.push_back(Value::realVal(refl->GetRepeatedDouble(msg, field, i)));
+                list->append(Value::realVal(refl->GetRepeatedDouble(msg, field, i)));
         }
         break;
 
         case FieldDescriptor::CPPTYPE_STRING:
         {
             for (int i = 0; i < refl->FieldSize(msg, field); i++)
-                list->elts.push_back(Value::stringVal(toUnicodeString(refl->GetRepeatedString(msg, field, i))));
+                list->append(Value::stringVal(toUnicodeString(refl->GetRepeatedString(msg, field, i))));
         }
         break;
 
@@ -733,7 +733,7 @@ void ProtoAdapter::buildRepeatedRespField(const Message& msg, const FieldDescrip
             for (int i = 0; i < refl->FieldSize(msg, field); i++) {
                 Value instVal = Value::objectInstanceVal(declVal);
                 generateSubResponse(refl->GetRepeatedMessage(msg, field, i), asObjectInstance(instVal));
-                list->elts.push_back(instVal);
+                list->append(instVal);
             }
         }
         break;
@@ -741,7 +741,7 @@ void ProtoAdapter::buildRepeatedRespField(const Message& msg, const FieldDescrip
         default:
         {
             std::cout << "Undefined message type " << field->cpp_type() << " for repeated field " << field->name() << std::endl;
-            list->elts.push_back(Value::nilVal());
+            list->append(Value::nilVal());
         }
         break;
     }

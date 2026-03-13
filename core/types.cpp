@@ -80,7 +80,7 @@ bool roxal::type::convertibleTo(BuiltinType from, BuiltinType to, bool strict)
 
 std::string Type::toString() const
 {
-    auto tspec = to_string(builtin);
+    auto tspec = (isConst ? "const " : "") + to_string(builtin);
 
     if (builtin == BuiltinType::Func) {
         if (func.has_value()) {

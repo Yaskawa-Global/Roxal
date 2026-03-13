@@ -1,0 +1,10 @@
+// Test move() with actor - zero-copy transfer
+type Worker actor:
+    func process(data: list) -> int:
+        return len(data)
+
+var w = Worker()
+var mylist = [10, 20, 30]
+var result = w.process(move(mylist))
+print('result=' + result)
+print('mylist is nil: ' + (mylist == nil))

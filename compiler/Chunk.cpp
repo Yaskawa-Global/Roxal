@@ -412,6 +412,14 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("THROW", offset);
         case OpCode::CopyInto:
             return simpleInstruction("COPY_INTO", offset);
+        case OpCode::MakeConst:
+            return simpleInstruction("MAKE_CONST", offset);
+        case OpCode::MoveLocal:
+            return argInstruction("MOVE_LOCAL", offset, doubleByteArg);
+        case OpCode::MoveModuleVar:
+            return constantInstruction("MOVE_MODULE_VAR", offset, doubleByteArg);
+        case OpCode::MoveProp:
+            return constantInstruction("MOVE_PROP", offset, doubleByteArg);
         case OpCode::Nop:
             return simpleInstruction("NOP", offset);
         default:

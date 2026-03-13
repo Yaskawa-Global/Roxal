@@ -950,7 +950,7 @@ static std::vector<double> extractDoubleList(Value v, int n, const char* name)
                                     std::to_string(lst->length()));
     std::vector<double> result(static_cast<size_t>(n));
     for (int i = 0; i < n; ++i)
-        result[static_cast<size_t>(i)] = toType(ValueType::Real, lst->elts.at(i), false).asReal();
+        result[static_cast<size_t>(i)] = toType(ValueType::Real, lst->getElement(i), false).asReal();
     return result;
 }
 

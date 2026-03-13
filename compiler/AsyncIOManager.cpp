@@ -212,9 +212,9 @@ Value AsyncIOManager::executeFileRead(PendingIOOp& op)
 
     if (op.binary) {
         Value lst { Value::listVal() };
-        asList(lst)->elts.reserve(static_cast<size_t>(n));
+        asList(lst)->reserve(static_cast<size_t>(n));
         for (std::streamsize i = 0; i < n; ++i)
-            asList(lst)->elts.push_back(Value::byteVal(static_cast<uint8_t>(buf[static_cast<size_t>(i)])));
+            asList(lst)->append(Value::byteVal(static_cast<uint8_t>(buf[static_cast<size_t>(i)])));
         return lst;
     }
 
@@ -257,9 +257,9 @@ Value AsyncIOManager::executeFileReadAll(PendingIOOp& op)
 
     if (op.binary) {
         Value lst { Value::listVal() };
-        asList(lst)->elts.reserve(data.size());
+        asList(lst)->reserve(data.size());
         for (char c : data)
-            asList(lst)->elts.push_back(Value::byteVal(static_cast<uint8_t>(c)));
+            asList(lst)->append(Value::byteVal(static_cast<uint8_t>(c)));
         return lst;
     }
 

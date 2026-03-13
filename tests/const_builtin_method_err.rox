@@ -1,0 +1,12 @@
+// Test that mutating builtin methods are rejected on const values.
+// Non-mutating methods (like filter) should work; mutating (like append) should error.
+
+var a = [1, 2, 3]
+const ca = a
+
+// Non-mutating method on const should work
+var f = ca.filter(func(x): x > 1)
+print(f)
+
+// Mutating method on const should error
+ca.append(4)

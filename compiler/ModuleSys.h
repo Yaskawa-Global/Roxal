@@ -35,6 +35,7 @@ public:
     Value weakref_builtin(VM& vm, ArgsView args);
     Value weak_alive_builtin(VM& vm, ArgsView args);
     Value strongref_builtin(VM& vm, ArgsView args);
+    Value refcount_builtin(VM& vm, ArgsView args);
     Value arity_builtin(VM& vm, ArgsView args);
     Value gc_builtin(VM& vm, ArgsView args);
     Value gc_config_builtin(VM& vm, ArgsView args);

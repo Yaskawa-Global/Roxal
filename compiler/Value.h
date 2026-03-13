@@ -118,6 +118,9 @@ const uint64_t SignBit = ((uint64_t)0x8000000000000000);
 // Bit 49 is unused in the NAN object representation.  Use it for the weak
 // reference flag when the value holds an object pointer.
 const uint64_t WeakMask = uint64_t(1) << 49;
+// Bit 48 flags a const (immutable snapshot) reference to an object.
+// Const refs participate in normal strong ref counting (keep the object alive).
+const uint64_t ConstMask = uint64_t(1) << 48;
 
 const int TypeTagOffset = 46;
 const uint64_t TypeTag = uint64_t(0xf) << TypeTagOffset;
@@ -334,6 +337,10 @@ public:
     Value weakRef() const;
     Value strongRef() const;
 
+    bool isConst() const { return (val.load() & ConstMask) != 0; }
+    Value constRef() const;
+    Value mutableRef() const;
+
     /// @brief Checks if the value is boxed.
     /// @return True if the value is boxed, false otherwise.
     bool isBoxed() const { return isObj() && isObjPrimitive(*this); }
@@ -471,17 +478,17 @@ public:
         assert(isObj());
         #endif
         if (isWeak()) {
-            ObjControl* c = (ObjControl*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask));
+            ObjControl* c = (ObjControl*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask | ConstMask));
             return c->obj;
         }
-        return (Obj*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask));
+        return (Obj*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask | ConstMask));
     }
 
     inline ObjControl* asControl() const {
         #ifdef DEBUG_BUILD
         assert(isObj());
         #endif
-        return (ObjControl*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask));
+        return (ObjControl*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask | ConstMask));
     }
 
 

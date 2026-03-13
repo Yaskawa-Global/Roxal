@@ -1,0 +1,10 @@
+// Test actor method params are implicitly const
+type O object:
+    var i: int
+
+type Worker actor:
+    func process(o: O) -> int:
+        return o.i
+
+var w = Worker()
+print(w.process(O(42)))

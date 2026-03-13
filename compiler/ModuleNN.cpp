@@ -298,7 +298,7 @@ static Value runInferenceMulti(ModelWrapper* wrapper,
     // Multiple outputs: return list of tensors
     Value list = Value::objVal(newListObj());
     for (auto& out : outputs)
-        asList(list)->elts.push_back(Value::objVal(newTensorObj(std::move(out))));
+        asList(list)->append(Value::objVal(newTensorObj(std::move(out))));
     return list;
 #else
     (void)wrapper; (void)inputTensors;
@@ -358,7 +358,7 @@ static Value safeRunInferenceFromValue(VM& vm, ModelWrapper* wrapper, const Valu
             std::vector<std::pair<std::string, ObjTensor*>> inputs;
             inputs.reserve(list->length());
             for (size_t i = 0; i < static_cast<size_t>(list->length()); ++i) {
-                Value elem = list->elts.at(i);
+                Value elem = list->getElement(i);
                 if (!isTensor(elem))
                     throw std::invalid_argument(
                         "ai.nn: predict list element " + std::to_string(i) + " is not a tensor");
@@ -424,7 +424,7 @@ static Value safeRunInferenceFromValueAsync(VM& vm,
             }
             inputs.reserve(list->length());
             for (size_t i = 0; i < static_cast<size_t>(list->length()); ++i) {
-                Value elem = list->elts.at(i);
+                Value elem = list->getElement(i);
                 if (!isTensor(elem))
                     throw std::invalid_argument(
                         "ai.nn: predict list element " + std::to_string(i) + " is not a tensor");
@@ -677,7 +677,7 @@ static Value buildIODescriptorList(const std::vector<std::string>& names,
 
         Value shapeList = Value::objVal(newListObj());
         for (auto dim : shapes[i])
-            asList(shapeList)->elts.push_back(Value::intVal(dim));
+            asList(shapeList)->append(Value::intVal(dim));
         asDict(dict)->store(
             Value::stringVal(toUnicodeString("shape")),
             shapeList
@@ -688,7 +688,7 @@ static Value buildIODescriptorList(const std::vector<std::string>& names,
             Value::stringVal(toUnicodeString(dtypes[i]))
         );
 
-        asList(list)->elts.push_back(dict);
+        asList(list)->append(dict);
     }
     return list;
 }
@@ -1470,7 +1470,7 @@ Value ModuleNN::nn_tokenizer_encode_builtin(ArgsView args)
 
     Value list = Value::objVal(newListObj());
     for (int id : ids)
-        asList(list)->elts.push_back(Value::intVal(id));
+        asList(list)->append(Value::intVal(id));
     return list;
 }
 
@@ -1487,7 +1487,7 @@ Value ModuleNN::nn_tokenizer_decode_builtin(ArgsView args)
     std::vector<int> ids;
     ids.reserve(idList->length());
     for (int i = 0; i < idList->length(); ++i)
-        ids.push_back(static_cast<int>(idList->elts.at(i).asInt()));
+        ids.push_back(static_cast<int>(idList->getElement(i).asInt()));
 
     std::string result = tokenizer_decode(*tw, ids);
     return Value::stringVal(toUnicodeString(result));

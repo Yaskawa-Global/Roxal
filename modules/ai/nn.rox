@@ -45,7 +45,7 @@ type Tokenizer object:
     """Encode text to a list of token IDs (integers)."""
 
   @builtin
-  func decode(ids:list) -> string:
+  func decode(ids: const list) -> string:
     """Decode a list of token IDs back to text."""
 
   @builtin

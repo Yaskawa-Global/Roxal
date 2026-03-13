@@ -150,7 +150,7 @@ with_stmt
 
 
 var_decl // FIXME: use ident_opt_type
- : annotation* (VAR | CONST) IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)?
+ : annotation* (VAR | CONST) IDENTIFIER (':' const_qualifier? (builtin_type | IDENTIFIER))? (EQUALS expression)?
  ;
 
 ident_opt_type
@@ -175,8 +175,13 @@ parameters
  ;
 
 parameter
- : annotation* DOTDOT identifier_word (':' (builtin_type | IDENTIFIER) )?  // variadic ...rest param (no default allowed)
- | annotation* identifier_word (':' (builtin_type | IDENTIFIER) )? (EQUALS expression)?
+ : annotation* DOTDOT identifier_word (':' const_qualifier? (builtin_type | IDENTIFIER) )?  // variadic ...rest param (no default allowed)
+ | annotation* identifier_word (':' const_qualifier? (builtin_type | IDENTIFIER) )? (EQUALS expression)?
+ ;
+
+const_qualifier
+ : CONST
+ | MUTABLE
  ;
 
 
@@ -225,7 +230,7 @@ method
  ;
 
 member_var
- : annotation* PRIVATE? (VAR | CONST) IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)?
+ : annotation* PRIVATE? (VAR | CONST) IDENTIFIER (':' const_qualifier? (builtin_type | IDENTIFIER))? (EQUALS expression)?
    ( NEWLINE
    | ':' NEWLINE INDENT (property_getter | property_setter)+ DEDENT
    )
@@ -405,8 +410,8 @@ primary
 
 
 return_type
- : type_spec                                                            // single type
- | '[' type_spec (',' type_spec)* ']'                                   // multiple types
+ : const_qualifier? type_spec                                            // single type
+ | '[' const_qualifier? type_spec (',' const_qualifier? type_spec)* ']'  // multiple types
  ;
 
 type_spec
@@ -459,6 +464,7 @@ dict
 TYPE: 'type';
 VAR : 'var';
 CONST : 'const';
+MUTABLE : 'mutable';
 PRIVATE: 'private';
 LET : 'let';
 FUNC: 'func';

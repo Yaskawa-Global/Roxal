@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 22;
+constexpr std::uint32_t ModuleCacheVersion = 23;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -953,7 +953,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
             symbolsList.push_back(Value::stringVal(symbol));
 
         Value symbolsListVal { Value::listVal() };
-        asList(symbolsListVal)->elts = symbolsList;
+        asList(symbolsListVal)->setElements(symbolsList);
 
         // Opcode::ImportModuleVars expects a list (of symbols) and the source module & target module
         emitConstant(symbolsListVal, "import vars "+toUTF8StdString(join(ast->symbols)));
@@ -1524,32 +1524,59 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
         if (!ast->initializer.has_value())
             error("Const declarations require an initializer.");
 
-        bool strictContext = asFuncScope(funcScope())->strict;
-        Value constValue = evaluateConstExpression(ast->initializer.value(), strictContext);
-        constValue = applyConstType(constValue, declType, strictContext);
-        if (constValue.isObj())
-            error("Const declarations are currently limited to builtin value types.");
-
-        declareConstant(ast->name, constValue, declType);
-
-        if (asFuncScope(funcScope())->scopeDepth == 0) {
-            uint16_t var = identifierConstant(ast->name);
-            emitConstant(constValue, toUTF8StdString(ast->name));
-            defineVariable(var, true);
+        // Try compile-time constant evaluation (works for primitive literals, unary ops, const refs)
+        bool useCompileTimeConst = false;
+        Value constValue;
+        try {
+            bool strictContext = asFuncScope(funcScope())->strict;
+            constValue = evaluateConstExpression(ast->initializer.value(), strictContext);
+            constValue = applyConstType(constValue, declType, strictContext);
+            useCompileTimeConst = true; // evaluateConstExpression only returns primitives
+        } catch (std::logic_error&) {
+            // Not a compile-time constant — fall through to runtime const path
         }
 
-        return {};
-    }
+        if (useCompileTimeConst) {
+            // Existing path: compile-time constant folding (primitives inlined at use sites)
+            declareConstant(ast->name, constValue, declType);
+            if (asFuncScope(funcScope())->scopeDepth == 0) {
+                uint16_t var = identifierConstant(ast->name);
+                emitConstant(constValue, toUTF8StdString(ast->name));
+                defineVariable(var, true);
+            }
+            return {};
+        }
 
-    declareVariable(ast->name, declType);
-    uint16_t var { 0 };
-    if (asFuncScope(funcScope())->scopeDepth == 0) { // global variable
-        var = identifierConstant(ast->name); // create constant table entry for name
-        if (declType.has_value())
-            asModuleScope(moduleScope())->moduleVarTypes[ast->name] = declType.value();
-    }
+        // Runtime const path: reference types or non-const-foldable expressions
+        // Creates a frozen snapshot via MakeConst opcode
+        if (declType.has_value() && std::holds_alternative<BuiltinType>(*declType)
+            && std::get<BuiltinType>(*declType) == BuiltinType::Signal)
+            error("const signal is not allowed.");
 
-    if (ast->initializer.has_value()) {
+        uint16_t var { 0 };
+        if (asFuncScope(funcScope())->scopeDepth == 0) {
+            // Module scope: register as const (prevents reassignment at runtime)
+            auto module = asModuleScope(moduleScope());
+            auto varIt = module->moduleVarLines.find(ast->name);
+            if (varIt != module->moduleVarLines.end())
+                error("A variable with this name already exists in this scope (previously declared at line " + std::to_string(varIt->second.line) + ").");
+            auto constIt = module->moduleConstLines.find(ast->name);
+            if (constIt != module->moduleConstLines.end())
+                error("A const with this name already exists in this scope (previously declared at line " + std::to_string(constIt->second.line) + ").");
+            ObjModuleType* moduleTypeObj = asModuleType(module->moduleType);
+            moduleTypeObj->constVars.insert(ast->name.hashCode());
+            module->moduleConstLines[ast->name] = currentNode->interval.first;
+            module->moduleVarLines[ast->name] = currentNode->interval.first;
+            if (declType.has_value())
+                module->moduleVarTypes[ast->name] = declType.value();
+            var = identifierConstant(ast->name);
+        } else {
+            // Local scope: declare as local variable marked const
+            declareVariable(ast->name, declType);
+            asFuncScope(funcScope())->locals.back().isConst = true;
+        }
+
+        // Evaluate initializer at runtime
         ast->initializer.value()->accept(*this);
         if (declType.has_value()) {
             if (std::holds_alternative<BuiltinType>(*declType))
@@ -1560,6 +1587,64 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
                 emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
             }
         }
+        if (!ast->isTypeMutable)
+            emitByte(OpCode::MakeConst);
+        defineVariable(var, asFuncScope(funcScope())->scopeDepth == 0);
+
+        return {};
+    }
+
+    declareVariable(ast->name, declType);
+    if (ast->isTypeConst) {
+        if (declType.has_value() && std::holds_alternative<BuiltinType>(*declType)
+            && std::get<BuiltinType>(*declType) == BuiltinType::Signal)
+            error("const signal is not allowed.");
+        if (asFuncScope(funcScope())->scopeDepth > 0)
+            asFuncScope(funcScope())->locals.back().isTypeConst = true;
+        else
+            asModuleScope(moduleScope())->moduleVarTypeConst.insert(ast->name);
+    }
+    uint16_t var { 0 };
+    if (asFuncScope(funcScope())->scopeDepth == 0) { // global variable
+        var = identifierConstant(ast->name); // create constant table entry for name
+        if (declType.has_value())
+            asModuleScope(moduleScope())->moduleVarTypes[ast->name] = declType.value();
+    }
+
+    if (ast->initializer.has_value()) {
+        // Check for const T → T assignment (prohibited per spec for reference types).
+        // Skip compile-time constants (primitives with value semantics) — only check
+        // runtime consts (reference types: objects, lists, dicts) and const-marked locals.
+        if (!ast->isTypeConst) {
+            auto* varExpr = dynamic_cast<ast::Variable*>(ast->initializer.value().get());
+            if (varExpr) {
+                auto localIdx = resolveLocal(funcScope(), varExpr->name);
+                bool initIsConst = false;
+                if (localIdx >= 0) {
+                    initIsConst = asFuncScope(funcScope())->locals[localIdx].isConst;
+                } else {
+                    // Runtime const = in moduleConstLines but NOT a compile-time const binding
+                    // (compile-time consts are primitives with value semantics, safe to copy)
+                    initIsConst = moduleConstExists(varExpr->name)
+                                  && !lookupConstBinding(varExpr->name);
+                }
+                if (initIsConst)
+                    error("Cannot assign const to mutable variable '" + toUTF8StdString(ast->name) + "'. Use clone() to create a mutable copy.");
+            }
+        }
+
+        ast->initializer.value()->accept(*this);
+        if (declType.has_value()) {
+            if (std::holds_alternative<BuiltinType>(*declType))
+                emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                          uint8_t(builtinToValueType(std::get<BuiltinType>(*declType))));
+            else {
+                namedVariable(std::get<icu::UnicodeString>(*declType), false);
+                emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+            }
+        }
+        if (ast->isTypeConst)
+            emitByte(OpCode::MakeConst);
     } else {
         if (declType.has_value()) {
             if (std::holds_alternative<BuiltinType>(*declType)) {
@@ -2444,12 +2529,36 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
 {
     currentNode = ast;
 
+    // Signals cannot be const (they exist to change over time)
+    if (ast->isConst && ast->type.has_value() && std::holds_alternative<BuiltinType>(*ast->type)
+        && std::get<BuiltinType>(*ast->type) == BuiltinType::Signal)
+        error("const signal is not allowed.");
+
     // TODO: handle optional type
 
     declareVariable(ast->name);
     uint16_t var = identifierConstant(ast->name); // create constant table entry for name
 
     defineVariable(var);
+
+    // Actor method params are implicitly const (isolation boundary) unless explicitly mutable.
+    // Explicit const-qualified params are also frozen and marked isConst on the local.
+    // Implicit actor const only emits MakeConst (runtime enforcement) without marking
+    // the local isConst, to avoid false positives from the compile-time const→mutable check
+    // (which can't distinguish primitive params that are safe to copy).
+    bool implicitConst = !ast->isMutable && inTypeScope() && asTypeScope(typeScope())->isActor &&
+                         asFuncScope(funcScope())->functionType == FunctionType::Method;
+    if (ast->isConst || implicitConst) {
+        auto localArg = resolveLocal(funcScope(), ast->name);
+        if (localArg >= 0) {
+            emitOpArgsBytes(OpCode::GetLocal, localArg);
+            emitByte(OpCode::MakeConst);
+            emitOpArgsBytes(OpCode::SetLocal, localArg);
+            emitByte(OpCode::Pop);
+            if (ast->isConst)
+                asFuncScope(funcScope())->locals[localArg].isConst = true;
+        }
+    }
 
     // output code for evaluating default value (if any)
     if (ast->defaultValue.has_value()) {
@@ -2585,9 +2694,36 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
     if (isa<Variable>(ast->lhs)) {
 
-        ast->rhs->accept(*this);
-
         auto name { as<Variable>(ast->lhs)->name };
+
+        // Check for const T → T assignment (prohibited per spec)
+        {
+            auto* varExpr = dynamic_cast<ast::Variable*>(ast->rhs.get());
+            if (varExpr) {
+                auto localIdx = resolveLocal(funcScope(), name);
+                bool targetIsConst = false;
+                if (localIdx >= 0)
+                    targetIsConst = asFuncScope(funcScope())->locals[localIdx].isConst
+                                 || asFuncScope(funcScope())->locals[localIdx].isTypeConst;
+                else
+                    targetIsConst = asModuleScope(moduleScope())->moduleVarTypeConst.count(name) > 0;
+                if (!targetIsConst) {
+                    auto rhsLocalIdx = resolveLocal(funcScope(), varExpr->name);
+                    bool rhsIsConst = false;
+                    if (rhsLocalIdx >= 0)
+                        rhsIsConst = asFuncScope(funcScope())->locals[rhsLocalIdx].isConst;
+                    else {
+                        // Runtime const = in moduleConstLines but NOT a compile-time const binding
+                        rhsIsConst = moduleConstExists(varExpr->name)
+                                     && !lookupConstBinding(varExpr->name);
+                    }
+                    if (rhsIsConst)
+                        error("Cannot assign const to mutable variable '" + toUTF8StdString(name) + "'. Use clone() to create a mutable copy.");
+                }
+            }
+        }
+
+        ast->rhs->accept(*this);
 
         auto vtype = localVarType(name);
         if (!vtype.has_value())
@@ -2600,6 +2736,18 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                 namedVariable(std::get<icu::UnicodeString>(*vtype), false);
                 emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
             }
+        }
+
+        // var x: const T — freeze assigned value (T → const T implicit conversion)
+        {
+            bool typeConst = false;
+            auto localIdx = resolveLocal(funcScope(), name);
+            if (localIdx >= 0)
+                typeConst = asFuncScope(funcScope())->locals[localIdx].isTypeConst;
+            else
+                typeConst = asModuleScope(moduleScope())->moduleVarTypeConst.count(name) > 0;
+            if (typeConst)
+                emitByte(OpCode::MakeConst);
         }
 
         namedVariable(name, /*assign=*/true);
@@ -2946,6 +3094,73 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
     currentNode = ast;
     Anys results {};
 
+    // Compiler-recognized move(expr): transfers ownership by nilling the source.
+    // For lvalue args, emits MoveLocal/MoveModuleVar/MoveProp.
+    // For non-lvalue args (temporaries), evaluates normally (already sole-owner).
+    if (auto callVar = dynamic_ptr_cast<ast::Variable>(ast->callable)) {
+        if (callVar->name == toUnicodeString("move") && ast->args.size() == 1 && !lookupConstBinding(callVar->name)) {
+            auto& argExpr = ast->args[0].second;
+
+            // move(variable)
+            if (auto varArg = dynamic_ptr_cast<ast::Variable>(argExpr)) {
+                auto localIdx = resolveLocal(funcScope(), varArg->name);
+                // At module scope (depth 0), variables live in the module var table,
+                // not in local stack slots, so use MoveModuleVar instead of MoveLocal.
+                if (localIdx >= 0 && asFuncScope(funcScope())->scopeDepth > 0) {
+                    if (asFuncScope(funcScope())->locals[localIdx].isConst)
+                        error("Cannot move const variable '" + toUTF8StdString(varArg->name) + "'");
+                    emitOpArgsBytes(OpCode::MoveLocal, localIdx);
+                    return {};
+                }
+                auto upIdx = resolveUpvalue(funcScope(), varArg->name);
+                if (upIdx >= 0) {
+                    error("Cannot move captured variable '" + toUTF8StdString(varArg->name) + "'");
+                    return {};
+                }
+                // Implicit property access: move(prop) inside a method → this.prop move
+                if (asFuncScope(funcScope())->functionType == FunctionType::Method ||
+                    asFuncScope(funcScope())->functionType == FunctionType::Initializer) {
+                    int16_t thisLocal = resolveLocal(funcScope(), UnicodeString("this"));
+                    if (thisLocal != -1 && inTypeScope()) {
+                        auto itMem = asTypeScope(typeScope())->propertyNames.find(varArg->name);
+                        if (itMem != asTypeScope(typeScope())->propertyNames.end()) {
+                            if (itMem->second.isConst)
+                                error("Cannot move const property '" + toUTF8StdString(varArg->name) + "'");
+                            emitOpArgsBytes(OpCode::GetLocal, thisLocal);
+                            uint16_t propConst = identifierConstant(varArg->name);
+                            emitOpArgsBytes(OpCode::MoveProp, propConst);
+                            return {};
+                        }
+                    }
+                }
+                // Module variable
+                if (!lookupConstBinding(varArg->name)) {
+                    if (moduleConstExists(varArg->name))
+                        error("Cannot move const variable '" + toUTF8StdString(varArg->name) + "'");
+                    uint16_t nameConst = identifierConstant(varArg->name);
+                    emitOpArgsBytes(OpCode::MoveModuleVar, nameConst);
+                    return {};
+                }
+                error("Cannot move constant '" + toUTF8StdString(varArg->name) + "'");
+                return {};
+            }
+
+            // move(obj.prop) — accessor expression
+            if (auto accessor = dynamic_ptr_cast<ast::UnaryOp>(argExpr)) {
+                if (accessor->op == ast::UnaryOp::Accessor && accessor->member.has_value()) {
+                    // Evaluate the receiver object
+                    accessor->arg->accept(*this);
+                    uint16_t propConst = identifierConstant(accessor->member.value());
+                    emitOpArgsBytes(OpCode::MoveProp, propConst);
+                    return {};
+                }
+            }
+
+            // move(non-lvalue expr) — just evaluate (temporary, already sole-owner)
+            argExpr->accept(*this);
+            return {};
+        }
+    }
 
     ast->acceptChildren(*this, results);
 
@@ -4397,11 +4612,8 @@ Value RoxalCompiler::applyConstType(Value value, std::optional<VarTypeSpec> type
     if (std::holds_alternative<type::BuiltinType>(*type)) {
         auto builtin = std::get<type::BuiltinType>(*type);
         ValueType vt = builtinToValueType(builtin);
-        if (vt == ValueType::String || vt == ValueType::Range || vt == ValueType::List ||
-            vt == ValueType::Dict || vt == ValueType::Vector || vt == ValueType::Matrix ||
-            vt == ValueType::Signal || vt == ValueType::Tensor || vt == ValueType::Orient || vt == ValueType::Event) {
-            error("Const declarations are currently limited to builtin value types.");
-        }
+        if (vt == ValueType::Signal)
+            error("const signal is not allowed.");
         try {
             return toType(vt, value, strictContext);
         } catch (const std::exception& e) {
@@ -4435,7 +4647,7 @@ Value RoxalCompiler::evaluateConstExpression(ptr<ast::Expression> expr, bool str
                     return Value::intVal(std::get<int32_t>(num->num));
             }
             default:
-                error("Const initializers currently support only nil, bool, and numeric literals.");
+                error("Compile-time const folding supports only nil, bool, and numeric literals. Non-primitive const values are frozen at runtime.");
         }
     }
 
@@ -4526,6 +4738,8 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
     if (localArg != -1) { // found
         if (asSignal)
             error("'changes' requires a module variable binding; use a signal expression instead");
+        if (assign && asFuncScope(funcScope())->locals[localArg].isConst)
+            error("Cannot assign to constant '" + toUTF8StdString(name) + "'");
         found = true;
         arg = localArg;
         getOp = OpCode::GetLocal;

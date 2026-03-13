@@ -1,0 +1,53 @@
+// Test identity (is) and equality (==) semantics with const
+
+type Point object:
+    var x :int
+    var y :int
+
+// 1. Object: is and == are both reference-based
+var p = Point(1, 2)
+var q = p           // alias
+const cp = p        // frozen clone
+
+print(p is q)       // true  - same object
+print(p is cp)      // false - frozen clone is different object
+print(p == q)       // true  - same object
+print(p == cp)      // false - reference equality for objects
+
+// 2. List: is is reference, == is structural
+var l = [1, 2, 3]
+const cl = l
+
+print(l is cl)      // false - different objects
+print(l == cl)      // true  - structural equality
+
+l.append(4)
+print(l == cl)      // false - contents now differ
+
+// 3. Dict: is is reference, == is structural
+var d = {"a": 1, "b": 2}
+const cd = d
+
+print(d is cd)      // false - different objects
+print(d == cd)      // true  - structural equality
+
+d["c"] = 3
+print(d == cd)      // false - contents now differ
+
+// 4. Const-to-const: same frozen clone
+const cp2 = cp      // passthrough, same frozen clone
+print(cp is cp2)    // true - same object (passthrough)
+print(cp == cp2)    // true
+
+// 5. Two independent snapshots of same object
+const cp3 = p       // new snapshot
+print(cp is cp3)    // false - different frozen clones
+print(cp3.x)        // 1
+
+// 6. Clone from const gives mutable, not identical
+var cloned = clone(cp)
+print(cloned is cp)    // false - clone is a new object
+print(cloned.x)        // 1
+cloned.x = 99
+print(cloned.x)        // 99
+print(cp.x)            // 1 - const unaffected

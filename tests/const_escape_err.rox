@@ -1,0 +1,7 @@
+// Test that assigning const to mutable variable is a compile error
+type O object:
+    var i: int
+
+const co = O(42)
+var mo = co
+print(mo.i)

@@ -190,8 +190,7 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
             ActorInstance* self = asActorInstance(args[0]);
 
             auto setProp = [&](const icu::UnicodeString& name, const Value& v) {
-                auto& slot = self->properties[name.hashCode()];
-                slot.assign(v);
+                self->assignProperty(name.hashCode(), v);
             };
 
             Value addrVal = Value::stringVal(toUnicodeString(this->targetAddress));
@@ -266,9 +265,9 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                 throw std::invalid_argument("close expects service instance");
             ActorInstance* self = asActorInstance(args[0]);
             auto clearProp = [&](const icu::UnicodeString& name) {
-                auto hit = self->properties.find(name.hashCode());
-                if (hit != self->properties.end())
-                    hit->second.assign(Value::nilVal());
+                auto hit = self->findProperty(name.hashCode());
+                if (hit)
+                    hit->assign(Value::nilVal());
             };
             clearProp(toUnicodeString("__connector"));
             clearProp(toUnicodeString("__channel"));
@@ -366,18 +365,18 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                                     coerced = toType(prop.type, argVal, false);
                                 }
                             }
-                            inst->properties[fieldHashes[i]].assign(coerced);
+                            inst->assignProperty(fieldHashes[i], coerced);
                         }
                     }
 
                     // reuse connector if available, else create and store
-                    Value connVal = self->properties[toUnicodeString("__connector").hashCode()].value;
+                    Value connVal = self->propertySlot(toUnicodeString("__connector").hashCode()).value;
                     ACUCommunicator* comm = nullptr;
                     if (isForeignPtr(connVal))
                         comm = static_cast<ACUCommunicator*>(asForeignPtr(connVal)->ptr);
 
                     if (!comm) {
-                        Value addrVal = self->properties[toUnicodeString("__addr").hashCode()].value;
+                        Value addrVal = self->propertySlot(toUnicodeString("__addr").hashCode()).value;
                         std::string addr = targetAddress;
                         if (isString(addrVal))
                             addr = toUTF8StdString(asStringObj(addrVal)->s);
@@ -388,11 +387,11 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                         Value fpComm = Value::foreignPtrVal(comm);
                         asForeignPtr(fpCh)->registerCleanup([](void* p){ delete static_cast<std::shared_ptr<grpc::Channel>*>(p); });
                         asForeignPtr(fpComm)->registerCleanup([](void* p){ delete static_cast<ACUCommunicator*>(p); });
-                        self->properties[toUnicodeString("__channel").hashCode()].assign(fpCh);
-                        self->properties[toUnicodeString("__connector").hashCode()].assign(fpComm);
+                        self->assignProperty(toUnicodeString("__channel").hashCode(), fpCh);
+                        self->assignProperty(toUnicodeString("__connector").hashCode(), fpComm);
                     }
 
-                    Value timeoutVal = self->properties[toUnicodeString("__timeout_ms").hashCode()].value;
+                    Value timeoutVal = self->propertySlot(toUnicodeString("__timeout_ms").hashCode()).value;
                     std::optional<std::chrono::milliseconds> timeout;
                     if (timeoutVal.isNumber()) {
                         int64_t ms = timeoutVal.asInt();
@@ -459,9 +458,9 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                             return Value::nilVal();
                         if (responseFieldCount == 1) {
                             int32_t hash = responseType->propertyOrder.front();
-                            auto it = respInst->properties.find(hash);
-                            if (it != respInst->properties.end())
-                                return it->second.value;
+                            auto it = respInst->findProperty(hash);
+                            if (it)
+                                return it->value;
                             return Value::nilVal();
                         }
                         return respVal;

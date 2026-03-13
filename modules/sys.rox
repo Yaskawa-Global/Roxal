@@ -63,6 +63,10 @@ func _strongref(value):
   """return a strong reference from a weak reference"""
 
 @builtin
+func _refcount(value) -> int:
+  """return the strong reference count of a value (-1 for non-objects)"""
+
+@builtin
 func _arity(fn) -> int:
   """return the number of parameters a function expects"""
 
@@ -71,7 +75,7 @@ func serialize(value, protocol:string='default') -> list:
   """serialize value using protocol and return list of bytes"""
 
 @builtin
-func deserialize(bytes:list, protocol:string='default'):
+func deserialize(bytes: const list, protocol:string='default'):
   """deserialize list of bytes using protocol"""
 
 @builtin
@@ -227,7 +231,7 @@ func _df_graphdot(title:string='') -> string:
 func loadlib(path:string):
   """load a native library at path"""
 
-func filter(items, predicate) -> list:
+func filter(items: const list, predicate) -> list:
   """return a new list containing elements for which predicate(element) returns true; predicate can optionally take (element, index)"""
   var result = []
   var arity = _arity(predicate)
@@ -242,7 +246,7 @@ func filter(items, predicate) -> list:
     i = i + 1
   return result
 
-func map(items, transform) -> list:
+func map(items: const list, transform) -> list:
   """return a new list with transform(element) applied to each element; transform can optionally take (element, index)"""
   var result = []
   var arity = _arity(transform)
@@ -255,7 +259,7 @@ func map(items, transform) -> list:
     i = i + 1
   return result
 
-func reduce(items, reducer, initial):
+func reduce(items: const list, reducer, initial):
   """reduce items to a single value by calling reducer(accumulator, element) for each element; reducer can optionally take (accumulator, element, index)"""
   var acc = initial
   var arity = _arity(reducer)

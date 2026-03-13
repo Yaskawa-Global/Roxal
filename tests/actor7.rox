@@ -1,13 +1,13 @@
-// Ensure actor receives clone of argument and modifications inside actor do not affect original list
+// Test actor mutable param with move() - actor can mutate the transferred value
 
 type A actor:
-  func modify(lst):
+  func modify(lst: mutable list):
     lst[0] = 1
     print('actor sees:'+lst[0])
     return true
 
 var a = A()
 var l = [0]
-var fut = a.modify(l)
+var fut = a.modify(move(l))
 print(fut)
 print(l)

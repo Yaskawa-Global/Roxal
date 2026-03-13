@@ -1214,6 +1214,12 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
     }
 
     if (context->COLON()) { // type specified
+        if (context->const_qualifier()) {
+            if (context->const_qualifier()->CONST())
+                vardecl->isTypeConst = true;
+            else if (context->const_qualifier()->MUTABLE())
+                vardecl->isTypeMutable = true;
+        }
         if (context->builtin_type()) {
             auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
             vardecl->varType = builtinType;
@@ -1336,8 +1342,10 @@ std::any ASTGenerator::visitFunc_sig(RoxalParser::Func_sigContext *context)
 
     // return types (optional)
     if (context->return_type()) {
-        auto returnTypeVector = anyas<std::vector<std::variant<BuiltinType,icu::UnicodeString>>>(visitReturn_type(context->return_type()));
-        func->returnTypes = returnTypeVector;
+        using ReturnInfo = std::pair<std::vector<std::variant<BuiltinType,icu::UnicodeString>>, std::vector<bool>>;
+        auto info = anyas<ReturnInfo>(visitReturn_type(context->return_type()));
+        func->returnTypes = info.first;
+        func->returnTypeConst = info.second;
     }
 
     if (func->returnTypes.has_value() && func->isProc)
@@ -1399,6 +1407,13 @@ std::any ASTGenerator::visitParameter(RoxalParser::ParameterContext *context)
 
             param->annotations.push_back(annotation);
         }
+    }
+
+    if (context->const_qualifier()) {
+        if (context->const_qualifier()->CONST())
+            param->isConst = true;
+        else if (context->const_qualifier()->MUTABLE())
+            param->isMutable = true;
     }
 
     if (context->builtin_type()) {
@@ -1702,6 +1717,9 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
             propAccessor->annotations.push_back(annotation);
         }
 
+        // Get const qualifier on type (parsed but not yet used for PropertyAccessor)
+        // if (context->const_qualifier()) { ... }
+
         // Get type
         if (context->builtin_type()) {
             auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
@@ -1754,6 +1772,13 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
             varDecl->annotations.push_back(annotation);
+        }
+
+        if (context->const_qualifier()) {
+            if (context->const_qualifier()->CONST())
+                varDecl->isTypeConst = true;
+            else if (context->const_qualifier()->MUTABLE())
+                varDecl->isTypeMutable = true;
         }
 
         if (context->builtin_type()) {
@@ -1904,8 +1929,10 @@ std::any ASTGenerator::visitLambda_func(RoxalParser::Lambda_funcContext *context
 
     // return types (optional)
     if (context->return_type()) {
-        auto returnTypeVector = anyas<std::vector<std::variant<BuiltinType,icu::UnicodeString>>>(visitReturn_type(context->return_type()));
-        func->returnTypes = returnTypeVector;
+        using ReturnInfo = std::pair<std::vector<std::variant<BuiltinType,icu::UnicodeString>>, std::vector<bool>>;
+        auto info = anyas<ReturnInfo>(visitReturn_type(context->return_type()));
+        func->returnTypes = info.first;
+        func->returnTypeConst = info.second;
     }
 
     if (context->suite()) {
@@ -2760,24 +2787,44 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
 }
 
 
-// returns BuiltinType enum value
+// returns pair of {return types, mutable flags}
 std::any ASTGenerator::visitReturn_type(RoxalParser::Return_typeContext *context)
 {
     visitStart();
 
+    using ReturnInfo = std::pair<std::vector<std::variant<BuiltinType,icu::UnicodeString>>, std::vector<bool>>;
     std::vector<std::variant<BuiltinType,icu::UnicodeString>> returnTypes;
+    std::vector<bool> constFlags;
 
-    // Process all type_spec nodes in order
-    for (auto* typeSpecCtx : context->type_spec()) {
-        auto typeSpec = anyas<std::variant<BuiltinType,icu::UnicodeString>>(visitType_spec(typeSpecCtx));
+    // Walk children in order to pair const_qualifier with following type_spec
+    auto typeSpecs = context->type_spec();
+    auto qualifiers = context->const_qualifier();
+    size_t qi = 0; // qualifier index
+
+    for (size_t ti = 0; ti < typeSpecs.size(); ti++) {
+        auto typeSpec = anyas<std::variant<BuiltinType,icu::UnicodeString>>(visitType_spec(typeSpecs[ti]));
         returnTypes.push_back(typeSpec);
+
+        // Check if there's a const_qualifier preceding this type_spec
+        bool isConst = false;
+        if (qi < qualifiers.size()) {
+            // A qualifier precedes this type_spec if its token position is before the type_spec's
+            auto qualStart = qualifiers[qi]->getStart()->getTokenIndex();
+            auto typeStart = typeSpecs[ti]->getStart()->getTokenIndex();
+            if (qualStart < typeStart) {
+                if (qualifiers[qi]->CONST())
+                    isConst = true;
+                qi++;
+            }
+        }
+        constFlags.push_back(isConst);
     }
 
     if (returnTypes.empty()) {
         throw std::runtime_error("Invalid return type specification - no types found.");
     }
 
-    return returnTypes;
+    return ReturnInfo{returnTypes, constFlags};
 
     visitEnd();
 }
@@ -2847,6 +2894,13 @@ std::any ASTGenerator::visitBuiltin_type(RoxalParser::Builtin_typeContext *conte
     visitEnd();
 }
 
+
+
+std::any ASTGenerator::visitConst_qualifier(RoxalParser::Const_qualifierContext *context)
+{
+    // Handled directly in visitParameter / visitVar_decl / visitReturn_type
+    return {};
+}
 
 
 std::any ASTGenerator::visitList(RoxalParser::ListContext *context)

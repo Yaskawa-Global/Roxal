@@ -452,9 +452,13 @@ protected:
     static thread_local UnicodeString nativeCallContext_;
     static thread_local std::string nativeCallOverrun_; // set by callNativeFn() on overrun
 
-
+    // Dataflow thread flag: when true, module var reads return const refs
+    // and module var writes raise a runtime error.
+    static thread_local bool onDataflowThread_;
 
 public:
+    static bool onDataflowThread() { return onDataflowThread_; }
+    static void setOnDataflowThread(bool v) { onDataflowThread_ = v; }
     Value getConditionalInterruptClosure() const { return conditionalInterruptClosure; } // ObjClosure
     ObjModuleType* replModuleType() const;
 
@@ -472,16 +476,21 @@ public:
         std::vector<Value> defaultValues;
         Value declFunction;
         uint32_t resolveArgMask {0}; // bit N set → resolve arg N before call
+        bool noMutateSelf {false};   // method doesn't mutate receiver state
+        uint32_t noMutateArgs {0};   // bitmask: bit N set → arg N not mutated
 
         BuiltinMethodInfo() : isProc(false), declFunction(Value::nilVal()) {}
         BuiltinMethodInfo(NativeFn fn, bool proc = false,
                           ptr<type::Type> type=nullptr,
                           std::vector<Value> defaults = {},
                           Value declFn = Value::nilVal(),
-                          uint32_t resolveMask = 0)
+                          uint32_t resolveMask = 0,
+                          bool noMutateSelf_ = false,
+                          uint32_t noMutateArgs_ = 0)
             : function(fn), isProc(proc), funcType(type),
               defaultValues(std::move(defaults)), declFunction(declFn),
-              resolveArgMask(resolveMask) {}
+              resolveArgMask(resolveMask),
+              noMutateSelf(noMutateSelf_), noMutateArgs(noMutateArgs_) {}
 
         void trace(ValueVisitor& visitor) const
         {
@@ -530,7 +539,9 @@ public:
                              bool isProc = false,
                              ptr<type::Type> funcType = nullptr,
                              std::vector<Value> defaults = {},
-                             Value declFunction = Value::nilVal());
+                             Value declFunction = Value::nilVal(),
+                             bool noMutateSelf = false,
+                             uint32_t noMutateArgs = 0);
 
     // Native property support
     typedef Value (VM::*NativePropertyGetter)(Value&);

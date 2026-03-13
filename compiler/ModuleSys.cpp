@@ -531,6 +531,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("_weakref", [this](VM& vm, ArgsView a){ return weakref_builtin(vm,a); });
         addSys("_weak_alive", [this](VM& vm, ArgsView a){ return weak_alive_builtin(vm,a); });
         addSys("_strongref", [this](VM& vm, ArgsView a){ return strongref_builtin(vm,a); });
+        addSys("_refcount", [this](VM& vm, ArgsView a){ return refcount_builtin(vm,a); });
         addSys("_arity", [this](VM& vm, ArgsView a){ return arity_builtin(vm,a); });
         addSys("gc", [this](VM& vm, ArgsView a){ return gc_builtin(vm,a); });
         addSys("gc_config", [this](VM& vm, ArgsView a){ return gc_config_builtin(vm,a); });
@@ -823,7 +824,7 @@ Value ModuleSys::wait_builtin(VM& vm, ArgsView args)
     VM::thread->pendingWaitFor = Value::nilVal();
 
     auto resolveList = [](ObjList* list) {
-        for (auto& element : list->elts.get())
+        for (auto& element : list->getElements())
             element.resolve();
     };
 
@@ -1767,6 +1768,18 @@ Value ModuleSys::strongref_builtin(VM& vm, ArgsView args)
     return args[0].strongRef();
 }
 
+Value ModuleSys::refcount_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 1)
+        throw std::invalid_argument("_refcount expects single argument");
+
+    Value v = args[0];
+    if (!v.isObj()) return Value::intVal(-1); // non-object
+    Obj* obj = v.asObj();
+    if (!obj || !obj->control) return Value::intVal(-1);
+    return Value::intVal(obj->control->strong.load(std::memory_order_relaxed));
+}
+
 Value ModuleSys::arity_builtin(VM& vm, ArgsView args)
 {
     if (args.size() != 1)
@@ -1884,7 +1897,7 @@ Value ModuleSys::deserialize_builtin(VM& vm, ArgsView args)
     std::string data;
     data.reserve(lst->length());
     for(int i=0;i<lst->length();i++) {
-        Value v = lst->elts.at(i);
+        Value v = lst->getElement(i);
         uint8_t b;
         if(v.isByte()) {
             b = v.asByte();
@@ -1920,7 +1933,7 @@ static json11::Json valueToJson(const Value& v) {
         case ValueType::List: {
             Json::array arr; arr.reserve(asList(v)->length());
             for(int i=0;i<asList(v)->length();++i)
-                arr.push_back(valueToJson(asList(v)->elts.at(i)));
+                arr.push_back(valueToJson(asList(v)->getElement(i)));
             return Json(arr);
         }
         case ValueType::Dict: {
@@ -2519,6 +2532,7 @@ Value ModuleSys::typeof_native(VM& vm, ArgsView args)
         throw std::invalid_argument("typeof expects single argument");
 
     Value val = args[0];
+    bool isConst = val.isConst();
     ValueType valueType;
 
     // Determine the ValueType of the argument
@@ -2543,10 +2557,14 @@ Value ModuleSys::typeof_native(VM& vm, ArgsView args)
         valueType = ValueType::Event;
     } else if (val.isObj()) {
         Obj* obj = val.asObj();
-        if (obj->type == ObjType::Instance)
-            return asObjectInstance(val)->instanceType;
-        if (obj->type == ObjType::Actor)
-            return asActorInstance(val)->instanceType;
+        if (obj->type == ObjType::Instance) {
+            Value result = asObjectInstance(val)->instanceType;
+            return isConst ? result.constRef() : result;
+        }
+        if (obj->type == ObjType::Actor) {
+            Value result = asActorInstance(val)->instanceType;
+            return isConst ? result.constRef() : result;
+        }
         if (obj->type == ObjType::Exception) {
             ObjException* ex = asException(val);
             if (!ex->exType.isNil())
@@ -2561,7 +2579,8 @@ Value ModuleSys::typeof_native(VM& vm, ArgsView args)
         // For primitive object wrappers like strings
         valueType = obj->valueType();
         auto typeObj = newTypeSpecObj(valueType);
-        return Value::objVal(std::move(typeObj));
+        Value result = Value::objVal(std::move(typeObj));
+        return isConst ? result.constRef() : result;
     } else {
         // Fallback
         valueType = ValueType::Nil;

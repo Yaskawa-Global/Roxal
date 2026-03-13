@@ -187,11 +187,11 @@ func ones(r:int, c:int) -> matrix:
   """matrix of all ones"""
 
 @builtin
-func dot(a:vector, b:vector) -> real:
+func dot(a: const vector, b: const vector) -> real:
   """dot product of two vectors"""
 
 @builtin
-func cross(a:vector, b:vector) -> vector:
+func cross(a: const vector, b: const vector) -> vector:
   """cross product of two 3-element vectors"""
 
 @builtin

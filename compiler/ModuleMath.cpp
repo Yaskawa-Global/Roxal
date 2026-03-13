@@ -406,7 +406,7 @@ Value ModuleMath::math_min_builtin(ArgsView args)
         return Value::realVal(minVal);
     }
     else if (isList(x)) {
-        auto elts = asList(x)->elts.get();
+        auto elts = asList(x)->getElements();
         if (elts.empty()) throw std::invalid_argument("math.min on empty list");
         double minVal = toType(ValueType::Real, elts[0], false).asReal();
         for (size_t i = 1; i < elts.size(); ++i)
@@ -443,7 +443,7 @@ Value ModuleMath::math_max_builtin(ArgsView args)
         return Value::realVal(maxVal);
     }
     else if (isList(x)) {
-        auto elts = asList(x)->elts.get();
+        auto elts = asList(x)->getElements();
         if (elts.empty()) throw std::invalid_argument("math.max on empty list");
         double maxVal = toType(ValueType::Real, elts[0], false).asReal();
         for (size_t i = 1; i < elts.size(); ++i)
@@ -479,7 +479,7 @@ Value ModuleMath::math_sum_builtin(ArgsView args)
         return Value::realVal(s);
     }
     else if (isList(x)) {
-        auto elts = asList(x)->elts.get();
+        auto elts = asList(x)->getElements();
         double s = 0.0;
         for (size_t i = 0; i < elts.size(); ++i)
             s += toType(ValueType::Real, elts[i], false).asReal();

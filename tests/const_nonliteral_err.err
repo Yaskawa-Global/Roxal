@@ -1,2 +1,0 @@
-.*const_nonliteral_err\.rox:2:0: error: Const initializer references an identifier that is not a const\.*
-

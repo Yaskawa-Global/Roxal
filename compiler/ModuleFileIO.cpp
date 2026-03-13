@@ -243,7 +243,7 @@ Value ModuleFileIO::fileio_write_builtin(ArgsView args)
         ObjList* lst = asList(args[1]);
         writeData.reserve(static_cast<size_t>(lst->length()));
         for (int i = 0; i < lst->length(); ++i) {
-            const Value& v = lst->elts.at(i);
+            const Value& v = lst->getElement(i);
             uint8_t b;
             if (v.isByte())
                 b = v.asByte();

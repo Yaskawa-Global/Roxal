@@ -1,0 +1,10 @@
+// Test that mutating an emitted event errors (spec: Event Implicit Const)
+
+type Clicked event:
+    var x: int
+
+when Clicked occurs as e:
+    print(e.x)
+    e.x = 99
+
+emit Clicked(x=42)

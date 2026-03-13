@@ -426,6 +426,48 @@ SimpleMarkSweepGC::CollectionResult SimpleMarkSweepGC::performCollection(std::un
     visitRoots(marker);
     marker.drain();
 
+    // MVCC: mark version chain snapshots.
+    // Version chain entries hold raw Obj* snapshots that aren't reachable via
+    // normal Value tracing.  We must mark them so the sweep doesn't collect
+    // objects that an active snapshot may still need for version resolution.
+    for (ObjControl* control : controls_) {
+        if (!control || !control->obj)
+            continue;
+        if (control->markEpoch.load(std::memory_order_relaxed) != epoch)
+            continue;
+        ObjVersion* ver = control->versionChain.load(std::memory_order_relaxed);
+        while (ver) {
+            if (ver->snapshot && ver->snapshot->control) {
+                ObjControl* snapCtrl = ver->snapshot->control;
+                if (!snapCtrl->collecting.load(std::memory_order_relaxed) &&
+                    snapCtrl->markEpoch.load(std::memory_order_relaxed) != epoch) {
+                    snapCtrl->markEpoch.store(epoch, std::memory_order_relaxed);
+                    // Trace the snapshot's children too (they may hold refs)
+                    marker.worklist.push_back(ver->snapshot);
+                }
+            }
+            ver = ver->prev;
+        }
+    }
+    marker.drain();
+
+    // MVCC: trim version chains on live objects.
+    // All threads are at a safepoint, so no concurrent readers.
+    {
+        uint64_t minEpoch = snapshotEpochTracker.minEpoch();
+        for (ObjControl* control : controls_) {
+            if (!control || !control->obj)
+                continue;
+            if (control->collecting.load(std::memory_order_relaxed))
+                continue;
+            // Only trim marked (live) objects that have a version chain
+            if (control->markEpoch.load(std::memory_order_relaxed) == epoch
+                && control->versionChain.load(std::memory_order_relaxed) != nullptr) {
+                control->obj->trimVersionChain(minEpoch);
+            }
+        }
+    }
+
     std::vector<Obj*> unreachable;
     unreachable.reserve(controls_.size());
     std::uint64_t totalFreedBytes = 0;

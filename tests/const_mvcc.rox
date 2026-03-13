@@ -1,0 +1,155 @@
+// Stress test for MVCC: version chains, chain trimming, GC integration.
+// Creates complex object graphs, interleaves mutations with const snapshots,
+// forces GC at strategic points, and verifies snapshot isolation throughout.
+
+type Node object:
+    var name: string
+    var value: int
+    var children: list
+
+// --- 1. Write-heavy workload: many mutations between snapshots ---
+// This exercises version save deduplication (only first mutation per epoch window saves).
+
+var root = Node("root", 0, [])
+for i in range(0..19):
+    root.value = i  // 20 mutations, but dedup should collapse most
+
+const snap_after_20 = root
+root.value = 999
+print("1a: {snap_after_20.value}")  // 19 (last value before snapshot)
+print("1b: {root.value}")           // 999
+gc()
+
+// --- 2. Multiple snapshots at different epochs with interior mutations ---
+
+var a = Node("A", 1, [])
+var b = Node("B", 2, [])
+var c = Node("C", 3, [a, b])
+
+const s1 = c               // snapshot 1: A=1, B=2, C=3
+a.value = 10
+b.value = 20
+c.value = 30
+gc()                        // GC with s1 active — chains must survive
+
+const s2 = c               // snapshot 2: A=10, B=20, C=30
+a.value = 100
+b.value = 200
+c.value = 300
+gc()                        // GC with s1 and s2 active
+
+const s3 = c               // snapshot 3: A=100, B=200, C=300
+a.value = 1000
+b.value = 2000
+c.value = 3000
+
+// All three snapshots must be independently correct
+print("2a: {s1.value} {s1.children[0].value} {s1.children[1].value}")  // 3 1 2
+print("2b: {s2.value} {s2.children[0].value} {s2.children[1].value}")  // 30 10 20
+print("2c: {s3.value} {s3.children[0].value} {s3.children[1].value}")  // 300 100 200
+print("2d: {c.value} {a.value} {b.value}")                             // 3000 1000 2000
+
+// --- 3. Snapshot lifetime: child escapes parent, parent collected ---
+
+var outer = Node("outer", 0, [Node("inner", 42, [])])
+const co = outer
+var escaped_child = co.children[0]   // frozen clone of inner, holds ref to token
+// co goes out of scope conceptually; escaped_child keeps token alive
+gc()
+print("3: {escaped_child.name} {escaped_child.value}")  // inner 42
+
+// --- 4. Cycles + GC: snapshot a cyclic graph, mutate, GC, verify ---
+
+type Link object:
+    var name: string
+    var next
+
+var x = Link("X", nil)
+var y = Link("Y", nil)
+x.next = y
+y.next = x    // cycle: X <-> Y
+
+const cx = x
+x.name = "X2"
+y.name = "Y2"
+gc()          // GC must trace version chain snapshots to keep them alive
+
+print("4a: {cx.name}")              // X
+print("4b: {cx.next.name}")         // Y
+print("4c: {cx.next.next.name}")    // X (cycle back)
+print("4d: {x.name} {y.name}")      // X2 Y2
+
+// --- 5. Diamond aliasing: two paths to same object ---
+
+var shared = Node("shared", 7, [])
+var left = Node("left", 0, [shared])
+var right = Node("right", 0, [shared])
+var diamond = [left, right]
+
+const cd = diamond
+shared.value = 77
+gc()
+
+print("5a: {cd[0].children[0].value}")  // 7  (snapshot)
+print("5b: {cd[1].children[0].value}")  // 7  (snapshot, same object)
+// Both paths through the diamond should see the same snapshot value
+
+// --- 6. Snapshot release + chain trimming ---
+// Create a snapshot, release it, mutate more, GC should trim old versions.
+
+var obj = Node("trim", 0, [])
+for i in range(0..9):
+    obj.value = i
+
+if true:
+    const temp_snap = obj   // snapshot in inner scope
+    print("6a: {temp_snap.value}")  // 9
+// temp_snap goes out of scope here (refcount drops, token freed)
+
+gc()  // should trim version chains since snapshot is gone
+
+// Object should still work fine after trimming
+obj.value = 42
+print("6b: {obj.value}")   // 42
+
+// Take a new snapshot to verify chains work correctly after trimming
+const fresh = obj
+obj.value = 99
+print("6c: {fresh.value}") // 42
+print("6d: {obj.value}")   // 99
+
+// --- 7. Nested lists with mutations at multiple depths ---
+
+var l1 = [1, 2, 3]
+var l2 = [10, 20, 30]
+var nested = [l1, l2]
+
+const cn = nested
+l1[0] = 111
+l2[2] = 333
+gc()
+
+print("7a: {cn[0][0]} {cn[0][1]} {cn[0][2]}")  // 1 2 3
+print("7b: {cn[1][0]} {cn[1][1]} {cn[1][2]}")  // 10 20 30
+print("7c: {nested[0][0]} {nested[1][2]}")       // 111 333
+
+// --- 8. Many snapshots created and released in sequence ---
+
+var counter = Node("counter", 0, [])
+for i in range(0..49):
+    counter.value = i
+
+// Take snapshots at specific points with GC interleaved
+counter.value = 100
+const snap100 = counter
+counter.value = 200
+gc()
+const snap200 = counter
+counter.value = 300
+gc()
+
+print("8a: {snap100.value}")  // 100
+print("8b: {snap200.value}")  // 200
+print("8c: {counter.value}")  // 300
+
+print("done")

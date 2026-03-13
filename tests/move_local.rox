@@ -1,0 +1,8 @@
+// Test move() with local variables
+func test():
+    var x = [1,2,3]
+    var y = move(x)
+    print('y=' + y)
+    print('x is nil: ' + (x == nil))
+
+test()

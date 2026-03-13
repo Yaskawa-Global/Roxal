@@ -112,7 +112,7 @@ tests = [
     'annot1', 'generic', 'objscopes',
     'threads1', 'fork_upvalue_error', 'fork_no_upvalues',
     'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8', 'actor9',
-    'actor_init', 'actor_stack', 'actor_future', 'future_ready', 'future_builtin_resolve',
+    'actor_init', 'actor_stack', 'actor_future', 'future_ready', 'future_builtin_resolve', 'future_typed_param_resolve',
     'actor_method_order',
     'actor_closure1', 'actor_closure2', 'actor_closure3',
     'clone1', 'clone_shared', 'clone_cycle', 'extends1', 'nothis', 'superprop', 'scopetest4',
@@ -133,7 +133,20 @@ tests = [
     'weakref', 'strongref', 'is_operator', 'in_operator', 'stackdepth', 'modulevar2',
     'const_basic', 'const_assign_err', 'const_nonliteral_err', 'const_missing_initializer_err',
     'const_property', 'const_property_method_err', 'const_property_runtime_err', 'const_module_assign',
+    'const-interior-mutation',
+    'const_list', 'const_dict', 'const_nested', 'const_snapshots', 'const_alias', 'const_identity',
+    'const_deep_chain', 'const_cycle', 'const_diamond', 'const_multi_snapshot', 'const_func', 'const_escape_err',
+    'const_type_qualifier', 'const_mutable_type', 'const_builtin_method_err', 'const_mvcc',
+    'const_method_dispatch',
+    'event_const', 'event_const_err', 'event_const_transitive_err',
+    'const_signal_err', 'const_signal_type_err',
+    'df_capture_mutable_err',
+    'actor_const_param', 'actor_const_param_err',
+    'move_local', 'move_module_var', 'move_prop', 'move_const_err', 'move_actor', 'move_zero_copy', 'move_actor_alias_err',
     'actor_module_const', 'actor_module_var_err',
+    'actor_return_mutable_sole', 'actor_return_mutable_shared',
+    'actor_return_const_sole', 'actor_return_const_shared',
+    'actor_interior_mutate',
     'is_operator_type',
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
     'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle', 'gc_list_cycle', 'gc_liveness',
@@ -170,6 +183,7 @@ tests += media_tests
 
 long_running_tests = [
     'gc_stress',
+    'const_mvcc_stress',
     'rtcallback_test',
 ]
 
