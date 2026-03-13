@@ -142,7 +142,7 @@ Value ModuleFileIO::fileio_close_builtin(ArgsView args)
         if (f->file && f->file->is_open())
             f->file->close();
     }
-    return Value::nilVal();
+    return Value::trueVal();
 }
 
 Value ModuleFileIO::fileio_is_open_builtin(ArgsView args)

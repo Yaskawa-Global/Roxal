@@ -3,8 +3,8 @@ func open(path:string, append:bool=false, format:string='text', write:bool=false
   """open file at path with optional append, format, and write access"""
 
 @builtin
-proc close(file):
-  """close file handle"""
+func close(file) -> bool:
+  """close file handle, waiting for pending writes to complete"""
 
 @builtin
 func flush(file) -> bool:

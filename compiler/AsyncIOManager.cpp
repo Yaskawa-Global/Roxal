@@ -306,13 +306,13 @@ Value AsyncIOManager::executeFileFlush(PendingIOOp& op)
 Value AsyncIOManager::executeFileClose(PendingIOOp& op)
 {
     // pendingFutures already waited in executeOp
-    if (!op.file) return Value::nilVal();
+    if (!op.file) return Value::falseVal();
 
     std::lock_guard<std::mutex> lock(op.file->mutex);
     if (op.file->file && op.file->file->is_open()) {
         op.file->file->close();
     }
-    return Value::nilVal();
+    return Value::trueVal();
 }
 
 Value AsyncIOManager::executeFileSyncFlush(PendingIOOp& op)

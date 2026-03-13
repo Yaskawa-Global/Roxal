@@ -16,7 +16,8 @@ type Writer actor:
         j = j + 1
       fileio.write(h, line + '\n')
       i = i + 1
-    fileio.close(h)
+    var close_rsp = fileio.close(h)
+    wait(for=close_rsp)
     return true
 
 var path = 'actor_concat_stress.tmp'
