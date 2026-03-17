@@ -115,7 +115,7 @@ void ModuleMath::registerBuiltins(VM& vm)
     // Link builtin Counter methods
     linkMethod("_Counter", "init", [this](VM&, ArgsView a){ return counter_init_builtin(a); });
     linkMethod("_Counter", "inc", [this](VM&, ArgsView a){ return counter_inc_builtin(a); });
-    linkMethod("_Counter", "value", [this](VM&, ArgsView a){ return counter_value_builtin(a); }, {});
+    linkMethod("_Counter", "value", [this](VM&, ArgsView a){ return counter_value_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
 
     if (auto vecSignal = moduleSourceSignal("_vecSignal", false))
         vecSignal->setInternal(true);

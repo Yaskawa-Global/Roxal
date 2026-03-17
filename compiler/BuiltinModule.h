@@ -69,8 +69,10 @@ protected:
     void linkMethod(const std::string& typeName,
                     const std::string& methodName,
                     NativeFn fn,
-                    std::vector<Value> defaults = {},
-                    uint32_t resolveArgMask = 0);
+                    std::vector<Value> defaults = {}, // default arg values (if not in .rox file)
+                    uint32_t resolveArgMask = 0,// bitmask of argument indices (0-based) that should be passed as resolved values (not futures)
+                    bool noMutateSelf = false,  // does this method modify instance state?
+                    uint32_t noMutateArgs = 0); // bitmask of argument indices (0-based) that are not mutated by this method (for optimization)
 
     // Fetch a module-level source signal declared in the builtin .rox file.
     // If \p required is false, returns nullptr when the signal cannot be found.
@@ -178,7 +180,9 @@ inline void BuiltinModule::linkMethod(const std::string& typeName,
                                       const std::string& methodName,
                                       NativeFn fn,
                                       std::vector<Value> defaults,
-                                      uint32_t resolveArgMask)
+                                      uint32_t resolveArgMask,
+                                      bool noMutateSelf,
+                                      uint32_t noMutateArgs)
 {
     auto typeVal = asModuleType(moduleType())->vars.load(toUnicodeString(typeName));
     if (typeVal.has_value() && isObjectType(typeVal.value())) {
@@ -189,7 +193,7 @@ inline void BuiltinModule::linkMethod(const std::string& typeName,
             if (isClosure(val)) {
                 ObjClosure* cl = asClosure(val);
                 asFunction(cl->function)->builtinInfo = make_ptr<BuiltinFuncInfo>(
-                    fn, std::move(defaults), resolveArgMask);
+                    fn, std::move(defaults), resolveArgMask, noMutateSelf, noMutateArgs);
             }
         }
         else {

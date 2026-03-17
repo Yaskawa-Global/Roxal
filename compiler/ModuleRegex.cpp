@@ -26,8 +26,8 @@ void ModuleRegex::registerBuiltins(VM& vm)
 
     // Regex object methods
     linkMethod("Regex", "init", [this](VM&, ArgsView a) { return regex_init_builtin(a); });
-    linkMethod("Regex", "test", [this](VM&, ArgsView a) { return regex_test_builtin(a); });
-    linkMethod("Regex", "exec", [this](VM&, ArgsView a) { return regex_exec_builtin(a); });
+    linkMethod("Regex", "test", [this](VM&, ArgsView a) { return regex_test_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Regex", "exec", [this](VM&, ArgsView a) { return regex_exec_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
 }
 
 RegexWrapper* ModuleRegex::compilePattern(const std::string& pattern,

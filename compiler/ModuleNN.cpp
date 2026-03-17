@@ -500,18 +500,18 @@ void ModuleNN::registerBuiltins(VM& vm)
         if (a.size() < 2 || !isObjectInstance(a[0]))
             throw std::invalid_argument("predict expects an input argument");
         return safeRunInferenceFromValueAsync(vm, getModelWrapperShared(asObjectInstance(a[0])), a[1]);
-    });
-    linkMethod("Model", "inputs",  [this](VM&, ArgsView a) { return nn_model_inputs_builtin(a); });
-    linkMethod("Model", "outputs", [this](VM&, ArgsView a) { return nn_model_outputs_builtin(a); });
-    linkMethod("Model", "device",  [this](VM&, ArgsView a) { return nn_model_device_builtin(a); });
+    }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Model", "inputs",  [this](VM&, ArgsView a) { return nn_model_inputs_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Model", "outputs", [this](VM&, ArgsView a) { return nn_model_outputs_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Model", "device",  [this](VM&, ArgsView a) { return nn_model_device_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
     linkMethod("Model", "close",   [this](VM&, ArgsView a) { return nn_model_close_builtin(a); });
 
     // Tokenizer object methods
     linkMethod("Tokenizer", "init",           [this](VM&, ArgsView a) { return nn_tokenizer_init_builtin(a); });
-    linkMethod("Tokenizer", "encode",         [this](VM&, ArgsView a) { return nn_tokenizer_encode_builtin(a); });
-    linkMethod("Tokenizer", "decode",         [this](VM&, ArgsView a) { return nn_tokenizer_decode_builtin(a); });
-    linkMethod("Tokenizer", "vocab_size",     [this](VM&, ArgsView a) { return nn_tokenizer_vocab_size_builtin(a); });
-    linkMethod("Tokenizer", "special_tokens", [this](VM&, ArgsView a) { return nn_tokenizer_special_tokens_builtin(a); });
+    linkMethod("Tokenizer", "encode",         [this](VM&, ArgsView a) { return nn_tokenizer_encode_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Tokenizer", "decode",         [this](VM&, ArgsView a) { return nn_tokenizer_decode_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Tokenizer", "vocab_size",     [this](VM&, ArgsView a) { return nn_tokenizer_vocab_size_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Tokenizer", "special_tokens", [this](VM&, ArgsView a) { return nn_tokenizer_special_tokens_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
     linkMethod("Tokenizer", "close",          [this](VM&, ArgsView a) { return nn_tokenizer_close_builtin(a); });
 }
 

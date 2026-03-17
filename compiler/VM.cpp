@@ -2675,7 +2675,8 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
 
 
 
-bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec)
+bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec,
+                        const Value& receiver)
 {
     ObjObjectType* t = type;
     const ObjObjectType::Method* methodPtr = nullptr;
@@ -2697,6 +2698,17 @@ bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& ca
         return false;
     }
     Value method { methodInfo.closure };
+
+    // Const enforcement for linkMethod-registered native methods
+    if (receiver.isConst()) {
+        ObjFunction* func = asFunction(asClosure(method)->function);
+        if (func->builtinInfo && !func->builtinInfo->noMutateSelf) {
+            runtimeError("Cannot call mutating method '%s' on const value.",
+                         toUTF8StdString(name->s).c_str());
+            return false;
+        }
+    }
+
     return call(asClosure(method), callSpec);
 }
 
@@ -2718,7 +2730,7 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
             return callValue(value, callSpec);
         }
 
-        return invokeFromType(asObjectType(instance->instanceType), name, callSpec);
+        return invokeFromType(asObjectType(instance->instanceType), name, callSpec, receiver);
     }
     else if (isActorInstance(receiver)) {
         ActorInstance* instance = asActorInstance(receiver);
@@ -3217,6 +3229,14 @@ VM::BindResult VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
         ObjClosure* cl = asClosure(method);
         ObjFunction* func = asFunction(cl->function);
         const auto& info = *func->builtinInfo;
+
+        // Const enforcement for linkMethod-registered native methods
+        if (peek(0).isConst() && !info.noMutateSelf) {
+            runtimeError("Cannot call mutating method '%s' on const value.",
+                         toUTF8StdString(name->s).c_str());
+            return BindResult::Private; // reuse error return path
+        }
+
         Value boundNative { Value::boundNativeVal(peek(0), info.function,
                                                   func->funcType.has_value() &&
                                                       func->funcType.value()->func.has_value() ?

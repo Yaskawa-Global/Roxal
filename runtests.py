@@ -136,7 +136,7 @@ tests = [
     'const-interior-mutation',
     'const_list', 'const_dict', 'const_nested', 'const_snapshots', 'const_alias', 'const_identity',
     'const_deep_chain', 'const_cycle', 'const_diamond', 'const_multi_snapshot', 'const_func', 'const_escape_err',
-    'const_type_qualifier', 'const_mutable_type', 'const_builtin_method_err', 'const_mvcc',
+    'const_type_qualifier', 'const_mutable_type', 'const_builtin_method_err', 'const_linked_method_err', 'const_mvcc',
     'const_method_dispatch',
     'event_const', 'event_const_err', 'event_const_transitive_err',
     'const_signal_err', 'const_signal_type_err',

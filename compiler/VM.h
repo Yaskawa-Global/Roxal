@@ -229,7 +229,8 @@ public:
     bool call(ObjClosure* closure, const CallSpec& callSpec);
     bool call(ValueType builtinType, const CallSpec& callSpec);
     bool callValue(const Value& callee, const CallSpec& callSpec);
-    bool invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec);
+    bool invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec,
+                        const Value& receiver);
     bool invoke(ObjString* name, const CallSpec& callSpec);
 
     /// Invoke a closure with arguments. Executes until completion or deadline.

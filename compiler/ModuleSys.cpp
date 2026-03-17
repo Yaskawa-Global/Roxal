@@ -588,38 +588,38 @@ void ModuleSys::registerBuiltins(VM& vm)
         Value::stringVal(toUnicodeString("local"))
     };
     linkMethod("Time", "init", [this](VM& vm, ArgsView a){ return time_init_native(vm,a); }, timeInitDefaults);
-    linkMethod("Time", "kind", [this](VM& vm, ArgsView a){ return time_kind_native(vm,a); });
-    linkMethod("Time", "is_steady", [this](VM& vm, ArgsView a){ return time_is_steady_native(vm,a); });
-    linkMethod("Time", "seconds", [this](VM& vm, ArgsView a){ return time_seconds_native(vm,a); });
-    linkMethod("Time", "microseconds", [this](VM& vm, ArgsView a){ return time_micros_native(vm,a); });
-    linkMethod("Time", "diff", [this](VM& vm, ArgsView a){ return time_diff_native(vm,a); });
-    linkMethod("Time", "since", [this](VM& vm, ArgsView a){ return time_since_native(vm,a); });
-    linkMethod("Time", "until_time", [this](VM& vm, ArgsView a){ return time_until_native(vm,a); });
+    linkMethod("Time", "kind", [this](VM& vm, ArgsView a){ return time_kind_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Time", "is_steady", [this](VM& vm, ArgsView a){ return time_is_steady_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Time", "seconds", [this](VM& vm, ArgsView a){ return time_seconds_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Time", "microseconds", [this](VM& vm, ArgsView a){ return time_micros_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Time", "diff", [this](VM& vm, ArgsView a){ return time_diff_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Time", "since", [this](VM& vm, ArgsView a){ return time_since_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Time", "until_time", [this](VM& vm, ArgsView a){ return time_until_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
     std::vector<Value> timeFormatDefaults{
         Value::stringVal(toUnicodeString("%Y-%m-%d %H:%M:%S")),
         Value::stringVal(toUnicodeString("local"))
     };
-    linkMethod("Time", "format", [this](VM& vm, ArgsView a){ return time_format_native(vm,a); }, timeFormatDefaults);
+    linkMethod("Time", "format", [this](VM& vm, ArgsView a){ return time_format_native(vm,a); }, timeFormatDefaults, 0, /*noMutateSelf=*/true);
     std::vector<Value> timeComponentsDefaults{
         Value::stringVal(toUnicodeString("local"))
     };
-    linkMethod("Time", "components", [this](VM& vm, ArgsView a){ return time_components_native(vm,a); }, timeComponentsDefaults);
+    linkMethod("Time", "components", [this](VM& vm, ArgsView a){ return time_components_native(vm,a); }, timeComponentsDefaults, 0, /*noMutateSelf=*/true);
 
     std::vector<Value> spanInitDefaults{
         Value::intVal(0), Value::intVal(0), Value::intVal(0),
         Value::intVal(0), Value::intVal(0), Value::intVal(0)
     };
     linkMethod("TimeSpan", "init", [this](VM& vm, ArgsView a){ return timespan_init_native(vm,a); }, spanInitDefaults);
-    linkMethod("TimeSpan", "seconds", [this](VM& vm, ArgsView a){ return timespan_seconds_native(vm,a); });
-    linkMethod("TimeSpan", "microseconds", [this](VM& vm, ArgsView a){ return timespan_micros_native(vm,a); });
-    linkMethod("TimeSpan", "split", [this](VM& vm, ArgsView a){ return timespan_split_native(vm,a); });
-    linkMethod("TimeSpan", "total_days", [this](VM& vm, ArgsView a){ return timespan_total_days_native(vm,a); });
-    linkMethod("TimeSpan", "total_hours", [this](VM& vm, ArgsView a){ return timespan_total_hours_native(vm,a); });
-    linkMethod("TimeSpan", "total_minutes", [this](VM& vm, ArgsView a){ return timespan_total_minutes_native(vm,a); });
-    linkMethod("TimeSpan", "total_seconds", [this](VM& vm, ArgsView a){ return timespan_total_seconds_native(vm,a); });
-    linkMethod("TimeSpan", "total_millis", [this](VM& vm, ArgsView a){ return timespan_total_millis_native(vm,a); });
-    linkMethod("TimeSpan", "total_micros", [this](VM& vm, ArgsView a){ return timespan_total_micros_native(vm,a); });
-    linkMethod("TimeSpan", "human", [this](VM& vm, ArgsView a){ return timespan_human_native(vm,a); });
+    linkMethod("TimeSpan", "seconds", [this](VM& vm, ArgsView a){ return timespan_seconds_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("TimeSpan", "microseconds", [this](VM& vm, ArgsView a){ return timespan_micros_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("TimeSpan", "split", [this](VM& vm, ArgsView a){ return timespan_split_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("TimeSpan", "total_days", [this](VM& vm, ArgsView a){ return timespan_total_days_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("TimeSpan", "total_hours", [this](VM& vm, ArgsView a){ return timespan_total_hours_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("TimeSpan", "total_minutes", [this](VM& vm, ArgsView a){ return timespan_total_minutes_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("TimeSpan", "total_seconds", [this](VM& vm, ArgsView a){ return timespan_total_seconds_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("TimeSpan", "total_millis", [this](VM& vm, ArgsView a){ return timespan_total_millis_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("TimeSpan", "total_micros", [this](VM& vm, ArgsView a){ return timespan_total_micros_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("TimeSpan", "human", [this](VM& vm, ArgsView a){ return timespan_human_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
 
     {
         std::vector<Value> defaults{ Value::stringVal(toUnicodeString("local")) };

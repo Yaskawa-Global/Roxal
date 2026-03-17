@@ -1179,10 +1179,14 @@ struct BuiltinFuncInfo {
     NativeFn function;
     std::vector<Value> defaultValues;
     uint32_t resolveArgMask {0};  // bit N set → resolve future arg N before native call
+    bool noMutateSelf {false};    // method doesn't mutate receiver state
+    uint32_t noMutateArgs {0};    // bitmask: bit N set → arg N not mutated
 
     BuiltinFuncInfo() = default;
-    BuiltinFuncInfo(NativeFn fn, std::vector<Value> defaults = {}, uint32_t mask = 0)
-        : function(fn), defaultValues(std::move(defaults)), resolveArgMask(mask) {}
+    BuiltinFuncInfo(NativeFn fn, std::vector<Value> defaults = {}, uint32_t mask = 0,
+                    bool noMutateSelf_ = false, uint32_t noMutateArgs_ = 0)
+        : function(fn), defaultValues(std::move(defaults)), resolveArgMask(mask),
+          noMutateSelf(noMutateSelf_), noMutateArgs(noMutateArgs_) {}
 };
 
 struct ObjFunction : public Obj
