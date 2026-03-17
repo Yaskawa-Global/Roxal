@@ -417,7 +417,7 @@ void Obj::trimVersionChain(uint64_t minEpoch)
 ///
 /// Performance: O(V + E) where V = reachable objects, E = reference edges.
 /// For the common case (list of primitives), V = 1 and returns true immediately.
-static bool isIsolatedGraph(Obj* root)
+bool roxal::isIsolatedGraph(Obj* root)
 {
     if (!root) return true;
 

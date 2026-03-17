@@ -189,6 +189,11 @@ inline void delObj(T* o);
 /// Returns the original value unchanged if it's already const or not a reference type.
 Value createFrozenSnapshot(const Value& v);
 
+/// Check whether all mutable interior objects reachable from \p root are
+/// exclusively owned by the graph (no external aliases).  The root itself
+/// is excluded — the caller verifies sole-ownership separately.
+bool isIsolatedGraph(Obj* root);
+
 /// Resolve a child value read through a frozen parent.
 /// For primitives, returns the value directly.
 /// For reference types, materializes a frozen clone at the parent's snapshot epoch,

@@ -326,7 +326,7 @@ void Thread::act(Value actorInstance)
                                         Obj* obj = ret.asObj();
                                         bool soleOwner = obj && obj->control &&
                                             obj->control->strong.load(std::memory_order_acquire) <= 1;
-                                        if (!soleOwner) {
+                                        if (!soleOwner || !isIsolatedGraph(obj)) {
                                             ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
                                             ret = ret.clone(cloneCtx);
                                         }
@@ -364,7 +364,7 @@ void Thread::act(Value actorInstance)
                                     Obj* obj = ret.asObj();
                                     bool soleOwner = obj && obj->control &&
                                         obj->control->strong.load(std::memory_order_acquire) <= 1;
-                                    if (!soleOwner) {
+                                    if (!soleOwner || !isIsolatedGraph(obj)) {
                                         ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
                                         ret = ret.clone(cloneCtx);
                                     }
@@ -438,7 +438,7 @@ void Thread::act(Value actorInstance)
                                     Obj* obj = ret.asObj();
                                     bool soleOwner = obj && obj->control &&
                                         obj->control->strong.load(std::memory_order_acquire) <= 1;
-                                    if (!soleOwner) {
+                                    if (!soleOwner || !isIsolatedGraph(obj)) {
                                         ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
                                         ret = ret.clone(cloneCtx);
                                     }
