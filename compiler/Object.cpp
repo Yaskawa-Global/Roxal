@@ -398,6 +398,106 @@ void Obj::trimVersionChain(uint64_t minEpoch)
 }
 
 
+/// Check whether the object graph rooted at `root` is isolated: every mutable
+/// interior object is referenced only from within the graph (no external aliases).
+///
+/// Algorithm (two-pass):
+///   Phase 1: Traverse from root via trace(), collecting all reachable Obj*
+///            into a set.
+///   Phase 2: For each reachable object, trace again, counting how many
+///            references land on other reachable objects (internal refs).
+///            Then verify: for each mutable container (List, Dict, Instance),
+///            strong_count == internal_ref_count.
+///
+/// The root is excluded from the check — its sole-ownership is verified by the
+/// caller (strong <= 1 in createFrozenSnapshot, <= 2 in queueCall).
+///
+/// Immutable types (String, Function, ObjectType, etc.) are skipped: they cannot
+/// be mutated through an alias, so sharing is safe.
+///
+/// Performance: O(V + E) where V = reachable objects, E = reference edges.
+/// For the common case (list of primitives), V = 1 and returns true immediately.
+static bool isIsolatedGraph(Obj* root)
+{
+    if (!root) return true;
+
+    // Phase 1: Collect all reachable objects via DFS
+    std::unordered_set<Obj*> reachable;
+    reachable.insert(root);
+
+    struct CollectVisitor : ValueVisitor {
+        std::unordered_set<Obj*>& reachable;
+        std::vector<Obj*> worklist;
+
+        explicit CollectVisitor(std::unordered_set<Obj*>& r) : reachable(r) {}
+
+        void visit(const Value& value) override {
+            if (!value.isObj() || value.isWeak()) return;
+            Obj* obj = value.asObj();
+            if (!obj || !obj->control) return;
+            if (reachable.count(obj)) return;
+            reachable.insert(obj);
+            worklist.push_back(obj);
+        }
+
+        void drain() {
+            while (!worklist.empty()) {
+                Obj* current = worklist.back();
+                worklist.pop_back();
+                current->trace(*this);
+            }
+        }
+    };
+
+    CollectVisitor collector(reachable);
+    root->trace(collector);
+    collector.drain();
+
+    // If only the root is reachable (e.g. list of primitives), trivially isolated.
+    if (reachable.size() <= 1) return true;
+
+    // Phase 2: Count internal references for each reachable object.
+    std::unordered_map<Obj*, int32_t> internalRefs;
+
+    struct CountVisitor : ValueVisitor {
+        const std::unordered_set<Obj*>& reachable;
+        std::unordered_map<Obj*, int32_t>& internalRefs;
+
+        CountVisitor(const std::unordered_set<Obj*>& r,
+                     std::unordered_map<Obj*, int32_t>& ir)
+            : reachable(r), internalRefs(ir) {}
+
+        void visit(const Value& value) override {
+            if (!value.isObj() || value.isWeak()) return;
+            Obj* obj = value.asObj();
+            if (!obj || !obj->control) return;
+            if (reachable.count(obj))
+                internalRefs[obj]++;
+        }
+    };
+
+    CountVisitor counter(reachable, internalRefs);
+    for (Obj* obj : reachable)
+        obj->trace(counter);
+
+    // Check isolation: every mutable interior object must have no external aliases.
+    for (Obj* obj : reachable) {
+        if (obj == root) continue;
+        if (!isMutableRefContainerType(obj->type)) continue;
+
+        int32_t strong = obj->control->strong.load(std::memory_order_acquire);
+        int32_t internal = 0;
+        auto it = internalRefs.find(obj);
+        if (it != internalRefs.end()) internal = it->second;
+
+        if (strong > internal)
+            return false; // has external alias
+    }
+
+    return true;
+}
+
+
 Value roxal::createFrozenSnapshot(const Value& v)
 {
     // Const-to-const passthrough: already frozen, reuse as-is
@@ -409,10 +509,24 @@ Value roxal::createFrozenSnapshot(const Value& v)
     Obj* obj = v.asObj();
     if (!obj) return v;
 
-    // Sole-owner fast path: if no other live references exist, freeze in-place
-    // rather than shallow-cloning.  This makes move() -> actor truly zero-copy.
+    // Sole-owner fast path: if no other live references exist AND the root has
+    // no object-type children, freeze in-place (zero-copy).
+    // When object-type children exist, we must fall through to the shallow-clone
+    // + MVCC path because interior objects may have external aliases that could
+    // mutate them, breaking the immutability guarantee of the frozen snapshot.
     if (obj->control && obj->control->strong.load(std::memory_order_acquire) <= 1) {
-        return v.constRef();
+        struct HasObjChildVisitor : ValueVisitor {
+            bool found = false;
+            void visit(const Value& v) override {
+                if (!found && v.isObj() && !v.isWeak())
+                    found = true;
+            }
+        };
+        HasObjChildVisitor checker;
+        obj->trace(checker);
+        if (!checker.found)
+            return v.constRef();
+        // Fall through to shallow-clone + MVCC
     }
 
     // Shallow-clone the root object
@@ -5392,6 +5506,10 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
 
             if (isMutableParam && !soleOwner) {
                 throw std::runtime_error("Cannot pass aliased value as mutable actor parameter (use move() to transfer sole ownership)");
+            }
+
+            if (isMutableParam && soleOwner && !isIsolatedGraph(obj)) {
+                throw std::runtime_error("Cannot pass value with aliased interior objects as mutable actor parameter");
             }
 
             if (isMutableParam) {

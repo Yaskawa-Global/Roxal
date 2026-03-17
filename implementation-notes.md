@@ -394,7 +394,4 @@ The const/MVCC implementation is covered by an extensive test suite (all in `tes
 - **Error cases**: `const_assign_err`, `const_escape_err`, `const_property_method_err`, `const_property_runtime_err`, `const_signal_err`, `const_signal_type_err`, `const_missing_initializer_err`, `const_nonliteral_err`
 - **Stress**: `const_mvcc_stress` (exercises version chains under high mutation load)
 - **Dataflow safety**: `df_capture_mutable_err` (closure capture check)
-
-### Known Gaps
-
-- **`move()` interior mutation gap**: the sole-ownership check in `createFrozenSnapshot()` examines only the root object's refcount. It does not detect mutable interior references held elsewhere, so a moved value could still have aliased sub-objects. A deeper reachability check or different approach is needed.
+- **Interior alias isolation**: `const_interior_alias` (const actor param with aliased interior objects falls back to safe path), `move_interior_alias_err` (mutable actor param with aliased interior objects errors)

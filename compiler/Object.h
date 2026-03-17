@@ -97,7 +97,11 @@ enum class ObjType {
     Exception
 };
 
-
+/// Returns true if the object type is user-mutable and can hold Value references
+/// to other objects (container types relevant for graph isolation checking).
+inline bool isMutableRefContainerType(ObjType t) {
+    return t == ObjType::List || t == ObjType::Dict || t == ObjType::Instance;
+}
 
 
 
