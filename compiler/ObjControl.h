@@ -27,17 +27,7 @@ struct ObjVersion {
 
 // Ref-counted token shared by all frozen clones of a single snapshot.
 // Lifetime = union of all frozen clones (root + lazily materialized children).
-struct SnapshotToken {
-    std::atomic<int32_t> refcount{1};
-    uint64_t epoch;
-    std::unordered_map<const Obj*, Value> cloneMap; // per-snapshot alias/cycle preservation (weak refs for identity lookup; containers cache strong refs to children)
-
-    explicit SnapshotToken(uint64_t e) : epoch(e) {}
-
-    void incRef() { refcount.fetch_add(1, std::memory_order_relaxed); }
-    // Returns true if this was the last ref (caller should delete + update globals)
-    bool decRef() { return refcount.fetch_sub(1, std::memory_order_acq_rel) == 1; }
-};
+struct SnapshotToken;
 
 // Global MVCC epoch counters
 inline std::atomic<uint64_t> globalWriteEpoch{1};
