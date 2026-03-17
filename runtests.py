@@ -141,7 +141,7 @@ tests = [
     'event_const', 'event_const_err', 'event_const_transitive_err',
     'const_signal_err', 'const_signal_type_err',
     'df_capture_mutable_err',
-    'actor_const_param', 'actor_const_param_err',
+    'actor_const_param', 'actor_const_param_aliased', 'actor_const_param_err',
     'move_local', 'move_module_var', 'move_prop', 'move_const_err', 'move_actor', 'move_zero_copy', 'move_actor_alias_err',
     'actor_module_const', 'actor_module_var_err',
     'actor_return_mutable_sole', 'actor_return_mutable_shared',

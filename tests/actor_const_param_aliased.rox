@@ -1,0 +1,13 @@
+// Test that aliased values can be passed to actor methods with typed params
+// (actor params are implicitly const, so aliased values should be allowed)
+type O object:
+    var i: int
+
+type Worker actor:
+    func process(o: O) -> int:
+        return o.i
+
+var w = Worker()
+var o = O(42)
+var alias = o
+print(w.process(o))

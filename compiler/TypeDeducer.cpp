@@ -114,7 +114,9 @@ std::any TypeDeducer::visit(ptr<ast::Import> ast)
 std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
 {
     ast::Anys results {};
+    typeKindStack.push_back(ast->kind);
     ast->acceptChildren(*this, results);
+    typeKindStack.pop_back();
 
     // if (ast->type.has_value())
     //     std::cout << toUTF8StdString(ast->name) << " : " <<  ast->type.value()->toString() << std::endl;
@@ -547,7 +549,7 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
                 paramType.name = param->name;
                 paramType.nameHashCode = param->name.hashCode();
                 paramType.type = make_ptr<Type>(std::get<BuiltinType>(param->type.value()));
-                if (param->isConst)
+                if (param->isConst || (inActorScope() && !param->isMutable))
                     paramType.type.value()->isConst = true;
                 paramType.hasDefault = param->defaultValue.has_value();
                 paramType.variadic = param->variadic;
@@ -561,7 +563,7 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
                 paramType.name = param->name;
                 paramType.nameHashCode = param->name.hashCode();
                 paramType.type = make_ptr<Type>(BuiltinType::Object);
-                if (param->isConst)
+                if (param->isConst || (inActorScope() && !param->isMutable))
                     paramType.type.value()->isConst = true;
                 paramType.hasDefault = param->defaultValue.has_value();
                 paramType.variadic = param->variadic;
