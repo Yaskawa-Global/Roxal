@@ -348,18 +348,31 @@ Many builtin methods (e.g., `list.length()`, `dict.contains()`, `string.find()`)
 
 For annotated builtins, the VM sets the ConstMask bit on a stack copy of the Value — just a bit-flip, O(1) — without creating a frozen clone. If the builtin (incorrectly) tried to mutate, the const flag would catch it at runtime. This eliminates clone overhead on hot paths like `len()`, `contains()`, and `indexOf()`. These annotations are declared in `.rox` module files alongside the parameter declarations.
 
+**Note for builtin implementors — const arguments with reference-type children:**
+
+When a native C++ function receives a const frozen snapshot (e.g., a const list of objects), the root object is a shallow clone with stable storage (COW). The direct elements are the Values as they were at snapshot time. However, if those elements are reference types (ObjectInstance, nested List, etc.), they point to the *original* live objects. If those objects are mutated after the snapshot was created, native code that accesses them directly (e.g., `asList(args[0])->getElement(i)`) will see the current (mutated) state, not the snapshot state.
+
+The VM handles this transparently via `resolveConstChild()` in its opcode handlers (GetIndex, GetProp), but native code bypasses this. Two options for native implementors:
+
+1. **Use `BuiltinModule::resolveConstChildValue(parent, child)`** — a helper that wraps the MVCC resolution logic. Pass the const parent and the raw child extracted from it; it returns the correctly resolved value at the snapshot's epoch. Zero overhead when the parent has no snapshot token.
+
+2. **Use `clone()` on the argument** — for implementations where performance is not a concern or containers are small, a deep copy avoids the issue entirely. The native code gets its own independent copy and doesn't need to worry about MVCC resolution.
+
+In practice, most current builtins are unaffected because they operate on the receiver's own data (Image pixels, Socket fd, etc.) or on primitive-valued elements. The concern only arises for native functions that deeply traverse an object graph received as a const argument.
+
 ### Actor Boundary Semantics
 
 Actor method parameters are **implicitly const** — the compiler emits `MakeConst` for each non-primitive parameter. At the actor boundary (`queueCall()`), non-primitive arguments use `createFrozenSnapshot()` for MVCC-based isolation:
 
-- **Sole-owner**: `createFrozenSnapshot()` just sets the const bit — zero-copy transfer via `move()`.
+- **Sole-owner with no Obj children** (e.g., list of primitives): `createFrozenSnapshot()` just sets the const bit — zero-copy transfer via `move()`.
+- **Sole-owner with Obj children**: falls through to the shared path below. The root's sole-ownership alone doesn't guarantee interior objects aren't aliased elsewhere, so the MVCC path is required for safety.
 - **Shared**: `createFrozenSnapshot()` shallow-clones the root object (O(#properties)). Children remain as shared refs to live objects and are lazily resolved via `resolveConstChild()` on the actor thread.
 
 This avoids the O(graph-size) deep-clone that was previously required at actor boundaries. Lazy resolution on the actor thread is safe because a **per-object spinlock** (`cowLock_` in `ObjControl`) protects the COW `ptr<>` members against concurrent read (shallowClone) + write (ensureUnique). Mutation methods acquire the lock (via `CowGuard` RAII) around `saveVersion + ensureUnique + mutation + epoch bump` when `activeSnapshotCount > 0`. `resolveConstChild` acquires the lock on the live child object when cloning from current state (not needed for immutable version-chain snapshots), and re-checks `writeEpoch` under the lock to handle the TOCTOU window where a mutation may have raced between the initial epoch check and lock acquisition. Zero overhead when no snapshots are active.
 
 Return types default to mutable (deep-clone for caller isolation). `-> const T` returns a frozen snapshot via `createFrozenSnapshot()`. `-> mutable T` uses the sole-owner optimization to skip cloning when possible.
 
-The `mutable` keyword on an actor parameter opts out of implicit const. The caller must use `move()` to transfer sole ownership; if the value is aliased, a runtime error is raised at the actor call site (not at the `move()` site).
+The `mutable` keyword on an actor parameter opts out of implicit const. The caller must use `move()` to transfer sole ownership; if the root value is aliased, a runtime error is raised at the actor call site (not at the `move()` site). Additionally, `queueCall()` runs `isIsolatedGraph()` — a two-pass graph traversal that verifies every mutable interior object (List, Dict, Instance) has no external aliases. If any do, the call is rejected: `"Cannot pass value with aliased interior objects as mutable actor parameter"`.
 
 ### Dataflow Engine Const Safety
 

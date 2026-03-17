@@ -88,6 +88,16 @@ protected:
 
     static void destroyModuleType(Value& moduleTypeValue);
 
+    /// Resolve a child value extracted from a const parent for correct MVCC
+    /// snapshot access.  Call this when native code reads a reference-type child
+    /// (e.g. list element, dict value, object property) from a const argument
+    /// and needs to see the value as it was at snapshot time rather than the
+    /// current (possibly mutated) state.
+    ///
+    /// If the parent is not const or has no snapshot token, this simply returns
+    /// the child with transitive const propagation (no MVCC overhead).
+    static Value resolveConstChildValue(const Value& parent, const Value& child);
+
     void setVM(VM& vm) { vm_ = vm; }
 
 
