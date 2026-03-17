@@ -8,14 +8,15 @@ Features:
   - Static & Dynamic typing
   - Builtin types aimed at AI and Robotics - vector/matrix/tensor
   - Signals & Dataflow engine (signal & event types)
-  - Object-Oriented (object types, inheretance, interfaces)
+  - Object-Oriented (object types, inheritance, interfaces)
+  - Safety - transitive const (via MVCC) & GC-based memory management
   - First class functions (closures)
   - Builtin library support for DDS (ROS interop) & gRPC (no codegen required)
   - Builtin library support for AI model inference (via ONNX Runtime)
-  - VM integratable into Real-time control loops
+  - VM integratable into Real-time control loops via runFor(deadline)
 
 See [Roxal-for-devs](roxal-for-devs.md) for an overview.
 
-Note: This is the core language and libraries without any actual proprietaty interface for robot control.
+Note: This is the core language and libraries without any actual proprietary interface for robot control.
 
 __IN DEVELOPMENT - BETA__

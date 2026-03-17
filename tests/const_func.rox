@@ -1,0 +1,12 @@
+
+type O object:
+  var i: int
+
+var go : O
+
+func f(o: const O) -> int:
+  go = clone(o)
+  return o.i
+
+print(f(O(42)))
+print(go.i)

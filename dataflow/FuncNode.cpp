@@ -13,6 +13,12 @@ using namespace df;
 
 namespace {
 
+// RAII guard to set/clear the dataflow thread flag on VM
+struct DataflowThreadGuard {
+    DataflowThreadGuard() { roxal::VM::setOnDataflowThread(true); }
+    ~DataflowThreadGuard() { roxal::VM::setOnDataflowThread(false); }
+};
+
 std::optional<roxal::ValueType> valueTypeForBuiltin(roxal::type::BuiltinType builtin)
 {
     using roxal::type::BuiltinType;
@@ -497,6 +503,7 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
             }
         }
 
+        DataflowThreadGuard dfGuard;
         auto result = vm.invokeClosure(asClosure(closure), args, deadline);
 
         if (result.first == ExecutionStatus::Yielded) {
@@ -517,8 +524,8 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
             if (isList(result.second)) {
                 auto list = asList(result.second);
                 for (size_t i = 0; i < m_outputNames.size(); ++i) {
-                    if (i < list->elts.size())
-                        outputValues.push_back(list->elts.at(i));
+                    if (i < list->length())
+                        outputValues.push_back(list->getElement(i));
                     else
                         outputValues.push_back(Value::nilVal());
                 }
@@ -626,6 +633,7 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
     VM::thread = m_funcYieldState.executionThread;
 
     auto remaining = deadline - TimePoint::currentTime();
+    DataflowThreadGuard dfGuard;
     auto [result, returnValue] = vm.runFor(remaining);
 
     if (result == ExecutionStatus::Yielded) {
@@ -652,8 +660,8 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
         if (isList(returnValue)) {
             auto list = asList(returnValue);
             for (size_t i = 0; i < m_outputNames.size(); ++i) {
-                if (i < list->elts.size())
-                    outputValues.push_back(list->elts.at(i));
+                if (i < list->length())
+                    outputValues.push_back(list->getElement(i));
                 else
                     outputValues.push_back(Value::nilVal());
             }
@@ -719,6 +727,7 @@ Values FuncNode::operator()(const Values& inputValues)
     if (nativeFunc) {
         return nativeFunc(args);
     }
+    DataflowThreadGuard dfGuard;
     auto result = vm.invokeClosure(roxal::asClosure(closure), args);
 
     if (!m_outputNames.empty() && m_outputNames.size() > 1) {
@@ -727,8 +736,8 @@ Values FuncNode::operator()(const Values& inputValues)
             Values outs;
             outs.reserve(m_outputNames.size());
             for (size_t i = 0; i < m_outputNames.size(); ++i) {
-                if (i < list->elts.size())
-                    outs.push_back(list->elts.at(i));
+                if (i < list->length())
+                    outs.push_back(list->getElement(i));
                 else
                     outs.push_back(Value::nilVal());
             }

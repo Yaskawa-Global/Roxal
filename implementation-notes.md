@@ -213,3 +213,198 @@ Operations that can block the thread:
 
 Blocked threads yield at the deadline and resume when the blocking condition
 clears or time elapses.
+
+
+## Constness and MVCC
+
+Roxal supports transitive immutability via the `const` keyword. When a mutable value is converted to const (`T → const T`), it becomes a **frozen snapshot** — an isolated view of the object graph as it existed at conversion time, immune to subsequent mutations through other references. The reverse conversion (`const T → T`) is prohibited; `clone()` returns a mutable deep copy, and `move()` can transfer sole ownership.
+
+### Value-Level Const: ConstMask (bit 48)
+
+Constness is tracked at the `Value` level using a single bit in the NaN-boxed representation:
+
+```cpp
+const uint64_t ConstMask = uint64_t(1) << 48;
+```
+
+The `asObj()` and `asControl()` extraction masks strip this bit (along with SignBit, QNAN and WeakMask) to recover the raw pointer. Const Values participate in normal strong ref counting — they keep the object alive like any other reference.
+
+Key methods on Value: `isConst()` checks the bit; `constRef()` returns a copy with the bit set (and increments the refcount); `mutableRef()` strips the bit (used internally, never exposed to user code).
+
+### Transitive Constness
+
+Constness is **transitive**: accessing a property of a const object yields a const value. This is enforced at the VM level — `GetProp`, `GetPropCheck`, and index opcodes check whether the receiver is const and, if so, ensure the returned child is also const. This contrasts with C++, where constness of a pointer member does not propagate.
+
+### Mutation Blocking
+
+`SetProp` on a const Value raises a runtime error: `"Cannot mutate const: assignment to '<name>'"`. Similarly, all mutating builtin methods (e.g., `list.append()`, `dict.store()`) check the receiver's const bit via `noMutateSelf` / `noMutateArgs` flags and error if it is set.
+
+At compile time, the compiler rejects reassignment of `const`-declared identifiers (using existing `constVars` tracking). The `MakeConst` opcode calls `createFrozenSnapshot()` on the top-of-stack value.
+
+### MVCC: Why Not Eager Freeze?
+
+The naive approach to `T → const T` — walking the entire reachable object graph to copy or mark every sub-object — is O(n) in graph size. For a `const c = bigList`, this would copy thousands of elements even if only one is ever read through `c`.
+
+A lazy approach (incrementing a "const ref count" on children only when accessed through a const ref) also fails: if a mutable alias mutates a child *before* any const read, the child has no const-ref count, no copy-on-write triggers, and the mutation leaks through. The `const-interior-mutation.rox` test demonstrates this exact scenario.
+
+MVCC resolves this by **versioning mutations** rather than eagerly copying the graph. The cost is redistributed: `T → const T` is O(#root-properties), mutations pay O(#properties) only when snapshots are active, and const reads pay O(version-chain-length) only on first access (then cached).
+
+### Global Write Epoch and Snapshot Tracking
+
+Three global atomics coordinate versioning:
+
+- **`globalWriteEpoch`** (starts at 1): bumped on each mutation to any object while snapshots are active. Each bump via `fetch_add(1)` returns a unique epoch value assigned to the mutated object.
+- **`activeSnapshotCount`**: when 0, mutations skip the version-save path entirely (one well-predicted branch per mutation — zero overhead in the common case).
+- **`latestSnapshotCreationEpoch`**: used for version-save deduplication — if an object has already saved a version since the last snapshot was created, redundant saves are skipped.
+
+These are declared in `ObjControl.h` as `inline` globals.
+
+### ObjControl: Per-Object MVCC State
+
+Each `Obj` has an `ObjControl` block (used for ref counting and GC). The MVCC extension adds:
+
+- **`writeEpoch`** (atomic uint64): the epoch at which this object was last mutated. Starts at 0 for newly created objects.
+- **`snapshotToken`** (pointer): non-null only for frozen clones — points to the `SnapshotToken` for the snapshot this clone belongs to.
+- **`versionChain`** (atomic pointer): linked list of `ObjVersion` nodes, newest first. Each node holds: `epoch` (the object's writeEpoch *before* the mutation — i.e. when it entered this state), `snapshot` (a shallow clone capturing the pre-mutation state), and `prev` (link to older version).
+- **`lastSaveEpoch`**: for deduplication — compared against `latestSnapshotCreationEpoch`.
+
+### SnapshotToken: Per-Snapshot Identity
+
+When a `T → const T` conversion creates a frozen snapshot, a `SnapshotToken` is allocated. It holds:
+
+- **`epoch`**: the `globalWriteEpoch` at snapshot creation time. This is the "as-of" timestamp for all const reads through this snapshot.
+- **`cloneMap`**: maps live `Obj*` → weak `Value` refs to frozen clones. This preserves alias identity within a snapshot: if `o.a is o.b` (same underlying object), then `c.a is c.b` (same frozen clone). It also handles cycles.
+- **`refcount`** (atomic): all frozen clones from the same snapshot (root + lazily materialized children) hold a ref to the token. When the last frozen clone dies, the token is deleted and `activeSnapshotCount` decremented.
+
+### `createFrozenSnapshot()`: The T → const T Path
+
+Called by the `MakeConst` opcode, and internally by event emission and `var x: const T` reassignment. The implementation (`Object.cpp`):
+
+1. **Passthrough**: if already const, return as-is (no re-snapshot).
+2. **Primitives**: return directly (value types are inherently immutable).
+3. **Sole-owner fast path**: if `control->strong <= 1`, no other live reference exists — just set the const bit, no clone needed. This makes `move()` → actor truly zero-copy.
+4. **Otherwise**: shallow-clone the root object (copies property slots; children remain shared refs to live objects). Allocate a `SnapshotToken` with `epoch = globalWriteEpoch`. Attach the token to the clone. Increment `activeSnapshotCount`.
+
+Cost: O(#direct-properties-of-root), NOT O(reachable-graph).
+
+### `saveVersion()`: Capturing Pre-Mutation State
+
+Every mutation method on `Obj` subtypes (`ObjList::setElement`, `ObjDict::store`, `ObjectInstance::setProperty`, etc.) follows this sequence:
+
+1. Check `activeSnapshotCount > 0`. If zero, skip versioning entirely.
+2. Call `saveVersion()`:
+   - **Deduplication**: skip if `lastSaveEpoch >= latestSnapshotCreationEpoch` (no new snapshot since last save).
+   - Shallow-clone the object's current state → version node with `epoch = control->writeEpoch` (the "birth epoch" of the state being saved).
+   - CAS-prepend the node to the version chain (lock-free, append-only).
+3. Apply the mutation in place.
+4. Bump the object's epoch: `control->writeEpoch = globalWriteEpoch.fetch_add(1)`. Done *after* mutation so readers see the new epoch only after the new state is fully written.
+
+### `resolveConstChild()`: Lazy Materialization on Const Reads
+
+When `GetProp` (or index access) reads a reference-type child through a const receiver, it calls `resolveConstChild()`. This is the core of lazy snapshot materialization:
+
+1. If the child is a primitive or already const: return directly.
+2. Check the `SnapshotToken::cloneMap` — if a frozen clone for this live `Obj*` already exists in this snapshot, reuse it (alias/cycle preservation).
+3. Call `findVersionForEpoch(childObj, epoch)`:
+   - If the child's `writeEpoch < snapshotEpoch`: it was never mutated since the snapshot — the current state is valid. Clone from current.
+   - If `writeEpoch >= snapshotEpoch`: walk the version chain to find the newest version with `epoch < snapshotEpoch`. Clone from that version's snapshot.
+4. Shallow-clone the source → frozen clone. Attach the same `SnapshotToken` (incrementing its refcount). Register the weak ref in `cloneMap`.
+5. **Cache** the frozen clone back into the parent's property slot (or list element, or dict entry) so subsequent reads are O(1).
+
+The strict `<` comparison is important: `writeEpoch == snapshotEpoch` means a mutation consumed the same global epoch value as the snapshot (via `fetch_add`), so it may have occurred after the snapshot and must be resolved via the version chain.
+
+### Walkthrough: Interior Mutation Isolation
+
+```roxal
+var o = Outer(Mid(Leaf(1)))
+var m = o.m                   // mutable alias to Mid
+const c: Outer = o            // snapshot at epoch E=5
+m.l.i = 2                    // mutate Leaf.i
+print(c.m.l.i)               // → 1 (isolated)
+```
+
+- **Snapshot**: shallow-clone Outer → `Outer'` (epoch=5). `Outer'.m` still points to live `Mid`.
+- **Mutation**: `Leaf.i = 2` triggers `saveVersion()` on Leaf (saves version with epoch=0, the birth epoch). Sets `Leaf.writeEpoch = 5`.
+- **Const read** `c.m.l.i`: `Outer'` (frozen) → resolve `Mid` (writeEpoch=0 < 5, not mutated, clone current) → resolve `Leaf` (writeEpoch=5 ≥ 5, walk version chain, find epoch=0 version with `i=1`, clone that) → read `i` → returns 1.
+
+### Copy-on-Write (COW) for Containers
+
+`shallowClone()` is called both by `createFrozenSnapshot()` (for the root) and by `saveVersion()` (for pre-mutation snapshots). Making this O(1) is crucial for performance. Three container types use COW via shared `ptr<>` (wraps `std::shared_ptr`):
+
+**ObjList**: internal storage is `ptr<std::vector<Value>> elts_`. `shallowClone()` copies the shared pointer (refcount bump, O(1)). Before any mutation, `ensureUnique()` checks `use_count() > 1` and copies the vector if shared. This pattern is already used by `ObjMatrix`, `ObjVector`, and `ObjTensor`.
+
+**ObjDict**: storage is `ptr<DictData> data_` where `DictData` bundles the `std::map` of entries and the `std::vector` of insertion-ordered keys. Same COW pattern. The per-object mutex (previously needed for thread safety) was removed — COW + atomic shared_ptr handles concurrent access.
+
+**ObjectInstance**: property storage is `ptr<PropertyMap> properties_` where `PropertyMap = std::unordered_map<int32_t, MonitoredValue>`. Same COW pattern.
+
+All three have `ensureUnique()` methods called by every mutation path and by `cacheElement`/`cacheValue`/non-const `findProperty` (since frozen clones share the ptr and const-read caching writes back through these accessors).
+
+### Builtin No-Mutate Optimization
+
+Many builtin methods (e.g., `list.length()`, `dict.contains()`, `string.find()`) are read-only. Requiring a frozen snapshot for every call would add unnecessary allocation overhead. Instead, builtins can be annotated at registration time:
+
+- **`noMutateSelf`**: the method does not mutate the receiver.
+- **`noMutateArgs`** (bitmask): each argument independently annotated as non-mutating.
+
+For annotated builtins, the VM sets the ConstMask bit on a stack copy of the Value — just a bit-flip, O(1) — without creating a frozen clone. If the builtin (incorrectly) tried to mutate, the const flag would catch it at runtime. This eliminates clone overhead on hot paths like `len()`, `contains()`, and `indexOf()`. These annotations are declared in `.rox` module files alongside the parameter declarations.
+
+**Note for builtin implementors — const arguments with reference-type children:**
+
+When a native C++ function receives a const frozen snapshot (e.g., a const list of objects), the root object is a shallow clone with stable storage (COW). The direct elements are the Values as they were at snapshot time. However, if those elements are reference types (ObjectInstance, nested List, etc.), they point to the *original* live objects. If those objects are mutated after the snapshot was created, native code that accesses them directly (e.g., `asList(args[0])->getElement(i)`) will see the current (mutated) state, not the snapshot state.
+
+The VM handles this transparently via `resolveConstChild()` in its opcode handlers (GetIndex, GetProp), but native code bypasses this. Two options for native implementors:
+
+1. **Use `BuiltinModule::resolveConstChildValue(parent, child)`** — a helper that wraps the MVCC resolution logic. Pass the const parent and the raw child extracted from it; it returns the correctly resolved value at the snapshot's epoch. Zero overhead when the parent has no snapshot token.
+
+2. **Use `clone()` on the argument** — for implementations where performance is not a concern or containers are small, a deep copy avoids the issue entirely. The native code gets its own independent copy and doesn't need to worry about MVCC resolution.
+
+In practice, most current builtins are unaffected because they operate on the receiver's own data (Image pixels, Socket fd, etc.) or on primitive-valued elements. The concern only arises for native functions that deeply traverse an object graph received as a const argument.
+
+### Actor Boundary Semantics
+
+Actor method parameters are **implicitly const** — the compiler emits `MakeConst` for each non-primitive parameter. At the actor boundary (`queueCall()`), non-primitive arguments use `createFrozenSnapshot()` for MVCC-based isolation:
+
+- **Sole-owner with no Obj children** (e.g., list of primitives): `createFrozenSnapshot()` just sets the const bit — zero-copy transfer via `move()`.
+- **Sole-owner with Obj children**: falls through to the shared path below. The root's sole-ownership alone doesn't guarantee interior objects aren't aliased elsewhere, so the MVCC path is required for safety.
+- **Shared**: `createFrozenSnapshot()` shallow-clones the root object (O(#properties)). Children remain as shared refs to live objects and are lazily resolved via `resolveConstChild()` on the actor thread.
+
+This avoids the O(graph-size) deep-clone that was previously required at actor boundaries. Lazy resolution on the actor thread is safe because a **per-object spinlock** (`cowLock_` in `ObjControl`) protects the COW `ptr<>` members against concurrent read (shallowClone) + write (ensureUnique). Mutation methods acquire the lock (via `CowGuard` RAII) around `saveVersion + ensureUnique + mutation + epoch bump` when `activeSnapshotCount > 0`. `resolveConstChild` acquires the lock on the live child object when cloning from current state (not needed for immutable version-chain snapshots), and re-checks `writeEpoch` under the lock to handle the TOCTOU window where a mutation may have raced between the initial epoch check and lock acquisition. Zero overhead when no snapshots are active.
+
+Return types default to mutable (deep-clone for caller isolation). `-> const T` returns a frozen snapshot via `createFrozenSnapshot()`. `-> mutable T` uses the sole-owner optimization to skip cloning when possible.
+
+The `mutable` keyword on an actor parameter opts out of implicit const. The caller must use `move()` to transfer sole ownership; if the root value is aliased, a runtime error is raised at the actor call site (not at the `move()` site). Additionally, `queueCall()` runs `isIsolatedGraph()` — a two-pass graph traversal that verifies every mutable interior object (List, Dict, Instance) has no external aliases. If any do, the call is rejected: `"Cannot pass value with aliased interior objects as mutable actor parameter"`.
+
+### Dataflow Engine Const Safety
+
+Dataflow function nodes (`FuncNode`) execute on the dataflow engine's actor thread, not the main thread. They can access module-scope variables via `GetModuleVar`/`SetModuleVar` opcodes, creating potential data races.
+
+Two protections are in place:
+
+**Thread-local flag**: `VM::onDataflowThread_` is a `thread_local bool`, set via an RAII `DataflowThreadGuard` around the three VM entry points in `FuncNode.cpp` (`invokeClosure` in `conditionallyExecute()`, `runFor` in `resumeExecution()`, and `invokeClosure` in the non-deadline path). When the flag is set:
+- `GetModuleVar` wraps the returned Value with `constRef()` — the DF func sees a const view.
+- `SetModuleVar`, `SetNewModuleVar`, and `MoveModuleVar` raise a runtime error: `"Cannot modify module variable '<name>' from dataflow function"`.
+
+**Closure capture check**: when a closure is registered as a dataflow function node (in `VM::callValue()`), the VM iterates its upvalues. If any captured value is a non-const reference type, a runtime error is raised: `"Dataflow function '<name>' captures a mutable reference variable"`. This check happens at registration time on the main thread, preventing the unsafe state from ever reaching the DF thread.
+
+### Event Implicit Const
+
+Events are implicitly const — `emit` calls `createFrozenSnapshot()` on the event payload before dispatch. Handlers receive a const view; attempting to mutate event data (including transitively nested properties) raises a runtime error.
+
+### Signal Restriction
+
+`const Signal` is prohibited at the compiler level — signals exist to change over time, so making them immutable is semantically contradictory. All declaration forms (`const s: Signal`, `var s: const Signal`, etc.) produce a compile error.
+
+### Tests
+
+The const/MVCC implementation is covered by an extensive test suite (all in `tests/`):
+
+- **Core snapshot isolation**: `const-interior-mutation`, `const_mvcc`, `const_snapshots`, `const_multi_snapshot`
+- **Graph topology**: `const_alias` (alias preservation), `const_cycle` (cyclic graphs), `const_diamond` (diamond sharing), `const_deep_chain` (deep nesting)
+- **Identity**: `const_identity` (`is` and `==` behavior)
+- **Containers**: `const_list`, `const_dict`
+- **Methods**: `const_method_dispatch`, `const_builtin_method_err`
+- **Type qualifiers**: `const_type_qualifier`, `const_mutable_type`, `const_func`
+- **Error cases**: `const_assign_err`, `const_escape_err`, `const_property_method_err`, `const_property_runtime_err`, `const_signal_err`, `const_signal_type_err`, `const_missing_initializer_err`, `const_nonliteral_err`
+- **Stress**: `const_mvcc_stress` (exercises version chains under high mutation load)
+- **Dataflow safety**: `df_capture_mutable_err` (closure capture check)
+- **Interior alias isolation**: `const_interior_alias` (const actor param with aliased interior objects falls back to safe path), `move_interior_alias_err` (mutable actor param with aliased interior objects errors)

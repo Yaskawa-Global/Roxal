@@ -287,6 +287,17 @@ void Thread::act(Value actorInstance)
                         auto closure = asClosure(boundMethod->method);
                         auto function = asFunction(closure->function);
 
+                        // Determine if return type is const-qualified (-> const T)
+                        bool returnIsConst = false;
+                        if (function->funcType.has_value()) {
+                            ptr<roxal::type::Type> ft { function->funcType.value() };
+                            if (ft->func.has_value() && !ft->func->returnTypes.empty()) {
+                                auto& rt = ft->func->returnTypes[0];
+                                if (rt && rt->isConst)
+                                    returnIsConst = true;
+                            }
+                        }
+
                         // Check if this is a native method wrapped in a BoundMethod
                         if (function->builtinInfo) {
                             // For native methods, we need to pass receiver as first arg
@@ -309,8 +320,17 @@ void Thread::act(Value actorInstance)
 
                             if (callInfo.returnPromise != nullptr) {
                                 if (!ret.isPrimitive() && !isException(ret)) {
-                                    ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
-                                    ret = ret.clone(cloneCtx);
+                                    if (returnIsConst) {
+                                        ret = createFrozenSnapshot(ret);
+                                    } else {
+                                        Obj* obj = ret.asObj();
+                                        bool soleOwner = obj && obj->control &&
+                                            obj->control->strong.load(std::memory_order_acquire) <= 1;
+                                        if (!soleOwner) {
+                                            ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+                                            ret = ret.clone(cloneCtx);
+                                        }
+                                    }
                                 }
                                 callInfo.returnPromise->set_value(ok ? ret : Value::nilVal());
                                 if (!callInfo.returnFuture.isNil()) {
@@ -338,8 +358,17 @@ void Thread::act(Value actorInstance)
                         if (callInfo.returnPromise != nullptr) {
                             Value ret = resultPair.second;
                             if (!ret.isPrimitive() && !isException(ret)) {
-                                ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
-                                ret = ret.clone(cloneCtx);
+                                if (returnIsConst) {
+                                    ret = createFrozenSnapshot(ret);
+                                } else {
+                                    Obj* obj = ret.asObj();
+                                    bool soleOwner = obj && obj->control &&
+                                        obj->control->strong.load(std::memory_order_acquire) <= 1;
+                                    if (!soleOwner) {
+                                        ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+                                        ret = ret.clone(cloneCtx);
+                                    }
+                                }
                             }
                             callInfo.returnPromise->set_value(ret);
                             if (!callInfo.returnFuture.isNil()) {
@@ -376,6 +405,15 @@ void Thread::act(Value actorInstance)
                     } else if (isBoundNative(callInfo.callee)) {
                         ObjBoundNative* bn = asBoundNative(callInfo.callee);
 
+                        bool bnReturnIsConst = false;
+                        if (bn->funcType) {
+                            if (bn->funcType->func.has_value() && !bn->funcType->func->returnTypes.empty()) {
+                                auto& rt = bn->funcType->func->returnTypes[0];
+                                if (rt && rt->isConst)
+                                    bnReturnIsConst = true;
+                            }
+                        }
+
                         for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
                             push(*it);
 
@@ -394,8 +432,17 @@ void Thread::act(Value actorInstance)
 
                         if (callInfo.returnPromise != nullptr) {
                             if (!ret.isPrimitive() && !isException(ret)) {
-                                ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
-                                ret = ret.clone(cloneCtx);
+                                if (bnReturnIsConst) {
+                                    ret = createFrozenSnapshot(ret);
+                                } else {
+                                    Obj* obj = ret.asObj();
+                                    bool soleOwner = obj && obj->control &&
+                                        obj->control->strong.load(std::memory_order_acquire) <= 1;
+                                    if (!soleOwner) {
+                                        ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+                                        ret = ret.clone(cloneCtx);
+                                    }
+                                }
                             }
                             // On failure, resolve to nil to avoid broken promises.
                             callInfo.returnPromise->set_value(ok ? ret : Value::nilVal());

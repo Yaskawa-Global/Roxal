@@ -1,0 +1,21 @@
+// Test that emitted events are implicitly const (spec: Event Implicit Const)
+
+type Widget object:
+    var name: string
+
+type Clicked event:
+    var x: int
+    var widget: Widget
+
+var w = Widget("button")
+
+// Handler 1: reads are ok
+when Clicked occurs as e:
+    print(e.x)
+    print(e.widget.name)
+
+emit Clicked(x=42, widget=w)
+
+// Original is still mutable after emit
+w.name = "changed"
+print(w.name)

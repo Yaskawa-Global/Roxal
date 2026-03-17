@@ -1,0 +1,25 @@
+// Test const snapshot of cyclic object graph (a <-> b)
+
+type N object:
+    var name: string
+    var link
+
+var a = N("A", nil)
+var b = N("B", a)
+a.link = b
+
+// Snapshot the cycle
+const ca = a
+
+// Read through the cycle
+print(ca.name)           // A
+print(ca.link.name)      // B
+print(ca.link.link.name) // A (cycle back)
+
+// Mutate originals — snapshot must be unaffected
+a.name = "A2"
+b.name = "B2"
+
+print(ca.name)           // A  (still original)
+print(ca.link.name)      // B  (still original)
+print(ca.link.link.name) // A  (still original)

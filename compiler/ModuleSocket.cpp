@@ -132,12 +132,12 @@ void ModuleSocket::asyncWorker()
                                 // Create result: [Socket, [host, port]]
                                 Value clientSocket = const_cast<ModuleSocket*>(this)->createSocketObject(clientFd, SOCK_STREAM);
                                 Value addrList = Value::listVal();
-                                asList(addrList)->elts.push_back(Value::stringVal(toUnicodeString(ipstr)));
-                                asList(addrList)->elts.push_back(Value::intVal(port));
+                                asList(addrList)->append(Value::stringVal(toUnicodeString(ipstr)));
+                                asList(addrList)->append(Value::intVal(port));
 
                                 Value resultList = Value::listVal();
-                                asList(resultList)->elts.push_back(clientSocket);
-                                asList(resultList)->elts.push_back(addrList);
+                                asList(resultList)->append(clientSocket);
+                                asList(resultList)->append(addrList);
 
                                 op->promise->set_value(resultList);
                             } else {
@@ -183,9 +183,9 @@ void ModuleSocket::asyncWorker()
 
                                 // Return [data, host, port]
                                 Value resultList = Value::listVal();
-                                asList(resultList)->elts.push_back(Value::stringVal(toUnicodeString(data)));
-                                asList(resultList)->elts.push_back(Value::stringVal(toUnicodeString(ipstr)));
-                                asList(resultList)->elts.push_back(Value::intVal(port));
+                                asList(resultList)->append(Value::stringVal(toUnicodeString(data)));
+                                asList(resultList)->append(Value::stringVal(toUnicodeString(ipstr)));
+                                asList(resultList)->append(Value::intVal(port));
                                 op->promise->set_value(resultList);
                             } else {
                                 op->promise->set_value(Value::nilVal());
@@ -227,20 +227,20 @@ void ModuleSocket::registerBuiltins(VM& vm)
     link("gethostbyname", [this](VM&, ArgsView a) { return socket_gethostbyname_builtin(a); }, {}, 0x1);
 
     // Socket object methods (arg 0 is receiver, so masks start from bit 1 for first real arg)
-    linkMethod("Socket", "bind", [this](VM&, ArgsView a) { return socket_bind_builtin(a); }, {}, 0x6);       // args 1,2: host, port
+    linkMethod("Socket", "bind", [this](VM&, ArgsView a) { return socket_bind_builtin(a); }, {}, 0x6, /*noMutateSelf=*/true);       // args 1,2: host, port
     linkMethod("Socket", "listen", [this](VM&, ArgsView a) { return socket_listen_builtin(a); }, {}, 0x2);   // arg 1: backlog
-    linkMethod("Socket", "accept", [this](VM&, ArgsView a) { return socket_accept_builtin(a); });
+    linkMethod("Socket", "accept", [this](VM&, ArgsView a) { return socket_accept_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
     linkMethod("Socket", "connect", [this](VM&, ArgsView a) { return socket_connect_builtin(a); }, {}, 0x6); // args 1,2: host, port
-    linkMethod("Socket", "send", [this](VM&, ArgsView a) { return socket_send_builtin(a); }, {}, 0x2);       // arg 1: data
-    linkMethod("Socket", "recv", [this](VM&, ArgsView a) { return socket_recv_builtin(a); }, {}, 0x2);       // arg 1: size
-    linkMethod("Socket", "sendto", [this](VM&, ArgsView a) { return socket_sendto_builtin(a); }, {}, 0xE);   // args 1,2,3: data, host, port
-    linkMethod("Socket", "recvfrom", [this](VM&, ArgsView a) { return socket_recvfrom_builtin(a); }, {}, 0x2); // arg 1: size
+    linkMethod("Socket", "send", [this](VM&, ArgsView a) { return socket_send_builtin(a); }, {}, 0x2, /*noMutateSelf=*/true);       // arg 1: data
+    linkMethod("Socket", "recv", [this](VM&, ArgsView a) { return socket_recv_builtin(a); }, {}, 0x2, /*noMutateSelf=*/true);       // arg 1: size
+    linkMethod("Socket", "sendto", [this](VM&, ArgsView a) { return socket_sendto_builtin(a); }, {}, 0xE, /*noMutateSelf=*/true);   // args 1,2,3: data, host, port
+    linkMethod("Socket", "recvfrom", [this](VM&, ArgsView a) { return socket_recvfrom_builtin(a); }, {}, 0x2, /*noMutateSelf=*/true); // arg 1: size
     linkMethod("Socket", "close", [this](VM&, ArgsView a) { return socket_close_builtin(a); });
     linkMethod("Socket", "settimeout", [this](VM&, ArgsView a) { return socket_settimeout_builtin(a); }, {}, 0x2); // arg 1: seconds
-    linkMethod("Socket", "setsockopt", [this](VM&, ArgsView a) { return socket_setsockopt_builtin(a); }, {}, 0x6); // args 1,2: option, value
-    linkMethod("Socket", "getsockname", [this](VM&, ArgsView a) { return socket_getsockname_builtin(a); });
-    linkMethod("Socket", "getpeername", [this](VM&, ArgsView a) { return socket_getpeername_builtin(a); });
-    linkMethod("Socket", "fileno", [this](VM&, ArgsView a) { return socket_fileno_builtin(a); });
+    linkMethod("Socket", "setsockopt", [this](VM&, ArgsView a) { return socket_setsockopt_builtin(a); }, {}, 0x6, /*noMutateSelf=*/true); // args 1,2: option, value
+    linkMethod("Socket", "getsockname", [this](VM&, ArgsView a) { return socket_getsockname_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Socket", "getpeername", [this](VM&, ArgsView a) { return socket_getpeername_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Socket", "fileno", [this](VM&, ArgsView a) { return socket_fileno_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
 }
 
 void ModuleSocket::onModuleLoaded(VM& vm)
@@ -719,8 +719,8 @@ Value ModuleSocket::socket_getsockname_builtin(ArgsView args)
     int port = ntohs(addr.sin_port);
 
     Value result = Value::listVal();
-    asList(result)->elts.push_back(Value::stringVal(toUnicodeString(ipstr)));
-    asList(result)->elts.push_back(Value::intVal(port));
+    asList(result)->append(Value::stringVal(toUnicodeString(ipstr)));
+    asList(result)->append(Value::intVal(port));
 
     return result;
 }
@@ -746,8 +746,8 @@ Value ModuleSocket::socket_getpeername_builtin(ArgsView args)
     int port = ntohs(addr.sin_port);
 
     Value result = Value::listVal();
-    asList(result)->elts.push_back(Value::stringVal(toUnicodeString(ipstr)));
-    asList(result)->elts.push_back(Value::intVal(port));
+    asList(result)->append(Value::stringVal(toUnicodeString(ipstr)));
+    asList(result)->append(Value::intVal(port));
 
     return result;
 }

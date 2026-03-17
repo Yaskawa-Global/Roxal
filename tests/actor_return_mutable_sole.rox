@@ -1,0 +1,13 @@
+// Case 1: mutable return + sole-owner → no clone, returned mutable
+import sys
+
+type Worker actor:
+    func make_list() -> mutable list:
+        var l = [1, 2, 3]
+        return l
+
+var w = Worker()
+var result = w.make_list()
+// result should be mutable — we can modify it
+result[0] = 99
+print(result)

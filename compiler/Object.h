@@ -97,7 +97,11 @@ enum class ObjType {
     Exception
 };
 
-
+/// Returns true if the object type is user-mutable and can hold Value references
+/// to other objects (container types relevant for graph isolation checking).
+inline bool isMutableRefContainerType(ObjType t) {
+    return t == ObjType::List || t == ObjType::Dict || t == ObjType::Instance;
+}
 
 
 
@@ -122,6 +126,29 @@ struct Obj {
     virtual void dropReferences();
 
     virtual unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const = 0; // deep copy preserving structure
+    virtual unique_ptr<Obj, UnreleasedObj> shallowClone() const; // shallow copy (copies property slots, not children); returns nullptr for types that don't support it
+
+    // MVCC: throws if this object is a frozen clone (const snapshot).
+    // Call at the top of every mutation method to prevent const violations
+    // that bypass the Value-level const bit (e.g. builtin method dispatch).
+    inline void ensureMutable() const {
+        if (control->snapshotToken)
+            throw std::runtime_error("Cannot mutate const value");
+    }
+
+    // MVCC: save current state into the version chain before mutation.
+    // Only call when activeSnapshotCount > 0.
+    void saveVersion();
+
+    // MVCC: free version chain entries and release SnapshotToken.
+    // Called from dropReferences() during object destruction.
+    void cleanupMVCC();
+
+    // MVCC: trim version chain entries that no active snapshot can observe.
+    // Keeps the newest entry with epoch <= minEpoch as a floor version.
+    // If minEpoch == UINT64_MAX (no active snapshots), clears the entire chain.
+    // Called from GC sweep when all threads are at a safepoint.
+    void trimVersionChain(uint64_t minEpoch);
 
     virtual void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const = 0;
     virtual void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) = 0;
@@ -154,6 +181,20 @@ struct Obj {
 
 template<typename T>
 inline void delObj(T* o);
+
+// MVCC snapshot functions
+
+/// Create a frozen snapshot of a mutable value (T → const T).
+/// Shallow-clones the root object, allocates a SnapshotToken, sets ConstMask.
+/// Returns the original value unchanged if it's already const or not a reference type.
+Value createFrozenSnapshot(const Value& v);
+
+/// Resolve a child value read through a frozen parent.
+/// For primitives, returns the value directly.
+/// For reference types, materializes a frozen clone at the parent's snapshot epoch,
+/// caching it back into the parent's property slot via `cacheSlot` (if non-null).
+/// Uses the SnapshotToken's cloneMap for alias/cycle preservation.
+Value resolveConstChild(const Value& child, SnapshotToken* token, Value* cacheSlot = nullptr);
 
 struct UnreleasedObj {
     template<typename T>
@@ -480,14 +521,28 @@ std::string objRangeToString(const ObjRange* r);
 
 struct ObjList : public Obj
 {
-    ObjList() { type = ObjType::List; }
+    ObjList() : elts_(make_ptr<std::vector<Value>>()) { type = ObjType::List; }
     ObjList(const ObjRange* r);
     virtual ~ObjList() {}
 
-    int32_t length() const { return elts.size(); }
+    int32_t length() const { return static_cast<int32_t>(elts_->size()); }
+    bool empty() const { return elts_->empty(); }
 
+    // Element access by integer index (no bounds-check Value wrapping)
+    Value getElement(size_t i) const { return elts_->at(i); }
+    void setElement(size_t i, const Value& v);  // MVCC-guarded
+
+    // Element access by Value index (with bounds checking and slice support)
     Value index(const Value& i) const;
     void setIndex(const Value& i, const Value& v);
+
+    // Bulk access: returns a snapshot copy of the elements vector
+    std::vector<Value> getElements() const { return *elts_; }
+    // Bulk replace: sets all elements from a plain vector
+    void setElements(const std::vector<Value>& v);  // MVCC-guarded
+
+    // Capacity
+    void reserve(size_t n) { ensureUnique(); elts_->reserve(n); }
 
     // List operations (in-place)
     void concatenate(const ObjList* other);  // Concatenate other list to this list
@@ -496,15 +551,24 @@ struct ObjList : public Obj
 
     bool equals(const ObjList* other) const;  // Deep equality comparison
 
-    atomic_vector<Value> elts;
+    // Replace element at index without MVCC guards (for frozen snapshot caching)
+    void cacheElement(int64_t index, const Value& val) { ensureUnique(); (*elts_)[index] = val; }
 
     unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+    unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
     void dropReferences() override;
+
+private:
+    ptr<std::vector<Value>> elts_;
+    void ensureUnique() {
+        if (elts_.use_count() > 1)
+            elts_ = make_ptr<std::vector<Value>>(*elts_);
+    }
 };
 
 
@@ -524,61 +588,6 @@ std::string objListToString(const ObjList* ol);
 
 struct ObjDict : public Obj
 {
-    ObjDict() { type = ObjType::Dict; }
-    virtual ~ObjDict() {}
-
-    int32_t length() const {
-        std::lock_guard<std::mutex> lock(m);
-        return m_keys.size();
-    }
-
-    bool contains(const Value& key) const {
-        std::lock_guard<std::mutex> lock(m);
-        return (entries.find(key) != entries.end());
-    }
-
-    Value at(const Value& key) const {
-        std::lock_guard<std::mutex> lock(m);
-        auto it = entries.find(key);
-        if (it != entries.end())
-            return it->second;
-        return Value::nilVal();
-    }
-
-    std::vector<Value> keys() const {
-        std::lock_guard<std::mutex> lock(m);
-        return m_keys;
-    }
-
-    std::vector<std::pair<Value,Value>> items() const {
-        std::lock_guard<std::mutex> lock(m);
-        std::vector<std::pair<Value,Value>> keyvalues {};
-        // can't just iterate over the entries directly, as we want to preserve order according to m_keys
-        for(auto it=m_keys.cbegin(); it!=m_keys.cend(); it++)
-            keyvalues.push_back(std::pair<Value,Value>(*it,entries.at(*it)));
-        return keyvalues;
-    }
-
-    void store(const Value& key, const Value& val) {
-        std::lock_guard<std::mutex> lock(m);
-        if (entries.find(key) == entries.end()) // key exists?
-            m_keys.push_back(key); // no, add to keys list
-        entries[key] = val; // insert or replace
-    }
-
-    void erase(const Value& key) {
-        std::lock_guard<std::mutex> lock(m);
-        auto it = entries.find(key);
-        if (it != entries.end()) {
-            entries.erase(it);
-            m_keys.erase(std::remove(m_keys.begin(), m_keys.end(), key), m_keys.end());
-        }
-    }
-
-    void set(const ObjDict* other); // Shallow copy from other dict
-
-    bool equals(const ObjDict* other) const;  // Deep equality comparison
-
     struct ValueComparitor
     {
         using is_transparent = std::true_type;
@@ -587,20 +596,71 @@ struct ObjDict : public Obj
         bool operator()(const Value& lhs, const Value& rhs) const { return less(lhs, rhs).asBool(); }
     };
 
-private:
-    mutable std::mutex m;
-    std::vector<Value> m_keys;
-    // TODO: transition unordered map (since m_keys provides ordering) - Value hash?
-    std::map<Value,Value,ValueComparitor> entries;
+    struct DictData {
+        std::map<Value,Value,ValueComparitor> entries;
+        std::vector<Value> m_keys;
+    };
 
-public:
+    ObjDict() : data_(make_ptr<DictData>()) { type = ObjType::Dict; }
+    virtual ~ObjDict() {}
+
+    int32_t length() const {
+        return data_->m_keys.size();
+    }
+
+    bool contains(const Value& key) const {
+        return (data_->entries.find(key) != data_->entries.end());
+    }
+
+    Value at(const Value& key) const {
+        auto it = data_->entries.find(key);
+        if (it != data_->entries.end())
+            return it->second;
+        return Value::nilVal();
+    }
+
+    std::vector<Value> keys() const {
+        return data_->m_keys;
+    }
+
+    std::vector<std::pair<Value,Value>> items() const {
+        std::vector<std::pair<Value,Value>> keyvalues {};
+        // can't just iterate over the entries directly, as we want to preserve order according to m_keys
+        for(auto it=data_->m_keys.cbegin(); it!=data_->m_keys.cend(); it++)
+            keyvalues.push_back(std::pair<Value,Value>(*it,data_->entries.at(*it)));
+        return keyvalues;
+    }
+
+    void store(const Value& key, const Value& val);   // MVCC-guarded
+    void erase(const Value& key);                      // MVCC-guarded
+
+    // Replace value for existing key without MVCC guards (for frozen snapshot caching)
+    void cacheValue(const Value& key, const Value& val) {
+        ensureUnique();
+        auto it = data_->entries.find(key);
+        if (it != data_->entries.end())
+            it->second = val;
+    }
+
+    void set(const ObjDict* other); // Shallow copy from other dict
+
+    bool equals(const ObjDict* other) const;  // Deep equality comparison
+
     unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+    unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
     void dropReferences() override;
+
+private:
+    ptr<DictData> data_;
+    void ensureUnique() {
+        if (data_.use_count() > 1)
+            data_ = make_ptr<DictData>(*data_);
+    }
 };
 
 
@@ -635,9 +695,10 @@ struct ObjVector : public Obj
 
     // COW accessors
     const Eigen::VectorXd& vec() const { return *vec_; }
-    Eigen::VectorXd& vecMut() { ensureUnique(); return *vec_; }
+    Eigen::VectorXd& vecMut();  // MVCC-guarded
 
     unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+    unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -692,9 +753,10 @@ struct ObjMatrix : public Obj
 
     // COW accessors
     const Eigen::MatrixXd& mat() const { return *mat_; }
-    Eigen::MatrixXd& matMut() { ensureUnique(); return *mat_; }
+    Eigen::MatrixXd& matMut();  // MVCC-guarded
 
     unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+    unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -802,6 +864,7 @@ struct ObjTensor : public Obj
     void set(const ObjTensor* other);
 
     unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+    unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1120,10 +1183,14 @@ struct BuiltinFuncInfo {
     NativeFn function;
     std::vector<Value> defaultValues;
     uint32_t resolveArgMask {0};  // bit N set → resolve future arg N before native call
+    bool noMutateSelf {false};    // method doesn't mutate receiver state
+    uint32_t noMutateArgs {0};    // bitmask: bit N set → arg N not mutated
 
     BuiltinFuncInfo() = default;
-    BuiltinFuncInfo(NativeFn fn, std::vector<Value> defaults = {}, uint32_t mask = 0)
-        : function(fn), defaultValues(std::move(defaults)), resolveArgMask(mask) {}
+    BuiltinFuncInfo(NativeFn fn, std::vector<Value> defaults = {}, uint32_t mask = 0,
+                    bool noMutateSelf_ = false, uint32_t noMutateArgs_ = 0)
+        : function(fn), defaultValues(std::move(defaults)), resolveArgMask(mask),
+          noMutateSelf(noMutateSelf_), noMutateArgs(noMutateArgs_) {}
 };
 
 struct ObjFunction : public Obj
@@ -1531,17 +1598,37 @@ unique_ptr<ObjModuleType, UnreleasedObj> newModuleTypeObj(const icu::UnicodeStri
 
 struct ObjectInstance : public Obj
 {
+    using PropertyMap = std::unordered_map<int32_t, VariablesMap::MonitoredValue>;
+
     ObjectInstance(const Value& objectType);
     virtual ~ObjectInstance();
 
     Value instanceType;
-    std::unordered_map<int32_t, VariablesMap::MonitoredValue> properties;
 
-    // convenience methods for property access (e.g. for builtin method implementations)
+    // Property access by hash
+    // Non-const version triggers ensureUnique() because callers may write through
+    // the returned pointer (e.g. resolveConstChild caching).
+    VariablesMap::MonitoredValue* findProperty(int32_t hash) {
+        ensureUnique();
+        auto it = properties_->find(hash);
+        return (it != properties_->end()) ? &it->second : nullptr;
+    }
+    const VariablesMap::MonitoredValue* findProperty(int32_t hash) const {
+        auto it = properties_->find(hash);
+        return (it != properties_->end()) ? &it->second : nullptr;
+    }
+    bool hasProperty(int32_t hash) const { return properties_->contains(hash); }
+    // Returns a reference to the slot, creating it if it doesn't exist (like operator[])
+    VariablesMap::MonitoredValue& propertySlot(int32_t hash);       // MVCC-guarded
+    void assignProperty(int32_t hash, const Value& value);          // MVCC-guarded
+    void emplaceProperty(int32_t hash, VariablesMap::MonitoredValue mv);  // MVCC-guarded
+    void clearProperties() { ensureUnique(); properties_->clear(); }
+
+    // convenience methods for property access by name (e.g. for builtin method implementations)
     Value getProperty(const icu::UnicodeString& name) const;
     Value getProperty(const std::string& name) const { return getProperty(toUnicodeString(name)); }
     Value getProperty(const char* name) const { return getProperty(toUnicodeString(name)); }
-    void setProperty(const icu::UnicodeString& name, Value value);
+    void setProperty(const icu::UnicodeString& name, Value value);  // MVCC-guarded
     void setProperty(const std::string& name, Value value) { setProperty(toUnicodeString(name), value); }
     void setProperty(const char* name, Value value) { setProperty(toUnicodeString(name), value); }
 
@@ -1550,12 +1637,20 @@ struct ObjectInstance : public Obj
       { return ensurePropertySignal(name.hashCode(), signalName); }
 
     unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+    unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
     void dropReferences() override;
+
+private:
+    ptr<PropertyMap> properties_;
+    void ensureUnique() {
+        if (properties_.use_count() > 1)
+            properties_ = make_ptr<PropertyMap>(*properties_);
+    }
 };
 
 inline bool isObjectInstance(const Value& v) { return isObjType(v, ObjType::Instance); }
@@ -1578,7 +1673,21 @@ struct ActorInstance : public Obj
     void initialize(const Value& objectType);
 
     Value instanceType;
-    std::unordered_map<int32_t, VariablesMap::MonitoredValue> properties;
+
+    // Property access by hash (same API as ObjectInstance)
+    VariablesMap::MonitoredValue* findProperty(int32_t hash) {
+        auto it = properties.find(hash);
+        return (it != properties.end()) ? &it->second : nullptr;
+    }
+    const VariablesMap::MonitoredValue* findProperty(int32_t hash) const {
+        auto it = properties.find(hash);
+        return (it != properties.end()) ? &it->second : nullptr;
+    }
+    bool hasProperty(int32_t hash) const { return properties.contains(hash); }
+    VariablesMap::MonitoredValue& propertySlot(int32_t hash);       // MVCC-guarded
+    void assignProperty(int32_t hash, const Value& value);          // MVCC-guarded
+    void emplaceProperty(int32_t hash, VariablesMap::MonitoredValue mv);  // MVCC-guarded
+    void clearProperties() { properties.clear(); }
 
     Value ensurePropertySignal(int32_t nameHash, const std::string& signalName);
 
@@ -1613,6 +1722,9 @@ struct ActorInstance : public Obj
 
     void trace(ValueVisitor& visitor) const override;
     void dropReferences() override;
+
+private:
+    std::unordered_map<int32_t, VariablesMap::MonitoredValue> properties;
 };
 
 inline bool isActorInstance(const Value& v) { return isObjType(v, ObjType::Actor); }

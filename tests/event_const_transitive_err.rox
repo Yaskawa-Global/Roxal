@@ -1,0 +1,17 @@
+// Test transitive const on emitted events (spec: Event Implicit Const)
+// Mutating a nested object through a const event should error.
+
+type Widget object:
+    var name: string
+
+type Clicked event:
+    var x: int
+    var widget: Widget
+
+var w = Widget("button")
+
+when Clicked occurs as e:
+    print(e.widget.name)
+    e.widget.name = "hacked"
+
+emit Clicked(x=10, widget=w)

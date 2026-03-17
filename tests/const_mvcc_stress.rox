@@ -1,0 +1,262 @@
+// Heavy MVCC stress test: creates large object graphs with version chains,
+// interleaves const snapshots with mutations and GC, exercises chain trimming.
+// Targets ~10s runtime.
+
+type Node object:
+    var id: int
+    var value: int
+    var children: list
+    var link
+
+// --- Phase 1: Build a large graph, snapshot, mutate, GC ---
+
+func build_chain(count: int) -> list:
+    var nodes = []
+    var i = 0
+    while i < count:
+        var n = Node(i, i * 10, [], nil)
+        nodes.append(n)
+        i = i + 1
+    // Link each node to the next (circular at end)
+    i = 0
+    while i < count:
+        nodes[i].link = nodes[(i + 1) % count]
+        i = i + 1
+    // Give each node some children (overlapping with neighbors = diamond aliasing)
+    i = 0
+    while i < count:
+        var c1 = nodes[(i + 1) % count]
+        var c2 = nodes[(i + 2) % count]
+        var c3 = nodes[(i + 3) % count]
+        nodes[i].children = [c1, c2, c3]
+        i = i + 1
+    return nodes
+
+var chain1 = build_chain(1500)
+
+// Snapshot the entire graph
+const snap1 = chain1
+
+// Heavy mutation pass
+var i = 0
+while i < len(chain1):
+    chain1[i].value = chain1[i].value + 1000
+    i = i + 1
+
+gc()
+
+// Verify snapshot is intact
+var ok = true
+i = 0
+while i < 1500:
+    var expected_val = i * 10
+    if snap1[i].value != expected_val:
+        var got = snap1[i].value
+        print("FAIL phase1 snap value i={i} got={got} expected={expected_val}")
+        ok = false
+    var child_expected = ((i + 1) % 1500) * 10
+    if snap1[i].children[0].value != child_expected:
+        print("FAIL phase1 snap child i={i}")
+        ok = false
+    i = i + 1
+
+// Verify current values changed
+i = 0
+while i < 1500:
+    var expected_cur = i * 10 + 1000
+    if chain1[i].value != expected_cur:
+        var got = chain1[i].value
+        print("FAIL phase1 current i={i} got={got}")
+        ok = false
+    i = i + 1
+
+if ok:
+    print("phase1: ok")
+
+// --- Phase 2: Multiple overlapping snapshots with GC between each ---
+
+var chain2 = build_chain(500)
+var snapshots = []
+
+var round = 0
+while round < 10:
+    i = 0
+    while i < 500:
+        chain2[i].value = round * 1000 + i
+        i = i + 1
+    const s = chain2
+    snapshots.append(s)
+    gc()
+    round = round + 1
+
+// Verify each snapshot captured the correct round
+ok = true
+round = 0
+while round < 10:
+    var s = snapshots[round]
+    i = 0
+    while i < 500:
+        var expected_v = round * 1000 + i
+        if s[i].value != expected_v:
+            var got = s[i].value
+            print("FAIL phase2 round={round} i={i} got={got} expected={expected_v}")
+            ok = false
+        i = i + 1
+    round = round + 1
+
+if ok:
+    print("phase2: ok")
+
+// --- Phase 3: Snapshot create/release churn with chain trimming ---
+
+var chain3 = build_chain(300)
+
+round = 0
+while round < 20:
+    i = 0
+    while i < 300:
+        chain3[i].value = round * 100 + i
+        i = i + 1
+
+    if true:
+        const temp = chain3
+        var expected_0 = round * 100
+        if temp[0].value != expected_0:
+            var got = temp[0].value
+            print("FAIL phase3 round={round} temp0={got}")
+        var expected_150 = round * 100 + 150
+        if temp[150].value != expected_150:
+            var got = temp[150].value
+            print("FAIL phase3 round={round} temp150={got}")
+
+    gc()
+    round = round + 1
+
+// Verify chain still works after many trim cycles
+const final3 = chain3
+chain3[0].value = -1
+var expected_final = 19 * 100
+if final3[0].value == expected_final:
+    print("phase3: ok")
+else:
+    var got = final3[0].value
+    print("FAIL phase3 final3={got} expected={expected_final}")
+
+// --- Phase 4: Wide fan-out with diamond aliasing at scale ---
+
+var leaves = []
+i = 0
+while i < 50:
+    leaves.append(Node(i, i, [], nil))
+    i = i + 1
+
+var hubs = []
+i = 0
+while i < 100:
+    var hub = Node(1000 + i, 0, [], nil)
+    var kids = []
+    var j = 0
+    while j < 50:
+        kids.append(leaves[(i + j) % 50])
+        j = j + 1
+    hub.children = kids
+    hubs.append(hub)
+    i = i + 1
+
+const snap_hubs = hubs
+
+// Mutate all leaves
+i = 0
+while i < 50:
+    leaves[i].value = leaves[i].value + 9000
+    i = i + 1
+
+gc()
+
+// Verify snapshot sees original leaf values through every hub
+ok = true
+i = 0
+while i < 100:
+    var j = 0
+    while j < 50:
+        var expected = (i + j) % 50
+        if snap_hubs[i].children[j].value != expected:
+            var got = snap_hubs[i].children[j].value
+            print("FAIL phase4 hub={i} child={j} got={got} expected={expected}")
+            ok = false
+        j = j + 1
+    i = i + 1
+
+if ok:
+    print("phase4: ok")
+
+// --- Phase 5: Deep version chains — many mutations on same objects ---
+
+var deep = build_chain(300)
+
+var deep_snaps = []
+round = 0
+while round < 100:
+    i = 0
+    while i < 300:
+        deep[i].value = round * 100 + i
+        i = i + 1
+    if round % 10 == 0:
+        const ds = deep
+        deep_snaps.append(ds)
+    if round % 25 == 0:
+        gc()
+    round = round + 1
+
+// Verify the 10 snapshots (at rounds 0, 10, 20, ..., 90)
+ok = true
+var si = 0
+while si < len(deep_snaps):
+    var expected_round = si * 10
+    i = 0
+    while i < 300:
+        var expected_v = expected_round * 100 + i
+        if deep_snaps[si][i].value != expected_v:
+            print("FAIL phase5 snap={si} i={i}")
+            ok = false
+        i = i + 1
+    si = si + 1
+
+if ok:
+    print("phase5: ok")
+
+// --- Phase 6: Interleaved build/snapshot/release cycles ---
+
+round = 0
+while round < 5:
+    var ephemeral = build_chain(400)
+    i = 0
+    while i < 400:
+        ephemeral[i].value = round * 10000 + i
+        i = i + 1
+    const esnap = ephemeral
+    // Mutate after snapshot
+    i = 0
+    while i < 400:
+        ephemeral[i].value = -1
+        i = i + 1
+    // Verify snapshot
+    var valid = true
+    i = 0
+    while i < 400:
+        var expected_v = round * 10000 + i
+        if esnap[i].value != expected_v:
+            valid = false
+        i = i + 1
+    if not valid:
+        print("FAIL phase6 round={round}")
+    gc()
+    round = round + 1
+
+print("phase6: ok")
+
+// Final GC to clean everything up
+gc()
+gc()
+
+print("done")

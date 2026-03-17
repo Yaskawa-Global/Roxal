@@ -1,0 +1,15 @@
+// Test var x: const T freezes the value, including on reassignment
+type O object:
+    var i: int
+
+var x: const O = O(42)
+print(x.i)
+
+// Reassignment: new value should also be frozen
+x = O(99)
+print(x.i)
+
+// Assigning from a const source should work
+const c = O(7)
+x = c
+print(x.i)

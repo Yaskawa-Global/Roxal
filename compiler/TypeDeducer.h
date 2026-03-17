@@ -78,8 +78,11 @@ public:
 
 private:
     std::vector<ScopeInfo> scopes;
+    std::vector<ast::TypeDecl::Kind> typeKindStack; // tracks enclosing type declarations
     bool replMode { false };
     bool replScopeInitialized { false };
+
+    bool inActorScope() const { return !typeKindStack.empty() && typeKindStack.back() == ast::TypeDecl::Kind::Actor; }
 
     void pushScope(bool strict);
     void popScope();

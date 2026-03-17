@@ -1,0 +1,15 @@
+// Case 2: mutable return + not sole-owner → deep-clone, returned mutable
+// The actor method creates a list and an alias, so the returned value
+// is not sole-owned and must be cloned for isolation.
+
+type Worker actor:
+    func make_list() -> mutable list:
+        var l = [1, 2, 3]
+        var alias = l
+        return l
+
+var w = Worker()
+var result = w.make_list()
+// result should be mutable (a clone) — we can modify it
+result[0] = 99
+print(result)

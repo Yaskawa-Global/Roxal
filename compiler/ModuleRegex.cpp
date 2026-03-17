@@ -26,8 +26,8 @@ void ModuleRegex::registerBuiltins(VM& vm)
 
     // Regex object methods
     linkMethod("Regex", "init", [this](VM&, ArgsView a) { return regex_init_builtin(a); });
-    linkMethod("Regex", "test", [this](VM&, ArgsView a) { return regex_test_builtin(a); });
-    linkMethod("Regex", "exec", [this](VM&, ArgsView a) { return regex_exec_builtin(a); });
+    linkMethod("Regex", "test", [this](VM&, ArgsView a) { return regex_test_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Regex", "exec", [this](VM&, ArgsView a) { return regex_exec_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
 }
 
 RegexWrapper* ModuleRegex::compilePattern(const std::string& pattern,
@@ -225,10 +225,10 @@ Value ModuleRegex::regex_exec_builtin(ArgsView args)
         PCRE2_SIZE start = ovector[2*i];
         PCRE2_SIZE end = ovector[2*i + 1];
         if (start == PCRE2_UNSET) {
-            groups->elts.push_back(Value::nilVal());
+            groups->append(Value::nilVal());
         } else {
             std::string groupStr = subject.substr(start, end - start);
-            groups->elts.push_back(Value::stringVal(toUnicodeString(groupStr)));
+            groups->append(Value::stringVal(toUnicodeString(groupStr)));
         }
     }
     dict->store(Value::stringVal(toUnicodeString("groups")), groupsList);

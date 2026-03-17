@@ -142,12 +142,16 @@ protected:
 
     struct Local {
         Local(const icu::UnicodeString& _name, int scopeDepth,
-               std::optional<VarTypeSpec> t = std::nullopt)
-            : name(_name), depth(scopeDepth), isCaptured(false), type(t) {}
+               std::optional<VarTypeSpec> t = std::nullopt, bool _isConst = false,
+               bool _isTypeConst = false)
+            : name(_name), depth(scopeDepth), isCaptured(false), isConst(_isConst),
+              isTypeConst(_isTypeConst), type(t) {}
 
         icu::UnicodeString name;
         int depth;
         bool isCaptured;
+        bool isConst;
+        bool isTypeConst;   // var x: const T — type is const, but var is reassignable
         std::optional<VarTypeSpec> type;
     };
 
@@ -344,6 +348,7 @@ protected:
         icu::UnicodeString sourceName;
         Value moduleType;  // ObjModuleType
         std::unordered_map<icu::UnicodeString, VarTypeSpec> moduleVarTypes;
+        std::unordered_set<icu::UnicodeString> moduleVarTypeConst; // vars declared as var x: const T
         std::unordered_map<icu::UnicodeString, ast::LinePos> moduleVarLines;
         std::unordered_map<icu::UnicodeString, ast::LinePos> moduleConstLines;
     };

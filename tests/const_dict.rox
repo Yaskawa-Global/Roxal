@@ -1,0 +1,22 @@
+// Test const on dicts: snapshot isolation
+
+// 1. Basic snapshot isolation
+var d = {"x": 1, "y": 2}
+const cd = d
+d["z"] = 3
+d["x"] = 99
+print(cd)        // {x: 1, y: 2}
+print(d)         // {x: 99, y: 2, z: 3}
+print(len(cd))   // 2
+print(len(d))    // 3
+
+// 2. Read access works
+print(cd["x"])  // 1
+print(cd["y"])  // 2
+
+// 3. Property-style access on const dict
+print(cd.x)     // 1
+print(cd.y)     // 2
+
+// 4. typeof
+print(typeof(cd))  // <type const dict>

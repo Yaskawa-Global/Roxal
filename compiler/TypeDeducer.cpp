@@ -114,7 +114,9 @@ std::any TypeDeducer::visit(ptr<ast::Import> ast)
 std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
 {
     ast::Anys results {};
+    typeKindStack.push_back(ast->kind);
     ast->acceptChildren(*this, results);
+    typeKindStack.pop_back();
 
     // if (ast->type.has_value())
     //     std::cout << toUTF8StdString(ast->name) << " : " <<  ast->type.value()->toString() << std::endl;
@@ -514,16 +516,21 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
     type->func->isProc = ast->isProc;
     if (ast->returnTypes.has_value()) {
         auto& returnTypes = ast->returnTypes.value();
-        for (const auto& returnType : returnTypes) {
-            if (std::holds_alternative<BuiltinType>(returnType)) {
-                type->func->returnTypes.push_back(make_ptr<Type>(std::get<BuiltinType>(returnType)));
+        for (size_t ri = 0; ri < returnTypes.size(); ri++) {
+            ptr<Type> retType;
+            if (std::holds_alternative<BuiltinType>(returnTypes[ri])) {
+                retType = make_ptr<Type>(std::get<BuiltinType>(returnTypes[ri]));
             }
-            else if (std::holds_alternative<icu::UnicodeString>(returnType)) {
+            else if (std::holds_alternative<icu::UnicodeString>(returnTypes[ri])) {
                 // lookup name - for now create a placeholder
                 // TODO: implement proper name lookup
-                ptr<Type> placeholderType = make_ptr<Type>(BuiltinType::Object);
-                type->func->returnTypes.push_back(placeholderType);
+                retType = make_ptr<Type>(BuiltinType::Object);
             }
+            // Mark return type as const if explicitly qualified (-> const T).
+            // Default is mutable (isConst=false). Only -> const T freezes at actor boundary.
+            if (retType && ri < ast->returnTypeConst.size() && ast->returnTypeConst[ri])
+                retType->isConst = true;
+            type->func->returnTypes.push_back(retType);
         }
 
         if (returnTypes.size() > 1) {
@@ -542,13 +549,25 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
                 paramType.name = param->name;
                 paramType.nameHashCode = param->name.hashCode();
                 paramType.type = make_ptr<Type>(std::get<BuiltinType>(param->type.value()));
+                if (param->isConst || (inActorScope() && !param->isMutable))
+                    paramType.type.value()->isConst = true;
                 paramType.hasDefault = param->defaultValue.has_value();
                 paramType.variadic = param->variadic;
                 type->func.value().params[i] = paramType;
             }
             else if (std::holds_alternative<icu::UnicodeString>(param->type.value())) {
-                // lookup name
-                //...
+                // Named type (user-defined object/actor) — use Object as placeholder
+                // builtin type. The actual type isn't resolved here, but this lets
+                // isConst be queried at runtime (e.g. for actor mutable param checks).
+                Type::FuncType::ParamType paramType {};
+                paramType.name = param->name;
+                paramType.nameHashCode = param->name.hashCode();
+                paramType.type = make_ptr<Type>(BuiltinType::Object);
+                if (param->isConst || (inActorScope() && !param->isMutable))
+                    paramType.type.value()->isConst = true;
+                paramType.hasDefault = param->defaultValue.has_value();
+                paramType.variadic = param->variadic;
+                type->func.value().params[i] = paramType;
             }
         }
         else {

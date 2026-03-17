@@ -1,0 +1,28 @@
+// Test alias preservation within const snapshots
+
+type Holder object:
+    var a :list
+    var b :list
+
+// Two properties pointing to the same object
+var shared = [1, 2, 3]
+var h = Holder(shared, shared)
+
+// Verify alias in mutable
+print(h.a is h.b)  // true
+
+// Create const snapshot
+const ch = h
+
+// Verify alias preserved in const snapshot
+print(ch.a is ch.b)  // true
+
+// Mutate through original
+shared.append(4)
+
+// Const snapshot isolated
+print(ch.a)  // [1, 2, 3]
+print(ch.b)  // [1, 2, 3]
+
+// And still aliased in const
+print(ch.a is ch.b)  // true

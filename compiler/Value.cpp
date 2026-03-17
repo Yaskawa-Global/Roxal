@@ -815,7 +815,7 @@ bool Value::equals(const Value& rhs, bool strict) const
         // Check if all elements are numeric
         bool allNumeric = true;
         for (int i = 0; i < rhsList->length(); i++) {
-            if (!rhsList->elts.at(i).isNumber()) {
+            if (!rhsList->getElement(i).isNumber()) {
                 allNumeric = false;
                 break;
             }
@@ -827,7 +827,7 @@ bool Value::equals(const Value& rhs, bool strict) const
             if (lhsVec->length() != rhsList->length())
                 return false;
             for (int i = 0; i < rhsList->length(); i++) {
-                if (std::abs(lhsVec->vec()[i] - rhsList->elts.at(i).asReal()) > 1e-15)
+                if (std::abs(lhsVec->vec()[i] - rhsList->getElement(i).asReal()) > 1e-15)
                     return false;
             }
             return true;
@@ -856,7 +856,7 @@ bool Value::equals(const Value& rhs, bool strict) const
         // Check if all elements are numeric
         bool allNumeric = true;
         for (int i = 0; i < rhsList->length(); i++) {
-            if (!rhsList->elts.at(i).isNumber()) {
+            if (!rhsList->getElement(i).isNumber()) {
                 allNumeric = false;
                 break;
             }
@@ -880,7 +880,7 @@ bool Value::equals(const Value& rhs, bool strict) const
                     return (lhsMat->rows() == 0 && lhsMat->cols() == 0);
                 } else if (expectedSize == 1) {
                     return (lhsMat->rows() == 1 && lhsMat->cols() == 1 &&
-                            std::abs(lhsMat->mat()(0,0) - rhsList->elts.at(0).asReal()) <= 1e-15);
+                            std::abs(lhsMat->mat()(0,0) - rhsList->getElement(0).asReal()) <= 1e-15);
                 }
             }
         }
@@ -1054,6 +1054,30 @@ Value Value::strongRef() const
     return v;
 }
 
+Value Value::constRef() const
+{
+    if (!isObj())
+        return *this; // primitives are already immutable
+    if (isConst())
+        return *this; // already const
+    // Create a new Value with ConstMask set, same strong ref counting
+    Value v;
+    v.val = val.load() | ConstMask;
+    v.incRefObj(); // const refs are strong refs
+    return v;
+}
+
+Value Value::mutableRef() const
+{
+    if (!isConst())
+        return *this;
+    // Strip the const bit, keep everything else
+    Value v;
+    v.val = val.load() & ~ConstMask;
+    v.incRefObj();
+    return v;
+}
+
 static type::BuiltinType valueTypeToBuiltin(ValueType t)
 {
     using namespace type;
@@ -1147,7 +1171,7 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
                 pass = l1->length() == l2->length();
                 if (pass) {
                     for(int i=0;i<l1->length();i++)
-                        if(!l1->elts.at(i).equals(l2->elts.at(i), true)) { pass=false; break; }
+                        if(!l1->getElement(i).equals(l2->getElement(i), true)) { pass=false; break; }
                 }
             }
             else if (isDict(v) && isDict(read)) {
@@ -1480,10 +1504,10 @@ Value roxal::toType(ValueType t, Value v, bool strict)
                 for (const auto& entry : vObjType->orderedPublicProperties()) {
                     auto propName { Value::stringVal(entry.property->name) };
                     #ifdef DEBUG_BUILD
-                    assert(vObj->properties.find(entry.key) != vObj->properties.end());
+                    assert(vObj->findProperty(entry.key) != nullptr);
                     #endif
                     asDict(dictValue)->store(propName,
-                                             vObj->properties[entry.key].value);
+                                             vObj->propertySlot(entry.key).value);
                 }
                 return dictValue;
             }
@@ -1629,7 +1653,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
         if (count == 1) {
             Value arg = *begin;
             if (isList(arg)) {
-                auto bits = asList(arg)->elts.get();
+                auto bits = asList(arg)->getElements();
                 if (bits.size() != 8)
                     throw std::runtime_error("byte constructor expects list of 8 bools or 0/1 ints");
                 uint8_t value = 0;
@@ -1659,7 +1683,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
         if (count == 1) {
             Value arg = *begin;
             if (isList(arg)) {
-                auto parts = asList(arg)->elts.get();
+                auto parts = asList(arg)->getElements();
                 if (parts.size() == 32) {
                     uint32_t value = 0;
                     for (size_t i = 0; i < parts.size(); ++i) {
@@ -1703,7 +1727,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
             if (arg.isInt())
                 return Value::vectorVal(arg.asInt());
             if (isList(arg)) {
-                auto listVals = asList(arg)->elts.get();
+                auto listVals = asList(arg)->getElements();
                 Eigen::VectorXd vals(listVals.size());
                 for(size_t i=0; i<listVals.size(); ++i) {
                     if (!listVals[i].isNumber() && !isSignal(listVals[i]))
@@ -1768,7 +1792,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
         if (count == 1) {
             Value arg = *begin;
             if (isList(arg)) {
-                auto rowsVals = asList(arg)->elts.get();
+                auto rowsVals = asList(arg)->getElements();
                 if (rowsVals.size() == 0)
                     return Value::matrixVal();
 
@@ -1793,7 +1817,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 for(size_t r=0; r<rowCount; ++r) {
                     auto rowVal = rowsVals[r];
                     if (isList(rowVal)) {
-                        auto rowList = asList(rowVal)->elts.get();
+                        auto rowList = asList(rowVal)->getElements();
                         if ((int)rowList.size() != colCount)
                             throw std::runtime_error("matrix rows must have equal length");
                         for(int c=0; c<colCount; ++c)
@@ -1864,7 +1888,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
             // Check if first arg is a list (old syntax) or int (new varargs syntax)
             if (isList(*it)) {
                 // tensor([shape], ...) - list-based shape
-                auto shapeList = asList(*it)->elts.get();
+                auto shapeList = asList(*it)->getElements();
                 shape.reserve(shapeList.size());
                 for (const auto& v : shapeList) {
                     if (!v.isInt())
@@ -1912,7 +1936,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                     continue;
                 } else if (isList(arg)) {
                     // Data list
-                    auto dataList = asList(arg)->elts.get();
+                    auto dataList = asList(arg)->getElements();
                     data.reserve(dataList.size());
                     for (const auto& v : dataList) {
                         if (!v.isNumber())
@@ -3251,11 +3275,11 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             if (useCtx)
                 ctx->idToObj[id] = obj;
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
-            obj->properties.clear();
+            obj->clearProperties();
             for(uint32_t i=0;i<count;i++) {
                 int32_t h; in.read(reinterpret_cast<char*>(&h),4);
                 Value v = readValue(in, ctx);
-                auto& slot = obj->properties[h];
+                auto& slot = obj->propertySlot(h);
                 slot.clearSignal();
                 slot.value = v;
             }
@@ -3282,11 +3306,11 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             debug_assert_msg(t->isActor, "Expected actor type for deserialization");
             obj->initialize(typeVal);
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
-            obj->properties.clear();
+            obj->clearProperties();
             for(uint32_t i=0;i<count;i++) {
                 int32_t h; in.read(reinterpret_cast<char*>(&h),4);
                 Value v = readValue(in, ctx);
-                auto& slot = obj->properties[h];
+                auto& slot = obj->propertySlot(h);
                 slot.clearSignal();
                 slot.value = v;
             }

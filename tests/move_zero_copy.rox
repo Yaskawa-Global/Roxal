@@ -1,0 +1,24 @@
+import sys
+
+// Verify move() + actor zero-copy path:
+// - moved value arrives intact in actor
+// - source is nil after move
+// - refcount inside actor is consistent with no-clone path
+//   (both moved values and temporaries should have same refcount,
+//    confirming both hit the sole-owner fast path in queueCall)
+type Worker actor:
+    func check(data: mutable list) -> int:
+        return sys._refcount(data)
+
+var w = Worker()
+
+// Case 1: move from variable
+var mylist = [10, 20, 30]
+var rc_moved = w.check(move(mylist))
+print('mylist is nil: ' + (mylist == nil))
+
+// Case 2: temporary (already sole-owner)
+var rc_temp = w.check([40, 50, 60])
+
+// Both should have same refcount (both skip clone in queueCall)
+print('refcounts equal: ' + (rc_moved == rc_temp))

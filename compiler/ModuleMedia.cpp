@@ -359,10 +359,10 @@ void ModuleMedia::registerBuiltins(VM& vm)
     setVM(vm);
 
     linkMethod("Image", "init",            [this](VM&, ArgsView a) { return image_init_builtin(a); });
-    linkMethod("Image", "write",           [this](VM&, ArgsView a) { return image_write_builtin(a); });
-    linkMethod("Image", "width",           [this](VM&, ArgsView a) { return image_width_builtin(a); });
-    linkMethod("Image", "height",          [this](VM&, ArgsView a) { return image_height_builtin(a); });
-    linkMethod("Image", "channels",        [this](VM&, ArgsView a) { return image_channels_builtin(a); });
+    linkMethod("Image", "write",           [this](VM&, ArgsView a) { return image_write_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Image", "width",           [this](VM&, ArgsView a) { return image_width_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Image", "height",          [this](VM&, ArgsView a) { return image_height_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Image", "channels",        [this](VM&, ArgsView a) { return image_channels_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
     linkMethod("Image", "resize",          [this](VM&, ArgsView a) { return image_resize_builtin(a); });
     linkMethod("Image", "crop",            [this](VM&, ArgsView a) { return image_crop_builtin(a); });
     linkMethod("Image", "pad",             [this](VM&, ArgsView a) { return image_pad_builtin(a); });
@@ -378,7 +378,7 @@ void ModuleMedia::registerBuiltins(VM& vm)
     linkMethod("Image", "to_float",        [this](VM&, ArgsView a) { return image_to_float_builtin(a); });
     linkMethod("Image", "to_uint8",        [this](VM&, ArgsView a) { return image_to_uint8_builtin(a); });
     linkMethod("Image", "normalize",       [this](VM&, ArgsView a) { return image_normalize_builtin(a); });
-    linkMethod("Image", "to_tensor",       [this](VM&, ArgsView a) { return image_to_tensor_builtin(a); });
+    linkMethod("Image", "to_tensor",       [this](VM&, ArgsView a) { return image_to_tensor_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
 }
 
 // Helper: replace the receiver's data tensor in-place
@@ -950,7 +950,7 @@ static std::vector<double> extractDoubleList(Value v, int n, const char* name)
                                     std::to_string(lst->length()));
     std::vector<double> result(static_cast<size_t>(n));
     for (int i = 0; i < n; ++i)
-        result[static_cast<size_t>(i)] = toType(ValueType::Real, lst->elts.at(i), false).asReal();
+        result[static_cast<size_t>(i)] = toType(ValueType::Real, lst->getElement(i), false).asReal();
     return result;
 }
 

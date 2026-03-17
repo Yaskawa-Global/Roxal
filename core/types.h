@@ -104,6 +104,7 @@ struct Type {
     };
 
     BuiltinType builtin;
+    bool isConst { false };  // type is const-qualified (e.g. const List, const O)
 
     std::optional<FuncType> func;   // if Func
     std::optional<ObjectType> obj;  // if Object or Actor

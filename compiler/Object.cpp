@@ -82,6 +82,8 @@ icu::UnicodeString readString(std::istream& in) {
 void writeTypeInfo(std::ostream& out, const type::Type& t) {
     uint8_t b = static_cast<uint8_t>(t.builtin);
     out.write(reinterpret_cast<char*>(&b),1);
+    uint8_t ic = t.isConst ? 1 : 0;
+    out.write(reinterpret_cast<char*>(&ic),1);
     if (t.builtin == type::BuiltinType::Func && t.func.has_value()) {
         uint8_t hasFunc = 1; out.write(reinterpret_cast<char*>(&hasFunc),1);
         const auto& ft = t.func.value();
@@ -110,6 +112,8 @@ void writeTypeInfo(std::ostream& out, const type::Type& t) {
 ptr<type::Type> readTypeInfo(std::istream& in) {
     uint8_t b; in.read(reinterpret_cast<char*>(&b),1);
     auto t = make_ptr<type::Type>(static_cast<type::BuiltinType>(b));
+    uint8_t ic; in.read(reinterpret_cast<char*>(&ic),1);
+    t->isConst = ic != 0;
     if (t->builtin == type::BuiltinType::Func) {
         uint8_t hasFunc; in.read(reinterpret_cast<char*>(&hasFunc),1);
         if(hasFunc){
@@ -274,10 +278,405 @@ ValueType Obj::valueType() const
 
 void Obj::dropReferences()
 {
-    // Default implementation does nothing.
+    // Clean up MVCC version chain and snapshot token
+    cleanupMVCC();
+}
+
+unique_ptr<Obj, UnreleasedObj> Obj::shallowClone() const
+{
+    // Default: types that don't support shallow cloning return nullptr
+    return nullptr;
+}
+
+void Obj::saveVersion()
+{
+    // Version save deduplication: skip if no new snapshot was created since last save
+    if (control->lastSaveEpoch >= latestSnapshotCreationEpoch.load(std::memory_order_acquire))
+        return;
+
+    auto snap = shallowClone();
+    if (!snap)
+        return; // type doesn't support shallow cloning (e.g. immutable types)
+
+    // Transfer ownership of the shallow clone to the version node.
+    // The clone gets a strong ref to keep it alive.
+    Obj* snapObj = snap.release();
+    snapObj->incRef();
+
+    auto* ver = new ObjVersion();
+    ver->epoch = control->writeEpoch.load(std::memory_order_relaxed);
+    ver->snapshot = snapObj;
+
+    // CAS-prepend to the version chain (lock-free)
+    ObjVersion* head = control->versionChain.load(std::memory_order_relaxed);
+    do {
+        ver->prev = head;
+    } while (!control->versionChain.compare_exchange_weak(head, ver,
+             std::memory_order_release, std::memory_order_relaxed));
+
+    control->lastSaveEpoch = globalWriteEpoch.load(std::memory_order_relaxed);
 }
 
 
+void Obj::cleanupMVCC()
+{
+    // Free version chain
+    ObjVersion* ver = control->versionChain.load(std::memory_order_relaxed);
+    control->versionChain.store(nullptr, std::memory_order_relaxed);
+    while (ver) {
+        ObjVersion* prev = ver->prev;
+        if (ver->snapshot) {
+            ver->snapshot->decRef();
+            ver->snapshot = nullptr;
+        }
+        delete ver;
+        ver = prev;
+    }
+
+    // Release snapshot token (for frozen clones)
+    if (control->snapshotToken) {
+        if (control->snapshotToken->decRef()) {
+            // Last frozen clone for this snapshot — decrement global count
+            snapshotEpochTracker.remove(control->snapshotToken->epoch);
+            activeSnapshotCount.fetch_sub(1, std::memory_order_relaxed);
+            delete control->snapshotToken;
+        }
+        control->snapshotToken = nullptr;
+    }
+}
+
+
+void Obj::trimVersionChain(uint64_t minEpoch)
+{
+    ObjVersion* chain = control->versionChain.load(std::memory_order_relaxed);
+    if (!chain)
+        return;
+
+    // No active snapshots — discard entire chain
+    if (minEpoch == UINT64_MAX) {
+        control->versionChain.store(nullptr, std::memory_order_relaxed);
+        control->lastSaveEpoch = 0;
+        while (chain) {
+            ObjVersion* prev = chain->prev;
+            if (chain->snapshot) {
+                chain->snapshot->decRef();
+                chain->snapshot = nullptr;
+            }
+            delete chain;
+            chain = prev;
+        }
+        return;
+    }
+
+    // Find the newest version with epoch < minEpoch (the floor version).
+    // Keep it and everything newer; discard everything older.
+    ObjVersion* cur = chain;
+    ObjVersion* floor = nullptr;
+    while (cur) {
+        if (cur->epoch < minEpoch) {
+            floor = cur;
+            break;  // chain is newest-first, so first match is the newest floor
+        }
+        cur = cur->prev;
+    }
+
+    if (!floor)
+        return;  // all versions are >= minEpoch, nothing to trim
+
+    // Free everything after the floor version
+    ObjVersion* toFree = floor->prev;
+    floor->prev = nullptr;
+    while (toFree) {
+        ObjVersion* prev = toFree->prev;
+        if (toFree->snapshot) {
+            toFree->snapshot->decRef();
+            toFree->snapshot = nullptr;
+        }
+        delete toFree;
+        toFree = prev;
+    }
+}
+
+
+/// Check whether the object graph rooted at `root` is isolated: every mutable
+/// interior object is referenced only from within the graph (no external aliases).
+///
+/// Algorithm (two-pass):
+///   Phase 1: Traverse from root via trace(), collecting all reachable Obj*
+///            into a set.
+///   Phase 2: For each reachable object, trace again, counting how many
+///            references land on other reachable objects (internal refs).
+///            Then verify: for each mutable container (List, Dict, Instance),
+///            strong_count == internal_ref_count.
+///
+/// The root is excluded from the check — its sole-ownership is verified by the
+/// caller (strong <= 1 in createFrozenSnapshot, <= 2 in queueCall).
+///
+/// Immutable types (String, Function, ObjectType, etc.) are skipped: they cannot
+/// be mutated through an alias, so sharing is safe.
+///
+/// Performance: O(V + E) where V = reachable objects, E = reference edges.
+/// For the common case (list of primitives), V = 1 and returns true immediately.
+static bool isIsolatedGraph(Obj* root)
+{
+    if (!root) return true;
+
+    // Phase 1: Collect all reachable objects via DFS
+    std::unordered_set<Obj*> reachable;
+    reachable.insert(root);
+
+    struct CollectVisitor : ValueVisitor {
+        std::unordered_set<Obj*>& reachable;
+        std::vector<Obj*> worklist;
+
+        explicit CollectVisitor(std::unordered_set<Obj*>& r) : reachable(r) {}
+
+        void visit(const Value& value) override {
+            if (!value.isObj() || value.isWeak()) return;
+            Obj* obj = value.asObj();
+            if (!obj || !obj->control) return;
+            if (reachable.count(obj)) return;
+            reachable.insert(obj);
+            worklist.push_back(obj);
+        }
+
+        void drain() {
+            while (!worklist.empty()) {
+                Obj* current = worklist.back();
+                worklist.pop_back();
+                current->trace(*this);
+            }
+        }
+    };
+
+    CollectVisitor collector(reachable);
+    root->trace(collector);
+    collector.drain();
+
+    // If only the root is reachable (e.g. list of primitives), trivially isolated.
+    if (reachable.size() <= 1) return true;
+
+    // Phase 2: Count internal references for each reachable object.
+    std::unordered_map<Obj*, int32_t> internalRefs;
+
+    struct CountVisitor : ValueVisitor {
+        const std::unordered_set<Obj*>& reachable;
+        std::unordered_map<Obj*, int32_t>& internalRefs;
+
+        CountVisitor(const std::unordered_set<Obj*>& r,
+                     std::unordered_map<Obj*, int32_t>& ir)
+            : reachable(r), internalRefs(ir) {}
+
+        void visit(const Value& value) override {
+            if (!value.isObj() || value.isWeak()) return;
+            Obj* obj = value.asObj();
+            if (!obj || !obj->control) return;
+            if (reachable.count(obj))
+                internalRefs[obj]++;
+        }
+    };
+
+    CountVisitor counter(reachable, internalRefs);
+    for (Obj* obj : reachable)
+        obj->trace(counter);
+
+    // Check isolation: every mutable interior object must have no external aliases.
+    for (Obj* obj : reachable) {
+        if (obj == root) continue;
+        if (!isMutableRefContainerType(obj->type)) continue;
+
+        int32_t strong = obj->control->strong.load(std::memory_order_acquire);
+        int32_t internal = 0;
+        auto it = internalRefs.find(obj);
+        if (it != internalRefs.end()) internal = it->second;
+
+        if (strong > internal)
+            return false; // has external alias
+    }
+
+    return true;
+}
+
+
+Value roxal::createFrozenSnapshot(const Value& v)
+{
+    // Const-to-const passthrough: already frozen, reuse as-is
+    if (v.isConst()) return v;
+
+    // Non-reference types are inherently immutable
+    if (!v.isObj()) return v;
+
+    Obj* obj = v.asObj();
+    if (!obj) return v;
+
+    // Sole-owner fast path: if no other live references exist AND the root has
+    // no object-type children, freeze in-place (zero-copy).
+    // When object-type children exist, we must fall through to the shallow-clone
+    // + MVCC path because interior objects may have external aliases that could
+    // mutate them, breaking the immutability guarantee of the frozen snapshot.
+    if (obj->control && obj->control->strong.load(std::memory_order_acquire) <= 1) {
+        struct HasObjChildVisitor : ValueVisitor {
+            bool found = false;
+            void visit(const Value& v) override {
+                if (!found && v.isObj() && !v.isWeak())
+                    found = true;
+            }
+        };
+        HasObjChildVisitor checker;
+        obj->trace(checker);
+        if (!checker.found)
+            return v.constRef();
+        // Fall through to shallow-clone + MVCC
+    }
+
+    // Shallow-clone the root object
+    auto snap = obj->shallowClone();
+    if (!snap) {
+        // Type doesn't support shallow cloning (e.g. immutable type like ObjString).
+        // Just return with const bit set.
+        return v.constRef();
+    }
+
+    // Allocate SnapshotToken
+    uint64_t epoch = globalWriteEpoch.load(std::memory_order_acquire);
+    auto* token = new SnapshotToken(epoch);
+
+    // Configure the frozen clone before transferring ownership
+    Obj* frozenObj = snap.get();
+    frozenObj->control->snapshotToken = token;
+    // The frozen clone's writeEpoch is irrelevant (it's never mutated),
+    // but set it to 0 so it's clearly distinguishable from live objects.
+    frozenObj->control->writeEpoch.store(0, std::memory_order_relaxed);
+
+    // Update global snapshot tracking
+    // latestSnapshotCreationEpoch must be updated BEFORE activeSnapshotCount
+    // (see proposal: memory ordering for version save deduplication)
+    latestSnapshotCreationEpoch.store(epoch, std::memory_order_release);
+    snapshotEpochTracker.add(epoch);
+    activeSnapshotCount.fetch_add(1, std::memory_order_release);
+
+    // Transfer ownership to Value (objVal does incRef via Value constructor)
+    Value result = Value::objVal(std::move(snap));
+    return result.constRef();
+}
+
+
+/// Find the correct version of an object for a given snapshot epoch.
+/// Returns the snapshot Obj* from the version chain, or nullptr if the
+/// object's current state is valid for this epoch.
+static Obj* findVersionForEpoch(Obj* obj, uint64_t snapshotEpoch)
+{
+    uint64_t objEpoch = obj->control->writeEpoch.load(std::memory_order_acquire);
+    if (objEpoch < snapshotEpoch) {
+        // Object was not mutated since the snapshot — current state is valid
+        return nullptr;
+    }
+
+    // Object was mutated at or after the snapshot epoch.
+    // Walk version chain to find newest version with epoch < snapshotEpoch.
+    ObjVersion* ver = obj->control->versionChain.load(std::memory_order_acquire);
+    ObjVersion* best = nullptr;
+    while (ver) {
+        if (ver->epoch < snapshotEpoch) {
+            if (!best || ver->epoch > best->epoch)
+                best = ver;
+            break;  // chain is newest-first, so first match with epoch < snapshotEpoch is best
+        }
+        ver = ver->prev;
+    }
+
+    // Invariant: a version must exist — the oldest version's epoch is the object's
+    // writeEpoch at its first-ever mutation (0 for newly created objects), which is
+    // ≤ any valid snapshot epoch ≥ 1.
+    debug_assert_msg(best != nullptr, "MVCC: no version found for epoch");
+    return best ? best->snapshot : nullptr;
+}
+
+
+Value roxal::resolveConstChild(const Value& child, SnapshotToken* token, Value* cacheSlot)
+{
+    // Primitives and non-objects: return directly (no cloning needed)
+    if (!child.isObj()) return child;
+
+    // Already resolved (cached from prior access): return as-is
+    if (child.isConst()) return child;
+
+    Obj* childObj = child.asObj();
+    if (!childObj) return child;
+
+    uint64_t epoch = token->epoch;
+
+    // Check the per-snapshot cloneMap for alias/cycle preservation.
+    // If we've already materialized a frozen clone for this object in this
+    // snapshot, reuse it to preserve 'is'-identity.
+    // The cloneMap stores weak refs — the parent container/object holds the
+    // strong ref (via cacheSlot or container element caching).
+    auto it = token->cloneMap.find(childObj);
+    if (it != token->cloneMap.end()) {
+        Value weak = it->second;
+        if (weak.isAlive()) {
+            // Promote weak ref to strong for return, preserving const bit
+            Value cached = weak.strongRef().constRef();
+            if (cacheSlot) *cacheSlot = cached;
+            return cached;
+        }
+        // Weak ref expired — remove stale entry and re-create below
+        token->cloneMap.erase(it);
+    }
+
+    // Determine the source state to clone from.
+    // Try version chain first (immutable snapshots — no lock needed).
+    Obj* versionObj = findVersionForEpoch(childObj, epoch);
+    unique_ptr<Obj, UnreleasedObj> snap;
+    if (versionObj) {
+        // Version chain has the correct pre-mutation state — clone from immutable version
+        snap = versionObj->shallowClone();
+    } else {
+        // Current state appears valid for this epoch. Lock and re-verify,
+        // because the owning thread may be mid-mutation (between ensureUnique
+        // and writeEpoch bump) — see CowGuard in mutation methods.
+        childObj->control->lockCow();
+        uint64_t currentEpoch = childObj->control->writeEpoch.load(std::memory_order_acquire);
+        if (currentEpoch < epoch) {
+            // Still valid under lock — clone current state
+            snap = childObj->shallowClone();
+            childObj->control->unlockCow();
+        } else {
+            // Race: mutation happened between our initial check and lock acquisition.
+            // The version chain now has the pre-mutation state we need.
+            childObj->control->unlockCow();
+            versionObj = findVersionForEpoch(childObj, epoch);
+            debug_assert_msg(versionObj != nullptr, "MVCC: no version found after race in resolveConstChild");
+            snap = versionObj->shallowClone();
+        }
+    }
+    if (!snap) {
+        // Immutable type (e.g. ObjString) — just return with const bit
+        Value result = child.constRef();
+        if (cacheSlot) *cacheSlot = result;
+        return result;
+    }
+
+    // Configure frozen child before transferring ownership
+    Obj* frozenChild = snap.get();
+
+    // Attach to the same snapshot token (increment refcount)
+    token->incRef();
+    frozenChild->control->snapshotToken = token;
+    frozenChild->control->writeEpoch.store(0, std::memory_order_relaxed);
+
+    // Transfer ownership to Value and set const bit
+    Value result = Value::objVal(std::move(snap)).constRef();
+
+    // Register weak ref in cloneMap for alias/identity preservation.
+    // The parent container holds the strong ref (via cacheSlot or element caching).
+    token->cloneMap[childObj] = result.weakRef();
+
+    // Cache in parent's slot
+    if (cacheSlot) *cacheSlot = result;
+
+    return result;
+}
 
 
 
@@ -604,8 +1003,19 @@ Value ObjVector::index(const Value& i) const
     return Value::nilVal();
 }
 
+Eigen::VectorXd& ObjVector::vecMut()
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    ensureUnique();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return *vec_;
+}
+
 void ObjVector::setIndex(const Value& i, const Value& v)
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
     ensureUnique();  // COW: copy before mutation
     if (i.isNumber()) {
         auto index = i.asInt();
@@ -634,6 +1044,7 @@ void ObjVector::setIndex(const Value& i, const Value& v)
     else {
         throw std::invalid_argument("Vector indexing subscript must be a number or a range (not "+to_string(i.type())+").");
     }
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 
@@ -879,11 +1290,14 @@ std::string roxal::objStringToString(const ObjString* os)
 
 
 ObjList::ObjList(const ObjRange* r)
+    : elts_(make_ptr<std::vector<Value>>())
 {
     type = ObjType::List;
     int32_t rangeLen = r->length();
+    if (rangeLen > 0)
+        elts_->reserve(rangeLen);
     for(int32_t i=0; i<rangeLen; i++)
-        elts.push_back(Value::intVal(r->targetIndex(i,-1)));
+        elts_->push_back(Value::intVal(r->targetIndex(i,-1)));
 }
 
 
@@ -896,7 +1310,7 @@ Value ObjList::index(const Value& i) const
             index = len - (-index);
         if (index < 0 || index >= len)
             throw std::invalid_argument("List index out-of-range.");
-        return elts.at(index);
+        return (*elts_)[index];
     }
     else if (isRange(i)) {
         auto sublist = newListObj();
@@ -907,7 +1321,7 @@ Value ObjList::index(const Value& i) const
         for(auto i=0; i<rangeLen; i++) {
             auto targetIndex = r->targetIndex(i,listLen);
             if ((targetIndex >= 0) && (targetIndex < listLen))
-                sublist->elts.push_back(elts.at(targetIndex));
+                sublist->elts_->push_back((*elts_)[targetIndex]);
         }
 
         return Value::objVal(std::move(sublist));
@@ -918,8 +1332,32 @@ Value ObjList::index(const Value& i) const
 }
 
 
+void ObjList::setElement(size_t i, const Value& v)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    (*elts_)[i] = v;
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+void ObjList::setElements(const std::vector<Value>& v)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    *elts_ = v;
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
 void ObjList::setIndex(const Value& i, const Value& v)
 {
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
     if (i.isNumber()) {
         auto index = i.asInt();
         auto len = length();
@@ -927,7 +1365,7 @@ void ObjList::setIndex(const Value& i, const Value& v)
             index = len - (-index);
         if (index < 0 || index >= len)
             throw std::invalid_argument("List index out-of-range.");
-        elts.store(index, v);
+        (*elts_)[index] = v;
     }
     else if (isRange(i)) {
 
@@ -948,61 +1386,79 @@ void ObjList::setIndex(const Value& i, const Value& v)
             auto targetIndex = r->targetIndex(i,listLen);
             if ((targetIndex >= 0) && (targetIndex < listLen)) {
                 if (i < rhsLen)
-                    elts.store(targetIndex,rhsList->elts.at(i));
+                    (*elts_)[targetIndex] = (*rhsList->elts_)[i];
             }
         }
     }
     else
         throw std::invalid_argument("List indexing subscript must be a number or a range (not "+to_string(i.type())+").");
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ObjList::concatenate(const ObjList* other)
 {
-    // Efficiently append all elements from other list in one lock
-    // (atomic_vector::append handles the reserve internally)
-    elts.append(other->elts);
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    const auto& otherElts = *other->elts_;
+    elts_->reserve(elts_->size() + otherElts.size());
+    elts_->insert(elts_->end(), otherElts.begin(), otherElts.end());
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ObjList::append(const Value& value)
 {
-    elts.push_back(value);
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    elts_->push_back(value);
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ObjList::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint32_t len = length();
     out.write(reinterpret_cast<char*>(&len), 4);
-    auto list = elts.get();
-    for(const auto& v : list)
+    for(const auto& v : *elts_)
         writeValue(out, v, ctx);
 }
 
 void ObjList::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
     uint32_t len;
     in.read(reinterpret_cast<char*>(&len), 4);
-    elts.clear();
+    elts_->clear();
     for(uint32_t i=0;i<len;i++)
-        elts.push_back(readValue(in, ctx));
+        elts_->push_back(readValue(in, ctx));
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ObjList::trace(ValueVisitor& visitor) const
 {
-    elts.unsafeApply([&visitor](const auto& values) {
-        for (const auto& value : values) {
-            visitor.visit(value);
-        }
-    });
+    for (const auto& value : *elts_) {
+        visitor.visit(value);
+    }
 }
 
 void ObjList::dropReferences()
 {
-    elts.clear();
+    elts_ = make_ptr<std::vector<Value>>();
 }
 
 void ObjList::set(const ObjList* other)
 {
-    elts = other->elts; // atomic_vector assignment performs copy
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    *elts_ = *other->elts_;
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 
@@ -1032,8 +1488,7 @@ unique_ptr<ObjList, UnreleasedObj> roxal::newListObj(const std::vector<Value>& e
     #else
     auto l = newObj<ObjList>();
     #endif
-    for(const auto& elt : elts)
-        l->elts.push_back(elt);
+    l->setElements(elts);
     return l;
 }
 
@@ -1057,10 +1512,20 @@ unique_ptr<Obj, UnreleasedObj> ObjList::clone(roxal::ptr<CloneContext> ctx) cons
     }
 
     // Clone children with context
-    auto lsize = elts.size();
-    for (auto i = 0; i < lsize; i++)
-        newl->elts.push_back(elts.at(i).clone(ctx));
+    auto lsize = elts_->size();
+    newl->elts_->reserve(lsize);
+    for (size_t i = 0; i < lsize; i++)
+        newl->elts_->push_back((*elts_)[i].clone(ctx));
 
+    return newl;
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjList::shallowClone() const
+{
+    auto newl = newListObj();
+    // COW: share the storage pointer (O(1) refcount bump).
+    // Mutations on either side will trigger ensureUnique() to copy-on-write.
+    newl->elts_ = elts_;
     return newl;
 }
 
@@ -1069,8 +1534,8 @@ bool ObjList::equals(const ObjList* other) const
     if (other == nullptr)
         return false;
 
-    auto lst1 = elts.get();
-    auto lst2 = other->elts.get();
+    const auto& lst1 = *elts_;
+    const auto& lst2 = *other->elts_;
 
     if (lst1.size() != lst2.size())
         return false;
@@ -1120,7 +1585,7 @@ std::string objListToStringInternal(const ObjList* ol,
 
     std::ostringstream os;
     os << "[";
-    auto list { ol->elts.get() };
+    auto list { ol->getElements() };
     for (auto it = list.begin(); it != list.end(); ++it) {
         os << valueToPrintableString(*it, context);
         if (it != list.end() - 1)
@@ -1218,12 +1683,49 @@ unique_ptr<Obj, UnreleasedObj> ObjDict::clone(roxal::ptr<CloneContext> ctx) cons
     return newd;
 }
 
+unique_ptr<Obj, UnreleasedObj> ObjDict::shallowClone() const
+{
+    auto newd = newDictObj();
+    // COW: share the storage pointer (O(1) refcount bump).
+    // Mutations on either side will trigger ensureUnique() to copy-on-write.
+    newd->data_ = data_;
+    return newd;
+}
+
+void ObjDict::store(const Value& key, const Value& val)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    if (data_->entries.find(key) == data_->entries.end())
+        data_->m_keys.push_back(key);
+    data_->entries[key] = val;
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+void ObjDict::erase(const Value& key)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    auto it = data_->entries.find(key);
+    if (it != data_->entries.end()) {
+        data_->entries.erase(it);
+        data_->m_keys.erase(std::remove(data_->m_keys.begin(), data_->m_keys.end(), key), data_->m_keys.end());
+    }
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
 void ObjDict::set(const ObjDict* other)
 {
-    std::lock_guard<std::mutex> lockThis(m);
-    std::lock_guard<std::mutex> lockOther(other->m);
-    m_keys = other->m_keys;
-    entries = other->entries;
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    *data_ = *other->data_;
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 bool ObjDict::equals(const ObjDict* other) const
@@ -1233,18 +1735,17 @@ bool ObjDict::equals(const ObjDict* other) const
     if (other == this)
         return true;
 
-    // lock both dictionaries while comparing
-    std::lock_guard<std::mutex> lockThis(m);
-    std::lock_guard<std::mutex> lockOther(other->m);
+    const auto& entries = data_->entries;
+    const auto& otherEntries = other->data_->entries;
 
-    if (entries.size() != other->entries.size())
+    if (entries.size() != otherEntries.size())
         return false;
 
     // entries is a std::map keyed by Value, which provides ordering
     // irrespective of insertion order.  Compare by keys and values
     for(const auto& [key, val] : entries) {
-        auto it = other->entries.find(key);
-        if (it == other->entries.end())
+        auto it = otherEntries.find(key);
+        if (it == otherEntries.end())
             return false;
         if (!val.equals(it->second, false))
             return false;
@@ -1273,21 +1774,26 @@ void ObjDict::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) con
 
 void ObjDict::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
     uint32_t len;
     in.read(reinterpret_cast<char*>(&len), 4);
-    m_keys.clear();
-    entries.clear();
+    data_->m_keys.clear();
+    data_->entries.clear();
     for(uint32_t i=0;i<len;i++) {
         Value k = readValue(in, ctx);
         Value v = readValue(in, ctx);
-        m_keys.push_back(k);
-        entries[k] = v;
+        data_->m_keys.push_back(k);
+        data_->entries[k] = v;
     }
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ObjDict::trace(ValueVisitor& visitor) const
 {
-    for (const auto& entry : entries) {
+    for (const auto& entry : data_->entries) {
         visitor.visit(entry.first);
         visitor.visit(entry.second);
     }
@@ -1295,9 +1801,7 @@ void ObjDict::trace(ValueVisitor& visitor) const
 
 void ObjDict::dropReferences()
 {
-    std::lock_guard<std::mutex> lock(m);
-    m_keys.clear();
-    entries.clear();
+    data_ = make_ptr<DictData>();
 }
 
 
@@ -1338,9 +1842,19 @@ unique_ptr<Obj, UnreleasedObj> ObjVector::clone(roxal::ptr<CloneContext> ctx) co
     return newv;
 }
 
+unique_ptr<Obj, UnreleasedObj> ObjVector::shallowClone() const
+{
+    auto newv = newVectorObj(0);
+    newv->vec_ = vec_;  // COW: share the data ptr
+    return newv;
+}
+
 void ObjVector::set(const ObjVector* other)
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
     vec_ = other->vec_;  // COW: share the data ptr
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 
@@ -1382,6 +1896,8 @@ void ObjVector::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) c
 
 void ObjVector::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
     uint32_t len;
     in.read(reinterpret_cast<char*>(&len), 4);
     vec_ = make_ptr<Eigen::VectorXd>(len);  // create new storage for deserialization
@@ -1389,6 +1905,7 @@ void ObjVector::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         double d; in.read(reinterpret_cast<char*>(&d), 8);
         (*vec_)[i] = d;
     }
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 
@@ -1460,9 +1977,28 @@ unique_ptr<Obj, UnreleasedObj> ObjMatrix::clone(roxal::ptr<CloneContext> ctx) co
     return newm;
 }
 
+unique_ptr<Obj, UnreleasedObj> ObjMatrix::shallowClone() const
+{
+    auto newm = newMatrixObj(0, 0);
+    newm->mat_ = mat_;  // COW: share the data ptr
+    return newm;
+}
+
+Eigen::MatrixXd& ObjMatrix::matMut()
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    ensureUnique();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return *mat_;
+}
+
 void ObjMatrix::set(const ObjMatrix* other)
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
     mat_ = other->mat_;  // COW: share the data ptr
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 unique_ptr<Obj, UnreleasedObj> ObjPrimitive::clone(roxal::ptr<CloneContext> ctx) const
@@ -2812,9 +3348,9 @@ void ObjectInstance::write(std::ostream& out, roxal::ptr<SerializationContext> c
     // Only serialize the object contents here.  Reference tracking is handled
     // by the calling writeValue() helper.
     writeValue(out, instanceType, ctx);
-    uint32_t count = properties.size();
+    uint32_t count = properties_->size();
     out.write(reinterpret_cast<char*>(&count),4);
-    for(const auto& kv : properties) {
+    for(const auto& kv : *properties_) {
         int32_t h = kv.first;
         out.write(reinterpret_cast<char*>(&h),4);
         writeValue(out, kv.second.value, ctx);
@@ -2823,24 +3359,29 @@ void ObjectInstance::write(std::ostream& out, roxal::ptr<SerializationContext> c
 
 void ObjectInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
     // Reference tracking is handled by readValue().  Just read the object
     // contents here.
     instanceType = readValue(in, ctx);
     uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
-    properties.clear();
+    properties_->clear();
     for(uint32_t i=0;i<count;i++) {
         int32_t h; in.read(reinterpret_cast<char*>(&h),4);
         Value v = readValue(in, ctx);
-        auto& slot = properties[h];
+        auto& slot = (*properties_)[h];
         slot.clearSignal();
         slot.value = v;
     }
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ObjectInstance::trace(ValueVisitor& visitor) const
 {
     visitor.visit(instanceType);
-    for (const auto& entry : properties) {
+    for (const auto& entry : *properties_) {
         visitor.visit(entry.second.value);
         visitor.visit(entry.second.signal);
     }
@@ -2849,11 +3390,7 @@ void ObjectInstance::trace(ValueVisitor& visitor) const
 void ObjectInstance::dropReferences()
 {
     instanceType = Value::nilVal();
-    for (auto& entry : properties) {
-        entry.second.value = Value::nilVal();
-        entry.second.signal = Value::nilVal();
-    }
-    properties.clear();
+    properties_ = make_ptr<PropertyMap>();
 }
 
 unique_ptr<Obj, UnreleasedObj> ObjBoundMethod::clone(roxal::ptr<CloneContext> ctx) const
@@ -3029,6 +3566,8 @@ void ObjMatrix::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) c
 
 void ObjMatrix::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
     uint32_t rows, cols;
     in.read(reinterpret_cast<char*>(&rows), 4);
     in.read(reinterpret_cast<char*>(&cols), 4);
@@ -3038,6 +3577,7 @@ void ObjMatrix::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             double d; in.read(reinterpret_cast<char*>(&d), 8);
             (*mat_)(r,c) = d;
         }
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 
@@ -3294,6 +3834,8 @@ double ObjTensor::at(int64_t flatIdx) const
 
 void ObjTensor::setAt(int64_t flatIdx, double v)
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
 #ifdef ROXAL_ENABLE_ONNX
     ensureCpu();
     ensureOrtUnique();
@@ -3302,6 +3844,7 @@ void ObjTensor::setAt(int64_t flatIdx, double v)
     ensureUnique();
     (*data_)[flatIdx] = v;
 #endif
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 const double* ObjTensor::data() const
@@ -3318,14 +3861,18 @@ const double* ObjTensor::data() const
 
 double* ObjTensor::dataMut()
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
 #ifdef ROXAL_ENABLE_ONNX
     if (dtype_ != TensorDType::Float64)
         throw std::runtime_error("dataMut() requires Float64 dtype; use setAt() for type-safe access");
     ensureCpu();
     ensureOrtUnique();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
     return ort_value_->GetTensorMutableData<double>();
 #else
     ensureUnique();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
     return data_->data();
 #endif
 }
@@ -3342,12 +3889,16 @@ const void* ObjTensor::rawData() const
 
 void* ObjTensor::rawDataMut()
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
 #ifdef ROXAL_ENABLE_ONNX
     ensureCpu();
     ensureOrtUnique();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
     return ort_value_->GetTensorMutableRawData();
 #else
     ensureUnique();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
     return data_->data();
 #endif
 }
@@ -3556,6 +4107,8 @@ bool ObjTensor::equals(const ObjTensor* other, double eps) const
 
 void ObjTensor::set(const ObjTensor* other)
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
     shape_ = other->shape_;
     strides_ = other->strides_;
     dtype_ = other->dtype_;
@@ -3564,11 +4117,26 @@ void ObjTensor::set(const ObjTensor* other)
 #else
     data_ = other->data_;  // COW: share the data
 #endif
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 unique_ptr<Obj, UnreleasedObj> ObjTensor::clone(roxal::ptr<CloneContext> ctx) const
 {
     (void)ctx; // tensor has value semantics, no object references to track
+    auto newt = newTensorObj();
+    newt->shape_ = shape_;
+    newt->strides_ = strides_;
+    newt->dtype_ = dtype_;
+#ifdef ROXAL_ENABLE_ONNX
+    newt->ort_value_ = ort_value_;  // COW: share the data
+#else
+    newt->data_ = data_;  // COW: share the data
+#endif
+    return newt;
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjTensor::shallowClone() const
+{
     auto newt = newTensorObj();
     newt->shape_ = shape_;
     newt->strides_ = strides_;
@@ -3607,6 +4175,8 @@ void ObjTensor::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) c
 
 void ObjTensor::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
     // Read dtype
     uint8_t dt;
     in.read(reinterpret_cast<char*>(&dt), 1);
@@ -3646,6 +4216,7 @@ void ObjTensor::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         (*data_)[i] = d;
     }
 #endif
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 unique_ptr<ObjTensor, UnreleasedObj> roxal::newTensorObj()
@@ -3995,7 +4566,7 @@ std::string roxal::stackTraceToString(Value frames)
     if (frames.isNil() || !isList(frames)) return "";
     ObjList* listObj = asList(frames);
     std::ostringstream oss;
-    auto list = listObj->elts.get();
+    auto list = listObj->getElements();
     for(const auto& v : list) {
         if (!isDict(v)) continue;
         ObjDict* d = asDict(v);
@@ -4123,6 +4694,8 @@ Value ObjMatrix::index(const Value& row, const Value& col) const
 
 void ObjMatrix::setIndex(const Value& row, const Value& value)
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
     ensureUnique();  // COW: copy before mutation
     std::vector<int> rowIdx;
     if (row.isNumber()) {
@@ -4158,10 +4731,13 @@ void ObjMatrix::setIndex(const Value& row, const Value& value)
 
     for(size_t i=0;i<rowIdx.size();++i)
         mat_->row(rowIdx[i]) = rhs->mat().row(i);
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ObjMatrix::setIndex(const Value& row, const Value& col, const Value& value)
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
     ensureUnique();
     bool rowRange = isRange(row);
     bool colRange = isRange(col);
@@ -4232,6 +4808,7 @@ void ObjMatrix::setIndex(const Value& row, const Value& col, const Value& value)
             for(size_t j=0;j<colIdx.size();++j)
                 (*mat_)(rowIdx[i], colIdx[j]) = rhs->mat()(i,j);
     }
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 bool ObjMatrix::equals(const ObjMatrix* other, double eps) const
@@ -4384,16 +4961,17 @@ std::string roxal::objToString(const Value& v)
             return objExceptionToString(asException(v));
         }
         case ObjType::Type: {
+            std::string constPrefix = v.isConst() ? "const " : "";
             if (isObjPrimitive(v))
                 return to_string(asObjPrimitive(v)->as.btype);
 
             ObjTypeSpec* ts = asTypeSpec(v);
             if ((ts->typeValue != ValueType::Object) && (ts->typeValue != ValueType::Actor)) {
-                return "<type "+to_string(ts->typeValue)+">";
+                return "<type "+constPrefix+to_string(ts->typeValue)+">";
             }
             else {
                 ObjObjectType* obj = asObjectType(v);
-                return std::string("<type ")+(obj->isActor ? "actor" :(obj->isInterface ? "interface" : (obj->isEnumeration ? "enum" : "object")))+" "+toUTF8StdString(obj->name)+">";
+                return std::string("<type ")+constPrefix+(obj->isActor ? "actor" :(obj->isInterface ? "interface" : (obj->isEnumeration ? "enum" : "object")))+" "+toUTF8StdString(obj->name)+">";
             }
         }
         case ObjType::Instance: {
@@ -4567,6 +5145,7 @@ ObjModuleType::~ObjModuleType() {}
 
 
 ObjectInstance::ObjectInstance(const Value& objectType)
+    : properties_(make_ptr<PropertyMap>())
 {
     type = ObjType::Instance;
     debug_assert_msg(isObjectType(objectType),
@@ -4603,7 +5182,7 @@ ObjectInstance::ObjectInstance(const Value& objectType)
             }
         }
         auto hash = prop.name.hashCode();
-        auto& slot = properties[hash];
+        auto& slot = (*properties_)[hash];
         slot.clearSignal();
         slot.value = propInitialvalue;
     }
@@ -4613,41 +5192,78 @@ ObjectInstance::~ObjectInstance() {}
 
 Value ObjectInstance::getProperty(const icu::UnicodeString& name) const
 {
-    auto it = properties.find(name.hashCode());
-    if (it != properties.end())
+    auto it = properties_->find(name.hashCode());
+    if (it != properties_->end())
         return it->second.value;
 
     // If property not found and name doesn't start with '_', check for backing field
     // (accessor properties store their data in _<name>)
     if (!name.startsWith("_")) {
         icu::UnicodeString backingName = UnicodeString("_") + name;
-        it = properties.find(backingName.hashCode());
-        if (it != properties.end())
+        it = properties_->find(backingName.hashCode());
+        if (it != properties_->end())
             return it->second.value;
     }
     return Value::nilVal();
 }
 
+VariablesMap::MonitoredValue& ObjectInstance::propertySlot(int32_t hash)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return (*properties_)[hash];
+}
+
+void ObjectInstance::assignProperty(int32_t hash, const Value& value)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    (*properties_)[hash].assign(value);
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+void ObjectInstance::emplaceProperty(int32_t hash, VariablesMap::MonitoredValue mv)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    properties_->emplace(hash, std::move(mv));
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
 void ObjectInstance::setProperty(const icu::UnicodeString& name, Value value)
 {
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
     // Check if this property has a backing field (accessor property)
     // If so, set the backing field instead of creating a separate property
     if (!name.startsWith("_")) {
         icu::UnicodeString backingName = UnicodeString("_") + name;
-        auto it = properties.find(backingName.hashCode());
-        if (it != properties.end()) {
+        auto it = properties_->find(backingName.hashCode());
+        if (it != properties_->end()) {
             // Use backing field instead
             it->second.assign(value);
+            if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
             return;
         }
     }
-    properties[name.hashCode()].assign(value);
+    (*properties_)[name.hashCode()].assign(value);
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 Value ObjectInstance::ensurePropertySignal(int32_t nameHash, const std::string& signalName)
 {
-    auto it = properties.find(nameHash);
-    if (it == properties.end())
+    ensureUnique();
+    auto it = properties_->find(nameHash);
+    if (it == properties_->end())
         return Value::nilVal();
     return it->second.ensureSignal(signalName);
 }
@@ -4685,12 +5301,12 @@ unique_ptr<Obj, UnreleasedObj> ObjectInstance::clone(roxal::ptr<CloneContext> ct
     }
 
     // Clone properties with context
-    for (const auto& index_value : properties) {
+    for (const auto& index_value : *properties_) {
         const auto index { index_value.first };
         const auto& slot { index_value.second };
         const Value& value { slot.value };
 
-        auto& targetSlot = newobj->properties[index];
+        auto& targetSlot = newobj->propertySlot(index);
         targetSlot.clearSignal();
 
         if (isActorInstance(value))
@@ -4702,6 +5318,17 @@ unique_ptr<Obj, UnreleasedObj> ObjectInstance::clone(roxal::ptr<CloneContext> ct
     return newobj;
 }
 
+unique_ptr<Obj, UnreleasedObj> ObjectInstance::shallowClone() const
+{
+    auto newobj = newObjectInstance(instanceType);
+    // COW: share the properties pointer (O(1) refcount bump).
+    // Mutations on either side will trigger ensureUnique() to copy-on-write.
+    // Signals are intentionally NOT copied — they are per-instance change
+    // notification handles tied to the dataflow engine and would be meaningless
+    // on a clone (same convention as deep clone(), which calls clearSignal()).
+    newobj->properties_ = properties_;
+    return newobj;
+}
 
 
 ActorInstance::ActorInstance(ActorInstance::UninitializedTag)
@@ -4714,6 +5341,30 @@ ActorInstance::ActorInstance(const Value& objectType)
     : ActorInstance(UninitializedTag{})
 {
     initialize(objectType);
+}
+
+VariablesMap::MonitoredValue& ActorInstance::propertySlot(int32_t hash)
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return properties[hash];
+}
+
+void ActorInstance::assignProperty(int32_t hash, const Value& value)
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    properties[hash].assign(value);
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+void ActorInstance::emplaceProperty(int32_t hash, VariablesMap::MonitoredValue mv)
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    properties.emplace(hash, std::move(mv));
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ActorInstance::initialize(const Value& objectType)
@@ -4811,26 +5462,18 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
 
     std::lock_guard<std::mutex> lock { queueMutex };
 
-    // TODO: arrange for push to move to queue to avoid copy
     MethodCallInfo callInfo {};
     callInfo.callee = callee;
     callInfo.callSpec = callSpec;
-    for(auto i=0; i<callSpec.argCount; i++) {
-        Value arg = *(argsStackTop - i - 1);
-        if (!arg.isPrimitive()) {
-            ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
-            arg = arg.clone(cloneCtx);
-        }
-        callInfo.args.push_back(arg);
-    }
-    callInfo.returnPromise = nullptr;
-    callInfo.returnFuture = Value::nilVal();
 
+    // Extract function type info early so we can check param constness in the arg loop
+    const std::vector<std::optional<type::Type::FuncType::ParamType>>* paramTypes = nullptr;
     if (isBoundMethod(callee)) {
         auto funcObj = asFunction(asClosure(asBoundMethod(callee)->method)->function);
         if (funcObj->funcType.has_value()) {
             ptr<roxal::type::Type> funcType { funcObj->funcType.value() };
             assert(funcType->func.has_value());
+            paramTypes = &funcType->func.value().params;
             if (!funcType->func.value().isProc) {
                 callInfo.returnPromise = make_ptr<std::promise<Value>>();
                 std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
@@ -4838,7 +5481,53 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
             }
         }
     }
-    else if (isBoundNative(callee)) {
+
+    // Marshal arguments: clone non-primitive args for actor isolation,
+    // skip clone for sole-owner values, error for aliased mutable params.
+    for(auto i=0; i<callSpec.argCount; i++) {
+        Value arg = *(argsStackTop - i - 1);
+        if (!arg.isPrimitive()) {
+            Obj* obj = arg.asObj();
+            bool soleOwner = obj && obj->control && obj->control->strong.load() <= 2;
+
+            // Check if this is an explicitly mutable param (not implicitly const).
+            // Actor params are implicitly const unless the param type exists and !isConst.
+            // Args are pushed in reverse order, so arg i corresponds to param (argCount-1-i).
+            bool isMutableParam = false;
+            if (paramTypes) {
+                size_t paramIdx = callSpec.argCount - 1 - i;
+                if (paramIdx < paramTypes->size()) {
+                    const auto& paramOpt = (*paramTypes)[paramIdx];
+                    if (paramOpt.has_value() && paramOpt->type.has_value()) {
+                        isMutableParam = !paramOpt->type.value()->isConst;
+                    }
+                }
+            }
+
+            if (isMutableParam && !soleOwner) {
+                throw std::runtime_error("Cannot pass aliased value as mutable actor parameter (use move() to transfer sole ownership)");
+            }
+
+            if (isMutableParam && soleOwner && !isIsolatedGraph(obj)) {
+                throw std::runtime_error("Cannot pass value with aliased interior objects as mutable actor parameter");
+            }
+
+            if (isMutableParam) {
+                // Mutable param: sole-owner passes through as-is (caller moved it).
+                // Non-sole-owner was already rejected above.
+            } else {
+                // Const param: frozen snapshot for MVCC-based isolation.
+                // Sole-owner: createFrozenSnapshot just sets const bit (zero-copy).
+                // Shared: createFrozenSnapshot shallow-clones the root; children are
+                // lazily resolved via resolveConstChild on the actor thread, protected
+                // by the per-object cowLock_ spinlock against concurrent mutations.
+                arg = createFrozenSnapshot(arg);
+            }
+        }
+        callInfo.args.push_back(arg);
+    }
+
+    if (isBoundNative(callee)) {
         // For builtin methods, check if it's a proc or func
         auto bound = asBoundNative(callee);
 
@@ -4872,8 +5561,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
                 if (arg.isNil() && pi < bound->defaultValues.size())
                     arg = bound->defaultValues[pi];
                 if (!arg.isPrimitive()) {
-                    ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
-                    arg = arg.clone(cloneCtx);
+                    arg = createFrozenSnapshot(arg);
                 }
                 normalized.push_back(arg);
             }
@@ -5011,7 +5699,7 @@ void roxal::testObjectValues()
     assert(isList(l1));
     assert(!l1.isNil());
     ObjList* lp = static_cast<ObjList*>(l1.asObj());
-    assert(lp->elts.size() == 3);
+    assert(lp->length() == 3);
 
     Value l2 = l1;
     assert(isList(l2));

@@ -1,0 +1,25 @@
+// Test that typed parameters (const list) implicitly resolve futures.
+// An actor returns a list after a short delay; the future is passed
+// directly to filter() and reduce() which have typed params (const list).
+
+type Provider actor:
+
+  func getList() -> list:
+    wait(ms=50)
+    return [10, 20, 30, 40, 50]
+
+var p = Provider()
+
+// filter on a future list
+var big = filter(p.getList(), func(x): x > 25)
+print("filter={big}")
+
+// reduce on a future list
+var total = reduce(p.getList(), func(acc, x): acc + x, 0)
+print("reduce={total}")
+
+// map on a future list
+var doubled = map(p.getList(), func(x): x * 2)
+print("map={doubled}")
+
+print("done")

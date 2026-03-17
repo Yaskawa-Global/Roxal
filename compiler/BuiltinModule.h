@@ -69,8 +69,10 @@ protected:
     void linkMethod(const std::string& typeName,
                     const std::string& methodName,
                     NativeFn fn,
-                    std::vector<Value> defaults = {},
-                    uint32_t resolveArgMask = 0);
+                    std::vector<Value> defaults = {}, // default arg values (if not in .rox file)
+                    uint32_t resolveArgMask = 0,// bitmask of argument indices (0-based) that should be passed as resolved values (not futures)
+                    bool noMutateSelf = false,  // does this method modify instance state?
+                    uint32_t noMutateArgs = 0); // bitmask of argument indices (0-based) that are not mutated by this method (for optimization)
 
     // Fetch a module-level source signal declared in the builtin .rox file.
     // If \p required is false, returns nullptr when the signal cannot be found.
@@ -85,6 +87,16 @@ protected:
                                     const std::string& signalName = "");
 
     static void destroyModuleType(Value& moduleTypeValue);
+
+    /// Resolve a child value extracted from a const parent for correct MVCC
+    /// snapshot access.  Call this when native code reads a reference-type child
+    /// (e.g. list element, dict value, object property) from a const argument
+    /// and needs to see the value as it was at snapshot time rather than the
+    /// current (possibly mutated) state.
+    ///
+    /// If the parent is not const or has no snapshot token, this simply returns
+    /// the child with transitive const propagation (no MVCC overhead).
+    static Value resolveConstChildValue(const Value& parent, const Value& child);
 
     void setVM(VM& vm) { vm_ = vm; }
 
@@ -178,7 +190,9 @@ inline void BuiltinModule::linkMethod(const std::string& typeName,
                                       const std::string& methodName,
                                       NativeFn fn,
                                       std::vector<Value> defaults,
-                                      uint32_t resolveArgMask)
+                                      uint32_t resolveArgMask,
+                                      bool noMutateSelf,
+                                      uint32_t noMutateArgs)
 {
     auto typeVal = asModuleType(moduleType())->vars.load(toUnicodeString(typeName));
     if (typeVal.has_value() && isObjectType(typeVal.value())) {
@@ -189,7 +203,7 @@ inline void BuiltinModule::linkMethod(const std::string& typeName,
             if (isClosure(val)) {
                 ObjClosure* cl = asClosure(val);
                 asFunction(cl->function)->builtinInfo = make_ptr<BuiltinFuncInfo>(
-                    fn, std::move(defaults), resolveArgMask);
+                    fn, std::move(defaults), resolveArgMask, noMutateSelf, noMutateArgs);
             }
         }
         else {

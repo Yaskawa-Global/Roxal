@@ -1,0 +1,41 @@
+// Test deep const access through object and list chains
+
+type Node object:
+    var name: string
+    var children: list
+
+// 1. Object-only chain (3 levels)
+type A object:
+    var n: int
+
+type B object:
+    var a
+
+type C object:
+    var b
+
+var a1 = A(42)
+var b1 = B(a1)
+var c1 = C(b1)
+
+const cc = c1
+print(cc.b.a.n)  // 42
+
+// 2. Object->list->object chain (3 levels)
+var leaf = Node("leaf", [])
+var mid = Node("mid", [leaf])
+var root = Node("root", [mid])
+
+const cr = root
+
+print(cr.children[0].name)                // mid
+print(cr.children[0].children[0].name)     // leaf
+
+// 3. Nested list indexing
+var l = [[1, 2], [3, 4]]
+const cl = l
+
+print(cl[0][0])  // 1
+print(cl[0][1])  // 2
+print(cl[1][0])  // 3
+print(cl[1][1])  // 4

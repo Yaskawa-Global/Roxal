@@ -64,6 +64,7 @@ using namespace roxal;
 thread_local TimePoint VM::nativeCallDeadline_ { TimePoint::max() };
 thread_local UnicodeString VM::nativeCallContext_;
 thread_local std::string VM::nativeCallOverrun_;
+thread_local bool VM::onDataflowThread_ { false };
 
 std::string VM::consumeNativeCallOverrun()
 {
@@ -212,7 +213,10 @@ std::string VM::versionString()
     return fullVersion;
 }
 
-static ValueType builtinToValueType(type::BuiltinType bt)
+// Map BuiltinType to ValueType for automatic type conversion at call sites.
+// Returns nullopt for types that don't support automatic conversion (e.g.
+// Object, Actor — these are user-defined types where toType() doesn't apply).
+static std::optional<ValueType> builtinToValueType(type::BuiltinType bt)
 {
     switch (bt) {
         case type::BuiltinType::Nil:     return ValueType::Nil;
@@ -230,8 +234,10 @@ static ValueType builtinToValueType(type::BuiltinType bt)
         case type::BuiltinType::Tensor:  return ValueType::Tensor;
         case type::BuiltinType::Orient:  return ValueType::Orient;
         case type::BuiltinType::Event:   return ValueType::Event;
+        case type::BuiltinType::Signal:  return ValueType::Signal;
+        case type::BuiltinType::Enum:    return ValueType::Enum;
         default:
-            throw std::runtime_error("unhandled builtin type");
+            return std::nullopt; // Object, Actor, Func, Type — no auto-conversion
     }
 }
 
@@ -399,11 +405,13 @@ size_t VM::marshalArgsPartial(ptr<type::Type> funcType,
 
         // Skip type conversion for params that will be filled by closure evaluation
         if (!needsClosureDefault && params[pi].has_value() && params[pi]->type.has_value()) {
-            ValueType vt = builtinToValueType(params[pi]->type.value()->builtin);
-            bool strictConv = false;
-            if (thread->frames.size() >= 1)
-                strictConv = (thread->frames.end()-1)->strict;
-            arg = toType(vt, arg, strictConv);
+            auto vt = builtinToValueType(params[pi]->type.value()->builtin);
+            if (vt.has_value()) {
+                bool strictConv = false;
+                if (thread->frames.size() >= 1)
+                    strictConv = (thread->frames.end()-1)->strict;
+                arg = toType(vt.value(), arg, strictConv);
+            }
         }
         out[idx++] = arg;
     }
@@ -443,11 +451,13 @@ size_t VM::marshalArgs(ptr<type::Type> funcType,
         }
 
         if (params[pi].has_value() && params[pi]->type.has_value()) {
-            ValueType vt = builtinToValueType(params[pi]->type.value()->builtin);
-            bool strictConv = false;
-            if (thread->frames.size() >= 1)
-                strictConv = (thread->frames.end()-1)->strict;
-            arg = toType(vt, arg, strictConv);
+            auto vt = builtinToValueType(params[pi]->type.value()->builtin);
+            if (vt.has_value()) {
+                bool strictConv = false;
+                if (thread->frames.size() >= 1)
+                    strictConv = (thread->frames.end()-1)->strict;
+                arg = toType(vt.value(), arg, strictConv);
+            }
         }
         out[idx++] = arg;
     }
@@ -1654,7 +1664,7 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
                             throw std::runtime_error("tensor dtype must be a string");
                     } else if (hash == dataHash) {
                         if (isList(arg)) {
-                            auto dataList = asList(arg)->elts.get();
+                            auto dataList = asList(arg)->getElements();
                             data.reserve(dataList.size());
                             for (const auto& v : dataList) {
                                 if (!v.isNumber())
@@ -1667,7 +1677,7 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
                         }
                     } else if (hash == shapeHash) {
                         if (isList(arg)) {
-                            auto shapeList = asList(arg)->elts.get();
+                            auto shapeList = asList(arg)->getElements();
                             shape.reserve(shapeList.size());
                             for (const auto& v : shapeList) {
                                 if (!v.isInt())
@@ -1686,7 +1696,7 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
                         shape.push_back(arg.asInt());
                     } else if (isList(arg) && shape.empty()) {
                         // First positional list -> shape list
-                        auto shapeList = asList(arg)->elts.get();
+                        auto shapeList = asList(arg)->getElements();
                         shape.reserve(shapeList.size());
                         for (const auto& v : shapeList) {
                             if (!v.isInt())
@@ -1695,7 +1705,7 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
                         }
                     } else if (isList(arg)) {
                         // Subsequent list -> data (backward compat)
-                        auto dataList = asList(arg)->elts.get();
+                        auto dataList = asList(arg)->getElements();
                         data.reserve(dataList.size());
                         for (const auto& v : dataList) {
                             if (!v.isNumber())
@@ -1810,6 +1820,21 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         return false;
                     constArgs[pname] = arg;
                 }
+            }
+        }
+
+        // Check closure upvalues for mutable reference type captures.
+        // DF funcs run on the dataflow thread — mutable captures would be
+        // unsafely shared between threads.
+        ObjClosure* cls = asClosure(closureVal);
+        for (size_t i = 0; i < cls->upvalues.size(); ++i) {
+            if (cls->upvalues[i].isNil()) continue;
+            Value captured = *asUpvalue(cls->upvalues[i])->location;
+            if (captured.isObj() && !captured.isConst()) {
+                runtimeError("Dataflow function '" + toUTF8StdString(functionObj->name)
+                    + "' captures a mutable reference variable; "
+                      "captured variables must be const or primitive types.");
+                return false;
             }
         }
 
@@ -2020,7 +2045,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             if (params.size() == 1) {
                                 if (!params[0].has_value() || !params[0]->type.has_value())
                                     initAcceptsDict = true;
-                                else if (builtinToValueType(params[0]->type.value()->builtin) == ValueType::Dict)
+                                else if (builtinToValueType(params[0]->type.value()->builtin) == std::optional(ValueType::Dict))
                                     initAcceptsDict = true;
                             }
                         }
@@ -2136,7 +2161,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                     }
                                 }
                                 // Direct assignment
-                                objInst->properties[hash].assign(val);
+                                objInst->assignProperty(hash, val);
                             }
                             pop();
 
@@ -2361,7 +2386,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                     setterFrames.push_back(SetterCall{setterClosure, assignment.value, setterFrame});
                                 } else {
                                     // Property without setter - direct assignment to backing field
-                                    objInst->properties[kv.first].assign(assignment.value);
+                                    objInst->assignProperty(kv.first, assignment.value);
                                 }
                             }
 
@@ -2650,7 +2675,8 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
 
 
 
-bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec)
+bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec,
+                        const Value& receiver)
 {
     ObjObjectType* t = type;
     const ObjObjectType::Method* methodPtr = nullptr;
@@ -2672,6 +2698,17 @@ bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& ca
         return false;
     }
     Value method { methodInfo.closure };
+
+    // Const enforcement for linkMethod-registered native methods
+    if (receiver.isConst()) {
+        ObjFunction* func = asFunction(asClosure(method)->function);
+        if (func->builtinInfo && !func->builtinInfo->noMutateSelf) {
+            runtimeError("Cannot call mutating method '%s' on const value.",
+                         toUTF8StdString(name->s).c_str());
+            return false;
+        }
+    }
+
     return call(asClosure(method), callSpec);
 }
 
@@ -2686,22 +2723,22 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
         ObjectInstance* instance = asObjectInstance(receiver);
 
         // check to ensure name isn't a prop with a func in it
-        auto it = instance->properties.find(name->hash);
-        if (it != instance->properties.end()) { // it is a prop
-            Value value { it->second.value };
+        auto* prop = instance->findProperty(name->hash);
+        if (prop) { // it is a prop
+            Value value { prop->value };
             *(thread->stackTop - callSpec.argCount - 1) = value;
             return callValue(value, callSpec);
         }
 
-        return invokeFromType(asObjectType(instance->instanceType), name, callSpec);
+        return invokeFromType(asObjectType(instance->instanceType), name, callSpec, receiver);
     }
     else if (isActorInstance(receiver)) {
         ActorInstance* instance = asActorInstance(receiver);
 
         // check to ensure name isn't a prop with a func in it
-        auto propIt = instance->properties.find(name->hash);
-        if (propIt != instance->properties.end()) { // it is a prop
-            Value value { propIt->second.value };
+        auto* prop = instance->findProperty(name->hash);
+        if (prop) { // it is a prop
+            Value value { prop->value };
             *(thread->stackTop - callSpec.argCount - 1) = value;
             return callValue(value, callSpec);
         }
@@ -2727,6 +2764,14 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
             if (it != mit->second.end()) {
                 const BuiltinMethodInfo& methodInfo = it->second;
                 NativeFn fn = methodInfo.function;
+
+                // Const enforcement: reject mutating methods on const receivers
+                if (receiver.isConst() && !methodInfo.noMutateSelf) {
+                    runtimeError("Cannot call mutating method '%s' on const value.",
+                                 toUTF8StdString(name->s).c_str());
+                    return false;
+                }
+
                 if (nativeCallTimingEnabled_)
                     nativeCallContext_ = name->s;
 
@@ -2768,6 +2813,14 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                 if (it != mit->second.end()) {
                     const BuiltinMethodInfo& methodInfo = it->second;
                     NativeFn fn = methodInfo.function;
+
+                    // Const enforcement: reject mutating methods on const receivers
+                    if (receiver.isConst() && !methodInfo.noMutateSelf) {
+                        runtimeError("Cannot call mutating method '%s' on const value.",
+                                     toUTF8StdString(name->s).c_str());
+                        return false;
+                    }
+
                     if (nativeCallTimingEnabled_)
                         nativeCallContext_ = name->s;
                     if (methodInfo.funcType) {
@@ -2848,9 +2901,27 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                     return false;
                 }
                 ObjList* list = asList(indexable);
+                bool isConstAccess = indexable.isConst();
                 Value index = pop();
                 try {
                     Value sublist { list->index(index) };
+                    // MVCC: propagate const + resolve snapshot for reference-type elements
+                    if (isConstAccess && sublist.isObj() && !sublist.isConst()) {
+                        auto* token = list->control->snapshotToken;
+                        if (token) {
+                            // For integer indexing, cache the frozen child back into the list element
+                            if (index.isNumber()) {
+                                auto idx = index.asInt();
+                                auto len = list->length();
+                                if (idx < 0) idx = len - (-idx);
+                                sublist = resolveConstChild(sublist, token);
+                                if (idx >= 0 && idx < len)
+                                    list->cacheElement(idx, sublist);
+                            } else {
+                                sublist = resolveConstChild(sublist, token);
+                            }
+                        }
+                    }
                     pop(); // discard indexable
                     push(sublist);
 
@@ -2938,6 +3009,14 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                     return false;
                 }
                 Value result { dict->at(index) };
+                // MVCC: propagate const + resolve snapshot for reference-type values
+                if (indexable.isConst() && result.isObj() && !result.isConst()) {
+                    auto* token = dict->control->snapshotToken;
+                    if (token) {
+                        result = resolveConstChild(result, token);
+                        dict->cacheValue(index, result);
+                    }
+                }
                 pop(); // discard indexable
                 push(result);
                 return true;
@@ -3150,6 +3229,14 @@ VM::BindResult VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
         ObjClosure* cl = asClosure(method);
         ObjFunction* func = asFunction(cl->function);
         const auto& info = *func->builtinInfo;
+
+        // Const enforcement for linkMethod-registered native methods
+        if (peek(0).isConst() && !info.noMutateSelf) {
+            runtimeError("Cannot call mutating method '%s' on const value.",
+                         toUTF8StdString(name->s).c_str());
+            return BindResult::Private; // reuse error return path
+        }
+
         Value boundNative { Value::boundNativeVal(peek(0), info.function,
                                                   func->funcType.has_value() &&
                                                       func->funcType.value()->func.has_value() ?
@@ -3812,9 +3899,10 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 for(size_t pi=0; pi<params.size(); ++pi) {
                     const auto& paramOpt = params[pi];
                     if (paramOpt.has_value() && paramOpt->type.has_value()) {
-                        ValueType vt = builtinToValueType(paramOpt->type.value()->builtin);
+                        auto vt = builtinToValueType(paramOpt->type.value()->builtin);
+                        if (!vt.has_value()) continue;
                         try {
-                            *(frame->slots + 1 + pi) = toType(vt, *(frame->slots + 1 + pi), strictConv);
+                            *(frame->slots + 1 + pi) = toType(vt.value(), *(frame->slots + 1 + pi), strictConv);
                         } catch(std::exception& e) {
                             runtimeError(e.what());
                             return std::make_pair(ExecutionStatus::RuntimeError,Value::nilVal());
@@ -3892,8 +3980,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjObjectType* type = asObjectType(objInst->instanceType);
-                    auto it = objInst->properties.find(name->hash);
-                    if (it != objInst->properties.end()) {
+                    auto* prop = objInst->findProperty(name->hash);
+                    if (prop) {
                         ast::Access propAccess = ast::Access::Public;
                         Value ownerT = objInst->instanceType.weakRef();
                         auto pit = type->properties.find(name->hash);
@@ -3906,7 +3994,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                             return errorReturn;
                         }
 
-                        Value result = it->second.value;
+                        Value result = prop->value;
                         if (!isSignal(result))
                             result = objInst->ensurePropertySignal(name->hash, signalName);
                         pop();
@@ -3927,8 +4015,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
                     ObjObjectType* type = asObjectType(actorInst->instanceType);
-                    auto it = actorInst->properties.find(name->hash);
-                    if (it != actorInst->properties.end()) {
+                    auto* prop = actorInst->findProperty(name->hash);
+                    if (prop) {
                         ast::Access propAccess = ast::Access::Public;
                         Value ownerT = actorInst->instanceType.weakRef();
                         auto pit = type->properties.find(name->hash);
@@ -3941,7 +4029,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                             return errorReturn;
                         }
 
-                        Value result = it->second.value;
+                        Value result = prop->value;
                         if (!isSignal(result))
                             result = actorInst->ensurePropertySignal(name->hash, signalName);
                         pop();
@@ -3974,6 +4062,30 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
                 runtimeError("Only object and actor instances have properties (string keys only).");
                 return errorReturn;
+            }
+            case OpCode::MoveProp: {
+                Value& inst { peek(0) };
+                ObjString* name = readString();
+                inst.resolveSignal();
+                if (runtimeErrorFlag.load()) return errorReturn;
+                VariablesMap::MonitoredValue* prop = nullptr;
+                if (isObjectInstance(inst)) {
+                    prop = asObjectInstance(inst)->findProperty(name->hash);
+                } else if (isActorInstance(inst)) {
+                    prop = asActorInstance(inst)->findProperty(name->hash);
+                } else {
+                    runtimeError("Cannot move property from non-object value");
+                    return errorReturn;
+                }
+                if (!prop) {
+                    runtimeError("Undefined property '"+toUTF8StdString(name->s)+"'");
+                    return errorReturn;
+                }
+                Value value = prop->value;
+                pop();
+                push(value);
+                prop->value = Value::nilVal();
+                break;
             }
             case OpCode::GetProp: {
                 Value& inst { peek(0) };
@@ -4036,6 +4148,12 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     auto pit = eventInst->payload.find(name->hash);
                     if (pit != eventInst->payload.end()) {
                         Value result = pit->second;
+                        // Propagate const transitively: event payload refs inherit const from event.
+                        // Use constRef() (not createFrozenSnapshot) to preserve object identity
+                        // for 'is' checks while still blocking mutation through const enforcement.
+                        if (inst.isConst() && result.isObj() && !result.isConst()) {
+                            result = result.constRef();
+                        }
                         pop();
                         push(result);
                         break;
@@ -4076,6 +4194,14 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                             runtimeError("KeyError: key '" + toString(key) + "' not found in dict.");
                             return errorReturn;
                         }
+                        // MVCC: propagate const + resolve snapshot for reference-type values
+                        if (inst.isConst() && result.isObj() && !result.isConst()) {
+                            auto* token = dict->control->snapshotToken;
+                            if (token) {
+                                result = resolveConstChild(result, token);
+                                dict->cacheValue(key, result);
+                            }
+                        }
                         pop();
                         push(result);
                         break;
@@ -4107,10 +4233,17 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     }
 
                     // is it an instance property?
-                    auto it = objInst->properties.find(name->hash);
-                    if (it != objInst->properties.end()) { // exists
+                    auto* prop = objInst->findProperty(name->hash);
+                    if (prop) { // exists
+                        Value result = prop->value;
+                        // MVCC const resolution: materialize frozen clone for reference-type children
+                        if (inst.isConst() && result.isObj() && !result.isConst()) {
+                            auto* token = objInst->control->snapshotToken;
+                            if (token)
+                                result = resolveConstChild(result, token, &prop->value);
+                        }
                         pop();
-                        push(it->second.value);
+                        push(result);
                         break;
                     }
                     else { // no
@@ -4126,10 +4259,17 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     }
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
-                    auto it = actorInst->properties.find(name->hash);
-                    if (it != actorInst->properties.end()) {
+                    auto* prop = actorInst->findProperty(name->hash);
+                    if (prop) {
+                        Value result = prop->value;
+                        // MVCC const resolution
+                        if (inst.isConst() && result.isObj() && !result.isConst()) {
+                            auto* token = actorInst->control->snapshotToken;
+                            if (token)
+                                result = resolveConstChild(result, token, &prop->value);
+                        }
                         pop();
-                        push(it->second.value);
+                        push(result);
                         break;
                     } else {
                         auto br = bindMethod(asObjectType(actorInst->instanceType), name);
@@ -4197,6 +4337,12 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         auto it2 = mit->second.find(name->hash);
                         if (it2 != mit->second.end()) {
                             const BuiltinMethodInfo& methodInfo = it2->second;
+                            // Const enforcement: reject mutating methods on const receivers
+                            if (inst.isConst() && !methodInfo.noMutateSelf) {
+                                runtimeError("Cannot call mutating method '%s' on const value.",
+                                             toUTF8StdString(name->s).c_str());
+                                return errorReturn;
+                            }
                             Value bm { Value::boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
                                                              methodInfo.funcType, methodInfo.defaultValues,
                                                              methodInfo.declFunction) };
@@ -4292,6 +4438,12 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     auto pit = eventInst->payload.find(name->hash);
                     if (pit != eventInst->payload.end()) {
                         Value result = pit->second;
+                        // Propagate const transitively: event payload refs inherit const from event.
+                        // Use constRef() (not createFrozenSnapshot) to preserve object identity
+                        // for 'is' checks while still blocking mutation through const enforcement.
+                        if (inst.isConst() && result.isObj() && !result.isConst()) {
+                            result = result.constRef();
+                        }
                         pop();
                         push(result);
                         break;
@@ -4331,6 +4483,14 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                             runtimeError("KeyError: key '" + toString(key) + "' not found in dict.");
                             return errorReturn;
                         }
+                        // MVCC: propagate const + resolve snapshot for reference-type values
+                        if (inst.isConst() && result.isObj() && !result.isConst()) {
+                            auto* token = dict->control->snapshotToken;
+                            if (token) {
+                                result = resolveConstChild(result, token);
+                                dict->cacheValue(key, result);
+                            }
+                        }
                         pop();
                         push(result);
                         break;
@@ -4341,8 +4501,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjObjectType* t = asObjectType(objInst->instanceType);
-                    auto it = objInst->properties.find(name->hash);
-                    if (it != objInst->properties.end()) {
+                    auto* prop = objInst->findProperty(name->hash);
+                    if (prop) {
                         auto pit = t->properties.find(name->hash);
                         ast::Access propAccess = ast::Access::Public;
                         Value ownerT = objInst->instanceType.weakRef();
@@ -4354,8 +4514,17 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                             runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
                             return errorReturn;
                         }
-                        pop();
-                        push(it->second.value);
+                        {
+                            Value result = prop->value;
+                            // MVCC const resolution
+                            if (inst.isConst() && result.isObj() && !result.isConst()) {
+                                auto* token = objInst->control->snapshotToken;
+                                if (token)
+                                    result = resolveConstChild(result, token, &prop->value);
+                            }
+                            pop();
+                            push(result);
+                        }
                         break;
                     } else {
                         // Check if this property has a getter method
@@ -4385,8 +4554,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     ActorInstance* actorInst = asActorInstance(inst);
                     ObjObjectType* t = asObjectType(actorInst->instanceType);
                     auto pit = t->properties.find(name->hash);
-                    auto it = actorInst->properties.find(name->hash);
-                    if (it != actorInst->properties.end()) {
+                    auto* prop = actorInst->findProperty(name->hash);
+                    if (prop) {
                         ast::Access propAccess = ast::Access::Public;
                         Value ownerT = actorInst->instanceType.weakRef();
                         if (pit != t->properties.end()) {
@@ -4397,8 +4566,17 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                             runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
                             return errorReturn;
                         }
-                        pop();
-                        push(it->second.value);
+                        {
+                            Value result = prop->value;
+                            // MVCC const resolution
+                            if (inst.isConst() && result.isObj() && !result.isConst()) {
+                                auto* token = actorInst->control->snapshotToken;
+                                if (token)
+                                    result = resolveConstChild(result, token, &prop->value);
+                            }
+                            pop();
+                            push(result);
+                        }
                         break;
                     } else {
                         auto br = bindMethod(t, name);
@@ -4462,6 +4640,12 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         auto it2 = mit->second.find(name->hash);
                         if (it2 != mit->second.end()) {
                             const BuiltinMethodInfo& methodInfo = it2->second;
+                            // Const enforcement: reject mutating methods on const receivers
+                            if (inst.isConst() && !methodInfo.noMutateSelf) {
+                                runtimeError("Cannot call mutating method '%s' on const value.",
+                                             toUTF8StdString(name->s).c_str());
+                                return errorReturn;
+                            }
                             Value bm { Value::boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
                                                              methodInfo.funcType, methodInfo.defaultValues,
                                                              methodInfo.declFunction) };
@@ -4494,6 +4678,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             case OpCode::SetProp: {
                 Value& inst { peek(1) };
                 ObjString* name = readString();
+
+                if (inst.isConst()) {
+                    runtimeError("Cannot mutate const: assignment to '%s'", toUTF8StdString(name->s).c_str());
+                    return errorReturn;
+                }
 
                 if (isSignal(inst)) {
                     auto vt = inst.type();
@@ -4590,7 +4779,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
 
                     // Clone vector/matrix/tensor for by-value semantics
-                    objInst->properties[name->hash].assign(cloneIfValueSemantics(value));
+                    objInst->assignProperty(name->hash, cloneIfValueSemantics(value));
                     popN(2); // pop original value & instance
                     push(value); // value (possibly converted)
                     break;
@@ -4623,7 +4812,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     }
 
                     // Clone vector/matrix/tensor for by-value semantics
-                    actorInst->properties[name->hash].assign(cloneIfValueSemantics(value));
+                    actorInst->assignProperty(name->hash, cloneIfValueSemantics(value));
                     popN(2);
                     push(value);
                     break;
@@ -4661,6 +4850,12 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             case OpCode::SetPropCheck: {
                 Value& inst { peek(1) };
                 ObjString* name = readString();
+
+                if (inst.isConst()) {
+                    runtimeError("Cannot mutate const: assignment to '%s'", toUTF8StdString(name->s).c_str());
+                    return errorReturn;
+                }
+
                 if (isSignal(inst)) {
                     auto vt = inst.type();
                     auto pit = builtinProperties.find(vt);
@@ -4761,7 +4956,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     }
 
                     // Clone vector/matrix/tensor for by-value semantics
-                    objInst->properties[name->hash].assign(cloneIfValueSemantics(value));
+                    objInst->assignProperty(name->hash, cloneIfValueSemantics(value));
                     popN(2);
                     push(value);
                     break;
@@ -4807,7 +5002,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     }
 
                     // Clone vector/matrix/tensor for by-value semantics
-                    actorInst->properties[name->hash].assign(cloneIfValueSemantics(value));
+                    actorInst->assignProperty(name->hash, cloneIfValueSemantics(value));
                     popN(2);
                     push(value);
                     break;
@@ -4889,7 +5084,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 if (isList(container)) {
                     ObjList* list = asList(container);
                     for (int32_t i = 0; i < list->length(); i++) {
-                        if (needle.equals(list->elts.at(i), frame->strict)) {
+                        if (needle.equals(list->getElement(i), frame->strict)) {
                             result = true;
                             break;
                         }
@@ -5195,9 +5390,18 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 std::swap(peek(0), peek(1));
                 break;
             }
+            case OpCode::MakeConst: {
+                Value& top = peek(0);
+                top = createFrozenSnapshot(top);
+                break;
+            }
             case OpCode::CopyInto: {
                 Value rhs = pop();
                 Value lhs = pop();
+                if (lhs.isConst()) {
+                    runtimeError("Cannot mutate const: copy-into (<-) on const value");
+                    return errorReturn;
+                }
                 try {
                     copyInto(lhs, rhs);
                 } catch (std::exception& e) {
@@ -5247,6 +5451,30 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     if (s == FutureStatus::Pending) goto postInstructionDispatch;
                     if (s == FutureStatus::Error) return errorReturn;
                 }
+
+                // Resolve future args for typed parameters (closures only).
+                // Native functions use resolveArgMask; this handles Roxal-implemented
+                // functions whose typed params should implicitly resolve futures.
+                if (isClosure(callee)) {
+                    ObjFunction* fn = asFunction(asClosure(callee)->function);
+                    if (fn->funcType.has_value()) {
+                        auto& ft = fn->funcType.value();
+                        if (ft->func.has_value()) {
+                            auto& params = ft->func->params;
+                            for (size_t i = 0; i < params.size() && i < (size_t)callSpec.argCount; i++) {
+                                if (params[i].has_value() && params[i]->type.has_value()) {
+                                    Value& arg = peek(callSpec.argCount - 1 - i);
+                                    if (isFuture(arg)) {
+                                        auto s = tryAwaitFuture(arg);
+                                        if (s != FutureStatus::Resolved)
+                                            goto postInstructionDispatch;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if (!callValue(callee, callSpec))
                     return errorReturn;
 
@@ -5428,6 +5656,17 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 push(frame->slots[slot]);
                 break;
             }
+            case OpCode::MoveLocal: {
+                uint16_t slot = singleByteArg ? readByte() : readShort();
+                #ifdef DEBUG_BUILD
+                auto stackIndex = (frame->slots - &thread->stack[0]) + slot;
+                if (stackIndex >= thread->stack.size())
+                    throw std::runtime_error("Stack overflow access");
+                #endif
+                push(frame->slots[slot]);
+                frame->slots[slot] = Value::nilVal();
+                break;
+            }
             case OpCode::SetLocal: {
                 uint16_t slot = singleByteArg ? readByte() : readShort();
                 #ifdef DEBUG_BUILD
@@ -5442,6 +5681,10 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 uint8_t argCount = readByte();
                 if (tryAwaitFuture(peek(argCount)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
+                if (peek(argCount).isConst()) {
+                    runtimeError("Cannot mutate const: index assignment");
+                    return errorReturn;
+                }
                 try {
                     Value& indexable { peek(argCount) };
                     Value& value { peek(argCount+1) };
@@ -5471,12 +5714,30 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 auto optValue { vars.load(name->hash) };
                 if (optValue.has_value()) {
                     Value value = optValue.value();
+                    if (onDataflowThread_ && value.isObj())
+                        value = value.constRef();
                     push(value);
                 }
                 else {
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
                     return errorReturn;
                 }
+                break;
+            }
+            case OpCode::MoveModuleVar: {
+                ObjString* name = readString();
+                if (onDataflowThread_) {
+                    runtimeError("Cannot modify module variable '" + name->toStdString() + "' from dataflow function");
+                    return errorReturn;
+                }
+                auto& vars { moduleVars() };
+                auto optValue { vars.load(name->hash) };
+                if (!optValue.has_value()) {
+                    runtimeError("Undefined variable '"+name->toStdString()+"'");
+                    return errorReturn;
+                }
+                push(optValue.value());
+                vars.storeIfExists(name->hash, name->s, Value::nilVal());
                 break;
             }
             case OpCode::GetModuleVarSignal: {
@@ -5516,6 +5777,10 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             }
             case OpCode::SetModuleVar: {
                 ObjString* name = readString();
+                if (onDataflowThread_) {
+                    runtimeError("Cannot modify module variable '" + name->toStdString() + "' from dataflow function");
+                    return errorReturn;
+                }
                 if (moduleType()->constVars.find(name->hash) != moduleType()->constVars.end()) {
                     runtimeError("Cannot assign to module constant '" + toUTF8StdString(name->s) + "'");
                     return errorReturn;
@@ -5532,6 +5797,10 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             }
             case OpCode::SetNewModuleVar: {
                 ObjString* name = readString();
+                if (onDataflowThread_) {
+                    runtimeError("Cannot modify module variable '" + name->toStdString() + "' from dataflow function");
+                    return errorReturn;
+                }
                 auto& vars { moduleVars() };
 
                 // only automatic declaration of globals on assignment when
@@ -5670,9 +5939,9 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     Value listItems { Value::listVal() };
                     for(const auto& item : vecItemPairs) {
                         Value itemList { Value::listVal() };
-                        asList(itemList)->elts.push_back(item.first);
-                        asList(itemList)->elts.push_back(item.second);
-                        asList(listItems)->elts.push_back(itemList);
+                        asList(itemList)->append(item.first);
+                        asList(itemList)->append(item.second);
+                        asList(listItems)->append(itemList);
                     }
                     push(listItems);
                 }
@@ -6026,7 +6295,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     auto toModuleType { asModuleType(toModule) };
 
                     // special case, if list is just [*], then import all symbols
-                    const auto& firstElement { symbolsListObj->elts.at(0) };
+                    const auto& firstElement { symbolsListObj->getElement(0) };
                     if (isString(firstElement) && asStringObj(firstElement)->s == "*") {
                         fromModuleType->vars.forEach(
                             [&](const VariablesMap::NameValue& nameValue) {
@@ -6036,7 +6305,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                             });
                     }
                     else { // import the symbols explicitly listed
-                        for(const auto& symbol : symbolsListObj->elts.get()) {
+                        for(const auto& symbol : symbolsListObj->getElements()) {
                             const auto& symbolString { asStringObj(symbol) };
                             auto optValue { fromModuleType->vars.load(symbolString->hash) };
                             const auto& name { symbolString->s };
@@ -6150,7 +6419,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             if (isList(waitTarget)) {
                 ObjList* list = asList(waitTarget);
                 bool allResolved = true;
-                for (auto& element : list->elts.get()) {
+                for (auto& element : list->getElements()) {
                     auto s = tryResolveValue(element);
                     if (s == FutureStatus::Error)
                         return errorReturn;
@@ -6598,11 +6867,13 @@ bool VM::processNativeDefaultParamDispatch(Value defaultValue)
     // Apply type conversion if needed
     const auto& params = state.funcType->func.value().params;
     if (params[paramIdx].has_value() && params[paramIdx]->type.has_value()) {
-        ValueType vt = builtinToValueType(params[paramIdx]->type.value()->builtin);
-        bool strictConv = false;
-        if (thread->frames.size() >= 1)
-            strictConv = (thread->frames.end()-1)->strict;
-        state.argsBuffer[bufferIdx] = toType(vt, state.argsBuffer[bufferIdx], strictConv);
+        auto vt = builtinToValueType(params[paramIdx]->type.value()->builtin);
+        if (vt.has_value()) {
+            bool strictConv = false;
+            if (thread->frames.size() >= 1)
+                strictConv = (thread->frames.end()-1)->strict;
+            state.argsBuffer[bufferIdx] = toType(vt.value(), state.argsBuffer[bufferIdx], strictConv);
+        }
     }
 
     // Move to next closure default
@@ -7125,66 +7396,114 @@ void VM::defineBuiltinMethods()
         return;
     }
 
-    defineBuiltinMethod(ValueType::Vector, "norm", std::mem_fn(&VM::vector_norm_builtin));
-    defineBuiltinMethod(ValueType::Vector, "sum", std::mem_fn(&VM::vector_sum_builtin));
-    defineBuiltinMethod(ValueType::Vector, "min", std::mem_fn(&VM::vector_min_builtin));
-    defineBuiltinMethod(ValueType::Vector, "max", std::mem_fn(&VM::vector_max_builtin));
-    defineBuiltinMethod(ValueType::Vector, "normalized", std::mem_fn(&VM::vector_normalized_builtin));
-    defineBuiltinMethod(ValueType::Vector, "dot", std::mem_fn(&VM::vector_dot_builtin));
+    // noMutateSelf / noMutateArgs flags:
+    //   noMutateSelf=true  → method reads but doesn't mutate receiver
+    //   noMutateArgs bits  → bit N set means arg N is read-only (not mutated)
+    // These flags enable the VM to skip snapshot isolation for const dispatch.
 
-    defineBuiltinMethod(ValueType::Matrix, "rows", std::mem_fn(&VM::matrix_rows_builtin));
-    defineBuiltinMethod(ValueType::Matrix, "cols", std::mem_fn(&VM::matrix_cols_builtin));
-    defineBuiltinMethod(ValueType::Matrix, "transpose", std::mem_fn(&VM::matrix_transpose_builtin));
-    defineBuiltinMethod(ValueType::Matrix, "determinant", std::mem_fn(&VM::matrix_determinant_builtin));
-    defineBuiltinMethod(ValueType::Matrix, "inverse", std::mem_fn(&VM::matrix_inverse_builtin));
-    defineBuiltinMethod(ValueType::Matrix, "trace", std::mem_fn(&VM::matrix_trace_builtin));
-    defineBuiltinMethod(ValueType::Matrix, "norm", std::mem_fn(&VM::matrix_norm_builtin));
-    defineBuiltinMethod(ValueType::Matrix, "sum", std::mem_fn(&VM::matrix_sum_builtin));
-    defineBuiltinMethod(ValueType::Matrix, "min", std::mem_fn(&VM::matrix_min_builtin));
-    defineBuiltinMethod(ValueType::Matrix, "max", std::mem_fn(&VM::matrix_max_builtin));
+    // Vector methods — all read-only on self
+    defineBuiltinMethod(ValueType::Vector, "norm", std::mem_fn(&VM::vector_norm_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Vector, "sum", std::mem_fn(&VM::vector_sum_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Vector, "min", std::mem_fn(&VM::vector_min_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Vector, "max", std::mem_fn(&VM::vector_max_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Vector, "normalized", std::mem_fn(&VM::vector_normalized_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Vector, "dot", std::mem_fn(&VM::vector_dot_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
 
-    defineBuiltinMethod(ValueType::Tensor, "min", std::mem_fn(&VM::tensor_min_builtin));
-    defineBuiltinMethod(ValueType::Tensor, "max", std::mem_fn(&VM::tensor_max_builtin));
-    defineBuiltinMethod(ValueType::Tensor, "sum", std::mem_fn(&VM::tensor_sum_builtin));
+    // Matrix methods — all read-only on self
+    defineBuiltinMethod(ValueType::Matrix, "rows", std::mem_fn(&VM::matrix_rows_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "cols", std::mem_fn(&VM::matrix_cols_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "transpose", std::mem_fn(&VM::matrix_transpose_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "determinant", std::mem_fn(&VM::matrix_determinant_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "inverse", std::mem_fn(&VM::matrix_inverse_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "trace", std::mem_fn(&VM::matrix_trace_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "norm", std::mem_fn(&VM::matrix_norm_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "sum", std::mem_fn(&VM::matrix_sum_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "min", std::mem_fn(&VM::matrix_min_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "max", std::mem_fn(&VM::matrix_max_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
 
-    defineBuiltinMethod(ValueType::List, "append", std::mem_fn(&VM::list_append_builtin));
-    defineBuiltinMethod(ValueType::List, "filter", std::mem_fn(&VM::list_filter_builtin));
-    defineBuiltinMethod(ValueType::List, "map", std::mem_fn(&VM::list_map_builtin));
-    defineBuiltinMethod(ValueType::List, "reduce", std::mem_fn(&VM::list_reduce_builtin));
+    // Tensor methods — all read-only on self
+    defineBuiltinMethod(ValueType::Tensor, "min", std::mem_fn(&VM::tensor_min_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Tensor, "max", std::mem_fn(&VM::tensor_max_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Tensor, "sum", std::mem_fn(&VM::tensor_sum_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+
+    // List methods — append mutates self; filter/map/reduce read-only on self
+    defineBuiltinMethod(ValueType::List, "append", std::mem_fn(&VM::list_append_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::List, "filter", std::mem_fn(&VM::list_filter_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::List, "map", std::mem_fn(&VM::list_map_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::List, "reduce", std::mem_fn(&VM::list_reduce_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x3);
 
 #ifdef ROXAL_ENABLE_REGEX
-    defineBuiltinMethod(ValueType::String, "match", std::mem_fn(&VM::string_match_builtin));
-    defineBuiltinMethod(ValueType::String, "search", std::mem_fn(&VM::string_search_builtin));
-    defineBuiltinMethod(ValueType::String, "replace", std::mem_fn(&VM::string_replace_builtin));
-    defineBuiltinMethod(ValueType::String, "split", std::mem_fn(&VM::string_split_builtin));
+    // String methods — all read-only on self and args
+    defineBuiltinMethod(ValueType::String, "match", std::mem_fn(&VM::string_match_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::String, "search", std::mem_fn(&VM::string_search_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::String, "replace", std::mem_fn(&VM::string_replace_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x3);
+    defineBuiltinMethod(ValueType::String, "split", std::mem_fn(&VM::string_split_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
 #endif
 
+    // Signal methods — run/stop/tick/set mutate self; freq is read-only
     defineBuiltinMethod(ValueType::Signal, "run", std::mem_fn(&VM::signal_run_builtin));
     defineBuiltinMethod(ValueType::Signal, "stop", std::mem_fn(&VM::signal_stop_builtin));
     defineBuiltinMethod(ValueType::Signal, "tick", std::mem_fn(&VM::signal_tick_builtin));
-    defineBuiltinMethod(ValueType::Signal, "freq", std::mem_fn(&VM::signal_freq_builtin));
-    defineBuiltinMethod(ValueType::Signal, "set", std::mem_fn(&VM::signal_set_builtin));
+    defineBuiltinMethod(ValueType::Signal, "freq", std::mem_fn(&VM::signal_freq_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Signal, "set", std::mem_fn(&VM::signal_set_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
     defineBuiltinMethod(ValueType::Signal, "on_changed", std::mem_fn(&VM::signal_on_changed_builtin), true);
 
-    defineBuiltinMethod(ValueType::Event, "emit", std::mem_fn(&VM::event_emit_builtin), true);
-    defineBuiltinMethod(ValueType::Object, "emit", std::mem_fn(&VM::event_emit_builtin), true);
+    // Event methods — all mutate self (register/remove handlers)
+    defineBuiltinMethod(ValueType::Event, "emit", std::mem_fn(&VM::event_emit_builtin), true,
+                        nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::Object, "emit", std::mem_fn(&VM::event_emit_builtin), true,
+                        nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
     defineBuiltinMethod(ValueType::Event, "when", std::mem_fn(&VM::event_when_builtin), true);
     defineBuiltinMethod(ValueType::Event, "remove", std::mem_fn(&VM::event_remove_builtin), true);
 
+    // Actor dataflow methods — all mutate state (procs)
     defineBuiltinMethod(ValueType::Actor, "tick", std::mem_fn(&VM::dataflow_tick_native), true);  // proc
     defineBuiltinMethod(ValueType::Actor, "run", std::mem_fn(&VM::dataflow_run_native), true);   // proc
-    defineBuiltinMethod(ValueType::Actor, "runFor", std::mem_fn(&VM::dataflow_run_for_native), true);  // proc
+    defineBuiltinMethod(ValueType::Actor, "runFor", std::mem_fn(&VM::dataflow_run_for_native), true,
+                        nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
 }
 
 void VM::defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn,
                              bool isProc,
                              ptr<type::Type> funcType,
                              std::vector<Value> defaults,
-                             Value declFunction)
+                             Value declFunction,
+                             bool noMutateSelf,
+                             uint32_t noMutateArgs)
 {
     auto us = toUnicodeString(name);
     builtinMethods[type][us.hashCode()] = BuiltinMethodInfo(fn, isProc, funcType,
-                                                            std::move(defaults), declFunction);
+                                                            std::move(defaults), declFunction,
+                                                            0, noMutateSelf, noMutateArgs);
 }
 
 void VM::defineBuiltinProperties()
@@ -7425,6 +7744,10 @@ Value VM::event_emit_builtin(ArgsView args)
 
     if (!ev)
         ev = asEventType(eventType);
+
+    // Event instances are implicitly const once emitted (spec: Event Implicit Const).
+    // Freeze before dispatch so all handlers receive a const snapshot.
+    instance = createFrozenSnapshot(instance);
 
     Value eventWeak = eventType.weakRef();
     scheduleEventHandlers(eventWeak, ev, instance, when);
@@ -7713,7 +8036,7 @@ Value VM::list_append_builtin(ArgsView args)
     // TODO: Signal values should be resolved when passed as function arguments
     // Currently signals may not be resolved immediately, requiring workarounds like arithmetic (0 + signal)
     ObjList* list = asList(args[0]);
-    list->elts.push_back(args[1]);
+    list->append(args[1]);
     return Value::nilVal();
 }
 
@@ -7729,7 +8052,7 @@ Value VM::list_filter_builtin(ArgsView args)
     ObjClosure* predicate = asClosure(args[1]);
 
     // Empty list - return immediately
-    if (inputList->elts.get().empty())
+    if (inputList->empty())
         return Value::listVal();
 
     // Detect callback arity
@@ -7758,7 +8081,7 @@ Value VM::list_filter_builtin(ArgsView args)
         int arity = d->at(Value::stringVal(toUnicodeString("arity"))).asInt();
 
         // Process result - append element if predicate returned true
-        auto elts = list->elts.get();
+        auto elts = list->getElements();
         if (isTruthy(callbackResult))
             result->append(elts[idx]);
 
@@ -7782,7 +8105,7 @@ Value VM::list_filter_builtin(ArgsView args)
     };
 
     // Push first callback
-    auto elts = inputList->elts.get();
+    auto elts = inputList->getElements();
     std::vector<Value> callArgs;
     callArgs.push_back(elts[0]);
     if (arity >= 2)
@@ -7807,7 +8130,7 @@ Value VM::list_map_builtin(ArgsView args)
     ObjClosure* transform = asClosure(args[1]);
 
     // Empty list - return immediately
-    if (inputList->elts.get().empty())
+    if (inputList->empty())
         return Value::listVal();
 
     // Detect callback arity
@@ -7843,7 +8166,7 @@ Value VM::list_map_builtin(ArgsView args)
         d->store(Value::stringVal(toUnicodeString("index")), Value::intVal(idx));
 
         // More iterations?
-        auto elts = list->elts.get();
+        auto elts = list->getElements();
         if (static_cast<size_t>(idx) < elts.size()) {
             ObjClosure* transform = asClosure(d->at(Value::stringVal(toUnicodeString("transform"))));
             std::vector<Value> callArgs;
@@ -7859,7 +8182,7 @@ Value VM::list_map_builtin(ArgsView args)
     };
 
     // Push first callback
-    auto elts = inputList->elts.get();
+    auto elts = inputList->getElements();
     std::vector<Value> callArgs;
     callArgs.push_back(elts[0]);
     if (arity >= 2)
@@ -7884,7 +8207,7 @@ Value VM::list_reduce_builtin(ArgsView args)
     ObjClosure* reducer = asClosure(args[1]);
 
     // Empty list - return initial value immediately
-    if (inputList->elts.get().empty())
+    if (inputList->empty())
         return args[2];
 
     // Detect callback arity
@@ -7919,7 +8242,7 @@ Value VM::list_reduce_builtin(ArgsView args)
         d->store(Value::stringVal(toUnicodeString("index")), Value::intVal(idx));
 
         // More iterations?
-        auto elts = list->elts.get();
+        auto elts = list->getElements();
         if (static_cast<size_t>(idx) < elts.size()) {
             ObjClosure* reducer = asClosure(d->at(Value::stringVal(toUnicodeString("reducer"))));
             std::vector<Value> callArgs;
@@ -7936,7 +8259,7 @@ Value VM::list_reduce_builtin(ArgsView args)
     };
 
     // Push first callback
-    auto elts = inputList->elts.get();
+    auto elts = inputList->getElements();
     std::vector<Value> callArgs;
     callArgs.push_back(args[2]);  // initial accumulator
     callArgs.push_back(elts[0]);
@@ -8001,10 +8324,10 @@ Value VM::string_match_builtin(ArgsView args)
         PCRE2_SIZE start = ovector[2*i];
         PCRE2_SIZE end = ovector[2*i + 1];
         if (start == PCRE2_UNSET) {
-            result->elts.push_back(Value::nilVal());
+            result->append(Value::nilVal());
         } else {
             std::string matchStr = subject.substr(start, end - start);
-            result->elts.push_back(Value::stringVal(toUnicodeString(matchStr)));
+            result->append(Value::stringVal(toUnicodeString(matchStr)));
         }
     }
 
@@ -8177,7 +8500,7 @@ Value VM::string_split_builtin(ArgsView args)
         if (rc < 0) {
             // No more matches - add rest of string
             std::string rest = subject.substr(offset);
-            result->elts.push_back(Value::stringVal(toUnicodeString(rest)));
+            result->append(Value::stringVal(toUnicodeString(rest)));
             break;
         }
 
@@ -8187,7 +8510,7 @@ Value VM::string_split_builtin(ArgsView args)
 
         // Add part before match
         std::string part = subject.substr(offset, matchStart - offset);
-        result->elts.push_back(Value::stringVal(toUnicodeString(part)));
+        result->append(Value::stringVal(toUnicodeString(part)));
 
         // Handle zero-length matches
         if (matchEnd == matchStart) {

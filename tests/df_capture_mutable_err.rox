@@ -1,0 +1,8 @@
+func setup():
+  var data = [1, 2, 3]
+  func process(x: int) -> int:
+    return x + data.length()
+  var c = clock(10)
+  var result = process(c)
+
+setup()
