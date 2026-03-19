@@ -1015,6 +1015,8 @@ VM::~VM()
     lazyModuleRegistry.clear();
 
     conditionalInterruptClosure = Value::nilVal();
+    replModuleValue = Value::nilVal();
+    pendingRTClosure_ = Value::nilVal();
 
     if (dataflowEngine)
         dataflowEngine->clear();
