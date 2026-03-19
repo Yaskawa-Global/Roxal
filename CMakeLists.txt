@@ -3,10 +3,21 @@ cmake_minimum_required(VERSION 3.10)
 project(roxal VERSION 0.8.0 LANGUAGES CXX C)
 set(ROXAL_PRERELEASE "pre" CACHE STRING "SemVer prerelease label (e.g. alpha.1, rc.1)")
 
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
+endif()
+
 enable_testing()
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-fmax-errors=1)
+endif()
+
+# AddressSanitizer for debugging
+option(ROXAL_ENABLE_ASAN "Enable AddressSanitizer" OFF)
+if(ROXAL_ENABLE_ASAN)
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=address)
 endif()
 
 option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
