@@ -158,6 +158,20 @@ struct Obj {
         control->strong.fetch_add(1,std::memory_order_relaxed);
     }
 
+    // Atomically increment strong count only if currently > 0.
+    // Returns true on success (caller now holds a strong ref).
+    // Returns false if the object is already dying (strong == 0).
+    inline bool tryIncRef()
+    {
+        int32_t prev = control->strong.load(std::memory_order_relaxed);
+        while (prev > 0) {
+            if (control->strong.compare_exchange_weak(prev, prev + 1,
+                    std::memory_order_relaxed, std::memory_order_relaxed))
+                return true;
+        }
+        return false;
+    }
+
     void decRef();
 
     inline void incWeak()
@@ -461,8 +475,11 @@ inline bool isString(const Value& v) { return isObjType(v, ObjType::String); }
 inline ObjString* asStringObj(const Value& v) { return static_cast<ObjString*>(v.asObj()); }
 inline UnicodeString asUString(const Value& v) { return asStringObj(v)->s; }
 
-// allocate new ObjString on heap and copy s (or return existing interned string)
-unique_ptr<ObjString, UnreleasedObj> newObjString(const UnicodeString& s);
+// allocate new ObjString on heap and copy s (or return existing interned string).
+// If wasInterned is non-null and the string was found in the intern table,
+// *wasInterned is set to true and the returned object has an extra strong ref
+// (via tryIncRef) that the caller must compensate for.
+unique_ptr<ObjString, UnreleasedObj> newObjString(const UnicodeString& s, bool* wasInterned = nullptr);
 void updateInternedString(ObjString* obj, const UnicodeString& newVal);
 
 std::string objStringToString(const ObjString* os);

@@ -839,8 +839,10 @@ static uint32_t fnv1a32(const UnicodeString& s)
 }
 
 
-unique_ptr<ObjString, UnreleasedObj> roxal::newObjString(const UnicodeString& s)
+unique_ptr<ObjString, UnreleasedObj> roxal::newObjString(const UnicodeString& s, bool* wasInterned)
 {
+    if (wasInterned) *wasInterned = false;
+
     uint32_t attempt = 0;
     while (true) {
         uint64_t key = computeInternKey(s, attempt);
@@ -848,22 +850,47 @@ unique_ptr<ObjString, UnreleasedObj> roxal::newObjString(const UnicodeString& s)
         if (existing.has_value()) {
             ObjString* objStr = existing.value();
             if (objStr && objStr->s == s) {
-                return unique_ptr<ObjString, UnreleasedObj>(objStr);
+                // Atomically try to take a strong reference to prevent
+                // the string from being freed by another thread before
+                // the caller's Value::incRef() runs.
+                if (objStr->tryIncRef()) {
+                    if (wasInterned) *wasInterned = true;
+                    return unique_ptr<ObjString, UnreleasedObj>(objStr);
+                }
+                // String is dying (strong == 0); remove stale entry and create new
+                strings.erase(key);
+                break;
             }
             ++attempt;
             continue;
         }
-
-        // create new
-        #ifdef DEBUG_BUILD
-        auto objStr = newObj<ObjString>(std::string(__func__)+" '" + toUTF8StdString(s) + "'",__FILE__,__LINE__,s);
-        #else
-        auto objStr = newObj<ObjString>(s);
-        #endif
-        objStr->internKey = key;
-        strings.store(key, objStr.get());
-        return objStr;
+        break;
     }
+
+    // create new
+    #ifdef DEBUG_BUILD
+    auto objStr = newObj<ObjString>(std::string(__func__)+" '" + toUTF8StdString(s) + "'",__FILE__,__LINE__,s);
+    #else
+    auto objStr = newObj<ObjString>(s);
+    #endif
+    uint64_t key = computeInternKey(s, 0);
+    // Check for collision with a different string at this key
+    uint32_t attempt2 = 0;
+    while (true) {
+        key = computeInternKey(s, attempt2);
+        auto existing = strings.lookup(key);
+        if (existing.has_value()) {
+            ObjString* other = existing.value();
+            if (other && other->s != s) {
+                ++attempt2;
+                continue;
+            }
+        }
+        break;
+    }
+    objStr->internKey = key;
+    strings.store(key, objStr.get());
+    return objStr;
 }
 
 void roxal::updateInternedString(ObjString* obj, const UnicodeString& newVal)

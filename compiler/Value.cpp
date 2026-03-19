@@ -154,7 +154,15 @@ std::string roxal::to_string(ValueType t)
 // Reference type constructors
 Value Value::stringVal(const icu::UnicodeString& s)
 {
-    return Value::objVal(newObjString(s));
+    bool wasInterned = false;
+    auto v = Value::objVal(newObjString(s, &wasInterned));
+    if (wasInterned) {
+        // newObjString called tryIncRef to protect the interned string from
+        // being freed before Value's constructor could call incRef.  Now that
+        // the Value holds its own strong ref, release the protective one.
+        v.asObj()->decRef();
+    }
+    return v;
 }
 
 Value Value::rangeVal()
