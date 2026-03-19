@@ -1,12 +1,12 @@
 // Test that mutating linkMethod-registered native methods are rejected on const objects.
-// Non-mutating methods (like width) should work; mutating (like resize) should error.
-import media
+// Non-mutating methods (like value) should work; mutating (like inc) should error.
+import math
 
-var img = media.Image('../tests/test_image_rgb.png')
-const cimg = img
+var c = math._Counter(0)
+const cc = c
 
 // Non-mutating method on const should work
-print(cimg.width())
+print(cc.value())
 
 // Mutating method on const should error
-cimg.resize(2, 2)
+cc.inc()

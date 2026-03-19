@@ -12,7 +12,6 @@ apt-get install -y \
     libicu-dev \
     libffi-dev \
     libboost-program-options-dev \
-    libeigen3-dev \
     git
 
 echo "installing python packages"
@@ -31,6 +30,17 @@ cmake -B /tmp/antlr4-build/build -S /tmp/antlr4-build/runtime/Cpp \
 cmake --build /tmp/antlr4-build/build -j$(nproc)
 cmake --install /tmp/antlr4-build/build
 rm -rf /tmp/antlr4-build
+
+# Eigen 5.0.1 (header-only, installs cmake config + headers)
+echo "building Eigen 5.0.1 from source into deps/eigen"
+git clone --depth 1 --branch 5.0.1 https://gitlab.com/libeigen/eigen.git /tmp/eigen-build
+cmake -B /tmp/eigen-build/build -S /tmp/eigen-build \
+    -DCMAKE_INSTALL_PREFIX="$(pwd)/deps/eigen" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DEIGEN_BUILD_BLAS=OFF \
+    -DEIGEN_BUILD_LAPACK=OFF
+cmake --install /tmp/eigen-build/build
+rm -rf /tmp/eigen-build
 
 # Optional features:
 #   media (PNG/JPEG): apt-get install -y libpng-dev libjpeg-dev

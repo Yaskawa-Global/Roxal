@@ -103,13 +103,11 @@ if(NOT antlr4-runtime_FOUND)
 endif()
 
 #
-# Eigen
-
-# Install via:
-# git clone https://gitlab.com/libeigen/eigen.git
-# git checkout 3.4.0
-# mkdir build && cd build && make && sudo make install
+# Eigen 5.0.1 (header-only, built from source into deps/eigen — see install-deps.sh)
+set(ROXAL_EIGEN_ROOT "${CMAKE_SOURCE_DIR}/deps/eigen" CACHE PATH "Eigen install prefix")
+list(APPEND CMAKE_PREFIX_PATH "${ROXAL_EIGEN_ROOT}")
 find_package( Eigen3 REQUIRED )
+get_target_property(EIGEN3_INCLUDE_DIR Eigen3::Eigen INTERFACE_INCLUDE_DIRECTORIES)
 include_directories(${EIGEN3_INCLUDE_DIR})
 
 if(ROXAL_ENABLE_GRPC)
