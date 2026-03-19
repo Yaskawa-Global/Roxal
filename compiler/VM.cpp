@@ -1120,8 +1120,21 @@ ExecutionStatus VM::run(std::istream& source, const std::string& name)
     }
 
     // Execute directly on the host thread
+    ExecutionStatus result = ExecutionStatus::OK;
     inSynchronousExecution_.store(true, std::memory_order_release);
-    auto [result, value] = execute();
+    try {
+        auto [execResult, value] = execute();
+        result = execResult;
+    } catch (...) {
+        // Ensure cleanup runs even if execute() throws (e.g. from queueCall
+        // runtime errors).  Without this, joinAllThreads/thread.reset are
+        // skipped, causing static/thread_local destruction order issues.
+        inSynchronousExecution_.store(false, std::memory_order_release);
+        joinAllThreads();
+        thread.reset();
+        freeObjects();
+        throw;
+    }
     inSynchronousExecution_.store(false, std::memory_order_release);
 
     // Join any other threads spawned during execution (actors, etc.)

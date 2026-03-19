@@ -1051,12 +1051,19 @@ Value Value::strongRef() const
     if (!isWeak())
         return *this;
 
-    if (!isAlive())
+    ObjControl* c = asControl();
+    Obj* obj = c->obj;
+    if (!obj)
         return nilVal();
 
-    Obj* obj = asControl()->obj;
-    // Increment strong count before constructing Value to ensure object stays alive
-    obj->incRef();
+    // Atomically try to increment strong count. This avoids the TOCTOU race
+    // where isAlive() returns true but by the time we call incRef(), another
+    // thread has already decremented strong to 0 and freed the object.
+    // Our weak reference keeps the control block (and object memory) alive,
+    // so accessing obj->control->strong is safe even after the destructor runs.
+    if (!obj->tryIncRef())
+        return nilVal();
+
     Value v;
     v.val = SignBit | QNAN | uint64_t(uintptr_t(obj));
     return v;
