@@ -219,6 +219,71 @@ func sum(x) -> real:
   """sum of all elements (works on vector, matrix, tensor, or list)"""
 
 
+// Complex number type
+type complex object:
+  var re :real = 0.0
+  var im :real = 0.0
+
+  proc init(re :real = 0.0, im :real = 0.0):
+    this.re = re
+    this.im = im
+
+  // Arithmetic: commutative + and * (accepts complex or real)
+  func operator+(other) -> complex:
+    if other is complex:
+      return complex(re + other.re, im + other.im)
+    return complex(re + real(other), im)
+
+  func operator-(other) -> complex:
+    if other is complex:
+      return complex(re - other.re, im - other.im)
+    return complex(re - real(other), im)
+
+  // Unary negation
+  func operator-() -> complex:
+    return complex(-re, -im)
+
+  // Multiplication: (a+bi)(c+di) = (ac-bd) + (ad+bc)i
+  func operator*(other) -> complex:
+    if other is complex:
+      return complex(re * other.re - im * other.im, re * other.im + im * other.re)
+    var s = real(other)
+    return complex(re * s, im * s)
+
+  // Division: (a+bi)/(c+di) = ((ac+bd) + (bc-ad)i) / (c²+d²)
+  func loperator/(other) -> complex:
+    if other is complex:
+      var denom = other.re * other.re + other.im * other.im
+      return complex((re * other.re + im * other.im) / denom, (im * other.re - re * other.im) / denom)
+    var s = real(other)
+    return complex(re / s, im / s)
+
+  // real / complex: r/(c+di) = r*(c-di)/(c²+d²)
+  func roperator/(other) -> complex:
+    var r = real(other)
+    var denom = re * re + im * im
+    return complex(r * re / denom, -r * im / denom)
+
+  // Comparison
+  func operator==(other) -> bool:
+    if other is complex:
+      return re == other.re and im == other.im
+    return im == 0.0 and re == real(other)
+
+  func operator!=(other) -> bool:
+    if other is complex:
+      return re != other.re or im != other.im
+    return im != 0.0 or re != real(other)
+
+  // Magnitude (absolute value)
+  func abs() -> real:
+    return sqrt(re * re + im * im)
+
+  // Conjugate
+  func conj() -> complex:
+    return complex(re, -im)
+
+
 // Example only: source signal updated from native code
 var _vecSignal :signal = signal(freq=20, initial=[0.0 0.0 0.0])
 

@@ -1391,6 +1391,99 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         }
     }
 
+    // Validate and remap operator method names before compilation
+    {
+        // Collect operator method info for cross-checks
+        static const std::set<icu::UnicodeString> comparisonOps = {
+            UnicodeString("=="), UnicodeString("!="),
+            UnicodeString("<"), UnicodeString(">"),
+            UnicodeString("<="), UnicodeString(">=")
+        };
+        static const std::set<icu::UnicodeString> arithmeticOps = {
+            UnicodeString("+"), UnicodeString("-"),
+            UnicodeString("*"), UnicodeString("/"), UnicodeString("%")
+        };
+
+        // Track which operator symbols have which forms defined
+        std::map<icu::UnicodeString, bool> hasOp;   // "operator<sym>" defined
+        std::map<icu::UnicodeString, bool> hasLop;   // "loperator<sym>" defined
+        std::map<icu::UnicodeString, bool> hasRop;   // "roperator<sym>" defined
+
+        for (auto& func : ast->methods) {
+            if (!func->name.has_value()) continue;
+            auto& name = func->name.value();
+            auto nameUtf8 = toUTF8StdString(name);
+
+            bool isOperator = name.startsWith("operator");
+            bool isLoperator = name.startsWith("loperator");
+            bool isRoperator = name.startsWith("roperator");
+
+            if (!isOperator && !isLoperator && !isRoperator)
+                continue;
+
+            // Extract the symbol part
+            icu::UnicodeString symbol;
+            if (isLoperator) symbol = name.tempSubString(9); // after "loperator"
+            else if (isRoperator) symbol = name.tempSubString(9); // after "roperator"
+            else symbol = name.tempSubString(8); // after "operator"
+
+            // Must be func, not proc
+            if (func->isProc)
+                error("Operator method '"+nameUtf8+"' must be 'func', not 'proc'.");
+
+            // Comparison operators don't support l/r variants
+            if ((isLoperator || isRoperator) && comparisonOps.count(symbol))
+                error("Comparison operator '"+nameUtf8+"' does not support l/r variants.");
+
+            // Comparison operators must return bool
+            if (isOperator && comparisonOps.count(symbol)) {
+                bool returnsBool = false;
+                if (func->returnTypes.has_value() && func->returnTypes->size() == 1) {
+                    auto& rt = func->returnTypes->at(0);
+                    if (std::holds_alternative<BuiltinType>(rt) && std::get<BuiltinType>(rt) == BuiltinType::Bool)
+                        returnsBool = true;
+                }
+                if (!returnsBool)
+                    error("Comparison operator '"+nameUtf8+"' must declare return type '-> bool'.");
+            }
+
+            // Arity checks and unary negation remap
+            size_t paramCount = func->params.size();
+            if (isOperator && symbol == "-" && paramCount == 0) {
+                // Unary negation: remap name to "uoperator-"
+                func->name = UnicodeString("uoperator-");
+            } else if (isLoperator || isRoperator) {
+                if (paramCount != 1)
+                    error("Operator method '"+nameUtf8+"' must have exactly 1 parameter.");
+            } else if (isOperator) {
+                // Binary operator must have 1 param (except unary negation handled above)
+                if (paramCount != 1)
+                    error("Binary operator method '"+nameUtf8+"' must have exactly 1 parameter.");
+            }
+
+            // Track for cross-checks
+            if (isOperator) hasOp[symbol] = true;
+            else if (isLoperator) hasLop[symbol] = true;
+            else if (isRoperator) hasRop[symbol] = true;
+        }
+
+        // Cross-checks: mutual exclusion and pairing
+        for (auto& [sym, _] : hasOp) {
+            if (hasLop.count(sym) || hasRop.count(sym))
+                error("Type '"+toUTF8StdString(ast->name)+"' defines both 'operator"+toUTF8StdString(sym)
+                      +"' and 'loperator"+toUTF8StdString(sym)+"'/'roperator"+toUTF8StdString(sym)
+                      +"' — use one convention.");
+        }
+        for (auto& [sym, _] : hasLop) {
+            if (!hasRop.count(sym))
+                error("'loperator"+toUTF8StdString(sym)+"' requires corresponding 'roperator"+toUTF8StdString(sym)+"'.");
+        }
+        for (auto& [sym, _] : hasRop) {
+            if (!hasLop.count(sym))
+                error("'roperator"+toUTF8StdString(sym)+"' requires corresponding 'loperator"+toUTF8StdString(sym)+"'.");
+        }
+    }
+
     // Now compile regular methods (after property accessors so they can reference the getter/setter methods)
 
     for(size_t i=0; i<ast->methods.size(); i++) {

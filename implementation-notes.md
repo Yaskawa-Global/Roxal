@@ -42,7 +42,7 @@ The deadline parameter enables incremental execution for real-time integration, 
 
 Runtime values in the language are represented by the Value class, which wraps a 64bit value.  This holds builtin primitives (`bool`, `int`, `real`, `decimal`, `enum`) and references to reference types.  The implementation uses NaN-boxing, whereby the full 64bit are used as a C double for the type `real`, but if the Quiet NaN (Not-a-Number) flags are set, then, it is instead assumed to be one of the other types, as stored in the type tag.
 
-These by-value types can be testes via the various is*() Value methods (`Value::isBool()`, `isInt()`, etc).
+These by-value types can be tested via the various is*() Value methods (`Value::isBool()`, `isInt()`, etc).
 
 In the case of reference types (`list`, `dict`, `vector`, `matrix`, `signal`, user-defined objects & actors), the `Value` only indicates the builtin type, or that is is an Object or Actor for user-defined types.  For enums, the Value holds the enum numeric value and a typeid value corresponding to a global registry of enum type information.  The reference is to an instance of class `Obj`.  Value manages reference counting for `Obj` references (via `incRef()` and `decRef()`).
 
@@ -61,11 +61,12 @@ Functions are first-class values and can capture variables from outer scopes, yi
 
 ## Object & Actor types
 
-A new object types (like a C++ class) can be declared and have its own methods (`func` or `proc`) and member variables.  Members can be declared private, in which case they're not accessible outside the scope of the type's methods.
+A new object type (like a C++ class) can be declared and have its own methods (`func` or `proc`) and member variables.  Members can be declared private, in which case they're not accessible outside the scope of the type's methods.
 
 An actor type is similar to an object, but additionally has its own thread of execution associated with it.  This thread is the only thread that can execute the actor's methods. Hence, when another thread (e.g. the main script thread or another actor's thread) calls an actor instance's methods, a future for the return value (if any) is immediately returned to the caller, which can continue to execute asynchronously.  Only if that future needs to be converted into the return value will the execution block, if necessary, until the called actor's method has completed and returned to provide the value.  Hence, execution of methods within an actor are serialized, since there is only one thread, so that developers need not worry about shared state between multiple threads.
 
-Complex reference types passed to an actor's method (or returned from it) behave as if deep-copied.  (currently, they are deep copied; but in future a Copy-on-Write implementation can be added so that only the reference need be passed in the common case of non-mutating parameters)
+Complex reference types passed to an actor's method (or returned from it) behave as if deep-copied (cloned).  In practice they use Multi-Version Concurrency Control (MVCC), as discussed below, to avoid actually copying.
+
 
 ## Signals and Data-Flow
 

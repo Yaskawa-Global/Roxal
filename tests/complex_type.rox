@@ -1,0 +1,79 @@
+// Test math.complex type
+
+import math.*
+
+var a = complex(3.0, 4.0)
+var b = complex(1.0, -2.0)
+
+// Addition (complex + complex, complex + real, real + complex)
+func test_add():
+  var c = a + b
+  print(c.re)
+  print(c.im)
+  c = a + 1.0
+  print(c.re)
+  print(c.im)
+  c = 5.0 + a
+  print(c.re)
+  print(c.im)
+
+// Subtraction (complex - complex, complex - real)
+func test_sub():
+  var c = a - b
+  print(c.re)
+  print(c.im)
+  c = a - 1.0
+  print(c.re)
+  print(c.im)
+
+// Multiplication (complex * complex, complex * real, real * complex)
+func test_mul():
+  var c = a * b
+  print(c.re)
+  print(c.im)
+  c = a * 2.0
+  print(c.re)
+  print(c.im)
+  c = 3.0 * b
+  print(c.re)
+  print(c.im)
+
+// Division (complex / complex, complex / real, real / complex)
+func test_div():
+  var c = a / b
+  print(c.re)
+  print(c.im)
+  c = a / 2.0
+  print(c.re)
+  print(c.im)
+  c = 10.0 / complex(2.0, 0.0)
+  print(c.re)
+  print(c.im)
+
+// Unary negation
+func test_neg():
+  var c = -a
+  print(c.re)
+  print(c.im)
+
+// Comparison
+func test_cmp():
+  print(a == complex(3.0, 4.0))
+  print(a != b)
+  print(a == 3.0)
+  print(complex(5.0, 0.0) == 5.0)
+
+// Methods
+func test_methods():
+  print(a.abs())
+  var c = a.conj()
+  print(c.re)
+  print(c.im)
+
+test_add()
+test_sub()
+test_mul()
+test_div()
+test_neg()
+test_cmp()
+test_methods()

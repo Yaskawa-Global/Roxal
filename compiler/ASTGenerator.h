@@ -69,6 +69,9 @@ public:
 
     virtual std::any visitFunc_sig(RoxalParser::Func_sigContext *context);
 
+    virtual std::any visitOperator_name(RoxalParser::Operator_nameContext *context) override { return {}; }
+    virtual std::any visitOperator_symbol(RoxalParser::Operator_symbolContext *context) override { return {}; }
+
     virtual std::any visitParameters(RoxalParser::ParametersContext *context);
 
     virtual std::any visitParameter(RoxalParser::ParameterContext *context);
@@ -175,6 +178,7 @@ protected:
     icu::UnicodeString normalizeIdentifier(const std::string& text);
     icu::UnicodeString identifierFromTerminal(antlr4::tree::TerminalNode* terminal);
     icu::UnicodeString identifierFromContext(antlr4::ParserRuleContext* context);
+    icu::UnicodeString operatorNameFromContext(RoxalParser::Operator_nameContext* context);
 
     antlr4::Token* currentToken;
     ptr<std::string> source;

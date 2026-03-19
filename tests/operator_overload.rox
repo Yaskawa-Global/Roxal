@@ -1,0 +1,40 @@
+// Test basic operator overloading: binary +, -, * and unary -
+
+type Pair object:
+  var x :real = 0.0
+  var y :real = 0.0
+
+  proc init(x :real, y :real):
+    this.x = x
+    this.y = y
+
+  func operator+(other :Pair) -> Pair:
+    return Pair(x + other.x, y + other.y)
+
+  func operator-(other :Pair) -> Pair:
+    return Pair(x - other.x, y - other.y)
+
+  func operator*( other :Pair) -> Pair:
+    return Pair(x * other.x, y * other.y)
+
+  func operator-() -> Pair:
+    return Pair(-x, -y)
+
+var a = Pair(1.0, 2.0)
+var b = Pair(3.0, 4.0)
+
+var c = a + b
+print(c.x)
+print(c.y)
+
+var d = a - b
+print(d.x)
+print(d.y)
+
+var e = a * b
+print(e.x)
+print(e.y)
+
+var f = -a
+print(f.x)
+print(f.y)

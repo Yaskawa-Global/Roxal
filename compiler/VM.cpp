@@ -776,6 +776,27 @@ VM::VM()
     thread = nullptr;
     initString = Value::stringVal(UnicodeString("init"));
 
+    // Pre-hash operator method names for fast dispatch
+    auto makeOpHashes = [](const char* sym) -> OperatorHashes {
+        return {
+            (UnicodeString("operator") + sym).hashCode(),
+            (UnicodeString("loperator") + sym).hashCode(),
+            (UnicodeString("roperator") + sym).hashCode()
+        };
+    };
+    opHashAdd = makeOpHashes("+");
+    opHashSub = makeOpHashes("-");
+    opHashMul = makeOpHashes("*");
+    opHashDiv = makeOpHashes("/");
+    opHashMod = makeOpHashes("%");
+    opHashEq  = makeOpHashes("==");
+    opHashNe  = makeOpHashes("!=");
+    opHashLt  = makeOpHashes("<");
+    opHashGt  = makeOpHashes(">");
+    opHashLe  = makeOpHashes("<=");
+    opHashGe  = makeOpHashes(">=");
+    opHashNeg = UnicodeString("uoperator-").hashCode();
+
     // Eagerly load sys & math modules
     registerBuiltinModule(make_ptr<ModuleSys>());
     registerBuiltinModule(make_ptr<ModuleMath>());
@@ -2712,6 +2733,93 @@ bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& ca
     return call(asClosure(method), callSpec);
 }
 
+
+const ObjObjectType::Method* VM::findOperatorMethod(ObjObjectType* type, int32_t hash)
+{
+    ObjObjectType* t = type;
+    while (t) {
+        auto it = t->methods.find(hash);
+        if (it != t->methods.end())
+            return &it->second;
+        t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+    }
+    return nullptr;
+}
+
+
+bool VM::tryDispatchBinaryOperator(const OperatorHashes& hashes)
+{
+    Value& rhs = peek(0);
+    Value& lhs = peek(1);
+
+    // Fast bail: neither is a user-defined object instance → no overload possible
+    // isObjectInstance checks isObj() then obj->type == ObjType::Instance,
+    // so strings, lists, vectors, etc. are excluded (they have different ObjTypes).
+    if (!isObjectInstance(lhs) && !isObjectInstance(rhs))
+        return false;
+
+    const ObjObjectType::Method* method = nullptr;
+    bool swapped = false;
+
+    // Try LHS first: operator<sym> or loperator<sym>
+    if (isObjectInstance(lhs)) {
+        auto* type = asObjectType(asObjectInstance(lhs)->instanceType);
+        method = findOperatorMethod(type, hashes.op);
+        if (!method)
+            method = findOperatorMethod(type, hashes.lop);
+    }
+
+    // If LHS didn't have it, try RHS: operator<sym> (commutative, swap) or roperator<sym>
+    if (!method && isObjectInstance(rhs)) {
+        auto* type = asObjectType(asObjectInstance(rhs)->instanceType);
+        method = findOperatorMethod(type, hashes.op);
+        if (method) {
+            swapped = true;
+        } else {
+            method = findOperatorMethod(type, hashes.rop);
+            if (method) swapped = true;
+        }
+    }
+
+    if (!method)
+        return false;
+
+    // Set up stack: [receiver, arg]
+    Value r = pop();
+    Value l = pop();
+    if (!swapped) {
+        push(l);  // receiver = lhs
+        push(r);  // arg = rhs
+    } else {
+        push(r);  // receiver = rhs
+        push(l);  // arg = lhs
+    }
+
+    CallSpec callSpec{1};
+    // Even if call() fails, return true to prevent fall-through to built-in dispatch
+    // (the error is already set by call())
+    call(asClosure(method->closure), callSpec);
+    return true;
+}
+
+
+bool VM::tryDispatchUnaryOperator(int32_t hash)
+{
+    Value& operand = peek(0);
+
+    if (!isObjectInstance(operand))
+        return false;
+
+    auto* type = asObjectType(asObjectInstance(operand)->instanceType);
+    auto* method = findOperatorMethod(type, hash);
+    if (!method)
+        return false;
+
+    // Stack already has [receiver]. Call with 0 args.
+    CallSpec callSpec{0};
+    call(asClosure(method->closure), callSpec);
+    return true;
+}
 
 
 bool VM::invoke(ObjString* name, const CallSpec& callSpec)
@@ -5051,6 +5159,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
+                if (tryDispatchBinaryOperator(opHashEq)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
+
                 try {
                     binaryOp([&](Value a, Value b) -> Value { return equal(a, b, frame->strict); });
                 } catch (std::exception& e) {
@@ -5149,6 +5262,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
+                if (tryDispatchBinaryOperator(opHashGt)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
+
                 try {
                     binaryOp([](Value a, Value b) -> Value { return greater(a,b); });
                 } catch (std::exception& e) {
@@ -5160,6 +5278,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             case OpCode::Less: {
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
+
+                if (tryDispatchBinaryOperator(opHashLt)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
 
                 try {
                     binaryOp([](Value a, Value b) -> Value { return less(a,b); });
@@ -5173,6 +5296,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
+                if (tryDispatchBinaryOperator(opHashGe)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
+
                 try {
                     binaryOp([](Value a, Value b) -> Value { return greaterEqual(a,b); });
                 } catch (std::exception& e) {
@@ -5184,6 +5312,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             case OpCode::LessEqual: {
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
+
+                if (tryDispatchBinaryOperator(opHashLe)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
 
                 try {
                     binaryOp([](Value a, Value b) -> Value { return lessEqual(a,b); });
@@ -5197,6 +5330,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
+                if (tryDispatchBinaryOperator(opHashNe)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
+
                 try {
                     binaryOp([&](Value a, Value b) -> Value { return notEqual(a, b, frame->strict); });
                 } catch (std::exception& e) {
@@ -5208,6 +5346,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             case OpCode::Add: {
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
+
+                if (tryDispatchBinaryOperator(opHashAdd)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
 
                 if (isString(peek(1))) {
                     concatenate();
@@ -5225,6 +5368,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
+                if (tryDispatchBinaryOperator(opHashSub)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
+
                 try {
                     binaryOp([](Value l, Value r) -> Value { return subtract(l, r); });
                 } catch (std::exception& e) {
@@ -5237,6 +5385,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
+                if (tryDispatchBinaryOperator(opHashMul)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
+
                 try {
                     binaryOp([](Value l, Value r) -> Value { return multiply(l, r); });
                 } catch (std::exception& e) {
@@ -5248,6 +5401,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             case OpCode::Divide: {
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
+
+                if (tryDispatchBinaryOperator(opHashDiv)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
 
                 try {
                     binaryOp([](Value l, Value r) -> Value { return divide(l, r); });
@@ -5262,6 +5420,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 if (tryAwaitFuture(operand) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
+                if (tryDispatchUnaryOperator(opHashNeg)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
+
                 try {
                     push(negate(pop()));
                 } catch (std::exception& e) {
@@ -5274,6 +5437,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 // TODO: support decimal
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
+
+                if (tryDispatchBinaryOperator(opHashMod)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
 
                 try {
                     binaryOp([](Value a, Value b) -> Value { return mod(a,b); });

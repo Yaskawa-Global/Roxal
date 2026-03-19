@@ -1,0 +1,37 @@
+// Test comparison operator overloading
+
+type Score object:
+  var v :int = 0
+
+  proc init(v :int):
+    this.v = v
+
+  func operator==(other :Score) -> bool:
+    return v == other.v
+
+  func operator!=(other :Score) -> bool:
+    return v != other.v
+
+  func operator<(other :Score) -> bool:
+    return v < other.v
+
+  func operator>(other :Score) -> bool:
+    return v > other.v
+
+  func operator<=(other :Score) -> bool:
+    return v <= other.v
+
+  func operator>=(other :Score) -> bool:
+    return v >= other.v
+
+var a = Score(100)
+var b = Score(200)
+var c = Score(100)
+
+print(a == c)
+print(a == b)
+print(a != b)
+print(a < b)
+print(b > a)
+print(a <= c)
+print(b >= a)

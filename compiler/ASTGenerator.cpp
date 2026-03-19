@@ -120,6 +120,31 @@ UnicodeString ASTGenerator::identifierFromContext(antlr4::ParserRuleContext* con
     return normalizeIdentifier(context->getText());
 }
 
+UnicodeString ASTGenerator::operatorNameFromContext(RoxalParser::Operator_nameContext* context)
+{
+    // Build canonical operator method name: "operator+", "loperator*", "roperator/", etc.
+    UnicodeString prefix;
+    if (context->OPERATOR()) prefix = "operator";
+    else if (context->LOPERATOR()) prefix = "loperator";
+    else if (context->ROPERATOR()) prefix = "roperator";
+
+    auto sym = context->operator_symbol();
+    UnicodeString symbol;
+    if (sym->PLUS()) symbol = "+";
+    else if (sym->MINUS()) symbol = "-";
+    else if (sym->STAR() || sym->MULT()) symbol = "*";
+    else if (sym->DIV()) symbol = "/";
+    else if (sym->MOD()) symbol = "%";
+    else if (sym->ISEQUAL()) symbol = "==";
+    else if (sym->ISNOTEQUALS()) symbol = "!=";
+    else if (sym->LESS_THAN()) symbol = "<";
+    else if (sym->GREATER_THAN()) symbol = ">";
+    else if (sym->LT_EQ()) symbol = "<=";
+    else if (sym->GT_EQ()) symbol = ">=";
+
+    return prefix + symbol;
+}
+
 
 ptr<Expression> ASTGenerator::parseInterpolationExpression(const std::string& text, antlr4::ParserRuleContext* context)
 {
@@ -1328,7 +1353,12 @@ std::any ASTGenerator::visitFunc_sig(RoxalParser::Func_sigContext *context)
 {
     visitStart();
 
-    auto ident { identifierFromTerminal(context->IDENTIFIER()) };
+    icu::UnicodeString ident;
+    if (context->IDENTIFIER()) {
+        ident = identifierFromTerminal(context->IDENTIFIER());
+    } else if (context->operator_name()) {
+        ident = operatorNameFromContext(context->operator_name());
+    }
 
     ptr<Function> func = make_ptr<Function>();
     setSourceInfo(func,context);

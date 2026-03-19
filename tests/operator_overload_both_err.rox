@@ -1,0 +1,11 @@
+// Error: both operator+ and loperator+/roperator+ defined
+
+type Bad object:
+  func operator+(other :Bad) -> Bad:
+    return Bad()
+
+  func loperator+(other :int) -> Bad:
+    return Bad()
+
+  func roperator+(other :int) -> Bad:
+    return Bad()

@@ -233,6 +233,18 @@ public:
                         const Value& receiver);
     bool invoke(ObjString* name, const CallSpec& callSpec);
 
+    // Operator method name hashes for fast lookup during operator dispatch
+    struct OperatorHashes {
+        int32_t op;   // "operator<sym>"
+        int32_t lop;  // "loperator<sym>"
+        int32_t rop;  // "roperator<sym>"
+    };
+
+    // Operator overload dispatch helpers
+    const ObjObjectType::Method* findOperatorMethod(ObjObjectType* type, int32_t hash);
+    bool tryDispatchBinaryOperator(const OperatorHashes& hashes);
+    bool tryDispatchUnaryOperator(int32_t hash);
+
     /// Invoke a closure with arguments. Executes until completion or deadline.
     /// Returns {OK, value} on completion, {Yielded, nil} if deadline exceeded,
     /// {RuntimeError, nil} on error.
@@ -465,6 +477,10 @@ public:
 
 
     Value initString; // ObjString "init"
+
+    OperatorHashes opHashAdd, opHashSub, opHashMul, opHashDiv, opHashMod;
+    OperatorHashes opHashEq, opHashNe, opHashLt, opHashGt, opHashLe, opHashGe;
+    int32_t opHashNeg;  // "uoperator-"
 
     // TODO: perhaps implement inheritance first, then pre-define
     //  object type as root of class heirarchy and add clone() and other

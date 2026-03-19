@@ -692,6 +692,71 @@ w.depth = 30       // Calls the setter (write-only)
 - For `const` properties, the backing field is also marked as const (and the getter should only return a constant expression)
 
 
+### Operator Overloading
+
+Object types can define custom behavior for operators by declaring specially named methods.  The naming convention uses the `operator` prefix followed by the operator symbol:
+
+```php
+import math.*  // math.complex is a pure-Roxal type using operator overloading
+
+var a = complex(3.0, 4.0)
+var b = complex(1.0, -2.0)
+var c = a + b          // calls a.operator+(b)
+print(c.re)            // 4
+print(c.im)            // 2
+print( (a * 2.0).re )  // 6  (commutative: complex * real)
+print( (2.0 * a).re )  // 6  (commutative: real * complex)
+print( (-a).re )        // -3  (unary negation)
+print( a == complex(3.0, 4.0) ) // true
+```
+
+To define operators on your own types:
+
+```php
+type Score object:
+  var v :int = 0
+  proc init(v :int):
+    this.v = v
+
+  func operator+(other :Score) -> Score:
+    return Score(v + other.v)
+
+  func operator<(other :Score) -> bool:
+    return v < other.v
+
+  func operator-() -> Score:  // unary negation (0 params)
+    return Score(-v)
+```
+
+Supported operators: `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`, and unary `-`.  Unicode equivalents (e.g., `≤`, `≥`, `≟`, `≠`, `×`) also work.
+
+**Commutative vs asymmetric dispatch:**
+
+When `operator*` is defined alone, it is used for both `obj * x` and `x * obj` (arguments are swapped as needed).  For operators where the left and right sides should behave differently, use `loperator` and `roperator` (which must be defined as a pair):
+
+```php
+type Wrapper object:
+  var v :real = 0.0
+  proc init(v :real):
+    this.v = v
+
+  func loperator/(other :real) -> Wrapper:   // Wrapper / real
+    return Wrapper(v / other)
+
+  func roperator/(other :real) -> Wrapper:   // real / Wrapper
+    return Wrapper(other / v)
+
+var w = Wrapper(10.0)
+print( (w / 2.0).v )   // 5  (loperator/)
+print( (20.0 / w).v )  // 2  (roperator/)
+```
+
+**Rules:**
+- Binary operators take exactly 1 parameter; unary `-` takes 0
+- A type must define either `operator<sym>` **or** `loperator<sym>`/`roperator<sym>`, not both
+- Comparison operators (`==`, `!=`, `<`, `>`, `<=`, `>=`) do not support l/r variants
+
+
 ## Actors
 
 Actors are similar to objects, with a key difference - each actor instance has its *own associated execution thread*.  That is the only thread that executes the actor's methods.

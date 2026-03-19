@@ -1,0 +1,5 @@
+// Error: operator method declared as proc instead of func
+
+type Bad object:
+  proc operator+(other :Bad):
+    _

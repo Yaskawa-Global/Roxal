@@ -1,0 +1,32 @@
+// Test that built-in type operators still work correctly with overload dispatch in place
+
+func test():
+  // int arithmetic
+  print(1 + 2)
+  print(10 - 3)
+  print(4 * 5)
+  print(10 / 3)
+  print(10 % 3)
+
+  // real arithmetic
+  print(1.5 + 2.5)
+  print(3.0 * 2.0)
+
+  // string concatenation
+  print("hello " + "world")
+
+  // list concatenation
+  print([1,2] + [3,4])
+
+  // comparisons
+  print(5 > 3)
+  print(2 == 2)
+  print(1 != 2)
+  print(3 <= 3)
+  print(4 >= 5)
+
+  // unary negation
+  print(-7)
+  print(-1.5)
+
+test()

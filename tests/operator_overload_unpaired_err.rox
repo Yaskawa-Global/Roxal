@@ -1,0 +1,5 @@
+// Error: loperator+ without roperator+
+
+type Bad object:
+  func loperator+(other :int) -> Bad:
+    return Bad()

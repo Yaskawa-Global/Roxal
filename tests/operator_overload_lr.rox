@@ -1,0 +1,29 @@
+// Test asymmetric loperator/roperator dispatch
+
+type Ratio object:
+  var n :int = 0  // numerator
+  var d :int = 1  // denominator
+
+  proc init(n :int, d :int = 1):
+    this.n = n
+    this.d = d
+
+  // Ratio / int: divide numerator
+  func loperator/(other :int) -> Ratio:
+    return Ratio(n, d * other)
+
+  // int / Ratio: invert and multiply
+  func roperator/(other :int) -> Ratio:
+    return Ratio(d * other, n)
+
+var r = Ratio(6, 1)
+
+// LHS: Ratio / 3
+var r1 = r / 3
+print(r1.n)
+print(r1.d)
+
+// RHS: 12 / Ratio
+var r2 = 12 / r
+print(r2.n)
+print(r2.d)

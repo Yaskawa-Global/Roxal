@@ -167,7 +167,17 @@ function
  ;
 
 func_sig
- : (FUNC | PROC) IDENTIFIER '(' parameters? ')' (YIELDS return_type)?
+ : (FUNC | PROC) (IDENTIFIER | operator_name) '(' parameters? ')' (YIELDS return_type)?
+ ;
+
+operator_name
+ : (OPERATOR | LOPERATOR | ROPERATOR) operator_symbol
+ ;
+
+operator_symbol
+ : PLUS | MINUS | STAR | MULT | DIV | MOD
+ | ISEQUAL | ISNOTEQUALS
+ | LESS_THAN | GREATER_THAN | LT_EQ | GT_EQ
  ;
 
 parameters
@@ -634,6 +644,10 @@ DOUBLE_STRING
  : '"' ( STRING_ESCAPE_SEQ | ~[\\\r\n\f"] )* '"'
  ;
 
+
+OPERATOR: 'operator';
+LOPERATOR: 'loperator';
+ROPERATOR: 'roperator';
 
 // this must be below keywords so they're not matched as identifiers
 IDENTIFIER
