@@ -1475,6 +1475,7 @@ void ObjList::trace(ValueVisitor& visitor) const
 
 void ObjList::dropReferences()
 {
+    cleanupMVCC();
     elts_ = make_ptr<std::vector<Value>>();
 }
 
@@ -1828,6 +1829,7 @@ void ObjDict::trace(ValueVisitor& visitor) const
 
 void ObjDict::dropReferences()
 {
+    cleanupMVCC();
     data_ = make_ptr<DictData>();
 }
 
@@ -3416,6 +3418,7 @@ void ObjectInstance::trace(ValueVisitor& visitor) const
 
 void ObjectInstance::dropReferences()
 {
+    cleanupMVCC();
     instanceType = Value::nilVal();
     properties_ = make_ptr<PropertyMap>();
 }

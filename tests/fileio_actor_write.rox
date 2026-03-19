@@ -4,7 +4,7 @@ var path = 'fileio_actor_write.log'
 var line_count = 10
 
 type Writer actor:
-  proc emit_lines(path, count):
+  func emit_lines(path, count) -> bool:
     var h = fileio.open(path, append=false, write=true)
     var i = 0
     while i < count:
@@ -13,16 +13,17 @@ type Writer actor:
       fileio.write(h, string(i) + ' ')
       fileio.write(h, '\n')
       i = i + 1
-    fileio.close(h)
+    var done = fileio.close(h)
+    wait(for=done)
+    return bool(done)
 
 var initializer = fileio.open(path, append=true)
-fileio.close(initializer)
+wait(for=fileio.close(initializer))
 
 var writer = Writer()
-writer.emit_lines(path, line_count)
-wait(us=200000)
+wait(for=writer.emit_lines(path, line_count))
 
 var reader = fileio.open(path, append=false, format='binary')
 var data = fileio.read(reader)
-fileio.close(reader)
+wait(for=fileio.close(reader))
 print(data)
