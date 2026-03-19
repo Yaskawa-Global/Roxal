@@ -162,7 +162,11 @@ tests = [
     'help_doc', 'help_time_wall_now', 'help_time_wall_now_instance', 'docstring_func',
     'builtin_object_methods', 'math_counter_signal', 'print_flush',
     'grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error', 'grpc_streaming', 'grpc_args',
-    'rt_execution'
+    'rt_execution',
+    'operator_conv_string', 'operator_conv_string_rettype',
+    'operator_conv_string_inherit', 'operator_conv_string_strict',
+    'operator_conv_string_implicit',
+    'operator_conv_proc_err', 'operator_conv_arity_err', 'operator_conv_rettype_err'
 ]
 
 grpc_tests = ['grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error', 'grpc_streaming', 'grpc_args']

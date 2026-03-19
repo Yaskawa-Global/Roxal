@@ -796,6 +796,7 @@ VM::VM()
     opHashLe  = makeOpHashes("<=");
     opHashGe  = makeOpHashes(">=");
     opHashNeg = UnicodeString("uoperator-").hashCode();
+    opHashConvString = UnicodeString("operator->string").hashCode();
 
     // Eagerly load sys & math modules
     registerBuiltinModule(make_ptr<ModuleSys>());
@@ -1800,6 +1801,33 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
             return true;
         }
 
+        // Check for user-defined conversion operator as fallback before construct()
+        if (callSpec.argCount == 1 && (isObjectInstance(*argBegin) || isActorInstance(*argBegin))) {
+            Value arg = *argBegin;
+            // Recursion guard
+            bool inProgress = false;
+            for (const auto& g : thread->conversionInProgress)
+                if (g.receiver.is(arg, false)) { inProgress = true; break; }
+            if (!inProgress) {
+                Value instType = isObjectInstance(arg)
+                    ? asObjectInstance(arg)->instanceType
+                    : asActorInstance(arg)->instanceType;
+                // Build hash for "operator->TARGET" from the builtin type name
+                UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(builtinType));
+                int32_t convHash = convName.hashCode();
+                Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/false);
+                if (!closure.isNil()) {
+                    thread->conversionInProgress.push_back({arg, thread->frames.size()});
+                    // Set up conversion call: replace callee+arg with receiver, call method
+                    *(thread->stackTop - callSpec.argCount - 1) = arg; // receiver
+                    popN(callSpec.argCount); // pop args (receiver is already in callee slot)
+                    CallSpec cs{0};
+                    call(asClosure(closure), cs);
+                    return true;
+                }
+            }
+        }
+
         *(thread->stackTop - callSpec.argCount - 1) = construct(builtinType, argBegin, argEnd);
         popN(callSpec.argCount);
         return true;
@@ -2734,16 +2762,39 @@ bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& ca
 }
 
 
-const ObjObjectType::Method* VM::findOperatorMethod(ObjObjectType* type, int32_t hash)
+Value VM::findOperatorMethod(ObjObjectType* type, int32_t hash)
 {
     ObjObjectType* t = type;
     while (t) {
         auto it = t->methods.find(hash);
         if (it != t->methods.end())
-            return &it->second;
+            return it->second.closure;
         t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
     }
-    return nullptr;
+    return Value::nilVal();
+}
+
+
+Value VM::findConversionMethod(const Value& instanceType, int32_t hash, bool implicitCall)
+{
+    Value closure = findOperatorMethod(asObjectType(instanceType), hash);
+    if (closure.isNil())
+        return Value::nilVal();
+
+    if (implicitCall) {
+        bool strictCtx = !thread->frames.empty()
+                         && (thread->frames.end()-1)->strict;
+        if (strictCtx) {
+            // Check for @implicit annotation on the conversion method
+            auto* funcObj = asFunction(asClosure(closure)->function);
+            bool hasImplicit = false;
+            for (const auto& annot : funcObj->annotations)
+                if (annot->name == "implicit") { hasImplicit = true; break; }
+            if (!hasImplicit)
+                return Value::nilVal();
+        }
+    }
+    return closure;
 }
 
 
@@ -2758,30 +2809,30 @@ bool VM::tryDispatchBinaryOperator(const OperatorHashes& hashes)
     if (!isObjectInstance(lhs) && !isObjectInstance(rhs))
         return false;
 
-    const ObjObjectType::Method* method = nullptr;
+    Value methodClosure;
     bool swapped = false;
 
     // Try LHS first: operator<sym> or loperator<sym>
     if (isObjectInstance(lhs)) {
         auto* type = asObjectType(asObjectInstance(lhs)->instanceType);
-        method = findOperatorMethod(type, hashes.op);
-        if (!method)
-            method = findOperatorMethod(type, hashes.lop);
+        methodClosure = findOperatorMethod(type, hashes.op);
+        if (methodClosure.isNil())
+            methodClosure = findOperatorMethod(type, hashes.lop);
     }
 
     // If LHS didn't have it, try RHS: operator<sym> (commutative, swap) or roperator<sym>
-    if (!method && isObjectInstance(rhs)) {
+    if (methodClosure.isNil() && isObjectInstance(rhs)) {
         auto* type = asObjectType(asObjectInstance(rhs)->instanceType);
-        method = findOperatorMethod(type, hashes.op);
-        if (method) {
+        methodClosure = findOperatorMethod(type, hashes.op);
+        if (!methodClosure.isNil()) {
             swapped = true;
         } else {
-            method = findOperatorMethod(type, hashes.rop);
-            if (method) swapped = true;
+            methodClosure = findOperatorMethod(type, hashes.rop);
+            if (!methodClosure.isNil()) swapped = true;
         }
     }
 
-    if (!method)
+    if (methodClosure.isNil())
         return false;
 
     // Set up stack: [receiver, arg]
@@ -2798,7 +2849,7 @@ bool VM::tryDispatchBinaryOperator(const OperatorHashes& hashes)
     CallSpec callSpec{1};
     // Even if call() fails, return true to prevent fall-through to built-in dispatch
     // (the error is already set by call())
-    call(asClosure(method->closure), callSpec);
+    call(asClosure(methodClosure), callSpec);
     return true;
 }
 
@@ -2811,13 +2862,13 @@ bool VM::tryDispatchUnaryOperator(int32_t hash)
         return false;
 
     auto* type = asObjectType(asObjectInstance(operand)->instanceType);
-    auto* method = findOperatorMethod(type, hash);
-    if (!method)
+    Value methodClosure = findOperatorMethod(type, hash);
+    if (methodClosure.isNil())
         return false;
 
     // Stack already has [receiver]. Call with 0 args.
     CallSpec callSpec{0};
-    call(asClosure(method->closure), callSpec);
+    call(asClosure(methodClosure), callSpec);
     return true;
 }
 
@@ -3931,6 +3982,42 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             push(thread->pendingConstructorInstance);
             thread->pendingSetterCount = 0;
             thread->pendingConstructorInstance = Value::nilVal();
+        }
+
+        // Pending conversion operator cleanup: after conversion method returns,
+        // complete the deferred operation (e.g. string concatenation)
+        if (!thread->pendingConversions.empty()
+            && thread->frames.size() == thread->pendingConversions.back().frameDepth) {
+            auto pending = thread->pendingConversions.back();
+            thread->pendingConversions.pop_back();
+            Value converted = pop();
+            // Remove receiver from recursion guard
+            auto& inProgress = thread->conversionInProgress;
+            for (auto it = inProgress.begin(); it != inProgress.end(); ++it) {
+                if (it->receiver.is(pending.convReceiver, false)) {
+                    inProgress.erase(it);
+                    break;
+                }
+            }
+            if (pending.kind == Thread::PendingConversion::Kind::Concat) {
+                UnicodeString lhs = asUString(pending.savedLHS);
+                UnicodeString rhs = isString(converted)
+                    ? asUString(converted)
+                    : toUnicodeString(toString(converted));
+                push(Value::stringVal(lhs + rhs));
+            }
+        }
+
+        // Clean up stale conversion recursion guards (for explicit TargetType(obj) calls
+        // where there is no PendingConversion to trigger cleanup)
+        if (!thread->conversionInProgress.empty()) {
+            auto& guards = thread->conversionInProgress;
+            guards.erase(
+                std::remove_if(guards.begin(), guards.end(),
+                    [&](const Thread::ConversionGuard& g) {
+                        return thread->frames.size() < g.frameDepth;
+                    }),
+                guards.end());
         }
 
         if (exitRequested.load())
@@ -5353,6 +5440,36 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
 
                 if (isString(peek(1))) {
+                    // Check for conversion operator on RHS before falling to concatenate()
+                    if (!isString(peek(0)) && (isObjectInstance(peek(0)) || isActorInstance(peek(0)))) {
+                        Value receiver = peek(0);
+                        // Recursion guard: skip if this object is already being converted
+                        bool inProgress = false;
+                        for (const auto& g : thread->conversionInProgress)
+                            if (g.receiver.is(receiver, false)) { inProgress = true; break; }
+                        if (!inProgress) {
+                            Value instType = isObjectInstance(receiver)
+                                ? asObjectInstance(receiver)->instanceType
+                                : asActorInstance(receiver)->instanceType;
+                            Value closure = findConversionMethod(instType, opHashConvString, /*implicitCall=*/true);
+                            if (!closure.isNil()) {
+                                // Save LHS string, set up conversion call
+                                Value lhs = peek(1);
+                                thread->pendingConversions.push_back({
+                                    Thread::PendingConversion::Kind::Concat,
+                                    lhs, receiver, thread->frames.size()
+                                });
+                                thread->conversionInProgress.push_back({receiver, thread->frames.size()});
+                                pop(); // rhs
+                                pop(); // lhs (saved in pendingConversions)
+                                push(receiver); // push as receiver for method call
+                                CallSpec callSpec{0};
+                                call(asClosure(closure), callSpec);
+                                frame = thread->frames.end() - 1;
+                                break;
+                            }
+                        }
+                    }
                     concatenate();
                 } else {
                     try {

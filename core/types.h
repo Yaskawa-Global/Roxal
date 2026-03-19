@@ -29,6 +29,7 @@ enum class BuiltinType {
 };
 
 std::string to_string(BuiltinType t);
+std::optional<BuiltinType> builtinTypeFromName(const std::string& name);
 
 // check if a value of builtin type `from` can be converted to builtin type
 // `to` using the same rules as `toType` in compiler/Value.cpp. The strict flag

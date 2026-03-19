@@ -243,6 +243,25 @@ public:
     Value pendingConstructorInstance { Value::nilVal() };
     int pendingSetterCount { 0 };
 
+    // Pending conversion operator support (for OpCode::Add string concatenation etc.)
+    // Uses a stack to support nested conversions (e.g. Outer.operator->string uses Inner in concat)
+    struct PendingConversion {
+        enum class Kind { Concat };
+        Kind kind;
+        Value savedLHS;              // saved LHS string for concatenation
+        Value convReceiver;          // receiver being converted (for recursion guard)
+        size_t frameDepth { 0 };     // frame count when conversion was set up
+    };
+    std::vector<PendingConversion> pendingConversions;
+
+    // Recursion guard for conversion operators (prevents infinite loop when
+    // operator->string uses string concatenation with `this`)
+    struct ConversionGuard {
+        Value receiver;
+        size_t frameDepth;  // frame count when guard was added; cleaned up when frame returns
+    };
+    std::vector<ConversionGuard> conversionInProgress;
+
 private:
     ptr<std::thread> osthread;
 

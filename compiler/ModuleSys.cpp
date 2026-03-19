@@ -697,6 +697,53 @@ Value ModuleSys::print_builtin(VM& vm, ArgsView args)
     if(args.size() > 3)
         throw std::invalid_argument("print expects at most 3 arguments");
 
+    // Check if first arg is an object/actor with operator->string conversion
+    if (args.size() >= 1 && (isObjectInstance(args[0]) || isActorInstance(args[0]))) {
+        Value val = args[0];
+        // Recursion guard
+        bool inProgress = false;
+        for (const auto& g : vm.thread->conversionInProgress)
+            if (g.receiver.is(val, false)) { inProgress = true; break; }
+        Value closure;
+        if (!inProgress) {
+            Value instType = isObjectInstance(val)
+                ? asObjectInstance(val)->instanceType
+                : asActorInstance(val)->instanceType;
+            closure = vm.findConversionMethod(instType, vm.opHashConvString, /*implicitCall=*/true);
+        }
+        if (!closure.isNil()) {
+            // Save end/flush args for the continuation callback
+            std::string endStr = "\n";
+            bool flush = false;
+            if (args.size() == 2 && args[1].isBool()) {
+                flush = args[1].asBool();
+            } else {
+                if (args.size() >= 2) endStr = toString(args[1]);
+                if (args.size() >= 3) flush = toType(ValueType::Bool, args[2], false).asBool();
+            }
+
+            // Set up nativeContinuation to print after conversion returns
+            auto& cont = vm.thread->nativeContinuation;
+            cont.active = true;
+            cont.state = Value::nilVal();
+            cont.resultSlot = nullptr;
+            cont.onComplete = [endStr, flush](VM& vm, Value converted) -> bool {
+                std::string valueStr = isString(converted) ? toUTF8StdString(asUString(converted)) : toString(converted);
+                std::cout << valueStr << endStr;
+                if (flush) std::cout << std::flush;
+                vm.push(Value::nilVal());
+                vm.clearContinuation();
+                return true;
+            };
+
+            // Push receiver and call conversion method
+            vm.push(val);
+            vm.call(asClosure(closure), CallSpec(0));
+            vm.thread->frames.back().isContinuationCallback = true;
+            return Value::nilVal(); // deferred — result handled by continuation
+        }
+    }
+
     std::string valueStr = "";
     std::string endStr = "\n";
     bool flush = false;

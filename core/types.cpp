@@ -22,6 +22,15 @@ std::string roxal::type::to_string(BuiltinType t)
     return builtinTypeToString[size_t(t)];
 }
 
+std::optional<BuiltinType> roxal::type::builtinTypeFromName(const std::string& name)
+{
+    for (size_t i = 0; i < builtinTypeToString.size(); ++i) {
+        if (builtinTypeToString[i] == name)
+            return static_cast<BuiltinType>(i);
+    }
+    return std::nullopt;
+}
+
 bool roxal::type::convertibleTo(BuiltinType from, BuiltinType to, bool strict)
 {
     if (from == to)

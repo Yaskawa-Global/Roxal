@@ -1414,6 +1414,50 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             auto& name = func->name.value();
             auto nameUtf8 = toUTF8StdString(name);
 
+            // Conversion operators: "operator->string", "operator->int", etc.
+            bool isConversion = name.startsWith("operator->");
+            if (isConversion) {
+                icu::UnicodeString targetType = name.tempSubString(10); // after "operator->"
+
+                if (func->isProc)
+                    error("Conversion operator '"+nameUtf8+"' must be 'func', not 'proc'.");
+
+                if (func->params.size() != 0)
+                    error("Conversion operator '"+nameUtf8+"' must have 0 parameters.");
+
+                // Return type inference or validation
+                auto bt = type::builtinTypeFromName(toUTF8StdString(targetType));
+                if (!func->returnTypes.has_value()) {
+                    // Infer return type from target type
+                    if (bt.has_value()) {
+                        func->returnTypes = std::vector<std::variant<BuiltinType,icu::UnicodeString>>{ bt.value() };
+                        func->returnTypeConst = std::vector<bool>{ false };
+                    } else {
+                        // User-defined type
+                        func->returnTypes = std::vector<std::variant<BuiltinType,icu::UnicodeString>>{ targetType };
+                        func->returnTypeConst = std::vector<bool>{ false };
+                    }
+                } else {
+                    // Validate supplied return type matches target
+                    if (func->returnTypes->size() != 1)
+                        error("Conversion operator '"+nameUtf8+"' must return exactly 1 value.");
+                    else {
+                        auto& rt = func->returnTypes->at(0);
+                        bool matches = false;
+                        if (bt.has_value()) {
+                            if (std::holds_alternative<BuiltinType>(rt) && std::get<BuiltinType>(rt) == bt.value())
+                                matches = true;
+                        } else {
+                            if (std::holds_alternative<icu::UnicodeString>(rt) && std::get<icu::UnicodeString>(rt) == targetType)
+                                matches = true;
+                        }
+                        if (!matches)
+                            error("Conversion operator '"+nameUtf8+"' return type must match target type '"+toUTF8StdString(targetType)+"'.");
+                    }
+                }
+                continue; // skip arithmetic/comparison operator checks
+            }
+
             bool isOperator = name.startsWith("operator");
             bool isLoperator = name.startsWith("loperator");
             bool isRoperator = name.startsWith("roperator");

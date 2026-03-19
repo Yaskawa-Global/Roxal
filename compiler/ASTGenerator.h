@@ -71,6 +71,7 @@ public:
 
     virtual std::any visitOperator_name(RoxalParser::Operator_nameContext *context) override { return {}; }
     virtual std::any visitOperator_symbol(RoxalParser::Operator_symbolContext *context) override { return {}; }
+    virtual std::any visitConversion_target(RoxalParser::Conversion_targetContext *context) override { return {}; }
 
     virtual std::any visitParameters(RoxalParser::ParametersContext *context);
 

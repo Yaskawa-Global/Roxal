@@ -122,6 +122,17 @@ UnicodeString ASTGenerator::identifierFromContext(antlr4::ParserRuleContext* con
 
 UnicodeString ASTGenerator::operatorNameFromContext(RoxalParser::Operator_nameContext* context)
 {
+    // Conversion operator: "operator->string", "operator->int", "operator->MyType", etc.
+    if (context->conversion_target()) {
+        auto ct = context->conversion_target();
+        UnicodeString target;
+        if (ct->builtin_type())
+            target = toUnicodeString(ct->builtin_type()->getText());
+        else if (ct->IDENTIFIER())
+            target = identifierFromTerminal(ct->IDENTIFIER());
+        return UnicodeString("operator->") + target;
+    }
+
     // Build canonical operator method name: "operator+", "loperator*", "roperator/", etc.
     UnicodeString prefix;
     if (context->OPERATOR()) prefix = "operator";

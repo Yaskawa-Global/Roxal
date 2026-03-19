@@ -172,6 +172,12 @@ func_sig
 
 operator_name
  : (OPERATOR | LOPERATOR | ROPERATOR) operator_symbol
+ | OPERATOR conversion_target
+ ;
+
+conversion_target
+ : builtin_type
+ | IDENTIFIER
  ;
 
 operator_symbol

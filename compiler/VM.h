@@ -241,9 +241,14 @@ public:
     };
 
     // Operator overload dispatch helpers
-    const ObjObjectType::Method* findOperatorMethod(ObjObjectType* type, int32_t hash);
+    // Returns the method closure Value, or nil if not found. Walks supertype chain.
+    Value findOperatorMethod(ObjObjectType* type, int32_t hash);
     bool tryDispatchBinaryOperator(const OperatorHashes& hashes);
     bool tryDispatchUnaryOperator(int32_t hash);
+
+    // Conversion operator lookup. Returns method closure Value (nil if not found
+    // or not allowed in current strict context when implicitCall is true).
+    Value findConversionMethod(const Value& instanceType, int32_t hash, bool implicitCall);
 
     /// Invoke a closure with arguments. Executes until completion or deadline.
     /// Returns {OK, value} on completion, {Yielded, nil} if deadline exceeded,
@@ -481,6 +486,7 @@ public:
     OperatorHashes opHashAdd, opHashSub, opHashMul, opHashDiv, opHashMod;
     OperatorHashes opHashEq, opHashNe, opHashLt, opHashGt, opHashLe, opHashGe;
     int32_t opHashNeg;  // "uoperator-"
+    int32_t opHashConvString;  // "operator->string"
 
     // TODO: perhaps implement inheritance first, then pre-define
     //  object type as root of class heirarchy and add clone() and other
