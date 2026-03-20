@@ -1537,6 +1537,41 @@ void Str::output(std::ostream& os, int indent) const
 }
 
 
+std::any SuffixedNum::accept(ASTVisitor& v)
+{
+    if (v.visitFirst() || v.visitLast())
+        return v.visit(dynamic_ptr_cast<SuffixedNum>(ptr_from_this()));
+    return {};
+}
+
+void SuffixedNum::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"SuffixedNum ";
+    if (std::holds_alternative<int32_t>(num))
+        os << std::to_string(std::get<int32_t>(num)) << ":int";
+    else if (std::holds_alternative<int64_t>(num))
+        os << std::to_string(std::get<int64_t>(num)) << ":int";
+    else if (std::holds_alternative<double>(num))
+        os << std::to_string(std::get<double>(num)) << ":real";
+    else
+        os << "?";
+    os << " suffix=\"" << toUTF8StdString(suffix) << "\"" << std::endl;
+}
+
+
+std::any SuffixedStr::accept(ASTVisitor& v)
+{
+    if (v.visitFirst() || v.visitLast())
+        return v.visit(dynamic_ptr_cast<SuffixedStr>(ptr_from_this()));
+    return {};
+}
+
+void SuffixedStr::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"SuffixedStr \"" << toUTF8StdString(str) << "\" suffix=\"" << toUTF8StdString(suffix) << "\"" << std::endl;
+}
+
+
 std::any Type::accept(ASTVisitor& v)
 {
     if (v.visitFirst() || v.visitLast())

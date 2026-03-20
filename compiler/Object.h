@@ -1587,6 +1587,10 @@ struct ObjModuleType : public ObjTypeSpec
     icu::UnicodeString moduleAliasFullName(const icu::UnicodeString& alias) const;
     void clearModuleAliases();
 
+    // Registered literal suffixes: suffix string -> function name
+    // Populated during compilation of @suffix-annotated functions.
+    std::unordered_map<icu::UnicodeString, icu::UnicodeString> registeredSuffixes;
+
     // cstruct type annotations: type name hash -> arch (32 or 64)
     std::unordered_map<int32_t, int> cstructArch;
     // property ctype annotations: type name hash -> (prop name hash -> ctype)

@@ -1,0 +1,25 @@
+// Compound suffix test (bare form with /)
+
+@suffix("m")
+func meters(v):
+  return v
+
+@suffix("m/s")
+func mps(v):
+  return v
+
+@suffix("mm/s")
+func mmps(v):
+  return v
+
+// Bare compound suffix
+print(10m/s)
+
+// Another compound
+print(100mm/s)
+
+// Simple suffix still works
+print(5m)
+
+// Suffix in expression with operator (space separates)
+print(10m/s + 5m/s)

@@ -741,6 +741,40 @@ std::any ASTGraphviz::visit(ptr<ast::Num> ast)
 }
 
 
+std::any ASTGraphviz::visit(ptr<ast::SuffixedNum> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+    std::string label;
+    if (std::holds_alternative<double>(ast->num)) {
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(3) << std::get<double>(ast->num);
+        label = ss.str();
+    } else if (std::holds_alternative<int32_t>(ast->num)) {
+        label = std::to_string(std::get<int32_t>(ast->num));
+    } else if (std::holds_alternative<int64_t>(ast->num)) {
+        label = std::to_string(std::get<int64_t>(ast->num));
+    }
+    std::string suf; ast->suffix.toUTF8String(suf);
+    nodes[name] = node(name, "suffixed_num", label + suf);
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
+std::any ASTGraphviz::visit(ptr<ast::SuffixedStr> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+    std::string s; ast->str.toUTF8String(s);
+    std::string suf; ast->suffix.toUTF8String(suf);
+    nodes[name] = node(name, "suffixed_str", "\\\"" + s + "\\\"" + suf);
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
+
 std::any ASTGraphviz::visit(ptr<ast::List> ast)
 {
     startVisit();

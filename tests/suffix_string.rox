@@ -1,0 +1,12 @@
+// String literal suffix test
+
+@suffix("en")
+func english(s):
+  return 'EN:' + s
+
+@suffix("fr")
+func french(s):
+  return 'FR:' + s
+
+print('hello'en)
+print("world"fr)

@@ -1,0 +1,25 @@
+// Basic literal suffix test
+
+@suffix("m")
+func meters(v):
+  return v * 1000  // convert to mm for testing
+
+@suffix("deg")
+func degrees(v):
+  return v
+
+// integer suffix
+print(10m)
+
+// real suffix
+print(3.14m)
+
+// another suffix
+print(90deg)
+
+// suffix in expression
+print(10m + 5m)
+
+// whitespace disambiguates: 10 * variable m, not suffix
+var m = 7
+print(10 * m)

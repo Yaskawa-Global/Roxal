@@ -632,6 +632,42 @@ void RoxalCompiler::setModuleResolverVM(VM* vm)
 }
 
 
+void RoxalCompiler::registerSuffix(const icu::UnicodeString& suffix, const icu::UnicodeString& funcName,
+                                   const icu::UnicodeString& moduleName)
+{
+    auto it = suffixRegistry.find(suffix);
+    if (it != suffixRegistry.end()) {
+        // Allow re-registration from the same module (can happen during compilation)
+        if (it->second.functionName == funcName && it->second.moduleName == moduleName)
+            return; // already registered, skip
+        std::string suf; suffix.toUTF8String(suf);
+        std::string existingMod; it->second.moduleName.toUTF8String(existingMod);
+        std::string newMod; moduleName.toUTF8String(newMod);
+        error("suffix '" + suf + "' is already registered by '" + existingMod
+              + "'; conflicting registration in '" + newMod + "'");
+        return;
+    }
+    suffixRegistry[suffix] = SuffixRegistration{suffix, funcName, moduleName};
+
+    // Also store on the module type so imported modules expose their suffixes
+    if (inModuleScope()) {
+        auto modScope = asModuleScope(moduleScope());
+        if (!modScope->moduleType.isNil()) {
+            auto* modType = asModuleType(modScope->moduleType);
+            modType->registeredSuffixes[suffix] = funcName;
+        }
+    }
+}
+
+const RoxalCompiler::SuffixRegistration* RoxalCompiler::lookupSuffix(const icu::UnicodeString& suffix) const
+{
+    auto it = suffixRegistry.find(suffix);
+    if (it != suffixRegistry.end())
+        return &it->second;
+    return nullptr;
+}
+
+
 ASTVisitor::TraversalOrder RoxalCompiler::traversalOrder() const
 {
     // we don't want AST implemented pre- or post-order tree traversal.
@@ -964,6 +1000,22 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         emitByte(OpCode::ImportModuleVars);
     }
 
+    // Propagate registered suffixes from the imported module into this compiler's registry
+    if (isModuleType(importedModuleType)) {
+        ObjModuleType* imported = asModuleType(importedModuleType);
+        for (const auto& [suf, funcName] : imported->registeredSuffixes) {
+            auto existing = suffixRegistry.find(suf);
+            if (existing != suffixRegistry.end() && existing->second.moduleName != imported->name) {
+                std::string sufStr; suf.toUTF8String(sufStr);
+                std::string existingMod; existing->second.moduleName.toUTF8String(existingMod);
+                std::string newMod; imported->name.toUTF8String(newMod);
+                error("suffix '" + sufStr + "' is already registered by '" + existingMod
+                      + "'; conflicting import from '" + newMod + "'");
+            } else {
+                suffixRegistry[suf] = SuffixRegistration{suf, funcName, imported->name};
+            }
+        }
+    }
 
     return {};
 }
@@ -1636,6 +1688,25 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
                 }
             }
             function->doc = toUnicodeString(d);
+        }
+        else if (annot->name == "suffix") {
+            if (annot->args.size() != 1) {
+                error("@suffix annotation requires exactly one string argument");
+            } else if (auto s = dynamic_ptr_cast<ast::Str>(annot->args[0].second)) {
+                // Validate function arity
+                if (ast->func->params.size() != 1)
+                    error("@suffix function must accept exactly one parameter");
+                else {
+                    icu::UnicodeString suffixStr = s->str;
+                    icu::UnicodeString funcName = ast->func->name.value_or(toUnicodeString(""));
+                    icu::UnicodeString modName;
+                    if (inModuleScope())
+                        modName = asModuleScope(moduleScope())->name;
+                    registerSuffix(suffixStr, funcName, modName);
+                }
+            } else {
+                error("@suffix argument must be a string literal");
+            }
         }
     }
 
@@ -3231,6 +3302,13 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
     currentNode = ast;
     Anys results {};
 
+    // Disallow calling a suffixed literal directly: 10m(...) is an error
+    if (dynamic_ptr_cast<ast::SuffixedNum>(ast->callable) ||
+        dynamic_ptr_cast<ast::SuffixedStr>(ast->callable)) {
+        error("cannot call a suffixed literal directly; add a space if you intend a separate operation");
+        return {};
+    }
+
     // Compiler-recognized move(expr): transfers ownership by nilling the source.
     // For lvalue args, emits MoveLocal/MoveModuleVar/MoveProp.
     // For non-lvalue args (temporaries), evaluates normally (already sole-owner).
@@ -3572,6 +3650,93 @@ std::any RoxalCompiler::visit(ptr<ast::Num> ast)
     }
     else
         throw std::runtime_error("unhandled Num type");
+    return {};
+}
+
+
+std::any RoxalCompiler::visit(ptr<ast::SuffixedNum> ast)
+{
+    currentNode = ast;
+
+    auto* reg = lookupSuffix(ast->suffix);
+    if (!reg) {
+        std::string suf; ast->suffix.toUTF8String(suf);
+        error("unknown literal suffix '" + suf + "'. Did you mean to use spaces?");
+        return {};
+    }
+
+    // Emit: push suffix function, push value, Call(1)
+    // The suffix function should be accessible by name in current scope
+    // (either directly imported or as a module-level function in current module)
+    if (!namedVariable(reg->functionName)) {
+        // If direct lookup fails, try module-qualified: moduleName.funcName
+        if (!reg->moduleName.isEmpty() && namedVariable(reg->moduleName)) {
+            uint16_t nameConst = identifierConstant(reg->functionName);
+            emitOpArgsBytes(OpCode::GetProp, nameConst);
+        } else {
+            std::string suf; ast->suffix.toUTF8String(suf);
+            std::string fn; reg->functionName.toUTF8String(fn);
+            error("suffix function '" + fn + "' for suffix '" + suf + "' is not accessible");
+            return {};
+        }
+    }
+
+    if (std::holds_alternative<double>(ast->num))
+        emitConstant(Value::realVal(std::get<double>(ast->num)));
+    else if (std::holds_alternative<int32_t>(ast->num))
+        emitConstant(Value::intVal(std::get<int32_t>(ast->num)));
+    else
+        emitConstant(Value::intVal(std::get<int64_t>(ast->num)));
+
+    CallSpec callSpec {};
+    callSpec.allPositional = true;
+    callSpec.argCount = 1;
+    auto bytes = callSpec.toBytes();
+    if (bytes.size() == 1)
+        emitBytes(OpCode::Call, bytes[0]);
+    else {
+        emitByte(OpCode::Call);
+        for (auto b : bytes) emitByte(b);
+    }
+    return {};
+}
+
+std::any RoxalCompiler::visit(ptr<ast::SuffixedStr> ast)
+{
+    currentNode = ast;
+
+    auto* reg = lookupSuffix(ast->suffix);
+    if (!reg) {
+        std::string suf; ast->suffix.toUTF8String(suf);
+        error("unknown literal suffix '" + suf + "'. Did you mean to use spaces?");
+        return {};
+    }
+
+    // Emit: push suffix function, push string value, Call(1)
+    if (!namedVariable(reg->functionName)) {
+        if (!reg->moduleName.isEmpty() && namedVariable(reg->moduleName)) {
+            uint16_t nameConst = identifierConstant(reg->functionName);
+            emitOpArgsBytes(OpCode::GetProp, nameConst);
+        } else {
+            std::string suf; ast->suffix.toUTF8String(suf);
+            std::string fn; reg->functionName.toUTF8String(fn);
+            error("suffix function '" + fn + "' for suffix '" + suf + "' is not accessible");
+            return {};
+        }
+    }
+
+    emitConstant(Value::stringVal(ast->str));
+
+    CallSpec callSpec {};
+    callSpec.allPositional = true;
+    callSpec.argCount = 1;
+    auto bytes = callSpec.toBytes();
+    if (bytes.size() == 1)
+        emitBytes(OpCode::Call, bytes[0]);
+    else {
+        emitByte(OpCode::Call);
+        for (auto b : bytes) emitByte(b);
+    }
     return {};
 }
 

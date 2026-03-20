@@ -1,0 +1,18 @@
+// Test braced suffix form
+
+@suffix("m/s")
+func mps(v):
+  return v
+
+@suffix("kg")
+func kilograms(v):
+  return v
+
+// Braced form with compound suffix
+print(10{m/s})
+
+// Braced form with simple suffix (also valid)
+print(5{kg})
+
+// Bare form of simple suffix
+print(3kg)

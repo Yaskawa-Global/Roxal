@@ -3036,9 +3036,157 @@ std::any ASTGenerator::visitDict(RoxalParser::DictContext *context)
 
 
 
+// Split a suffixed token into its value part and suffix string.
+// For braced form "10{m/s}", returns {"10", "m/s", true}.
+// For bare form "10m", returns {"10", "m", false}.
+// isString: if true, the value part ends at the closing quote char.
+static std::tuple<std::string, std::string, bool>
+splitSuffixFromToken(const std::string& text, bool isString, char quoteChar = '\'')
+{
+    std::string valuePart;
+    std::string suffixPart;
+    bool braced = false;
+
+    if (isString) {
+        // Find the closing quote (skip escaped quotes)
+        size_t i = 1; // skip opening quote
+        while (i < text.size()) {
+            if (text[i] == '\\' && i+1 < text.size()) {
+                i += 2; // skip escape sequence
+            } else if (text[i] == quoteChar) {
+                // Found closing quote
+                valuePart = text.substr(0, i+1); // include quotes
+                std::string after = text.substr(i+1);
+                if (!after.empty() && after[0] == '{') {
+                    braced = true;
+                    suffixPart = after.substr(1, after.size()-2); // strip { }
+                } else {
+                    suffixPart = after;
+                }
+                break;
+            } else {
+                i++;
+            }
+        }
+    } else {
+        // Numeric: find where the suffix starts
+        // digits, '.', 'e/E' (in exponents), '+', '-' are numeric; first alpha or '{' starts suffix.
+        size_t suffixStart = text.size();
+        for (size_t i = 0; i < text.size(); i++) {
+            unsigned char c = text[i];
+            if (c == '{') {
+                suffixStart = i;
+                braced = true;
+                break;
+            }
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+                // 'e'/'E' might be part of scientific notation (e.g. 1e3)
+                if ((c == 'e' || c == 'E') && i > 0) {
+                    unsigned char prev = text[i-1];
+                    if ((prev >= '0' && prev <= '9') || prev == '.') {
+                        if (i+1 < text.size()) {
+                            unsigned char next = text[i+1];
+                            if (next == '+' || next == '-' || (next >= '0' && next <= '9'))
+                                continue; // part of exponent, skip
+                        }
+                    }
+                }
+                suffixStart = i;
+                break;
+            }
+            // Non-ASCII byte: start of Unicode letter suffix
+            if (c >= 0x80) {
+                suffixStart = i;
+                break;
+            }
+        }
+        valuePart = text.substr(0, suffixStart);
+        if (braced) {
+            std::string bracedContent = text.substr(suffixStart+1);
+            if (!bracedContent.empty() && bracedContent.back() == '}')
+                bracedContent.pop_back();
+            suffixPart = bracedContent;
+        } else {
+            suffixPart = text.substr(suffixStart);
+        }
+    }
+    return {valuePart, suffixPart, braced};
+}
+
+// Validate a bare (non-braced) suffix string for structural constraints.
+// Returns empty string if valid, or an error message if invalid.
+static std::string validateBareSuffix(const std::string& suffix)
+{
+    if (suffix.empty())
+        return "suffix is empty";
+
+    // Count UTF-8 characters (non-continuation bytes)
+    int charCount = 0;
+    for (unsigned char c : suffix)
+        if ((c & 0xC0) != 0x80) charCount++;
+    if (charCount > 8)
+        return "bare suffix exceeds maximum length of 8 characters (use {braces} for longer suffixes)";
+
+    int slashCount = 0;
+    bool prevWasMiddleDot = false;
+    for (size_t i = 0; i < suffix.size(); i++) {
+        unsigned char c = suffix[i];
+        if (c == '/') {
+            slashCount++;
+            if (slashCount > 1)
+                return "bare suffix may contain at most one '/'";
+            if (i+1 >= suffix.size())
+                return "suffix '/' must be followed by a letter";
+            prevWasMiddleDot = false;
+        }
+        // Middle dot · (U+00B7 = 0xC2 0xB7 in UTF-8)
+        else if (c == 0xC2 && i+1 < suffix.size() && (unsigned char)suffix[i+1] == 0xB7) {
+            if (prevWasMiddleDot)
+                return "suffix may not contain consecutive '··'";
+            if (i+2 >= suffix.size())
+                return "suffix '·' must be followed by a letter";
+            prevWasMiddleDot = true;
+        } else {
+            prevWasMiddleDot = false;
+        }
+    }
+    return ""; // valid
+}
+
+
 std::any ASTGenerator::visitStr(RoxalParser::StrContext *context)
 {
     visitStart();
+
+    // Handle suffixed strings first
+    if (context->SUFFIXED_SINGLE_STRING() || context->SUFFIXED_DOUBLE_STRING()) {
+        bool isDouble = context->SUFFIXED_DOUBLE_STRING() != nullptr;
+        auto token = isDouble ? context->SUFFIXED_DOUBLE_STRING() : context->SUFFIXED_SINGLE_STRING();
+        std::string fullText = token->getText();
+        char quoteChar = isDouble ? '"' : '\'';
+
+        auto [valuePart, suffixPart, braced] = splitSuffixFromToken(fullText, true, quoteChar);
+
+        if (!braced) {
+            auto err = validateBareSuffix(suffixPart);
+            if (!err.empty())
+                reportError(token->getSymbol(),
+                           "invalid literal suffix '" + suffixPart + "': " + err);
+        }
+
+        // Strip enclosing quotes from valuePart
+        std::string strContent = valuePart.substr(1, valuePart.size()-2);
+
+        // TODO: for suffixed double-quoted strings, interpolation is not yet supported.
+        // The string is treated as a plain string for now.
+
+        ptr<SuffixedStr> sstr = make_ptr<SuffixedStr>();
+        setSourceInfo(sstr, token);
+        sstr->str = toUnicodeString(strContent).unescape();
+        sstr->suffix = toUnicodeString(suffixPart);
+        return typeValue(sstr);
+    }
+
     std::string text;
     bool isDouble = false;
     bool isTriple = false;
@@ -3128,6 +3276,62 @@ std::any ASTGenerator::visitNum(RoxalParser::NumContext *context)
 
     if (context->integer())
         return visitInteger(context->integer());
+
+    // Suffixed float: e.g. "3.14m" or "10.0{m/s}"
+    if (context->SUFFIXED_FLOAT()) {
+        std::string text = context->SUFFIXED_FLOAT()->getText();
+        auto [valuePart, suffixPart, braced] = splitSuffixFromToken(text, false);
+
+        if (!braced) {
+            auto err = validateBareSuffix(suffixPart);
+            if (!err.empty())
+                reportError(context->SUFFIXED_FLOAT()->getSymbol(),
+                           "invalid literal suffix '" + suffixPart + "': " + err);
+        }
+
+        double real {0.0};
+        try {
+            real = std::stod(valuePart);
+        } catch (std::invalid_argument&) {
+            throw std::runtime_error("invalid number \""+valuePart+"\"");
+        }
+        ptr<SuffixedNum> snum = make_ptr<SuffixedNum>();
+        setSourceInfo(snum, context->SUFFIXED_FLOAT());
+        snum->num = real;
+        snum->suffix = toUnicodeString(suffixPart);
+        return typeValue(snum);
+    }
+
+    // Suffixed decimal integer: e.g. "10m" or "100{mm/s}"
+    if (context->SUFFIXED_DECIMAL_INTEGER()) {
+        std::string text = context->SUFFIXED_DECIMAL_INTEGER()->getText();
+        auto [valuePart, suffixPart, braced] = splitSuffixFromToken(text, false);
+
+        if (!braced) {
+            auto err = validateBareSuffix(suffixPart);
+            if (!err.empty())
+                reportError(context->SUFFIXED_DECIMAL_INTEGER()->getSymbol(),
+                           "invalid literal suffix '" + suffixPart + "': " + err);
+        }
+
+        uint64_t value = 0;
+        auto result = std::from_chars(valuePart.data(), valuePart.data() + valuePart.size(), value, 10);
+        ptr<SuffixedNum> snum = make_ptr<SuffixedNum>();
+        setSourceInfo(snum, context->SUFFIXED_DECIMAL_INTEGER());
+        if (result.ec == std::errc::result_out_of_range ||
+            value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+            reportError(context->start, "integer literal out of range for int64: " + valuePart);
+            snum->num = int32_t(0);
+        } else {
+            int64_t signedVal = static_cast<int64_t>(value);
+            if (signedVal >= std::numeric_limits<int32_t>::min() && signedVal <= std::numeric_limits<int32_t>::max())
+                snum->num = static_cast<int32_t>(signedVal);
+            else
+                snum->num = signedVal;
+        }
+        snum->suffix = toUnicodeString(suffixPart);
+        return typeValue(snum);
+    }
 
     // real/float
     // TODO: do we need to consider Unicode here?

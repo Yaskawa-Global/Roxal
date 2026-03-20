@@ -78,6 +78,8 @@ public:
     virtual std::any visit(ptr<ast::Str> ast);
     virtual std::any visit(ptr<ast::Type> ast);
     virtual std::any visit(ptr<ast::Num> ast);
+    virtual std::any visit(ptr<ast::SuffixedNum> ast);
+    virtual std::any visit(ptr<ast::SuffixedStr> ast);
     virtual std::any visit(ptr<ast::List> ast);
     virtual std::any visit(ptr<ast::Vector> ast);
     virtual std::any visit(ptr<ast::Matrix> ast);
@@ -133,6 +135,17 @@ protected:
 
     // Persistent TypeDeducer for REPL mode to maintain type info across lines
     ptr<TypeDeducer> replTypeDeducer;
+
+    // Literal suffix registry: maps suffix string -> function name
+    struct SuffixRegistration {
+        icu::UnicodeString suffix;
+        icu::UnicodeString functionName;
+        icu::UnicodeString moduleName;  // for error messages
+    };
+    std::unordered_map<icu::UnicodeString, SuffixRegistration> suffixRegistry;
+    void registerSuffix(const icu::UnicodeString& suffix, const icu::UnicodeString& funcName,
+                        const icu::UnicodeString& moduleName);
+    const SuffixRegistration* lookupSuffix(const icu::UnicodeString& suffix) const;
 
     std::map<ModuleInfo,Value> importedModules;
 

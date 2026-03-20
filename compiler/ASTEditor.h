@@ -51,6 +51,8 @@ public:
     virtual std::any visit(ptr<ast::Str> ast);
     virtual std::any visit(ptr<ast::Type> ast);
     virtual std::any visit(ptr<ast::Num> ast);
+    virtual std::any visit(ptr<ast::SuffixedNum> ast);
+    virtual std::any visit(ptr<ast::SuffixedStr> ast);
     virtual std::any visit(ptr<ast::List> ast);
     virtual std::any visit(ptr<ast::Vector> ast);
     virtual std::any visit(ptr<ast::Matrix> ast);
@@ -131,6 +133,8 @@ public:
     std::any visit(ptr<roxal::ast::Type> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Str> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Num> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::SuffixedNum> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::SuffixedStr> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::List> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Vector> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Matrix> ast) override { if(m_f) m_f(ast); return{}; }

@@ -906,6 +906,20 @@ std::any TypeDeducer::visit(ptr<ast::Num> ast)
 }
 
 
+std::any TypeDeducer::visit(ptr<ast::SuffixedNum> ast)
+{
+    // Type depends on suffix function return type; resolved by compiler
+    // For now, leave type unset
+    return {};
+}
+
+std::any TypeDeducer::visit(ptr<ast::SuffixedStr> ast)
+{
+    // Type depends on suffix function return type; resolved by compiler
+    return {};
+}
+
+
 std::any TypeDeducer::visit(ptr<ast::List> ast)
 {
     ast::Anys results {};

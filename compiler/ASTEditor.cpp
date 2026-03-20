@@ -517,6 +517,16 @@ std::any ASTEditor::visit(ptr<ast::Num> ast)
     return {};
 }
 
+std::any ASTEditor::visit(ptr<ast::SuffixedNum> ast)
+{
+    return {};
+}
+
+std::any ASTEditor::visit(ptr<ast::SuffixedStr> ast)
+{
+    return {};
+}
+
 std::any ASTEditor::visit(ptr<ast::List> ast)
 {
     //std::vector<ptr<Expression>> elements;

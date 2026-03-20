@@ -599,12 +599,16 @@ LNIL: 'nil';
  : SINGLE_STRING
  | DOUBLE_STRING
  | TRIPLE_STRING
+ | SUFFIXED_SINGLE_STRING
+ | SUFFIXED_DOUBLE_STRING
  ;
 
 
 num
  : integer
  | FLOAT_NUMBER
+ | SUFFIXED_FLOAT
+ | SUFFIXED_DECIMAL_INTEGER
  ;
 
 
@@ -614,6 +618,27 @@ integer
  | HEX_INTEGER
  | BIN_INTEGER
  ;
+
+// Suffixed literal tokens — must appear before plain numeric/string tokens
+// so that ANTLR4 longest-match picks the suffixed variant when a suffix is present.
+// Bare suffix: starts with alpha, continues with alpha/digit/·/²³¹⁻/^//
+// Braced suffix: {contents} — allows alpha, digits, ·, ², ³, ¹, ⁻, ^, /, spaces
+SUFFIXED_FLOAT
+ : ( POINT_FLOAT | EXPONENT_FLOAT ) ( BRACED_SUFFIX | BARE_SUFFIX )
+ ;
+
+SUFFIXED_DECIMAL_INTEGER
+ : ( NON_ZERO_DIGIT DIGIT* | '0'+ ) ( BRACED_SUFFIX | BARE_SUFFIX )
+ ;
+
+SUFFIXED_SINGLE_STRING
+ : '\'' ( STRING_ESCAPE_SEQ | ~[\\\r\n\f'] )* '\'' ( BRACED_SUFFIX | BARE_SUFFIX )
+ ;
+
+SUFFIXED_DOUBLE_STRING
+ : '"' ( STRING_ESCAPE_SEQ | ~[\\\r\n\f"] )* '"' ( BRACED_SUFFIX | BARE_SUFFIX )
+ ;
+
 
 DECIMAL_INTEGER
  : NON_ZERO_DIGIT DIGIT*
@@ -740,6 +765,42 @@ fragment FRACTION
 
  fragment STRING_ESCAPE_SEQ
  : '\\' .
+ ;
+
+// Literal suffix fragments
+// Bare suffix: starts with a letter, continues with letters, digits, and select
+// unit-notation characters. The ASTGenerator validates further constraints
+// (max 8 chars, at most one '/', no consecutive '··', etc.)
+fragment SUFFIX_START
+ : [\p{Letter}]
+ ;
+
+fragment SUFFIX_CONTINUE
+ : [\p{Letter}\p{Decimal_Number}]
+ | '\u00B7'                          // · middle dot (unit multiplication, e.g. N·m)
+ | [\u00B2\u00B3\u00B9]              // ² ³ ¹ superscript digits
+ | '\u207B'                          // ⁻ superscript minus
+ | '^'
+ | '/'
+ ;
+
+fragment BARE_SUFFIX
+ : SUFFIX_START SUFFIX_CONTINUE*
+ ;
+
+// Braced suffix: {contents} for expert use, allows longer/complex suffixes.
+// Restricted to letters, digits, unit-notation chars, and spaces.
+// Disallows quotes, braces, parens, brackets, backslash, control chars.
+fragment BRACED_SUFFIX
+ : '{' BRACED_SUFFIX_CHAR+ '}'
+ ;
+
+fragment BRACED_SUFFIX_CHAR
+ : [\p{Letter}\p{Decimal_Number}]
+ | '\u00B7'                          // · middle dot
+ | [\u00B2\u00B3\u00B9]              // ² ³ ¹
+ | '\u207B'                          // ⁻
+ | '^' | '/' | ' ' | '_' | '-'
  ;
 
 fragment SPACES

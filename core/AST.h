@@ -56,6 +56,8 @@ class Bool;
 class Str;
 class Type;
 class Num;
+class SuffixedNum;
+class SuffixedStr;
 class List;
 class Vector;
 class Matrix;
@@ -112,6 +114,8 @@ public:
     virtual std::any visit(ptr<Str> ast) = 0;
     virtual std::any visit(ptr<Type> ast) = 0;
     virtual std::any visit(ptr<Num> ast) = 0;
+    virtual std::any visit(ptr<SuffixedNum> ast) = 0;
+    virtual std::any visit(ptr<SuffixedStr> ast) = 0;
     virtual std::any visit(ptr<List> ast) = 0;
     virtual std::any visit(ptr<Vector> ast) = 0;
     virtual std::any visit(ptr<Matrix> ast) = 0;
@@ -777,7 +781,9 @@ struct Literal : public Expression {
         List,
         Dict,
         Vector,
-        Matrix
+        Matrix,
+        SuffixedNum,
+        SuffixedStr
     };
     Literal() : Expression(ExprType::Literal), literalType(Nil) {}
 
@@ -810,6 +816,27 @@ struct Str : public Literal {
     Str() { literalType = LiteralType::Str; }
 
     icu::UnicodeString str;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+};
+
+
+struct SuffixedNum : public Literal {
+    SuffixedNum() { literalType = LiteralType::SuffixedNum; }
+
+    std::variant<int32_t,int64_t,double> num;
+    icu::UnicodeString suffix;  // raw suffix string: "m", "m/s", "kg·m/s²", etc.
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+};
+
+struct SuffixedStr : public Literal {
+    SuffixedStr() { literalType = LiteralType::SuffixedStr; }
+
+    icu::UnicodeString str;
+    icu::UnicodeString suffix;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
