@@ -554,7 +554,78 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 return true;  // Deferred - execute() will continue with closure frame
             }
 
-            // No closure defaults - proceed with immediate call (original code path)
+            // Check if any params need async user-defined conversion (operator->T or constructor)
+            {
+                const auto& params = funcType->func.value().params;
+                auto paramPositions = callSpec.paramPositions(funcType, true);
+                std::vector<size_t> asyncConvIndices;
+                for (size_t pi = 0; pi < params.size(); ++pi) {
+                    if (!params[pi].has_value() || !params[pi]->type.has_value())
+                        continue;
+                    int pos = paramPositions[pi];
+                    if (pos < 0) continue; // default or missing — sync path handles it
+                    Value arg = *(&(*thread->stackTop) - callSpec.argCount + pos);
+                    if (needsAsyncConversion(arg, params[pi]->type.value()))
+                        asyncConvIndices.push_back(pi);
+                }
+
+                if (!asyncConvIndices.empty()) {
+                    // Defer: marshal args without converting async params, then push conversion frames
+                    auto& state = thread->nativeParamConversionState;
+                    state.active = true;
+                    state.nativeFunc = fn;
+                    state.funcType = funcType;
+                    state.callSpec = callSpec;
+                    state.includeReceiver = includeReceiver;
+                    state.receiver = receiver;
+                    state.declFunction = declFunction;
+                    state.resolveArgMask = resolveArgMask;
+                    state.originalArgCount = callSpec.argCount;
+
+                    // Marshal args — sync conversions happen here; async params get default
+                    // toType result (e.g. "<object Foo>" for string) which we'll overwrite
+                    state.argsBuffer.resize(paramCount);
+                    // For async params, store original value (skip toType which may throw)
+                    // Use marshalArgsPartial which handles defaults but still does toType;
+                    // override async param slots with original values afterward
+                    marshalArgsPartial(funcType, defaults, callSpec, state.argsBuffer.data(),
+                                       includeReceiver, receiver, paramDefaults);
+                    // Overwrite async param slots with original (unconverted) values
+                    for (size_t pi : asyncConvIndices) {
+                        int pos = paramPositions[pi];
+                        if (pos >= 0) {
+                            Value arg = *(&(*thread->stackTop) - callSpec.argCount + pos);
+                            state.argsBuffer[pi + (includeReceiver ? 1 : 0)] = arg;
+                        }
+                    }
+
+                    state.conversionParamIndices = std::move(asyncConvIndices);
+                    state.nextConversionIndex = 0;
+
+                    // Set up continuation
+                    auto& cont = thread->nativeContinuation;
+                    cont.active = true;
+                    cont.state = Value::nilVal();
+                    cont.resultSlot = nullptr;
+                    cont.onComplete = [](VM& vm, Value convertedValue) -> bool {
+                        return vm.processNativeParamConversion(convertedValue);
+                    };
+
+                    // Push first conversion frame
+                    size_t firstParamIdx = state.conversionParamIndices[0];
+                    size_t firstBufIdx = firstParamIdx + (includeReceiver ? 1 : 0);
+                    const auto& firstParamType = params[firstParamIdx]->type.value();
+                    if (!pushParamConversionFrame(state.argsBuffer[firstBufIdx], firstParamType)) {
+                        state.clear();
+                        cont.clear();
+                        runtimeError("Failed to set up parameter conversion");
+                        return false;
+                    }
+                    return true;  // Deferred — execute() continues with conversion frame
+                }
+            }
+
+            // No async conversions needed - proceed with immediate call (original code path)
             constexpr size_t Small = 8;
             Value stackArgs[Small];
             std::vector<Value> heapArgs;
@@ -6528,23 +6599,30 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
-            case OpCode::ToType: {
-                uint8_t typeByte = readByte();
-                try {
-                    peek(0) = toType(ValueType(typeByte), peek(0), /*strict=*/false);
-                } catch (std::exception& e) {
-                    runtimeError(e.what());
-                    return errorReturn;
-                }
-                break;
-            }
+            case OpCode::ToType:
             case OpCode::ToTypeStrict: {
+                bool strict = (instruction == OpCode::ToTypeStrict);
                 uint8_t typeByte = readByte();
-                try {
-                    peek(0) = toType(ValueType(typeByte), peek(0), /*strict=*/true);
-                } catch (std::exception& e) {
-                    runtimeError(e.what());
-                    return errorReturn;
+                ValueType targetVT = ValueType(typeByte);
+                Value val = pop(); // remove from stack; tryConvertValue manages stack for async
+
+                Value typeSpec = Value::typeSpecVal(targetVT);
+                auto outcome = tryConvertValue(val, typeSpec, strict, /*implicitCall=*/true,
+                                               Thread::PendingConversion::Kind::TypeConversion);
+                switch (outcome.result) {
+                    case ConversionResult::AlreadyCorrectType:
+                        push(val);
+                        break;
+                    case ConversionResult::ConvertedSync:
+                        push(outcome.convertedValue);
+                        break;
+                    case ConversionResult::NeedsAsyncFrame:
+                        frame = thread->frames.end() - 1;
+                        break;
+                    case ConversionResult::Failed:
+                        runtimeError("unable to convert " + to_string(val.type())
+                                     + " to " + to_string(targetVT));
+                        return errorReturn;
                 }
                 break;
             }
@@ -7542,6 +7620,192 @@ bool VM::processNativeDefaultParamDispatch(Value defaultValue)
     // receiver and original args. We need to replace them with the final result.
     size_t argCount = state.originalArgCount;
     // Stack: [receiver, <args>...] - write result to receiver slot, pop args
+    *(thread->stackTop - argCount - 1) = finalResult;
+    popN(argCount);
+
+    state.clear();
+    return true;
+}
+
+
+bool VM::needsAsyncConversion(const Value& val, ptr<type::Type> paramType)
+{
+    if (!paramType)
+        return false;
+
+    auto vt = builtinToValueType(paramType->builtin);
+
+    // Object/Actor target type: check for constructor auto-conversion
+    if (paramType->builtin == type::BuiltinType::Object
+        || paramType->builtin == type::BuiltinType::Actor) {
+        if (!paramType->obj.has_value())
+            return false;
+        // Look up the target type in module variables
+        auto& typeName = paramType->obj.value().name;
+        Value typeVal = Value::nilVal();
+        if (!thread->frames.empty()) {
+            auto moduleType = asFunction(asClosure(thread->frames.back().closure)->function)->moduleType;
+            if (!moduleType.isNil()) {
+                auto found = asModuleType(moduleType)->vars.load(typeName);
+                if (found.has_value())
+                    typeVal = found.value();
+            }
+        }
+        if (typeVal.isNil() || !isTypeSpec(typeVal))
+            return false;
+        // If value already matches, no conversion needed
+        if (val.is(typeVal))
+            return false;
+        // Check if constructor auto-conversion is possible
+        return canConvertToType(val, typeVal, true);
+    }
+
+    // Builtin target type: check if source is object/actor with conversion operator
+    if (vt.has_value() && (isObjectInstance(val) || isActorInstance(val))) {
+        Value instType = isObjectInstance(val)
+            ? asObjectInstance(val)->instanceType
+            : asActorInstance(val)->instanceType;
+        UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(vt.value()));
+        int32_t convHash = convName.hashCode();
+        Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true);
+        return !closure.isNil();
+    }
+
+    return false;
+}
+
+
+bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType)
+{
+    auto vt = builtinToValueType(paramType->builtin);
+
+    // User-defined conversion operator (object/actor → builtin)
+    if (vt.has_value() && (isObjectInstance(val) || isActorInstance(val))) {
+        Value instType = isObjectInstance(val)
+            ? asObjectInstance(val)->instanceType
+            : asActorInstance(val)->instanceType;
+        UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(vt.value()));
+        int32_t convHash = convName.hashCode();
+        Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true);
+        if (!closure.isNil()) {
+            thread->conversionInProgress.push_back({val, thread->frames.size()});
+            push(val); // push as receiver for method call
+            if (!call(asClosure(closure), CallSpec(0)))
+                return false;
+            thread->frames.back().isContinuationCallback = true;
+            return true;
+        }
+    }
+
+    // Constructor auto-conversion (for object/actor target types)
+    if (paramType->builtin == type::BuiltinType::Object
+        || paramType->builtin == type::BuiltinType::Actor) {
+        if (paramType->obj.has_value()) {
+            auto& typeName = paramType->obj.value().name;
+            Value typeVal = Value::nilVal();
+            if (!thread->frames.empty()) {
+                auto moduleType = asFunction(asClosure(thread->frames.back().closure)->function)->moduleType;
+                if (!moduleType.isNil()) {
+                    auto found = asModuleType(moduleType)->vars.load(typeName);
+                    if (found.has_value())
+                        typeVal = found.value();
+                }
+            }
+            if (!typeVal.isNil() && isTypeSpec(typeVal)) {
+                push(typeVal);  // callee (type constructor)
+                push(val);     // argument
+                if (!callValue(typeVal, CallSpec(1)))
+                    return false;
+                thread->frames.back().isContinuationCallback = true;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+
+bool VM::processNativeParamConversion(Value convertedValue)
+{
+    auto& state = thread->nativeParamConversionState;
+    if (!state.active)
+        return true;
+
+    // Store the converted value in the args buffer
+    size_t paramIdx = state.conversionParamIndices[state.nextConversionIndex];
+    size_t bufferIdx = paramIdx + (state.includeReceiver ? 1 : 0);
+    state.argsBuffer[bufferIdx] = convertedValue;
+
+    // Clean up conversion recursion guard
+    auto& guards = thread->conversionInProgress;
+    if (!guards.empty()) {
+        guards.erase(
+            std::remove_if(guards.begin(), guards.end(),
+                [&](const Thread::ConversionGuard& g) {
+                    return thread->frames.size() <= g.frameDepth;
+                }),
+            guards.end());
+    }
+
+    // Move to next conversion
+    state.nextConversionIndex++;
+
+    // More conversions to do?
+    if (state.nextConversionIndex < state.conversionParamIndices.size()) {
+        size_t nextParamIdx = state.conversionParamIndices[state.nextConversionIndex];
+        size_t nextBufIdx = nextParamIdx + (state.includeReceiver ? 1 : 0);
+        const auto& params = state.funcType->func.value().params;
+        Value val = state.argsBuffer[nextBufIdx];
+        if (!pushParamConversionFrame(val, params[nextParamIdx]->type.value())) {
+            state.clear();
+            clearContinuation();
+            runtimeError("Failed to convert parameter for native function call");
+            return false;
+        }
+        return true;  // Continue with next conversion frame
+    }
+
+    // All conversions done — call the native function
+    clearContinuation();
+    NativeFn fn = state.nativeFunc;
+    size_t actual = state.argsBuffer.size();
+    Value* buf = state.argsBuffer.data();
+
+    // Non-blocking resolution of future args
+    if (state.resolveArgMask) {
+        for (size_t i = 0; i < actual && state.resolveArgMask >> i; ++i) {
+            if ((state.resolveArgMask & (1u << i)) && isFuture(buf[i])) {
+                auto s = buf[i].tryResolveFuture();
+                if (s == FutureStatus::Pending) {
+                    thread->awaitedFuture = buf[i];
+                    state.clear();
+                    runtimeError("Cannot await future in native function with deferred param conversion");
+                    return false;
+                }
+                if (s == FutureStatus::Error) {
+                    state.clear();
+                    return false;
+                }
+            }
+        }
+    }
+
+    ArgsView view{buf, actual};
+    Value result { fn(*this, view) };
+
+    // Check if this is an init method (proc returning instance)
+    bool isInitMethod = state.includeReceiver &&
+                        isObjectInstance(state.receiver) &&
+                        state.funcType &&
+                        state.funcType->func.has_value() &&
+                        state.funcType->func.value().isProc;
+    Value finalResult = result;
+    if (isInitMethod)
+        finalResult = state.receiver;
+
+    // Clean up original call args from stack
+    size_t argCount = state.originalArgCount;
     *(thread->stackTop - argCount - 1) = finalResult;
     popN(argCount);
 

@@ -213,6 +213,48 @@ public:
     };
     NativeDefaultParamState nativeDefaultParamState;
 
+    // State for deferred native function call when params need async type conversion.
+    // Used when a native function has typed params that require executing Roxal code
+    // (e.g., user-defined operator->string on an object passed to print(value:string)).
+    struct NativeParamConversionState {
+        bool active { false };
+
+        // Native function to call after all conversions complete
+        NativeFn nativeFunc;
+        ptr<type::Type> funcType;
+        CallSpec callSpec;
+        bool includeReceiver { false };
+        Value receiver { Value::nilVal() };
+        Value declFunction { Value::nilVal() };
+        uint32_t resolveArgMask { 0 };
+
+        // Args buffer (fully marshaled; async params updated as conversions complete)
+        std::vector<Value> argsBuffer;
+
+        // Param indices (into argsBuffer, accounting for receiver offset) needing async conversion
+        std::vector<size_t> conversionParamIndices;
+        size_t nextConversionIndex { 0 };
+
+        // Stack state for cleanup
+        size_t originalArgCount { 0 };
+
+        void clear() {
+            active = false;
+            nativeFunc = nullptr;
+            funcType = nullptr;
+            callSpec = CallSpec(0);
+            includeReceiver = false;
+            receiver = Value::nilVal();
+            declFunction = Value::nilVal();
+            resolveArgMask = 0;
+            argsBuffer.clear();
+            conversionParamIndices.clear();
+            nextConversionIndex = 0;
+            originalArgCount = 0;
+        }
+    };
+    NativeParamConversionState nativeParamConversionState;
+
     void pruneEventRegistrations();
 
     // Keeps the currently executing actor call target alive while the

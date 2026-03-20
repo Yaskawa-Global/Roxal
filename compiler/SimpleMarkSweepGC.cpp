@@ -119,6 +119,15 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
             visitStrongValue(visitor, entry.second);
         }
     }
+
+    // Trace native param conversion state (deferred native call with async param conversions)
+    if (thread.nativeParamConversionState.active) {
+        visitStrongValue(visitor, thread.nativeParamConversionState.receiver);
+        visitStrongValue(visitor, thread.nativeParamConversionState.declFunction);
+        for (const auto& val : thread.nativeParamConversionState.argsBuffer) {
+            visitStrongValue(visitor, val);
+        }
+    }
 }
 
 } // namespace

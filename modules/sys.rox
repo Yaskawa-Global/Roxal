@@ -1,5 +1,5 @@
 @builtin
-proc print(value='', end='\n', flush:bool=false):
+proc print(value:string='', end='\n', flush:bool=false):
   """print the string representation of value followed by end and flush if requested"""
 
 @builtin

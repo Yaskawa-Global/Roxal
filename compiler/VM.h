@@ -135,6 +135,7 @@ public:
     ptr<BuiltinModule> getBuiltinModule(const icu::UnicodeString& name);
     Value getBuiltinModuleType(const icu::UnicodeString& name);
     std::optional<Value> loadGlobal(const icu::UnicodeString& name) { return globals.load(name); }
+    void storeGlobal(const icu::UnicodeString& name, const Value& value) { globals.storeGlobal(name, value); }
     void registerBuiltinModule(ptr<BuiltinModule> module);
 #ifdef ROXAL_ENABLE_GRPC
     Value importProtoModule(const std::string& path);
@@ -330,6 +331,16 @@ public:
     // Process native default param continuation after a closure default returns
     // Called by the nativeContinuation.onComplete callback
     bool processNativeDefaultParamDispatch(Value defaultValue);
+
+    // Returns true if converting val to the given param type requires executing Roxal code
+    // (user-defined conversion operator or constructor auto-conversion)
+    bool needsAsyncConversion(const Value& val, ptr<type::Type> paramType);
+
+    // Process native param conversion continuation after a conversion frame returns
+    bool processNativeParamConversion(Value convertedValue);
+
+    // Push a conversion frame for a single param (operator call or constructor call)
+    bool pushParamConversionFrame(const Value& val, ptr<type::Type> paramType);
 
     bool callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                       const std::vector<Value>& defaults,

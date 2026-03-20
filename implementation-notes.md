@@ -86,10 +86,14 @@ function executes inline within `callNativeFn` and returns a `Value` directly.
 **`callNativeFn(fn, funcType, defaults, callSpec, includeReceiver, receiver, ...)`:**
 
 *Typed path* (when `funcType` is non-null):
-1. `marshalArgs()` copies arguments from the stack into a local buffer,
-   reordering named params and applying defaults
-2. The native `fn` is called with an `ArgsView` into that local buffer
-3. Cleanup: `*(stackTop - argCount - 1) = result; popN(argCount);` — writes
+1. Scan original args on the stack for params needing async user-defined
+   conversion (via `needsAsyncConversion()`). If found, defer the native call
+   via `NativeParamConversionState` (see below).
+2. Otherwise, `marshalArgs()` copies arguments from the stack into a local
+   buffer, reordering named params, applying defaults, and performing sync
+   builtin type conversions via `toType()`
+3. The native `fn` is called with an `ArgsView` into that local buffer
+4. Cleanup: `*(stackTop - argCount - 1) = result; popN(argCount);` — writes
    the result into the callee slot, then pops the args
 
 *Untyped path* (when `funcType` is null):
@@ -101,10 +105,41 @@ function executes inline within `callNativeFn` and returns a `Value` directly.
 In both cases, the callee+args footprint is replaced by the result, matching
 the net stack effect of a Roxal closure call.
 
+### Async Parameter Conversion for Native Functions
+
+When a native function has typed parameters and an argument is an object/actor
+with a user-defined conversion operator (e.g., `print(obj)` where print
+declares `value:string` and the object has `@implicit operator string()`),
+the conversion requires executing Roxal code. Since `callNativeFn` can't
+re-enter the dispatch loop, it uses a deferred call pattern via
+`NativeParamConversionState` (in `Thread.h`):
+
+1. `callNativeFn` scans original args against param types using
+   `needsAsyncConversion()` — checks for `findConversionMethod()` matches
+   or constructor auto-conversion eligibility
+2. If async params found: marshals args (skipping conversion for async params),
+   saves state in `NativeParamConversionState`, sets up `NativeContinuation`
+   with `onComplete = processNativeParamConversion`, and pushes the first
+   conversion frame via `pushParamConversionFrame()`
+3. Each conversion frame returns to `processNativeParamConversion()` which
+   stores the converted value in the args buffer and pushes the next
+   conversion frame (or calls the native when all conversions are done)
+4. After the native returns, the original callee+args are cleaned up
+
+This is the same pattern as `NativeDefaultParamState` (for closure-evaluated
+default parameters) — both defer the native call until async pre-call work
+completes.
+
+Note: for `@builtin` functions declared in `.rox` files, the compiled closure's
+bytecode (including parameter conversion opcodes) is never executed — the
+native implementation runs via `builtinInfo`. The `funcType` must be provided
+explicitly when registering the builtin via `addSys` / `defineNative` for async
+parameter conversion to work.
+
 ### Native Functions with Continuations
 
-When a native function needs to execute Roxal code (e.g., `print()` calling
-`operator->string()`, or `list.map()` calling a predicate), it cannot re-enter
+When a native function needs to execute Roxal code iteratively (e.g.,
+`list.map()` calling a predicate for each element), it cannot re-enter
 the dispatch loop. Instead it uses the `NativeContinuation` mechanism:
 
 1. The native sets up `thread->nativeContinuation` (state + `onComplete`
@@ -197,7 +232,7 @@ calling Roxal closures from native code. Rather than recursively calling
 the main `execute()` loop. When the closure completes, a handler processes
 the result.
 
-Three continuation mechanisms exist in the `Thread` class:
+Four continuation mechanisms exist in the `Thread` class:
 
 ### EventDispatchState
 
@@ -267,6 +302,38 @@ struct NativeDefaultParamState {
 partially marshals args with `marshalArgsPartial()`, and pushes default closure
 frames one at a time. `processNativeDefaultParamDispatch()` stores each result
 and either pushes the next closure or invokes the native function with
+complete args.
+
+### NativeParamConversionState
+
+Handles async user-defined type conversion for native function parameters.
+When a native function has typed parameters and an argument requires executing
+Roxal code to convert (e.g., an object with `@implicit operator->string()`
+passed to `print(value:string)`), this mechanism defers the native call until
+all async conversions complete.
+
+```cpp
+struct NativeParamConversionState {
+    bool active;
+    NativeFn nativeFunc;
+    ptr<type::Type> funcType;
+    CallSpec callSpec;
+    bool includeReceiver;
+    Value receiver;
+    Value declFunction;
+    uint32_t resolveArgMask;
+    std::vector<Value> argsBuffer;               // Args with conversions applied
+    std::vector<size_t> conversionParamIndices;   // Params needing async conversion
+    size_t nextConversionIndex;
+    size_t originalArgCount;
+};
+```
+
+`callNativeFn()` detects params needing async conversion via
+`needsAsyncConversion()`, marshals args (storing originals for async params),
+and pushes conversion frames one at a time via `pushParamConversionFrame()`.
+`processNativeParamConversion()` stores each converted value and either
+pushes the next conversion frame or invokes the native function with
 complete args.
 
 ### CallFrame Flags

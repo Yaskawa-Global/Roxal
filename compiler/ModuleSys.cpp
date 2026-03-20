@@ -481,7 +481,7 @@ void ModuleSys::registerBuiltins(VM& vm)
                       uint32_t resolveArgMask = 0){
         if (!vm.loadGlobal(toUnicodeString(name)).has_value())
             vm.defineNative(name, fn, funcType, defaults, resolveArgMask);
-        link(name, fn, defaults);
+        link(name, fn, defaults, resolveArgMask);
     };
 
     if (!vm.loadGlobal(toUnicodeString("print")).has_value()) {
@@ -490,7 +490,20 @@ void ModuleSys::registerBuiltins(VM& vm)
             Value::stringVal(toUnicodeString("\n")),
             Value::falseVal()
         };
-        addSys("print", [this](VM& vm, ArgsView a){ return print_builtin(vm,a); }, nullptr, pdefaults, 0x1);
+        // Construct funcType matching: proc print(value:string='', end='\n', flush:bool=false)
+        // The :string type on value enables async user-defined conversion (operator->string)
+        // for objects passed to print, via callNativeFn's NativeParamConversionState.
+        ptr<type::Type> printType = make_ptr<type::Type>(type::BuiltinType::Func);
+        printType->func = type::Type::FuncType();
+        printType->func->isProc = true;
+        auto printParams = BuiltinModule::constructParams({
+            {"value", type::BuiltinType::String},
+            {"end", type::BuiltinType::String},
+            {"flush", type::BuiltinType::Bool}
+        }, pdefaults);
+        printType->func->params.resize(printParams.size());
+        for (size_t i = 0; i < printParams.size(); ++i) printType->func->params[i] = printParams[i];
+        addSys("print", [this](VM& vm, ArgsView a){ return print_builtin(vm,a); }, printType, pdefaults, 0x1);
         addSys("len", [this](VM& vm, ArgsView a){ return len_builtin(vm,a); }, nullptr, {}, 0x1);
         addSys("help", [this](VM& vm, ArgsView a){ return help_builtin(vm,a); }, nullptr, {}, 0x1);
         addSys("clone", [this](VM& vm, ArgsView a){ return clone_builtin(vm,a); });
@@ -697,53 +710,8 @@ Value ModuleSys::print_builtin(VM& vm, ArgsView args)
     if(args.size() > 3)
         throw std::invalid_argument("print expects at most 3 arguments");
 
-    // Check if first arg is an object/actor with @implicit operator->string conversion.
-    // Uses findConversionMethod directly (not tryConvertValue) because print() needs the
-    // nativeContinuation mechanism for async, which is incompatible with PendingConversion.
-    if (args.size() >= 1 && (isObjectInstance(args[0]) || isActorInstance(args[0]))) {
-        Value val = args[0];
-        bool inProgress = false;
-        for (const auto& g : vm.thread->conversionInProgress)
-            if (g.receiver.is(val, false)) { inProgress = true; break; }
-        Value closure;
-        if (!inProgress) {
-            Value instType = isObjectInstance(val)
-                ? asObjectInstance(val)->instanceType
-                : asActorInstance(val)->instanceType;
-            closure = vm.findConversionMethod(instType, vm.opHashConvString, /*implicitCall=*/true);
-        }
-        if (!closure.isNil()) {
-            std::string endStr = "\n";
-            bool flush = false;
-            if (args.size() == 2 && args[1].isBool()) {
-                flush = args[1].asBool();
-            } else {
-                if (args.size() >= 2) endStr = toString(args[1]);
-                if (args.size() >= 3) flush = toType(ValueType::Bool, args[2], false).asBool();
-            }
-
-            auto& cont = vm.thread->nativeContinuation;
-            cont.active = true;
-            cont.state = Value::nilVal();
-            cont.resultSlot = nullptr;
-            cont.onComplete = [endStr, flush](VM& vm, Value converted) -> bool {
-                std::string valueStr = isString(converted) ? toUTF8StdString(asUString(converted)) : toString(converted);
-                std::cout << valueStr << endStr;
-                if (flush) std::cout << std::flush;
-                // Push nil (print's return value) as the final result.
-                // processContinuationDispatch will clean up the original
-                // callee+args via resultSlot/stackBase set by callNativeFn.
-                vm.push(Value::nilVal());
-                return true;
-            };
-
-            vm.push(val);
-            vm.call(asClosure(closure), CallSpec(0));
-            vm.thread->frames.back().isContinuationCallback = true;
-            return Value::nilVal();
-        }
-    }
-
+    // value param is typed :string — async user-defined conversions (operator->string)
+    // are handled by callNativeFn's NativeParamConversionState before we get here.
     std::string valueStr = "";
     std::string endStr = "\n";
     bool flush = false;

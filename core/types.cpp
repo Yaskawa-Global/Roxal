@@ -83,6 +83,12 @@ bool roxal::type::convertibleTo(BuiltinType from, BuiltinType to, bool strict)
     if (to == BuiltinType::Dict && from == BuiltinType::Object)
         return !strict;
 
+    // Object/Actor → builtin: allow at compile time because user-defined
+    // conversion operators (operator->T) may handle it at runtime.
+    // The VM's tryConvertValue will produce a runtime error if no operator exists.
+    if ((from == BuiltinType::Object || from == BuiltinType::Actor) && ti >= 0)
+        return true;
+
     return false;
 }
 
