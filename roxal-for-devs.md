@@ -757,6 +757,68 @@ print( (20.0 / w).v )  // 2  (roperator/)
 - Comparison operators (`==`, `!=`, `<`, `>`, `<=`, `>=`) do not support l/r variants
 
 
+### Literal Suffixes
+
+Numeric and string literals can have a *suffix* glued directly after them (no whitespace).  A suffix is resolved to a call to a function annotated with `@suffix`:
+
+```php
+@suffix("px")
+func pixels(v) -> int:
+  return int(v)
+
+var width = 100px    // equivalent to pixels(100)
+var height = 50.5px  // equivalent to pixels(50.5)
+print(width)         // 100
+```
+
+Whitespace disambiguates: `10px` is a suffixed literal, while `10 * px` is multiplication by a variable named `px`.
+
+**Suffix character rules (bare form):**
+- Must start with a letter
+- Can contain letters, digits, `/` (at most one), `·` (middle dot, for unit multiplication), superscripts (`²`, `³`, `⁻¹`), and `^`
+- Maximum 8 characters
+
+**Braced form** `{}` allows arbitrary length and additional characters (spaces, hyphens, underscores):
+
+```php
+@suffix("m/s²")
+func accel(v):
+  return v
+
+var a = 9.81{m/s²}  // braced: allows special chars
+var b = 9.81m/s^2    // bare: also valid (^ instead of ²)
+```
+
+**String suffixes** work similarly:
+
+```php
+@suffix("i18n")
+func translate(s :string) -> string:
+  // look up translation...
+  return s
+
+print("hello"i18n)
+print('world'{i18n})  // braced form also works
+```
+
+**Defining suffix functions:**
+- Annotate with `@suffix("suffix_string")`
+- Function must accept exactly one parameter (the literal value)
+- Multiple suffixes can map to the same return type (e.g., `"mm"`, `"cm"`, `"m"` all returning a `quantity`)
+- Suffixes are scoped to the module that defines them; the `sys` module's suffixes are globally available
+
+The `sys` module defines suffixes for physical units — see the `quantity` type below.
+
+**Examples:**
+
+```php
+var d = 10m + 500mm       // 10.5 m  (auto-converts to common unit)
+var speed = 100m / 4s     // 25 m/s  (derived dimension)
+var force = 5kg * 9.81m/s^2  // 49.05 N (Force = Mass × Acceleration)
+var angle = 90deg         // 90 deg  (stored as radians internally)
+print(d.inches)           // 413.386  (property getter converts from SI)
+```
+
 ## Actors
 
 Actors are similar to objects, with a key difference - each actor instance has its *own associated execution thread*.  That is the only thread that executes the actor's methods.
@@ -1548,6 +1610,44 @@ The functions in the sys module are always globally available (- as if `import s
 * `typeof(value)` - return the type of `value`
 * `loadlib(path)` - load a native library from `path`
   * relative paths are resolved against the directory of the executing script
+
+#### quantity
+
+A dimensional physical quantity type for type-safe unit handling.  Stores a real value in SI canonical units (meters, kilograms, seconds, radians) with a dimension vector tracking Length, Time, Mass, and Angle exponents.  Arithmetic operators perform automatic dimensional analysis.
+
+**Construction via literal suffixes** (globally available):
+
+| Suffix | Unit | Dimension |
+|--------|------|-----------|
+| `m`, `cm`, `mm`, `um`/`μm` | meters, centimeters, millimeters, micrometers | Length |
+| `in`, `ft`, `mil` | inches, feet, thousandths of an inch | Length |
+| `kg`, `g`, `mg` | kilograms, grams, milligrams | Mass |
+| `lb`, `oz` | pounds, ounces | Mass |
+| `s`, `ms`, `us`/`μs` | seconds, milliseconds, microseconds | Time |
+| `min`, `hr` | minutes, hours | Time |
+| `rad`, `deg` | radians, degrees | Angle |
+| `m/s`, `cm/s`, `mm/s` | velocity | Length/Time |
+| `m/s^2`, `m/s²` | acceleration | Length/Time² |
+| `N` | Newtons | Force |
+| `Nm`, `N·m` | Newton-meters | Torque |
+| `rad/s`, `deg/s` | angular velocity | Angle/Time |
+
+
+**Operators:**
+- `+`, `-`: require matching dimensions; raises exception on mismatch
+- `*`, `/`: between quantities adds/subtracts dimension exponents (e.g., `Dist / Time → Velocity`)
+- `*`, `/`: with a scalar scales the value, preserving dimensions
+- Comparisons (`==`, `!=`, `<`, `>`, `<=`, `>=`): require matching dimensions
+- `real(q)`: explicit conversion to real; raises exception unless dimensionless
+
+**Property getters** — extract the value in a specific unit (raises exception if dimensions don't match):
+
+*Length:* `.meters`, `.centimeters`, `.millimeters`, `.micrometers`, `.inches`, `.feet`, `.mils`
+*Mass:* `.kilograms`, `.grams`, `.milligrams`, `.pounds`, `.ounces`
+*Time:* `.seconds`, `.milliseconds`, `.microseconds`, `.minutes`, `.hours`
+*Angle:* `.radians`, `.degrees`
+
+**String display:** `quantity` implicitly converts to string, choosing the most natural unit for the magnitude (e.g., `0.005 m` displays as `5 mm`).
 
 #### Internal (likely to be removed or renamed)
 * `fork(fn)` - run `fn` in a new thread and return its id
