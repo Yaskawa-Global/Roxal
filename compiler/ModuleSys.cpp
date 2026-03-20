@@ -697,10 +697,11 @@ Value ModuleSys::print_builtin(VM& vm, ArgsView args)
     if(args.size() > 3)
         throw std::invalid_argument("print expects at most 3 arguments");
 
-    // Check if first arg is an object/actor with operator->string conversion
+    // Check if first arg is an object/actor with @implicit operator->string conversion.
+    // Uses findConversionMethod directly (not tryConvertValue) because print() needs the
+    // nativeContinuation mechanism for async, which is incompatible with PendingConversion.
     if (args.size() >= 1 && (isObjectInstance(args[0]) || isActorInstance(args[0]))) {
         Value val = args[0];
-        // Recursion guard
         bool inProgress = false;
         for (const auto& g : vm.thread->conversionInProgress)
             if (g.receiver.is(val, false)) { inProgress = true; break; }
@@ -712,7 +713,6 @@ Value ModuleSys::print_builtin(VM& vm, ArgsView args)
             closure = vm.findConversionMethod(instType, vm.opHashConvString, /*implicitCall=*/true);
         }
         if (!closure.isNil()) {
-            // Save end/flush args for the continuation callback
             std::string endStr = "\n";
             bool flush = false;
             if (args.size() == 2 && args[1].isBool()) {
@@ -722,7 +722,6 @@ Value ModuleSys::print_builtin(VM& vm, ArgsView args)
                 if (args.size() >= 3) flush = toType(ValueType::Bool, args[2], false).asBool();
             }
 
-            // Set up nativeContinuation to print after conversion returns
             auto& cont = vm.thread->nativeContinuation;
             cont.active = true;
             cont.state = Value::nilVal();
@@ -736,11 +735,10 @@ Value ModuleSys::print_builtin(VM& vm, ArgsView args)
                 return true;
             };
 
-            // Push receiver and call conversion method
             vm.push(val);
             vm.call(asClosure(closure), CallSpec(0));
             vm.thread->frames.back().isContinuationCallback = true;
-            return Value::nilVal(); // deferred — result handled by continuation
+            return Value::nilVal();
         }
     }
 

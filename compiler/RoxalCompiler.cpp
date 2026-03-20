@@ -1116,7 +1116,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
             auto propName { prop->name };
             uint16_t propNameConstant = identifierConstant(propName);
-        asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name, prop->isConst};
+            asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name, prop->isConst, prop->varType};
 
             if (prop->varType.has_value()) {
                 auto varType { prop->varType.value() };
@@ -1258,8 +1258,8 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         auto propName { prop->name };
         uint16_t propNameConstant = identifierConstant(propName);
 
-        // record property name for implicit access within methods
-        asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name, prop->isConst};
+        // record property name and type for implicit access within methods
+        asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name, prop->isConst, prop->varType};
 
         // store @ctype annotation
         for(const auto& a : prop->annotations) {
@@ -3042,6 +3042,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
         OpCode op = OpCode::SetPropCheck;
         bool useSetter = false;
+        std::optional<std::variant<type::BuiltinType, icu::UnicodeString>> propType;
 
         if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
             auto typeScopePtr = asTypeScope(typeScope());
@@ -3053,9 +3054,9 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                 if (info.isConst)
                     error("Cannot assign to constant '"+toUTF8StdString(accessor->member.value())+"'");
                 op = OpCode::SetProp;
+                propType = info.propType;
 
-                // Check if property has a setter (Phase 6)
-                // Check if __set_<property> method exists in current type
+                // Check if property has a setter
                 icu::UnicodeString setterMethodName = UnicodeString("__set_") + accessor->member.value();
                 if (typeScopePtr->propertyNames.find(setterMethodName) != typeScopePtr->propertyNames.end()) {
                     useSetter = true;
@@ -3064,6 +3065,19 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
         }
 
         ast->rhs->accept(*this);
+
+        // Emit type conversion for typed properties (same pattern as variable declarations)
+        if (propType.has_value()) {
+            if (std::holds_alternative<BuiltinType>(*propType)) {
+                emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                          uint8_t(builtinToValueType(std::get<BuiltinType>(*propType))));
+            } else {
+                auto& typeName = std::get<icu::UnicodeString>(*propType);
+                if (!namedVariable(typeName, false))
+                    namedModuleVariable(typeName);
+                emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+            }
+        }
 
         if (useSetter) {
             // Call __set_<property>(value) instead of SetProp

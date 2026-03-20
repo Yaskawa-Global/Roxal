@@ -307,6 +307,7 @@ protected:
             ast::Access access { ast::Access::Public };
             icu::UnicodeString owner;
             bool isConst { false };
+            std::optional<std::variant<type::BuiltinType, icu::UnicodeString>> propType;
         };
         std::unordered_map<icu::UnicodeString, MemberInfo> propertyNames;
     };
