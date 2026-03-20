@@ -1,0 +1,15 @@
+# Conversion operator with explicit return type annotation
+type Color object:
+  var r: int = 0
+  var g: int = 0
+  var b: int = 0
+  proc init(r: int, g: int, b: int):
+    this.r = r
+    this.g = g
+    this.b = b
+  func operator string() -> string:
+    return "rgb(" + string(r) + "," + string(g) + "," + string(b) + ")"
+
+var c = Color(255, 128, 0)
+print(c)
+print("Color: " + c)

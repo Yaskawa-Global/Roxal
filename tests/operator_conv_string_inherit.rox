@@ -1,0 +1,17 @@
+# Conversion operator is inherited
+type Base object:
+  var name = "base"
+  proc init(name):
+    this.name = name
+  func operator string():
+    return "<" + name + ">"
+
+type Derived object extends Base:
+  proc init(name):
+    super.init(name)
+
+var b = Base("hello")
+var d = Derived("world")
+print(b)
+print(d)
+print("b=" + b + " d=" + d)

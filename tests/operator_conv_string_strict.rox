@@ -1,0 +1,19 @@
+# In strict context (function body), conversion is NOT implicit without @implicit
+# but explicit string(obj) still works
+type Item object:
+  var val = 0
+  proc init(val):
+    this.val = val
+  func operator string():
+    return "Item(" + string(val) + ")"
+
+func test(item):
+  # Explicit conversion always works in strict context
+  var s = string(item)
+  print(s)
+
+var i = Item(42)
+# Module scope is non-strict, so implicit works
+print("implicit: " + i)
+# Explicit works everywhere
+test(i)

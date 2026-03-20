@@ -1,0 +1,17 @@
+type Point object:
+  var x: real = 0.0
+  var y: real = 0.0
+  proc init(x: real, y: real):
+    this.x = x
+    this.y = y
+  func operator string():
+    return "(" + string(x) + ", " + string(y) + ")"
+
+var p = Point(3.0, 4.0)
+# print uses conversion operator
+print(p)
+# string concatenation uses conversion operator
+print("Point is: " + p)
+# explicit string(obj) invocation
+var s = string(p)
+print(s)
