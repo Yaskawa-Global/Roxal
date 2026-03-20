@@ -7,6 +7,7 @@ Features:
   - Easy to learn syntax (similarities with Python)
   - Static & Dynamic typing
   - Builtin types aimed at AI and Robotics - vector/matrix/tensor
+  - Physical unit literals (eg. `5kg * 9.81m/s²` = `49.05N`)
   - Signals & Dataflow engine (signal & event types)
   - Object-Oriented (object types, inheritance, interfaces)
   - Safety - transitive const (via MVCC) & GC-based memory management
