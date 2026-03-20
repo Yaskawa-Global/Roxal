@@ -1,18 +1,18 @@
 // Test braced suffix form
 
-@suffix("m/s")
-func mps(v):
+@suffix("u/t")
+func upt(v):
   return v
 
-@suffix("kg")
-func kilograms(v):
+@suffix("wt")
+func weight(v):
   return v
 
 // Braced form with compound suffix
-print(10{m/s})
+print(10{u/t})
 
 // Braced form with simple suffix (also valid)
-print(5{kg})
+print(5{wt})
 
 // Bare form of simple suffix
-print(3kg)
+print(3wt)

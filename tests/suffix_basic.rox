@@ -1,25 +1,25 @@
 // Basic literal suffix test
 
-@suffix("m")
-func meters(v):
-  return v * 1000  // convert to mm for testing
+@suffix("px")
+func pixels(v):
+  return v * 1000  // scale for testing
 
-@suffix("deg")
-func degrees(v):
+@suffix("pct")
+func percent(v):
   return v
 
 // integer suffix
-print(10m)
+print(10px)
 
 // real suffix
-print(3.14m)
+print(3.14px)
 
 // another suffix
-print(90deg)
+print(90pct)
 
 // suffix in expression
-print(10m + 5m)
+print(10px + 5px)
 
-// whitespace disambiguates: 10 * variable m, not suffix
-var m = 7
-print(10 * m)
+// whitespace disambiguates: 10 * variable px, not suffix
+var px = 7
+print(10 * px)

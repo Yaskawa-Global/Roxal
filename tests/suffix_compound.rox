@@ -1,25 +1,25 @@
 // Compound suffix test (bare form with /)
 
-@suffix("m")
-func meters(v):
+@suffix("aa")
+func suf_aa(v):
   return v
 
-@suffix("m/s")
-func mps(v):
+@suffix("aa/bb")
+func suf_aabb(v):
   return v
 
-@suffix("mm/s")
-func mmps(v):
+@suffix("cc/bb")
+func suf_ccbb(v):
   return v
 
 // Bare compound suffix
-print(10m/s)
+print(10aa/bb)
 
 // Another compound
-print(100mm/s)
+print(100cc/bb)
 
 // Simple suffix still works
-print(5m)
+print(5aa)
 
 // Suffix in expression with operator (space separates)
-print(10m/s + 5m/s)
+print(10aa/bb + 5aa/bb)
