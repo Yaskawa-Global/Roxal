@@ -850,6 +850,34 @@ VM::VM()
                 globals.storeGlobal(toUnicodeString(name), maybeFunc.value());
             }
         }
+        // Export suffix functions and types from sys to globals.
+        // If registeredSuffixes is empty (module loaded from cache), rebuild
+        // it by scanning function annotations for @suffix.
+        ObjModuleType* sysMod = asModuleType(sysModule);
+        if (sysMod->registeredSuffixes.empty()) {
+            sysVars.forEach([&](const VariablesMap::NameValue& nv) {
+                if (isClosure(nv.second)) {
+                    ObjFunction* fn = asFunction(asClosure(nv.second)->function);
+                    for (const auto& annot : fn->annotations) {
+                        if (annot->name == "suffix" && annot->args.size() == 1) {
+                            if (auto s = dynamic_ptr_cast<ast::Str>(annot->args[0].second))
+                                sysMod->registeredSuffixes[s->str] = nv.first;
+                        }
+                    }
+                }
+            });
+        }
+        for (const auto& [suffix, funcName] : sysMod->registeredSuffixes) {
+            auto maybeFunc = sysVars.load(funcName);
+            if (maybeFunc.has_value())
+                globals.storeGlobal(funcName, maybeFunc.value());
+        }
+        // Also export quantity and _dimension types
+        for (const char* name : {"quantity", "_dimension"}) {
+            auto maybeType = sysVars.load(toUnicodeString(name));
+            if (maybeType.has_value())
+                globals.storeGlobal(toUnicodeString(name), maybeType.value());
+        }
     }
 
     executeBuiltinModuleScript("math.rox", getBuiltinModuleType(toUnicodeString("math")));

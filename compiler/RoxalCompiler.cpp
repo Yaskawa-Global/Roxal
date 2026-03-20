@@ -166,6 +166,36 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
 
         auto module { asModuleScope(moduleScope()) };
 
+        // Seed suffix registry from implicitly imported modules (e.g. sys)
+        // that may have registered @suffix functions.
+        // Use moduleResolverVM to avoid VM::instance() recursion during VM init.
+        if (moduleResolverVM) {
+            Value sysModType = moduleResolverVM->getBuiltinModuleType(toUnicodeString("sys"));
+            if (sysModType.isNonNil() && isModuleType(sysModType)) {
+                ObjModuleType* sysMod = asModuleType(sysModType);
+                // If registeredSuffixes is empty (e.g. module loaded from cache),
+                // rebuild it by scanning function annotations for @suffix
+                if (sysMod->registeredSuffixes.empty()) {
+                    sysMod->vars.forEach([&](const VariablesMap::NameValue& nv) {
+                        const auto& name = nv.first;
+                        const auto& val = nv.second;
+                        if (isClosure(val)) {
+                            ObjFunction* fn = asFunction(asClosure(val)->function);
+                            for (const auto& annot : fn->annotations) {
+                                if (annot->name == "suffix" && annot->args.size() == 1) {
+                                    if (auto s = dynamic_ptr_cast<ast::Str>(annot->args[0].second))
+                                        sysMod->registeredSuffixes[s->str] = name;
+                                }
+                            }
+                        }
+                    });
+                }
+                for (const auto& [suf, funcName] : sysMod->registeredSuffixes) {
+                    suffixRegistry[suf] = SuffixRegistration{suf, funcName, sysMod->name};
+                }
+            }
+        }
+
         bool strictContext = false;
         if (auto file = dynamic_ptr_cast<ast::File>(ast)) {
             for (const auto& annot : file->annotations) {
@@ -3665,21 +3695,11 @@ std::any RoxalCompiler::visit(ptr<ast::SuffixedNum> ast)
         return {};
     }
 
-    // Emit: push suffix function, push value, Call(1)
-    // The suffix function should be accessible by name in current scope
-    // (either directly imported or as a module-level function in current module)
-    if (!namedVariable(reg->functionName)) {
-        // If direct lookup fails, try module-qualified: moduleName.funcName
-        if (!reg->moduleName.isEmpty() && namedVariable(reg->moduleName)) {
-            uint16_t nameConst = identifierConstant(reg->functionName);
-            emitOpArgsBytes(OpCode::GetProp, nameConst);
-        } else {
-            std::string suf; ast->suffix.toUTF8String(suf);
-            std::string fn; reg->functionName.toUTF8String(fn);
-            error("suffix function '" + fn + "' for suffix '" + suf + "' is not accessible");
-            return {};
-        }
-    }
+    // Push suffix function onto stack.
+    // Try local/upvalue first, then fall back to module variable lookup
+    // (which resolves sys module globals at runtime via GetModuleVar).
+    if (!namedVariable(reg->functionName))
+        namedModuleVariable(reg->functionName);
 
     if (std::holds_alternative<double>(ast->num))
         emitConstant(Value::realVal(std::get<double>(ast->num)));
@@ -3712,18 +3732,9 @@ std::any RoxalCompiler::visit(ptr<ast::SuffixedStr> ast)
         return {};
     }
 
-    // Emit: push suffix function, push string value, Call(1)
-    if (!namedVariable(reg->functionName)) {
-        if (!reg->moduleName.isEmpty() && namedVariable(reg->moduleName)) {
-            uint16_t nameConst = identifierConstant(reg->functionName);
-            emitOpArgsBytes(OpCode::GetProp, nameConst);
-        } else {
-            std::string suf; ast->suffix.toUTF8String(suf);
-            std::string fn; reg->functionName.toUTF8String(fn);
-            error("suffix function '" + fn + "' for suffix '" + suf + "' is not accessible");
-            return {};
-        }
-    }
+    // Push suffix function onto stack
+    if (!namedVariable(reg->functionName))
+        namedModuleVariable(reg->functionName);
 
     emitConstant(Value::stringVal(ast->str));
 

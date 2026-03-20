@@ -272,3 +272,433 @@ func reduce(items: const list, reducer, initial):
     i = i + 1
   return acc
 
+
+// ============================================================================
+// quantity — dimensional physical quantity type
+// ============================================================================
+//
+// Stores a real value in SI canonical units (m, kg, s, rad) plus a dimension
+// vector of 4 integer exponents [Length, Time, Mass, Angle].
+// Arithmetic operators perform automatic dimensional analysis.
+
+type _dimension enum:
+  L   // Length
+  T   // Time
+  M   // Mass
+  A   // Angle
+
+
+type quantity object:
+  private var _v :real = 0.0
+  private var _d :list = [0, 0, 0, 0]
+
+  proc init(v :real = 0.0, d :list = [0, 0, 0, 0]):
+    _v = v
+    _d = d
+
+  // --- helpers (private by convention) ---
+
+  func _dim_label() -> string:
+    // Build a human-readable dimension label like "L¹T⁻²M¹"
+    var parts = ['L', 'T', 'M', 'A']
+    var result = ''
+    var i = 0
+    for p in parts:
+      var e = _d[i]
+      if e != 0:
+        result = result + p
+        if e != 1:
+          result = result + string(e)
+      i = i + 1
+    if result == '':
+      return 'dimensionless'
+    return result
+
+  func _check_same_dim(other :quantity, op :string):
+    if _d != other._d:
+      raise 'dimension mismatch in ' + op + ': ' + _dim_label() + ' vs ' + other._dim_label()
+
+  func _is_dimensionless() -> bool:
+    return _d[0]==0 and _d[1]==0 and _d[2]==0 and _d[3]==0
+
+  // --- arithmetic operators ---
+
+  func operator+(other :quantity) -> quantity:
+    _check_same_dim(other, '+')
+    return quantity(v=_v + other._v, d=_d)
+
+  func operator-(other :quantity) -> quantity:
+    _check_same_dim(other, '-')
+    return quantity(v=_v - other._v, d=_d)
+
+  func operator-() -> quantity:
+    return quantity(v=-_v, d=_d)
+
+  // quantity * other
+  func loperator*(other) -> quantity:
+    if other is quantity:
+      return quantity(v=_v * other._v, d=[_d[0]+other._d[0], _d[1]+other._d[1], _d[2]+other._d[2], _d[3]+other._d[3]])
+    return quantity(v=_v * real(other), d=_d)
+
+  // other * quantity
+  func roperator*(other) -> quantity:
+    if other is quantity:
+      return quantity(v=other._v * _v, d=[_d[0]+other._d[0], _d[1]+other._d[1], _d[2]+other._d[2], _d[3]+other._d[3]])
+    return quantity(v=real(other) * _v, d=_d)
+
+  // quantity / other
+  func loperator/(other) -> quantity:
+    if other is quantity:
+      var rd = [_d[0]-other._d[0], _d[1]-other._d[1], _d[2]-other._d[2], _d[3]-other._d[3]]
+      return quantity(v=_v / other._v, d=rd)
+    return quantity(v=_v / real(other), d=_d)
+
+  // other / quantity
+  func roperator/(other) -> quantity:
+    if other is quantity:
+      var rd = [other._d[0]-_d[0], other._d[1]-_d[1], other._d[2]-_d[2], other._d[3]-_d[3]]
+      return quantity(v=other._v / _v, d=rd)
+    return quantity(v=real(other) / _v, d=[0-_d[0], 0-_d[1], 0-_d[2], 0-_d[3]])
+
+  // --- comparison operators ---
+
+  func operator==(other) -> bool:
+    if other is quantity:
+      _check_same_dim(other, '==')
+      return _v == other._v
+    // allow comparison with 0 for any dimension
+    if real(other) == 0.0:
+      return _v == 0.0
+    return false
+
+  func operator!=(other) -> bool:
+    if other is quantity:
+      _check_same_dim(other, '!=')
+      return _v != other._v
+    if real(other) == 0.0:
+      return _v != 0.0
+    return true
+
+  func operator<(other :quantity) -> bool:
+    _check_same_dim(other, '<')
+    return _v < other._v
+
+  func operator>(other :quantity) -> bool:
+    _check_same_dim(other, '>')
+    return _v > other._v
+
+  func operator<=(other :quantity) -> bool:
+    _check_same_dim(other, '<=')
+    return _v <= other._v
+
+  func operator>=(other :quantity) -> bool:
+    _check_same_dim(other, '>=')
+    return _v >= other._v
+
+  // --- conversion operators ---
+
+  func operator real() -> real:
+    if not _is_dimensionless():
+      raise 'cannot convert quantity with dimensions ' + _dim_label() + ' to real; only dimensionless quantities can be converted'
+    return _v
+
+  // --- string display ---
+
+  @implicit
+  func operator string() -> string:
+    // Display in the most natural unit for the dimension vector
+    // Use absolute value for range selection so negatives display correctly
+    var av = _v
+    if av < 0:
+      av = -av
+    // Length [1,0,0,0]
+    if _d == [1,0,0,0]:
+      if av >= 1.0:
+        return string(_v) + ' m'
+      if av >= 0.01:
+        return string(_v * 100.0) + ' cm'
+      if av >= 0.001:
+        return string(_v * 1000.0) + ' mm'
+      return string(_v * 1000000.0) + ' um'
+    // Time [0,1,0,0]
+    if _d == [0,1,0,0]:
+      if av >= 3600.0:
+        return string(_v / 3600.0) + ' hr'
+      if av >= 60.0:
+        return string(_v / 60.0) + ' min'
+      if av >= 1.0:
+        return string(_v) + ' s'
+      if av >= 0.001:
+        return string(_v * 1000.0) + ' ms'
+      return string(_v * 1000000.0) + ' us'
+    // Mass [0,0,1,0]
+    if _d == [0,0,1,0]:
+      if av >= 1.0:
+        return string(_v) + ' kg'
+      if av >= 0.001:
+        return string(_v * 1000.0) + ' g'
+      return string(_v * 1000000.0) + ' mg'
+    // Angle [0,0,0,1]
+    if _d == [0,0,0,1]:
+      return string(_v * 180.0 / 3.14159265358979323846) + ' deg'
+    // Velocity [1,-1,0,0]
+    if _d == [1,-1,0,0]:
+      return string(_v) + ' m/s'
+    // Acceleration [1,-2,0,0]
+    if _d == [1,-2,0,0]:
+      return string(_v) + ' m/s^2'
+    // Force [1,-2,1,0]
+    if _d == [1,-2,1,0]:
+      return string(_v) + ' N'
+    // Torque [2,-2,1,0]
+    if _d == [2,-2,1,0]:
+      return string(_v) + ' Nm'
+    // Angular velocity [0,-1,0,1]
+    if _d == [0,-1,0,1]:
+      return string(_v * 180.0 / 3.14159265358979323846) + ' deg/s'
+    // Dimensionless [0,0,0,0]
+    if _is_dimensionless():
+      return string(_v)
+    // Unknown dimension — show raw
+    return string(_v) + ' [' + _dim_label() + ']'
+
+  // --- property getters for value extraction ---
+  // Length getters
+  var meters :real:
+    get:
+      if _d != [1,0,0,0]:
+        raise 'cannot get meters from quantity with dimensions ' + _dim_label()
+      return _v
+  var millimeters :real:
+    get:
+      if _d != [1,0,0,0]:
+        raise 'cannot get millimeters from quantity with dimensions ' + _dim_label()
+      return _v * 1000.0
+  var centimeters :real:
+    get:
+      if _d != [1,0,0,0]:
+        raise 'cannot get centimeters from quantity with dimensions ' + _dim_label()
+      return _v * 100.0
+  var micrometers :real:
+    get:
+      if _d != [1,0,0,0]:
+        raise 'cannot get micrometers from quantity with dimensions ' + _dim_label()
+      return _v * 1000000.0
+  var inches :real:
+    get:
+      if _d != [1,0,0,0]:
+        raise 'cannot get inches from quantity with dimensions ' + _dim_label()
+      return _v / 0.0254
+  var feet :real:
+    get:
+      if _d != [1,0,0,0]:
+        raise 'cannot get feet from quantity with dimensions ' + _dim_label()
+      return _v / 0.3048
+  var mils :real:
+    get:
+      if _d != [1,0,0,0]:
+        raise 'cannot get mils from quantity with dimensions ' + _dim_label()
+      return _v / 0.0000254
+
+  // Mass getters
+  var kilograms :real:
+    get:
+      if _d != [0,0,1,0]:
+        raise 'cannot get kilograms from quantity with dimensions ' + _dim_label()
+      return _v
+  var grams :real:
+    get:
+      if _d != [0,0,1,0]:
+        raise 'cannot get grams from quantity with dimensions ' + _dim_label()
+      return _v * 1000.0
+  var milligrams :real:
+    get:
+      if _d != [0,0,1,0]:
+        raise 'cannot get milligrams from quantity with dimensions ' + _dim_label()
+      return _v * 1000000.0
+  var pounds :real:
+    get:
+      if _d != [0,0,1,0]:
+        raise 'cannot get pounds from quantity with dimensions ' + _dim_label()
+      return _v / 0.45359237
+  var ounces :real:
+    get:
+      if _d != [0,0,1,0]:
+        raise 'cannot get ounces from quantity with dimensions ' + _dim_label()
+      return _v / 0.0283495231
+
+  // Time getters
+  var seconds :real:
+    get:
+      if _d != [0,1,0,0]:
+        raise 'cannot get seconds from quantity with dimensions ' + _dim_label()
+      return _v
+  var milliseconds :real:
+    get:
+      if _d != [0,1,0,0]:
+        raise 'cannot get milliseconds from quantity with dimensions ' + _dim_label()
+      return _v * 1000.0
+  var microseconds :real:
+    get:
+      if _d != [0,1,0,0]:
+        raise 'cannot get microseconds from quantity with dimensions ' + _dim_label()
+      return _v * 1000000.0
+  var minutes :real:
+    get:
+      if _d != [0,1,0,0]:
+        raise 'cannot get minutes from quantity with dimensions ' + _dim_label()
+      return _v / 60.0
+  var hours :real:
+    get:
+      if _d != [0,1,0,0]:
+        raise 'cannot get hours from quantity with dimensions ' + _dim_label()
+      return _v / 3600.0
+
+  // Angle getters
+  var radians :real:
+    get:
+      if _d != [0,0,0,1]:
+        raise 'cannot get radians from quantity with dimensions ' + _dim_label()
+      return _v
+  var degrees :real:
+    get:
+      if _d != [0,0,0,1]:
+        raise 'cannot get degrees from quantity with dimensions ' + _dim_label()
+      return _v * 180.0 / 3.14159265358979323846
+
+
+// --- Suffix functions for quantity literals ---
+
+// Length
+@suffix("um")
+func _suf_um(v) -> quantity:
+  return quantity(v=real(v) * 0.000001, d=[1,0,0,0])
+
+@suffix("\u03BCm")
+func _suf_um2(v) -> quantity:
+  return quantity(v=real(v) * 0.000001, d=[1,0,0,0])
+
+@suffix("mm")
+func _suf_mm(v) -> quantity:
+  return quantity(v=real(v) * 0.001, d=[1,0,0,0])
+
+@suffix("cm")
+func _suf_cm(v) -> quantity:
+  return quantity(v=real(v) * 0.01, d=[1,0,0,0])
+
+@suffix("m")
+func _suf_m(v) -> quantity:
+  return quantity(v=real(v), d=[1,0,0,0])
+
+@suffix("in")
+func _suf_in(v) -> quantity:
+  return quantity(v=real(v) * 0.0254, d=[1,0,0,0])
+
+@suffix("ft")
+func _suf_ft(v) -> quantity:
+  return quantity(v=real(v) * 0.3048, d=[1,0,0,0])
+
+@suffix("mil")
+func _suf_mil(v) -> quantity:
+  return quantity(v=real(v) * 0.0000254, d=[1,0,0,0])
+
+// Mass
+@suffix("mg")
+func _suf_mg(v) -> quantity:
+  return quantity(v=real(v) * 0.000001, d=[0,0,1,0])
+
+@suffix("g")
+func _suf_g(v) -> quantity:
+  return quantity(v=real(v) * 0.001, d=[0,0,1,0])
+
+@suffix("kg")
+func _suf_kg(v) -> quantity:
+  return quantity(v=real(v), d=[0,0,1,0])
+
+@suffix("lb")
+func _suf_lb(v) -> quantity:
+  return quantity(v=real(v) * 0.45359237, d=[0,0,1,0])
+
+@suffix("oz")
+func _suf_oz(v) -> quantity:
+  return quantity(v=real(v) * 0.0283495231, d=[0,0,1,0])
+
+// Time
+@suffix("us")
+func _suf_us(v) -> quantity:
+  return quantity(v=real(v) * 0.000001, d=[0,1,0,0])
+
+@suffix("\u03BCs")
+func _suf_us2(v) -> quantity:
+  return quantity(v=real(v) * 0.000001, d=[0,1,0,0])
+
+@suffix("ms")
+func _suf_ms(v) -> quantity:
+  return quantity(v=real(v) * 0.001, d=[0,1,0,0])
+
+@suffix("s")
+func _suf_s(v) -> quantity:
+  return quantity(v=real(v), d=[0,1,0,0])
+
+@suffix("min")
+func _suf_min(v) -> quantity:
+  return quantity(v=real(v) * 60.0, d=[0,1,0,0])
+
+@suffix("hr")
+func _suf_hr(v) -> quantity:
+  return quantity(v=real(v) * 3600.0, d=[0,1,0,0])
+
+// Angle
+@suffix("rad")
+func _suf_rad(v) -> quantity:
+  return quantity(v=real(v), d=[0,0,0,1])
+
+@suffix("deg")
+func _suf_deg(v) -> quantity:
+  return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,0,0,1])
+
+// Velocity
+@suffix("mm/s")
+func _suf_mmps(v) -> quantity:
+  return quantity(v=real(v) * 0.001, d=[1,-1,0,0])
+
+@suffix("cm/s")
+func _suf_cmps(v) -> quantity:
+  return quantity(v=real(v) * 0.01, d=[1,-1,0,0])
+
+@suffix("m/s")
+func _suf_mps(v) -> quantity:
+  return quantity(v=real(v), d=[1,-1,0,0])
+
+// Acceleration
+@suffix("m/s^2")
+func _suf_mps2(v) -> quantity:
+  return quantity(v=real(v), d=[1,-2,0,0])
+
+@suffix("m/s\u00B2")
+func _suf_mps2u(v) -> quantity:
+  return quantity(v=real(v), d=[1,-2,0,0])
+
+// Force
+@suffix("N")
+func _suf_N(v) -> quantity:
+  return quantity(v=real(v), d=[1,-2,1,0])
+
+// Torque
+@suffix("Nm")
+func _suf_Nm(v) -> quantity:
+  return quantity(v=real(v), d=[2,-2,1,0])
+
+@suffix("N\u00B7m")
+func _suf_Ndotm(v) -> quantity:
+  return quantity(v=real(v), d=[2,-2,1,0])
+
+// Angular velocity
+@suffix("rad/s")
+func _suf_radps(v) -> quantity:
+  return quantity(v=real(v), d=[0,-1,0,1])
+
+@suffix("deg/s")
+func _suf_degps(v) -> quantity:
+  return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,-1,0,1])
+
