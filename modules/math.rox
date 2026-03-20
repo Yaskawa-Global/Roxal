@@ -283,6 +283,31 @@ type complex object:
   func conj() -> complex:
     return complex(re, -im)
 
+  // String representation: "a+bi", "a-bi", "bi", or "a"
+  @implicit
+  func operator string() -> string:
+    if im == 0.0:
+      return string(re)
+    if re == 0.0:
+      if im == 1.0:
+        return 'i'
+      if im == -1.0:
+        return '-i'
+      return string(im) + 'i'
+    if im < 0.0:
+      if im == -1.0:
+        return string(re) + '-i'
+      return string(re) + string(im) + 'i'
+    if im == 1.0:
+      return string(re) + '+i'
+    return string(re) + '+' + string(im) + 'i'
+
+
+// Imaginary literal suffix: 3i → complex(0, 3)
+@suffix("i")
+func _suf_i(v) -> complex:
+  return complex(im=real(v))
+
 
 // Example only: source signal updated from native code
 var _vecSignal :signal = signal(freq=20, initial=[0.0 0.0 0.0])

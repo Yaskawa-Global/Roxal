@@ -1030,9 +1030,24 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         emitByte(OpCode::ImportModuleVars);
     }
 
-    // Propagate registered suffixes from the imported module into this compiler's registry
+    // Propagate registered suffixes from the imported module into this compiler's registry.
+    // If the module was loaded from cache, registeredSuffixes may be empty;
+    // rebuild it by scanning function annotations.
     if (isModuleType(importedModuleType)) {
         ObjModuleType* imported = asModuleType(importedModuleType);
+        if (imported->registeredSuffixes.empty()) {
+            imported->vars.forEach([&](const VariablesMap::NameValue& nv) {
+                if (isClosure(nv.second)) {
+                    ObjFunction* fn = asFunction(asClosure(nv.second)->function);
+                    for (const auto& annot : fn->annotations) {
+                        if (annot->name == "suffix" && annot->args.size() == 1) {
+                            if (auto s = dynamic_ptr_cast<ast::Str>(annot->args[0].second))
+                                imported->registeredSuffixes[s->str] = nv.first;
+                        }
+                    }
+                }
+            });
+        }
         for (const auto& [suf, funcName] : imported->registeredSuffixes) {
             auto existing = suffixRegistry.find(suf);
             if (existing != suffixRegistry.end() && existing->second.moduleName != imported->name) {
