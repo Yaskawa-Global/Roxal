@@ -57,6 +57,16 @@ Some non-strict automatic conversions: (see conversions.md for details):
 Function body scope is strict by default.  To convert types in strict context, casting/constructor syntax is required. e.g. `byte(5)`, `string(6)`.  Most automatic convenience conversions available in non-strict context can be used with explicit construction in strict context.
 (strict vs non-strict can be controlled via annotations)
 
+**User-defined conversions** can be declared via `operator <type>()` methods on object types (see Operator Overloading section).  By default, user-defined conversions require explicit invocation (e.g., `string(obj)`).  Use annotations to control implicit behavior:
+
+| Annotation | Non-strict | Strict |
+|------------|-----------|--------|
+| *(none)* | Explicit only | Explicit only |
+| `@implicit` | Implicit OK | Implicit OK |
+| `@implicit(nonstrict_only=true)` | Implicit OK | Explicit only |
+
+**Constructor auto-conversion:** When a typed variable expects type `T` and receives a value of type `S`, if `T` has a constructor (`init`) with exactly one required parameter, `T(value)` is called automatically.  Mark a constructor `@explicit` to prevent this.
+
 ## Variables
 
 Variables are declared with `var`:

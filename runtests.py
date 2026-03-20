@@ -169,7 +169,9 @@ tests = [
     'operator_conv_proc_err', 'operator_conv_arity_err', 'operator_conv_rettype_err',
     'suffix_basic', 'suffix_braced', 'suffix_compound', 'suffix_string',
     'suffix_unknown_err', 'suffix_edge_cases',
-    'quantity_basic'
+    'quantity_basic',
+    'conv_explicit_default', 'conv_nonstrict_only',
+    'conv_constructor_auto', 'conv_constructor_explicit'
 ]
 
 grpc_tests = ['grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error', 'grpc_streaming', 'grpc_args']

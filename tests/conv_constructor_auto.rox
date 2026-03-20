@@ -1,0 +1,25 @@
+// Constructor auto-conversion via typed variable assignment.
+// A type with a single-required-param init() can auto-construct
+// when a compatible value is assigned to a typed variable.
+
+type Wrapper object:
+  var val :string = ''
+  proc init(s :string):
+    val = s
+
+// Explicit construction
+var w1 :Wrapper = Wrapper('explicit')
+print(w1.val)
+
+// Auto-construction via typed variable: string auto-constructs Wrapper
+var w2 :Wrapper = 'auto-converted'
+print(w2.val)
+
+// Also works with different source types
+type IntBox object:
+  var n :int = 0
+  proc init(n :int):
+    this.n = n
+
+var b :IntBox = 42
+print(b.n)

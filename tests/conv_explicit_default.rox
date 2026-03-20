@@ -1,0 +1,13 @@
+// Without @implicit, operator string() only works with explicit string(obj)
+type Item object:
+  var val = 0
+  proc init(val):
+    this.val = val
+  func operator string():
+    return "Item(" + string(val) + ")"
+
+var i = Item(42)
+// Explicit always works
+print(string(i))
+// print() without @implicit falls back to default repr
+print(i)

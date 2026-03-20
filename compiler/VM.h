@@ -250,6 +250,12 @@ public:
     // or not allowed in current strict context when implicitCall is true).
     Value findConversionMethod(const Value& instanceType, int32_t hash, bool implicitCall);
 
+    // Check if a value can be converted to the target type.
+    // Considers: exact type match, builtin conversions, user-defined conversion operators,
+    // and single-required-param constructor auto-conversion.
+    // implicitCall: if true, only considers conversions marked @implicit (or @implicit(nonstrict_only=true) in non-strict)
+    bool canConvertToType(const Value& val, const Value& targetTypeSpec, bool implicitCall) const;
+
     /// Invoke a closure with arguments. Executes until completion or deadline.
     /// Returns {OK, value} on completion, {Yielded, nil} if deadline exceeded,
     /// {RuntimeError, nil} on error.

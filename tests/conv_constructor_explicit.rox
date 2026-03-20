@@ -1,0 +1,9 @@
+// @explicit on constructor blocks auto-conversion via typed var assignment
+type Strict object:
+  var val :string = ''
+  @explicit
+  proc init(s :string):
+    val = s
+
+// Auto-construction via typed var should fail
+var s :Strict = 'should fail'

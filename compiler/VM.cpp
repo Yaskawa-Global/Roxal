@@ -2872,6 +2872,71 @@ Value VM::findConversionMethod(const Value& instanceType, int32_t hash, bool imp
 }
 
 
+bool VM::canConvertToType(const Value& val, const Value& targetTypeSpec, bool implicitCall) const
+{
+    // 1. Already the target type?
+    if (val.is(targetTypeSpec))
+        return true;
+
+    if (!isTypeSpec(targetTypeSpec))
+        return false;
+
+    ObjTypeSpec* ts = asTypeSpec(targetTypeSpec);
+
+    // 2. For builtin target types, check if the source can convert via builtin rules
+    if (ts->typeValue != ValueType::Object && ts->typeValue != ValueType::Actor
+        && ts->typeValue != ValueType::Nil) {
+
+        // Builtin-to-builtin: these generally succeed (int→real, etc.)
+        if (!val.isObj() || isString(val))
+            return true;
+
+        // Object/actor → builtin: check for user-defined conversion operator
+        if (isObjectInstance(val) || isActorInstance(val)) {
+            Value instType = isObjectInstance(val)
+                ? asObjectInstance(val)->instanceType
+                : asActorInstance(val)->instanceType;
+            UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(ts->typeValue));
+            int32_t convHash = convName.hashCode();
+            // Use const_cast since findConversionMethod isn't const but doesn't modify state
+            // when only checking (implicitCall logic reads thread which is safe)
+            Value closure = const_cast<VM*>(this)->findConversionMethod(instType, convHash, implicitCall);
+            if (!closure.isNil())
+                return true;
+        }
+        return false;
+    }
+
+    // 3. For object/actor target types: check constructor-based auto-conversion
+    if (ts->typeValue == ValueType::Object || ts->typeValue == ValueType::Actor) {
+        ObjObjectType* targetType = asObjectType(targetTypeSpec);
+
+        // Find init method on target type
+        ObjObjectType* tInit = targetType;
+        const ObjObjectType::Method* initMethod = nullptr;
+        while (tInit != nullptr && initMethod == nullptr) {
+            auto it = tInit->methods.find(asStringObj(initString)->hash);
+            if (it != tInit->methods.end())
+                initMethod = &it->second;
+            else
+                tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
+        }
+
+        if (initMethod != nullptr && isClosure(initMethod->closure)) {
+            ObjFunction* initFunc = asFunction(asClosure(initMethod->closure)->function);
+
+            // Check: single required param (arity == 1) and not @explicit
+            if (initFunc->arity == 1 && !hasExplicitAnnotation(initMethod->closure)) {
+                // Constructor auto-conversion eligible
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+
 bool VM::tryDispatchBinaryOperator(const OperatorHashes& hashes)
 {
     Value& rhs = peek(0);
@@ -4205,10 +4270,31 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 for(size_t pi=0; pi<params.size(); ++pi) {
                     const auto& paramOpt = params[pi];
                     if (paramOpt.has_value() && paramOpt->type.has_value()) {
-                        auto vt = builtinToValueType(paramOpt->type.value()->builtin);
+                        auto& paramType = paramOpt->type.value();
+                        Value& arg = *(frame->slots + 1 + pi);
+
+                        // User-defined Object/Actor parameter types: check type match.
+                        // Constructor auto-conversion for function params is handled by
+                        // the compiler emitting ToTypeSpec opcodes (TODO: future improvement).
+                        if ((paramType->builtin == type::BuiltinType::Object
+                             || paramType->builtin == type::BuiltinType::Actor)
+                            && paramType->obj.has_value()) {
+                            auto& typeName = paramType->obj.value().name;
+                            auto typeVal = asModuleType(
+                                asFunction(asClosure(frame->closure)->function)->moduleType
+                            )->vars.load(typeName);
+                            if (typeVal.has_value() && isTypeSpec(typeVal.value()) && !arg.is(typeVal.value())) {
+                                runtimeError("unable to convert " + to_string(arg.type())
+                                             + " to " + toUTF8StdString(typeName));
+                                return std::make_pair(ExecutionStatus::RuntimeError, Value::nilVal());
+                            }
+                            continue;
+                        }
+
+                        auto vt = builtinToValueType(paramType->builtin);
                         if (!vt.has_value()) continue;
                         try {
-                            *(frame->slots + 1 + pi) = toType(vt.value(), *(frame->slots + 1 + pi), strictConv);
+                            arg = toType(vt.value(), arg, strictConv);
                         } catch(std::exception& e) {
                             runtimeError(e.what());
                             return std::make_pair(ExecutionStatus::RuntimeError,Value::nilVal());
@@ -6370,11 +6456,45 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 Value typeSpec = pop();
                 Value& val = peek(0);
 
-                // Check for user-defined conversion on object/actor instances
-                if ((isObjectInstance(val) || isActorInstance(val)) && isTypeSpec(typeSpec)) {
+                // Already the target type? No conversion needed.
+                if (val.is(typeSpec))
+                    break;
+
+                if (isTypeSpec(typeSpec)) {
                     ObjTypeSpec* ts = asTypeSpec(typeSpec);
-                    // For builtin target types, check for operator->TARGET conversion method
-                    if (ts->typeValue != ValueType::Object && ts->typeValue != ValueType::Actor
+
+                    // Constructor-based auto-conversion for Object/Actor target types.
+                    // Takes precedence over conversion operators.
+                    // Eligible when target type has init with arity==1 and no @explicit.
+                    if ((ts->typeValue == ValueType::Object || ts->typeValue == ValueType::Actor)
+                        && !val.is(typeSpec)) {
+                        ObjObjectType* targetType = asObjectType(typeSpec);
+                        ObjObjectType* tInit = targetType;
+                        const ObjObjectType::Method* initMethod = nullptr;
+                        while (tInit && !initMethod) {
+                            auto it = tInit->methods.find(asStringObj(initString)->hash);
+                            if (it != tInit->methods.end())
+                                initMethod = &it->second;
+                            else
+                                tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
+                        }
+                        if (initMethod && isClosure(initMethod->closure)) {
+                            ObjFunction* initFunc = asFunction(asClosure(initMethod->closure)->function);
+                            if (initFunc->arity == 1 && !hasExplicitAnnotation(initMethod->closure)) {
+                                // Auto-construct: push type as callee, value is already on stack as arg
+                                Value argVal = pop();
+                                push(typeSpec);  // callee (type constructor)
+                                push(argVal);    // argument
+                                callValue(typeSpec, CallSpec(1));
+                                frame = thread->frames.end() - 1;
+                                break;
+                            }
+                        }
+                    }
+
+                    // User-defined conversion on object/actor instances → builtin target
+                    if ((isObjectInstance(val) || isActorInstance(val))
+                        && ts->typeValue != ValueType::Object && ts->typeValue != ValueType::Actor
                         && ts->typeValue != ValueType::Nil) {
                         UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(ts->typeValue));
                         int32_t convHash = convName.hashCode();
