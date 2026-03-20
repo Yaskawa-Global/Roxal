@@ -2424,9 +2424,6 @@ std::any RoxalCompiler::visit(ptr<ast::TryStatement> ast)
         exceptionVarStack.pop_back();
         exitLocalScope();
 
-        if (!ec.name.has_value())
-            emitByte(OpCode::Pop, "exception");
-
         if (ast->finallySuite.has_value())
             ast->finallySuite.value()->accept(*this);
 

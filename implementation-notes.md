@@ -38,6 +38,95 @@ The main execution loop is `VM::execute(TimePoint deadline)`, which processes by
 The deadline parameter enables incremental execution for real-time integration, where the VM can be run for a bounded time period and then yield control back to the caller with its state preserved for later resumption.
 
 
+## Calling Convention
+
+The VM is stack-based. All function/method calls follow a push-args-then-call
+pattern, but the details differ between Roxal closures and native (C++) functions.
+
+### Roxal Closures
+
+**Caller** (bytecode emitted by the compiler):
+1. Push the **callee** value (closure or bound method) onto the stack
+2. Push **arguments** left-to-right
+3. Emit `OpCode::Call` (or `OpCode::Invoke` for method calls)
+
+Stack before call: `[...][callee][arg0][arg1]...[argN-1] ← stackTop`
+
+**`call(ObjClosure*, CallSpec)`** (VM.cpp):
+- Handles named-arg reordering, default parameters (including closure-evaluated
+  defaults pushed via temporary `defValFrames`), and variadic arg collection
+- Creates a `CallFrame` with `slots` pointing at the callee slot:
+  `slots = stackTop - argCount - 1`
+- The callee slot (`slots[0]`) serves as `this` / the closure value; locals
+  start at `slots[1]`
+- Pushes the frame onto `thread->frames` and returns `true`
+- The dispatch loop continues executing the callee's bytecode
+
+**`opReturn()`** (on `OpCode::Return` / `OpCode::ReturnStore`):
+- Pops the return value from the stack
+- Closes upvalues for the returning frame
+- Pops the frame from `thread->frames`
+- Pops all values from `stackTop` down to `frame.slots` (inclusive), which
+  removes the callee slot and all locals/temporaries
+- Returns the result value
+
+Back in the `Return` opcode handler, the result is pushed onto the stack.
+Net effect: the entire call footprint (callee + args + locals) is replaced by
+one result value.
+
+### Native (C++) Functions
+
+Native functions are registered as `NativeFn` (a `std::function`) and wrapped
+in `ObjNative` (standalone) or `ObjBoundNative` (method with receiver). They
+are dispatched through `callNativeFn()`.
+
+**Key difference from closures:** no `CallFrame` is pushed. The native
+function executes inline within `callNativeFn` and returns a `Value` directly.
+
+**`callNativeFn(fn, funcType, defaults, callSpec, includeReceiver, receiver, ...)`:**
+
+*Typed path* (when `funcType` is non-null):
+1. `marshalArgs()` copies arguments from the stack into a local buffer,
+   reordering named params and applying defaults
+2. The native `fn` is called with an `ArgsView` into that local buffer
+3. Cleanup: `*(stackTop - argCount - 1) = result; popN(argCount);` — writes
+   the result into the callee slot, then pops the args
+
+*Untyped path* (when `funcType` is null):
+1. An `ArgsView` is constructed pointing directly into the stack:
+   `base = stackTop - argCount - (includeReceiver ? 1 : 0)`
+2. The native `fn` is called with this view
+3. Same cleanup pattern as the typed path
+
+In both cases, the callee+args footprint is replaced by the result, matching
+the net stack effect of a Roxal closure call.
+
+### Native Functions with Continuations
+
+When a native function needs to execute Roxal code (e.g., `print()` calling
+`operator->string()`, or `list.map()` calling a predicate), it cannot re-enter
+the dispatch loop. Instead it uses the `NativeContinuation` mechanism:
+
+1. The native sets up `thread->nativeContinuation` (state + `onComplete`
+   callback) and optionally sets `resultSlot` / `stackBase` for stack cleanup
+2. It calls `pushContinuationCall()`, which pushes closure + args and calls
+   `call()`, creating a new frame marked `isContinuationCallback = true`
+3. The native returns a dummy value — `callNativeFn` detects that new frames
+   were pushed (`thisCallPushedFrames`) and skips the normal callee+args
+   cleanup, since the continuation frames sit on top of that area
+4. If the continuation did not set a `resultSlot`, `callNativeFn` fills one in
+   automatically to cover the original callee+args area
+5. The dispatch loop executes the Roxal callback naturally
+6. When the callback returns, `opReturn` sets `continuationCallbackReturned`
+7. `processContinuationDispatch()` pops the result, calls `onComplete`, and
+   either pushes the next iteration's frame or finalizes: pops the original
+   call's footprint (via `resultSlot` / `stackBase`) and pushes the final result
+
+On exception unwind, `unwindFrame()` detects continuation callback frames and
+extends the pop range to include the original call's footprint using
+`resultSlot`, then clears the continuation.
+
+
 ## Types & Values
 
 Runtime values in the language are represented by the Value class, which wraps a 64bit value.  This holds builtin primitives (`bool`, `int`, `real`, `decimal`, `enum`) and references to reference types.  The implementation uses NaN-boxing, whereby the full 64bit are used as a C double for the type `real`, but if the Quiet NaN (Not-a-Number) flags are set, then, it is instead assumed to be one of the other types, as stored in the type tag.

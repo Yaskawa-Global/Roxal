@@ -36,6 +36,8 @@ To see the compiled bytecods, use the --dis option (with --recompile).
 
 Don't forget that .rox script require a newline before EOF and the output of print() is a newline, so most .out files end in a newline.
 
+NEVER adapt the expected output or error files to match known bugs - the expected output should ALWAYS reflect the correct output (so that tests fail due to bugs, known or not).  Tests known to fail due to known bugs or unimplemented features can be added to the `failing_tests` list in runtests.py
+
 Read the conversions.md for information about type conversions (as needed) and/or `implementation-notes.md` about the implementation generally.
 
 See also `roxal-for-devs.md`

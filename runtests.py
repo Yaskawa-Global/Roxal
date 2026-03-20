@@ -204,7 +204,7 @@ long_running_tests = [
 ]
 
 # implementation doesn't yet allow these tests to pass (do not add to this list without human consent)
-failing_tests = ['signal_network1', 'stack_depth_check']  # stack_depth_check: pre-existing nativeContinuation stack leak + exception unwind bug
+failing_tests = ['signal_network1']
 assert(set(failing_tests).issubset(set(tests) | set(long_running_tests)))
 
 

@@ -610,8 +610,18 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 currentThread->exceptionJumpPending.store(false, std::memory_order_relaxed);
                 return true;
             }
-            if (thisCallPushedFrames)
+            if (thisCallPushedFrames) {
+                // Native set up a continuation — ensure resultSlot/stackBase are set
+                // so processContinuationDispatch (or unwindFrame on exception) can
+                // clean up the original callee+args area.
+                auto& cont = thread->nativeContinuation;
+                if (cont.active && !cont.resultSlot) {
+                    size_t calleePos = stackDepthBefore - callSpec.argCount - 1;
+                    cont.resultSlot = &*(thread->stack.begin() + calleePos);
+                    cont.stackBase = thread->stack.begin() + calleePos + 1;
+                }
                 return true;
+            }
             *(thread->stackTop - callSpec.argCount - 1) = result;
             popN(callSpec.argCount);
             return true;
@@ -660,8 +670,15 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 currentThread->exceptionJumpPending.store(false, std::memory_order_relaxed);
                 return true;
             }
-            if (thisCallPushedFrames2)
+            if (thisCallPushedFrames2) {
+                auto& cont = thread->nativeContinuation;
+                if (cont.active && !cont.resultSlot) {
+                    size_t calleePos = stackDepthBefore - callSpec.argCount - 1;
+                    cont.resultSlot = &*(thread->stack.begin() + calleePos);
+                    cont.stackBase = thread->stack.begin() + calleePos + 1;
+                }
                 return true;
+            }
             *(thread->stackTop - callSpec.argCount - 1) = result;
             popN(callSpec.argCount);
             return true;

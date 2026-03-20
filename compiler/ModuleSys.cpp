@@ -730,8 +730,10 @@ Value ModuleSys::print_builtin(VM& vm, ArgsView args)
                 std::string valueStr = isString(converted) ? toUTF8StdString(asUString(converted)) : toString(converted);
                 std::cout << valueStr << endStr;
                 if (flush) std::cout << std::flush;
+                // Push nil (print's return value) as the final result.
+                // processContinuationDispatch will clean up the original
+                // callee+args via resultSlot/stackBase set by callNativeFn.
                 vm.push(Value::nilVal());
-                vm.clearContinuation();
                 return true;
             };
 
