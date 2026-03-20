@@ -246,9 +246,9 @@ public:
     // Pending conversion operator support (for OpCode::Add string concatenation etc.)
     // Uses a stack to support nested conversions (e.g. Outer.operator->string uses Inner in concat)
     struct PendingConversion {
-        enum class Kind { Concat };
+        enum class Kind { Concat, TypeConversion };
         Kind kind;
-        Value savedLHS;              // saved LHS string for concatenation
+        Value savedLHS;              // saved LHS string for concatenation (Concat only)
         Value convReceiver;          // receiver being converted (for recursion guard)
         size_t frameDepth { 0 };     // frame count when conversion was set up
     };

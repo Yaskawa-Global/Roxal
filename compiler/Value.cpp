@@ -509,6 +509,9 @@ bool Value::asBool(bool strict) const
         else if (v->asObj()->type == ObjType::Bool) {
             return asObjPrimitive(*v)->as.boolean;
         }
+        else if (isObjectInstance(*v) || isActorInstance(*v)) {
+            throw std::invalid_argument("unable to convert object to bool");
+        }
     }
     return false;
 }
@@ -574,6 +577,9 @@ uint8_t Value::asByte(bool strict) const
                 return std::stoi(str,nullptr,10);
             } catch(...) { return 0; }
         }
+        else if (isObjectInstance(*v) || isActorInstance(*v)) {
+            throw std::invalid_argument("unable to convert object to byte");
+        }
     }
     if (strict)
         throw std::invalid_argument("unable to convert " + to_string(v->type()) + " to byte in strict mode");
@@ -632,6 +638,9 @@ int64_t Value::asInt(bool strict) const
                 }
                 return std::stoll(str,nullptr,10);
             } catch(...) { return 0; }
+        }
+        else if (isObjectInstance(*v) || isActorInstance(*v)) {
+            throw std::invalid_argument("unable to convert object to int");
         }
     }
     if (strict)
@@ -695,6 +704,9 @@ double Value::asReal(bool strict) const
                 auto str { toUTF8StdString(asStringObj(*v)->s) };
                 return std::stod(str);
             } catch(...) { return 0.0; }
+        }
+        else if (isObjectInstance(*v) || isActorInstance(*v)) {
+            throw std::invalid_argument("unable to convert object to real");
         }
     }
     if (strict)

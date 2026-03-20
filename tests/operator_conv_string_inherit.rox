@@ -3,6 +3,7 @@ type Base object:
   var name = "base"
   proc init(name):
     this.name = name
+  @implicit
   func operator string():
     return "<" + name + ">"
 

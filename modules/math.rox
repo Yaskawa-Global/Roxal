@@ -302,6 +302,12 @@ type complex object:
       return string(re) + '+i'
     return string(re) + '+' + string(im) + 'i'
 
+  // Explicit conversion to real — only if imaginary part is zero
+  func operator real() -> real:
+    if im != 0.0:
+      raise 'cannot convert complex with non-zero imaginary part to real'
+    return re
+
 
 // Imaginary literal suffix: 3i → complex(0, 3)
 @suffix("i")

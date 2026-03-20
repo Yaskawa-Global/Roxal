@@ -2818,6 +2818,38 @@ Value VM::findOperatorMethod(ObjObjectType* type, int32_t hash)
 }
 
 
+// Annotation mode for user-defined conversion operators
+enum class ImplicitMode {
+    ExplicitOnly,    // no annotation — explicit conversion required everywhere
+    Everywhere,      // @implicit — implicit conversion allowed in all contexts
+    NonstrictOnly    // @implicit(nonstrict_only=true) — implicit in non-strict only
+};
+
+static ImplicitMode getImplicitMode(const Value& closureVal)
+{
+    auto* funcObj = asFunction(asClosure(closureVal)->function);
+    for (const auto& annot : funcObj->annotations) {
+        if (annot->name == "implicit") {
+            for (const auto& arg : annot->args) {
+                if (arg.first == toUnicodeString("nonstrict_only")) {
+                    if (auto b = dynamic_ptr_cast<ast::Bool>(arg.second))
+                        if (b->value) return ImplicitMode::NonstrictOnly;
+                }
+            }
+            return ImplicitMode::Everywhere;
+        }
+    }
+    return ImplicitMode::ExplicitOnly;
+}
+
+static bool hasExplicitAnnotation(const Value& closureVal)
+{
+    auto* funcObj = asFunction(asClosure(closureVal)->function);
+    for (const auto& annot : funcObj->annotations)
+        if (annot->name == "explicit") return true;
+    return false;
+}
+
 Value VM::findConversionMethod(const Value& instanceType, int32_t hash, bool implicitCall)
 {
     Value closure = findOperatorMethod(asObjectType(instanceType), hash);
@@ -2825,17 +2857,16 @@ Value VM::findConversionMethod(const Value& instanceType, int32_t hash, bool imp
         return Value::nilVal();
 
     if (implicitCall) {
-        bool strictCtx = !thread->frames.empty()
-                         && (thread->frames.end()-1)->strict;
-        if (strictCtx) {
-            // Check for @implicit annotation on the conversion method
-            auto* funcObj = asFunction(asClosure(closure)->function);
-            bool hasImplicit = false;
-            for (const auto& annot : funcObj->annotations)
-                if (annot->name == "implicit") { hasImplicit = true; break; }
-            if (!hasImplicit)
-                return Value::nilVal();
+        ImplicitMode mode = getImplicitMode(closure);
+        if (mode == ImplicitMode::ExplicitOnly)
+            return Value::nilVal();  // no @implicit — require explicit conversion
+        if (mode == ImplicitMode::NonstrictOnly) {
+            bool strictCtx = !thread->frames.empty()
+                             && (thread->frames.end()-1)->strict;
+            if (strictCtx)
+                return Value::nilVal();  // nonstrict_only in strict context — block
         }
+        // ImplicitMode::Everywhere always proceeds
     }
     return closure;
 }
@@ -2877,6 +2908,39 @@ bool VM::tryDispatchBinaryOperator(const OperatorHashes& hashes)
 
     if (methodClosure.isNil())
         return false;
+
+    // Check parameter type compatibility: if the operator method declares a type
+    // for its parameter, verify the argument is compatible before dispatching.
+    // This prevents e.g. quantity.operator+(other :quantity) from being dispatched
+    // when the other operand is a string.
+    {
+        Value arg = swapped ? lhs : rhs;
+        ObjFunction* fn = asFunction(asClosure(methodClosure)->function);
+        if (fn->funcType.has_value() && fn->funcType.value()->func.has_value()) {
+            auto& params = fn->funcType.value()->func.value().params;
+            if (!params.empty() && params[0].has_value() && params[0]->type.has_value()) {
+                auto& paramType = params[0]->type.value();
+                // For object/actor parameter types, check if arg is that type
+                if (paramType->builtin == type::BuiltinType::Object && paramType->obj.has_value()) {
+                    if (!arg.is(Value::nilVal()) && isObjectInstance(arg)) {
+                        auto* argType = asObjectType(asObjectInstance(arg)->instanceType);
+                        auto& expectedName = paramType->obj.value().name;
+                        // Walk supertype chain for compatibility
+                        bool compatible = false;
+                        auto* t = argType;
+                        while (t) {
+                            if (t->name == expectedName) { compatible = true; break; }
+                            t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+                        }
+                        if (!compatible)
+                            return false;  // parameter type mismatch — skip this operator
+                    } else if (!isObjectInstance(arg)) {
+                        return false;  // operator expects object type, arg is not an object
+                    }
+                }
+            }
+        }
+    }
 
     // Set up stack: [receiver, arg]
     Value r = pop();
@@ -4049,6 +4113,10 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     : toUnicodeString(toString(converted));
                 push(Value::stringVal(lhs + rhs));
             }
+            else if (pending.kind == Thread::PendingConversion::Kind::TypeConversion) {
+                // Conversion method returned the converted value — push it
+                push(converted);
+            }
         }
 
         // Clean up stale conversion recursion guards (for explicit TargetType(obj) calls
@@ -4058,7 +4126,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             guards.erase(
                 std::remove_if(guards.begin(), guards.end(),
                     [&](const Thread::ConversionGuard& g) {
-                        return thread->frames.size() < g.frameDepth;
+                        return thread->frames.size() <= g.frameDepth;
                     }),
                 guards.end());
         }
@@ -5477,11 +5545,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
-                if (tryDispatchBinaryOperator(opHashAdd)) {
-                    frame = thread->frames.end() - 1;
-                    break;
-                }
-
+                // String concatenation takes priority when LHS is a string
+                // (string behaves as if it has a built-in operator+)
                 if (isString(peek(1))) {
                     // Check for conversion operator on RHS before falling to concatenate()
                     if (!isString(peek(0)) && (isObjectInstance(peek(0)) || isActorInstance(peek(0)))) {
@@ -5515,6 +5580,10 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     }
                     concatenate();
                 } else {
+                    if (tryDispatchBinaryOperator(opHashAdd)) {
+                        frame = thread->frames.end() - 1;
+                        break;
+                    }
                     try {
                         binaryOp([](Value l, Value r) -> Value { return add(l, r); });
                     } catch (std::exception& e) {
@@ -6295,20 +6364,49 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
-            case OpCode::ToTypeSpec: {
-                Value typeSpec = pop();
-                try {
-                    peek(0) = toType(typeSpec, peek(0), /*strict=*/false);
-                } catch(std::exception& e) {
-                    runtimeError(e.what());
-                    return errorReturn;
-                }
-                break;
-            }
+            case OpCode::ToTypeSpec:
             case OpCode::ToTypeSpecStrict: {
+                bool strict = (instruction == OpCode::ToTypeSpecStrict);
                 Value typeSpec = pop();
+                Value& val = peek(0);
+
+                // Check for user-defined conversion on object/actor instances
+                if ((isObjectInstance(val) || isActorInstance(val)) && isTypeSpec(typeSpec)) {
+                    ObjTypeSpec* ts = asTypeSpec(typeSpec);
+                    // For builtin target types, check for operator->TARGET conversion method
+                    if (ts->typeValue != ValueType::Object && ts->typeValue != ValueType::Actor
+                        && ts->typeValue != ValueType::Nil) {
+                        UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(ts->typeValue));
+                        int32_t convHash = convName.hashCode();
+                        Value instType = isObjectInstance(val)
+                            ? asObjectInstance(val)->instanceType
+                            : asActorInstance(val)->instanceType;
+                        // Check recursion guard
+                        bool inProgress = false;
+                        for (const auto& g : thread->conversionInProgress)
+                            if (g.receiver.is(val, false)) { inProgress = true; break; }
+                        if (!inProgress) {
+                            Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true);
+                            if (!closure.isNil()) {
+                                Value receiver = val;
+                                pop(); // remove value from stack
+                                thread->pendingConversions.push_back({
+                                    Thread::PendingConversion::Kind::TypeConversion,
+                                    Value::nilVal(), receiver, thread->frames.size()
+                                });
+                                thread->conversionInProgress.push_back({receiver, thread->frames.size()});
+                                push(receiver); // push as receiver for method call
+                                call(asClosure(closure), CallSpec(0));
+                                frame = thread->frames.end() - 1;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Fallback: builtin conversion
                 try {
-                    peek(0) = toType(typeSpec, peek(0), /*strict=*/true);
+                    val = toType(typeSpec, val, strict);
                 } catch(std::exception& e) {
                     runtimeError(e.what());
                     return errorReturn;

@@ -53,6 +53,14 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
         visitCallFrameRoots(frame, visitor);
     }
 
+    for (const auto& pending : thread.pendingConversions) {
+        visitStrongValue(visitor, pending.savedLHS);
+        visitStrongValue(visitor, pending.convReceiver);
+    }
+    for (const auto& guard : thread.conversionInProgress) {
+        visitStrongValue(visitor, guard.receiver);
+    }
+
     for (const auto& entry : thread.eventHandlers) {
         visitStrongValue(visitor, entry.first);
         for (const auto& reg : entry.second) {
@@ -93,6 +101,7 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
     visitStrongValue(visitor, thread.currentBoundCall);
     visitStrongValue(visitor, thread.pendingWaitFor);
     visitStrongValue(visitor, thread.awaitedFuture);
+    visitStrongValue(visitor, thread.pendingConstructorInstance);
 
     // Trace native continuation state (e.g., filter/map/reduce iteration)
     if (thread.nativeContinuation.active) {

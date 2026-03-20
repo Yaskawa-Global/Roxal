@@ -1,9 +1,9 @@
-# In strict context (function body), conversion is NOT implicit without @implicit
-# but explicit string(obj) still works
+# @implicit(nonstrict_only=true): implicit in non-strict, explicit required in strict
 type Item object:
   var val = 0
   proc init(val):
     this.val = val
+  @implicit(nonstrict_only=true)
   func operator string():
     return "Item(" + string(val) + ")"
 
@@ -13,7 +13,7 @@ func test(item):
   print(s)
 
 var i = Item(42)
-# Module scope is non-strict, so implicit works
+# Module scope is non-strict, so implicit works with nonstrict_only
 print("implicit: " + i)
 # Explicit works everywhere
 test(i)
