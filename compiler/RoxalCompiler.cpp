@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 23;
+constexpr std::uint32_t ModuleCacheVersion = 24;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -2793,6 +2793,31 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
     uint16_t var = identifierConstant(ast->name); // create constant table entry for name
 
     defineVariable(var);
+
+    // Emit type conversion for typed parameters (same pattern as variable declarations).
+    // This gives function parameters full conversion support (builtin, user-defined, constructor).
+    if (ast->type.has_value()) {
+        auto localIdx = resolveLocal(funcScope(), ast->name);
+        if (localIdx >= 0) {
+            bool emitConversion = true;
+            if (std::holds_alternative<BuiltinType>(*ast->type)) {
+                emitOpArgsBytes(OpCode::GetLocal, localIdx);
+                emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                          uint8_t(builtinToValueType(std::get<BuiltinType>(*ast->type))));
+            } else {
+                // User-defined type: emit namedVariable to push the type, then ToTypeSpec.
+                // namedVariable may fail for unknown names (e.g., 'str') — resolved at runtime
+                // via GetModuleVar which will error if the type doesn't exist.
+                emitOpArgsBytes(OpCode::GetLocal, localIdx);
+                if (!namedVariable(std::get<icu::UnicodeString>(*ast->type), false)) {
+                    namedModuleVariable(std::get<icu::UnicodeString>(*ast->type));
+                }
+                emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+            }
+            emitOpArgsBytes(OpCode::SetLocal, localIdx);
+            emitByte(OpCode::Pop);
+        }
+    }
 
     // Actor method params are implicitly const (isolation boundary) unless explicitly mutable.
     // Explicit const-qualified params are also frozen and marked isConst on the local.

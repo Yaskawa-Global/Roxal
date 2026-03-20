@@ -171,7 +171,8 @@ tests = [
     'suffix_unknown_err', 'suffix_edge_cases',
     'quantity_basic',
     'conv_explicit_default', 'conv_nonstrict_only',
-    'conv_constructor_auto', 'conv_constructor_explicit'
+    'conv_constructor_auto', 'conv_constructor_explicit',
+    'conv_func_param_auto'
 ]
 
 grpc_tests = ['grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error', 'grpc_streaming', 'grpc_args']

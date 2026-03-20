@@ -1847,28 +1847,21 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
         // Check for user-defined conversion operator as fallback before construct()
         if (callSpec.argCount == 1 && (isObjectInstance(*argBegin) || isActorInstance(*argBegin))) {
             Value arg = *argBegin;
-            // Recursion guard
-            bool inProgress = false;
-            for (const auto& g : thread->conversionInProgress)
-                if (g.receiver.is(arg, false)) { inProgress = true; break; }
-            if (!inProgress) {
-                Value instType = isObjectInstance(arg)
-                    ? asObjectInstance(arg)->instanceType
-                    : asActorInstance(arg)->instanceType;
-                // Build hash for "operator->TARGET" from the builtin type name
-                UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(builtinType));
-                int32_t convHash = convName.hashCode();
-                Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/false);
-                if (!closure.isNil()) {
-                    thread->conversionInProgress.push_back({arg, thread->frames.size()});
-                    // Set up conversion call: replace callee+arg with receiver, call method
-                    *(thread->stackTop - callSpec.argCount - 1) = arg; // receiver
-                    popN(callSpec.argCount); // pop args (receiver is already in callee slot)
-                    CallSpec cs{0};
-                    call(asClosure(closure), cs);
-                    return true;
-                }
+            // Remove callee+arg from stack; tryConvertValue manages stack for async
+            popN(callSpec.argCount + 1);
+            auto outcome = tryConvertValue(arg, Value::typeVal(builtinType), false, /*implicitCall=*/false,
+                                           Thread::PendingConversion::Kind::TypeConversion);
+            if (outcome.result == ConversionResult::NeedsAsyncFrame)
+                return true;
+            if (outcome.result == ConversionResult::ConvertedSync) {
+                push(outcome.convertedValue);
+                return true;
             }
+            // No conversion operator — restore stack and fall through to construct()
+            push(Value::typeVal(builtinType)); // callee placeholder
+            push(arg);
+            argBegin = thread->stackTop - 1;
+            argEnd = thread->stackTop;
         }
 
         *(thread->stackTop - callSpec.argCount - 1) = construct(builtinType, argBegin, argEnd);
@@ -2934,6 +2927,101 @@ bool VM::canConvertToType(const Value& val, const Value& targetTypeSpec, bool im
     }
 
     return false;
+}
+
+
+VM::ConversionOutcome VM::tryConvertValue(
+    const Value& val,
+    const Value& targetTypeSpec,
+    bool strict,
+    bool implicitCall,
+    Thread::PendingConversion::Kind pendingKind,
+    const Value& savedContext)
+{
+    // 1. Already the target type?
+    if (val.is(targetTypeSpec))
+        return { ConversionResult::AlreadyCorrectType, Value::nilVal() };
+
+    // Resolve target type: accept both ObjTypeSpec and inline type tags
+    ValueType targetVT = ValueType::Nil;
+    if (isTypeSpec(targetTypeSpec)) {
+        targetVT = asTypeSpec(targetTypeSpec)->typeValue;
+    } else if (targetTypeSpec.isType()) {
+        targetVT = targetTypeSpec.asType();
+    } else {
+        return { ConversionResult::Failed, Value::nilVal() };
+    }
+
+    ObjTypeSpec* ts = isTypeSpec(targetTypeSpec) ? asTypeSpec(targetTypeSpec) : nullptr;
+
+    // 2. Constructor auto-conversion for Object/Actor target types.
+    //    Takes precedence over conversion operators.
+    //    Eligible when target type has init with arity==1 and no @explicit.
+    if (ts && (targetVT == ValueType::Object || targetVT == ValueType::Actor)) {
+        ObjObjectType* targetType = asObjectType(targetTypeSpec);
+        ObjObjectType* tInit = targetType;
+        const ObjObjectType::Method* initMethod = nullptr;
+        while (tInit && !initMethod) {
+            auto it = tInit->methods.find(asStringObj(initString)->hash);
+            if (it != tInit->methods.end())
+                initMethod = &it->second;
+            else
+                tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
+        }
+        if (initMethod && isClosure(initMethod->closure)) {
+            ObjFunction* initFunc = asFunction(asClosure(initMethod->closure)->function);
+            if (initFunc->arity == 1 && !hasExplicitAnnotation(initMethod->closure)) {
+                // Auto-construct: set up callValue frame
+                push(targetTypeSpec);  // callee (type constructor)
+                push(val);             // argument
+                callValue(targetTypeSpec, CallSpec(1));
+                // The PendingConversion is not needed here because callValue for a
+                // type constructor leaves the constructed instance on the stack when
+                // the init frame returns (the VM's existing constructor machinery
+                // handles this). The caller should treat this like NeedsAsyncFrame.
+                return { ConversionResult::NeedsAsyncFrame, Value::nilVal() };
+            }
+        }
+        // Object/Actor target with no eligible constructor
+        return { ConversionResult::Failed, Value::nilVal() };
+    }
+
+    // 3. User-defined conversion operator (source is Object/Actor, target is builtin)
+    if ((isObjectInstance(val) || isActorInstance(val))
+        && targetVT != ValueType::Nil) {
+        Value instType = isObjectInstance(val)
+            ? asObjectInstance(val)->instanceType
+            : asActorInstance(val)->instanceType;
+        UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(targetVT));
+        int32_t convHash = convName.hashCode();
+
+        // Recursion guard
+        bool inProgress = false;
+        for (const auto& g : thread->conversionInProgress)
+            if (g.receiver.is(val, false)) { inProgress = true; break; }
+
+        if (!inProgress) {
+            Value closure = findConversionMethod(instType, convHash, implicitCall);
+            if (!closure.isNil()) {
+                // Set up async conversion call
+                thread->pendingConversions.push_back({
+                    pendingKind, savedContext, val, thread->frames.size()
+                });
+                thread->conversionInProgress.push_back({val, thread->frames.size()});
+                push(val); // push as receiver for method call
+                call(asClosure(closure), CallSpec(0));
+                return { ConversionResult::NeedsAsyncFrame, Value::nilVal() };
+            }
+        }
+    }
+
+    // 4. Builtin conversion fallback
+    try {
+        Value converted = toType(targetTypeSpec, val, strict);
+        return { ConversionResult::ConvertedSync, converted };
+    } catch (std::exception&) {
+        return { ConversionResult::Failed, Value::nilVal() };
+    }
 }
 
 
@@ -5634,35 +5722,26 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 // String concatenation takes priority when LHS is a string
                 // (string behaves as if it has a built-in operator+)
                 if (isString(peek(1))) {
-                    // Check for conversion operator on RHS before falling to concatenate()
+                    // Check for @implicit operator string() on RHS before falling to concatenate()
                     if (!isString(peek(0)) && (isObjectInstance(peek(0)) || isActorInstance(peek(0)))) {
-                        Value receiver = peek(0);
-                        // Recursion guard: skip if this object is already being converted
-                        bool inProgress = false;
-                        for (const auto& g : thread->conversionInProgress)
-                            if (g.receiver.is(receiver, false)) { inProgress = true; break; }
-                        if (!inProgress) {
-                            Value instType = isObjectInstance(receiver)
-                                ? asObjectInstance(receiver)->instanceType
-                                : asActorInstance(receiver)->instanceType;
-                            Value closure = findConversionMethod(instType, opHashConvString, /*implicitCall=*/true);
-                            if (!closure.isNil()) {
-                                // Save LHS string, set up conversion call
-                                Value lhs = peek(1);
-                                thread->pendingConversions.push_back({
-                                    Thread::PendingConversion::Kind::Concat,
-                                    lhs, receiver, thread->frames.size()
-                                });
-                                thread->conversionInProgress.push_back({receiver, thread->frames.size()});
-                                pop(); // rhs
-                                pop(); // lhs (saved in pendingConversions)
-                                push(receiver); // push as receiver for method call
-                                CallSpec callSpec{0};
-                                call(asClosure(closure), callSpec);
-                                frame = thread->frames.end() - 1;
-                                break;
-                            }
+                        Value rhs = pop();
+                        Value lhs = pop();
+                        auto outcome = tryConvertValue(rhs, Value::typeVal(ValueType::String),
+                                                       false, /*implicitCall=*/true,
+                                                       Thread::PendingConversion::Kind::Concat, lhs);
+                        if (outcome.result == ConversionResult::NeedsAsyncFrame) {
+                            frame = thread->frames.end() - 1;
+                            break;
                         }
+                        if (outcome.result == ConversionResult::ConvertedSync) {
+                            push(Value::stringVal(asUString(lhs) + (isString(outcome.convertedValue)
+                                ? asUString(outcome.convertedValue)
+                                : toUnicodeString(toString(outcome.convertedValue)))));
+                            break;
+                        }
+                        // No conversion — push back and fall through to concatenate()
+                        push(lhs);
+                        push(rhs);
                     }
                     concatenate();
                 } else {
@@ -6454,82 +6533,25 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             case OpCode::ToTypeSpecStrict: {
                 bool strict = (instruction == OpCode::ToTypeSpecStrict);
                 Value typeSpec = pop();
-                Value& val = peek(0);
+                Value val = pop(); // remove from stack; tryConvertValue manages stack for async
 
-                // Already the target type? No conversion needed.
-                if (val.is(typeSpec))
-                    break;
-
-                if (isTypeSpec(typeSpec)) {
-                    ObjTypeSpec* ts = asTypeSpec(typeSpec);
-
-                    // Constructor-based auto-conversion for Object/Actor target types.
-                    // Takes precedence over conversion operators.
-                    // Eligible when target type has init with arity==1 and no @explicit.
-                    if ((ts->typeValue == ValueType::Object || ts->typeValue == ValueType::Actor)
-                        && !val.is(typeSpec)) {
-                        ObjObjectType* targetType = asObjectType(typeSpec);
-                        ObjObjectType* tInit = targetType;
-                        const ObjObjectType::Method* initMethod = nullptr;
-                        while (tInit && !initMethod) {
-                            auto it = tInit->methods.find(asStringObj(initString)->hash);
-                            if (it != tInit->methods.end())
-                                initMethod = &it->second;
-                            else
-                                tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
-                        }
-                        if (initMethod && isClosure(initMethod->closure)) {
-                            ObjFunction* initFunc = asFunction(asClosure(initMethod->closure)->function);
-                            if (initFunc->arity == 1 && !hasExplicitAnnotation(initMethod->closure)) {
-                                // Auto-construct: push type as callee, value is already on stack as arg
-                                Value argVal = pop();
-                                push(typeSpec);  // callee (type constructor)
-                                push(argVal);    // argument
-                                callValue(typeSpec, CallSpec(1));
-                                frame = thread->frames.end() - 1;
-                                break;
-                            }
-                        }
-                    }
-
-                    // User-defined conversion on object/actor instances → builtin target
-                    if ((isObjectInstance(val) || isActorInstance(val))
-                        && ts->typeValue != ValueType::Object && ts->typeValue != ValueType::Actor
-                        && ts->typeValue != ValueType::Nil) {
-                        UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(ts->typeValue));
-                        int32_t convHash = convName.hashCode();
-                        Value instType = isObjectInstance(val)
-                            ? asObjectInstance(val)->instanceType
-                            : asActorInstance(val)->instanceType;
-                        // Check recursion guard
-                        bool inProgress = false;
-                        for (const auto& g : thread->conversionInProgress)
-                            if (g.receiver.is(val, false)) { inProgress = true; break; }
-                        if (!inProgress) {
-                            Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true);
-                            if (!closure.isNil()) {
-                                Value receiver = val;
-                                pop(); // remove value from stack
-                                thread->pendingConversions.push_back({
-                                    Thread::PendingConversion::Kind::TypeConversion,
-                                    Value::nilVal(), receiver, thread->frames.size()
-                                });
-                                thread->conversionInProgress.push_back({receiver, thread->frames.size()});
-                                push(receiver); // push as receiver for method call
-                                call(asClosure(closure), CallSpec(0));
-                                frame = thread->frames.end() - 1;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                // Fallback: builtin conversion
-                try {
-                    val = toType(typeSpec, val, strict);
-                } catch(std::exception& e) {
-                    runtimeError(e.what());
-                    return errorReturn;
+                auto outcome = tryConvertValue(val, typeSpec, strict, /*implicitCall=*/true,
+                                               Thread::PendingConversion::Kind::TypeConversion);
+                switch (outcome.result) {
+                    case ConversionResult::AlreadyCorrectType:
+                        push(val);
+                        break;
+                    case ConversionResult::ConvertedSync:
+                        push(outcome.convertedValue);
+                        break;
+                    case ConversionResult::NeedsAsyncFrame:
+                        // tryConvertValue set up the call frame; result will land on stack
+                        frame = thread->frames.end() - 1;
+                        break;
+                    case ConversionResult::Failed:
+                        runtimeError("unable to convert " + to_string(val.type())
+                                     + " to " + (isTypeSpec(typeSpec) ? to_string(asTypeSpec(typeSpec)->typeValue) : "type"));
+                        return errorReturn;
                 }
                 break;
             }

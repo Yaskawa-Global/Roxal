@@ -1,0 +1,27 @@
+// Constructor auto-conversion via function parameters.
+// When a function expects type T and receives type S, and T has
+// init(s:S) with arity==1 and no @explicit, T(S) is called automatically.
+
+type Wrapper object:
+  var val :string = ''
+  proc init(s :string):
+    val = s
+
+func show(w :Wrapper):
+  print(w.val)
+
+// Explicit construction
+show(Wrapper('explicit'))
+// Auto-construction via param: string → Wrapper
+show('auto via param')
+
+// @explicit blocks auto-construction for params
+type Strict object:
+  var val :string = ''
+  @explicit
+  proc init(s :string):
+    val = s
+
+// Explicit still works
+var s = Strict('ok')
+print(s.val)

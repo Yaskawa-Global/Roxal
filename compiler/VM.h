@@ -250,11 +250,27 @@ public:
     // or not allowed in current strict context when implicitCall is true).
     Value findConversionMethod(const Value& instanceType, int32_t hash, bool implicitCall);
 
-    // Check if a value can be converted to the target type.
-    // Considers: exact type match, builtin conversions, user-defined conversion operators,
-    // and single-required-param constructor auto-conversion.
-    // implicitCall: if true, only considers conversions marked @implicit (or @implicit(nonstrict_only=true) in non-strict)
+    // Check if a value can be converted to the target type (pure predicate, no side effects).
     bool canConvertToType(const Value& val, const Value& targetTypeSpec, bool implicitCall) const;
+
+    // Unified type conversion. Attempts to convert val to targetTypeSpec.
+    // Returns outcome indicating whether conversion was sync, async (frame pushed), or failed.
+    // For NeedsAsyncFrame: a call frame + PendingConversion have been set up;
+    // the caller must break to the dispatch loop. The converted value will be
+    // pushed by the PendingConversion completion handler when the frame returns.
+    enum class ConversionResult { AlreadyCorrectType, ConvertedSync, NeedsAsyncFrame, Failed };
+    struct ConversionOutcome {
+        ConversionResult result;
+        Value convertedValue;  // valid when result == ConvertedSync
+    };
+    ConversionOutcome tryConvertValue(
+        const Value& val,
+        const Value& targetTypeSpec,
+        bool strict,
+        bool implicitCall,
+        Thread::PendingConversion::Kind pendingKind,
+        const Value& savedContext = Value::nilVal()
+    );
 
     /// Invoke a closure with arguments. Executes until completion or deadline.
     /// Returns {OK, value} on completion, {Yielded, nil} if deadline exceeded,
