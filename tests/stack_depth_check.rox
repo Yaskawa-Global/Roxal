@@ -1,0 +1,100 @@
+// Test that operations involving continuations don't leak stack slots.
+// _stackdepth() must be called standalone (not inside expressions) to avoid
+// measuring expression temporaries.
+
+type Foo object:
+  var x = 0
+  proc init(x):
+    this.x = x
+  @implicit
+  func operator string() -> string:
+    var items = ['a', 'b', 'c']
+    var r = ''
+    for item in items:
+      r = r + item
+    return r + string(x)
+
+func double(x):
+  return x * 2
+
+func gt2(x):
+  return x > 2
+
+func throw_at_2(x):
+  if x == 2:
+    raise "err"
+  return x * 10
+
+proc fail(label, d, d0):
+  print("FAIL " + label + ": depth " + string(d) + " vs expected " + string(d0))
+  exit(1)
+
+var d0 = _stackdepth()
+
+// print(obj) with for-loop-using operator string (nativeContinuation path)
+print(Foo(1))
+var d = _stackdepth()
+if d != d0:
+  fail('print(obj)', d, d0)
+
+print(Foo(2))
+d = _stackdepth()
+if d != d0:
+  fail('print(obj) x2', d, d0)
+
+// string(obj) explicit
+var s1 = string(Foo(3))
+d = _stackdepth()
+if d != d0:
+  fail('string(obj)', d, d0)
+
+// string concat with implicit conversion
+var s2 = "val:" + Foo(4)
+d = _stackdepth()
+if d != d0:
+  fail('string concat', d, d0)
+
+// print(obj) in a loop
+var i = 0
+while i < 3:
+  print(Foo(i))
+  i = i + 1
+d = _stackdepth()
+if d != d0:
+  fail('print loop', d, d0)
+
+// list.map with callback
+var mapped = [1, 2, 3].map(double)
+d = _stackdepth()
+if d != d0:
+  fail('list.map', d, d0)
+
+// list.filter with callback
+var filtered = [1, 2, 3, 4].filter(gt2)
+d = _stackdepth()
+if d != d0:
+  fail('list.filter', d, d0)
+
+// exception in map is catchable and doesn't leak
+try:
+  [1, 2, 3].map(throw_at_2)
+except:
+  _
+d = _stackdepth()
+if d != d0:
+  fail('map exception', d, d0)
+
+// filter then map with exceptions
+try:
+  [1, 2, 3].filter(throw_at_2)
+except:
+  _
+try:
+  [1, 2, 3].map(throw_at_2)
+except:
+  _
+d = _stackdepth()
+if d != d0:
+  fail('filter+map exceptions', d, d0)
+
+print("stack depth checks: PASS")

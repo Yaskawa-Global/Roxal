@@ -414,48 +414,48 @@ type quantity object:
     // Length [1,0,0,0]
     if _d == [1,0,0,0]:
       if av >= 1.0:
-        return string(_v) + ' m'
+        return string(_v) + 'm'
       if av >= 0.01:
-        return string(_v * 100.0) + ' cm'
+        return string(_v * 100.0) + 'cm'
       if av >= 0.001:
-        return string(_v * 1000.0) + ' mm'
-      return string(_v * 1000000.0) + ' um'
+        return string(_v * 1000.0) + 'mm'
+      return string(_v * 1000000.0) + 'um'
     // Time [0,1,0,0]
     if _d == [0,1,0,0]:
       if av >= 3600.0:
-        return string(_v / 3600.0) + ' hr'
+        return string(_v / 3600.0) + 'hr'
       if av >= 60.0:
-        return string(_v / 60.0) + ' min'
+        return string(_v / 60.0) + 'min'
       if av >= 1.0:
-        return string(_v) + ' s'
+        return string(_v) + 's'
       if av >= 0.001:
-        return string(_v * 1000.0) + ' ms'
-      return string(_v * 1000000.0) + ' us'
+        return string(_v * 1000.0) + 'ms'
+      return string(_v * 1000000.0) + 'us'
     // Mass [0,0,1,0]
     if _d == [0,0,1,0]:
       if av >= 1.0:
-        return string(_v) + ' kg'
+        return string(_v) + 'kg'
       if av >= 0.001:
-        return string(_v * 1000.0) + ' g'
-      return string(_v * 1000000.0) + ' mg'
+        return string(_v * 1000.0) + 'g'
+      return string(_v * 1000000.0) + 'mg'
     // Angle [0,0,0,1]
     if _d == [0,0,0,1]:
-      return string(_v * 180.0 / 3.14159265358979323846) + ' deg'
+      return string(_v * 180.0 / 3.14159265358979323846) + 'deg'
     // Velocity [1,-1,0,0]
     if _d == [1,-1,0,0]:
-      return string(_v) + ' m/s'
+      return string(_v) + 'm/s'
     // Acceleration [1,-2,0,0]
     if _d == [1,-2,0,0]:
-      return string(_v) + ' m/s^2'
+      return string(_v) + 'm/s^2'
     // Force [1,-2,1,0]
     if _d == [1,-2,1,0]:
-      return string(_v) + ' N'
+      return string(_v) + 'N'
     // Torque [2,-2,1,0]
     if _d == [2,-2,1,0]:
-      return string(_v) + ' Nm'
+      return string(_v) + 'Nm'
     // Angular velocity [0,-1,0,1]
     if _d == [0,-1,0,1]:
-      return string(_v * 180.0 / 3.14159265358979323846) + ' deg/s'
+      return string(_v * 180.0 / 3.14159265358979323846) + 'deg/s'
     // Dimensionless [0,0,0,0]
     if _is_dimensionless():
       return string(_v)

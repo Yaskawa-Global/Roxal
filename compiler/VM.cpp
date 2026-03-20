@@ -601,10 +601,17 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 auto frameDepthAfter = thread->frames.size();
                 unwound = stackDepthAfter < stackDepthBefore || frameDepthAfter < frameDepthBefore;
             }
-            if (currentThread && (currentThread->exceptionJumpPending.load(std::memory_order_relaxed) || unwound || currentThread->nativeContinuation.active)) {
+            // Skip stack cleanup only when THIS native call pushed frames (set up a
+            // continuation or deferred call). Frame depth increase distinguishes this from
+            // nested native calls during an outer continuation (e.g., len() inside
+            // operator->string called via print()'s continuation — len should clean up normally).
+            bool thisCallPushedFrames = thread && thread->frames.size() > frameDepthBefore;
+            if (currentThread && (currentThread->exceptionJumpPending.load(std::memory_order_relaxed) || unwound)) {
                 currentThread->exceptionJumpPending.store(false, std::memory_order_relaxed);
                 return true;
             }
+            if (thisCallPushedFrames)
+                return true;
             *(thread->stackTop - callSpec.argCount - 1) = result;
             popN(callSpec.argCount);
             return true;
@@ -648,10 +655,13 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 auto frameDepthAfter = thread->frames.size();
                 unwound = stackDepthAfter < stackDepthBefore || frameDepthAfter < frameDepthBefore;
             }
-            if (currentThread && (currentThread->exceptionJumpPending.load(std::memory_order_relaxed) || unwound || currentThread->nativeContinuation.active)) {
+            bool thisCallPushedFrames2 = thread && thread->frames.size() > frameDepthBefore;
+            if (currentThread && (currentThread->exceptionJumpPending.load(std::memory_order_relaxed) || unwound)) {
                 currentThread->exceptionJumpPending.store(false, std::memory_order_relaxed);
                 return true;
             }
+            if (thisCallPushedFrames2)
+                return true;
             *(thread->stackTop - callSpec.argCount - 1) = result;
             popN(callSpec.argCount);
             return true;
@@ -1178,11 +1188,7 @@ ExecutionStatus VM::run(std::istream& source, const std::string& name)
         result = ExecutionStatus::OK;
 
     #if defined(DEBUG_TRACE_EXECUTION)
-    if (globals.size() > 0) {
-        std::cout << std::endl << "== globals ==" << std::endl;
-        for(const auto& global : globals.get())
-            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second.value) << std::endl;
-    }
+    // globals dump disabled (VariablesMap API changed)
     #endif
 
     thread.reset();
@@ -1406,11 +1412,7 @@ ExecutionStatus VM::runLine(std::istream& linestream,
         result = ExecutionStatus::RuntimeError;
 
     #if defined(DEBUG_TRACE_EXECUTION)
-    if (globals.size() > 0) {
-        std::cout << std::endl << "== globals ==" << std::endl;
-        for(const auto& global : globals.get())
-            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second.value) << std::endl;
-    }
+    // globals dump disabled (VariablesMap API changed)
     #endif
 
     thread.reset();
@@ -4311,7 +4313,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             }
             else {
                 std::cout << "          <end of chunk>" << std::endl;
-                return std::make_pair(ExecutionStatus::RuntimeError,nilVal());
+                return std::make_pair(ExecutionStatus::RuntimeError,Value::nilVal());
             }
         #endif
 
