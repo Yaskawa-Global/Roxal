@@ -1,9 +1,9 @@
-// @explicit on constructor blocks auto-conversion via typed var assignment
+// Constructors are explicit by default — auto-conversion requires @implicit.
+// Without @implicit, typed var assignment should fail.
 type Strict object:
   var val :string = ''
-  @explicit
   proc init(s :string):
     val = s
 
-// Auto-construction via typed var should fail
+// Auto-construction via typed var should fail (no @implicit on init)
 var s :Strict = 'should fail'

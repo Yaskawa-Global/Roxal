@@ -2939,11 +2939,11 @@ static ImplicitMode getImplicitMode(const Value& closureVal)
     return ImplicitMode::ExplicitOnly;
 }
 
-static bool hasExplicitAnnotation(const Value& closureVal)
+static bool hasImplicitAnnotation(const Value& closureVal)
 {
     auto* funcObj = asFunction(asClosure(closureVal)->function);
     for (const auto& annot : funcObj->annotations)
-        if (annot->name == "explicit") return true;
+        if (annot->name == "implicit") return true;
     return false;
 }
 
@@ -3022,8 +3022,8 @@ bool VM::canConvertToType(const Value& val, const Value& targetTypeSpec, bool im
         if (initMethod != nullptr && isClosure(initMethod->closure)) {
             ObjFunction* initFunc = asFunction(asClosure(initMethod->closure)->function);
 
-            // Check: single required param (arity == 1) and not @explicit
-            if (initFunc->arity == 1 && !hasExplicitAnnotation(initMethod->closure)) {
+            // Check: single required param (arity == 1) and @implicit
+            if (initFunc->arity == 1 && hasImplicitAnnotation(initMethod->closure)) {
                 // Constructor auto-conversion eligible
                 return true;
             }
@@ -3060,7 +3060,7 @@ VM::ConversionOutcome VM::tryConvertValue(
 
     // 2. Constructor auto-conversion for Object/Actor target types.
     //    Takes precedence over conversion operators.
-    //    Eligible when target type has init with arity==1 and no @explicit.
+    //    Eligible when target type has init with arity==1 and @implicit.
     if (ts && (targetVT == ValueType::Object || targetVT == ValueType::Actor)) {
         ObjObjectType* targetType = asObjectType(targetTypeSpec);
         ObjObjectType* tInit = targetType;
@@ -3074,7 +3074,7 @@ VM::ConversionOutcome VM::tryConvertValue(
         }
         if (initMethod && isClosure(initMethod->closure)) {
             ObjFunction* initFunc = asFunction(asClosure(initMethod->closure)->function);
-            if (initFunc->arity == 1 && !hasExplicitAnnotation(initMethod->closure)) {
+            if (initFunc->arity == 1 && hasImplicitAnnotation(initMethod->closure)) {
                 // Auto-construct: set up callValue frame
                 push(targetTypeSpec);  // callee (type constructor)
                 push(val);             // argument
