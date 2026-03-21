@@ -163,7 +163,7 @@ tests = [
     'builtin_object_methods', 'math_counter_signal', 'print_flush',
     'grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error', 'grpc_streaming', 'grpc_args',
     'rt_execution',
-    'operator_conv_string', 'operator_conv_string_rettype',
+    'operator_conv_string', 'operator_conv_string_rettype', 'return_type_conv', 'return_type_conv_upcast',
     'operator_conv_string_inherit', 'operator_conv_string_strict',
     'operator_conv_string_implicit',
     'operator_conv_proc_err', 'operator_conv_arity_err', 'operator_conv_rettype_err',

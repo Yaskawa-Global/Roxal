@@ -288,6 +288,10 @@ protected:
         FunctionType    functionType;
         ptr<type::Type> type;
 
+        // AST-level return types (preserves user-defined type names that TypeDeducer loses).
+        // Used by visit(ReturnStatement) to emit return type conversion.
+        std::optional<std::vector<std::variant<type::BuiltinType, icu::UnicodeString>>> astReturnTypes;
+
         std::vector<uint16_t> identConsts;
     };
 

@@ -1,0 +1,45 @@
+# Test return type conversion: compiler emits ToType before Return
+# when function has a declared return type
+
+# Builtin type conversion: int -> real (widening)
+func to_real(x: int) -> real:
+  return x
+
+print(to_real(42))
+
+# Builtin type conversion: int -> string
+func to_str(x: int) -> string:
+  return x
+
+print(to_str(99))
+
+# Builtin type conversion: real -> int (explicit construction)
+func to_int(x: real) -> int:
+  return int(x)
+
+print(to_int(3.7))
+
+# User-defined conversion operator: object -> string via return type
+type Point object:
+  var x: real = 0.0
+  var y: real = 0.0
+  proc init(x: real, y: real):
+    this.x = x
+    this.y = y
+  @implicit
+  func operator string():
+    return "(" + string(x) + ", " + string(y) + ")"
+
+func point_to_str(p: Point) -> string:
+  return p
+
+print(point_to_str(Point(1.0, 2.0)))
+
+# Expression-body lambda with return type
+var f = func(x: int) -> real: x
+print(f(5))
+
+# Conversion operator itself should not recurse
+var p = Point(3.0, 4.0)
+var s: string = p
+print(s)

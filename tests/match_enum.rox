@@ -13,7 +13,7 @@ type Status enum:
     Paused
     Stopped
 
-func color_category(c: Color) -> str:
+func color_category(c: Color) -> string:
     match c:
         case Color.Red, Color.Orange, Color.Yellow:
             return "warm"
@@ -22,7 +22,7 @@ func color_category(c: Color) -> str:
         default:
             return "unknown"
 
-func status_message(s: Status) -> str:
+func status_message(s: Status) -> string:
     match s:
         case Status.Idle:
             return "ready"

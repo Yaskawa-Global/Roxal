@@ -1,6 +1,6 @@
 # Test repeated calls
 
-func test_simple(x: int) -> str:
+func test_simple(x: int) -> string:
     match x:
         case 1:
             return "one"

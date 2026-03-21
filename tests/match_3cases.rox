@@ -1,6 +1,6 @@
 # Test with 3 cases
 
-func test_three_cases(x: int) -> str:
+func test_three_cases(x: int) -> string:
     match x:
         case 1:
             return "one"

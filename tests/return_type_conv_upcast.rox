@@ -1,0 +1,36 @@
+# Test return type conversion with object inheritance (upcasting)
+# Returning a child type where a parent type is declared should pass through
+
+type Animal object:
+  var name: string = ""
+  proc init(name: string):
+    this.name = name
+  @implicit
+  func operator string():
+    return "Animal(" + name + ")"
+
+type Dog object extends Animal:
+  var breed: string = ""
+  proc init(name: string, breed: string):
+    super.init(name)
+    this.breed = breed
+  @implicit
+  func operator string():
+    return "Dog(" + name + ", " + breed + ")"
+
+# Return child where parent is declared — should pass through (upcast)
+func get_animal() -> Animal:
+  return Dog("Rex", "Shepherd")
+
+var a = get_animal()
+print(a)
+
+# Verify it's still a Dog
+print(a is Dog)
+print(a is Animal)
+
+# Return exact type — should also work
+func get_dog() -> Animal:
+  return Animal("Cat")
+
+print(get_dog())

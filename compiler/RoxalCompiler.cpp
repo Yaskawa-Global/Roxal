@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 24;
+constexpr std::uint32_t ModuleCacheVersion = 25;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -1982,6 +1982,21 @@ std::any RoxalCompiler::visit(ptr<ast::ReturnStatement> ast)
         if (asFuncScope(funcScope())->type->func.has_value() && asFuncScope(funcScope())->type->func.value().isProc)
             error("A value cannot be returned from a proc method.");
 
+        // Emit return type conversion if the function has a declared return type.
+        // The return expression result is on the stack from acceptChildren.
+        auto& astReturnTypes = asFuncScope(funcScope())->astReturnTypes;
+        if (astReturnTypes.has_value() && !astReturnTypes->empty()) {
+            auto& rt = astReturnTypes->at(0);
+            if (std::holds_alternative<BuiltinType>(rt))
+                emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                          uint8_t(builtinToValueType(std::get<BuiltinType>(rt))));
+            else {
+                if (!namedVariable(std::get<icu::UnicodeString>(rt), false))
+                    namedModuleVariable(std::get<icu::UnicodeString>(rt));
+                emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+            }
+        }
+
         emitByte(OpCode::Return);
     }
     else
@@ -2689,6 +2704,11 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 
     enterFuncScope(enclosingModuleScope->moduleType, funcName, ftype, ast->type.value());
 
+    // Store AST-level return types so visit(ReturnStatement) can emit conversion opcodes.
+    // Skip for conversion operators (would recurse — the operator IS the conversion).
+    if (ast->returnTypes.has_value() && !(ast->name.has_value() && ast->name.value().startsWith("operator->")))
+        asFuncScope(funcScope())->astReturnTypes = ast->returnTypes;
+
     bool strictContext = true;
     for (const auto& annot : ast->annotations) {
         if (annot->name == "strict")
@@ -2721,8 +2741,22 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     ast->acceptChildren(*this, results);
 
     // if the body is an expression (e.g. lambda func), leaves the result on the stack, so return it
-    if (std::holds_alternative<ptr<Expression>>(ast->body))
+    if (std::holds_alternative<ptr<Expression>>(ast->body)) {
+        // Emit return type conversion for expression-body lambdas
+        auto& astReturnTypes = asFuncScope(funcScope())->astReturnTypes;
+        if (astReturnTypes.has_value() && !astReturnTypes->empty()) {
+            auto& rt = astReturnTypes->at(0);
+            if (std::holds_alternative<BuiltinType>(rt))
+                emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                          uint8_t(builtinToValueType(std::get<BuiltinType>(rt))));
+            else {
+                if (!namedVariable(std::get<icu::UnicodeString>(rt), false))
+                    namedModuleVariable(std::get<icu::UnicodeString>(rt));
+                emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+            }
+        }
         emitByte(OpCode::Return);
+    }
 
     //exitLocalScope();
 
