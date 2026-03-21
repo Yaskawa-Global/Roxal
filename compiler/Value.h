@@ -262,7 +262,8 @@ public:
 
     static Value closureVal(const Value& function); // ObjClosure
 
-    static Value futureVal(const std::shared_future<Value>& fv); // ObjFuture
+    static Value futureVal(const std::shared_future<Value>& fv,
+                           ptr<type::Type> promisedType = nullptr); // ObjFuture
 
     static Value nativeVal(NativeFn function, void* data=nullptr,
                            ptr<roxal::type::Type> funcType=nullptr,

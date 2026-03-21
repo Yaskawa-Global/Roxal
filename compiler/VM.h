@@ -332,6 +332,11 @@ public:
     // Called by the nativeContinuation.onComplete callback
     bool processNativeDefaultParamDispatch(Value defaultValue);
 
+    // Check if a future's promised type is assignable to the target type.
+    // If true, the future can pass through without resolution.
+    bool isFutureAssignableTo(const Value& futureVal, ValueType targetVT);
+    bool isFutureAssignableTo(const Value& futureVal, const Value& targetTypeSpec);
+
     // Returns true if converting val to the given param type requires executing Roxal code
     // (user-defined conversion operator or constructor auto-conversion)
     bool needsAsyncConversion(const Value& val, ptr<type::Type> paramType);

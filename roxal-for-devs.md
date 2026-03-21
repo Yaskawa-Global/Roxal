@@ -837,7 +837,22 @@ This is an ideal way to achieve concurrency, because actors don't share any stat
 
 The syntax for declaring an actor is similar to an object, except it cannot have any non-private member variables.  You can think of calling a method on an actor instance as being more like sending it a message to execute that method.
 
-Note that the caller is not blocked when calling an actor method - instead the call returns immediately with a 'future' for the return value (sometimes called a promise).  This behaves just like the actual return value, but won't be useable until the actor method completes and provides the value.  An attempt to use the return value future before it is ready will block the using thead (- though you can pass futures to other functions, store them etc.).  A future value is always implicitly convertible to the value it is promising.
+Note that the caller is not blocked when calling an actor method - instead the call returns immediately with a 'future' for the return value (sometimes called a promise).  This behaves just like the actual return value, but won't be useable until the actor method completes and provides the value.  An attempt to use the return value future before it is ready will block the using thread (- though you can pass futures to other functions, store them etc.).  A future value is always implicitly convertible to the value it is promising.
+
+**Future resolution rules:**
+
+A future carries the type of the value it promises (derived from the actor method's return type annotation).  Futures are resolved (awaited) automatically when the concrete value is needed:
+
+* **Typed function parameters:** A future passes through without resolution if its promised type matches the parameter type (including subtypes via inheritance).  If the types don't match, the future is resolved first, then converted.
+* **Untyped parameters:** Futures always pass through as-is.
+* **Operators** (`+`, `*`, `>`, etc.): Both operands are resolved before the operation.
+* **`for..in`:** The iterable is resolved before iteration begins.
+* **Conditions** (`if`, `while`): The condition is resolved before evaluation.
+* **Property access/assignment:** The receiver (and assigned value) are resolved.
+* **Explicit cast:** `real(future_real)` resolves the future (similar to how `real(signal)` samples a signal).
+* **Variable assignment with type:** `var x:int = future_real` resolves and converts.
+
+In short: futures flow through untyped and type-matching boundaries, and are resolved at the point of first use that requires a concrete value.
 
 ```php
 type Worker actor:

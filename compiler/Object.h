@@ -1207,6 +1207,7 @@ struct BuiltinFuncInfo {
     uint32_t resolveArgMask {0};  // bit N set → resolve future arg N before native call
     bool noMutateSelf {false};    // method doesn't mutate receiver state
     uint32_t noMutateArgs {0};    // bitmask: bit N set → arg N not mutated
+    bool resolveReturn {false};   // if true, resolve returned future before caller resumes
 
     BuiltinFuncInfo() = default;
     BuiltinFuncInfo(NativeFn fn, std::vector<Value> defaults = {}, uint32_t mask = 0,
@@ -1365,8 +1366,9 @@ inline unique_ptr<ObjClosure, UnreleasedObj> newClosureObj(Value function) { // 
 
 struct ObjFuture : public Obj
 {
-    ObjFuture(const std::shared_future<Value>& fv)
-        : future(fv)
+    ObjFuture(const std::shared_future<Value>& fv,
+              ptr<type::Type> promisedType = nullptr)
+        : future(fv), promisedType(std::move(promisedType))
     {
         type = ObjType::Future;
     }
@@ -1375,6 +1377,7 @@ struct ObjFuture : public Obj
     Value asValue() { return future.valid() ? future.get() : Value::nilVal(); }
 
     std::shared_future<Value> future;
+    ptr<type::Type> promisedType;  // type of the promised value (nullptr = unknown)
 
     mutable std::mutex waitMutex;
     std::vector<weak_ptr<Thread>> waiters;
@@ -1397,11 +1400,12 @@ inline ObjFuture* asFuture(const Value& v) {
     return static_cast<ObjFuture*>(v.asObj());
 }
 
-inline unique_ptr<ObjFuture, UnreleasedObj> newFutureObj(const std::shared_future<Value>& fv) {
+inline unique_ptr<ObjFuture, UnreleasedObj> newFutureObj(const std::shared_future<Value>& fv,
+                                                         ptr<type::Type> promisedType = nullptr) {
     #ifdef DEBUG_BUILD
-    return newObj<ObjFuture>(__func__, __FILE__,__LINE__,fv);
+    return newObj<ObjFuture>(__func__, __FILE__,__LINE__,fv, std::move(promisedType));
     #else
-    return newObj<ObjFuture>(fv);
+    return newObj<ObjFuture>(fv, std::move(promisedType));
     #endif
 }
 
@@ -1549,6 +1553,18 @@ struct ObjObjectType : public ObjTypeSpec
 
 inline bool isObjectType(const Value& v) { return isObjType(v, ObjType::Type) && ((asTypeSpec(v)->typeValue == ValueType::Object) || (asTypeSpec(v)->typeValue == ValueType::Actor)); }
 inline ObjObjectType* asObjectType(const Value& v) { return static_cast<ObjObjectType*>(v.asObj()); }
+
+// Check if sourceType is the same type as targetType or a subtype (extends/implements).
+// Used by Value::is() and future promised-type assignability checks.
+inline bool isSubtypeOf(ObjObjectType* sourceType, ObjObjectType* targetType) {
+    ObjObjectType* t = sourceType;
+    while (t) {
+        if (t == targetType) return true;
+        if (t->superType.isNil()) break;
+        t = asObjectType(t->superType);
+    }
+    return false;
+}
 
 inline bool isEnumType(const Value& v) { return isObjType(v, ObjType::Type) && asTypeSpec(v)->typeValue == ValueType::Enum; }
 

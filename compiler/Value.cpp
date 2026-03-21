@@ -303,9 +303,9 @@ Value Value::closureVal(const Value& function)
     return Value::objVal(newClosureObj(function));
 }
 
-Value Value::futureVal(const std::shared_future<Value>& fv)
+Value Value::futureVal(const std::shared_future<Value>& fv, ptr<type::Type> promisedType)
 {
-    return Value::objVal(newFutureObj(fv));
+    return Value::objVal(newFutureObj(fv, std::move(promisedType)));
 }
 
 Value Value::nativeVal(NativeFn function, void* data,
@@ -949,41 +949,19 @@ bool Value::is(const Value& rhs, bool strict) const
         ObjTypeSpec* ts = asTypeSpec(rhs);
         switch (ts->typeValue) {
             case ValueType::Object:
-                if (isObjectInstance(*this)) {
-                    ObjObjectType* t = asObjectType(asObjectInstance(*this)->instanceType);
-                    while (t) {
-                        if (t == ts)
-                            return true;
-                        if (t->superType.isNil()) break;
-                        t = asObjectType(t->superType);
-                    }
-                    return false;
-                }
+                if (isObjectInstance(*this))
+                    return isSubtypeOf(asObjectType(asObjectInstance(*this)->instanceType),
+                                       static_cast<ObjObjectType*>(ts));
                 if (isException(*this) && isObjectType(rhs)) {
                     ObjException* ex = asException(*this);
-                    if (isTypeSpec(ex->exType)) {
-                        ObjObjectType* et = asObjectType(ex->exType);
-                        ObjObjectType* target = asObjectType(rhs);
-                        while (et) {
-                            if (et == target)
-                                return true;
-                            if (et->superType.isNil()) break;
-                            et = asObjectType(et->superType);
-                        }
-                    }
+                    if (isTypeSpec(ex->exType))
+                        return isSubtypeOf(asObjectType(ex->exType), asObjectType(rhs));
                 }
                 break;
             case ValueType::Actor:
-                if (isActorInstance(*this)) {
-                    ObjObjectType* t = asObjectType(asActorInstance(*this)->instanceType);
-                    while (t) {
-                        if (t == ts)
-                            return true;
-                        if (t->superType.isNil()) break;
-                        t = asObjectType(t->superType);
-                    }
-                    return false;
-                }
+                if (isActorInstance(*this))
+                    return isSubtypeOf(asObjectType(asActorInstance(*this)->instanceType),
+                                       static_cast<ObjObjectType*>(ts));
                 break;
             default:
                 return type() == ts->typeValue;

@@ -5505,9 +5505,13 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
             assert(funcType->func.has_value());
             paramTypes = &funcType->func.value().params;
             if (!funcType->func.value().isProc) {
+                // Extract return type for the future's promisedType
+                ptr<type::Type> retType;
+                if (!funcType->func.value().returnTypes.empty())
+                    retType = funcType->func.value().returnTypes[0];
                 callInfo.returnPromise = make_ptr<std::promise<Value>>();
                 std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
-                callInfo.returnFuture = Value::objVal(newFutureObj(sf));
+                callInfo.returnFuture = Value::objVal(newFutureObj(sf, retType));
             }
         }
     }
@@ -5563,9 +5567,13 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
 
         // Only create a return promise if it's NOT a proc (i.e., it's a func)
         if (!bound->isProc) {
+            ptr<type::Type> retType;
+            if (bound->funcType && bound->funcType->func.has_value()
+                && !bound->funcType->func.value().returnTypes.empty())
+                retType = bound->funcType->func.value().returnTypes[0];
             callInfo.returnPromise = make_ptr<std::promise<Value>>();
             std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
-            callInfo.returnFuture = Value::objVal(newFutureObj(sf));
+            callInfo.returnFuture = Value::objVal(newFutureObj(sf, retType));
         }
 
         // Convert arguments into parameter order so actor thread receives a complete list.

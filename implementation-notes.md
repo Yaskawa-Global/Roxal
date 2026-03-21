@@ -192,6 +192,70 @@ An actor type is similar to an object, but additionally has its own thread of ex
 Complex reference types passed to an actor's method (or returned from it) behave as if deep-copied (cloned).  In practice they use Multi-Version Concurrency Control (MVCC), as discussed below, to avoid actually copying.
 
 
+## Futures
+
+When a non-proc actor method is called from another thread, the caller receives
+an `ObjFuture` wrapping a `std::shared_future<Value>`. The actor thread fulfils
+the underlying promise when the method completes. Some native builtins (file IO,
+sockets, gRPC, neural network inference) also return futures for non-blocking
+operation.
+
+### Promised Type
+
+Each `ObjFuture` stores a `promisedType` (`ptr<type::Type>`) indicating the type
+of the value it will resolve to. This is extracted from the actor method's
+declared return type (via `funcType->func->returnTypes[0]`) at future creation
+time in `ActorInstance::queueCall()`. Native builtins can also supply a promised
+type via `Value::futureVal(future, promisedType)`. When the type is unknown
+(nullptr), the future is treated conservatively at typed boundaries.
+
+### Resolution Rules
+
+Futures are resolved (awaited) lazily — only when a concrete value is needed:
+
+- **Typed function parameters:** If the future's promised type matches the
+  parameter type (identity or subtype via `isSubtypeOf`), the future passes
+  through without resolution. Otherwise it is resolved first, then converted.
+  This is checked in the `Call` opcode handler, `marshalArgs`, the runtime
+  parameter conversion safety net, and the `ToType`/`ToTypeSpec` handlers.
+- **Untyped parameters:** Futures pass through as-is.
+- **Operators, conditions, iteration, property access:** The VM resolves futures
+  at the point of use — binary ops, `JumpIfFalse`/`JumpIfTrue`, `IfDictToKeys`,
+  `Invoke`, `SetProp`, `SetIndex`, `Throw`, etc. all call `tryAwaitFuture()` or
+  `tryAwaitValue()` before operating on the value.
+- **Explicit casts:** `T(future)` resolves the future (like signal sampling).
+
+### Non-blocking Awaiting
+
+Resolution never blocks the C++ dispatch loop. `tryAwaitFuture()` checks if the
+future is ready (zero-wait `wait_for`). If not:
+1. The thread registers as a waiter on the future (`ObjFuture::addWaiter`)
+2. `thread->awaitedFuture` is set and the instruction pointer is rewound
+3. The dispatch loop yields to `postInstructionDispatch` which sleeps on the
+   thread's condition variable (1ms polling fallback)
+4. When the promise is fulfilled, `ObjFuture::wakeWaiters()` signals waiting
+   threads
+5. On the next loop iteration, the future is ready and resolved in-place
+
+This allows the VM to process events, respect `execute(deadline)` deadlines, and
+yield control back to the caller during the wait.
+
+### Actor Return Resolution
+
+Actor methods always resolve any futures in their return value before fulfilling
+the caller's promise (`Thread.cpp`, in the `act()` return paths). This ensures
+the promise value is always concrete — the caller's future wraps a resolved
+value, not a nested future. The caller's future gets its own `promisedType` from
+the method's declared return type.
+
+### resolveReturn Flag
+
+`BuiltinFuncInfo` has a `resolveReturn` flag. When set, `callNativeFn` triggers
+non-blocking resolution of the returned future before the caller resumes. This
+allows native functions to use futures internally for non-blocking IO while
+presenting a synchronous API to the user (e.g., file `close()`).
+
+
 ## Signals and Data-Flow
 
 The VM includes a data-flow engine (in `Dataflow/`) that can represent a set of signals (`Signal` & `ObjSignal`) of Values that interconnect as inputs and outputs to function nodes (`FuncNode`).

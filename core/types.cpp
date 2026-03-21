@@ -93,6 +93,17 @@ bool roxal::type::convertibleTo(BuiltinType from, BuiltinType to, bool strict)
 }
 
 
+bool roxal::type::isAssignableFrom(BuiltinType target, BuiltinType source)
+{
+    if (target == source)
+        return true;
+    // Object and Actor are their own categories — no cross-assignment.
+    // Inheritance checking (subtype walks) requires ObjObjectType at runtime;
+    // see VM::isTypeAssignable() for the full check.
+    return false;
+}
+
+
 std::string Type::toString() const
 {
     auto tspec = (isConst ? "const " : "") + to_string(builtin);

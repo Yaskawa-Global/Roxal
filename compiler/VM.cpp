@@ -451,8 +451,11 @@ size_t VM::marshalArgs(ptr<type::Type> funcType,
         }
 
         if (params[pi].has_value() && params[pi]->type.has_value()) {
+            // Skip conversion for futures whose promised type matches the param type
             auto vt = builtinToValueType(params[pi]->type.value()->builtin);
-            if (vt.has_value()) {
+            if (isFuture(arg) && vt.has_value() && isFutureAssignableTo(arg, vt.value())) {
+                // pass future through as-is
+            } else if (vt.has_value()) {
                 bool strictConv = false;
                 if (thread->frames.size() >= 1)
                     strictConv = (thread->frames.end()-1)->strict;
@@ -692,6 +695,17 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                     cont.stackBase = thread->stack.begin() + calleePos + 1;
                 }
                 return true;
+            }
+            // If resolveReturn is set and result is a future, trigger non-blocking
+            // resolution — the dispatch loop will await and replace the result.
+            if (isFuture(result) && declFunction.isNonNil() && isFunction(declFunction)) {
+                auto* funcObj = asFunction(declFunction);
+                if (funcObj->builtinInfo && funcObj->builtinInfo->resolveReturn) {
+                    thread->awaitedFuture = result;
+                    // Store the future as the result — it will be resolved in-place
+                    // by the dispatch loop's awaitedFuture handler before the next
+                    // instruction reads it.
+                }
             }
             *(thread->stackTop - callSpec.argCount - 1) = result;
             popN(callSpec.argCount);
@@ -4439,7 +4453,13 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 frame->reorderArgs.clear();
             }
 
-            // convert arguments to parameter types if specified
+            // Runtime parameter type conversion (safety net).
+            // The compiler emits ToType/ToTypeSpec opcodes in the parameter prologue
+            // which handle conversions (including async user-defined conversions).
+            // This runtime path is redundant for Roxal closures but still needed for
+            // native functions called via call() without marshalArgs.
+            // TODO: examine whether this can be removed now that compiler-emitted
+            // ToType handles all cases, including future pass-through.
             if (asFunction(asClosure(frame->closure)->function)->funcType.has_value()) {
                 const auto& params = asFunction(asClosure(frame->closure)->function)->funcType.value()->func.value().params;
                 bool strictConv = false;
@@ -4471,6 +4491,9 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
                         auto vt = builtinToValueType(paramType->builtin);
                         if (!vt.has_value()) continue;
+                        // Pass through futures whose promised type matches
+                        if (isFuture(arg) && isFutureAssignableTo(arg, vt.value()))
+                            continue;
                         try {
                             arg = toType(vt.value(), arg, strictConv);
                         } catch(std::exception& e) {
@@ -4634,6 +4657,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 return errorReturn;
             }
             case OpCode::MoveProp: {
+                if (isFuture(peek(0))) {
+                    auto s = tryAwaitFuture(peek(0));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
                 Value& inst { peek(0) };
                 ObjString* name = readString();
                 inst.resolveSignal();
@@ -5246,6 +5274,17 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::SetProp: {
+                // Resolve futures on receiver and assigned value
+                if (isFuture(peek(1))) {
+                    auto s = tryAwaitFuture(peek(1));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+                if (isFuture(peek(0))) {
+                    auto s = tryAwaitFuture(peek(0));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
                 Value& inst { peek(1) };
                 ObjString* name = readString();
 
@@ -5418,6 +5457,17 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::SetPropCheck: {
+                // Resolve futures on receiver and assigned value
+                if (isFuture(peek(1))) {
+                    auto s = tryAwaitFuture(peek(1));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+                if (isFuture(peek(0))) {
+                    auto s = tryAwaitFuture(peek(0));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
                 Value& inst { peek(1) };
                 ObjString* name = readString();
 
@@ -6117,6 +6167,10 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                                 if (params[i].has_value() && params[i]->type.has_value()) {
                                     Value& arg = peek(callSpec.argCount - 1 - i);
                                     if (isFuture(arg)) {
+                                        // Pass through if promised type matches param type
+                                        auto pvt = builtinToValueType(params[i]->type.value()->builtin);
+                                        if (pvt.has_value() && isFutureAssignableTo(arg, pvt.value()))
+                                            continue;
                                         auto s = tryAwaitFuture(arg);
                                         if (s != FutureStatus::Resolved)
                                             goto postInstructionDispatch;
@@ -6159,6 +6213,15 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             case OpCode::Invoke: {
                 ObjString* method = readString();
                 CallSpec callSpec{frame->ip};
+                // Resolve future on receiver before method dispatch
+                {
+                    Value& receiver = peek(callSpec.argCount);
+                    if (isFuture(receiver)) {
+                        auto s = tryAwaitFuture(receiver);
+                        if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                        if (s == FutureStatus::Error) return errorReturn;
+                    }
+                }
                 if (!invoke(method, callSpec))
                     return errorReturn;
 
@@ -6333,6 +6396,12 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 uint8_t argCount = readByte();
                 if (tryAwaitFuture(peek(argCount)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
+                // Resolve future on the value being assigned
+                if (isFuture(peek(argCount+1))) {
+                    auto s = tryAwaitFuture(peek(argCount+1));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
                 if (peek(argCount).isConst()) {
                     runtimeError("Cannot mutate const: index assignment");
                     return errorReturn;
@@ -6604,7 +6673,25 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 bool strict = (instruction == OpCode::ToTypeStrict);
                 uint8_t typeByte = readByte();
                 ValueType targetVT = ValueType(typeByte);
-                Value val = pop(); // remove from stack; tryConvertValue manages stack for async
+                Value val = pop();
+
+                // Future pass-through: if promised type matches target, no resolution needed
+                if (isFuture(val) && isFutureAssignableTo(val, targetVT)) {
+                    push(val);
+                    break;
+                }
+                // Future with mismatched/unknown type: resolve before converting
+                if (isFuture(val)) {
+                    auto s = val.tryResolveFuture();
+                    if (s == FutureStatus::Pending) {
+                        push(val);
+                        frame->ip = instructionStart;
+                        thread->awaitedFuture = val;
+                        goto postInstructionDispatch;
+                    }
+                    if (s == FutureStatus::Error) return errorReturn;
+                    // val is now resolved — fall through to conversion
+                }
 
                 Value typeSpec = Value::typeSpecVal(targetVT);
                 auto outcome = tryConvertValue(val, typeSpec, strict, /*implicitCall=*/true,
@@ -6630,7 +6717,27 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             case OpCode::ToTypeSpecStrict: {
                 bool strict = (instruction == OpCode::ToTypeSpecStrict);
                 Value typeSpec = pop();
-                Value val = pop(); // remove from stack; tryConvertValue manages stack for async
+                Value val = pop();
+
+                // Future pass-through: if promised type matches target, no resolution needed
+                if (isFuture(val) && isFutureAssignableTo(val, typeSpec)) {
+                    push(val);
+                    break;
+                }
+                // Future with mismatched/unknown type: resolve before converting
+                if (isFuture(val)) {
+                    auto s = val.tryResolveFuture();
+                    if (s == FutureStatus::Pending) {
+                        // Re-push val then typeSpec (instruction pops typeSpec first, then val)
+                        push(val);
+                        push(typeSpec);
+                        frame->ip = instructionStart;
+                        thread->awaitedFuture = val;
+                        goto postInstructionDispatch;
+                    }
+                    if (s == FutureStatus::Error) return errorReturn;
+                    // val is now resolved — fall through to conversion
+                }
 
                 auto outcome = tryConvertValue(val, typeSpec, strict, /*implicitCall=*/true,
                                                Thread::PendingConversion::Kind::TypeConversion);
@@ -6766,6 +6873,12 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::Throw: {
+                // Resolve future before throwing
+                if (isFuture(peek(0))) {
+                    auto s = tryAwaitFuture(peek(0));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
                 Value exc = pop();
                 if (!isException(exc))
                     exc = Value::exceptionVal(exc);
@@ -7628,10 +7741,72 @@ bool VM::processNativeDefaultParamDispatch(Value defaultValue)
 }
 
 
+// Check if a future's promised type is assignable to the given target ValueType
+// without needing resolution. Returns true if the future can pass through.
+bool VM::isFutureAssignableTo(const Value& futureVal, ValueType targetVT)
+{
+    if (!isFuture(futureVal)) return false;
+    auto* fut = asFuture(futureVal);
+    if (!fut->promisedType) return false; // unknown → not assignable, must resolve
+
+    auto promisedVT = builtinToValueType(fut->promisedType->builtin);
+    if (!promisedVT.has_value()) return false;
+    return promisedVT.value() == targetVT;
+}
+
+// Check if a future's promised type is assignable to the given target typespec
+// (handles both builtin types and object/actor types with inheritance).
+bool VM::isFutureAssignableTo(const Value& futureVal, const Value& targetTypeSpec)
+{
+    if (!isFuture(futureVal)) return false;
+    auto* fut = asFuture(futureVal);
+    if (!fut->promisedType) return false; // unknown → not assignable, must resolve
+
+    if (!isTypeSpec(targetTypeSpec)) return false;
+    ObjTypeSpec* ts = asTypeSpec(targetTypeSpec);
+
+    // For builtin target types: check builtin type identity
+    if (ts->typeValue != ValueType::Object && ts->typeValue != ValueType::Actor) {
+        auto promisedVT = builtinToValueType(fut->promisedType->builtin);
+        return promisedVT.has_value() && promisedVT.value() == ts->typeValue;
+    }
+
+    // For object/actor target types: check inheritance
+    if ((fut->promisedType->builtin == type::BuiltinType::Object
+         || fut->promisedType->builtin == type::BuiltinType::Actor)
+        && fut->promisedType->obj.has_value() && isObjectType(targetTypeSpec)) {
+        // Resolve the promised type name to an ObjObjectType for inheritance check
+        auto& typeName = fut->promisedType->obj.value().name;
+        if (!thread->frames.empty()) {
+            auto moduleType = asFunction(asClosure(thread->frames.back().closure)->function)->moduleType;
+            if (!moduleType.isNil()) {
+                auto found = asModuleType(moduleType)->vars.load(typeName);
+                if (found.has_value() && isObjectType(found.value()))
+                    return isSubtypeOf(asObjectType(found.value()), asObjectType(targetTypeSpec));
+            }
+        }
+    }
+
+    return false;
+}
+
 bool VM::needsAsyncConversion(const Value& val, ptr<type::Type> paramType)
 {
     if (!paramType)
         return false;
+
+    // Futures with matching promised type pass through — no conversion needed
+    if (isFuture(val)) {
+        auto vt = builtinToValueType(paramType->builtin);
+        if (vt.has_value() && isFutureAssignableTo(val, vt.value()))
+            return false;
+        // For non-matching futures: they'll need resolution first, then possibly
+        // async conversion. But the resolution itself is handled by marshalArgs/toType.
+        // We only flag async conversion if the resolved value would need it,
+        // which we can't know until resolution. For now, don't flag — let marshalArgs
+        // resolve and toType convert synchronously.
+        return false;
+    }
 
     auto vt = builtinToValueType(paramType->builtin);
 

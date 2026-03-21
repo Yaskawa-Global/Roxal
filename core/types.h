@@ -36,6 +36,14 @@ std::optional<BuiltinType> builtinTypeFromName(const std::string& name);
 // determines whether strict conversions are required (as per conversions.md).
 bool convertibleTo(BuiltinType from, BuiltinType to, bool strict=true);
 
+// Check if a value of sourceType is acceptable where targetType is expected,
+// without any conversion. For builtin types: identity only. For object/actor
+// types: identity or sourceType is a subtype (extends/implements) of targetType.
+// This is distinct from convertibleTo() which checks if conversion is possible.
+// Note: for object/actor types, this only checks the BuiltinType-level match
+// (Object==Object, Actor==Actor). Full inheritance checking requires runtime
+// ObjObjectType access — see VM::isTypeAssignable() for the complete check.
+bool isAssignableFrom(BuiltinType target, BuiltinType source);
 
 
 struct Type {

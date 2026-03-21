@@ -319,6 +319,9 @@ void Thread::act(Value actorInstance)
                             popN(callInfo.callSpec.argCount + 1);
 
                             if (callInfo.returnPromise != nullptr) {
+                                // Resolve any futures before returning across actor boundary
+                                if (isFuture(ret))
+                                    ret.resolveFuture();
                                 if (!ret.isPrimitive() && !isException(ret)) {
                                     if (returnIsConst) {
                                         ret = createFrozenSnapshot(ret);
@@ -357,6 +360,9 @@ void Thread::act(Value actorInstance)
                     if (resultPair.first == ExecutionStatus::OK) {
                         if (callInfo.returnPromise != nullptr) {
                             Value ret = resultPair.second;
+                            // Resolve any futures before returning across actor boundary
+                            if (isFuture(ret))
+                                ret.resolveFuture();
                             if (!ret.isPrimitive() && !isException(ret)) {
                                 if (returnIsConst) {
                                     ret = createFrozenSnapshot(ret);
@@ -431,6 +437,9 @@ void Thread::act(Value actorInstance)
                         popN(callInfo.callSpec.argCount);
 
                         if (callInfo.returnPromise != nullptr) {
+                            // Resolve any futures before returning across actor boundary
+                            if (isFuture(ret))
+                                ret.resolveFuture();
                             if (!ret.isPrimitive() && !isException(ret)) {
                                 if (bnReturnIsConst) {
                                     ret = createFrozenSnapshot(ret);
