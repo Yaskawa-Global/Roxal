@@ -2825,25 +2825,23 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
 
     defineVariable(var);
 
-    // Emit type conversion for typed parameters (same pattern as variable declarations).
-    // This gives function parameters full conversion support (builtin, user-defined, constructor).
+    // Emit type conversion for typed parameters using ToTypeParam/ToTypeSpecParam.
+    // These opcodes use the caller's lexical strict context (stored in frame->callerStrict)
+    // because argument conversion conceptually happens at the call site.
     if (ast->type.has_value()) {
         auto localIdx = resolveLocal(funcScope(), ast->name);
         if (localIdx >= 0) {
-            bool emitConversion = true;
             if (std::holds_alternative<BuiltinType>(*ast->type)) {
                 emitOpArgsBytes(OpCode::GetLocal, localIdx);
-                emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                emitBytes(OpCode::ToTypeParam,
                           uint8_t(builtinToValueType(std::get<BuiltinType>(*ast->type))));
             } else {
-                // User-defined type: emit namedVariable to push the type, then ToTypeSpec.
-                // namedVariable may fail for unknown names (e.g., 'str') — resolved at runtime
-                // via GetModuleVar which will error if the type doesn't exist.
+                // User-defined type: emit namedVariable to push the type, then ToTypeSpecParam.
                 emitOpArgsBytes(OpCode::GetLocal, localIdx);
                 if (!namedVariable(std::get<icu::UnicodeString>(*ast->type), false)) {
                     namedModuleVariable(std::get<icu::UnicodeString>(*ast->type));
                 }
-                emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+                emitByte(OpCode::ToTypeSpecParam);
             }
             emitOpArgsBytes(OpCode::SetLocal, localIdx);
             emitByte(OpCode::Pop);

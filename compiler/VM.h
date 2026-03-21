@@ -58,9 +58,9 @@ typedef std::vector<CallFrame> CallFrames;
 
 struct CallFrame {
     #ifdef DEBUG_BUILD
-    CallFrame() : closure(Value::nilVal()), slots(nullptr), strict(false), isEventHandler(false), isContinuationCallback(false) {}
+    CallFrame() : closure(Value::nilVal()), slots(nullptr), strict(false), callerStrict(false), isEventHandler(false), isContinuationCallback(false) {}
     #else
-    CallFrame() : closure(Value::nilVal()), strict(false), isEventHandler(false), isContinuationCallback(false) {}
+    CallFrame() : closure(Value::nilVal()), strict(false), callerStrict(false), isEventHandler(false), isContinuationCallback(false) {}
     #endif
     Value closure; // ObjClosure
     Chunk::iterator startIp;
@@ -70,6 +70,7 @@ struct CallFrame {
     CallFrames::iterator parent;
 
     bool strict; // whether current frame executes in strict mode
+    bool callerStrict; // caller's lexical strict setting (for parameter conversion context)
 
     // on frame start, move argument Value (second) to end of the frame's
     //  argument list (in existing stack arg placeholder slots)
@@ -249,7 +250,7 @@ public:
 
     // Conversion operator lookup. Returns method closure Value (nil if not found
     // or not allowed in current strict context when implicitCall is true).
-    Value findConversionMethod(const Value& instanceType, int32_t hash, bool implicitCall);
+    Value findConversionMethod(const Value& instanceType, int32_t hash, bool implicitCall, bool strictContext);
 
     // Check if a value can be converted to the target type (pure predicate, no side effects).
     bool canConvertToType(const Value& val, const Value& targetTypeSpec, bool implicitCall) const;

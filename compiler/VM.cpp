@@ -1765,6 +1765,7 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
     callframe.startIp = callframe.ip = asFunction(closure->function)->chunk->code.begin();
     callframe.slots = &(*(thread->stackTop - argCount - 1));
     callframe.strict = asFunction(closure->function)->strict;
+    callframe.callerStrict = !thread->frames.empty() && (thread->frames.end()-1)->strict;
     thread->pushFrame(callframe);
     thread->frameStart = true;
 
@@ -2325,6 +2326,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                     setterFrame.closure = Value::objRef(asClosure(setterClosure));
                                     setterFrame.startIp = setterFrame.ip = asFunction(asClosure(setterClosure)->function)->chunk->code.begin();
                                     setterFrame.strict = asFunction(asClosure(setterClosure)->function)->strict;
+                                    setterFrame.callerStrict = !thread->frames.empty() && thread->frames.back().strict;
 
                                     setterFrames.push_back(DictSetterCall{setterClosure, kv.second, setterFrame});
                                     continue;
@@ -2570,6 +2572,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                     setterFrame.closure = Value::objRef(asClosure(setterClosure));
                                     setterFrame.startIp = setterFrame.ip = asFunction(asClosure(setterClosure)->function)->chunk->code.begin();
                                     setterFrame.strict = asFunction(asClosure(setterClosure)->function)->strict;
+                                    setterFrame.callerStrict = !thread->frames.empty() && thread->frames.back().strict;
 
                                     // Save closure, value, and frame for later
                                     setterFrames.push_back(SetterCall{setterClosure, assignment.value, setterFrame});
@@ -2947,7 +2950,7 @@ static bool hasImplicitAnnotation(const Value& closureVal)
     return false;
 }
 
-Value VM::findConversionMethod(const Value& instanceType, int32_t hash, bool implicitCall)
+Value VM::findConversionMethod(const Value& instanceType, int32_t hash, bool implicitCall, bool strictContext)
 {
     Value closure = findOperatorMethod(asObjectType(instanceType), hash);
     if (closure.isNil())
@@ -2958,9 +2961,7 @@ Value VM::findConversionMethod(const Value& instanceType, int32_t hash, bool imp
         if (mode == ImplicitMode::ExplicitOnly)
             return Value::nilVal();  // no @implicit — require explicit conversion
         if (mode == ImplicitMode::NonstrictOnly) {
-            bool strictCtx = !thread->frames.empty()
-                             && (thread->frames.end()-1)->strict;
-            if (strictCtx)
+            if (strictContext)
                 return Value::nilVal();  // nonstrict_only in strict context — block
         }
         // ImplicitMode::Everywhere always proceeds
@@ -2997,7 +2998,8 @@ bool VM::canConvertToType(const Value& val, const Value& targetTypeSpec, bool im
             int32_t convHash = convName.hashCode();
             // Use const_cast since findConversionMethod isn't const but doesn't modify state
             // when only checking (implicitCall logic reads thread which is safe)
-            Value closure = const_cast<VM*>(this)->findConversionMethod(instType, convHash, implicitCall);
+            bool strictCtx = !thread->frames.empty() && (thread->frames.end()-1)->strict;
+            Value closure = const_cast<VM*>(this)->findConversionMethod(instType, convHash, implicitCall, strictCtx);
             if (!closure.isNil())
                 return true;
         }
@@ -3105,7 +3107,7 @@ VM::ConversionOutcome VM::tryConvertValue(
             if (g.receiver.is(val, false)) { inProgress = true; break; }
 
         if (!inProgress) {
-            Value closure = findConversionMethod(instType, convHash, implicitCall);
+            Value closure = findConversionMethod(instType, convHash, implicitCall, strict);
             if (!closure.isNil()) {
                 // Set up async conversion call
                 thread->pendingConversions.push_back({
@@ -4453,57 +4455,9 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 frame->reorderArgs.clear();
             }
 
-            // Runtime parameter type conversion (safety net).
-            // The compiler emits ToType/ToTypeSpec opcodes in the parameter prologue
-            // which handle conversions (including async user-defined conversions).
-            // This runtime path is redundant for Roxal closures but still needed for
-            // native functions called via call() without marshalArgs.
-            // TODO: examine whether this can be removed now that compiler-emitted
-            // ToType handles all cases, including future pass-through.
-            if (asFunction(asClosure(frame->closure)->function)->funcType.has_value()) {
-                const auto& params = asFunction(asClosure(frame->closure)->function)->funcType.value()->func.value().params;
-                bool strictConv = false;
-                if (thread->frames.size() >= 2)
-                    strictConv = (thread->frames.end()-2)->strict;
-                for(size_t pi=0; pi<params.size(); ++pi) {
-                    const auto& paramOpt = params[pi];
-                    if (paramOpt.has_value() && paramOpt->type.has_value()) {
-                        auto& paramType = paramOpt->type.value();
-                        Value& arg = *(frame->slots + 1 + pi);
-
-                        // User-defined Object/Actor parameter types: check type match.
-                        // Constructor auto-conversion for function params is handled by
-                        // the compiler emitting ToTypeSpec opcodes (TODO: future improvement).
-                        if ((paramType->builtin == type::BuiltinType::Object
-                             || paramType->builtin == type::BuiltinType::Actor)
-                            && paramType->obj.has_value()) {
-                            auto& typeName = paramType->obj.value().name;
-                            auto typeVal = asModuleType(
-                                asFunction(asClosure(frame->closure)->function)->moduleType
-                            )->vars.load(typeName);
-                            if (typeVal.has_value() && isTypeSpec(typeVal.value()) && !arg.is(typeVal.value())) {
-                                runtimeError("unable to convert " + to_string(arg.type())
-                                             + " to " + toUTF8StdString(typeName));
-                                return std::make_pair(ExecutionStatus::RuntimeError, Value::nilVal());
-                            }
-                            continue;
-                        }
-
-                        auto vt = builtinToValueType(paramType->builtin);
-                        if (!vt.has_value()) continue;
-                        // Pass through futures whose promised type matches
-                        if (isFuture(arg) && isFutureAssignableTo(arg, vt.value()))
-                            continue;
-                        try {
-                            arg = toType(vt.value(), arg, strictConv);
-                        } catch(std::exception& e) {
-                            runtimeError(e.what());
-                            return std::make_pair(ExecutionStatus::RuntimeError,Value::nilVal());
-                        }
-                    }
-                }
-            }
-
+            // Parameter type conversion is handled by the compiler-emitted
+            // ToTypeParam/ToTypeSpecParam opcodes in the parameter prologue.
+            // These use frame->callerStrict (the caller's lexical strict setting).
 
         }
 
@@ -6759,6 +6713,90 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
+            case OpCode::ToTypeParam: {
+                // Like ToType but uses caller's lexical strict context for parameter conversion
+                bool strict = frame->callerStrict;
+                uint8_t typeByte = readByte();
+                ValueType targetVT = ValueType(typeByte);
+                Value val = pop();
+
+                if (isFuture(val) && isFutureAssignableTo(val, targetVT)) {
+                    push(val);
+                    break;
+                }
+                if (isFuture(val)) {
+                    auto s = val.tryResolveFuture();
+                    if (s == FutureStatus::Pending) {
+                        push(val);
+                        frame->ip = instructionStart;
+                        thread->awaitedFuture = val;
+                        goto postInstructionDispatch;
+                    }
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+
+                Value typeSpec = Value::typeSpecVal(targetVT);
+                auto outcome = tryConvertValue(val, typeSpec, strict, /*implicitCall=*/true,
+                                               Thread::PendingConversion::Kind::TypeConversion);
+                switch (outcome.result) {
+                    case ConversionResult::AlreadyCorrectType:
+                        push(val);
+                        break;
+                    case ConversionResult::ConvertedSync:
+                        push(outcome.convertedValue);
+                        break;
+                    case ConversionResult::NeedsAsyncFrame:
+                        frame = thread->frames.end() - 1;
+                        break;
+                    case ConversionResult::Failed:
+                        runtimeError("unable to convert " + to_string(val.type())
+                                     + " to " + to_string(targetVT)
+                                     + (strict ? " in strict mode" : ""));
+                        return errorReturn;
+                }
+                break;
+            }
+            case OpCode::ToTypeSpecParam: {
+                // Like ToTypeSpec but uses caller's lexical strict context for parameter conversion
+                bool strict = frame->callerStrict;
+                Value typeSpec = pop();
+                Value val = pop();
+
+                if (isFuture(val) && isFutureAssignableTo(val, typeSpec)) {
+                    push(val);
+                    break;
+                }
+                if (isFuture(val)) {
+                    auto s = val.tryResolveFuture();
+                    if (s == FutureStatus::Pending) {
+                        push(val);
+                        push(typeSpec);
+                        frame->ip = instructionStart;
+                        thread->awaitedFuture = val;
+                        goto postInstructionDispatch;
+                    }
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+
+                auto outcome = tryConvertValue(val, typeSpec, strict, /*implicitCall=*/true,
+                                               Thread::PendingConversion::Kind::TypeConversion);
+                switch (outcome.result) {
+                    case ConversionResult::AlreadyCorrectType:
+                        push(val);
+                        break;
+                    case ConversionResult::ConvertedSync:
+                        push(outcome.convertedValue);
+                        break;
+                    case ConversionResult::NeedsAsyncFrame:
+                        frame = thread->frames.end() - 1;
+                        break;
+                    case ConversionResult::Failed:
+                        runtimeError("unable to convert " + to_string(val.type())
+                                     + " to " + (isTypeSpec(typeSpec) ? to_string(asTypeSpec(typeSpec)->typeValue) : "type"));
+                        return errorReturn;
+                }
+                break;
+            }
             case OpCode::EventOn: {
                 uint8_t modeByte = readByte();
                 // mode encoding: bits 0-1 = base mode, bit 2 = target filter present
@@ -7842,7 +7880,8 @@ bool VM::needsAsyncConversion(const Value& val, ptr<type::Type> paramType)
             : asActorInstance(val)->instanceType;
         UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(vt.value()));
         int32_t convHash = convName.hashCode();
-        Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true);
+        bool strictCtx = !thread->frames.empty() && (thread->frames.end()-1)->strict;
+        Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true, strictCtx);
         return !closure.isNil();
     }
 
@@ -7861,7 +7900,8 @@ bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType)
             : asActorInstance(val)->instanceType;
         UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(vt.value()));
         int32_t convHash = convName.hashCode();
-        Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true);
+        bool strictCtx = !thread->frames.empty() && (thread->frames.end()-1)->strict;
+        Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true, strictCtx);
         if (!closure.isNil()) {
             thread->conversionInProgress.push_back({val, thread->frames.size()});
             push(val); // push as receiver for method call

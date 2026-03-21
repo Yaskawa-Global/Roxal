@@ -136,6 +136,42 @@ native implementation runs via `builtinInfo`. The `funcType` must be provided
 explicitly when registering the builtin via `addSys` / `defineNative` for async
 parameter conversion to work.
 
+### Parameter Conversion Strict Context
+
+Argument conversion conceptually happens at the call site, in the caller's
+lexical scope. The compiler emits `ToTypeParam` / `ToTypeSpecParam` opcodes in
+the parameter prologue (`visit(Parameter)`). These differ from `ToType` /
+`ToTypeSpec` in that they read `frame->callerStrict` (the caller's lexical
+strict setting) rather than the current frame's strict flag. This means a
+non-strict caller can pass `"2"` to a strict function's `int` parameter — the
+string-to-int conversion is evaluated in the caller's non-strict context.
+
+`callerStrict` is set on `CallFrame` during frame push from the calling frame's
+`strict` flag. `findConversionMethod()` also takes an explicit `strictContext`
+parameter for checking `@implicit(nonstrict_only=true)` annotations.
+
+### Return Type Conversion
+
+When a function has a declared return type (`-> T`), the compiler emits
+`ToType` / `ToTypeSpec` before `OpCode::Return` in `visit(ReturnStatement)`.
+This uses the callee's strict setting (the function's own context). The same
+conversion is emitted for expression-body lambdas in `visit(Function)`.
+
+Skipped for: procs (no return value), initializers (return `this`), and
+conversion operators (`operator->T` — the operator IS the conversion, emitting
+a conversion on its return would be redundant or recursive).
+
+### Constructor Auto-Conversion
+
+Constructors are **explicit by default** — a 1-argument `init` is not eligible
+for auto-conversion unless marked `@implicit`. This matches modern language
+conventions (C++ recommends `explicit` on single-arg constructors; Rust and
+Swift have no implicit constructors). The `@explicit` annotation on
+constructors is a no-op (the default is already explicit).
+
+Auto-conversion eligibility is checked in `tryConvertValue()` via
+`hasImplicitAnnotation()`.
+
 ### Native Functions with Continuations
 
 When a native function needs to execute Roxal code iteratively (e.g.,
@@ -216,8 +252,8 @@ Futures are resolved (awaited) lazily — only when a concrete value is needed:
 - **Typed function parameters:** If the future's promised type matches the
   parameter type (identity or subtype via `isSubtypeOf`), the future passes
   through without resolution. Otherwise it is resolved first, then converted.
-  This is checked in the `Call` opcode handler, `marshalArgs`, the runtime
-  parameter conversion safety net, and the `ToType`/`ToTypeSpec` handlers.
+  This is checked in the `Call` opcode handler, `marshalArgs`, and the
+  `ToType`/`ToTypeSpec`/`ToTypeParam`/`ToTypeSpecParam` handlers.
 - **Untyped parameters:** Futures pass through as-is.
 - **Operators, conditions, iteration, property access:** The VM resolves futures
   at the point of use — binary ops, `JumpIfFalse`/`JumpIfTrue`, `IfDictToKeys`,
@@ -400,9 +436,12 @@ and pushes conversion frames one at a time via `pushParamConversionFrame()`.
 pushes the next conversion frame or invokes the native function with
 complete args.
 
-### CallFrame Flags
+### CallFrame Fields
 
-Call frames use flags to identify their role:
+Call frames carry context for the dispatch loop:
+- `strict`: The callee's lexical strict setting (from `ObjFunction::strict`)
+- `callerStrict`: The caller's lexical strict setting (set during frame push).
+  Used by `ToTypeParam`/`ToTypeSpecParam` for parameter conversion context.
 - `isEventHandler`: Return triggers next event handler
 - `isContinuationCallback`: Return triggers `onComplete` handler
 

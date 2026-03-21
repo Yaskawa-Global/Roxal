@@ -65,7 +65,7 @@ Function body scope is strict by default.  To convert types in strict context, c
 | `@implicit` | Implicit OK | Implicit OK |
 | `@implicit(nonstrict_only=true)` | Implicit OK | Explicit only |
 
-**Constructor auto-conversion:** When a typed variable expects type `T` and receives a value of type `S`, if `T` has a constructor (`init`) with exactly one required parameter, `T(value)` is called automatically.  Mark a constructor `@explicit` to prevent this.
+**Constructor auto-conversion:** When a typed variable expects type `T` and receives a value of type `S`, if `T` has an `@implicit` constructor (`init`) with exactly one required parameter, `T(value)` is called automatically.  Constructors are explicit by default — mark with `@implicit` to enable auto-conversion.
 
 ## Variables
 
