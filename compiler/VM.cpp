@@ -6661,7 +6661,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         frame = thread->frames.end() - 1;
                         break;
                     case ConversionResult::Failed:
-                        runtimeError("unable to convert " + to_string(val.type())
+                        runtimeError("unable to convert " + val.typeName()
                                      + " to " + to_string(targetVT));
                         return errorReturn;
                 }
@@ -6707,8 +6707,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         frame = thread->frames.end() - 1;
                         break;
                     case ConversionResult::Failed:
-                        runtimeError("unable to convert " + to_string(val.type())
-                                     + " to " + (isTypeSpec(typeSpec) ? to_string(asTypeSpec(typeSpec)->typeValue) : "type"));
+                        runtimeError("unable to convert " + val.typeName()
+                                     + " to " + typeSpec.typeName());
                         return errorReturn;
                 }
                 break;
@@ -6749,7 +6749,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         frame = thread->frames.end() - 1;
                         break;
                     case ConversionResult::Failed:
-                        runtimeError("unable to convert " + to_string(val.type())
+                        runtimeError("unable to convert " + val.typeName()
                                      + " to " + to_string(targetVT)
                                      + (strict ? " in strict mode" : ""));
                         return errorReturn;
@@ -6791,8 +6791,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         frame = thread->frames.end() - 1;
                         break;
                     case ConversionResult::Failed:
-                        runtimeError("unable to convert " + to_string(val.type())
-                                     + " to " + (isTypeSpec(typeSpec) ? to_string(asTypeSpec(typeSpec)->typeValue) : "type"));
+                        runtimeError("unable to convert " + val.typeName()
+                                     + " to " + typeSpec.typeName());
                         return errorReturn;
                 }
                 break;

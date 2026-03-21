@@ -775,8 +775,15 @@ std::string Value::typeName() const
         else
             return "unknown";
     }
-    else if (isObj())
-        return "object";
+    else if (isObj()) {
+        if (isObjectInstance(*this))
+            return toUTF8StdString(asObjectType(asObjectInstance(*this)->instanceType)->name);
+        if (isActorInstance(*this))
+            return toUTF8StdString(asObjectType(asActorInstance(*this)->instanceType)->name);
+        if (isObjectType(*this))
+            return toUTF8StdString(asObjectType(*this)->name);
+        return to_string(type());
+    }
     return "unknown";
 }
 

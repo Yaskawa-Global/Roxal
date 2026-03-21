@@ -92,7 +92,7 @@ tests = [
     'json_basic',
     'byteops', 'bitwise', 'byte_int_bits', 'int64_promotion', 'int64_bounds', 'list_byte_concat', 'list_enum_concat',
     'object_init', 'object_constructor_args', 'object_constructor_unknown_arg', 'object_constructor_arg_count',
-    'object_inherit_is', 'object_ref_member_default',
+    'object_inherit_is', 'object_downcast', 'object_ref_member_default',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'closure_many', 'lambda1', 'lambda2',
     'conversion1', 'string_interp',
     'call_param_type_nonstrict', 'call_param_type_strict', 'param_assign_static_err',
