@@ -8674,6 +8674,14 @@ void VM::defineBuiltinProperties()
     defineBuiltinProperty(ValueType::Object, "stackTrace", &VM::exception_stacktrace_getter);
     defineBuiltinProperty(ValueType::Object, "stackTraceString", &VM::exception_stacktrace_string_getter);
     defineBuiltinProperty(ValueType::Object, "detail", &VM::exception_detail_getter);
+
+    // Range properties
+    defineBuiltinProperty(ValueType::Range, "start", &VM::range_start_getter);
+    defineBuiltinProperty(ValueType::Range, "stop", &VM::range_stop_getter);
+    defineBuiltinProperty(ValueType::Range, "step", &VM::range_step_getter);
+    defineBuiltinProperty(ValueType::Range, "closed", &VM::range_closed_getter);
+    defineBuiltinProperty(ValueType::Range, "first", &VM::range_first_getter);
+    defineBuiltinProperty(ValueType::Range, "last", &VM::range_last_getter);
 }
 
 void VM::defineBuiltinProperty(ValueType type, const std::string& name, NativePropertyGetter getter, NativePropertySetter setter)
@@ -8762,6 +8770,57 @@ Value VM::exception_detail_getter(Value& receiver)
     }
     ObjException* ex = asException(receiver);
     return ex->detail;
+}
+
+Value VM::range_start_getter(Value& receiver)
+{
+    ObjRange* r = asRange(receiver);
+    return r->start;
+}
+
+Value VM::range_stop_getter(Value& receiver)
+{
+    ObjRange* r = asRange(receiver);
+    return r->stop;
+}
+
+Value VM::range_step_getter(Value& receiver)
+{
+    ObjRange* r = asRange(receiver);
+    return r->step.isNil() ? Value::intVal(1) : r->step;
+}
+
+Value VM::range_closed_getter(Value& receiver)
+{
+    ObjRange* r = asRange(receiver);
+    return Value::boolVal(r->closed);
+}
+
+Value VM::range_first_getter(Value& receiver)
+{
+    ObjRange* r = asRange(receiver);
+    auto len = r->length();
+    if (len == 0) return Value::nilVal();
+    if (len > 0) return Value(r->targetIndex(0));
+    // Indeterminate length: first is known if start is known
+    if (!r->start.isNil()) return r->start;
+    return Value::nilVal();
+}
+
+Value VM::range_last_getter(Value& receiver)
+{
+    ObjRange* r = asRange(receiver);
+    auto len = r->length();
+    if (len == 0) return Value::nilVal();
+    if (len > 0) return Value(r->targetIndex(len - 1));
+    // Indeterminate length: last is known if stop is known (adjusted for closed/open)
+    if (!r->stop.isNil()) {
+        if (r->closed)
+            return r->stop;
+        else if (r->stop.isInt())
+            return Value::intVal(r->stop.asInt() - 1);
+    }
+    return Value::nilVal();
 }
 
 Value VM::captureStacktrace()

@@ -219,6 +219,33 @@ func sum(x) -> real:
   """sum of all elements (works on vector, matrix, tensor, or list)"""
 
 
+func clamp(value, r :range):
+  """clamp value to the given range; returns int if value is int, otherwise real.
+     Indeterminate bounds (nil) leave that side unclamped."""
+  var lo = r.first
+  var hi = r.last
+  if lo is nil and hi is nil:
+    if value is int:
+      return value
+    return real(value)
+  if lo is not nil and hi is not nil and lo > hi:
+    var tmp = lo
+    lo = hi
+    hi = tmp
+  if value is int:
+    if lo is not nil and value < lo:
+      return lo
+    if hi is not nil and value > hi:
+      return hi
+    return value
+  var v = real(value)
+  if lo is not nil and v < real(lo):
+    return real(lo)
+  if hi is not nil and v > real(hi):
+    return real(hi)
+  return v
+
+
 // Complex number type
 type complex object:
   var re :real = 0.0

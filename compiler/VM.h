@@ -715,6 +715,14 @@ public:
     Value exception_stacktrace_string_getter(Value& receiver);
     Value exception_detail_getter(Value& receiver);
 
+    // Range property getters
+    Value range_start_getter(Value& receiver);
+    Value range_stop_getter(Value& receiver);
+    Value range_step_getter(Value& receiver);
+    Value range_closed_getter(Value& receiver);
+    Value range_first_getter(Value& receiver);
+    Value range_last_getter(Value& receiver);
+
     Value loadlib_native(ArgsView args);
     Value ffi_native(ArgsView args);
 
