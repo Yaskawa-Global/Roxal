@@ -136,12 +136,37 @@ native implementation runs via `builtinInfo`. The `funcType` must be provided
 explicitly when registering the builtin via `addSys` / `defineNative` for async
 parameter conversion to work.
 
+### Parameter Conversion at `frameStart`
+
+All parameter type conversion and const-freezing for Roxal closures is handled
+at runtime in `frameStart` (the `if (thread->frameStart)` block in the dispatch
+loop), not via compiler-emitted opcodes. When a new frame begins execution,
+`frameStart` scans `funcType->func->params` and for each typed parameter:
+
+1. **Future pass-through**: If the value is a future whose promised type matches
+   the param type, it passes through without resolution.
+2. **Async conversion check**: If the value needs a user-defined conversion
+   (operator→T or @implicit constructor), it's queued for async handling via
+   `ClosureParamConversionState`.
+3. **Sync conversion**: Builtin type coercions (e.g., string→int) are applied
+   in-place to the frame's param slot via `toType()`.
+4. **Object/Actor type check**: For user-defined target types, the type name is
+   resolved from the function's module vars and checked via `Value::is()`.
+5. **Const-freezing**: After all conversions complete, params with
+   `type->isConst` are frozen via `createFrozenSnapshot()`. This covers both
+   explicit `const` params and implicit actor method const (isolation boundary).
+
+For async conversions, `ClosureParamConversionState` (sibling to
+`NativeParamConversionState`) stores the target frame depth and param indices
+needing conversion. Conversion frames are pushed one at a time via
+`pushParamConversionFrame()`, and `processClosureParamConversion()` routes
+each result into the target frame's param slot. Const-freezing runs after all
+async conversions complete.
+
 ### Parameter Conversion Strict Context
 
 Argument conversion conceptually happens at the call site, in the caller's
-lexical scope. The compiler emits `ToTypeParam` / `ToTypeSpecParam` opcodes in
-the parameter prologue (`visit(Parameter)`). These differ from `ToType` /
-`ToTypeSpec` in that they read `frame->callerStrict` (the caller's lexical
+lexical scope. `frameStart` uses `frame->callerStrict` (the caller's lexical
 strict setting) rather than the current frame's strict flag. This means a
 non-strict caller can pass `"2"` to a strict function's `int` parameter — the
 string-to-int conversion is evaluated in the caller's non-strict context.
@@ -252,8 +277,8 @@ Futures are resolved (awaited) lazily — only when a concrete value is needed:
 - **Typed function parameters:** If the future's promised type matches the
   parameter type (identity or subtype via `isSubtypeOf`), the future passes
   through without resolution. Otherwise it is resolved first, then converted.
-  This is checked in the `Call` opcode handler, `marshalArgs`, and the
-  `ToType`/`ToTypeSpec`/`ToTypeParam`/`ToTypeSpecParam` handlers.
+  This is checked in the `Call` opcode handler, `marshalArgs`, `frameStart`
+  parameter conversion, and the `ToType`/`ToTypeSpec` handlers.
 - **Untyped parameters:** Futures pass through as-is.
 - **Operators, conditions, iteration, property access:** The VM resolves futures
   at the point of use — binary ops, `JumpIfFalse`/`JumpIfTrue`, `IfDictToKeys`,
@@ -441,7 +466,7 @@ complete args.
 Call frames carry context for the dispatch loop:
 - `strict`: The callee's lexical strict setting (from `ObjFunction::strict`)
 - `callerStrict`: The caller's lexical strict setting (set during frame push).
-  Used by `ToTypeParam`/`ToTypeSpecParam` for parameter conversion context.
+  Used by `frameStart` parameter conversion and `findConversionMethod()`.
 - `isEventHandler`: Return triggers next event handler
 - `isContinuationCallback`: Return triggers `onComplete` handler
 
@@ -622,7 +647,7 @@ In practice, most current builtins are unaffected because they operate on the re
 
 ### Actor Boundary Semantics
 
-Actor method parameters are **implicitly const** — the compiler emits `MakeConst` for each non-primitive parameter. At the actor boundary (`queueCall()`), non-primitive arguments use `createFrozenSnapshot()` for MVCC-based isolation:
+Actor method parameters are **implicitly const** — `frameStart` applies `createFrozenSnapshot()` for each param whose `funcType` type has `isConst` set (which includes implicit actor const). At the actor boundary (`queueCall()`), non-primitive arguments also use `createFrozenSnapshot()` for MVCC-based isolation:
 
 - **Sole-owner with no Obj children** (e.g., list of primitives): `createFrozenSnapshot()` just sets the const bit — zero-copy transfer via `move()`.
 - **Sole-owner with Obj children**: falls through to the shared path below. The root's sole-ownership alone doesn't guarantee interior objects aren't aliased elsewhere, so the MVCC path is required for safety.
