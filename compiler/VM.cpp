@@ -1097,6 +1097,12 @@ void VM::ensureDataflowEngineStopped()
 
 VM::~VM()
 {
+    // Signal all actor threads to exit the dispatch loop and wait for them
+    // before tearing down any state.  Without this, dropReferences() can clear
+    // module vars while actor threads are mid-opcode, causing use-after-free.
+    // requestExit also stops the dataflow engine and joins all threads.
+    requestExit(0);
+
     SimpleMarkSweepGC::instance().setVM(nullptr);
 
     for (auto moduleTypeVal : ObjModuleType::allModules.get()) {
@@ -1107,18 +1113,12 @@ VM::~VM()
     }
     ObjModuleType::allModules.clear();
 
-    // Clean up dataflow engine resources before globals cleanup. Signal the
-    // engine to exit cooperatively before waiting on the actor thread so the
-    // join cannot block inside the run loop.
-    ensureDataflowEngineStopped();
+    // Clean up dataflow engine actor (engine already stopped by requestExit)
     if (dataflowEngineThread) {
         dataflowEngineThread->join();
         dataflowEngineThread.reset();
     }
-    dataflowEngineActor = Value::nilVal();  // This will call decRef() via Value destructor
-
-    // join any remaining threads to prevent leak reports
-    joinAllThreads();
+    dataflowEngineActor = Value::nilVal();
 
 
     globals.forEach([](const VariablesMap::NameValue& nv) {
