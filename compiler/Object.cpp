@@ -107,6 +107,14 @@ void writeTypeInfo(std::ostream& out, const type::Type& t) {
     } else if (t.builtin == type::BuiltinType::Func) {
         uint8_t hasFunc = 0; out.write(reinterpret_cast<char*>(&hasFunc),1);
     }
+    // Serialize obj.name for Object/Actor types (used by runtime param conversion)
+    if ((t.builtin == type::BuiltinType::Object || t.builtin == type::BuiltinType::Actor)
+        && t.obj.has_value()) {
+        uint8_t hasObj = 1; out.write(reinterpret_cast<char*>(&hasObj),1);
+        writeString(out, t.obj.value().name);
+    } else if (t.builtin == type::BuiltinType::Object || t.builtin == type::BuiltinType::Actor) {
+        uint8_t hasObj = 0; out.write(reinterpret_cast<char*>(&hasObj),1);
+    }
 }
 
 ptr<type::Type> readTypeInfo(std::istream& in) {
@@ -137,6 +145,14 @@ ptr<type::Type> readTypeInfo(std::istream& in) {
             uint32_t rc; in.read(reinterpret_cast<char*>(&rc),4);
             for(uint32_t i=0;i<rc;i++)
                 ft.returnTypes.push_back(readTypeInfo(in));
+        }
+    }
+    // Deserialize obj.name for Object/Actor types
+    if (t->builtin == type::BuiltinType::Object || t->builtin == type::BuiltinType::Actor) {
+        uint8_t hasObj; in.read(reinterpret_cast<char*>(&hasObj),1);
+        if (hasObj) {
+            t->obj = type::Type::ObjectType{};
+            t->obj->name = readString(in);
         }
     }
     return t;

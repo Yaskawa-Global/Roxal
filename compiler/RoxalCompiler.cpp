@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 26;
+constexpr std::uint32_t ModuleCacheVersion = 27;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -2829,23 +2829,14 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
     // which scans funcType params and converts in-place using callerStrict.
     // No bytecode emission needed here.
 
-    // Actor method params are implicitly const (isolation boundary) unless explicitly mutable.
-    // Explicit const-qualified params are also frozen and marked isConst on the local.
-    // Implicit actor const only emits MakeConst (runtime enforcement) without marking
-    // the local isConst, to avoid false positives from the compile-time const→mutable check
-    // (which can't distinguish primitive params that are safe to copy).
-    bool implicitConst = !ast->isMutable && inTypeScope() && asTypeScope(typeScope())->isActor &&
-                         asFuncScope(funcScope())->functionType == FunctionType::Method;
-    if (ast->isConst || implicitConst) {
+    // Const-freezing of params is handled at runtime in frameStart (VM.cpp),
+    // using funcType param's type->isConst. Mark the compile-time local as const
+    // for the const→mutable assignment checker (explicit const only — implicit
+    // actor const skips this to avoid false positives with primitive params).
+    if (ast->isConst) {
         auto localArg = resolveLocal(funcScope(), ast->name);
-        if (localArg >= 0) {
-            emitOpArgsBytes(OpCode::GetLocal, localArg);
-            emitByte(OpCode::MakeConst);
-            emitOpArgsBytes(OpCode::SetLocal, localArg);
-            emitByte(OpCode::Pop);
-            if (ast->isConst)
-                asFuncScope(funcScope())->locals[localArg].isConst = true;
-        }
+        if (localArg >= 0)
+            asFuncScope(funcScope())->locals[localArg].isConst = true;
     }
 
     // output code for evaluating default value (if any)

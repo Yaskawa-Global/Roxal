@@ -4548,6 +4548,17 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                                 return errorReturn;
                             }
                             frame = thread->frames.end() - 1;
+                        } else {
+                            // No async conversions — freeze const params now
+                            // (async case freezes all const params in processClosureParamConversion)
+                            for (size_t pi = 0; pi < params.size(); ++pi) {
+                                if (!params[pi].has_value() || !params[pi]->type.has_value())
+                                    continue;
+                                if (params[pi]->type.value()->isConst) {
+                                    Value& slot = *(frame->slots + 1 + pi);
+                                    slot = createFrozenSnapshot(slot);
+                                }
+                            }
                         }
                     }
                 }
@@ -8090,7 +8101,19 @@ bool VM::processClosureParamConversion(Value convertedValue)
         return true;  // Continue with next conversion frame
     }
 
-    // All conversions done — clear state, execution continues in the target frame
+    // All conversions done — freeze const params before function body executes
+    {
+        auto& params = state.funcType->func.value().params;
+        for (size_t pi = 0; pi < params.size(); ++pi) {
+            if (!params[pi].has_value() || !params[pi]->type.has_value())
+                continue;
+            if (params[pi]->type.value()->isConst) {
+                Value& slot = *(targetFrame->slots + 1 + pi);
+                slot = createFrozenSnapshot(slot);
+            }
+        }
+    }
+
     state.clear();
     return true;
 }
