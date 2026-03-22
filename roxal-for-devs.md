@@ -181,6 +181,8 @@ print( f(1) )   // "a is 1 and b is 3"
 print( f(b=7, a=2) ) // // "a is 2 and b is 7"
 ```
 
+Parameters are immutable bindings — they cannot be reassigned within the function body. To work with a mutable copy, shadow the parameter with a new local (e.g., `var x = clamp(x, range(0..100))`).
+
 ### Variadic Parameters
 
 Functions can accept a variable number of arguments using the `...` prefix on the last parameter. The variadic arguments are collected into a list:

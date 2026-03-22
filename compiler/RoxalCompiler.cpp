@@ -2829,14 +2829,14 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
     // which scans funcType params and converts in-place using callerStrict.
     // No bytecode emission needed here.
 
-    // Const-freezing of params is handled at runtime in frameStart (VM.cpp),
-    // using funcType param's type->isConst. Mark the compile-time local as const
-    // for the const→mutable assignment checker (explicit const only — implicit
-    // actor const skips this to avoid false positives with primitive params).
-    if (ast->isConst) {
+    // Const-freezing of typed params is handled at runtime in frameStart (VM.cpp),
+    // using funcType param's type->isConst.
+    // Params are immutable bindings — reassignment is checked via isParam
+    // in namedVariable(), not via isConst (which would also block copying to mutable locals).
+    {
         auto localArg = resolveLocal(funcScope(), ast->name);
         if (localArg >= 0)
-            asFuncScope(funcScope())->locals[localArg].isConst = true;
+            asFuncScope(funcScope())->locals[localArg].isParam = true;
     }
 
     // output code for evaluating default value (if any)
@@ -4745,7 +4745,7 @@ int16_t RoxalCompiler::resolveLocal(Scope scopeState, const icu::UnicodeString& 
                 if (locals[i].name == name) {
             #endif
                     if (locals[i].depth == -1)
-                        error("Reference to local variable in initializer not allowed.");
+                        continue;  // skip uninitialized shadow; keep searching for outer binding
                     #ifdef DEBUG_TRACE_NAME_RESOLUTION
                     std::cout << " - found " << i << std::endl;
                     #endif
@@ -5108,6 +5108,8 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
             error("'changes' requires a module variable binding; use a signal expression instead");
         if (assign && asFuncScope(funcScope())->locals[localArg].isConst)
             error("Cannot assign to constant '" + toUTF8StdString(name) + "'");
+        if (assign && asFuncScope(funcScope())->locals[localArg].isParam)
+            error("Cannot assign to parameter '" + toUTF8StdString(name) + "'. Parameters are immutable bindings; use 'var " + toUTF8StdString(name) + " = ...' to create a mutable copy.");
         found = true;
         arg = localArg;
         getOp = OpCode::GetLocal;

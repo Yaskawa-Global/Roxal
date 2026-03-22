@@ -165,6 +165,7 @@ protected:
         bool isCaptured;
         bool isConst;
         bool isTypeConst;   // var x: const T — type is const, but var is reassignable
+        bool isParam { false }; // immutable binding (cannot reassign) but value is not const
         std::optional<VarTypeSpec> type;
     };
 
