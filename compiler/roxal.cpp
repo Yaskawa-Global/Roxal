@@ -35,6 +35,8 @@
 #include "Introspection.h"
 #include "RuntimeConfig.h"
 
+#include <Eigen/Version>
+
 
 extern "C" {
     #include "linenoise.h"
@@ -770,6 +772,14 @@ int main(int argc, const char* argv[])
         }
         std::cout << std::endl;
         return 0;
+    }
+
+    // Verify Eigen version to catch accidental use of system Eigen instead of deps/eigen
+    if (EIGEN_MAJOR_VERSION != 5 || EIGEN_MINOR_VERSION != 0 || EIGEN_PATCH_VERSION != 1) {
+        std::cerr << "Fatal: expected Eigen 5.0.1 (from deps/eigen) but found "
+                  << EIGEN_MAJOR_VERSION << "." << EIGEN_MINOR_VERSION << "." << EIGEN_PATCH_VERSION
+                  << ". Check CMAKE_PREFIX_PATH and ROXAL_EIGEN_ROOT." << std::endl;
+        return 1;
     }
 
     const size_t stackSizeLimit = vmap["stack-size"].as<size_t>();
