@@ -255,6 +255,37 @@ public:
     };
     NativeParamConversionState nativeParamConversionState;
 
+    // State for deferred closure (Roxal function) call when params need async type conversion.
+    // Mirrors NativeParamConversionState but stores results directly into frame stack slots
+    // instead of an args buffer.  Activated from frameStart when funcType has typed params
+    // needing user-defined conversion (operator->T, @implicit constructor).
+    struct ClosureParamConversionState {
+        bool active { false };
+
+        // The frame whose param slots we're converting (by depth, not pointer — frames may move)
+        size_t targetFrameDepth { 0 };
+
+        // Param indices needing async conversion (indices into funcType params / frame slots)
+        std::vector<size_t> conversionParamIndices;
+        size_t nextConversionIndex { 0 };
+
+        // funcType for param type info
+        ptr<type::Type> funcType;
+
+        // Module type for resolving user-defined type names
+        Value moduleType { Value::nilVal() };
+
+        void clear() {
+            active = false;
+            targetFrameDepth = 0;
+            conversionParamIndices.clear();
+            nextConversionIndex = 0;
+            funcType = nullptr;
+            moduleType = Value::nilVal();
+        }
+    };
+    ClosureParamConversionState closureParamConversionState;
+
     void pruneEventRegistrations();
 
     // Keeps the currently executing actor call target alive while the

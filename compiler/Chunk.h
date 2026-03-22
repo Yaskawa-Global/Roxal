@@ -95,8 +95,6 @@ enum class OpCode {
     ToTypeStrict,
     ToTypeSpec,
     ToTypeSpecStrict,
-    ToTypeParam,     // like ToType but uses caller's strict context (for parameter conversion)
-    ToTypeSpecParam, // like ToTypeSpec but uses caller's strict context (for parameter conversion)
     EventOn,
     EventOff,
     SetupExcept,

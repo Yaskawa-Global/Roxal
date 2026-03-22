@@ -339,14 +339,19 @@ public:
     bool isFutureAssignableTo(const Value& futureVal, const Value& targetTypeSpec);
 
     // Returns true if converting val to the given param type requires executing Roxal code
-    // (user-defined conversion operator or constructor auto-conversion)
-    bool needsAsyncConversion(const Value& val, ptr<type::Type> paramType);
+    // (user-defined conversion operator or constructor auto-conversion).
+    // strictCtx: the caller's lexical strict setting (for @implicit(nonstrict_only) checks)
+    bool needsAsyncConversion(const Value& val, ptr<type::Type> paramType, bool strictCtx);
 
     // Process native param conversion continuation after a conversion frame returns
     bool processNativeParamConversion(Value convertedValue);
 
-    // Push a conversion frame for a single param (operator call or constructor call)
-    bool pushParamConversionFrame(const Value& val, ptr<type::Type> paramType);
+    // Process closure param conversion after a conversion frame returns
+    bool processClosureParamConversion(Value convertedValue);
+
+    // Push a conversion frame for a single param (operator call or constructor call).
+    // strictCtx: the caller's lexical strict setting
+    bool pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, bool strictCtx);
 
     bool callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                       const std::vector<Value>& defaults,

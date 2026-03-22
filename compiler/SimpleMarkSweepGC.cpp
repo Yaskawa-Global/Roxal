@@ -128,6 +128,11 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
             visitStrongValue(visitor, val);
         }
     }
+
+    // Trace closure param conversion state (deferred closure call with async param conversions)
+    if (thread.closureParamConversionState.active) {
+        visitStrongValue(visitor, thread.closureParamConversionState.moduleType);
+    }
 }
 
 } // namespace

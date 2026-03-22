@@ -568,7 +568,8 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                     int pos = paramPositions[pi];
                     if (pos < 0) continue; // default or missing — sync path handles it
                     Value arg = *(&(*thread->stackTop) - callSpec.argCount + pos);
-                    if (needsAsyncConversion(arg, params[pi]->type.value()))
+                    bool nativeStrictCtx = !thread->frames.empty() && (thread->frames.end()-1)->strict;
+                    if (needsAsyncConversion(arg, params[pi]->type.value(), nativeStrictCtx))
                         asyncConvIndices.push_back(pi);
                 }
 
@@ -618,7 +619,8 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                     size_t firstParamIdx = state.conversionParamIndices[0];
                     size_t firstBufIdx = firstParamIdx + (includeReceiver ? 1 : 0);
                     const auto& firstParamType = params[firstParamIdx]->type.value();
-                    if (!pushParamConversionFrame(state.argsBuffer[firstBufIdx], firstParamType)) {
+                    bool nativeStrictCtx2 = !thread->frames.empty() && (thread->frames.end()-1)->strict;
+                    if (!pushParamConversionFrame(state.argsBuffer[firstBufIdx], firstParamType, nativeStrictCtx2)) {
                         state.clear();
                         cont.clear();
                         runtimeError("Failed to set up parameter conversion");
@@ -4455,9 +4457,101 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 frame->reorderArgs.clear();
             }
 
-            // Parameter type conversion is handled by the compiler-emitted
-            // ToTypeParam/ToTypeSpecParam opcodes in the parameter prologue.
-            // These use frame->callerStrict (the caller's lexical strict setting).
+            // Parameter type conversion: scan funcType params and convert in-place.
+            // Uses frame->callerStrict (caller's lexical strict context) because
+            // argument conversion conceptually happens at the call site.
+            {
+                ObjFunction* func = asFunction(asClosure(frame->closure)->function);
+                if (func->funcType.has_value()) {
+                    auto& ft = func->funcType.value();
+                    if (ft->func.has_value()) {
+                        auto& params = ft->func.value().params;
+                        bool strictCtx = frame->callerStrict;
+                        std::vector<size_t> asyncIndices;
+
+                        for (size_t pi = 0; pi < params.size(); ++pi) {
+                            if (!params[pi].has_value() || !params[pi]->type.has_value())
+                                continue;
+                            if (params[pi]->variadic)
+                                continue;  // skip variadic params
+
+                            Value& slot = *(frame->slots + 1 + pi);
+                            auto& paramType = params[pi]->type.value();
+                            auto targetVT = builtinToValueType(paramType->builtin);
+
+                            // Future pass-through: if promised type matches, no conversion
+                            if (isFuture(slot)) {
+                                if (targetVT.has_value() && isFutureAssignableTo(slot, targetVT.value()))
+                                    continue;
+                                // Non-matching future: try to resolve
+                                auto s = slot.tryResolveFuture();
+                                if (s == FutureStatus::Pending) {
+                                    // Can't convert pending futures in frameStart — fall through
+                                    // to let the function body handle it (or error)
+                                    continue;
+                                }
+                                if (s == FutureStatus::Error) {
+                                    runtimeError("future resolved with error");
+                                    return errorReturn;
+                                }
+                            }
+
+                            // Check if async (user-defined) conversion needed
+                            if (needsAsyncConversion(slot, paramType, strictCtx)) {
+                                asyncIndices.push_back(pi);
+                                continue;
+                            }
+
+                            // Sync builtin conversion
+                            if (targetVT.has_value() && slot.type() != targetVT.value()) {
+                                try {
+                                    slot = toType(targetVT.value(), slot, strictCtx);
+                                } catch (std::runtime_error& e) {
+                                    runtimeError(std::string(e.what()));
+                                    return errorReturn;
+                                }
+                            }
+
+                            // Sync object/actor type check (value.is(typeSpec))
+                            if (!targetVT.has_value()
+                                && (paramType->builtin == type::BuiltinType::Object
+                                    || paramType->builtin == type::BuiltinType::Actor)
+                                && paramType->obj.has_value()) {
+                                auto& typeName = paramType->obj.value().name;
+                                Value moduleTypeVal = func->moduleType;
+                                if (!moduleTypeVal.isNil()) {
+                                    auto found = asModuleType(moduleTypeVal)->vars.load(typeName);
+                                    if (found.has_value() && !slot.is(found.value())) {
+                                        runtimeError("unable to convert " + slot.typeName()
+                                                     + " to " + toUTF8StdString(typeName));
+                                        return errorReturn;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Handle async conversions by setting up state and pushing first frame
+                        if (!asyncIndices.empty()) {
+                            auto& state = thread->closureParamConversionState;
+                            state.active = true;
+                            state.targetFrameDepth = thread->frames.size();
+                            state.conversionParamIndices = std::move(asyncIndices);
+                            state.nextConversionIndex = 0;
+                            state.funcType = ft;
+                            state.moduleType = func->moduleType;
+
+                            size_t firstIdx = state.conversionParamIndices[0];
+                            Value& firstSlot = *(frame->slots + 1 + firstIdx);
+                            if (!pushParamConversionFrame(firstSlot, params[firstIdx]->type.value(), strictCtx)) {
+                                state.clear();
+                                runtimeError("Failed to set up parameter conversion");
+                                return errorReturn;
+                            }
+                            frame = thread->frames.end() - 1;
+                        }
+                    }
+                }
+            }
 
         }
 
@@ -6713,90 +6807,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
-            case OpCode::ToTypeParam: {
-                // Like ToType but uses caller's lexical strict context for parameter conversion
-                bool strict = frame->callerStrict;
-                uint8_t typeByte = readByte();
-                ValueType targetVT = ValueType(typeByte);
-                Value val = pop();
-
-                if (isFuture(val) && isFutureAssignableTo(val, targetVT)) {
-                    push(val);
-                    break;
-                }
-                if (isFuture(val)) {
-                    auto s = val.tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        push(val);
-                        frame->ip = instructionStart;
-                        thread->awaitedFuture = val;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) return errorReturn;
-                }
-
-                Value typeSpec = Value::typeSpecVal(targetVT);
-                auto outcome = tryConvertValue(val, typeSpec, strict, /*implicitCall=*/true,
-                                               Thread::PendingConversion::Kind::TypeConversion);
-                switch (outcome.result) {
-                    case ConversionResult::AlreadyCorrectType:
-                        push(val);
-                        break;
-                    case ConversionResult::ConvertedSync:
-                        push(outcome.convertedValue);
-                        break;
-                    case ConversionResult::NeedsAsyncFrame:
-                        frame = thread->frames.end() - 1;
-                        break;
-                    case ConversionResult::Failed:
-                        runtimeError("unable to convert " + val.typeName()
-                                     + " to " + to_string(targetVT)
-                                     + (strict ? " in strict mode" : ""));
-                        return errorReturn;
-                }
-                break;
-            }
-            case OpCode::ToTypeSpecParam: {
-                // Like ToTypeSpec but uses caller's lexical strict context for parameter conversion
-                bool strict = frame->callerStrict;
-                Value typeSpec = pop();
-                Value val = pop();
-
-                if (isFuture(val) && isFutureAssignableTo(val, typeSpec)) {
-                    push(val);
-                    break;
-                }
-                if (isFuture(val)) {
-                    auto s = val.tryResolveFuture();
-                    if (s == FutureStatus::Pending) {
-                        push(val);
-                        push(typeSpec);
-                        frame->ip = instructionStart;
-                        thread->awaitedFuture = val;
-                        goto postInstructionDispatch;
-                    }
-                    if (s == FutureStatus::Error) return errorReturn;
-                }
-
-                auto outcome = tryConvertValue(val, typeSpec, strict, /*implicitCall=*/true,
-                                               Thread::PendingConversion::Kind::TypeConversion);
-                switch (outcome.result) {
-                    case ConversionResult::AlreadyCorrectType:
-                        push(val);
-                        break;
-                    case ConversionResult::ConvertedSync:
-                        push(outcome.convertedValue);
-                        break;
-                    case ConversionResult::NeedsAsyncFrame:
-                        frame = thread->frames.end() - 1;
-                        break;
-                    case ConversionResult::Failed:
-                        runtimeError("unable to convert " + val.typeName()
-                                     + " to " + typeSpec.typeName());
-                        return errorReturn;
-                }
-                break;
-            }
             case OpCode::EventOn: {
                 uint8_t modeByte = readByte();
                 // mode encoding: bits 0-1 = base mode, bit 2 = target filter present
@@ -7638,8 +7648,14 @@ bool VM::processContinuationDispatch()
     thread->continuationCallbackReturned = false;
     auto& cont = thread->nativeContinuation;
 
-    if (!cont.active || !cont.onComplete)
+    if (!cont.active || !cont.onComplete) {
+        // Check for closure param conversion (uses isContinuationCallback but not nativeContinuation)
+        if (thread->closureParamConversionState.active) {
+            Value result = pop();
+            return processClosureParamConversion(result);
+        }
         return true;  // No active continuation
+    }
 
     // Get closure return value from stack
     Value result = pop();
@@ -7828,7 +7844,7 @@ bool VM::isFutureAssignableTo(const Value& futureVal, const Value& targetTypeSpe
     return false;
 }
 
-bool VM::needsAsyncConversion(const Value& val, ptr<type::Type> paramType)
+bool VM::needsAsyncConversion(const Value& val, ptr<type::Type> paramType, bool strictCtx)
 {
     if (!paramType)
         return false;
@@ -7880,7 +7896,6 @@ bool VM::needsAsyncConversion(const Value& val, ptr<type::Type> paramType)
             : asActorInstance(val)->instanceType;
         UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(vt.value()));
         int32_t convHash = convName.hashCode();
-        bool strictCtx = !thread->frames.empty() && (thread->frames.end()-1)->strict;
         Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true, strictCtx);
         return !closure.isNil();
     }
@@ -7889,7 +7904,7 @@ bool VM::needsAsyncConversion(const Value& val, ptr<type::Type> paramType)
 }
 
 
-bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType)
+bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, bool strictCtx)
 {
     auto vt = builtinToValueType(paramType->builtin);
 
@@ -7900,7 +7915,6 @@ bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType)
             : asActorInstance(val)->instanceType;
         UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(vt.value()));
         int32_t convHash = convName.hashCode();
-        bool strictCtx = !thread->frames.empty() && (thread->frames.end()-1)->strict;
         Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true, strictCtx);
         if (!closure.isNil()) {
             thread->conversionInProgress.push_back({val, thread->frames.size()});
@@ -7972,7 +7986,8 @@ bool VM::processNativeParamConversion(Value convertedValue)
         size_t nextBufIdx = nextParamIdx + (state.includeReceiver ? 1 : 0);
         const auto& params = state.funcType->func.value().params;
         Value val = state.argsBuffer[nextBufIdx];
-        if (!pushParamConversionFrame(val, params[nextParamIdx]->type.value())) {
+        bool nativeStrict = !thread->frames.empty() && (thread->frames.end()-1)->strict;
+        if (!pushParamConversionFrame(val, params[nextParamIdx]->type.value(), nativeStrict)) {
             state.clear();
             clearContinuation();
             runtimeError("Failed to convert parameter for native function call");
@@ -8024,6 +8039,58 @@ bool VM::processNativeParamConversion(Value convertedValue)
     *(thread->stackTop - argCount - 1) = finalResult;
     popN(argCount);
 
+    state.clear();
+    return true;
+}
+
+
+bool VM::processClosureParamConversion(Value convertedValue)
+{
+    auto& state = thread->closureParamConversionState;
+    if (!state.active)
+        return true;
+
+    // Store the converted value directly into the target frame's param slot
+    size_t paramIdx = state.conversionParamIndices[state.nextConversionIndex];
+
+    // Find the target frame by depth
+    if (thread->frames.size() < state.targetFrameDepth) {
+        state.clear();
+        runtimeError("Closure param conversion: target frame no longer exists");
+        return false;
+    }
+    auto targetFrame = thread->frames.begin() + (state.targetFrameDepth - 1);
+    *(targetFrame->slots + 1 + paramIdx) = convertedValue;
+
+    // Clean up conversion recursion guard
+    auto& guards = thread->conversionInProgress;
+    if (!guards.empty()) {
+        guards.erase(
+            std::remove_if(guards.begin(), guards.end(),
+                [&](const Thread::ConversionGuard& g) {
+                    return thread->frames.size() <= g.frameDepth;
+                }),
+            guards.end());
+    }
+
+    // Move to next conversion
+    state.nextConversionIndex++;
+
+    // More conversions to do?
+    if (state.nextConversionIndex < state.conversionParamIndices.size()) {
+        size_t nextIdx = state.conversionParamIndices[state.nextConversionIndex];
+        Value& nextSlot = *(targetFrame->slots + 1 + nextIdx);
+        auto& params = state.funcType->func.value().params;
+        bool strictCtx = targetFrame->callerStrict;
+        if (!pushParamConversionFrame(nextSlot, params[nextIdx]->type.value(), strictCtx)) {
+            state.clear();
+            runtimeError("Failed to convert parameter for function call");
+            return false;
+        }
+        return true;  // Continue with next conversion frame
+    }
+
+    // All conversions done — clear state, execution continues in the target frame
     state.clear();
     return true;
 }

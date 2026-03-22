@@ -557,12 +557,13 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
             }
             else if (std::holds_alternative<icu::UnicodeString>(param->type.value())) {
                 // Named type (user-defined object/actor) — use Object as placeholder
-                // builtin type. The actual type isn't resolved here, but this lets
-                // isConst be queried at runtime (e.g. for actor mutable param checks).
+                // builtin type with the type name stored in obj for runtime resolution.
                 Type::FuncType::ParamType paramType {};
                 paramType.name = param->name;
                 paramType.nameHashCode = param->name.hashCode();
                 paramType.type = make_ptr<Type>(BuiltinType::Object);
+                paramType.type.value()->obj = Type::ObjectType{};
+                paramType.type.value()->obj->name = std::get<icu::UnicodeString>(param->type.value());
                 if (param->isConst || (inActorScope() && !param->isMutable))
                     paramType.type.value()->isConst = true;
                 paramType.hasDefault = param->defaultValue.has_value();

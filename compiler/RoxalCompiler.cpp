@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 25;
+constexpr std::uint32_t ModuleCacheVersion = 26;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -2825,28 +2825,9 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
 
     defineVariable(var);
 
-    // Emit type conversion for typed parameters using ToTypeParam/ToTypeSpecParam.
-    // These opcodes use the caller's lexical strict context (stored in frame->callerStrict)
-    // because argument conversion conceptually happens at the call site.
-    if (ast->type.has_value()) {
-        auto localIdx = resolveLocal(funcScope(), ast->name);
-        if (localIdx >= 0) {
-            if (std::holds_alternative<BuiltinType>(*ast->type)) {
-                emitOpArgsBytes(OpCode::GetLocal, localIdx);
-                emitBytes(OpCode::ToTypeParam,
-                          uint8_t(builtinToValueType(std::get<BuiltinType>(*ast->type))));
-            } else {
-                // User-defined type: emit namedVariable to push the type, then ToTypeSpecParam.
-                emitOpArgsBytes(OpCode::GetLocal, localIdx);
-                if (!namedVariable(std::get<icu::UnicodeString>(*ast->type), false)) {
-                    namedModuleVariable(std::get<icu::UnicodeString>(*ast->type));
-                }
-                emitByte(OpCode::ToTypeSpecParam);
-            }
-            emitOpArgsBytes(OpCode::SetLocal, localIdx);
-            emitByte(OpCode::Pop);
-        }
-    }
+    // Parameter type conversion is handled at runtime in frameStart (VM.cpp),
+    // which scans funcType params and converts in-place using callerStrict.
+    // No bytecode emission needed here.
 
     // Actor method params are implicitly const (isolation boundary) unless explicitly mutable.
     // Explicit const-qualified params are also frozen and marked isConst on the local.

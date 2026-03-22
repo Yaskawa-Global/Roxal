@@ -400,10 +400,6 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("TO_TYPE_SPEC", offset);
         case OpCode::ToTypeSpecStrict:
             return simpleInstruction("TO_TYPE_SPEC_STRICT", offset);
-        case OpCode::ToTypeParam:
-            return byteInstruction("TO_TYPE_PARAM", offset);
-        case OpCode::ToTypeSpecParam:
-            return simpleInstruction("TO_TYPE_SPEC_PARAM", offset);
         case OpCode::EventOn:
             return byteInstruction("EVENT_ON", offset);
         case OpCode::EventOff:
