@@ -25,7 +25,7 @@ parser.add_argument('--all', action='store_true', help='Run all tests, including
 parser.add_argument('--opcode-prof', action='store_true', help='Enable opcode profiling for each Roxal invocation')
 parser.add_argument('--nocache', action='store_true', help='Disable reading and writing Roxal bytecode cache files')
 parser.add_argument('--nogc', action='store_true', help='Disable Roxal garbage collection during tests')
-parser.add_argument('--recompile', action='store_true', help='Force Roxal to recompile input scripts on each run')
+parser.add_argument('--recompile', action='store_true', help='Delete cached .roc files before running tests')
 parser.add_argument('--build', action='store_true', help='Invoke cmake --build before running the tests')
 parser.add_argument('--test', '-t', type=str, metavar='PATTERN', help='Only run tests matching PATTERN (shell-style wildcards: * ? [seq])')
 args = parser.parse_args()
@@ -64,6 +64,22 @@ def is_debug_build(build_dir: str) -> bool:
         return 'DEBUG_BUILD' in contents
     except OSError:
         return False
+
+
+def clear_bytecode_cache(root_dir: str) -> int:
+    """Delete cached Roxal bytecode files (.*.roc) under root_dir."""
+    removed = 0
+    for dirpath, _, filenames in os.walk(root_dir):
+        for filename in filenames:
+            if not (filename.startswith('.') and filename.endswith('.roc')):
+                continue
+            cache_path = os.path.join(dirpath, filename)
+            try:
+                os.remove(cache_path)
+                removed += 1
+            except FileNotFoundError:
+                continue
+    return removed
 
 # for each named test, run the <test>.rox file in the tests folder
 # and compare its output with <test>.out (stdout) and <test>.err (stderr regex)
@@ -231,6 +247,10 @@ if args.test:
 
 project_root = os.path.dirname(os.path.abspath(__file__))
 test_dir = os.path.join(project_root, 'tests')
+
+if args.recompile:
+    removed_cache_count = clear_bytecode_cache(project_root)
+    print(f"Cleared {removed_cache_count} bytecode cache file(s).")
 
 roxalpath = 'build'
 roxal = './roxal'
@@ -413,8 +433,6 @@ try:
             cmd = [cmd[0], '--nocache', *cmd[1:]]
         if args.nogc and '--nogc' not in cmd:
             cmd = [cmd[0], '--nogc', *cmd[1:]]
-        if args.recompile and '--recompile' not in cmd:
-            cmd = [cmd[0], '--recompile', *cmd[1:]]
 
         opt_expected = (" [expected]" if test in failing_tests else '')
 
