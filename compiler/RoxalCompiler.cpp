@@ -894,6 +894,8 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
                                               absoluteModuleFilePath
                                             : toUTF8StdString(module.name)
                                       );
+                    if (function.isNil())
+                        throw std::runtime_error("compilation failed for module: " + toUTF8StdString(module.name));
                     storeModuleCache(module, function);
                 }
 
