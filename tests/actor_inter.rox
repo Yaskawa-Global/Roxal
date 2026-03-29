@@ -1,0 +1,21 @@
+
+type A actor:
+
+  private var id: int
+
+  proc init(id :int):
+    this.id = id
+    print("Actor {id} initialized.")
+
+  func greet(name: string) -> bool:
+    print("Actor {id} says: Hello, {name}!")
+    return true
+
+  func callOther(other: A, name: string) -> bool:
+    print("Actor {id} is calling other actor...")
+    return other.greet(name)
+
+var a = A(1)
+var b = A(2)
+wait(ms=10)
+wait(for=a.callOther(b, "Alice"))

@@ -131,6 +131,7 @@ tests = [
     'actor_init', 'actor_stack', 'actor_future', 'future_ready', 'future_builtin_resolve', 'future_typed_param_resolve',
     'actor_method_order',
     'actor_closure1', 'actor_closure2', 'actor_closure3',
+    'actor_inter',
     'clone1', 'clone_shared', 'clone_cycle', 'extends1', 'nothis', 'superprop', 'scopetest4',
     'private_prop', 'private_method', 'private_inherit',
     'operator_overload', 'operator_overload_cmp', 'operator_overload_commutative',

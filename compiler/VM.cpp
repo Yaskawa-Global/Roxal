@@ -2079,6 +2079,13 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         return call(asClosure(boundMethod->method), callSpec);
                     } else {
                         // call to other actor
+                        if (!inst->alive.load(std::memory_order_acquire)) {
+                            auto methodName = toUTF8StdString(asFunction(asClosure(boundMethod->method)->function)->name);
+                            auto typeName   = toUTF8StdString(asObjectType(inst->instanceType)->name);
+                            runtimeError("method '%s' called on terminated actor of type '%s'",
+                                         methodName.c_str(), typeName.c_str());
+                            return false;
+                        }
                         Value future = inst->queueCall(callee, callSpec, &(*thread->stackTop) );
 
                         popN(callSpec.argCount + 1); // args & callee
@@ -2797,6 +2804,12 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                             bound->declFunction, resolveMask);
                     } else {
                         // call to other actor
+                        if (!inst->alive.load(std::memory_order_acquire)) {
+                            auto typeName = toUTF8StdString(asObjectType(inst->instanceType)->name);
+                            runtimeError("native method called on terminated actor of type '%s'",
+                                         typeName.c_str());
+                            return false;
+                        }
                         Value future = inst->queueCall(callee, callSpec, &(*thread->stackTop) );
 
                         popN(callSpec.argCount + 1); // args & callee
@@ -3316,6 +3329,12 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                     }
                 } else {
                     // Different thread - queue the call
+                    if (!instance->alive.load(std::memory_order_acquire)) {
+                        auto typeName = toUTF8StdString(asObjectType(instance->instanceType)->name);
+                        runtimeError("method '%s' called on terminated actor of type '%s'",
+                                     toUTF8StdString(name->s).c_str(), typeName.c_str());
+                        return false;
+                    }
                     Value callee = Value::boundNativeVal(receiver, fn, methodInfo.isProc,
                                                          methodInfo.funcType, methodInfo.defaultValues,
                                                          methodInfo.declFunction);

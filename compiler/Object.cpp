@@ -5508,6 +5508,12 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
 
     std::lock_guard<std::mutex> lock { queueMutex };
 
+    // If the actor's thread has already exited, no one will service this call.
+    // Return nil immediately so callers (resolveFuture etc.) don't block forever.
+    if (!alive.load(std::memory_order_acquire)) {
+        return Value::nilVal();
+    }
+
     MethodCallInfo callInfo {};
     callInfo.callee = callee;
     callInfo.callSpec = callSpec;
@@ -5562,11 +5568,18 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
                 throw std::runtime_error("Cannot pass value with aliased interior objects as mutable actor parameter");
             }
 
-            if (isMutableParam) {
-                // Mutable param: sole-owner passes through as-is (caller moved it).
-                // Non-sole-owner was already rejected above.
+            if (isActorInstance(arg)) {
+                // Actor instances are live shared references with their own concurrency
+                // isolation — MVCC snapshotting does not apply.  Apply const/mutable
+                // semantics directly: implicitly-const params carry the const bit,
+                // explicitly-mutable params are passed as-is.
+                if (!isMutableParam)
+                    arg = arg.constRef();
+            } else if (isMutableParam) {
+                // Mutable value param: sole-owner passes through as-is (caller moved it).
+                // Non-sole-owner and non-isolated were already rejected above.
             } else {
-                // Const param: frozen snapshot for MVCC-based isolation.
+                // Const value param: frozen snapshot for MVCC-based isolation.
                 // Sole-owner: createFrozenSnapshot just sets const bit (zero-copy).
                 // Shared: createFrozenSnapshot shallow-clones the root; children are
                 // lazily resolved via resolveConstChild on the actor thread, protected

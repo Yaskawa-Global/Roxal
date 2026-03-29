@@ -1756,6 +1756,7 @@ struct ActorInstance : public Obj
 
     std::thread::id thread_id;
     weak_ptr<Thread> thread;
+    std::atomic<bool> alive{false}; // true while actor OS thread is running; guards queueCall
 
     unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override { throw std::runtime_error("cannot clone actor instances"); }
 

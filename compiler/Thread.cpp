@@ -217,6 +217,11 @@ void Thread::act(Value actorInstance)
     actor = true;
     state = State::Spawned;
 
+    // Mark actor as alive before spawning the OS thread so that any queueCall()
+    // arriving between now and the thread's first iteration doesn't see alive=false
+    // and silently drop the call.
+    asActorInstance(actorInstance)->alive.store(true, std::memory_order_release);
+
     osthread = make_ptr<std::thread>([this]() {
         try {
             auto& vm { VM::instance() };
@@ -255,7 +260,11 @@ void Thread::act(Value actorInstance)
                     if (!actorInst->callQueue.empty()) {
                         callInfo = actorInst->callQueue.pop();
                     }
-                    if (quit)
+                    // Only break on quit if there is no call to process: if a call
+                    // was already popped from the queue we must execute it (and
+                    // fulfil its promise) before exiting, otherwise the caller
+                    // blocks forever on a future that is never resolved.
+                    if (quit && !callInfo.valid())
                         break;
                 }
 
@@ -472,7 +481,15 @@ void Thread::act(Value actorInstance)
 
             } while (true);
 
-            // resolve any queued calls with nil so waiting futures complete
+            // Set alive=false while holding queueMutex so any concurrent queueCall()
+            // that acquires the lock after this point will see alive=false and
+            // immediately resolve its promise, rather than pushing to an unserviced queue.
+            {
+                std::lock_guard<std::mutex> lock { actorInst->queueMutex };
+                actorInst->alive.store(false, std::memory_order_release);
+            }
+
+            // Drain items that arrived before alive was cleared (or were already queued).
             while(!actorInst->callQueue.empty()) {
                 auto pending = actorInst->callQueue.pop();
                 if (pending.returnPromise) {
