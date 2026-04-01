@@ -34,6 +34,10 @@
 #include "Object.h"
 #include "Introspection.h"
 #include "RuntimeConfig.h"
+#ifdef ROXAL_COMPUTE_SERVER
+#include "ComputeServer.h"
+#include "ComputeProtocol.h"
+#endif
 
 #include <Eigen/Version>
 
@@ -667,7 +671,11 @@ int main(int argc, const char* argv[])
             if (arg == "-f" || arg == "-p" ||
                 arg == "--input-file" || arg == "--module-paths" ||
                 arg == "--astgraph" || arg == "--gc-threshold" ||
-                arg == "--stack-size" || arg == "--max-call-frames") {
+                arg == "--stack-size" || arg == "--max-call-frames"
+#ifdef ROXAL_COMPUTE_SERVER
+                || arg == "--port"
+#endif
+                ) {
                 ++i; // skip next arg (the option's value)
             }
         } else {
@@ -704,6 +712,10 @@ int main(int argc, const char* argv[])
         ("nogc", "disable garbage collection")
         ("stack-size", po::value<size_t>()->default_value(VM::DefaultMaxStack), stackOptionHelp.c_str())
         ("max-call-frames", po::value<size_t>()->default_value(VM::DefaultMaxCallFrames), frameOptionHelp.c_str())
+        #ifdef ROXAL_COMPUTE_SERVER
+        ("server", "run as a Roxal compute server")
+        ("port", po::value<int>()->default_value(ComputeDefaultPort), "server listen port (0 for ephemeral)")
+        #endif
         #ifdef DEBUG_BUILD
         ("opcode-prof", "collect opcode execution frequencies in opcode_profile.json")
         #endif
@@ -740,36 +752,9 @@ int main(int argc, const char* argv[])
 
     if (vmap.count("version")) {
         std::cout << VM::versionString() << " " << buildDate();
-        std::vector<std::string> features;
-        #ifdef ROXAL_ENABLE_FILEIO
-            features.push_back("fileio");
-        #endif
-        #ifdef ROXAL_ENABLE_GRPC
-            features.push_back("grpc");
-        #endif
-        #ifdef ROXAL_ENABLE_DDS
-            features.push_back("dds");
-        #endif
-        #ifdef ROXAL_ENABLE_REGEX
-            features.push_back("regex");
-        #endif
-        #ifdef ROXAL_ENABLE_SOCKET
-            features.push_back("socket");
-        #endif
-        #ifdef ROXAL_ENABLE_AI_NN
-            features.push_back("nn");
-        #endif
-        #ifdef ROXAL_ENABLE_MEDIA
-            features.push_back("media");
-        #endif
-        if (!features.empty()) {
-            std::cout << " [";
-            for (size_t i = 0; i < features.size(); ++i) {
-                if (i > 0) std::cout << ",";
-                std::cout << features[i];
-            }
-            std::cout << "]";
-        }
+        const std::string featureString = VM::featureString();
+        if (!featureString.empty())
+            std::cout << " " << featureString;
         std::cout << std::endl;
         return 0;
     }
@@ -896,6 +881,31 @@ int main(int argc, const char* argv[])
         RuntimeConfig::set("vm.stack_size", std::to_string(stackSizeLimit));
         RuntimeConfig::set("vm.call_frame_limit", std::to_string(callFrameLimit));
     }
+
+#ifdef ROXAL_COMPUTE_SERVER
+    if (vmap.count("server")) {
+        if (vmap.count("execute") || vmap.count("input-file") || vmap.count("ast") ||
+            vmap.count("astgraph") || vmap.count("precompile")) {
+            std::cerr << "Error: --server cannot be combined with script execution or parse modes" << std::endl;
+            return 1;
+        }
+
+        int port = vmap["port"].as<int>();
+        if (port < 0 || port > 65535) {
+            std::cerr << "Error: --port must be in the range 0..65535" << std::endl;
+            return 1;
+        }
+
+        try {
+            ComputeServer server;
+            server.listen(static_cast<std::uint16_t>(port));
+        } catch (const std::exception& e) {
+            std::cerr << "Compute server error: " << e.what() << std::endl;
+            return 1;
+        }
+        return 0;
+    }
+#endif
 
     if (vmap.count("execute")) {
         VM::instance().setCacheMode(cacheMode);

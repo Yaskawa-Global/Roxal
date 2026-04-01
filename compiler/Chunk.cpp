@@ -293,6 +293,21 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             }
             return offset+1+callSpec.toBytes().size();
         }
+        case OpCode::RemoteCall: {
+            byteInstruction("REMOTE_CALL", offset);
+            auto ip = code.begin()+offset+1;
+            CallSpec callSpec{ip};
+            if (!callSpec.allPositional) {
+                std::cout << format("%04d      |                 %3d  ",offset+2,callSpec.argCount);
+                for(auto arg : callSpec.args)
+                    if (arg.positional)
+                        std::cout << "p ";
+                    else
+                        std::cout << "n ";
+                std::cout << std::endl;
+            }
+            return offset+1+callSpec.toBytes().size();
+        }
         case OpCode::Index:
             return byteInstruction("INDEX", offset);
         case OpCode::SetIndex:

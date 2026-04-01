@@ -53,6 +53,9 @@ struct ObjEventType; // forward
 struct ObjEventInstance; // forward
 struct ObjFunction; // forward for bound native default values
 struct ObjException; // forward
+#ifdef ROXAL_COMPUTE_SERVER
+class ComputeConnection; // forward
+#endif
 
 void visitInternedStrings(const std::function<void(ObjString*)>& fn);
 void purgeDeadInternedStrings();
@@ -1734,7 +1737,8 @@ struct ActorInstance : public Obj
     Value ensurePropertySignal(int32_t nameHash, const std::string& signalName);
 
     // Returns a future resolved with the queued method's result, or nil for proc methods
-    Value queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop);
+    Value queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop,
+                    bool forceCompletionFuture = false);
 
 
     // queue of actor method calls
@@ -1746,6 +1750,32 @@ struct ActorInstance : public Obj
         ptr<std::promise<Value>> returnPromise;
         Value returnFuture;
         CallSpec callSpec;
+#ifdef ROXAL_COMPUTE_SERVER
+        struct PrintTarget {
+            enum class Kind : std::uint8_t {
+                LocalStdout,
+                RemoteCall
+            };
+
+            Kind kind { Kind::LocalStdout };
+            weak_ptr<ComputeConnection> remoteConn;
+            uint64_t remoteCallId { 0 };
+
+            static PrintTarget localStdout() { return {}; }
+
+            static PrintTarget remoteCall(const ptr<ComputeConnection>& conn, uint64_t callId) {
+                PrintTarget target;
+                target.kind = Kind::RemoteCall;
+                target.remoteConn = conn;
+                target.remoteCallId = callId;
+                return target;
+            }
+
+            bool routesRemotely() const { return kind == Kind::RemoteCall; }
+        };
+
+        PrintTarget printTarget;
+#endif
 
         bool valid() const { return !callee.isNil(); }
     };
@@ -1757,6 +1787,14 @@ struct ActorInstance : public Obj
     std::thread::id thread_id;
     weak_ptr<Thread> thread;
     std::atomic<bool> alive{false}; // true while actor OS thread is running; guards queueCall
+
+#ifdef ROXAL_COMPUTE_SERVER
+    bool isRemote { false };
+    int64_t remoteActorId { 0 };
+    weak_ptr<ComputeConnection> remoteConn;
+    // Keep the transport alive until a connection cache/registry exists.
+    ptr<ComputeConnection> remoteConnHold;
+#endif
 
     unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override { throw std::runtime_error("cannot clone actor instances"); }
 
@@ -1775,6 +1813,10 @@ inline ActorInstance* asActorInstance(const Value& v) { return static_cast<Actor
 
 unique_ptr<ActorInstance, UnreleasedObj> newActorInstance(const Value& objectType);
 unique_ptr<ActorInstance, UnreleasedObj> newActorInstance(ActorInstance::UninitializedTag);
+
+#ifdef ROXAL_COMPUTE_SERVER
+Value makeRemoteActor(const Value& actorType, int64_t remoteId, ptr<ComputeConnection> conn);
+#endif
 
 
 

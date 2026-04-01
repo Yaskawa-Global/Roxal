@@ -1,0 +1,29 @@
+// Back-channel test: a local actor ref is passed as an argument to a remote
+// actor method.  The remote actor calls a method on it; that call must route
+// back to the client where the local actor lives.
+
+type Logger actor:
+  private var log: string = ""
+
+  proc append(msg: string):
+    this.log = this.log + msg
+
+  func getLog() -> string:
+    return this.log
+
+type Worker actor:
+  proc init():
+    _
+
+  proc run(logger: mutable Logger, prefix: string):
+    wait(for=logger.append(prefix + "hello"))
+    wait(for=logger.append(prefix + "world"))
+
+var logger = Logger()
+var worker = Worker() at "__COMPUTE_TEST_ADDR__"
+
+wait(for=worker.run(logger, "remote:"))
+
+var result = logger.getLog()
+wait(for=result)
+print(result)

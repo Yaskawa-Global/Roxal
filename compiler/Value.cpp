@@ -11,6 +11,9 @@
 #include "dataflow/DataflowEngine.h"
 #include "Thread.h"
 #include "VM.h"
+#ifdef ROXAL_COMPUTE_SERVER
+#include "ComputeConnection.h"
+#endif
 #include <core/types.h>
 #include <Eigen/Dense>
 #include <chrono>
@@ -38,6 +41,100 @@ namespace roxal {
 
 
 using namespace roxal;
+
+#ifdef ROXAL_COMPUTE_SERVER
+namespace {
+
+Value resolveCanonicalSerializedObjectType(const Value& typeVal)
+{
+    if (!isObjectType(typeVal))
+        return typeVal;
+
+    ObjObjectType* objectType = asObjectType(typeVal);
+    auto findPreferredModule = [&](const Value& moduleValue) -> Value {
+        if (!isModuleType(moduleValue))
+            return Value::nilVal();
+
+        ObjModuleType* module = asModuleType(moduleValue);
+        auto matchesModule = [&](const Value& candidate) -> Value {
+            if (!isModuleType(candidate) || candidate.asObj() == moduleValue.asObj())
+                return Value::nilVal();
+            ObjModuleType* candidateModule = asModuleType(candidate);
+            if (!module->fullName.isEmpty()) {
+                if (candidateModule->fullName == module->fullName)
+                    return candidate.strongRef();
+                return Value::nilVal();
+            }
+            if (candidateModule->name == module->name)
+                return candidate.strongRef();
+            return Value::nilVal();
+        };
+
+        Value builtin = VM::instance().getBuiltinModuleType(module->name);
+        Value matched = matchesModule(builtin);
+        if (matched.isNonNil())
+            return matched;
+
+        if (!module->fullName.isEmpty()) {
+            auto globalByFull = VM::instance().loadGlobal(module->fullName);
+            if (globalByFull.has_value()) {
+                matched = matchesModule(globalByFull.value());
+                if (matched.isNonNil())
+                    return matched;
+            }
+        }
+
+        auto globalByName = VM::instance().loadGlobal(module->name);
+        if (globalByName.has_value()) {
+            matched = matchesModule(globalByName.value());
+            if (matched.isNonNil())
+                return matched;
+        }
+
+        for (const Value& candidate : ObjModuleType::allModules.get()) {
+            matched = matchesModule(candidate);
+            if (matched.isNonNil())
+                return matched;
+        }
+
+        return moduleValue.strongRef();
+    };
+
+    auto tryModule = [&](const Value& moduleValue) -> Value {
+        Value preferredModule = findPreferredModule(moduleValue);
+        if (isModuleType(preferredModule)) {
+            auto found = asModuleType(preferredModule)->vars.load(objectType->name);
+            if (found.has_value() && isObjectType(found.value()))
+                return found.value().strongRef();
+        }
+
+        if (isModuleType(moduleValue)) {
+            auto found = asModuleType(moduleValue)->vars.load(objectType->name);
+            if (found.has_value() && isObjectType(found.value()))
+                return found.value().strongRef();
+        }
+        return Value::nilVal();
+    };
+
+    for (const auto& [_, method] : objectType->methods) {
+        if (!isClosure(method.closure))
+            continue;
+        Value resolved = tryModule(asFunction(asClosure(method.closure)->function)->moduleType.strongRef());
+        if (resolved.isNonNil())
+            return resolved;
+    }
+
+    for (const Value& modVal : ObjModuleType::allModules.get()) {
+        Value resolved = tryModule(modVal.strongRef());
+        if (resolved.isNonNil())
+            return resolved;
+    }
+
+    return typeVal;
+}
+
+} // namespace
+#endif
 
 
 VariablesMap::MonitoredValue::MonitoredValue()
@@ -3020,6 +3117,11 @@ void roxal::writeValue(std::ostream& out, const Value& v, roxal::ptr<Serializati
     bool useCtx = ctx != nullptr;
     ptr<SerializationContext> localCtx = make_ptr<SerializationContext>();
     if(!ctx) ctx = localCtx;
+#ifdef ROXAL_COMPUTE_SERVER
+    auto* netCtx = dynamic_cast<NetworkSerializationContext*>(ctx.get());
+#else
+    auto* netCtx = static_cast<SerializationContext*>(nullptr);
+#endif
     if (isForeignPtr(v))
         throw std::runtime_error("Cannot serialize foreign pointers");
 
@@ -3030,6 +3132,43 @@ void roxal::writeValue(std::ostream& out, const Value& v, roxal::ptr<Serializati
         writeValue(out, resolved, ctx);
         return;
     }
+
+#ifdef ROXAL_COMPUTE_SERVER
+    if (netCtx && isActorInstance(v)) {
+        auto* actor = asActorInstance(v);
+        int64_t actorId = 0;
+
+        bool canForwardAsRemote = false;
+        if (actor->isRemote) {
+            auto remoteConn = actor->remoteConn.lock();
+            canForwardAsRemote = (remoteConn != nullptr && remoteConn.get() == netCtx->conn);
+        }
+
+        if (canForwardAsRemote) {
+            actorId = actor->remoteActorId;
+        } else {
+            auto it = netCtx->localActorToForeignId.find(actor);
+            if (it != netCtx->localActorToForeignId.end()) {
+                actorId = it->second;
+            } else {
+                actorId = netCtx->conn->registerLocalActor(v);
+                netCtx->localActorToForeignId[actor] = actorId;
+                netCtx->foreignIdToLocalActor[actorId] = actor;
+            }
+        }
+
+        uint8_t marker = ComputeActorRefMarker;
+        out.write(reinterpret_cast<char*>(&marker), 1);
+        out.write(reinterpret_cast<char*>(&actorId), sizeof(actorId));
+        writeValue(out, actor->instanceType, ctx);
+        return;
+    }
+
+    if (netCtx && isSignal(v)) {
+        throw std::runtime_error(
+                "Remote actor calls do not support signal values; pass signal.value or another sampled value instead.");
+    }
+#endif
 
     auto writeObjWithRef = [&](Obj* o){
         uint8_t flag = 1;
@@ -3101,6 +3240,8 @@ void roxal::writeValue(std::ostream& out, const Value& v, roxal::ptr<Serializati
         case ValueType::Dict:
         case ValueType::Vector:
         case ValueType::Matrix:
+        case ValueType::Tensor:
+        case ValueType::Signal:
         case ValueType::Object:
         case ValueType::Actor:
         case ValueType::Function:
@@ -3118,9 +3259,48 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
     bool useCtx = ctx != nullptr;
     ptr<SerializationContext> localCtx = make_ptr<SerializationContext>();
     if(!ctx) ctx = localCtx;
+#ifdef ROXAL_COMPUTE_SERVER
+    auto* netCtx = dynamic_cast<NetworkSerializationContext*>(ctx.get());
+#else
+    auto* netCtx = static_cast<SerializationContext*>(nullptr);
+#endif
     uint8_t typeByte;
     if(!in.read(reinterpret_cast<char*>(&typeByte),1))
         throw std::runtime_error("readValue: unable to read type");
+
+#ifdef ROXAL_COMPUTE_SERVER
+    if (typeByte == ComputeActorRefMarker) {
+        int64_t actorId = 0;
+        in.read(reinterpret_cast<char*>(&actorId), sizeof(actorId));
+        if (!in)
+            throw std::runtime_error("readValue: unable to read network actor id");
+
+        Value typeVal = readValue(in, ctx);
+
+        if (!netCtx || netCtx->conn == nullptr)
+            throw std::runtime_error("readValue: network actor ref requires NetworkSerializationContext");
+
+        // Resolve the deserialized type to the canonical registered instance so that
+        // pointer-identity type checks (isSubtypeOf) work correctly.
+        typeVal = resolveCanonicalSerializedObjectType(typeVal);
+
+        auto existing = netCtx->foreignIdToLocalActor.find(actorId);
+        if (existing != netCtx->foreignIdToLocalActor.end())
+            return Value::objRef(const_cast<Obj*>(existing->second));
+
+        Value localActor = netCtx->conn->resolveLocalActor(actorId);
+        if (localActor.isNonNil()) {
+            netCtx->foreignIdToLocalActor[actorId] = localActor.asObj();
+            return localActor;
+        }
+
+        Value proxy = makeRemoteActor(typeVal, actorId,
+                                      ptr<ComputeConnection>(netCtx->conn->shared_from_this()));
+        netCtx->foreignIdToLocalActor[actorId] = proxy.asObj();
+        return proxy;
+    }
+#endif
+
     ValueType t = static_cast<ValueType>(typeByte);
     auto readObjWithRef = [&](auto objMaker){
         uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
@@ -3244,7 +3424,10 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             if (useCtx)
                 ctx->idToObj[id] = obj;
             obj->read(in, ctx);
-            return owned;
+            Value resolved = resolveCanonicalSerializedObjectType(owned);
+            if (useCtx && resolved.isObj())
+                ctx->idToObj[id] = resolved.asObj();
+            return resolved;
         }
         case ValueType::String: {
             return readOwnedObject([&](){
@@ -3271,6 +3454,12 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
         case ValueType::Matrix: {
             return readOwnedObject([&](){ return Value::matrixVal(); });
         }
+        case ValueType::Tensor: {
+            return readOwnedObject([&](){ return Value::tensorVal(); });
+        }
+        case ValueType::Signal: {
+            return readOwnedObject([&](){ return Value::signalVal(nullptr); });
+        }
         case ValueType::Object: {
             uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
             uint64_t id;  in.read(reinterpret_cast<char*>(&id),8);
@@ -3280,6 +3469,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                 return Value::objRef(it->second);
             }
             Value typeVal = readValue(in, ctx);
+            typeVal = resolveCanonicalSerializedObjectType(typeVal);
             ObjObjectType* t = asObjectType(typeVal);
             debug_assert_msg(!t->isActor, "Expected object type for deserialization");
             Value objVal = Value::objectInstanceVal(typeVal);
@@ -3314,6 +3504,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             }
 
             Value typeVal = readValue(in, ctx);
+            typeVal = resolveCanonicalSerializedObjectType(typeVal);
             ObjObjectType* t = asObjectType(typeVal);
             debug_assert_msg(t->isActor, "Expected actor type for deserialization");
             obj->initialize(typeVal);

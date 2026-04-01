@@ -1,6 +1,9 @@
 #include "Thread.h"
 #include "VM.h"
 #include "Object.h"
+#ifdef ROXAL_COMPUTE_SERVER
+#include "ComputeConnection.h"
+#endif
 #include <algorithm>
 #include <iostream>
 #ifdef __linux__
@@ -9,6 +12,29 @@
 #endif
 
 using namespace roxal;
+
+#ifdef ROXAL_COMPUTE_SERVER
+namespace {
+icu::UnicodeString remoteMethodNameForCall(const ActorInstance::MethodCallInfo& callInfo)
+{
+    if (isBoundMethod(callInfo.callee)) {
+        auto* boundMethod = asBoundMethod(callInfo.callee);
+        auto* closure = asClosure(boundMethod->method);
+        auto* function = asFunction(closure->function);
+        return function->name;
+    }
+
+    if (isBoundNative(callInfo.callee)) {
+        auto* boundNative = asBoundNative(callInfo.callee);
+        if (isFunction(boundNative->declFunction))
+            return asFunction(boundNative->declFunction)->name;
+        throw std::runtime_error("remote actor call missing declared function metadata");
+    }
+
+    throw std::runtime_error("unsupported remote actor callee");
+}
+}
+#endif
 
 Thread::~Thread()
 {
@@ -182,6 +208,17 @@ void Thread::join(ActorInstance* actorInstOverride)
             std::lock_guard<std::mutex> lock { inst->queueMutex };
             quit = true;
             inst->queueConditionVar.notify_one();
+#ifdef ROXAL_COMPUTE_SERVER
+            // Remote proxy workers can be blocked in ComputeConnection::future.get()
+            // rather than waiting on the actor queue. Abort the transport first so
+            // pending remote calls are rejected and the worker can unwind before the
+            // blocking std::thread::join() below.
+            if (inst->isRemote) {
+                auto conn = inst->remoteConn.lock();
+                if (conn)
+                    conn->abort();
+            }
+#endif
         } else {
             quit = true;
         }
@@ -290,6 +327,48 @@ void Thread::act(Value actorInstance)
                     }
                     // Ensure actor instance stays alive during call
                     this->stack[0] = strongActor;
+
+#ifdef ROXAL_COMPUTE_SERVER
+                    VM::ScopedPrintTarget printTargetScope(callInfo.printTarget);
+                    if (actorInst->isRemote) {
+                        try {
+                            auto conn = actorInst->remoteConn.lock();
+                            if (!conn)
+                                throw std::runtime_error("remote actor connection has been released");
+
+                            std::vector<Value> remoteArgs(callInfo.args.rbegin(), callInfo.args.rend());
+                            Value ret = conn->callRemoteMethod(
+                                actorInst->remoteActorId,
+                                remoteMethodNameForCall(callInfo),
+                                remoteArgs,
+                                callInfo.callSpec);
+
+                            if (callInfo.returnPromise != nullptr) {
+                                callInfo.returnPromise->set_value(ret);
+                                if (!callInfo.returnFuture.isNil()) {
+                                    asFuture(callInfo.returnFuture)->wakeWaiters();
+                                    callInfo.returnFuture = Value::nilVal();
+                                }
+                            }
+                        } catch (const std::exception& e) {
+                            std::cerr << "Remote actor call failed: " << e.what() << std::endl;
+                            if (callInfo.returnPromise != nullptr) {
+                                callInfo.returnPromise->set_value(Value::nilVal());
+                                if (!callInfo.returnFuture.isNil()) {
+                                    asFuture(callInfo.returnFuture)->wakeWaiters();
+                                    callInfo.returnFuture = Value::nilVal();
+                                }
+                            }
+                            quit = true;
+                        }
+
+                        this->stack[0] = this->actorInstance;
+                        currentActorCall = Value::nilVal();
+                        if (quit)
+                            break;
+                        continue;
+                    }
+#endif
 
                     if (isBoundMethod(callInfo.callee)) {
                         auto boundMethod = asBoundMethod(callInfo.callee);

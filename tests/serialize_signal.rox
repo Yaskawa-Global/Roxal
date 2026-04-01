@@ -1,0 +1,7 @@
+var s = signal(10, 42)
+var data = serialize(s)
+var s2 = deserialize(data)
+
+print(typeof(s2))
+print(s2.freq())
+print(s2.value)

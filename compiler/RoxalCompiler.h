@@ -453,6 +453,9 @@ protected:
     void defineVariable(uint16_t moduleVar = 0, bool isConst = false); // moduleVar unused if defining a local
     bool namedVariable(const icu::UnicodeString& name, bool assign=false, bool asSignal=false);
     void namedModuleVariable(const icu::UnicodeString& name, bool assign=false);
+    CallSpec buildCallSpec(const ptr<ast::Call>& ast);
+    bool isRemoteActorConstructorCall(const ptr<ast::Expression>& expr) const;
+    void emitRemoteActorConstructorCall(const ptr<ast::Call>& callAst, const ptr<ast::Expression>& hostExpr);
 
     std::optional<VarTypeSpec> localVarType(const icu::UnicodeString& name);
     std::optional<VarTypeSpec> moduleVarType(const icu::UnicodeString& name);

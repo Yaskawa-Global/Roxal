@@ -1,6 +1,6 @@
 @builtin
-proc print(value:string='', end='\n', flush:bool=false):
-  """print the string representation of value followed by end and flush if requested"""
+proc print(value:string='', end='\n', flush:bool=false, here:bool=false):
+  """print the string representation of value followed by end, optionally flush, and with here=true force output on the current process instead of routed remote output"""
 
 @builtin
 func len(v) -> int:
@@ -701,4 +701,3 @@ func _suf_radps(v) -> quantity:
 @suffix("deg/s")
 func _suf_degps(v) -> quantity:
   return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,-1,0,1])
-

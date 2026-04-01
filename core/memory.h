@@ -159,6 +159,13 @@ inline ptr<T> dynamic_ptr_cast(const ptr<U>& p) {
     return {}; // empty
 }
 
+// static_ptr_cast<T>(p): like std::static_pointer_cast — use when T* and U* are
+// statically known to be compatible (e.g. upcast or trusted downcast).
+template<class T, class U>
+inline ptr<T> static_ptr_cast(const ptr<U>& p) {
+    return ptr<T>::template alias_from<U>(p, static_cast<T*>(p.get()));
+}
+
 
 // inherit from this class instead of std::enable_shared_from_this<T> directly
 template<class T>

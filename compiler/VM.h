@@ -365,6 +365,7 @@ public:
     // deserialization needs this to prevent the thread object from being
     // destroyed immediately after creation.
     inline void registerThread(ptr<Thread> t) { threads.store(t->id(), t); }
+    inline void unregisterThread(uint64_t id) { threads.erase(id); }
 
     void wakeAllThreadsForGC();
 
@@ -382,6 +383,18 @@ public:
     static constexpr size_t DefaultMaxCallFrames = 128;
 
     static std::string versionString();
+    static std::vector<std::string> featureStrings();
+    static std::string featureString();
+#ifdef ROXAL_COMPUTE_SERVER
+    using PrintTarget = ActorInstance::MethodCallInfo::PrintTarget;
+    struct ScopedPrintTarget {
+        explicit ScopedPrintTarget(const PrintTarget& target);
+        ~ScopedPrintTarget();
+        PrintTarget previous;
+    };
+    static const PrintTarget& currentPrintTarget();
+    static void emitPrintOutput(const std::string& text, bool flush, bool here = false);
+#endif
     static std::filesystem::path executablePath();
     static std::vector<std::string> defaultModuleSearchPaths();
     static void configureModulePaths(const std::vector<std::string>& modulePaths);
@@ -513,6 +526,9 @@ protected:
     static thread_local TimePoint nativeCallDeadline_;
     static thread_local UnicodeString nativeCallContext_;
     static thread_local std::string nativeCallOverrun_; // set by callNativeFn() on overrun
+#ifdef ROXAL_COMPUTE_SERVER
+    static thread_local PrintTarget currentPrintTarget_;
+#endif
 
     // Dataflow thread flag: when true, module var reads return const refs
     // and module var writes raise a runtime error.

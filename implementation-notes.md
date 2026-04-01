@@ -693,3 +693,177 @@ The const/MVCC implementation is covered by an extensive test suite (all in `tes
 - **Stress**: `const_mvcc_stress` (exercises version chains under high mutation load)
 - **Dataflow safety**: `df_capture_mutable_err` (closure capture check)
 - **Interior alias isolation**: `const_interior_alias` (const actor param with aliased interior objects falls back to safe path), `move_interior_alias_err` (mutable actor param with aliased interior objects errors)
+
+## Remote Compute Server
+
+Roxal's remote actor support reuses the existing actor model rather than adding a
+separate distributed object system. A remote actor still looks like an ordinary
+actor to user code: construction returns an actor instance, actor method calls
+still return futures, and `wait(for=...)` remains the synchronization point.
+
+### Overview
+
+- `roxal --server` starts a compute server that accepts one or more TCP client
+  connections.
+- `MyActor(...) at "host[:port]"` causes the actor type plus constructor args
+  to be shipped to the remote process, where a real actor instance and thread
+  are created.
+- The local side receives a proxy `ActorInstance` marked `isRemote=true`.
+- Calls on that proxy are queued as normal via `ActorInstance::queueCall()`,
+  but the proxy thread dispatches them over a `ComputeConnection` instead of
+  executing locally.
+
+This keeps the language-facing semantics aligned with ordinary actors while
+moving the actual execution to another process.
+
+### Protocol and Connection Model
+
+The wire protocol is defined in `compiler/ComputeProtocol.h`. It uses framed
+messages:
+
+- `HELLO` / `HELLO_OK` / `HELLO_ERR`
+- `SPAWN_ACTOR` / `SPAWN_RESULT`
+- `CALL_METHOD` / `CALL_RESULT`
+- `PRINT_OUTPUT`
+- `ACTOR_DROPPED`
+- `BYE`
+
+`ComputeConnection` owns one bidirectional TCP connection and a reader thread.
+Outgoing RPC-like requests are tracked by `call_id` in a pending-call table.
+Each pending entry stores:
+
+- a `std::promise<Value>` used to complete the local wait
+- print-routing metadata for Phase 8 output forwarding
+
+This means the transport is synchronous per network hop internally (the helper
+thread blocks on the promise/future pair), while still exposing the normal
+asynchronous Roxal future interface to Roxal code.
+
+### Remote Actor Proxies
+
+Remote actor proxies are ordinary `ActorInstance`s with additional transport
+state:
+
+- `isRemote`
+- `remoteActorId`
+- `remoteConn`
+
+The proxy still has its own local worker thread. When that thread pulls a
+queued call in `Thread::act()`, it notices `isRemote` and sends `CALL_METHOD`
+to the remote process rather than invoking the bound method locally. The reply
+is received as `CALL_RESULT`, which fulfills the local Roxal future.
+
+This design means existing actor call machinery (`queueCall`, futures, wakeups,
+`wait(for=...)`) does not need a separate remote-specific user-visible path.
+
+### Back-channel Actor References
+
+Actor references passed across the network are serialized specially using
+`NetworkSerializationContext`:
+
+- a local actor sent over a connection is registered in a per-connection actor
+  table and serialized as a foreign actor id
+- when the far side reads that actor reference, it creates a remote actor proxy
+  pointing back across the same connection
+
+This enables the "back-channel" case where a remotely running actor calls a
+method on an actor reference that originated on the caller side.
+
+### Type Shipping
+
+Remote actor creation has to ship more than just constructor args. The remote
+side must have the actor type and any user-defined object/actor types that its
+methods refer to.
+
+The `SPAWN_ACTOR` payload therefore contains:
+
+- the remote call id
+- a dependency preamble of shipped type definitions
+- the main actor type definition
+- constructor `CallSpec`
+- constructor args
+
+Dependencies are collected by walking:
+
+- actor methods
+- nested function constants
+- default-parameter functions
+- object-type references in constant pools
+- `superType`
+- property type references
+- function signature metadata (`funcType`)
+
+Each shipped dependency is keyed by canonical module export identity:
+
+- module full name
+- module short name
+- exported symbol name
+
+On the server, dependency types are deserialized first and registered into the
+appropriate module exports before the main actor type is deserialized and
+canonicalized.
+
+### Type Freshness and Stale Server State
+
+A long-lived compute server can already have an exported type for a given
+`(module, symbol)` from an earlier spawn.
+
+To address this, each shipped dependency type and the main actor type carry a
+64-bit content fingerprint:
+
+- the client serializes the type to bytes
+- computes an FNV-1a 64-bit hash of those bytes
+- includes that hash in `SPAWN_ACTOR`
+
+On the server:
+
+- if an existing canonical export for `(module, symbol)` has the same
+  fingerprint, it is reused
+- if the fingerprint differs, the stale export is cleared before deserializing
+  the incoming type, then replaced with the new canonical definition
+
+This is intentionally the simple freshness model: one canonical "current"
+definition per module export symbol. It fixes the dev-time stale-type problem
+without yet implementing multi-version coexistence on one server.
+
+### Print Redirection
+
+Remote print routing is call-scoped rather than process-scoped.
+
+Each in-flight remote call carries a print target:
+
+- local stdout, or
+- an upstream `(ComputeConnection, call_id)` pair
+
+`sys.print(value='', end='\n', flush=false, here=false)` uses that target:
+
+- with `here=false`, output is routed back to the originating caller if the
+  current call came from a remote peer; otherwise it prints locally
+- with `here=true`, output always goes to the local process's stdout
+
+`PRINT_OUTPUT` frames are forwarded transitively, so if `A -> B -> C` and code
+running on `C` calls `print()`, the output is forwarded from `C` to `B` to `A`.
+Local actor-to-actor calls made while servicing a remote call inherit the same
+print target, so nested local calls on the server also print back to the
+originating client by default.
+
+### Lifetime Model
+
+Remote actor lifetime is connection-scoped and deliberately simpler than
+distributed GC:
+
+- when the last local proxy for a remote actor is dropped, the proxy destructor
+  sends `ACTOR_DROPPED`
+- on disconnect, the server tears down actors associated with that client
+
+This is closer to remote reference counting than distributed tracing. Cross-
+process cycles are not collected automatically and are currently considered the
+programmer's responsibility to break explicitly.
+
+### Limitations
+
+- Type versioning: multiple live versions of the same type are not supported
+- Type-shipping unoptimized: on actor invocation, types may be shipped unnecessarily
+- Cross-remote actor reference method calls are routed hop-by-hop, not directly.
+- No fully-disctributed GC
+- Seperate server TCP connection per-actor-instance rather than shared

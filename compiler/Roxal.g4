@@ -53,9 +53,12 @@ until_clause
  : UNTIL expression
  ;
 
+at_clause
+ : {_input->LT(1)->getText() == "at"}? IDENTIFIER expression
+ ;
 
 expr_stmt
- : expression
+ : expression at_clause?
  ;
 
 
@@ -150,7 +153,7 @@ with_stmt
 
 
 var_decl // FIXME: use ident_opt_type
- : annotation* (VAR | CONST) IDENTIFIER (':' const_qualifier? (builtin_type | IDENTIFIER))? (EQUALS expression)?
+ : annotation* (VAR | CONST) IDENTIFIER (':' const_qualifier? (builtin_type | IDENTIFIER))? (EQUALS expression at_clause?)?
  ;
 
 ident_opt_type
@@ -292,8 +295,8 @@ expression
  : assignment ;
 
 assignment
- : ( call DOT )? IDENTIFIER (EQUALS | COPYINTO) assignment
- | call (EQUALS | COPYINTO) assignment
+ : ( call DOT )? IDENTIFIER (EQUALS | COPYINTO) assignment at_clause?
+ | call (EQUALS | COPYINTO) assignment at_clause?
  | logic_or
  ;
 

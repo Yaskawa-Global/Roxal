@@ -93,6 +93,7 @@ std::string to_string(ValueType t);
 
 
 struct SerializationContext {
+    virtual ~SerializationContext() = default;
     std::unordered_map<const Obj*, uint64_t> objToId;
     std::unordered_map<uint64_t, Obj*> idToObj;
     uint64_t nextId = 1;

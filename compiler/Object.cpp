@@ -22,6 +22,9 @@
 #include "FFI.h"
 #include "Value.h"
 #include "Thread.h"
+#ifdef ROXAL_COMPUTE_SERVER
+#include "ComputeConnection.h"
+#endif
 #include "dataflow/Signal.h"
 #include "dataflow/DataflowEngine.h"
 #include "Object.h"
@@ -2911,6 +2914,7 @@ void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
         out.write(reinterpret_cast<char*>(&acc),1);
         uint8_t isConst = prop.isConst ? 1 : 0;
         out.write(reinterpret_cast<char*>(&isConst),1);
+        writeValue(out, prop.ownerType, ctx);
         uint8_t hasC = prop.ctype.has_value() ? 1 : 0;
         out.write(reinterpret_cast<char*>(&hasC),1);
         if(hasC) {
@@ -2932,6 +2936,7 @@ void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
         writeValue(out, method.closure, ctx);
         uint8_t acc = static_cast<uint8_t>(method.access);
         out.write(reinterpret_cast<char*>(&acc),1);
+        writeValue(out, method.ownerType, ctx);
     }
 
     uint32_t lcount = enumLabelValues.size();
@@ -2976,6 +2981,9 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         Value init  = readValue(in, ctx);
         uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
         uint8_t isConst; in.read(reinterpret_cast<char*>(&isConst),1);
+        Value ownerType = readValue(in, ctx);
+        if (!ownerType.isNil())
+            ownerType = ownerType.weakRef();
         uint8_t hasC; in.read(reinterpret_cast<char*>(&hasC),1);
         std::optional<icu::UnicodeString> ct;
         if(hasC) {
@@ -2984,7 +2992,9 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             ct = icu::UnicodeString::fromUTF8(cts);
         }
         int32_t hash = uname.hashCode();
-        Property prop{uname, ptype, init, static_cast<ast::Access>(acc), isConst != 0, Value::nilVal(), ct};
+        if (ownerType.isNil())
+            ownerType = Value::objRef(this).weakRef();
+        Property prop{uname, ptype, init, static_cast<ast::Access>(acc), isConst != 0, ownerType, ct};
         properties[hash] = prop;
         propertyOrder.push_back(hash);
     }
@@ -2997,8 +3007,13 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         icu::UnicodeString uname = icu::UnicodeString::fromUTF8(mn);
         Value clos = readValue(in, ctx);
         uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
+        Value ownerType = readValue(in, ctx);
+        if (!ownerType.isNil())
+            ownerType = ownerType.weakRef();
         int32_t hash = uname.hashCode();
-        Method m{uname, clos, static_cast<ast::Access>(acc), Value::nilVal()};
+        if (ownerType.isNil())
+            ownerType = Value::objRef(this).weakRef();
+        Method m{uname, clos, static_cast<ast::Access>(acc), ownerType};
         methods[hash] = m;
     }
 
@@ -5462,6 +5477,16 @@ ActorInstance::~ActorInstance()
     // The VM ensures the worker thread has already been joined (or detached in
     // the self-join case) before destroying the actor instance, so clearing the
     // weak thread reference here is just bookkeeping.
+#ifdef ROXAL_COMPUTE_SERVER
+    if (isRemote && remoteActorId != 0 && remoteConnHold != nullptr) {
+        try {
+            remoteConnHold->sendActorDropped(remoteActorId);
+        } catch (...) {
+        }
+    }
+    remoteConn.reset();
+    remoteConnHold.reset();
+#endif
     thread.reset();
 }
 
@@ -5497,7 +5522,8 @@ void ActorInstance::dropReferences()
     }
 }
 
-Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop)
+Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop,
+                               bool forceCompletionFuture)
 {
     // queue producer for consumer Thread::act()
     #ifdef DEBUG_BUILD
@@ -5517,24 +5543,31 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
     MethodCallInfo callInfo {};
     callInfo.callee = callee;
     callInfo.callSpec = callSpec;
+#ifdef ROXAL_COMPUTE_SERVER
+    callInfo.printTarget = VM::currentPrintTarget();
+#endif
 
     // Extract function type info early so we can check param constness in the arg loop
     const std::vector<std::optional<type::Type::FuncType::ParamType>>* paramTypes = nullptr;
     if (isBoundMethod(callee)) {
         auto funcObj = asFunction(asClosure(asBoundMethod(callee)->method)->function);
+        ptr<type::Type> retType;
+        bool needsReturnFuture = forceCompletionFuture;
         if (funcObj->funcType.has_value()) {
             ptr<roxal::type::Type> funcType { funcObj->funcType.value() };
             assert(funcType->func.has_value());
             paramTypes = &funcType->func.value().params;
-            if (!funcType->func.value().isProc) {
+            needsReturnFuture = forceCompletionFuture || !funcType->func.value().isProc;
+            if (needsReturnFuture) {
                 // Extract return type for the future's promisedType
-                ptr<type::Type> retType;
                 if (!funcType->func.value().returnTypes.empty())
                     retType = funcType->func.value().returnTypes[0];
-                callInfo.returnPromise = make_ptr<std::promise<Value>>();
-                std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
-                callInfo.returnFuture = Value::objVal(newFutureObj(sf, retType));
             }
+        }
+        if (needsReturnFuture) {
+            callInfo.returnPromise = make_ptr<std::promise<Value>>();
+            std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
+            callInfo.returnFuture = Value::objVal(newFutureObj(sf, retType));
         }
     }
 
@@ -5560,31 +5593,32 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
                 }
             }
 
-            if (isMutableParam && !soleOwner) {
-                throw std::runtime_error("Cannot pass aliased value as mutable actor parameter (use move() to transfer sole ownership)");
-            }
-
-            if (isMutableParam && soleOwner && !isIsolatedGraph(obj)) {
-                throw std::runtime_error("Cannot pass value with aliased interior objects as mutable actor parameter");
-            }
-
             if (isActorInstance(arg)) {
                 // Actor instances are live shared references with their own concurrency
-                // isolation — MVCC snapshotting does not apply.  Apply const/mutable
-                // semantics directly: implicitly-const params carry the const bit,
-                // explicitly-mutable params are passed as-is.
+                // isolation — sole-owner and graph-isolation checks do not apply since
+                // all actor state is protected by the actor's own isolation.
+                // Apply const/mutable semantics directly: implicitly-const params carry
+                // the const bit; explicitly-mutable params are passed as-is.
                 if (!isMutableParam)
                     arg = arg.constRef();
-            } else if (isMutableParam) {
-                // Mutable value param: sole-owner passes through as-is (caller moved it).
-                // Non-sole-owner and non-isolated were already rejected above.
             } else {
-                // Const value param: frozen snapshot for MVCC-based isolation.
-                // Sole-owner: createFrozenSnapshot just sets const bit (zero-copy).
-                // Shared: createFrozenSnapshot shallow-clones the root; children are
-                // lazily resolved via resolveConstChild on the actor thread, protected
-                // by the per-object cowLock_ spinlock against concurrent mutations.
-                arg = createFrozenSnapshot(arg);
+                if (isMutableParam && !soleOwner) {
+                    throw std::runtime_error("Cannot pass aliased value as mutable actor parameter (use move() to transfer sole ownership)");
+                }
+
+                if (isMutableParam && soleOwner && !isIsolatedGraph(obj)) {
+                    throw std::runtime_error("Cannot pass value with aliased interior objects as mutable actor parameter");
+                }
+
+                if (!isMutableParam) {
+                    // Const value param: frozen snapshot for MVCC-based isolation.
+                    // Sole-owner: createFrozenSnapshot just sets const bit (zero-copy).
+                    // Shared: createFrozenSnapshot shallow-clones the root; children are
+                    // lazily resolved via resolveConstChild on the actor thread, protected
+                    // by the per-object cowLock_ spinlock against concurrent mutations.
+                    arg = createFrozenSnapshot(arg);
+                }
+                // else: mutable sole-owner value passes through as-is (caller moved it).
             }
         }
         callInfo.args.push_back(arg);
@@ -5595,7 +5629,7 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
         auto bound = asBoundNative(callee);
 
         // Only create a return promise if it's NOT a proc (i.e., it's a func)
-        if (!bound->isProc) {
+        if (forceCompletionFuture || !bound->isProc) {
             ptr<type::Type> retType;
             if (bound->funcType && bound->funcType->func.has_value()
                 && !bound->funcType->func.value().returnTypes.empty())
@@ -5674,6 +5708,24 @@ unique_ptr<ActorInstance, UnreleasedObj> roxal::newActorInstance(const Value& ob
     actor->initialize(objectType);
     return actor;
 }
+
+#ifdef ROXAL_COMPUTE_SERVER
+Value roxal::makeRemoteActor(const Value& actorType, int64_t remoteId, ptr<ComputeConnection> conn)
+{
+    Value actorVal = Value::objVal(newActorInstance(actorType));
+    auto* actor = asActorInstance(actorVal);
+    actor->isRemote = true;
+    actor->remoteActorId = remoteId;
+    actor->remoteConn = conn;
+    actor->remoteConnHold = conn;
+
+    ptr<Thread> newThread = make_ptr<Thread>();
+    VM::instance().registerThread(newThread);
+    actor->thread = newThread;
+    newThread->act(actorVal);
+    return actorVal;
+}
+#endif
 
 ObjBoundMethod::ObjBoundMethod(const Value& instance, const Value& closure)
     : receiver(instance), method(closure.weakRef())

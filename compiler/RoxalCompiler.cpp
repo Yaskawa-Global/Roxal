@@ -1766,6 +1766,16 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
 std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
 {
     currentNode = ast;
+    auto emitInitializer = [&]() {
+        if (ast->atHost.has_value()) {
+            auto callAst = dynamic_ptr_cast<ast::Call>(ast->initializer.value());
+            if (callAst == nullptr || !isRemoteActorConstructorCall(ast->initializer.value()))
+                error("'at <host>' requires an actor constructor call.");
+            emitRemoteActorConstructorCall(callAst, ast->atHost.value());
+        } else {
+            ast->initializer.value()->accept(*this);
+        }
+    };
 
     std::optional<VarTypeSpec> declType{};
     if (ast->varType.has_value()) {
@@ -1832,7 +1842,7 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
         }
 
         // Evaluate initializer at runtime
-        ast->initializer.value()->accept(*this);
+        emitInitializer();
         if (declType.has_value()) {
             if (std::holds_alternative<BuiltinType>(*declType))
                 emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
@@ -1888,7 +1898,7 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
             }
         }
 
-        ast->initializer.value()->accept(*this);
+        emitInitializer();
         if (declType.has_value()) {
             if (std::holds_alternative<BuiltinType>(*declType))
                 emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
@@ -1938,12 +1948,98 @@ std::any RoxalCompiler::visit(ptr<ast::Suite> ast)
     return results;
 }
 
+CallSpec RoxalCompiler::buildCallSpec(const ptr<ast::Call>& ast)
+{
+    auto argCount = ast->args.size();
+    if (argCount > 127)
+        error("Number of call parameters is limited to 127");
+
+    CallSpec callSpec {};
+    if (!ast->namedArgs()) {
+        callSpec.allPositional = true;
+        callSpec.argCount = ast->args.size();
+        return callSpec;
+    }
+
+    callSpec.allPositional = false;
+    callSpec.argCount = ast->args.size();
+#ifdef DEBUG_BUILD
+    std::map<UnicodeString,uint16_t> hashes {};
+#endif
+    for(const auto& arg : ast->args) {
+        CallSpec::ArgSpec aspec {};
+        if (arg.first.isEmpty())
+            aspec.positional = true;
+        else {
+            aspec.positional = false;
+            aspec.paramNameHash = 0x8000 | (arg.first.hashCode() & 0x7fff);
+#ifdef DEBUG_BUILD
+            hashes[arg.first] = aspec.paramNameHash;
+#endif
+        }
+        callSpec.args.push_back(aspec);
+    }
+#ifdef DEBUG_BUILD
+    std::set<uint16_t> hashSet;
+    for (auto const& hash : hashes)
+        hashSet.insert(hash.second);
+    if (hashSet.size() != hashes.size())
+        throw std::runtime_error("Hash collision occured between two argument names");
+#endif
+    return callSpec;
+}
+
+bool RoxalCompiler::isRemoteActorConstructorCall(const ptr<ast::Expression>& expr) const
+{
+    auto callAst = dynamic_ptr_cast<ast::Call>(expr);
+    if (callAst == nullptr || !callAst->callable->type.has_value())
+        return false;
+    return callAst->callable->type.value()->builtin == BuiltinType::Actor;
+}
+
+void RoxalCompiler::emitRemoteActorConstructorCall(const ptr<ast::Call>& callAst,
+                                                   const ptr<ast::Expression>& hostExpr)
+{
+#ifndef ROXAL_COMPUTE_SERVER
+    (void)callAst;
+    (void)hostExpr;
+    error("Remote actor calls require a build with ROXAL_COMPUTE_SERVER enabled.");
+#else
+    if (!callAst->callable->type.has_value() || callAst->callable->type.value()->builtin != BuiltinType::Actor)
+        error("Remote calls require an actor constructor expression.");
+
+    currentNode = callAst;
+    CallSpec callSpec = buildCallSpec(callAst);
+
+    callAst->callable->accept(*this); // actor type
+    hostExpr->accept(*this);          // host string expression
+    for (const auto& arg : callAst->args)
+        arg.second->accept(*this);
+
+    auto bytes = callSpec.toBytes();
+    if (bytes.size() == 1)
+        emitBytes(OpCode::RemoteCall, bytes[0]);
+    else {
+        emitByte(OpCode::RemoteCall);
+        for (auto b : bytes)
+            emitByte(b);
+    }
+#endif
+}
+
 
 std::any RoxalCompiler::visit(ptr<ast::ExpressionStatement> ast)
 {
     currentNode = ast;
     ast::Anys results {};
-    ast->acceptChildren(*this, results);
+    if (ast->atHost.has_value()) {
+        auto callAst = dynamic_ptr_cast<ast::Call>(ast->expr);
+        if (callAst == nullptr || !isRemoteActorConstructorCall(ast->expr))
+            error("'at <host>' requires an actor constructor call.");
+        emitRemoteActorConstructorCall(callAst, ast->atHost.value());
+    } else {
+        ast->acceptChildren(*this, results);
+    }
 
     // In REPL mode at module scope with no nested local scope, automatically
     // print the value of expression statements
@@ -2891,13 +2987,23 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
 std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 {
     currentNode = ast;
+    auto emitRhs = [&]() {
+        if (ast->atHost.has_value()) {
+            auto callAst = dynamic_ptr_cast<ast::Call>(ast->rhs);
+            if (callAst == nullptr || !isRemoteActorConstructorCall(ast->rhs))
+                error("'at <host>' requires an actor constructor call.");
+            emitRemoteActorConstructorCall(callAst, ast->atHost.value());
+        } else {
+            ast->rhs->accept(*this);
+        }
+    };
 
     if (ast->op == ast::Assignment::CopyInto) {
         if (isa<Variable>(ast->lhs)) {
             auto name { as<Variable>(ast->lhs)->name };
             namedVariable(name, false); // push current value
 
-            ast->rhs->accept(*this);
+            emitRhs();
 
             auto vtype = localVarType(name);
             if (!vtype.has_value())
@@ -2942,7 +3048,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             emitByte(OpCode::Dup);             // keep instance for SetProp
             emitOpArgsBytes(getOp, propName);  // push current property value
 
-            ast->rhs->accept(*this);
+            emitRhs();
 
             emitByte(OpCode::CopyInto);        // mutate property value
             emitOpArgsBytes(setOp, propName);  // store back
@@ -2957,7 +3063,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             debug_assert_msg(index->args.size() <= 255, "Indexing with more than 255 arguments is not supported");
             emitBytes(OpCode::Index, uint8_t(index->args.size()));
 
-            ast->rhs->accept(*this);
+            emitRhs();
             emitByte(OpCode::CopyInto);          // mutate element
 
             // set element back
@@ -3004,7 +3110,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             }
         }
 
-        ast->rhs->accept(*this);
+        emitRhs();
 
         auto vtype = localVarType(name);
         if (!vtype.has_value())
@@ -3067,7 +3173,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             }
         }
 
-        ast->rhs->accept(*this);
+        emitRhs();
 
         // Emit type conversion for typed properties (same pattern as variable declarations)
         if (propType.has_value()) {
@@ -3104,7 +3210,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
     else if (isa<Index>(ast->lhs)) {
 
         // evaluate rhs
-        ast->rhs->accept(*this);
+        emitRhs();
 
         auto index { as<Index>(ast->lhs) };
 
@@ -3123,7 +3229,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
         // evaluate rhs (expected to leave list on stack)
         //  TOOD: consider also supporting dict lhs so return components can be named(?)
-        ast->rhs->accept(*this);
+        emitRhs();
 
         auto lhsList = as<List>(ast->lhs);
         auto lhsSize = lhsList->elements.size();
@@ -3483,51 +3589,7 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
     // the final argument.
     currentNode = ast;
 
-    auto argCount = ast->args.size();
-    if (argCount > 127)
-        error("Number of call parameters is limited to 127");
-
-    //
-    // create call param spec
-    CallSpec callSpec {};
-
-    if (!ast->namedArgs()) {
-        // only positional arguments
-        callSpec.allPositional = true;
-        callSpec.argCount = ast->args.size();
-    }
-    else {
-        #ifdef DEBUG_BUILD
-        // keep track of hashes to check for collisions
-        std::map<UnicodeString,uint16_t> hashes {};
-        #endif
-        // mix of positional & named args
-        callSpec.allPositional = false;
-        callSpec.argCount = ast->args.size();
-        for(const auto& arg : ast->args) {
-            CallSpec::ArgSpec aspec {};
-            if (arg.first.isEmpty())
-                aspec.positional = true;
-            else {
-                aspec.positional = false;
-                // 15bits of param name string hash
-                aspec.paramNameHash =0x8000 | (arg.first.hashCode() & 0x7fff);
-                #ifdef DEBUG_BUILD
-                hashes[arg.first] = aspec.paramNameHash;
-                #endif
-            }
-            callSpec.args.push_back(aspec);
-        }
-        #ifdef DEBUG_BUILD
-        // if any hash collisions occurs, the size of the set of hashes
-        //  won't match the arg count
-        std::set<uint16_t> hashSet;
-        for(auto const& hash: hashes)
-            hashSet.insert(hash.second);
-        if (hashSet.size() != hashes.size())
-            throw std::runtime_error("Hash collision occured between two argument names");
-        #endif
-    }
+    CallSpec callSpec = buildCallSpec(ast);
 
     // Optimization: dict(object) with known object type at compile time
     // Instead of OpCode::Call -> construct -> toType (which accesses backing fields),

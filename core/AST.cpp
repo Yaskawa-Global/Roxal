@@ -325,6 +325,8 @@ std::any ExpressionStatement::accept(ASTVisitor& v)
 void ExpressionStatement::acceptChildren(ASTVisitor& v, Anys& results)
 {
     results.push_back( expr->accept(v) );
+    if (atHost)
+        results.push_back( (*atHost)->accept(v) );
 }
 
 
@@ -334,6 +336,8 @@ void ExpressionStatement::output(std::ostream& os, int indent) const
     os << spaces(indent)+"ExprStmt" << std::endl;
     //sourceOut();
     expr->output(os,indent+1);
+    if (atHost)
+        (*atHost)->output(os,indent+1);
 }
 
 
@@ -747,6 +751,8 @@ void VarDecl::acceptChildren(ASTVisitor& v, Anys& results)
 {
     if (initializer.has_value())
         results.push_back( initializer.value()->accept(v) );
+    if (atHost)
+        results.push_back( (*atHost)->accept(v) );
 }
 
 
@@ -759,6 +765,8 @@ void VarDecl::output(std::ostream& os, int indent) const
         else if (std::holds_alternative<BuiltinType>(varType.value()))
             os << " :" << to_string(std::get<BuiltinType>(varType.value()));
     }
+    if (atHost)
+        os << " at <host-expr>";
     os << std::endl;
 
     for(auto& annot : annotations)
@@ -766,6 +774,8 @@ void VarDecl::output(std::ostream& os, int indent) const
 
     if (initializer.has_value())
         initializer.value()->output(os,indent+1);
+    if (atHost)
+        (*atHost)->output(os,indent+1);
 }
 
 
@@ -1252,15 +1262,19 @@ void Assignment::acceptChildren(ASTVisitor& v, Anys& results)
 {
     results.push_back( lhs->accept(v) );
     results.push_back( rhs->accept(v) );
+    if (atHost)
+        results.push_back( (*atHost)->accept(v) );
 }
 
 
 void Assignment::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"Assignment " << opString() << std::endl;
+    os << spaces(indent)+"Assignment " << opString() << (atHost ? " at <host-expr>" : "") << std::endl;
     //sourceOut();
     lhs->output(os,indent+1);
     rhs->output(os,indent+1);
+    if (atHost)
+        (*atHost)->output(os,indent+1);
 }
 
 

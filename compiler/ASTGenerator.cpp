@@ -771,10 +771,19 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
     ptr<Statement> stmt { nullptr };
 
     if (context->expr_stmt()) {
-        auto expr = visitExpr_stmt(context->expr_stmt());
+        auto exprStmtCtx = context->expr_stmt();
+        auto expr = visitExpr_stmt(exprStmtCtx);
         assertType<Expression>(expr);
         auto exprStmt = make_ptr<ExpressionStatement>();
         exprStmt->expr = as<Expression>(expr);
+
+        // Handle optional 'at <host-expr>' clause
+        if (exprStmtCtx->at_clause()) {
+            auto hostExpr = visitExpression(exprStmtCtx->at_clause()->expression());
+            assertType<Expression>(hostExpr);
+            exprStmt->atHost = as<Expression>(hostExpr);
+        }
+
         stmt = std::move(exprStmt);
     }
     else if (context->compound_stmt()) {
@@ -1221,6 +1230,16 @@ std::any ASTGenerator::visitUntil_clause(RoxalParser::Until_clauseContext *conte
     visitEnd();
 }
 
+std::any ASTGenerator::visitAt_clause(RoxalParser::At_clauseContext *context)
+{
+    visitStart();
+
+    auto expr = visitExpression(context->expression());
+    return expr;
+
+    visitEnd();
+}
+
 
 
 
@@ -1268,6 +1287,12 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
 
     if (context->EQUALS())
         vardecl->initializer = as<Expression>(visitExpression(context->expression()));
+
+    if (context->at_clause()) {
+        auto hostExpr = visitExpression(context->at_clause()->expression());
+        assertType<Expression>(hostExpr);
+        vardecl->atHost = as<Expression>(hostExpr);
+    }
 
     return typeValue(vardecl);
     visitEnd();
@@ -2079,6 +2104,12 @@ std::any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *context)
         }
 
         assign->rhs = as<Expression>(visitAssignment(context->assignment()));
+
+        if (context->at_clause()) {
+            auto hostExpr = visitExpression(context->at_clause()->expression());
+            assertType<Expression>(hostExpr);
+            assign->atHost = as<Expression>(hostExpr);
+        }
 
         return typeValue(assign);
     }

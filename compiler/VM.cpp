@@ -34,6 +34,9 @@
 #include <core/TimePoint.h>
 #include "VM.h"
 #include "Object.h"
+#ifdef ROXAL_COMPUTE_SERVER
+#include "ComputeConnection.h"
+#endif
 #include "FFI.h"
 #include "ModuleMath.h"
 #include "ModuleSys.h"
@@ -65,6 +68,9 @@ thread_local TimePoint VM::nativeCallDeadline_ { TimePoint::max() };
 thread_local UnicodeString VM::nativeCallContext_;
 thread_local std::string VM::nativeCallOverrun_;
 thread_local bool VM::onDataflowThread_ { false };
+#ifdef ROXAL_COMPUTE_SERVER
+thread_local VM::PrintTarget VM::currentPrintTarget_ {};
+#endif
 
 std::string VM::consumeNativeCallOverrun()
 {
@@ -85,6 +91,9 @@ std::atomic<bool> vmConstructed{false};
 std::atomic<VM::CacheMode> configuredCacheMode{VM::CacheMode::Normal};
 std::mutex configuredModulePathsMutex;
 std::vector<std::string> configuredModulePaths;
+
+Value resolveCanonicalRuntimeObjectType(const Value& typeVal);
+bool isCompatibleRuntimeObjectArg(const Value& slot, const Value& expectedType);
 
 void appendUnique(std::vector<std::string>& target, const std::vector<std::string>& additions)
 {
@@ -212,6 +221,91 @@ std::string VM::versionString()
 
     return fullVersion;
 }
+
+std::vector<std::string> VM::featureStrings()
+{
+    std::vector<std::string> features;
+#ifdef ROXAL_ENABLE_FILEIO
+    features.push_back("fileio");
+#endif
+#ifdef ROXAL_ENABLE_GRPC
+    features.push_back("grpc");
+#endif
+#ifdef ROXAL_ENABLE_DDS
+    features.push_back("dds");
+#endif
+#ifdef ROXAL_ENABLE_REGEX
+    features.push_back("regex");
+#endif
+#ifdef ROXAL_ENABLE_SOCKET
+    features.push_back("socket");
+#endif
+#ifdef ROXAL_COMPUTE_SERVER
+    features.push_back("server");
+#endif
+#ifdef ROXAL_ENABLE_AI_NN
+    features.push_back("nn");
+#endif
+#ifdef ROXAL_ENABLE_MEDIA
+    features.push_back("media");
+#endif
+    return features;
+}
+
+std::string VM::featureString()
+{
+    const auto features = featureStrings();
+    if (features.empty())
+        return {};
+
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < features.size(); ++i) {
+        if (i > 0)
+            out << ",";
+        out << features[i];
+    }
+    out << "]";
+    return out.str();
+}
+
+#ifdef ROXAL_COMPUTE_SERVER
+VM::ScopedPrintTarget::ScopedPrintTarget(const PrintTarget& target)
+    : previous(currentPrintTarget_)
+{
+    currentPrintTarget_ = target;
+}
+
+VM::ScopedPrintTarget::~ScopedPrintTarget()
+{
+    currentPrintTarget_ = previous;
+}
+
+const VM::PrintTarget& VM::currentPrintTarget()
+{
+    return currentPrintTarget_;
+}
+
+void VM::emitPrintOutput(const std::string& text, bool flush, bool here)
+{
+    if (here || !currentPrintTarget_.routesRemotely()) {
+        std::cout << text;
+        if (flush)
+            std::cout << std::flush;
+        return;
+    }
+
+    auto conn = currentPrintTarget_.remoteConn.lock();
+    if (!conn) {
+        std::cout << text;
+        if (flush)
+            std::cout << std::flush;
+        return;
+    }
+
+    conn->sendPrintOutput(currentPrintTarget_.remoteCallId, text, flush);
+}
+#endif
 
 // Map BuiltinType to ValueType for automatic type conversion at call sites.
 // Returns nullopt for types that don't support automatic conversion (e.g.
@@ -2086,7 +2180,16 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                          methodName.c_str(), typeName.c_str());
                             return false;
                         }
-                        Value future = inst->queueCall(callee, callSpec, &(*thread->stackTop) );
+                        bool forceCompletionFuture = false;
+#ifdef ROXAL_COMPUTE_SERVER
+                        // Remote actors always need a completion future so that
+                        // wait(for=remoteActor.proc(...)) correctly suspends until
+                        // the network round-trip finishes.
+                        if (inst->isRemote)
+                            forceCompletionFuture = true;
+#endif
+                        Value future = inst->queueCall(callee, callSpec, &(*thread->stackTop),
+                                                       forceCompletionFuture);
 
                         popN(callSpec.argCount + 1); // args & callee
 
@@ -4540,7 +4643,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                                 Value moduleTypeVal = func->moduleType;
                                 if (!moduleTypeVal.isNil()) {
                                     auto found = asModuleType(moduleTypeVal)->vars.load(typeName);
-                                    if (found.has_value() && !slot.is(found.value())) {
+                                    if (found.has_value()
+                                        && !isCompatibleRuntimeObjectArg(slot, found.value())) {
                                         runtimeError("unable to convert " + slot.typeName()
                                                      + " to " + toUTF8StdString(typeName));
                                         return errorReturn;
@@ -6278,6 +6382,59 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
                 break;
             }
+            case OpCode::RemoteCall: {
+                CallSpec callSpec{frame->ip};
+#ifndef ROXAL_COMPUTE_SERVER
+                runtimeError("Remote actor calls require ROXAL_COMPUTE_SERVER.");
+                return errorReturn;
+#else
+                Value& hostVal { peek(callSpec.argCount) };
+                Value& actorTypeVal { peek(callSpec.argCount + 1) };
+
+                {
+                    auto s = tryAwaitValue(hostVal);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+                {
+                    auto s = tryAwaitValue(actorTypeVal);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+                for (int i = 0; i < callSpec.argCount; ++i) {
+                    Value& arg = peek(callSpec.argCount - 1 - i);
+                    auto s = tryAwaitValue(arg);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+
+                if (!isString(hostVal)) {
+                    runtimeError("Remote actor host must be a string.");
+                    return errorReturn;
+                }
+                if (!isObjectType(actorTypeVal) || !asObjectType(actorTypeVal)->isActor) {
+                    runtimeError("Remote calls require an actor type.");
+                    return errorReturn;
+                }
+
+                std::vector<Value> args;
+                args.reserve(callSpec.argCount);
+                for (int i = 0; i < callSpec.argCount; ++i)
+                    args.push_back(peek(callSpec.argCount - 1 - i));
+
+                try {
+                    std::string hostPort = toUTF8StdString(asStringObj(hostVal)->s);
+                    auto conn = ComputeConnection::connect(hostPort);
+                    Value remoteActor = conn->spawnActor(actorTypeVal, args, callSpec);
+                    *(thread->stackTop - callSpec.argCount - 2) = remoteActor;
+                    popN(callSpec.argCount + 1);
+                } catch (const std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+#endif
+            }
             case OpCode::Index: {
                 uint8_t argCount = readByte();
                 if (tryAwaitFuture(peek(argCount)) != FutureStatus::Resolved)
@@ -7874,6 +8031,120 @@ bool VM::isFutureAssignableTo(const Value& futureVal, const Value& targetTypeSpe
     return false;
 }
 
+namespace {
+
+Value resolveCanonicalRuntimeObjectType(const Value& typeVal)
+{
+    if (!isObjectType(typeVal))
+        return typeVal;
+
+    ObjObjectType* objectType = asObjectType(typeVal);
+    auto findPreferredModule = [&](const Value& moduleValue) -> Value {
+        if (!isModuleType(moduleValue))
+            return Value::nilVal();
+
+        ObjModuleType* module = asModuleType(moduleValue);
+        auto matchesModule = [&](const Value& candidate) -> Value {
+            if (!isModuleType(candidate) || candidate.asObj() == moduleValue.asObj())
+                return Value::nilVal();
+            ObjModuleType* candidateModule = asModuleType(candidate);
+            if (!module->fullName.isEmpty()) {
+                if (candidateModule->fullName == module->fullName)
+                    return candidate.strongRef();
+                return Value::nilVal();
+            }
+            if (candidateModule->name == module->name)
+                return candidate.strongRef();
+            return Value::nilVal();
+        };
+
+        Value builtin = VM::instance().getBuiltinModuleType(module->name);
+        Value matched = matchesModule(builtin);
+        if (matched.isNonNil())
+            return matched;
+
+        if (!module->fullName.isEmpty()) {
+            auto globalByFull = VM::instance().loadGlobal(module->fullName);
+            if (globalByFull.has_value()) {
+                matched = matchesModule(globalByFull.value());
+                if (matched.isNonNil())
+                    return matched;
+            }
+        }
+
+        auto globalByName = VM::instance().loadGlobal(module->name);
+        if (globalByName.has_value()) {
+            matched = matchesModule(globalByName.value());
+            if (matched.isNonNil())
+                return matched;
+        }
+
+        for (const Value& candidate : ObjModuleType::allModules.get()) {
+            matched = matchesModule(candidate);
+            if (matched.isNonNil())
+                return matched;
+        }
+
+        return moduleValue.strongRef();
+    };
+
+    auto tryModule = [&](const Value& moduleValue) -> Value {
+        Value preferredModule = findPreferredModule(moduleValue);
+        if (isModuleType(preferredModule)) {
+            auto found = asModuleType(preferredModule)->vars.load(objectType->name);
+            if (found.has_value() && isObjectType(found.value()))
+                return found.value().strongRef();
+        }
+
+        if (isModuleType(moduleValue)) {
+            auto found = asModuleType(moduleValue)->vars.load(objectType->name);
+            if (found.has_value() && isObjectType(found.value()))
+                return found.value().strongRef();
+        }
+        return Value::nilVal();
+    };
+
+    for (const auto& [_, method] : objectType->methods) {
+        if (!isClosure(method.closure))
+            continue;
+        Value resolved = tryModule(asFunction(asClosure(method.closure)->function)->moduleType.strongRef());
+        if (resolved.isNonNil())
+            return resolved;
+    }
+
+    for (const Value& modVal : ObjModuleType::allModules.get()) {
+        Value resolved = tryModule(modVal.strongRef());
+        if (resolved.isNonNil())
+            return resolved;
+    }
+
+    return typeVal;
+}
+
+bool isCompatibleRuntimeObjectArg(const Value& slot, const Value& expectedType)
+{
+    if (slot.is(expectedType))
+        return true;
+    if (!isObjectType(expectedType))
+        return false;
+
+    Value slotType = Value::nilVal();
+    if (isObjectInstance(slot))
+        slotType = asObjectInstance(slot)->instanceType;
+    else if (isActorInstance(slot))
+        slotType = asActorInstance(slot)->instanceType;
+    else
+        return false;
+
+    slotType = resolveCanonicalRuntimeObjectType(slotType);
+    if (!isObjectType(slotType))
+        return false;
+
+    return isSubtypeOf(asObjectType(slotType), asObjectType(expectedType));
+}
+
+} // namespace
+
 bool VM::needsAsyncConversion(const Value& val, ptr<type::Type> paramType, bool strictCtx)
 {
     if (!paramType)
@@ -7913,7 +8184,7 @@ bool VM::needsAsyncConversion(const Value& val, ptr<type::Type> paramType, bool 
         if (typeVal.isNil() || !isTypeSpec(typeVal))
             return false;
         // If value already matches, no conversion needed
-        if (val.is(typeVal))
+        if (isCompatibleRuntimeObjectArg(val, typeVal))
             return false;
         // Check if constructor auto-conversion is possible
         return canConvertToType(val, typeVal, true);

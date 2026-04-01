@@ -1,0 +1,23 @@
+import remote_actor_dep_types.*
+
+type Worker actor:
+  func sumPoint(p: Point) -> int:
+    return p.x + p.y
+
+type Forwarder actor:
+  private var nextHop: string
+
+  proc init(nextHop: string):
+    this.nextHop = nextHop
+
+  func forwardPoint(p: Point) -> int:
+    var worker = Worker() at this.nextHop
+    var result = worker.sumPoint(p)
+    wait(for=result)
+    return result
+
+var point = Point(11, 31)
+var forwarder = Forwarder("__COMPUTE_TEST_ADDR_2__") at "__COMPUTE_TEST_ADDR__"
+var result = forwarder.forwardPoint(point)
+wait(for=result)
+print(result)

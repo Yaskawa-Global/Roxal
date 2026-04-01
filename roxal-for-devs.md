@@ -1063,6 +1063,45 @@ take_a_while() until c > 20
 ```
 
 
+## Advanced: Compute Server
+
+When built with the `server` feature, `roxal --server` starts a TCP compute server for remote actors. A client can then instantiate an actor on that process with `MyActor() at "host[:port]"`.
+
+Useful options:
+
+* `--server` start server mode instead of running a script
+* `--port N` listen on port `N` (default `26925`)
+
+The server hosts actor instances and executes remote method calls. `print()` output from those calls is routed back to the originating client by default unless `here=true` is used.
+
+For example, on a remote machine (say, 192.168.1.10):
+```bash
+$ roxal --server
+```
+
+With script `remote-example.rox`:
+```php
+
+type A actor:
+  func sayHi(name: string) -> bool:
+    print("Hello {name}")
+    return true
+
+var a = A() at '192.168.1.10' // instantiate on the remote server
+wait(for=a.sayHi('Client'))   // runs sayHi on the remote
+```
+
+Then on a local machine:
+```bash
+$ roxal remote-example.rox
+Hello Client
+```
+
+While the `sayHi()` method executed on the remote machine, the output was routed back to the client terminal.  (`sys.print()` also accepts a `here=true` param to cause output wherever the actor is running instead - the remote machine in this case)
+
+Note that actor instances can be passed to actor methods as args to allow remote actors to make method calls to instances on other remote machines or whereever they were instantiated and are running (e.g. on the original client)
+
+
 ## Advanced: Using gRPC Protos
 
 When Roxal is built with `ROXAL_ENABLE_GRPC=ON`, you can import Protocol Buffer schemas at runtime. Supply the directory containing your `.proto` files with `-p` (or set `ROXALPATH`) when running scripts:

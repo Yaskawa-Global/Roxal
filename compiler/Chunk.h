@@ -49,6 +49,7 @@ enum class OpCode {
     Jump,
     Loop,
     Call,
+    RemoteCall,
     Index,
     SetIndex,
     Invoke,

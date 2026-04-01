@@ -1,0 +1,21 @@
+type Acc actor:
+  private var base: int
+
+  proc init(base: int):
+    this.base = base
+
+  func add(x: int, y: int=1) -> int:
+    return this.base + x + y
+
+var first = Acc(base=10) at "__COMPUTE_TEST_ADDR__"
+
+var second
+second = Acc(4) at "__COMPUTE_TEST_ADDR__"
+
+var firstResult = first.add(y=3, x=2)
+wait(for=firstResult)
+print(firstResult)
+
+var secondResult = second.add(1, y=2)
+wait(for=secondResult)
+print(secondResult)

@@ -488,9 +488,11 @@ void ModuleSys::registerBuiltins(VM& vm)
         std::vector<Value> pdefaults{
             Value::stringVal(toUnicodeString("")),
             Value::stringVal(toUnicodeString("\n")),
+            Value::falseVal(),
             Value::falseVal()
         };
-        // Construct funcType matching: proc print(value:string='', end='\n', flush:bool=false)
+        // Construct funcType matching:
+        // proc print(value:string='', end='\n', flush:bool=false, here:bool=false)
         // The :string type on value enables async user-defined conversion (operator->string)
         // for objects passed to print, via callNativeFn's NativeParamConversionState.
         ptr<type::Type> printType = make_ptr<type::Type>(type::BuiltinType::Func);
@@ -499,7 +501,8 @@ void ModuleSys::registerBuiltins(VM& vm)
         auto printParams = BuiltinModule::constructParams({
             {"value", type::BuiltinType::String},
             {"end", type::BuiltinType::String},
-            {"flush", type::BuiltinType::Bool}
+            {"flush", type::BuiltinType::Bool},
+            {"here", type::BuiltinType::Bool}
         }, pdefaults);
         printType->func->params.resize(printParams.size());
         for (size_t i = 0; i < printParams.size(); ++i) printType->func->params[i] = printParams[i];
@@ -707,14 +710,15 @@ void ModuleSys::registerBuiltins(VM& vm)
 
 Value ModuleSys::print_builtin(VM& vm, ArgsView args)
 {
-    if(args.size() > 3)
-        throw std::invalid_argument("print expects at most 3 arguments");
+    if(args.size() > 4)
+        throw std::invalid_argument("print expects at most 4 arguments");
 
     // value param is typed :string — async user-defined conversions (operator->string)
     // are handled by callNativeFn's NativeParamConversionState before we get here.
     std::string valueStr = "";
     std::string endStr = "\n";
     bool flush = false;
+    bool here = false;
 
     if(args.size() >= 1)
         valueStr = toString(args[0]);
@@ -726,11 +730,19 @@ Value ModuleSys::print_builtin(VM& vm, ArgsView args)
             endStr = toString(args[1]);
         if(args.size() >= 3)
             flush = toType(ValueType::Bool, args[2], false).asBool();
+        if(args.size() >= 4)
+            here = toType(ValueType::Bool, args[3], false).asBool();
     }
 
+#ifdef ROXAL_COMPUTE_SERVER
+    VM::emitPrintOutput(valueStr + endStr, flush, here);
+#else
+    (void)vm;
+    (void)here;
     std::cout << valueStr << endStr;
     if(flush)
         std::cout << std::flush;
+#endif
     return Value::nilVal();
 }
 

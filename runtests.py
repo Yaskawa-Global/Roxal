@@ -8,6 +8,7 @@ import argparse
 import fnmatch
 import re
 import time
+import tempfile
 from typing import Set
 
 # Maximum time in seconds to allow each test to run
@@ -17,6 +18,20 @@ NN_LFS_TIMEOUT_SECS = 60
 # Width of the test name column when printing results
 TEST_NAME_WIDTH = 32
 GRPC_TEST_ADDR = "127.0.0.1:50051"
+COMPUTE_TEST_ADDR = "127.0.0.1:56925"
+COMPUTE_TEST_ADDR_2 = "127.0.0.1:56926"
+COMPUTE_TEST_ADDR_PLACEHOLDER = "__COMPUTE_TEST_ADDR__"
+COMPUTE_TEST_ADDR_2_PLACEHOLDER = "__COMPUTE_TEST_ADDR_2__"
+
+
+def read_compute_protocol_version(project_root: str) -> int:
+    header_path = os.path.join(project_root, 'compiler', 'ComputeProtocol.h')
+    with open(header_path, 'r', encoding='utf-8') as handle:
+        header = handle.read()
+    match = re.search(r'ComputeVersion\s*=\s*(\d+)', header)
+    if not match:
+        raise RuntimeError(f"Unable to parse ComputeVersion from {header_path}")
+    return int(match.group(1))
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Run Roxal tests.")
@@ -104,7 +119,7 @@ tests = [
     'until_event', 'until_signal', 'signal_vector_dot',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
     'module_strict_assign_err', 'var_redeclare_err', 'var_redeclare_assign_err', 'repl_var_redeclare_err', 'func_nonstrict', 'conversions1',
-    'serialize_values', 'serialize_objects', 'serialize_user_objects', 'serialize_func', 'serialize_actor',
+    'serialize_values', 'serialize_signal', 'serialize_objects', 'serialize_user_objects', 'serialize_func', 'serialize_actor',
     'json_basic',
     'byteops', 'bitwise', 'byte_int_bits', 'int64_promotion', 'int64_bounds', 'list_byte_concat', 'list_enum_concat',
     'object_init', 'object_constructor_args', 'object_constructor_unknown_arg', 'object_constructor_arg_count',
@@ -206,6 +221,20 @@ socket_tests = ['socket_basic']
 nn_tests = ['nn_mnist', 'nn_signal', 'nn_chain', 'nn_signal_chain', 'nn_dynamic', 'nn_multi_io', 'nn_async', 'nn_tokenizer']
 nn_lfs_tests = ['nn_dfine']  # require LFS model files (only run with --all)
 media_tests = ['media_read_write', 'media_manipulate', 'media_convert']
+compute_server_tests = [
+    'remote_actor_basic',
+    'remote_actor_backchannel',
+    'remote_actor_imported_type',
+    'remote_actor_forwarded_type',
+    'remote_actor_signal_err',
+    'remote_actor_tensor',
+    'remote_actor_refresh_here',
+    'remote_actor_print',
+    'remote_actor_print_forwarded',
+    'remote_actor_print_here',
+    'remote_actor_version_mismatch',
+]
+compute_server_double_hop_tests = ['remote_actor_forwarded_type', 'remote_actor_print_forwarded']
 
 # Add feature-specific tests to the full list; feature gating happens later.
 tests += dds_tests
@@ -213,6 +242,7 @@ tests += regex_tests
 tests += socket_tests
 tests += nn_tests
 tests += media_tests
+tests += compute_server_tests
 
 long_running_tests = [
     'gc_stress',
@@ -305,6 +335,7 @@ has_dds = 'dds' in features
 has_regex = 'regex' in features
 has_socket = 'socket' in features
 has_nn = 'nn' in features
+has_compute_server = 'server' in features
 if not has_grpc and any(test in tests for test in grpc_tests):
     print("Skipping gRPC tests (feature not enabled).")
     tests = [t for t in tests if t not in grpc_tests]
@@ -323,6 +354,10 @@ if not has_socket:
     if any(test in tests for test in socket_tests):
         print("Skipping socket tests (feature not enabled).")
         tests = [t for t in tests if t not in socket_tests]
+if not has_compute_server:
+    if any(test in tests for test in compute_server_tests):
+        print("Skipping compute server tests (feature not enabled).")
+        tests = [t for t in tests if t not in compute_server_tests]
 if not has_nn:
     if any(test in tests for test in nn_tests + nn_lfs_tests):
         print("Skipping ai.nn tests (feature not enabled).")
@@ -345,6 +380,7 @@ if has_nn and any(test in tests for test in nn_lfs_tests):
         print("Skipping LFS-dependent nn tests (model files not available; run 'git lfs pull').")
         tests = [t for t in tests if t not in nn_lfs_tests]
 needs_grpc_server = has_grpc and any(test in tests for test in grpc_server_tests)
+needs_compute_server = has_compute_server and any(test in tests for test in compute_server_tests)
 
 env_base = os.environ.copy()
 env_base['ROXALPATH'] = test_dir
@@ -386,15 +422,190 @@ def start_grpc_test_server(env) -> subprocess.Popen:
         proc.kill()
     raise RuntimeError(f"Timed out waiting for gRPC test server to start: {last_error}")
 
+
+def start_compute_test_server(env, address: str) -> tuple[subprocess.Popen, str, tempfile.NamedTemporaryFile]:
+    host, port_str = address.split(':', 1)
+    port = int(port_str)
+    log_handle = tempfile.NamedTemporaryFile(
+        mode='w+b', suffix='.compute.log', prefix='roxal_compute_', delete=False
+    )
+    proc = subprocess.Popen(
+        [roxal, '--server', '--port', str(port)],
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+        env=env,
+    )
+
+    deadline = time.time() + 5.0
+    last_error = None
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            log_handle.flush()
+            with open(log_handle.name, 'rb') as handle:
+                output = handle.read()
+            raise RuntimeError(
+                f"compute server failed to start (exit {proc.returncode}): "
+                f"{output.decode(errors='ignore')}"
+            )
+        try:
+            with socket.create_connection((host, port), timeout=0.25):
+                return proc, address, log_handle
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.1)
+
+    proc.terminate()
+    try:
+        proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    raise RuntimeError(f"Timed out waiting for compute server to start: {last_error}")
+
+
+def read_new_server_output(log_handle: tempfile.NamedTemporaryFile, offset: int) -> tuple[int, bytes]:
+    log_handle.flush()
+    with open(log_handle.name, 'rb') as handle:
+        handle.seek(offset)
+        data = handle.read()
+        new_offset = handle.tell()
+    return new_offset, data
+
+
+def run_compute_version_mismatch_test(address: str) -> tuple[bool, str]:
+    host, port_str = address.split(':', 1)
+    port = int(port_str)
+    current_version = read_compute_protocol_version(project_root)
+    wrong_version = 0 if current_version != 0 else 1
+    payload = b'RXCS' + wrong_version.to_bytes(4, byteorder='big')
+    frame = len(payload).to_bytes(4, byteorder='big') + bytes([0x01]) + payload
+
+    with socket.create_connection((host, port), timeout=1.0) as sock:
+        sock.sendall(frame)
+        header = sock.recv(5)
+        if len(header) != 5:
+            return False, f"short response header: {header!r}"
+
+        payload_len = int.from_bytes(header[:4], byteorder='big')
+        msg_type = header[4]
+        body = b''
+        while len(body) < payload_len:
+            chunk = sock.recv(payload_len - len(body))
+            if not chunk:
+                break
+            body += chunk
+
+    if msg_type != 0x03:
+        return False, f"expected HELLO_ERR (0x03), got 0x{msg_type:02x}"
+    if len(body) < 4:
+        return False, f"HELLO_ERR payload too short: {body!r}"
+
+    reason_len = int.from_bytes(body[:4], byteorder='big')
+    reason = body[4:4 + reason_len].decode(errors='ignore')
+    if "version mismatch" not in reason:
+        return False, f"unexpected HELLO_ERR message: {reason!r}"
+    return True, reason
+
+
+def run_compute_refresh_here_test(test_dir: str, address: str, server_log_handle: tempfile.NamedTemporaryFile) -> tuple[bool, str]:
+    temp_path = os.path.join(test_dir, 'remote_actor_refresh_here_runtime.rox')
+    host_expr = address
+
+    source_before = f"""type RefreshPrintActor actor:
+  func run() -> int:
+    print("client-copy")
+    return 1
+
+var worker = RefreshPrintActor() at "{host_expr}"
+var result = worker.run()
+wait(for=result)
+print(result)
+"""
+
+    source_after = f"""type RefreshPrintActor actor:
+  func run() -> int:
+    print("server-copy", flush=true, here=true)
+    return 2
+
+var worker = RefreshPrintActor() at "{host_expr}"
+var result = worker.run()
+wait(for=result)
+print(result)
+"""
+
+    try:
+        with open(temp_path, 'w', encoding='utf-8') as handle:
+            handle.write(source_before)
+        first = subprocess.run([roxal, temp_path], capture_output=True, env=env_base, timeout=TEST_TIMEOUT_SECS)
+        if first.returncode != 0:
+            return False, f"first run failed: {first.stderr.decode(errors='ignore')}"
+        if first.stdout != b'client-copy\n1\n':
+            return False, f"unexpected first stdout: {first.stdout!r}"
+
+        server_offset = os.path.getsize(server_log_handle.name)
+        with open(temp_path, 'w', encoding='utf-8') as handle:
+            handle.write(source_after)
+        second = subprocess.run([roxal, '--recompile', temp_path], capture_output=True, env=env_base, timeout=TEST_TIMEOUT_SECS)
+        if second.returncode != 0:
+            return False, f"second run failed: {second.stderr.decode(errors='ignore')}"
+        if second.stdout != b'2\n':
+            return False, f"unexpected second stdout: {second.stdout!r}"
+
+        _, server_chunk = read_new_server_output(server_log_handle, server_offset)
+        if server_chunk != b'server-copy\n':
+            return False, f"unexpected server stdout after refresh: {server_chunk!r}"
+        return True, "refresh here=true respected without server restart"
+    finally:
+        try:
+            os.remove(temp_path)
+        except FileNotFoundError:
+            pass
+
 grpc_server_proc = None
+compute_server_proc = None
+compute_server_proc_2 = None
+compute_server_log = None
+compute_server_log_2 = None
+compute_test_addr = None
+compute_test_addr_2 = None
+generated_compute_tests = []
+compute_server_output = ""
 total_start_time = time.perf_counter()
 
 try:
     grpc_server_proc = start_grpc_test_server(env_base) if needs_grpc_server else None
+    if needs_compute_server:
+        compute_server_proc, compute_test_addr, compute_server_log = start_compute_test_server(env_base, COMPUTE_TEST_ADDR)
+        if any(test in tests for test in compute_server_double_hop_tests):
+            compute_server_proc_2, compute_test_addr_2, compute_server_log_2 = start_compute_test_server(env_base, COMPUTE_TEST_ADDR_2)
 
     for test in tests:
         print(f"Test {test:<{TEST_NAME_WIDTH}} ", end='', flush=True)
         start_time = time.perf_counter()
+        if test == 'remote_actor_version_mismatch':
+            passed, detail = run_compute_version_mismatch_test(compute_test_addr)
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            if passed:
+                print(f"pass ({duration_ms:.0f} ms)", flush=True)
+                passed_count += 1
+            else:
+                print("FAIL:", flush=True)
+                print(detail)
+                failed_count += 1
+                unexpected_failures.append(test)
+            continue
+        if test == 'remote_actor_refresh_here':
+            passed, detail = run_compute_refresh_here_test(test_dir, compute_test_addr, compute_server_log)
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            if passed:
+                print(f"pass ({duration_ms:.0f} ms)", flush=True)
+                passed_count += 1
+            else:
+                print("FAIL:", flush=True)
+                print(detail)
+                failed_count += 1
+                unexpected_failures.append(test)
+            continue
+
         testrox = os.path.join(test_dir, test + '.rox')
         testout = os.path.join(test_dir, test + '.out')
         testerr = os.path.join(test_dir, test + '.err')
@@ -404,7 +615,27 @@ try:
         if not (os.path.exists(testout) or os.path.exists(testerr)):
             raise RuntimeError(f"Test expected output {testout} or {testerr} not found.")
 
-        rel_testrox = os.path.relpath(testrox, os.getcwd())
+        run_testrox = testrox
+        compute_server_offsets = {}
+        if test in compute_server_tests:
+            with open(testrox, 'r', encoding='utf-8') as handle:
+                source = handle.read()
+                source = source.replace(COMPUTE_TEST_ADDR_PLACEHOLDER, compute_test_addr)
+                source = source.replace(COMPUTE_TEST_ADDR_2_PLACEHOLDER,
+                                        compute_test_addr_2 if compute_test_addr_2 else COMPUTE_TEST_ADDR_2)
+            temp_handle = tempfile.NamedTemporaryFile(
+                mode='w', suffix='.rox', prefix=f'{test}_', dir=test_dir, delete=False, encoding='utf-8'
+            )
+            with temp_handle:
+                temp_handle.write(source)
+            run_testrox = temp_handle.name
+            generated_compute_tests.append(run_testrox)
+            if compute_server_log:
+                compute_server_offsets[compute_server_log.name] = os.path.getsize(compute_server_log.name)
+            if compute_server_log_2:
+                compute_server_offsets[compute_server_log_2.name] = os.path.getsize(compute_server_log_2.name)
+
+        rel_testrox = os.path.relpath(run_testrox, os.getcwd())
         input_data = None
         cmd = [roxal, rel_testrox]
         if test.startswith('repl_'):
@@ -514,6 +745,31 @@ try:
                 print("--")
                 print()
                 passed = False
+        server_out_path = os.path.join(test_dir, test + '.server.out')
+        if os.path.exists(server_out_path):
+            expected_server = open(server_out_path, 'rb').read()
+            actual_chunks = []
+            if compute_server_log and compute_server_log.name in compute_server_offsets:
+                _, chunk = read_new_server_output(compute_server_log, compute_server_offsets[compute_server_log.name])
+                actual_chunks.append(chunk)
+            if compute_server_log_2 and compute_server_log_2.name in compute_server_offsets:
+                _, chunk = read_new_server_output(compute_server_log_2, compute_server_offsets[compute_server_log_2.name])
+                actual_chunks.append(chunk)
+            actual_server = b''.join(actual_chunks)
+            if expected_server != actual_server:
+                print(f"FAIL: {opt_expected}", flush=True)
+                print("-- compute server stdout --")
+                print(actual_server)
+                print("-- expected compute server stdout --")
+                print(expected_server)
+                print("--")
+                print()
+                passed = False
+        if not passed and compProc.stderr:
+            print("-- stderr --")
+            print(compProc.stderr.decode())
+            print("--")
+            print()
         if passed:
             print(f"pass ({duration_ms:.0f} ms)", flush=True)
             passed_count += 1
@@ -526,6 +782,54 @@ try:
 except Exception as e:
     print('Exception: ' + str(e))
 finally:
+    for path in generated_compute_tests:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+    if compute_server_proc:
+        compute_server_proc.terminate()
+        try:
+            compute_server_proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            compute_server_proc.kill()
+        if compute_server_log:
+            try:
+                compute_server_log.flush()
+                with open(compute_server_log.name, 'rb') as handle:
+                    compute_server_output = handle.read().decode(errors='ignore')
+            except Exception:
+                compute_server_output = ""
+            try:
+                compute_server_log.close()
+            except Exception:
+                pass
+            try:
+                os.remove(compute_server_log.name)
+            except OSError:
+                pass
+    if compute_server_proc_2:
+        compute_server_proc_2.terminate()
+        try:
+            compute_server_proc_2.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            compute_server_proc_2.kill()
+        if compute_server_log_2:
+            try:
+                compute_server_log_2.flush()
+                with open(compute_server_log_2.name, 'rb') as handle:
+                    extra_output = handle.read().decode(errors='ignore')
+                compute_server_output = (compute_server_output + "\n" + extra_output).strip()
+            except Exception:
+                pass
+            try:
+                compute_server_log_2.close()
+            except Exception:
+                pass
+            try:
+                os.remove(compute_server_log_2.name)
+            except OSError:
+                pass
     if grpc_server_proc:
         grpc_server_proc.terminate()
         try:
@@ -542,6 +846,10 @@ print()
 print(f"{passed_count} tests passed, {failed_unexpected_count} "+('FAILED' if failed_unexpected_count>0 else 'failed')+f" unexpectedly{expected_fail_msg}")
 if unexpected_failures:
     print(f"Unexpected failures: {', '.join(unexpected_failures)}")
+if compute_server_output and any(test in compute_server_tests for test in unexpected_failures):
+    print("-- compute server output --")
+    print(compute_server_output)
+    print("--")
 print(f"Total time {total_duration:.2f} s")
 
 if args.opcode_prof:

@@ -14,6 +14,7 @@ Features:
   - First class functions (closures)
   - Builtin library support for DDS (ROS interop) & gRPC (no codegen required)
   - Builtin library support for AI model inference (via ONNX Runtime)
+  - Distribuited Compute (instantiate actors remotely)
   - VM integratable into Real-time control loops via runFor(deadline)
 
 See [Roxal-for-devs](roxal-for-devs.md) for an overview.

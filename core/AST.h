@@ -310,6 +310,7 @@ struct ExpressionStatement : public Statement {
     ExpressionStatement() : Statement(StmtType::Expression) {}
 
     ptr<ast::Expression> expr;
+    std::optional<ptr<ast::Expression>> atHost; // optional: host expression from 'at <expr>'
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -499,6 +500,7 @@ struct VarDecl : public Declaration {
     bool isConst { false };        // declaration is 'const' (cannot reassign)
     bool isTypeConst { false };    // type is qualified with 'const' (e.g. var x: const T)
     bool isTypeMutable { false };  // type is qualified with 'mutable' (e.g. const x: mutable T)
+    std::optional<ptr<Expression>> atHost; // optional: host expression from 'at <expr>'
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -677,6 +679,7 @@ struct Assignment : public Expression {
     Op op;
     ptr<Expression> lhs;
     ptr<Expression> rhs;
+    std::optional<ptr<Expression>> atHost; // optional: host expression from 'at <expr>'
 
     std::string opString() const;
 
