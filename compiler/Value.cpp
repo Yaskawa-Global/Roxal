@@ -3424,9 +3424,12 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             if (useCtx)
                 ctx->idToObj[id] = obj;
             obj->read(in, ctx);
-            Value resolved = resolveCanonicalSerializedObjectType(owned);
+            Value resolved = owned;
+#ifdef ROXAL_COMPUTE_SERVER
+            resolved = resolveCanonicalSerializedObjectType(owned);
             if (useCtx && resolved.isObj())
                 ctx->idToObj[id] = resolved.asObj();
+#endif
             return resolved;
         }
         case ValueType::String: {
@@ -3469,7 +3472,9 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                 return Value::objRef(it->second);
             }
             Value typeVal = readValue(in, ctx);
+#ifdef ROXAL_COMPUTE_SERVER
             typeVal = resolveCanonicalSerializedObjectType(typeVal);
+#endif
             ObjObjectType* t = asObjectType(typeVal);
             debug_assert_msg(!t->isActor, "Expected object type for deserialization");
             Value objVal = Value::objectInstanceVal(typeVal);
@@ -3504,7 +3509,9 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             }
 
             Value typeVal = readValue(in, ctx);
+#ifdef ROXAL_COMPUTE_SERVER
             typeVal = resolveCanonicalSerializedObjectType(typeVal);
+#endif
             ObjObjectType* t = asObjectType(typeVal);
             debug_assert_msg(t->isActor, "Expected actor type for deserialization");
             obj->initialize(typeVal);
