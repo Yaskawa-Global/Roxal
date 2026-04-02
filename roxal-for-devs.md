@@ -824,10 +824,10 @@ The `sys` module defines suffixes for physical units — see the `quantity` type
 **Examples:**
 
 ```php
-var d = 10m + 500mm       // 10.5 m  (auto-converts to common unit)
-var speed = 100m / 4s     // 25 m/s  (derived dimension)
-var force = 5kg * 9.81m/s^2  // 49.05 N (Force = Mass × Acceleration)
-var angle = 90deg         // 90 deg  (stored as radians internally)
+var d = 10m + 500mm       // 10.5m  (auto-converts to common unit)
+var speed = 100m / 4s     // 25m/s  (derived dimension)
+var force = 5kg * 9.81m/s^2  // 49.05N (Force = Mass × Acceleration)
+var angle = 90deg         // 90deg  (stored as radians internally)
 print(d.inches)           // 413.386  (property getter converts from SI)
 ```
 
@@ -863,10 +863,10 @@ type Worker actor:
 
   proc addto(r :real):
     amount = amount + r
-    wait(ms=200)  // 'sleep' for a bit
+    wait(200ms)  // 'sleep' for a bit
 
   func currentAmount() -> real:
-    wait(ms=300)
+    wait(300ms)
     return amount
 
 w = Worker()
@@ -990,7 +990,7 @@ when c changes as evt:
   print('tick='+evt.value)
 
 c.run()    // start the clock counting
-wait(s=1)  // keep the script running so we can see ~10 prints
+wait(1s)  // keep the script running so we can see ~10 prints
 ```
 
 Use `changes` to run a handler on any update. Supplying `as evt` binds the automatically-generated event instance that contains the sampled signal value (`evt.value`), a steady-clock duration since the engine started (`evt.timestamp`, a `sys.TimeSpan`), and the signal's own tick count (`evt.tick`). To fire only when a signal hits a specific value, use the `becomes` form:
@@ -1021,10 +1021,10 @@ s2.run()
 
 // change them
 s.set([1.0 3.0 3.0])  // handler above will print dp=16 on next 10Hz boundary
-wait(ms=100)
+wait(100ms)
 s2.set([2.0 1.0 0.5]) // handler above will print dp=6.5 on next 10Hz boundary
 
-wait(ms=500)  // don't exit until after next tick & handler runs
+wait(500ms)  // don't exit until after next tick & handler runs
 print('done')
 ```
 
@@ -1039,11 +1039,11 @@ The until condition can be an event or a boolean valued signal.
 var e :event
 
 func take_a_while():
-  wait(s=10)  // do nothing for 10s
+  wait(10s)  // do nothing for 10s
 
 type MyWorker actor:
   proc triggerEventAfterDelay(e :event, aftersecs :int):
-    wait(s=aftersecs)
+    wait(aftersecs)
     emit e()
 
 worker = MyWorker()
@@ -1180,7 +1180,7 @@ if responseSignal.running:
     print("Stream still open")
 
 // Wait for stream to end
-wait(ms=1000)
+wait(1s)
 ```
 
 The RPC returns a future that resolves to a signal. Each server message updates the signal's value, triggering `when ... changes` handlers. When the server closes the stream, the signal's `.running` property becomes `false`.
@@ -1223,7 +1223,7 @@ inputSignal.set(StreamRequest(value=10))
 inputSignal.stop()  // Done sending
 
 // Wait for server to finish
-wait(ms=500)
+wait(500ms)
 ```
 
 **Signal properties for streaming**:
@@ -1582,13 +1582,13 @@ input_sig.run()
 var img1 = tensor(1, 1, 28, 28, dtype='float32')
 # ... draw digit "1" ...
 input_sig.set(img1)
-wait(ms=500)
+wait(500ms)
 
 # Update again — triggers another prediction
 var img0 = tensor(1, 1, 28, 28, dtype='float32')
 # ... draw digit "0" ...
 input_sig.set(img0)
-wait(ms=500)
+wait(500ms)
 
 for p in predictions:
   print(p)  // 1, 0
@@ -1619,7 +1619,7 @@ input_sig.run()
 var input = tensor(1, 10, dtype='float32')
 input[0, 3] = 42.0
 input_sig.set(input)
-wait(ms=300)
+wait(300ms)
 ```
 
 When models run on GPU, intermediate tensors stay on GPU throughout the signal chain — no CPU round-trip.
@@ -1660,7 +1660,7 @@ The functions in the sys module are always globally available (- as if `import s
 * `len(v)` - return the length of `v` if applicable
 * `help(fn)` - return signature and doc string for `fn`
 * `clone(v)` - deep copy `v`
-* `wait(duration=nil, s=0, ms=0, us=0, ns=0, for=nil)` - pause execution for the specified time and optionally await a future or list of futures afterwards. `duration` accepts a time quantity such as `250ms` or a numeric seconds value such as `0.5`; do not mix it with `s/ms/us/ns`.
+* `wait(duration=nil, s=0, ms=0, us=0, ns=0, for=nil)` - pause execution for the specified time and optionally await a single future afterwards. Prefer time quantities such as `250ms` or `1s`; numeric seconds such as `0.5` are also accepted. Named-unit arguments are also supported. The function returns `nil` for a pure delay, the resolved value for a future, or the supplied nonfuture value after any delay. Do not mix `duration` with `s/ms/us/ns`.
 * `stacktrace()` - return the current call stack as a list
 * `serialize(value, protocol='default')` - serialize `value` using protocol
 * `deserialize(bytes, protocol='default')` - deserialize bytes using protocol

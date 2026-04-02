@@ -575,7 +575,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         {
             ptr<type::Type> t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
-            t->func->isProc = true;
+            t->func->isProc = false;
             std::vector<Value> defaults { Value::nilVal(), Value::intVal(0), Value::intVal(0), Value::intVal(0), Value::intVal(0), Value::nilVal() };
             auto params = BuiltinModule::constructParams({ {"duration", std::nullopt},
                                            {"s", type::BuiltinType::Int},
@@ -909,6 +909,10 @@ Value ModuleSys::wait_builtin(VM& vm, ArgsView args)
     if (args.size() != 6)
         throw std::invalid_argument("wait expects 6 arguments");
 
+    auto* thread = VM::thread.get();
+    if (!thread)
+        throw std::runtime_error("wait requires an active thread");
+
     Value duration = args[0];
     int64_t s = toType(ValueType::Int, args[1], false).asInt();
     int64_t ms = toType(ValueType::Int, args[2], false).asInt();
@@ -940,30 +944,48 @@ Value ModuleSys::wait_builtin(VM& vm, ArgsView args)
     auto microSecs { TimeDuration::microSecs(totalus) };
     bool hasDelay = microSecs.microSecs() > 0;
 
-    VM::thread->threadSleepUntil = TimePoint::currentTime() + microSecs;
-    VM::thread->threadSleep = true;
-    VM::thread->pendingWaitFor = Value::nilVal();
+    thread->threadSleep = false;
+    thread->pendingWaitFor = Value::nilVal();
+    thread->waitSuspension.clear();
 
-    auto resolveList = [](ObjList* list) {
-        for (auto& element : list->getElements())
-            element.resolve();
+    // wait() suspends via the VM dispatcher rather than blocking in native code.
+    auto suspendWait = [&](Thread::WaitSuspension::ResultMode mode, Value storedValue = Value::nilVal()) {
+        thread->waitSuspension.active = true;
+        thread->waitSuspension.resultMode = mode;
+        thread->waitSuspension.storedValue = storedValue;
     };
 
-    if (isList(waitTarget)) {
-        if (hasDelay) {
-            VM::thread->pendingWaitFor = waitTarget;
-        } else {
-            resolveList(asList(waitTarget));
-        }
-    } else if (isFuture(waitTarget)) {
-        if (hasDelay) {
-            VM::thread->pendingWaitFor = waitTarget;
-        } else {
-            waitTarget.resolve();
-        }
+    if (hasDelay) {
+        thread->threadSleepUntil = TimePoint::currentTime() + microSecs;
+        thread->threadSleep = true;
     }
 
-    return Value::nilVal();
+    if (waitTarget.isNil()) {
+        if (hasDelay)
+            suspendWait(Thread::WaitSuspension::ResultMode::Nil);
+        return Value::nilVal();
+    }
+
+    if (isFuture(waitTarget)) {
+        if (!hasDelay) {
+            auto status = vm.tryResolveValue(waitTarget);
+            if (status == FutureStatus::Error)
+                return Value::nilVal();
+            if (status == FutureStatus::Resolved)
+                return waitTarget;
+        }
+
+        thread->pendingWaitFor = waitTarget;
+        suspendWait(Thread::WaitSuspension::ResultMode::PendingWaitTarget);
+        return Value::nilVal();
+    }
+
+    if (hasDelay) {
+        suspendWait(Thread::WaitSuspension::ResultMode::StoredValue, waitTarget);
+        return Value::nilVal();
+    }
+
+    return waitTarget;
 }
 
 Value ModuleSys::is_ready_builtin(VM& vm, ArgsView args)
@@ -1710,10 +1732,10 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
             auto savedThread = VM::thread;
 
             std::stringstream source;
-            // Use 1000 iterations - enough to yield multiple times but completes within tick period
+            // Use enough work and small enough slices to force multiple resumptions.
             source << "func dfSlowFunc3(x: int) -> int:\n"
                    << "  var sum = 0\n"
-                   << "  for i in range(..<1000):\n"
+                   << "  for i in range(..<10000):\n"
                    << "    sum = sum + i\n"
                    << "  return sum + x\n";
 
@@ -1747,15 +1769,14 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                         );
                         funcNode->addToEngine();
 
-                        // First tick with short budget - use 500us to be short but not too tiny
-                        auto result = engine.tickFor(TimeDuration::microSecs(500));
+                        // First tick with a very short budget so the closure must yield.
+                        auto result = engine.tickFor(TimeDuration::microSecs(100));
                         int yieldCount = (result == df::DataflowEngine::TickResult::Yielded) ? 1 : 0;
 
-                        // Use 2ms per iteration - small enough to yield multiple times,
-                        // but large enough to make progress and complete within tick period (100ms)
-                        const int maxIterations = 100;
+                        // Keep resume slices short enough that completion requires multiple passes.
+                        const int maxIterations = 400;
                         for (int i = 0; i < maxIterations && result == df::DataflowEngine::TickResult::Yielded; ++i) {
-                            result = engine.tickFor(TimeDuration::milliSecs(2));
+                            result = engine.tickFor(TimeDuration::microSecs(500));
                             if (result == df::DataflowEngine::TickResult::Yielded)
                                 yieldCount++;
                         }
@@ -1851,6 +1872,130 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                                         : "non-int") +
                                     ", expected=" + std::to_string(expectedOutput));
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Test 15: wait(for=pendingFuture) yields under deadline and resumes with value
+        {
+            auto savedThread = VM::thread;
+
+            std::stringstream source;
+            source << "type WaitWorker actor:\n"
+                   << "  func delayed(v: int, delay_ms: int=2) -> int:\n"
+                   << "    wait(ms=delay_ms)\n"
+                   << "    return v\n"
+                   << "\n"
+                   << "func waitImmediateFuture() -> int:\n"
+                   << "  var w = WaitWorker()\n"
+                   << "  return wait(for=w.delayed(123, 2))\n";
+
+            auto setupResult = vm.setup(source, "rt_wait_future");
+            if (setupResult != ExecutionStatus::OK) {
+                VM::thread = savedThread;
+                reportTest("wait_future_yields", false, "Failed to compile");
+            } else {
+                ObjModuleType* modType = vm.moduleType();
+                auto [execResult, _] = vm.execute();
+                if (execResult != ExecutionStatus::OK) {
+                    VM::thread = savedThread;
+                    reportTest("wait_future_yields", false, "execute failed");
+                } else {
+                    auto closureOpt = modType->vars.load(toUnicodeString("waitImmediateFuture"));
+                    if (!closureOpt.has_value() || !isClosure(closureOpt.value())) {
+                        VM::thread = savedThread;
+                        reportTest("wait_future_yields", false, "closure not found");
+                    } else {
+                        auto deadline = TimePoint::currentTime() + TimeDuration::microSecs(50);
+                        auto [result, returnVal] = vm.invokeClosure(asClosure(closureOpt.value()), {}, deadline);
+
+                        bool yielded = (result == ExecutionStatus::Yielded);
+                        if (!yielded) {
+                            VM::thread = savedThread;
+                            reportTest("wait_future_yields", false,
+                                "result=" + std::to_string(static_cast<int>(result)));
+                        } else {
+                            ExecutionStatus resumeResult = result;
+                            Value resumeVal = returnVal;
+                            const int maxIterations = 200;
+                            for (int i = 0; i < maxIterations && resumeResult == ExecutionStatus::Yielded; ++i) {
+                                auto [res, val] = vm.runFor(TimeDuration::milliSecs(10));
+                                resumeResult = res;
+                                resumeVal = val;
+                                if (resumeResult == ExecutionStatus::Yielded)
+                                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                            }
+                            bool completed = (resumeResult == ExecutionStatus::OK);
+                            bool correctValue = resumeVal.isInt() && resumeVal.asInt() == 123;
+                            VM::thread = savedThread;
+                            reportTest("wait_future_yields", completed && correctValue,
+                                "completed=" + std::to_string(completed) +
+                                ", result=" + std::to_string(static_cast<int>(resumeResult)) +
+                                ", value=" + (resumeVal.isInt() ? std::to_string(resumeVal.asInt()) : "non-int"));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Test 16: wait(delay, for=pendingFuture) yields under deadline and resumes with value
+        {
+            auto savedThread = VM::thread;
+
+            std::stringstream source;
+            source << "type WaitWorker2 actor:\n"
+                   << "  func delayed(v: int, delay_ms: int=2) -> int:\n"
+                   << "    wait(ms=delay_ms)\n"
+                   << "    return v\n"
+                   << "\n"
+                   << "func waitDelayedFuture() -> int:\n"
+                   << "  var w = WaitWorker2()\n"
+                   << "  return wait(1ms, for=w.delayed(234, 2))\n";
+
+            auto setupResult = vm.setup(source, "rt_wait_delay_future");
+            if (setupResult != ExecutionStatus::OK) {
+                VM::thread = savedThread;
+                reportTest("wait_delay_future_yields", false, "Failed to compile");
+            } else {
+                ObjModuleType* modType = vm.moduleType();
+                auto [execResult, _] = vm.execute();
+                if (execResult != ExecutionStatus::OK) {
+                    VM::thread = savedThread;
+                    reportTest("wait_delay_future_yields", false, "execute failed");
+                } else {
+                    auto closureOpt = modType->vars.load(toUnicodeString("waitDelayedFuture"));
+                    if (!closureOpt.has_value() || !isClosure(closureOpt.value())) {
+                        VM::thread = savedThread;
+                        reportTest("wait_delay_future_yields", false, "closure not found");
+                    } else {
+                        auto deadline = TimePoint::currentTime() + TimeDuration::microSecs(50);
+                        auto [result, returnVal] = vm.invokeClosure(asClosure(closureOpt.value()), {}, deadline);
+
+                        bool yielded = (result == ExecutionStatus::Yielded);
+                        if (!yielded) {
+                            VM::thread = savedThread;
+                            reportTest("wait_delay_future_yields", false,
+                                "result=" + std::to_string(static_cast<int>(result)));
+                        } else {
+                            ExecutionStatus resumeResult = result;
+                            Value resumeVal = returnVal;
+                            const int maxIterations = 200;
+                            for (int i = 0; i < maxIterations && resumeResult == ExecutionStatus::Yielded; ++i) {
+                                auto [res, val] = vm.runFor(TimeDuration::milliSecs(10));
+                                resumeResult = res;
+                                resumeVal = val;
+                                if (resumeResult == ExecutionStatus::Yielded)
+                                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                            }
+                            bool completed = (resumeResult == ExecutionStatus::OK);
+                            bool correctValue = resumeVal.isInt() && resumeVal.asInt() == 234;
+                            VM::thread = savedThread;
+                            reportTest("wait_delay_future_yields", completed && correctValue,
+                                "completed=" + std::to_string(completed) +
+                                ", result=" + std::to_string(static_cast<int>(resumeResult)) +
+                                ", value=" + (resumeVal.isInt() ? std::to_string(resumeVal.asInt()) : "non-int"));
                         }
                     }
                 }

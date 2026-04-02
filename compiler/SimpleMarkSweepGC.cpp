@@ -102,6 +102,9 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
     visitStrongValue(visitor, thread.pendingWaitFor);
     visitStrongValue(visitor, thread.awaitedFuture);
     visitStrongValue(visitor, thread.pendingConstructorInstance);
+    if (thread.waitSuspension.active) {
+        visitStrongValue(visitor, thread.waitSuspension.storedValue);
+    }
 
     // Trace native continuation state (e.g., filter/map/reduce iteration)
     if (thread.nativeContinuation.active) {

@@ -15,8 +15,8 @@ func clone(v):
   """return a deep copy of v"""
 
 @builtin
-proc wait(duration=nil, s:int=0, ms:int=0, us:int=0, ns:int=0, for=nil):
-  """wait for duration (time quantity or numeric seconds) or legacy s/ms/us/ns fields, then optionally await a future or list of futures afterwards; do not mix duration with s/ms/us/ns"""
+func wait(duration=nil, s:int=0, ms:int=0, us:int=0, ns:int=0, for=nil):
+  """wait for duration (time quantity or numeric seconds) or legacy s/ms/us/ns fields, then optionally await a single future; returns nil for pure delay, the resolved value for a future, or the supplied nonfuture value after any delay; do not mix duration with s/ms/us/ns"""
 
 @builtin
 func is_ready(future) -> bool:

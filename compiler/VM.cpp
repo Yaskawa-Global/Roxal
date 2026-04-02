@@ -792,6 +792,14 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 }
                 return true;
             }
+            auto& waitSusp = thread->waitSuspension;
+            if (waitSusp.active && !waitSusp.resultSlot) {
+                size_t calleePos = stackDepthBefore - callSpec.argCount - 1;
+                waitSusp.resultSlot = &*(thread->stack.begin() + calleePos);
+                waitSusp.stackBase = thread->stack.begin() + calleePos + 1;
+                waitSusp.frameDepth = thread->frames.size();
+                return true;
+            }
             // If resolveReturn is set and result is a future, trigger non-blocking
             // resolution — the dispatch loop will await and replace the result.
             if (isFuture(result) && declFunction.isNonNil() && isFunction(declFunction)) {
@@ -858,6 +866,14 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                     cont.resultSlot = &*(thread->stack.begin() + calleePos);
                     cont.stackBase = thread->stack.begin() + calleePos + 1;
                 }
+                return true;
+            }
+            auto& waitSusp = thread->waitSuspension;
+            if (waitSusp.active && !waitSusp.resultSlot) {
+                size_t calleePos = stackDepthBefore - callSpec.argCount - 1;
+                waitSusp.resultSlot = &*(thread->stack.begin() + calleePos);
+                waitSusp.stackBase = thread->stack.begin() + calleePos + 1;
+                waitSusp.frameDepth = thread->frames.size();
                 return true;
             }
             *(thread->stackTop - callSpec.argCount - 1) = result;
@@ -4451,6 +4467,32 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
     auto errorReturn = std::make_pair(ExecutionStatus::RuntimeError,Value::nilVal());
 
+    auto finalizeWaitSuspension = [&]() {
+        if (!(thread->waitSuspension.active &&
+              thread->waitSuspension.resultSlot &&
+              !thread->threadSleep &&
+              thread->awaitedFuture.isNil() &&
+              thread->pendingWaitFor.isNil() &&
+              thread->frames.size() == thread->waitSuspension.frameDepth))
+            return;
+
+        auto& waitSusp = thread->waitSuspension;
+        Value finalResult = Value::nilVal();
+        switch (waitSusp.resultMode) {
+            case Thread::WaitSuspension::ResultMode::Nil:
+                break;
+            case Thread::WaitSuspension::ResultMode::StoredValue:
+            case Thread::WaitSuspension::ResultMode::PendingWaitTarget:
+                finalResult = waitSusp.storedValue;
+                break;
+        }
+
+        *(waitSusp.resultSlot) = finalResult;
+        size_t itemsToPop = static_cast<size_t>(thread->stackTop - waitSusp.stackBase);
+        popN(itemsToPop);
+        waitSusp.clear();
+    };
+
 
     //
     //  main dispatch loop
@@ -4529,6 +4571,14 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 goto postInstructionDispatch; // still pending
             thread->awaitedFuture = Value::nilVal(); // resolved, clear and proceed
         }
+
+        // A suspended wait(for=...) is not complete until pendingWaitFor has
+        // been revisited and cleared. Do not execute another opcode while that
+        // handoff is still in flight, even if awaitedFuture just became ready.
+        if (thread->pendingWaitFor.isNonNil())
+            goto postInstructionDispatch;
+
+        finalizeWaitSuspension();
 
 
         #if defined(DEBUG_TRACE_EXECUTION)
@@ -7429,7 +7479,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
         if (thread->pendingWaitFor.isNonNil()) {
             Value& waitTarget = thread->pendingWaitFor;
-            if (isList(waitTarget)) {
+            /*if (isList(waitTarget)) {
                 ObjList* list = asList(waitTarget);
                 bool allResolved = true;
                 for (auto& element : list->getElements()) {
@@ -7444,17 +7494,41 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 if (allResolved)
                     thread->pendingWaitFor = Value::nilVal();
-            } else if (isFuture(waitTarget)) {
+            } else*/
+            if (isFuture(waitTarget)) {
                 auto s = tryResolveValue(waitTarget);
-                if (s == FutureStatus::Error)
+                if (s == FutureStatus::Error) {
+                    thread->waitSuspension.clear();
                     return errorReturn;
+                }
                 if (s == FutureStatus::Pending) {
                     thread->awaitedFuture = waitTarget;
                 } else {
+                    if (thread->waitSuspension.active &&
+                        thread->waitSuspension.resultMode ==
+                            Thread::WaitSuspension::ResultMode::PendingWaitTarget) {
+                        thread->waitSuspension.storedValue = waitTarget;
+                    }
                     thread->pendingWaitFor = Value::nilVal();
                 }
             } else {
                 thread->pendingWaitFor = Value::nilVal();
+            }
+        }
+
+        // pendingWaitFor may have promoted a future into awaitedFuture above,
+        // so gate on it again before executing another opcode.
+        if (thread->awaitedFuture.isNonNil()) {
+            ObjFuture* fut = asFuture(thread->awaitedFuture);
+            if (fut->future.wait_for(std::chrono::microseconds(0)) == std::future_status::ready) {
+                thread->awaitedFuture = Value::nilVal();
+            } else {
+                if (hasDeadline) {
+                    if (thread->execute_depth > 0) thread->execute_depth--;
+                    return yieldReturn;
+                }
+                std::unique_lock<std::mutex> lk(thread->sleepMutex);
+                thread->sleepCondVar.wait_for(lk, std::chrono::milliseconds(1));
             }
         }
 
@@ -7463,6 +7537,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
         if (!processContinuationDispatch())
             return errorReturn;
+
+        finalizeWaitSuspension();
 
         // Refresh frame pointer after processing events/continuations, as
         // frames may have been pushed onto or popped from the frame stack
@@ -8451,6 +8527,16 @@ void VM::raiseException(Value exc)
 
     if (thread && thread->nativeCallDepth > 0)
         thread->exceptionJumpPending.store(true, std::memory_order_relaxed);
+
+    // A suspended sys.wait() must be abandoned once control transfers via an
+    // exception handler; its saved stack cleanup info is no longer valid after
+    // the exception rewind.
+    if (thread && thread->waitSuspension.active) {
+        thread->waitSuspension.clear();
+        thread->pendingWaitFor = Value::nilVal();
+        thread->awaitedFuture = Value::nilVal();
+        thread->threadSleep = false;
+    }
 
     while (true) {
         if (thread->frames.empty()) {

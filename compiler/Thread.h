@@ -300,6 +300,30 @@ public:
     // any requested sleep completes.
     Value pendingWaitFor { Value::nilVal() };
 
+    struct WaitSuspension {
+        enum class ResultMode {
+            Nil,
+            StoredValue,
+            PendingWaitTarget
+        };
+
+        bool active { false };
+        ResultMode resultMode { ResultMode::Nil };
+        Value storedValue { Value::nilVal() };
+        Value* resultSlot { nullptr };
+        ValueStack::iterator stackBase;
+        size_t frameDepth { 0 };
+
+        void clear() {
+            active = false;
+            resultMode = ResultMode::Nil;
+            storedValue = Value::nilVal();
+            resultSlot = nullptr;
+            frameDepth = 0;
+        }
+    };
+    WaitSuspension waitSuspension;
+
     // Tracks the future this thread is waiting on inside execute().
     // When set, the dispatch loop gates on this (like threadSleep) and
     // sleeps on the condvar until the future resolves or 1ms elapses.
