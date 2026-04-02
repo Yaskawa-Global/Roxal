@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.12)
 
 project(roxal VERSION 0.8.1 LANGUAGES CXX C)
 set(ROXAL_PRERELEASE "pre" CACHE STRING "SemVer prerelease label (e.g. alpha.1, rc.1)")
@@ -28,7 +28,6 @@ option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
 option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
 option(ROXAL_ENABLE_GRPC "Enable gRPC/protobuf import support" OFF)
 option(ROXAL_ENABLE_DDS "Enable CycloneDDS support" OFF)
-set(ROXAL_DDS_ROOT "${CMAKE_SOURCE_DIR}/deps/cyclonedds" CACHE PATH "CycloneDDS install prefix when ROXAL_ENABLE_DDS is ON")
 option(ROXAL_ENABLE_REGEX "Enable regex module (requires libpcre2)" OFF)
 option(ROXAL_ENABLE_SOCKET "Enable socket module (POSIX sockets)" ON)
 option(ROXAL_COMPUTE_SERVER "Enable compute server (roxal --server) and 'at' remote actor support" OFF)
@@ -36,7 +35,6 @@ if(ROXAL_COMPUTE_SERVER)
     set(ROXAL_ENABLE_SOCKET ON CACHE BOOL "Enabled implicitly by ROXAL_COMPUTE_SERVER" FORCE)
 endif()
 option(ROXAL_ENABLE_ONNX "Enable ONNX Runtime backend for tensor type" OFF)
-set(ROXAL_ONNX_ROOT "${CMAKE_SOURCE_DIR}/deps/onnxruntime" CACHE PATH "ONNX Runtime install prefix")
 option(ROXAL_ENABLE_AI_NN "Enable ai.nn neural network inference module (requires ONNX Runtime)" OFF)
 if(ROXAL_ENABLE_AI_NN)
     set(ROXAL_ENABLE_ONNX ON CACHE BOOL "Enabled implicitly by ROXAL_ENABLE_AI_NN" FORCE)
@@ -82,51 +80,92 @@ find_package(PkgConfig REQUIRED)
 
 
 #
-# ANTLR4
+# From-source dependencies (see install-deps.sh)
 #
-# Build the runtime from source (version must match the antlr4 tool):
-#   git clone --depth 1 --branch 4.13.1 https://github.com/antlr/antlr4.git /tmp/antlr4
-#   cmake -B /tmp/antlr4/build -S /tmp/antlr4/runtime/Cpp \
-#     -DCMAKE_INSTALL_PREFIX=$(pwd)/deps/antlr4 -DCMAKE_BUILD_TYPE=Release -DANTLR_BUILD_CPP_TESTS=OFF
-#   cmake --build /tmp/antlr4/build -j$(nproc) && cmake --install /tmp/antlr4/build
-#
-# Install the matching tool via: pip install antlr4-tools
-#   (the tool downloads the correct jar when invoked with -v 4.13.1)
-#
-set(ROXAL_ANTLR4_ROOT "${CMAKE_SOURCE_DIR}/deps/antlr4" CACHE PATH "ANTLR4 C++ runtime install prefix")
-list(APPEND CMAKE_PREFIX_PATH "${ROXAL_ANTLR4_ROOT}")
+set(ROXAL_DEPS_DIR "${CMAKE_SOURCE_DIR}/deps")
+
+# Eigen — check: explicit override, then deps/eigen
+if(NOT DEFINED Eigen3_ROOT)
+  if(EXISTS "${ROXAL_DEPS_DIR}/eigen/share/eigen3/cmake/Eigen3Config.cmake")
+    set(Eigen3_ROOT "${ROXAL_DEPS_DIR}/eigen")
+  endif()
+endif()
+if(Eigen3_ROOT)
+  set(Eigen3_ROOT "${Eigen3_ROOT}" CACHE PATH "Eigen install prefix")
+  list(APPEND CMAKE_PREFIX_PATH "${Eigen3_ROOT}")
+  message(STATUS "Eigen: using ${Eigen3_ROOT}")
+else()
+  message(STATUS "Eigen: using system")
+endif()
+find_package(Eigen3 REQUIRED)
+get_target_property(EIGEN3_INCLUDE_DIR Eigen3::Eigen INTERFACE_INCLUDE_DIRECTORIES)
+include_directories(${EIGEN3_INCLUDE_DIR})
+
+# ANTLR4 C++ runtime — check: explicit override, then deps/antlr4
+if(NOT DEFINED antlr4_ROOT)
+  if(EXISTS "${ROXAL_DEPS_DIR}/antlr4/lib")
+    set(antlr4_ROOT "${ROXAL_DEPS_DIR}/antlr4")
+  endif()
+endif()
+if(antlr4_ROOT)
+  set(antlr4_ROOT "${antlr4_ROOT}" CACHE PATH "ANTLR4 C++ runtime install prefix")
+  message(STATUS "ANTLR4: using ${antlr4_ROOT}")
+else()
+  message(STATUS "ANTLR4: using system")
+endif()
+list(APPEND CMAKE_PREFIX_PATH "${antlr4_ROOT}")
 # Try CONFIG mode first (available via vcpkg); fall back to manual detection
 # for from-source installs which don't ship cmake config files.
 find_package(antlr4-runtime 4.13.1 CONFIG QUIET)
 if(NOT antlr4-runtime_FOUND)
-    find_library(ANTLR4_LIB antlr4-runtime PATHS ${ROXAL_ANTLR4_ROOT}/lib NO_DEFAULT_PATH)
-    find_path(ANTLR4_INCLUDE antlr4-runtime.h PATHS ${ROXAL_ANTLR4_ROOT}/include/antlr4-runtime NO_DEFAULT_PATH)
+    find_library(ANTLR4_LIB antlr4-runtime PATHS ${antlr4_ROOT}/lib NO_DEFAULT_PATH)
+    find_path(ANTLR4_INCLUDE antlr4-runtime.h PATHS ${antlr4_ROOT}/include/antlr4-runtime NO_DEFAULT_PATH)
     if(NOT ANTLR4_LIB OR NOT ANTLR4_INCLUDE)
-        message(FATAL_ERROR "ANTLR4 runtime not found at ${ROXAL_ANTLR4_ROOT}. "
-            "Build from source or set -DROXAL_ANTLR4_ROOT=<prefix>.")
+        message(FATAL_ERROR "ANTLR4 runtime not found at ${antlr4_ROOT}. "
+            "Build from source or set -Dantlr4_ROOT=<prefix>.")
     endif()
-    message(STATUS "Found ANTLR4 runtime: ${ANTLR4_LIB}")
 endif()
 
-#
-# Eigen 5.0.1 (header-only, built from source into deps/eigen — see install-deps.sh)
-set(ROXAL_EIGEN_ROOT "${CMAKE_SOURCE_DIR}/deps/eigen" CACHE PATH "Eigen install prefix")
-list(APPEND CMAKE_PREFIX_PATH "${ROXAL_EIGEN_ROOT}")
-find_package( Eigen3 REQUIRED )
-get_target_property(EIGEN3_INCLUDE_DIR Eigen3::Eigen INTERFACE_INCLUDE_DIRECTORIES)
-include_directories(${EIGEN3_INCLUDE_DIR})
-
+# gRPC — check: explicit override, then deps/grpc, then system packages
 if(ROXAL_ENABLE_GRPC)
-    find_package(Protobuf REQUIRED) # use module or config
-    pkg_check_modules(GRPC REQUIRED grpc++)
-    include_directories(${GRPC_INCLUDE_DIRS})
+    if(NOT DEFINED gRPC_ROOT)
+      if(EXISTS "${ROXAL_DEPS_DIR}/grpc/lib/cmake/grpc")
+        set(gRPC_ROOT "${ROXAL_DEPS_DIR}/grpc")
+      endif()
+    endif()
+    if(gRPC_ROOT)
+      set(gRPC_ROOT "${gRPC_ROOT}" CACHE PATH "gRPC/Protobuf install prefix")
+      list(APPEND CMAKE_PREFIX_PATH "${gRPC_ROOT}")
+      message(STATUS "gRPC: using ${gRPC_ROOT}")
+
+      find_package(Protobuf CONFIG REQUIRED)
+      find_package(gRPC CONFIG REQUIRED)
+
+      set(ROXAL_GRPC_FROM_SOURCE TRUE)
+    else()
+      message(STATUS "gRPC: using system packages")
+
+      find_package(Protobuf REQUIRED)
+      pkg_check_modules(GRPC REQUIRED grpc++)
+      include_directories(${GRPC_INCLUDE_DIRS})
+
+      set(ROXAL_GRPC_FROM_SOURCE FALSE)
+    endif()
 endif()
 
-# CycloneDDS
-#   see install-deps.sh for a source build into deps/cyclonedds
+# CycloneDDS — check: explicit override, then deps/cyclonedds
 if(ROXAL_ENABLE_DDS)
-    if(ROXAL_DDS_ROOT)
-        list(APPEND CMAKE_PREFIX_PATH "${ROXAL_DDS_ROOT}")
+    if(NOT DEFINED CycloneDDS_ROOT)
+      if(EXISTS "${ROXAL_DEPS_DIR}/cyclonedds/lib/cmake/CycloneDDS")
+        set(CycloneDDS_ROOT "${ROXAL_DEPS_DIR}/cyclonedds")
+      endif()
+    endif()
+    if(CycloneDDS_ROOT)
+      set(CycloneDDS_ROOT "${CycloneDDS_ROOT}" CACHE PATH "CycloneDDS install prefix")
+      list(APPEND CMAKE_PREFIX_PATH "${CycloneDDS_ROOT}")
+      message(STATUS "CycloneDDS: using ${CycloneDDS_ROOT}")
+    else()
+      message(STATUS "CycloneDDS: using system")
     endif()
     find_package(CycloneDDS CONFIG REQUIRED)
     include_directories(${CycloneDDS_INCLUDE_DIRS})
@@ -138,34 +177,41 @@ if(ROXAL_ENABLE_REGEX)
     include_directories(${PCRE2_INCLUDE_DIRS})
 endif()
 
-# ONNX Runtime
-#   Download a release from https://github.com/microsoft/onnxruntime/releases
-#   and extract into deps/onnxruntime (see install-deps.sh).
+# ONNX Runtime — check: explicit override, then deps/onnxruntime (see install-deps.sh)
 if(ROXAL_ENABLE_ONNX)
+    if(NOT DEFINED OnnxRuntime_ROOT)
+      if(EXISTS "${ROXAL_DEPS_DIR}/onnxruntime/lib")
+        set(OnnxRuntime_ROOT "${ROXAL_DEPS_DIR}/onnxruntime")
+      endif()
+    endif()
+    if(OnnxRuntime_ROOT)
+      set(OnnxRuntime_ROOT "${OnnxRuntime_ROOT}" CACHE PATH "ONNX Runtime install prefix")
+      message(STATUS "ONNX Runtime: using ${OnnxRuntime_ROOT}")
+    else()
+      message(STATUS "ONNX Runtime: using system")
+    endif()
+
     find_path(ONNXRUNTIME_INCLUDE_DIR
         NAMES onnxruntime_cxx_api.h
-        PATHS ${ROXAL_ONNX_ROOT}/include
-              ${ROXAL_ONNX_ROOT}/include/onnxruntime/core/session
+        PATHS ${OnnxRuntime_ROOT}/include
+              ${OnnxRuntime_ROOT}/include/onnxruntime/core/session
               /usr/local/include/onnxruntime
               /usr/include/onnxruntime
         NO_DEFAULT_PATH
     )
     find_library(ONNXRUNTIME_LIBRARY
         NAMES onnxruntime
-        PATHS ${ROXAL_ONNX_ROOT}/lib
+        PATHS ${OnnxRuntime_ROOT}/lib
               /usr/local/lib
               /usr/lib
         NO_DEFAULT_PATH
     )
     if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
         message(FATAL_ERROR
-            "ONNX Runtime not found. Set ROXAL_ONNX_ROOT to the install prefix "
-            "(default: deps/onnxruntime) or disable with -DROXAL_ENABLE_ONNX=OFF")
+            "ONNX Runtime not found. Set -DOnnxRuntime_ROOT=<prefix> "
+            "or disable with -DROXAL_ENABLE_ONNX=OFF")
     endif()
-    message(STATUS "Found ONNX Runtime: ${ONNXRUNTIME_LIBRARY}")
-    message(STATUS "ONNX Runtime include: ${ONNXRUNTIME_INCLUDE_DIR}")
     include_directories(${ONNXRUNTIME_INCLUDE_DIR})
-
 endif()
 
 # PNG / JPEG for media module
@@ -293,7 +339,7 @@ include_directories(${CMAKE_HOME_DIRECTORY})
 
 # Add the include directories
 include_directories(
-    ${ROXAL_ANTLR4_ROOT}/include/antlr4-runtime
+    ${antlr4_ROOT}/include/antlr4-runtime
     compiler/cpp-gen
     ${CMAKE_SOURCE_DIR}/compiler
     ${CMAKE_SOURCE_DIR}/compiler/grpc
@@ -301,7 +347,7 @@ include_directories(
 )
 
 link_directories(
-    ${ROXAL_ANTLR4_ROOT}/lib
+    ${antlr4_ROOT}/lib
     ${CMAKE_SOURCE_DIR}/cpp-gen
     ${LIBFFI_LIBRARY_DIRS}
     ${PCRE2_LIBRARY_DIRS}
@@ -330,7 +376,8 @@ target_link_libraries(roxalcore
         dl
         ${LIBFFI_LIBRARIES}
         $<$<BOOL:${ROXAL_ENABLE_GRPC}>:protobuf::libprotobuf>
-        $<$<BOOL:${ROXAL_ENABLE_GRPC}>:${GRPC_LIBRARIES}>
+        $<$<AND:$<BOOL:${ROXAL_ENABLE_GRPC}>,$<BOOL:${ROXAL_GRPC_FROM_SOURCE}>>:gRPC::grpc++>
+        $<$<AND:$<BOOL:${ROXAL_ENABLE_GRPC}>,$<NOT:$<BOOL:${ROXAL_GRPC_FROM_SOURCE}>>>:${GRPC_LIBRARIES}>
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::ddsc>
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::libidlc>
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::idl>
