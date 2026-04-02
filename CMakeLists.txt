@@ -458,6 +458,17 @@ if(ROXAL_BUILD_MAIN)
 endif()
 
 
+# Export enabled features so embedding projects (e.g. FC) can conditionally
+# link the transitive dependencies that libroxal.a requires.
+file(WRITE "${CMAKE_BINARY_DIR}/roxal_features.cmake"
+    "set(ROXAL_HAS_GRPC ${ROXAL_ENABLE_GRPC})\n"
+    "set(ROXAL_HAS_DDS ${ROXAL_ENABLE_DDS})\n"
+    "set(ROXAL_HAS_ONNX ${ROXAL_ENABLE_ONNX})\n"
+    "set(ROXAL_HAS_REGEX ${ROXAL_ENABLE_REGEX})\n"
+    "set(ROXAL_HAS_MEDIA ${ROXAL_ENABLE_MEDIA})\n"
+    "set(ROXAL_HAS_COMPUTE_SERVER ${ROXAL_COMPUTE_SERVER})\n"
+)
+
 add_custom_target(check
     COMMAND ${CMAKE_COMMAND} --build . --target all
     COMMAND ${CMAKE_CTEST_COMMAND}
