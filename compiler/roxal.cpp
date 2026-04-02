@@ -40,6 +40,9 @@
 #endif
 
 #include <Eigen/Version>
+#ifdef ROXAL_ENABLE_DDS
+#include <dds/version.h>
+#endif
 
 
 extern "C" {
@@ -766,6 +769,18 @@ int main(int argc, const char* argv[])
                   << ". Check CMAKE_PREFIX_PATH and ROXAL_EIGEN_ROOT." << std::endl;
         return 1;
     }
+
+#ifdef ROXAL_ENABLE_DDS
+    // Verify CycloneDDS version to catch accidental use of a different install
+    // than the one currently validated for Roxal.
+    if (DDS_VERSION_MAJOR != 11 || DDS_VERSION_MINOR != 0 || DDS_VERSION_PATCH != 0) {
+        std::cerr << "Fatal: expected CycloneDDS 11.0.0 but found "
+                  << DDS_VERSION_MAJOR << "." << DDS_VERSION_MINOR << "." << DDS_VERSION_PATCH
+                  << ". Check CMAKE_PREFIX_PATH, ROXAL_DDS_ROOT, and CycloneDDS_DIR."
+                  << std::endl;
+        return 1;
+    }
+#endif
 
     const size_t stackSizeLimit = vmap["stack-size"].as<size_t>();
     if (stackSizeLimit == 0) {

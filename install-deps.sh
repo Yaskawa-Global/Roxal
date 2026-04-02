@@ -48,7 +48,16 @@ rm -rf /tmp/eigen-build
 #     apt-get install -y protobuf-compiler libprotobuf-dev libprotoc-dev libgrpc++-dev
 #   gRPC/protobuf (Python, needed by runtests.py test server):
 #     python3 -m pip install --user --break-system-packages grpcio grpcio-tools
-#   CycloneDDS:    build from source (see packaging/Dockerfile for reference)
+#
+#   CycloneDDS:    build from source into deps/cyclonedds
+#     mkdir -p deps
+#     git clone --depth 1 --branch 11.0.0 https://github.com/eclipse-cyclonedds/cyclonedds.git /tmp/cdds-build
+#     cmake -B /tmp/cdds-build/build -S /tmp/cdds-build \
+#       -DCMAKE_INSTALL_PREFIX="$(pwd)/deps/cyclonedds" \
+#       -DCMAKE_BUILD_TYPE=Release
+#     cmake --build /tmp/cdds-build/build -j$(nproc)
+#     cmake --install /tmp/cdds-build/build --prefix "$(pwd)/deps/cyclonedds"
+#     rm -rf /tmp/cdds-build
 #
 # ONNX Runtime (for ai.nn ML inference module):
 #

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(roxal VERSION 0.8.0 LANGUAGES CXX C)
+project(roxal VERSION 0.8.1 LANGUAGES CXX C)
 set(ROXAL_PRERELEASE "pre" CACHE STRING "SemVer prerelease label (e.g. alpha.1, rc.1)")
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -26,7 +26,7 @@ option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
 option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
 option(ROXAL_ENABLE_GRPC "Enable gRPC/protobuf import support" OFF)
 option(ROXAL_ENABLE_DDS "Enable CycloneDDS support" OFF)
-set(ROXAL_DDS_ROOT "/usr/share" CACHE PATH "CycloneDDS install prefix when ROXAL_ENABLE_DDS is ON")
+set(ROXAL_DDS_ROOT "${CMAKE_SOURCE_DIR}/deps/cyclonedds" CACHE PATH "CycloneDDS install prefix when ROXAL_ENABLE_DDS is ON")
 option(ROXAL_ENABLE_REGEX "Enable regex module (requires libpcre2)" OFF)
 option(ROXAL_ENABLE_SOCKET "Enable socket module (POSIX sockets)" ON)
 option(ROXAL_COMPUTE_SERVER "Enable compute server (roxal --server) and 'at' remote actor support" OFF)
@@ -121,9 +121,7 @@ if(ROXAL_ENABLE_GRPC)
 endif()
 
 # CycloneDDS
-#   git clone https://github.com/eclipse-cyclonedds/cyclonedds and configure with
-#   cmake -Bbuild -D CMAKE_INSTALL_PREFIX=/usr/share
-#   then build and make install
+#   see install-deps.sh for a source build into deps/cyclonedds
 if(ROXAL_ENABLE_DDS)
     if(ROXAL_DDS_ROOT)
         list(APPEND CMAKE_PREFIX_PATH "${ROXAL_DDS_ROOT}")

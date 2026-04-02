@@ -32,7 +32,7 @@ When creating new language features, create some tests to add to the tests/ and 
 If a test is expected to generate a runtime error, there is a mechanism to provide an .err file containing a regex to match the expected stderr output.
 Some tests also use the --ast option to compare the AST dump with the .out file.
 
-To see the compiled bytecods, use the --dis option (with --recompile).
+To see the compiled bytecodes, use the --dis option (with --recompile).
 
 Don't forget that .rox script require a newline before EOF and the output of print() is a newline, so most .out files end in a newline.
 

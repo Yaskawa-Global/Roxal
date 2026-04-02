@@ -63,7 +63,7 @@ sudo apt remove roxal
 The package version is assembled from several sources:
 
 ```
-0.8.0~pre+20260218.g66e36b0~noble
+0.8.1~pre+20260402.g66e36b0~noble
 ^     ^   ^        ^        ^
 |     |   |        |        └── Ubuntu codename (--distro)
 |     |   |        └── short git hash
