@@ -296,6 +296,23 @@ public:
     // reachable while dispatched directly on this thread.
     Value currentBoundCall { Value::nilVal() };
 
+#ifdef ROXAL_COMPUTE_SERVER
+    struct RemoteComputeCallState {
+        bool active { false };
+        std::vector<Value> args;
+        Value completionFuture { Value::nilVal() };
+        Value result { Value::nilVal() };
+
+        void clear() {
+            active = false;
+            args.clear();
+            completionFuture = Value::nilVal();
+            result = Value::nilVal();
+        }
+    };
+    RemoteComputeCallState remoteComputeCallState;
+#endif
+
     // Future supplied to sys.wait(for=...) that should be awaited after
     // any requested sleep completes.
     Value pendingWaitFor { Value::nilVal() };

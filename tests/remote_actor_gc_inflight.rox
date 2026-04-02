@@ -1,0 +1,11 @@
+type SlowWorker actor:
+  func slow(value: int, delay_ms: int = 120) -> int:
+    wait(ms=delay_ms)
+    return value
+
+var worker = SlowWorker() at "__COMPUTE_TEST_ADDR__"
+
+var result = worker.slow(42)
+gc()
+wait(for=result)
+print(result)

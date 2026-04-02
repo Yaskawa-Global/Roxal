@@ -224,6 +224,9 @@ media_tests = ['media_read_write', 'media_manipulate', 'media_convert']
 compute_server_tests = [
     'remote_actor_basic',
     'remote_actor_backchannel',
+    'remote_actor_gc_backchannel',
+    'remote_actor_gc_idle_retention',
+    'remote_actor_gc_inflight',
     'remote_actor_imported_type',
     'remote_actor_forwarded_type',
     'remote_actor_signal_err',

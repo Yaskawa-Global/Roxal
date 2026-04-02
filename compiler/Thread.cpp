@@ -331,37 +331,42 @@ void Thread::act(Value actorInstance)
 #ifdef ROXAL_COMPUTE_SERVER
                     VM::ScopedPrintTarget printTargetScope(callInfo.printTarget);
                     if (actorInst->isRemote) {
+                        remoteComputeCallState.active = true;
+                        remoteComputeCallState.args.assign(callInfo.args.rbegin(), callInfo.args.rend());
+                        remoteComputeCallState.completionFuture = callInfo.returnFuture;
+                        remoteComputeCallState.result = Value::nilVal();
                         try {
                             auto conn = actorInst->remoteConn.lock();
                             if (!conn)
                                 throw std::runtime_error("remote actor connection has been released");
 
-                            std::vector<Value> remoteArgs(callInfo.args.rbegin(), callInfo.args.rend());
                             Value ret = conn->callRemoteMethod(
                                 actorInst->remoteActorId,
                                 remoteMethodNameForCall(callInfo),
-                                remoteArgs,
+                                remoteComputeCallState.args,
                                 callInfo.callSpec);
+                            remoteComputeCallState.result = ret;
 
                             if (callInfo.returnPromise != nullptr) {
-                                callInfo.returnPromise->set_value(ret);
-                                if (!callInfo.returnFuture.isNil()) {
-                                    asFuture(callInfo.returnFuture)->wakeWaiters();
-                                    callInfo.returnFuture = Value::nilVal();
+                                callInfo.returnPromise->set_value(remoteComputeCallState.result);
+                                if (!remoteComputeCallState.completionFuture.isNil()) {
+                                    asFuture(remoteComputeCallState.completionFuture)->wakeWaiters();
+                                    remoteComputeCallState.completionFuture = Value::nilVal();
                                 }
                             }
                         } catch (const std::exception& e) {
                             std::cerr << "Remote actor call failed: " << e.what() << std::endl;
                             if (callInfo.returnPromise != nullptr) {
                                 callInfo.returnPromise->set_value(Value::nilVal());
-                                if (!callInfo.returnFuture.isNil()) {
-                                    asFuture(callInfo.returnFuture)->wakeWaiters();
-                                    callInfo.returnFuture = Value::nilVal();
+                                if (!remoteComputeCallState.completionFuture.isNil()) {
+                                    asFuture(remoteComputeCallState.completionFuture)->wakeWaiters();
+                                    remoteComputeCallState.completionFuture = Value::nilVal();
                                 }
                             }
                             quit = true;
                         }
 
+                        remoteComputeCallState.clear();
                         this->stack[0] = this->actorInstance;
                         currentActorCall = Value::nilVal();
                         if (quit)

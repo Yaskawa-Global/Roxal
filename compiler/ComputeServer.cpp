@@ -3,6 +3,7 @@
 #ifdef ROXAL_COMPUTE_SERVER
 
 #include "ComputeConnection.h"
+#include "SimpleMarkSweepGC.h"
 #include "VM.h"
 #include "Thread.h"
 
@@ -12,7 +13,9 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstring>
+#include <future>
 #include <functional>
 #include <iostream>
 #include <sstream>
@@ -24,6 +27,103 @@
 namespace roxal {
 
 namespace {
+
+void visitComputeValue(ValueVisitor& visitor, const Value& value)
+{
+    if (value.isObj() && !value.isWeak()) {
+        visitor.visit(value);
+    }
+}
+
+void visitComputeValues(ValueVisitor& visitor, const std::vector<Value>& values)
+{
+    for (const auto& value : values) {
+        visitComputeValue(visitor, value);
+    }
+}
+
+template <typename FutureT>
+Value waitForComputeFuture(FutureT& future, SimpleMarkSweepGC::ExternalParticipant& participant)
+{
+    using namespace std::chrono_literals;
+
+    while (future.wait_for(5ms) != std::future_status::ready) {
+        participant.pollSafepointIfRequested();
+    }
+
+    participant.pollSafepointIfRequested();
+    return future.get();
+}
+
+class ServerActorRegistry final : public SimpleMarkSweepGC::ExternalRootProvider {
+public:
+    explicit ServerActorRegistry(SimpleMarkSweepGC& gc)
+        : gc_(gc)
+    {
+        gc_.registerExternalRootProvider(this);
+    }
+
+    ~ServerActorRegistry() override
+    {
+        gc_.unregisterExternalRootProvider(this);
+    }
+
+    void visitRoots(ValueVisitor& visitor) override
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& entry : actors_) {
+            visitComputeValue(visitor, entry.second);
+        }
+    }
+
+    int64_t addActor(const Value& actorVal)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        int64_t actorId = nextActorId_++;
+        actors_[actorId] = actorVal;
+        return actorId;
+    }
+
+    Value lookupActor(int64_t actorId)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = actors_.find(actorId);
+        if (it == actors_.end()) {
+            return Value::nilVal();
+        }
+        return it->second;
+    }
+
+    Value takeActor(int64_t actorId)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = actors_.find(actorId);
+        if (it == actors_.end()) {
+            return Value::nilVal();
+        }
+        Value actorVal = it->second;
+        actors_.erase(it);
+        return actorVal;
+    }
+
+    std::vector<Value> drainActors()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<Value> drained;
+        drained.reserve(actors_.size());
+        for (auto& entry : actors_) {
+            drained.push_back(entry.second);
+        }
+        actors_.clear();
+        return drained;
+    }
+
+private:
+    SimpleMarkSweepGC& gc_;
+    std::mutex mutex_;
+    std::unordered_map<int64_t, Value> actors_;
+    int64_t nextActorId_ { 1 };
+};
 
 bool readExactFd(int fd, void* buf, std::size_t n)
 {
@@ -499,13 +599,17 @@ void ComputeServer::listen(std::uint16_t port)
 void ComputeServer::handleClient(int clientFd)
 {
     ptr<ComputeConnection> conn = make_ptr<ComputeConnection>(clientFd, false);
-    std::unordered_map<int64_t, Value> actors;
-    int64_t nextActorId = 1;
+    ServerActorRegistry actors(SimpleMarkSweepGC::instance());
 
     auto cleanupActors = [&]() {
-        for (auto& [id, actorVal] : actors)
+        SimpleMarkSweepGC::ExternalParticipant gcParticipant(SimpleMarkSweepGC::instance());
+        std::vector<Value> actorValues = actors.drainActors();
+        gcParticipant.setRootVisitor([&](ValueVisitor& visitor) {
+            visitComputeValues(visitor, actorValues);
+        });
+        for (auto& actorVal : actorValues) {
             shutdownActorForServer(actorVal);
-        actors.clear();
+        }
     };
 
     ComputeMsg msgType {};
@@ -541,10 +645,25 @@ void ComputeServer::handleClient(int clientFd)
         try {
             switch (msgType) {
             case ComputeMsg::SpawnActor: {
+                SimpleMarkSweepGC::ExternalParticipant gcParticipant(SimpleMarkSweepGC::instance());
                 uint64_t callId = readU64(p, end);
                 std::uint32_t dependencyCount = readU32(p, end);
                 ptr<SerializationContext> ctx = make_ptr<NetworkSerializationContext>(conn.get());
                 std::vector<RemoteSpawnDependency> dependencies;
+                Value actorOwnerModule = Value::nilVal();
+                Value actorTypeVal = Value::nilVal();
+                Value actorVal = Value::nilVal();
+                std::vector<Value> initArgs;
+                gcParticipant.setRootVisitor([&](ValueVisitor& visitor) {
+                    for (const auto& dependency : dependencies) {
+                        visitComputeValue(visitor, dependency.deserializedValue);
+                        visitComputeValue(visitor, dependency.canonicalValue);
+                    }
+                    visitComputeValue(visitor, actorOwnerModule);
+                    visitComputeValue(visitor, actorTypeVal);
+                    visitComputeValue(visitor, actorVal);
+                    visitComputeValues(visitor, initArgs);
+                });
                 dependencies.reserve(dependencyCount);
 
                 RemoteTypeCanonicalizer canonicalizer;
@@ -592,7 +711,7 @@ void ComputeServer::handleClient(int clientFd)
                 icu::UnicodeString actorSymbolName = icu::UnicodeString::fromUTF8(readString(p, end));
                 std::uint64_t actorFingerprint = readU64(p, end);
 
-                Value actorOwnerModule = findOrCreateCanonicalModule(actorModuleFullName, actorModuleName);
+                actorOwnerModule = findOrCreateCanonicalModule(actorModuleFullName, actorModuleName);
                 ObjModuleType* ownerModule = asModuleType(actorOwnerModule);
                 auto existingActor = ownerModule->vars.load(actorSymbolName);
                 bool reuseExistingActor = existingActor.has_value() && isObjectType(existingActor.value())
@@ -605,7 +724,7 @@ void ComputeServer::handleClient(int clientFd)
                     throw std::runtime_error("truncated actor type payload");
 
                 const std::uint8_t* typeEnd = p + typeLen;
-                Value actorTypeVal = deserializeValueForServer(p, typeEnd, ctx).strongRef();
+                actorTypeVal = deserializeValueForServer(p, typeEnd, ctx).strongRef();
                 p = typeEnd;
 
                 if (!isObjectType(actorTypeVal) || !asObjectType(actorTypeVal)->isActor)
@@ -629,12 +748,13 @@ void ComputeServer::handleClient(int clientFd)
                     ownerModule->vars.store(actorSymbolName, actorTypeVal.strongRef(), true);
                 }
                 CallSpec initCallSpec = decodeCallSpecBytes(p, end);
-                auto initArgs = deserializeValueListForServer(p, end, ctx);
+                initArgs = deserializeValueListForServer(p, end, ctx);
+                gcParticipant.pollSafepointIfRequested();
                 VM::ScopedPrintTarget printTargetScope(
                         ActorInstance::MethodCallInfo::PrintTarget::remoteCall(conn, callId));
-                Value actorVal = spawnActorForServer(actorTypeVal, initArgs, initCallSpec);
-                int64_t actorId = nextActorId++;
-                actors[actorId] = actorVal;
+                actorVal = spawnActorForServer(actorTypeVal, initArgs, initCallSpec);
+                int64_t actorId = actors.addActor(actorVal);
+                gcParticipant.pollSafepointIfRequested();
 
                 std::vector<std::uint8_t> response;
                 writeU64(response, callId);
@@ -645,12 +765,13 @@ void ComputeServer::handleClient(int clientFd)
             }
 
             case ComputeMsg::CallMethod: {
+                SimpleMarkSweepGC::ExternalParticipant gcParticipant(SimpleMarkSweepGC::instance());
                 uint64_t callId = readU64(p, end);
                 int64_t actorId = static_cast<int64_t>(readU64(p, end));
                 std::string methodUtf8 = readString(p, end);
                 icu::UnicodeString methodName = icu::UnicodeString::fromUTF8(methodUtf8);
-                auto actorIt = actors.find(actorId);
-                if (actorIt == actors.end()) {
+                Value actorVal = actors.lookupActor(actorId);
+                if (actorVal.isNil()) {
                     sendCallError(conn, callId, "unknown actor id " + std::to_string(actorId));
                     break;
                 }
@@ -658,23 +779,48 @@ void ComputeServer::handleClient(int clientFd)
                 ptr<SerializationContext> ctx = make_ptr<NetworkSerializationContext>(conn.get());
                 CallSpec callSpec = decodeCallSpecBytes(p, end);
                 std::vector<Value> args = deserializeValueListForServer(p, end, ctx);
-                Value actorVal = actorIt->second;
                 Value callee = bindActorMethodForServer(actorVal, methodName);
+                gcParticipant.setRootVisitor([&](ValueVisitor& visitor) {
+                    visitComputeValue(visitor, actorVal);
+                    visitComputeValue(visitor, callee);
+                    visitComputeValues(visitor, args);
+                });
 
                 // Dispatch in a background thread so the read loop remains free to
                 // process CALL_RESULT frames from the client (back-channel replies).
-                std::thread([conn, callId, actorVal, callee, args = std::move(args), callSpec]() mutable {
+                std::promise<void> workerReadyPromise;
+                auto workerReady = workerReadyPromise.get_future();
+                std::thread([conn,
+                             callId,
+                             actorVal,
+                             callee,
+                             args = std::move(args),
+                             callSpec,
+                             workerReadyPromise = std::move(workerReadyPromise)]() mutable {
+                    SimpleMarkSweepGC::ExternalParticipant workerParticipant(SimpleMarkSweepGC::instance());
+                    Value completion = Value::nilVal();
+                    Value result = Value::nilVal();
+                    workerParticipant.setRootVisitor([&](ValueVisitor& visitor) {
+                        visitComputeValue(visitor, actorVal);
+                        visitComputeValue(visitor, callee);
+                        visitComputeValues(visitor, args);
+                        visitComputeValue(visitor, completion);
+                        visitComputeValue(visitor, result);
+                    });
+                    workerReadyPromise.set_value();
                     try {
                         Value* argTop = args.empty() ? nullptr : args.data() + args.size();
                         VM::ScopedPrintTarget printTargetScope(
                                 ActorInstance::MethodCallInfo::PrintTarget::remoteCall(conn, callId));
-                        Value completion = asActorInstance(actorVal)->queueCall(
+                        workerParticipant.pollSafepointIfRequested();
+                        completion = asActorInstance(actorVal)->queueCall(
                                 callee, callSpec, argTop, /*forceCompletionFuture=*/true);
+                        workerParticipant.pollSafepointIfRequested();
                         if (completion.isNil()) {
                             sendCallError(conn, callId, "actor is not alive");
                             return;
                         }
-                        Value result = asFuture(completion)->future.get();
+                        result = waitForComputeFuture(asFuture(completion)->future, workerParticipant);
                         ptr<SerializationContext> rctx = make_ptr<NetworkSerializationContext>(conn.get());
                         auto resultBytes = serializeValueForServer(result, rctx);
                         std::vector<std::uint8_t> response;
@@ -687,10 +833,16 @@ void ComputeServer::handleClient(int clientFd)
                         sendCallError(conn, callId, e.what());
                     }
                 }).detach();
+                using namespace std::chrono_literals;
+                while (workerReady.wait_for(5ms) != std::future_status::ready) {
+                    gcParticipant.pollSafepointIfRequested();
+                }
+                gcParticipant.pollSafepointIfRequested();
                 break;
             }
 
             case ComputeMsg::CallResult: {
+                SimpleMarkSweepGC::ExternalParticipant gcParticipant(SimpleMarkSweepGC::instance());
                 // Client is responding to a back-channel CALL_METHOD we sent earlier.
                 uint64_t callId = readU64(p, end);
                 uint8_t  ok     = readU8(p, end);
@@ -700,8 +852,14 @@ void ComputeServer::handleClient(int clientFd)
                         throw std::runtime_error("truncated back-channel CALL_RESULT value");
                     const std::uint8_t* vend = p + len;
                     ptr<SerializationContext> ctx = make_ptr<NetworkSerializationContext>(conn.get());
-                    Value result = deserializeValueForServer(p, vend, ctx);
+                    Value result = Value::nilVal();
+                    gcParticipant.setRootVisitor([&](ValueVisitor& visitor) {
+                        visitComputeValue(visitor, result);
+                    });
+                    result = deserializeValueForServer(p, vend, ctx);
+                    gcParticipant.pollSafepointIfRequested();
                     conn->resolveCall(callId, std::move(result));
+                    gcParticipant.pollSafepointIfRequested();
                 } else {
                     std::string err = readString(p, end);
                     conn->rejectCall(callId, "back-channel call failed: " + err);
@@ -718,11 +876,14 @@ void ComputeServer::handleClient(int clientFd)
             }
 
             case ComputeMsg::ActorDropped: {
+                SimpleMarkSweepGC::ExternalParticipant gcParticipant(SimpleMarkSweepGC::instance());
                 int64_t actorId = static_cast<int64_t>(readU64(p, end));
-                auto it = actors.find(actorId);
-                if (it != actors.end()) {
-                    shutdownActorForServer(it->second);
-                    actors.erase(it);
+                Value actorVal = actors.takeActor(actorId);
+                gcParticipant.setRootVisitor([&](ValueVisitor& visitor) {
+                    visitComputeValue(visitor, actorVal);
+                });
+                if (actorVal.isNonNil()) {
+                    shutdownActorForServer(actorVal);
                 }
                 break;
             }

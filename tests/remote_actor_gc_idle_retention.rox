@@ -1,0 +1,23 @@
+type Counter actor:
+  private var count: int = 0
+
+  func ping() -> int:
+    this.count = this.count + 1
+    return this.count
+
+type GcRunner actor:
+  proc run():
+    gc()
+
+var counter = Counter() at "__COMPUTE_TEST_ADDR__"
+var gcRunner = GcRunner() at "__COMPUTE_TEST_ADDR__"
+
+var first = counter.ping()
+wait(for=first)
+print(first)
+
+wait(for=gcRunner.run())
+
+var second = counter.ping()
+wait(for=second)
+print(second)

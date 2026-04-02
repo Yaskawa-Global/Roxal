@@ -2,10 +2,12 @@
 
 #ifdef ROXAL_COMPUTE_SERVER
 
+#include <compiler/SimpleMarkSweepGC.h>
 #include <compiler/VM.h>
 #include <compiler/Thread.h>
 
 #include <arpa/inet.h>
+#include <chrono>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -23,6 +25,54 @@ namespace roxal {
 // ---------------------------------------------------------------------------
 // helpers: parse "host[:port]"
 // ---------------------------------------------------------------------------
+namespace {
+
+void visitComputeValue(ValueVisitor& visitor, const Value& value)
+{
+    if (value.isObj() && !value.isWeak()) {
+        visitor.visit(value);
+    }
+}
+
+void visitComputeValues(ValueVisitor& visitor, const std::vector<Value>& values)
+{
+    for (const auto& value : values) {
+        visitComputeValue(visitor, value);
+    }
+}
+
+void pollVmThreadSafepointIfRequested()
+{
+    if (VM::thread && VM::thread->execute_depth > 0) {
+        SimpleMarkSweepGC& gc = SimpleMarkSweepGC::instance();
+        if (gc.isCollectionRequested()) {
+            gc.safepoint(*VM::thread);
+        }
+    }
+}
+
+template <typename FutureT>
+Value waitForComputeFuture(FutureT& future,
+                           SimpleMarkSweepGC::ExternalParticipant* participant = nullptr)
+{
+    using namespace std::chrono_literals;
+
+    while (future.wait_for(5ms) != std::future_status::ready) {
+        if (participant != nullptr) {
+            participant->pollSafepointIfRequested();
+        }
+        pollVmThreadSafepointIfRequested();
+    }
+
+    if (participant != nullptr) {
+        participant->pollSafepointIfRequested();
+    }
+    pollVmThreadSafepointIfRequested();
+    return future.get();
+}
+
+} // namespace
+
 static std::pair<std::string,uint16_t> parseHostPort(const std::string& hostPort)
 {
     auto colon = hostPort.rfind(':');
@@ -474,7 +524,7 @@ ptr<ComputeConnection> ComputeConnection::connect(const std::string& hostPort)
             std::lock_guard<std::mutex> lk(conn->pendingMu_);
             fut = conn->pendingCalls_[0].promise->get_future();
         }
-        handshakeResult = fut.get(); // blocks; reader loop resolves/rejects this
+        handshakeResult = waitForComputeFuture(fut);
     }
     // If the reader rejected it (HELLO_ERR) it will have thrown via rejectCall.
     // (The exception propagates through the future.)
@@ -727,7 +777,7 @@ Value ComputeConnection::spawnActor(const Value& actorTypeVal,
     sendFrame(ComputeMsg::SpawnActor, payload);
 
     // Block until SPAWN_RESULT
-    Value result = future.get(); // may throw if server returned an error
+    Value result = waitForComputeFuture(future); // may throw if server returned an error
     if (!result.isInt())
         throw std::runtime_error("SPAWN_ACTOR returned unexpected payload");
 
@@ -776,7 +826,7 @@ Value ComputeConnection::callRemoteMethod(int64_t remoteActorId,
 
     sendFrame(ComputeMsg::CallMethod, payload);
 
-    return future.get(); // blocks; may throw on remote error
+    return waitForComputeFuture(future); // blocks; may throw on remote error
 }
 
 // ---------------------------------------------------------------------------
@@ -856,8 +906,34 @@ void ComputeConnection::handleIncomingCall(uint64_t callId, int64_t actorId,
     // Bind the method closure on the local actor, queue the call, and send
     // CALL_RESULT back — same pattern as ComputeServer::handleClient CallMethod.
     // Run in a detached thread so the reader loop is not blocked.
+    SimpleMarkSweepGC::ExternalParticipant handoffParticipant(SimpleMarkSweepGC::instance());
+    handoffParticipant.setRootVisitor([&](ValueVisitor& visitor) {
+        visitComputeValue(visitor, actorVal);
+        visitComputeValues(visitor, args);
+    });
     auto connWeak = weak_from_this();
-    std::thread([connWeak, callId, actorVal, method, args, callSpec]() mutable {
+    std::promise<void> workerReadyPromise;
+    auto workerReady = workerReadyPromise.get_future();
+    std::thread([connWeak,
+                 callId,
+                 actorVal,
+                 method,
+                 args,
+                 callSpec,
+                 workerReadyPromise = std::move(workerReadyPromise)]() mutable {
+        SimpleMarkSweepGC::ExternalParticipant gcParticipant(SimpleMarkSweepGC::instance());
+        Value callee = Value::nilVal();
+        Value completion = Value::nilVal();
+        Value result = Value::nilVal();
+        gcParticipant.setRootVisitor([&](ValueVisitor& visitor) {
+            visitComputeValue(visitor, actorVal);
+            visitComputeValue(visitor, callee);
+            visitComputeValues(visitor, args);
+            visitComputeValue(visitor, completion);
+            visitComputeValue(visitor, result);
+        });
+        workerReadyPromise.set_value();
+
         auto sendResult = [&](bool ok, const Value& resultOrNil, const std::string& errMsg) {
             auto conn = connWeak.lock();
             if (!conn) return;
@@ -898,7 +974,6 @@ void ComputeConnection::handleIncomingCall(uint64_t callId, int64_t actorId,
             ObjClosure* closure = asClosure(closureVal);
             ObjFunction* function = asFunction(closure->function);
 
-            Value callee;
             if (function->builtinInfo) {
                 const auto& info = *function->builtinInfo;
                 callee = Value::boundNativeVal(actorVal, info.function,
@@ -915,19 +990,27 @@ void ComputeConnection::handleIncomingCall(uint64_t callId, int64_t actorId,
                                          : const_cast<Value*>(args.data() + args.size());
             VM::ScopedPrintTarget printTargetScope(
                     ActorInstance::MethodCallInfo::PrintTarget::remoteCall(conn, callId));
-            Value completion = asActorInstance(actorVal)->queueCall(callee, callSpec, argTop,
-                                                                     /*forceCompletionFuture=*/true);
+            gcParticipant.pollSafepointIfRequested();
+            completion = asActorInstance(actorVal)->queueCall(callee, callSpec, argTop,
+                                                              /*forceCompletionFuture=*/true);
+            gcParticipant.pollSafepointIfRequested();
             if (completion.isNil()) {
                 sendResult(false, Value::nilVal(), "back-channel: actor is not alive");
                 return;
             }
 
-            Value result = asFuture(completion)->future.get();
+            result = waitForComputeFuture(asFuture(completion)->future, &gcParticipant);
             sendResult(true, result, "");
         } catch (const std::exception& e) {
             sendResult(false, Value::nilVal(), e.what());
         }
     }).detach();
+
+    using namespace std::chrono_literals;
+    while (workerReady.wait_for(5ms) != std::future_status::ready) {
+        handoffParticipant.pollSafepointIfRequested();
+    }
+    handoffParticipant.pollSafepointIfRequested();
 }
 
 // ---------------------------------------------------------------------------
@@ -989,6 +1072,7 @@ void ComputeConnection::readerLoop()
             }
 
             case ComputeMsg::CallResult: {
+                SimpleMarkSweepGC::ExternalParticipant gcParticipant(SimpleMarkSweepGC::instance());
                 uint64_t callId = readU64(p, end);
                 uint8_t  ok     = readU8(p, end);
                 if (ok) {
@@ -997,8 +1081,14 @@ void ComputeConnection::readerLoop()
                         throw std::runtime_error("truncated CALL_RESULT value");
                     const std::uint8_t* vend = p + len;
                     ptr<SerializationContext> ctx = make_ptr<NetworkSerializationContext>(this);
-                    Value result = deserializeValue(p, vend, ctx);
+                    Value result = Value::nilVal();
+                    gcParticipant.setRootVisitor([&](ValueVisitor& visitor) {
+                        visitComputeValue(visitor, result);
+                    });
+                    result = deserializeValue(p, vend, ctx);
+                    gcParticipant.pollSafepointIfRequested();
                     resolveCall(callId, std::move(result));
+                    gcParticipant.pollSafepointIfRequested();
                 } else {
                     std::string err = readString(p, end);
                     rejectCall(callId, "remote call failed: " + err);
@@ -1015,6 +1105,7 @@ void ComputeConnection::readerLoop()
             }
 
             case ComputeMsg::CallMethod: {
+                SimpleMarkSweepGC::ExternalParticipant gcParticipant(SimpleMarkSweepGC::instance());
                 // Back-channel: remote actor is calling a method on one of our local actors
                 uint64_t callId  = readU64(p, end);
                 int64_t actorId = static_cast<int64_t>(readU64(p, end));
@@ -1031,9 +1122,14 @@ void ComputeConnection::readerLoop()
 
                 // Deserialize args
                 ptr<SerializationContext> ctx = make_ptr<NetworkSerializationContext>(this);
-                auto args = deserializeValueList(p, end, ctx);
-
+                std::vector<Value> args;
+                gcParticipant.setRootVisitor([&](ValueVisitor& visitor) {
+                    visitComputeValues(visitor, args);
+                });
+                args = deserializeValueList(p, end, ctx);
+                gcParticipant.pollSafepointIfRequested();
                 handleIncomingCall(callId, actorId, method, args, cs);
+                gcParticipant.pollSafepointIfRequested();
                 break;
             }
 
