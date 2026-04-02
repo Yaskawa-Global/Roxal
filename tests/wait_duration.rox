@@ -1,0 +1,30 @@
+type Worker actor:
+
+  func slow(value:int, delay_ms:int=100) -> int:
+    wait(ms=delay_ms)
+    return value
+
+w = Worker()
+
+f1 = w.slow(7, 120)
+wait(250ms, for=f1)
+print(is_ready(f1))
+print(int(f1))
+
+f2 = w.slow(8, 120)
+wait(0.05)
+print(is_ready(f2))
+wait(0.2)
+print(is_ready(f2))
+print(int(f2))
+
+f3 = w.slow(9, 120)
+wait(duration=50ms)
+print(is_ready(f3))
+wait(duration=250ms, for=f3)
+print(is_ready(f3))
+print(int(f3))
+
+start = Time.steady_now()
+wait(1s)
+print(Time.steady_now().since(start).total_millis() >= 900.0)

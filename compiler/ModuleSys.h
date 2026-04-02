@@ -92,8 +92,10 @@ private:
     Value moduleTypeValue; // ObjModuleType*
     Value timeTypeValue;
     Value timeSpanTypeValue;
+    Value quantityTypeValue;
     ObjObjectType* timeTypeObj { nullptr };
     ObjObjectType* timeSpanTypeObj { nullptr };
+    ObjObjectType* quantityTypeObj { nullptr };
 
     Value typeMethodDecl(const Value& typeValue, const std::string& methodName) const;
 };

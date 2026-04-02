@@ -15,8 +15,8 @@ func clone(v):
   """return a deep copy of v"""
 
 @builtin
-proc wait(s:int=0, ms:int=0, us:int=0, ns:int=0, for=nil):
-  """wait until the specified amount of time elapses and optionally await a future or list of futures afterwards"""
+proc wait(duration=nil, s:int=0, ms:int=0, us:int=0, ns:int=0, for=nil):
+  """wait for duration (time quantity or numeric seconds) or legacy s/ms/us/ns fields, then optionally await a future or list of futures afterwards; do not mix duration with s/ms/us/ns"""
 
 @builtin
 func is_ready(future) -> bool:
@@ -296,9 +296,9 @@ type quantity object:
     _v = v
     _d = d
 
-  // --- helpers (private by convention) ---
+  // --- helpers ---
 
-  func _dim_label() -> string:
+  private func dim_label() -> string:
     // Build a human-readable dimension label like "L¹T⁻²M¹"
     var parts = ['L', 'T', 'M', 'A']
     var result = ''
@@ -314,21 +314,21 @@ type quantity object:
       return 'dimensionless'
     return result
 
-  func _check_same_dim(other :quantity, op :string):
+  private func check_same_dim(other :quantity, op :string):
     if _d != other._d:
-      raise 'dimension mismatch in ' + op + ': ' + _dim_label() + ' vs ' + other._dim_label()
+      raise 'dimension mismatch in ' + op + ': ' + dim_label() + ' vs ' + other.dim_label()
 
-  func _is_dimensionless() -> bool:
+  private func is_dimensionless() -> bool:
     return _d[0]==0 and _d[1]==0 and _d[2]==0 and _d[3]==0
 
   // --- arithmetic operators ---
 
   func operator+(other :quantity) -> quantity:
-    _check_same_dim(other, '+')
+    check_same_dim(other, '+')
     return quantity(v=_v + other._v, d=_d)
 
   func operator-(other :quantity) -> quantity:
-    _check_same_dim(other, '-')
+    check_same_dim(other, '-')
     return quantity(v=_v - other._v, d=_d)
 
   func operator-() -> quantity:
@@ -364,7 +364,7 @@ type quantity object:
 
   func operator==(other) -> bool:
     if other is quantity:
-      _check_same_dim(other, '==')
+      check_same_dim(other, '==')
       return _v == other._v
     // allow comparison with 0 for any dimension
     if real(other) == 0.0:
@@ -373,33 +373,33 @@ type quantity object:
 
   func operator!=(other) -> bool:
     if other is quantity:
-      _check_same_dim(other, '!=')
+      check_same_dim(other, '!=')
       return _v != other._v
     if real(other) == 0.0:
       return _v != 0.0
     return true
 
   func operator<(other :quantity) -> bool:
-    _check_same_dim(other, '<')
+    check_same_dim(other, '<')
     return _v < other._v
 
   func operator>(other :quantity) -> bool:
-    _check_same_dim(other, '>')
+    check_same_dim(other, '>')
     return _v > other._v
 
   func operator<=(other :quantity) -> bool:
-    _check_same_dim(other, '<=')
+    check_same_dim(other, '<=')
     return _v <= other._v
 
   func operator>=(other :quantity) -> bool:
-    _check_same_dim(other, '>=')
+    check_same_dim(other, '>=')
     return _v >= other._v
 
   // --- conversion operators ---
 
   func operator real() -> real:
-    if not _is_dimensionless():
-      raise 'cannot convert quantity with dimensions ' + _dim_label() + ' to real; only dimensionless quantities can be converted'
+    if not is_dimensionless():
+      raise 'cannot convert quantity with dimensions ' + dim_label() + ' to real; only dimensionless quantities can be converted'
     return _v
 
   // --- string display ---
@@ -457,113 +457,113 @@ type quantity object:
     if _d == [0,-1,0,1]:
       return string(_v * 180.0 / 3.14159265358979323846) + 'deg/s'
     // Dimensionless [0,0,0,0]
-    if _is_dimensionless():
+    if is_dimensionless():
       return string(_v)
     // Unknown dimension — show raw
-    return string(_v) + ' [' + _dim_label() + ']'
+    return string(_v) + '{' + dim_label() + '}'
 
   // --- property getters for value extraction ---
   // Length getters
   var meters :real:
     get:
       if _d != [1,0,0,0]:
-        raise 'cannot get meters from quantity with dimensions ' + _dim_label()
+        raise 'cannot get meters from quantity with dimensions ' + dim_label()
       return _v
   var millimeters :real:
     get:
       if _d != [1,0,0,0]:
-        raise 'cannot get millimeters from quantity with dimensions ' + _dim_label()
+        raise 'cannot get millimeters from quantity with dimensions ' + dim_label()
       return _v * 1000.0
   var centimeters :real:
     get:
       if _d != [1,0,0,0]:
-        raise 'cannot get centimeters from quantity with dimensions ' + _dim_label()
+        raise 'cannot get centimeters from quantity with dimensions ' + dim_label()
       return _v * 100.0
   var micrometers :real:
     get:
       if _d != [1,0,0,0]:
-        raise 'cannot get micrometers from quantity with dimensions ' + _dim_label()
+        raise 'cannot get micrometers from quantity with dimensions ' + dim_label()
       return _v * 1000000.0
   var inches :real:
     get:
       if _d != [1,0,0,0]:
-        raise 'cannot get inches from quantity with dimensions ' + _dim_label()
+        raise 'cannot get inches from quantity with dimensions ' + dim_label()
       return _v / 0.0254
   var feet :real:
     get:
       if _d != [1,0,0,0]:
-        raise 'cannot get feet from quantity with dimensions ' + _dim_label()
+        raise 'cannot get feet from quantity with dimensions ' + dim_label()
       return _v / 0.3048
   var mils :real:
     get:
       if _d != [1,0,0,0]:
-        raise 'cannot get mils from quantity with dimensions ' + _dim_label()
+        raise 'cannot get mils from quantity with dimensions ' + dim_label()
       return _v / 0.0000254
 
   // Mass getters
   var kilograms :real:
     get:
       if _d != [0,0,1,0]:
-        raise 'cannot get kilograms from quantity with dimensions ' + _dim_label()
+        raise 'cannot get kilograms from quantity with dimensions ' + dim_label()
       return _v
   var grams :real:
     get:
       if _d != [0,0,1,0]:
-        raise 'cannot get grams from quantity with dimensions ' + _dim_label()
+        raise 'cannot get grams from quantity with dimensions ' + dim_label()
       return _v * 1000.0
   var milligrams :real:
     get:
       if _d != [0,0,1,0]:
-        raise 'cannot get milligrams from quantity with dimensions ' + _dim_label()
+        raise 'cannot get milligrams from quantity with dimensions ' + dim_label()
       return _v * 1000000.0
   var pounds :real:
     get:
       if _d != [0,0,1,0]:
-        raise 'cannot get pounds from quantity with dimensions ' + _dim_label()
+        raise 'cannot get pounds from quantity with dimensions ' + dim_label()
       return _v / 0.45359237
   var ounces :real:
     get:
       if _d != [0,0,1,0]:
-        raise 'cannot get ounces from quantity with dimensions ' + _dim_label()
+        raise 'cannot get ounces from quantity with dimensions ' + dim_label()
       return _v / 0.0283495231
 
   // Time getters
   var seconds :real:
     get:
       if _d != [0,1,0,0]:
-        raise 'cannot get seconds from quantity with dimensions ' + _dim_label()
+        raise 'cannot get seconds from quantity with dimensions ' + dim_label()
       return _v
   var milliseconds :real:
     get:
       if _d != [0,1,0,0]:
-        raise 'cannot get milliseconds from quantity with dimensions ' + _dim_label()
+        raise 'cannot get milliseconds from quantity with dimensions ' + dim_label()
       return _v * 1000.0
   var microseconds :real:
     get:
       if _d != [0,1,0,0]:
-        raise 'cannot get microseconds from quantity with dimensions ' + _dim_label()
+        raise 'cannot get microseconds from quantity with dimensions ' + dim_label()
       return _v * 1000000.0
   var minutes :real:
     get:
       if _d != [0,1,0,0]:
-        raise 'cannot get minutes from quantity with dimensions ' + _dim_label()
+        raise 'cannot get minutes from quantity with dimensions ' + dim_label()
       return _v / 60.0
   var hours :real:
     get:
       if _d != [0,1,0,0]:
-        raise 'cannot get hours from quantity with dimensions ' + _dim_label()
+        raise 'cannot get hours from quantity with dimensions ' + dim_label()
       return _v / 3600.0
 
   // Angle getters
   var radians :real:
     get:
       if _d != [0,0,0,1]:
-        raise 'cannot get radians from quantity with dimensions ' + _dim_label()
+        raise 'cannot get radians from quantity with dimensions ' + dim_label()
       return _v
   var degrees :real:
     get:
       if _d != [0,0,0,1]:
-        raise 'cannot get degrees from quantity with dimensions ' + _dim_label()
+        raise 'cannot get degrees from quantity with dimensions ' + dim_label()
       return _v * 180.0 / 3.14159265358979323846
 
 

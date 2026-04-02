@@ -323,6 +323,68 @@ bool readBoolProperty(ObjectInstance* inst, const char* name)
     return v.asBool();
 }
 
+double readNumberProperty(const Value& instanceValue, const char* name)
+{
+    if (!isObjectInstance(instanceValue))
+        throw std::runtime_error(std::string("expected object instance for property '") + name + "'");
+    Value v = asObjectInstance(instanceValue)->getProperty(name);
+    if (!v.isNumber())
+        throw std::runtime_error(std::string("expected numeric property '") + name + "'");
+    return v.isReal() ? v.asReal() : static_cast<double>(v.asInt());
+}
+
+int32_t readListIntElement(const Value& listValue, int index, const char* name)
+{
+    if (!isList(listValue))
+        throw std::runtime_error(std::string("expected list property '") + name + "'");
+    ObjList* list = asList(listValue);
+    if (index < 0 || index >= list->length())
+        throw std::runtime_error(std::string("expected element in list property '") + name + "'");
+    Value v = list->getElement(index);
+    if (!v.isNumber())
+        throw std::runtime_error(std::string("expected numeric element in list property '") + name + "'");
+    return static_cast<int32_t>(v.asInt());
+}
+
+int64_t microsFromSeconds(double seconds, const char* context)
+{
+    if (!std::isfinite(seconds))
+        throw std::invalid_argument(std::string(context) + " must be finite");
+    long double totalMicros = static_cast<long double>(seconds) * static_cast<long double>(MICROS_PER_SECOND);
+    if (totalMicros > static_cast<long double>(std::numeric_limits<int64_t>::max()) ||
+        totalMicros < static_cast<long double>(std::numeric_limits<int64_t>::min())) {
+        throw std::out_of_range(std::string(context) + " overflow");
+    }
+    return static_cast<int64_t>(std::llround(totalMicros));
+}
+
+int64_t quantityTimeMicros(const Value& instanceValue)
+{
+    if (!isObjectInstance(instanceValue))
+        throw std::runtime_error("expected object instance for wait duration");
+    Value dimsValue = asObjectInstance(instanceValue)->getProperty("_d");
+    if (!isList(dimsValue) || asList(dimsValue)->length() != 4)
+        throw std::runtime_error("expected four-element list property '_d'");
+
+    int32_t lenDim = readListIntElement(dimsValue, 0, "_d");
+    int32_t timeDim = readListIntElement(dimsValue, 1, "_d");
+    int32_t massDim = readListIntElement(dimsValue, 2, "_d");
+    int32_t angleDim = readListIntElement(dimsValue, 3, "_d");
+    if (lenDim != 0 || timeDim != 1 || massDim != 0 || angleDim != 0)
+        throw std::invalid_argument("wait duration quantity must have time dimensions");
+
+    return microsFromSeconds(readNumberProperty(instanceValue, "_v"), "wait duration");
+}
+
+int64_t waitFieldMicros(int64_t value, int64_t scale)
+{
+    if (value > 0 && value > std::numeric_limits<int64_t>::max() / scale)
+        throw std::out_of_range("wait duration overflow");
+    if (value < 0 && value < std::numeric_limits<int64_t>::min() / scale)
+        throw std::out_of_range("wait duration overflow");
+    return value * scale;
+}
+
 int64_t timeTotalMicros(ObjectInstance* inst)
 {
     int64_t seconds = readIntProperty(inst, "_seconds");
@@ -514,15 +576,18 @@ void ModuleSys::registerBuiltins(VM& vm)
             ptr<type::Type> t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
             t->func->isProc = true;
-            std::vector<Value> defaults { Value::intVal(0), Value::intVal(0), Value::intVal(0), Value::intVal(0), Value::nilVal() };
-            auto params = BuiltinModule::constructParams({ {"s", type::BuiltinType::Int},
+            std::vector<Value> defaults { Value::nilVal(), Value::intVal(0), Value::intVal(0), Value::intVal(0), Value::intVal(0), Value::nilVal() };
+            auto params = BuiltinModule::constructParams({ {"duration", std::nullopt},
+                                           {"s", type::BuiltinType::Int},
                                            {"ms", type::BuiltinType::Int},
                                            {"us", type::BuiltinType::Int},
                                            {"ns", type::BuiltinType::Int},
                                            {"for", std::nullopt} },
                                          defaults);
-            if (params.size() == defaults.size())
+            if (params.size() == defaults.size()) {
+                params.front().hasDefault = true;
                 params.back().hasDefault = true;
+            }
             t->func->params.resize(params.size());
             for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
             addSys("wait", [this](VM& vm, ArgsView a){ return wait_builtin(vm,a); }, t, defaults);
@@ -598,6 +663,14 @@ void ModuleSys::registerBuiltins(VM& vm)
     gSysTimeSpanType = timeSpanTypeObj;
     if (!vm.loadGlobal(toUnicodeString("TimeSpan")).has_value())
         vm.globals.storeGlobal(toUnicodeString("TimeSpan"), timeSpanTypeValue);
+
+    auto maybeQuantity = asModuleType(moduleType())->vars.load(toUnicodeString("quantity"));
+    if (!maybeQuantity.has_value() || !isObjectType(maybeQuantity.value()))
+        throw std::runtime_error("sys.quantity type not found");
+    quantityTypeValue = maybeQuantity.value();
+    quantityTypeObj = asObjectType(quantityTypeValue);
+    if (!vm.loadGlobal(toUnicodeString("quantity")).has_value())
+        vm.globals.storeGlobal(toUnicodeString("quantity"), quantityTypeValue);
 
     std::vector<Value> timeInitDefaults{
         Value::stringVal(toUnicodeString("wall")),
@@ -833,16 +906,37 @@ Value ModuleSys::clone_builtin(VM& vm, ArgsView args)
 
 Value ModuleSys::wait_builtin(VM& vm, ArgsView args)
 {
-    if (args.size() != 5)
-        throw std::invalid_argument("wait expects 5 arguments");
+    if (args.size() != 6)
+        throw std::invalid_argument("wait expects 6 arguments");
 
-    int64_t s = toType(ValueType::Int, args[0], false).asInt();
-    int64_t ms = toType(ValueType::Int, args[1], false).asInt();
-    int64_t us = toType(ValueType::Int, args[2], false).asInt();
-    int64_t ns = toType(ValueType::Int, args[3], false).asInt();
-    Value waitTarget = args[4];
+    Value duration = args[0];
+    int64_t s = toType(ValueType::Int, args[1], false).asInt();
+    int64_t ms = toType(ValueType::Int, args[2], false).asInt();
+    int64_t us = toType(ValueType::Int, args[3], false).asInt();
+    int64_t ns = toType(ValueType::Int, args[4], false).asInt();
+    Value waitTarget = args[5];
 
-    int64_t totalus = s*1000000 + ms*1000 + us + ns/1000;
+    bool hasDuration = !duration.isNil();
+    if (hasDuration && (s != 0 || ms != 0 || us != 0 || ns != 0))
+        throw std::invalid_argument("wait duration cannot be combined with s, ms, us, or ns");
+
+    int64_t totalus = 0;
+    if (hasDuration) {
+        if (duration.isNumber()) {
+            double seconds = duration.isReal() ? duration.asReal() : static_cast<double>(duration.asInt());
+            totalus = microsFromSeconds(seconds, "wait duration");
+        } else if (isObjectInstance(duration) && ::instanceOf(asObjectInstance(duration), quantityTypeObj)) {
+            totalus = quantityTimeMicros(duration);
+        } else {
+            throw std::invalid_argument("wait duration must be nil, int, real, or a time quantity");
+        }
+    } else {
+        totalus = addChecked(totalus, waitFieldMicros(s, MICROS_PER_SECOND));
+        totalus = addChecked(totalus, waitFieldMicros(ms, MICROS_PER_MILLISECOND));
+        totalus = addChecked(totalus, us);
+        totalus = addChecked(totalus, ns / 1000);
+    }
+
     auto microSecs { TimeDuration::microSecs(totalus) };
     bool hasDelay = microSecs.microSecs() > 0;
 
@@ -865,7 +959,7 @@ Value ModuleSys::wait_builtin(VM& vm, ArgsView args)
         if (hasDelay) {
             VM::thread->pendingWaitFor = waitTarget;
         } else {
-            args[4].resolve();
+            waitTarget.resolve();
         }
     }
 

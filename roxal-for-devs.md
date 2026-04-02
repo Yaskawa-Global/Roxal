@@ -1660,7 +1660,7 @@ The functions in the sys module are always globally available (- as if `import s
 * `len(v)` - return the length of `v` if applicable
 * `help(fn)` - return signature and doc string for `fn`
 * `clone(v)` - deep copy `v`
-* `wait(s=0, ms=0, us=0, ns=0, for=nil)` - pause execution for the specified time and optionally await a future or list of futures afterwards
+* `wait(duration=nil, s=0, ms=0, us=0, ns=0, for=nil)` - pause execution for the specified time and optionally await a future or list of futures afterwards. `duration` accepts a time quantity such as `250ms` or a numeric seconds value such as `0.5`; do not mix it with `s/ms/us/ns`.
 * `stacktrace()` - return the current call stack as a list
 * `serialize(value, protocol='default')` - serialize `value` using protocol
 * `deserialize(bytes, protocol='default')` - deserialize bytes using protocol
