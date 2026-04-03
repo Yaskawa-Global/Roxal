@@ -609,6 +609,12 @@ void ComputeConnection::resolveCall(uint64_t callId, Value result)
     std::lock_guard<std::mutex> lk(pendingMu_);
     auto it = pendingCalls_.find(callId);
     if (it == pendingCalls_.end()) return;
+    // Write the result into the caller's GC-rooted slot (if provided)
+    // *before* signalling the promise, so the Value is reachable from a
+    // GC root throughout the handoff.  promise::set_value provides the
+    // happens-before guarantee for the consumer thread.
+    if (it->second.gcRootedResultSlot != nullptr)
+        *it->second.gcRootedResultSlot = result;
     it->second.promise->set_value(std::move(result));
     pendingCalls_.erase(it);
 }
@@ -792,7 +798,8 @@ Value ComputeConnection::spawnActor(const Value& actorTypeVal,
 Value ComputeConnection::callRemoteMethod(int64_t remoteActorId,
                                           const icu::UnicodeString& methodName,
                                           const std::vector<Value>& args,
-                                          const CallSpec& callSpec)
+                                          const CallSpec& callSpec,
+                                          Value* gcRootedResultSlot)
 {
     uint64_t callId = nextCallId_.fetch_add(1);
 
@@ -821,6 +828,7 @@ Value ComputeConnection::callRemoteMethod(int64_t remoteActorId,
         ComputeConnection::PendingCall pending {};
         pending.promise = promise;
         pending.printTarget = VM::currentPrintTarget();
+        pending.gcRootedResultSlot = gcRootedResultSlot;
         pendingCalls_[callId] = pending;
     }
 

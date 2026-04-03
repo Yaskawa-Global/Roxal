@@ -78,7 +78,8 @@ public:
     Value callRemoteMethod(int64_t remoteActorId,
                            const icu::UnicodeString& methodName,
                            const std::vector<Value>& args,
-                           const CallSpec& callSpec);
+                           const CallSpec& callSpec,
+                           Value* gcRootedResultSlot = nullptr);
 
     // Register a local actor so that back-channel CALL_METHOD frames can be
     // routed back to it.  Returns the foreign ID assigned to this actor.
@@ -126,6 +127,11 @@ private:
     struct PendingCall {
         ptr<std::promise<Value>> promise;
         PrintTarget printTarget;
+        // Optional GC-rooted slot: when non-null, resolveCall writes the
+        // result here *before* signalling the promise.  This ensures the
+        // Value is reachable from a GC root (the caller's traced state)
+        // throughout the promise→future handoff window.
+        Value* gcRootedResultSlot { nullptr };
     };
 
     int fd_;

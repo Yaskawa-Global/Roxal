@@ -344,7 +344,8 @@ void Thread::act(Value actorInstance)
                                 actorInst->remoteActorId,
                                 remoteMethodNameForCall(callInfo),
                                 remoteComputeCallState.args,
-                                callInfo.callSpec);
+                                callInfo.callSpec,
+                                &remoteComputeCallState.result);
                             remoteComputeCallState.result = ret;
 
                             if (callInfo.returnPromise != nullptr) {
