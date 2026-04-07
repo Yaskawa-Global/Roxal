@@ -271,6 +271,7 @@ set(COMPILER_SOURCES
 
 list(APPEND COMPILER_SOURCES compiler/ModuleMath.cpp)
 list(APPEND COMPILER_SOURCES compiler/ModuleSys.cpp)
+list(APPEND COMPILER_SOURCES compiler/TestRefOrient.cpp)
 list(APPEND COMPILER_SOURCES compiler/LazyModuleRegistry.cpp)
 list(APPEND COMPILER_SOURCES compiler/RuntimeConfig.cpp)
 list(APPEND COMPILER_SOURCES compiler/RTCallbackManager.cpp)

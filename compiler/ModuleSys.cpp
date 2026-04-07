@@ -1226,6 +1226,27 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
 
         std::cout << "Passed " << passes << " failed " << fails << std::endl;
     }
+    else if (suite == "orient") {
+        auto results = testOrientConversions();
+
+        int passes = 0;
+        int fails = 0;
+        for (const auto& result : results) {
+            std::cout << "Test: " << std::get<0>(result) << " ";
+            bool passed = std::get<1>(result);
+            if (passed) {
+                std::cout << "passed";
+                passes++;
+            }
+            else {
+                std::cout << "failed";
+                fails++;
+            }
+            std::cout << " " << std::get<2>(result) << std::endl;
+        }
+
+        std::cout << "Passed " << passes << " failed " << fails << std::endl;
+    }
     else if (suite == "rtcallback_start" || suite == "rtcallback_results") {
         // RT Callback timing test
         // rtcallback_start: Registers a callback that collects timing data

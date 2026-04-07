@@ -606,6 +606,8 @@ bool convertibleTo(ValueType from, ValueType to, bool strict=true);
 std::vector<std::tuple<std::string,bool,std::string>> testConversions();
 // run serialization unit tests used by the runtime '_runtests' builtin
 std::vector<std::tuple<std::string,bool,std::string>> testValueSerialization();
+// run orient conversion tests (TestRefOrient vs Eigen) used by '_runtests'
+std::vector<std::tuple<std::string,bool,std::string>> testOrientConversions();
 
 bool isFalsey(const Value& v);
 bool isTruthy(const Value& v);
