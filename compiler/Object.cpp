@@ -274,6 +274,7 @@ ValueType Obj::valueType() const
         case ObjType::Dict: return ValueType::Dict;
         case ObjType::Vector: return ValueType::Vector;
         case ObjType::Matrix: return ValueType::Matrix;
+        case ObjType::Orient: return ValueType::Orient;
         case ObjType::Tensor: return ValueType::Tensor;
         case ObjType::Signal: return ValueType::Signal;
         case ObjType::File: return ValueType::Object;
@@ -4950,6 +4951,110 @@ std::string roxal::objMatrixToString(const ObjMatrix* om)
 }
 
 
+// ObjOrient
+
+ObjOrient::ObjOrient(const Eigen::Quaterniond& q)
+    : quat_(make_ptr<Eigen::Quaterniond>(q.normalized()))
+{
+    type = ObjType::Orient;
+}
+
+Eigen::Quaterniond& ObjOrient::quatMut()
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    ensureUnique();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return *quat_;
+}
+
+bool ObjOrient::equals(const ObjOrient* other, double eps) const
+{
+    if (!other) return false;
+    // q and -q represent the same rotation
+    double dot = quat().dot(other->quat());
+    return std::abs(std::abs(dot) - 1.0) < eps;
+}
+
+void ObjOrient::set(const ObjOrient* other)
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    quat_ = other->quat_;  // COW: share the data ptr
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjOrient::clone(roxal::ptr<CloneContext> ctx) const
+{
+    (void)ctx; // orient has value semantics, no object references to track
+    auto newo = newOrientObj();
+    newo->quat_ = quat_;  // COW: share the data ptr
+    return newo;
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjOrient::shallowClone() const
+{
+    auto newo = newOrientObj();
+    newo->quat_ = quat_;  // COW: share the data ptr
+    return newo;
+}
+
+void ObjOrient::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
+{
+    (void)ctx;
+    double x = quat().x(), y = quat().y(), z = quat().z(), w = quat().w();
+    out.write(reinterpret_cast<const char*>(&x), 8);
+    out.write(reinterpret_cast<const char*>(&y), 8);
+    out.write(reinterpret_cast<const char*>(&z), 8);
+    out.write(reinterpret_cast<const char*>(&w), 8);
+}
+
+void ObjOrient::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
+{
+    (void)ctx;
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    double x, y, z, w;
+    in.read(reinterpret_cast<char*>(&x), 8);
+    in.read(reinterpret_cast<char*>(&y), 8);
+    in.read(reinterpret_cast<char*>(&z), 8);
+    in.read(reinterpret_cast<char*>(&w), 8);
+    quat_ = make_ptr<Eigen::Quaterniond>(w, x, y, z);  // Eigen ctor order: w,x,y,z
+    quat_->normalize();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+unique_ptr<ObjOrient, UnreleasedObj> roxal::newOrientObj()
+{
+    #ifdef DEBUG_BUILD
+    return newObj<ObjOrient>(__func__, __FILE__, __LINE__);
+    #else
+    return newObj<ObjOrient>();
+    #endif
+}
+
+unique_ptr<ObjOrient, UnreleasedObj> roxal::newOrientObj(const Eigen::Quaterniond& q)
+{
+    #ifdef DEBUG_BUILD
+    return newObj<ObjOrient>(__func__, __FILE__, __LINE__, q);
+    #else
+    return newObj<ObjOrient>(q);
+    #endif
+}
+
+std::string roxal::objOrientToString(const ObjOrient* oo)
+{
+    // Display as RPY in degrees for readability
+    Eigen::Matrix3d m = oo->quat().toRotationMatrix();
+    // eulerAngles(2,1,0) returns [yaw, pitch, roll] for ZYX (extrinsic XYZ = RPY)
+    Eigen::Vector3d ea = m.canonicalEulerAngles(2, 1, 0);
+    double roll  = ea[2] * 180.0 / M_PI;  if (roll == -0.0)  roll = 0.0;
+    double pitch = ea[1] * 180.0 / M_PI; if (pitch == -0.0) pitch = 0.0;
+    double yaw   = ea[0] * 180.0 / M_PI; if (yaw == -0.0)   yaw = 0.0;
+    std::ostringstream os;
+    os << "orient(r=" << roll << "\u00B0, p=" << pitch << "\u00B0, y=" << yaw << "\u00B0)";
+    return os.str();
+}
 
 
 
@@ -4996,6 +5101,9 @@ std::string roxal::objToString(const Value& v)
         }
         case ObjType::Matrix: {
             return objMatrixToString(asMatrix(v));
+        }
+        case ObjType::Orient: {
+            return objOrientToString(asOrient(v));
         }
         case ObjType::Tensor: {
             return objTensorToString(asTensor(v));
@@ -5045,6 +5153,10 @@ std::string roxal::objToString(const Value& v)
             if (ObjObjectType* spanType = sysTimeSpanType()) {
                 if (type == spanType)
                     return sysTimeSpanDefaultString(inst);
+            }
+            if (ObjObjectType* quantityType = sysQuantityType()) {
+                if (type == quantityType)
+                    return sysQuantityDefaultString(inst);
             }
             return std::string("object "+toUTF8StdString(type->name));
         }
@@ -5327,6 +5439,60 @@ Value ObjectInstance::ensurePropertySignal(int32_t nameHash, const std::string& 
     if (it == properties_->end())
         return Value::nilVal();
     return it->second.ensureSignal(signalName);
+}
+
+
+bool roxal::tryExtractQuantity(const Value& v, double& siValue, std::array<int32_t,4>& dims, bool& isDimensioned)
+{
+    // Bare zero (int or real) is compatible with any dimension
+    if (v.isNumber()) {
+        double val = v.isReal() ? v.asReal() : static_cast<double>(v.asInt());
+        if (val == 0.0) {
+            siValue = 0.0;
+            // isDimensioned left unchanged — zero is compatible with any dimension
+            return true;
+        }
+        return false; // non-zero bare number is not a quantity
+    }
+
+    // Check if it's a quantity object (duck-typed: has _v real and _d list of 4 ints)
+    if (!isObjectInstance(v))
+        return false;
+
+    ObjectInstance* inst = asObjectInstance(v);
+    Value vVal = inst->getProperty("_v");
+    Value dVal = inst->getProperty("_d");
+
+    if (vVal.isNil() || dVal.isNil())
+        return false;
+    if (!vVal.isNumber() || !isList(dVal))
+        return false;
+
+    ObjList* dList = asList(dVal);
+    if (dList->length() != 4)
+        return false;
+
+    siValue = vVal.isReal() ? vVal.asReal() : static_cast<double>(vVal.asInt());
+
+    std::array<int32_t,4> thisDims;
+    for (int i = 0; i < 4; ++i) {
+        Value elem = dList->getElement(i);
+        if (!elem.isInt())
+            return false;
+        thisDims[i] = static_cast<int32_t>(elem.asInt());
+    }
+
+    if (!isDimensioned) {
+        // First dimensioned element sets the reference dims
+        dims = thisDims;
+        isDimensioned = true;
+    } else {
+        // Subsequent elements must match
+        if (dims != thisDims)
+            throw std::runtime_error("vector elements have mismatched quantity dimensions");
+    }
+
+    return true;
 }
 
 
@@ -5793,6 +5959,8 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::Dict: return "dict";
     case ObjType::Vector: return "vector";
     case ObjType::Matrix: return "matrix";
+    case ObjType::Orient: return "orient";
+    case ObjType::Tensor: return "tensor";
     case ObjType::Signal: return "signal";
     case ObjType::File: return "file";
     case ObjType::EventType: return "event";

@@ -20,6 +20,7 @@
 #include <unordered_set>
 #include <vector>
 #include <algorithm>
+#include <array>
 
 #include <core/common.h>
 #include <core/AST.h>
@@ -29,6 +30,7 @@
 #include "Value.h"
 #include "SimpleMarkSweepGC.h"
 #include <Eigen/Dense>
+#include <Eigen/Geometry>
 
 #ifdef ROXAL_ENABLE_ONNX
 #include <onnxruntime_cxx_api.h>
@@ -88,6 +90,7 @@ enum class ObjType {
     Type,
     List,
     Dict,
+    Orient,
     Vector,
     Matrix,
     Tensor,
@@ -804,6 +807,48 @@ unique_ptr<ObjMatrix, UnreleasedObj> newMatrixObj(int32_t rows, int32_t cols);
 unique_ptr<ObjMatrix, UnreleasedObj> newMatrixObj(const Eigen::MatrixXd& values);
 
 std::string objMatrixToString(const ObjMatrix* om);
+
+
+//
+// orient (3D orientation, backed by unit quaternion)
+
+struct ObjOrient : public Obj
+{
+    ObjOrient() : quat_(make_ptr<Eigen::Quaterniond>(Eigen::Quaterniond::Identity())) { type = ObjType::Orient; }
+    ObjOrient(const Eigen::Quaterniond& q);
+    virtual ~ObjOrient() {}
+
+    bool equals(const ObjOrient* other, double eps = 1e-12) const;
+
+    void set(const ObjOrient* other);
+
+    // COW accessors
+    const Eigen::Quaterniond& quat() const { return *quat_; }
+    Eigen::Quaterniond& quatMut();  // MVCC-guarded
+
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+    unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
+
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(ValueVisitor& visitor) const override { (void)visitor; }
+
+private:
+    ptr<Eigen::Quaterniond> quat_;
+    void ensureUnique() {
+        if (quat_.use_count() > 1)
+            quat_ = make_ptr<Eigen::Quaterniond>(*quat_);
+    }
+};
+
+inline bool isOrient(const Value& v) { return isObjType(v, ObjType::Orient); }
+inline ObjOrient* asOrient(const Value& v) { return static_cast<ObjOrient*>(v.asObj()); }
+
+unique_ptr<ObjOrient, UnreleasedObj> newOrientObj();
+unique_ptr<ObjOrient, UnreleasedObj> newOrientObj(const Eigen::Quaterniond& q);
+
+std::string objOrientToString(const ObjOrient* oo);
 
 
 //
@@ -1702,6 +1747,14 @@ inline bool isObjectInstance(const Value& v) { return isObjType(v, ObjType::Inst
 inline ObjectInstance* asObjectInstance(const Value& v) { return static_cast<ObjectInstance*>(v.asObj()); }
 
 unique_ptr<ObjectInstance, UnreleasedObj> newObjectInstance(const Value& objectType);
+
+/// Quantity extraction for vector construction and orient.
+/// If v is a sys.quantity object, extracts the SI canonical value into siValue
+/// and the 4-element dimension vector into dims, returning true.
+/// If v is a bare zero (int or real == 0), returns true with siValue=0 and dims left unchanged
+/// (compatible with any dimension).
+/// Otherwise returns false.
+bool tryExtractQuantity(const Value& v, double& siValue, std::array<int32_t,4>& dims, bool& isDimensioned);
 
 
 //

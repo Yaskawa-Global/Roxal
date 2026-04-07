@@ -1,0 +1,71 @@
+func assert(cond, msg=''):
+  if not cond:
+    raise "ASSERT FAILED: " + msg
+
+# Identity
+var o0 = orient()
+print(o0)
+assert(o0 == orient(), "identity equality")
+
+# Construction: r=, p=, y=
+var o1 = orient(r=0deg, p=0deg, y=90deg)
+print(o1)
+
+# Construction: rpy= vector (quantity-aware)
+var o2 = orient(rpy=[0deg 0deg 90deg])
+assert(o1 == o2, "rpy vector matches r/p/y")
+
+# Construction: rpy= list of quantities
+var o3 = orient(rpy=[0deg, 0deg, 90deg])
+assert(o1 == o3, "rpy list matches r/p/y")
+
+# Construction: axis-angle
+var o4 = orient(axis=[0 0 1], angle=90deg)
+assert(o1 == o4, "axis-angle matches")
+
+# Construction: quaternion
+var o5 = orient(quat=[0 0 0.7071067811865476 0.7071067811865476])
+assert(o1 == o5, "quat matches")
+
+# Construction: matrix round-trip
+var m = o1.mat
+var o6 = orient(mat=m)
+assert(o1 == o6, "matrix round-trip")
+
+# Construction: euler
+var o7 = orient(euler=[30deg 45deg 60deg], axes="ZXZ")
+print(o7)
+
+# Properties
+print(o1.quat)
+print(o1.mat)
+print(o1.r)
+print(o1.p)
+print(o1.y)
+print(o1.axis)
+print(o1.angle)
+
+# Operators
+var o180 = o1 * o1
+print(o180)
+var v = o1 * [1 0 0]
+print(v)
+
+# Methods
+var v2 = o1.rotate([1 0 0])
+print(v2)
+var mid = o0.slerp(o1, 0.5)
+print(mid)
+print(o0.angle_to(o1))
+print(o1.euler("ZYX"))
+
+# Inverse
+var inv = o1.inverse
+assert(inv * o1 == orient(), "inverse * self == identity")
+print(inv)
+
+# Negative angle
+var oneg = orient(r=0deg, p=0deg, y=-45deg)
+print(oneg)
+
+print("orient_test passed")

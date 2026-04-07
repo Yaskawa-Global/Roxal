@@ -1,0 +1,23 @@
+import sys
+
+# Vector from quantity literals
+var v1 = [90deg 45deg 0deg]
+print(v1)
+
+# Bare zeros mixed with quantities should work
+var v2 = [0 45deg 0]
+print(v2)
+
+# Negative quantity literals in vectors
+var v3 = [90deg -45deg 0deg]
+print(v3)
+
+# Mixed units of same dimension (both length)
+var v4 = [1m 100cm 1000mm]
+print(v4)
+
+# Vector from list of quantities
+var v5 = vector([90deg, 45deg, -30deg])
+print(v5)
+
+print("vector_quantity_test passed")

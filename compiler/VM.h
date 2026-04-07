@@ -666,6 +666,23 @@ public:
     Value tensor_max_builtin(ArgsView args);
     Value tensor_sum_builtin(ArgsView args);
 
+    // Orient methods
+    Value orient_rotate_builtin(ArgsView args);
+    Value orient_slerp_builtin(ArgsView args);
+    Value orient_angle_to_builtin(ArgsView args);
+    Value orient_euler_builtin(ArgsView args);
+
+    // Orient property getters
+    Value orient_rpy_getter(Value& receiver);
+    Value orient_r_getter(Value& receiver);
+    Value orient_p_getter(Value& receiver);
+    Value orient_y_getter(Value& receiver);
+    Value orient_quat_getter(Value& receiver);
+    Value orient_mat_getter(Value& receiver);
+    Value orient_axis_getter(Value& receiver);
+    Value orient_angle_getter(Value& receiver);
+    Value orient_inverse_getter(Value& receiver);
+
     Value list_append_builtin(ArgsView args);
     Value list_filter_builtin(ArgsView args);
     Value list_map_builtin(ArgsView args);

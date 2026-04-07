@@ -299,16 +299,25 @@ type quantity object:
   // --- helpers ---
 
   private func dim_label() -> string:
-    // Build a human-readable dimension label like "L¹T⁻²M¹"
-    var parts = ['L', 'T', 'M', 'A']
+    // Build a human-readable SI dimension label like "ms⁻²kg"
+    var units = ['m', 's', 'kg', 'rad']
+    var sup_digits = ['\u2070', '\u00B9', '\u00B2', '\u00B3', '\u2074', '\u2075', '\u2076', '\u2077', '\u2078', '\u2079']
     var result = ''
     var i = 0
-    for p in parts:
+    for u in units:
       var e = _d[i]
       if e != 0:
-        result = result + p
+        result = result + u
         if e != 1:
-          result = result + string(e)
+          var es = ''
+          var ae = e
+          if ae < 0:
+            es = '\u207B'
+            ae = -ae
+          if ae >= 10:
+            es = es + sup_digits[ae / 10]
+          es = es + sup_digits[ae % 10]
+          result = result + es
       i = i + 1
     if result == '':
       return 'dimensionless'
@@ -440,13 +449,13 @@ type quantity object:
       return string(_v * 1000000.0) + 'mg'
     // Angle [0,0,0,1]
     if _d == [0,0,0,1]:
-      return string(_v * 180.0 / 3.14159265358979323846) + 'deg'
+      return string(_v * 180.0 / 3.14159265358979323846) + '\u00B0'
     // Velocity [1,-1,0,0]
     if _d == [1,-1,0,0]:
       return string(_v) + 'm/s'
     // Acceleration [1,-2,0,0]
     if _d == [1,-2,0,0]:
-      return string(_v) + 'm/s^2'
+      return string(_v) + 'ms\u207B\u00B2'
     // Force [1,-2,1,0]
     if _d == [1,-2,1,0]:
       return string(_v) + 'N'
@@ -455,12 +464,12 @@ type quantity object:
       return string(_v) + 'Nm'
     // Angular velocity [0,-1,0,1]
     if _d == [0,-1,0,1]:
-      return string(_v * 180.0 / 3.14159265358979323846) + 'deg/s'
+      return string(_v * 180.0 / 3.14159265358979323846) + '\u00B0/s'
     // Dimensionless [0,0,0,0]
     if is_dimensionless():
       return string(_v)
-    // Unknown dimension — show raw
-    return string(_v) + '{' + dim_label() + '}'
+    // Unknown dimension — show as SI units with superscript exponents
+    return string(_v) + dim_label()
 
   // --- property getters for value extraction ---
   // Length getters
@@ -655,6 +664,10 @@ func _suf_rad(v) -> quantity:
 
 @suffix("deg")
 func _suf_deg(v) -> quantity:
+  return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,0,0,1])
+
+@suffix("\u00B0")
+func _suf_degree_symbol(v) -> quantity:
   return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,0,0,1])
 
 // Velocity

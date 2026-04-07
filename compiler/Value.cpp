@@ -330,6 +330,16 @@ Value Value::matrixVal(const Eigen::MatrixXd& values)
     return Value::objVal(newMatrixObj(values));
 }
 
+Value Value::orientVal()
+{
+    return Value::objVal(newOrientObj());
+}
+
+Value Value::orientVal(const Eigen::Quaterniond& q)
+{
+    return Value::objVal(newOrientObj(q));
+}
+
 Value Value::tensorVal()
 {
     return Value::objVal(newTensorObj());
@@ -1020,6 +1030,12 @@ bool Value::equals(const Value& rhs, bool strict) const
             return true;
         return asTensor(*this)->equals(asTensor(rhs));
     }
+    // Orient comparisons
+    else if (isOrient(*this) && isOrient(rhs)) {
+        if (asObj() == rhs.asObj())
+            return true;
+        return asOrient(*this)->equals(asOrient(rhs));
+    }
     else if (isList(*this) && isList(rhs)) {
         return asList(*this)->equals(asList(rhs));
     }
@@ -1529,8 +1545,8 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::Matrix: return Value::matrixVal();
         case ValueType::Signal: throw std::runtime_error("Can't default-construct signal");
         case ValueType::Event: return Value::eventVal();
+        case ValueType::Orient: return Value::orientVal();
         case ValueType::Tensor:
-        case ValueType::Orient:
         case ValueType::Object:
         case ValueType::Actor:
         default:
@@ -1838,11 +1854,30 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
             if (isList(arg)) {
                 auto listVals = asList(arg)->getElements();
                 Eigen::VectorXd vals(listVals.size());
-                for(size_t i=0; i<listVals.size(); ++i) {
-                    if (!listVals[i].isNumber() && !isSignal(listVals[i]))
-                        throw std::runtime_error("vector constructor expects list of numeric elements");
-                    vals[i] = toType(ValueType::Real, listVals[i], false).asReal();
+
+                // Check if any element is a quantity
+                bool hasQuantity = false;
+                for (size_t i = 0; i < listVals.size(); ++i) {
+                    if (isObjectInstance(listVals[i])) { hasQuantity = true; break; }
                 }
+
+                if (hasQuantity) {
+                    std::array<int32_t,4> dims = {0,0,0,0};
+                    bool isDimensioned = false;
+                    for (size_t i = 0; i < listVals.size(); ++i) {
+                        double siVal;
+                        if (!tryExtractQuantity(listVals[i], siVal, dims, isDimensioned))
+                            throw std::runtime_error("vector from list with quantities: all elements must be quantities or zero");
+                        vals[i] = siVal;
+                    }
+                } else {
+                    for (size_t i = 0; i < listVals.size(); ++i) {
+                        if (!listVals[i].isNumber() && !isSignal(listVals[i]))
+                            throw std::runtime_error("vector constructor expects list of numeric elements");
+                        vals[i] = toType(ValueType::Real, listVals[i], false).asReal();
+                    }
+                }
+
                 return Value::vectorVal(vals);
             }
             if (isVector(arg)) {
@@ -2471,6 +2506,23 @@ Value roxal::multiply(Value l, Value r)
             result->setAt(i, scalar * rt->at(i));
         return Value::objVal(std::move(result));
     }
+    // Orient composition: orient * orient
+    if (isOrient(l) && isOrient(r)) {
+        Eigen::Quaterniond result = asOrient(l)->quat() * asOrient(r)->quat();
+        return Value::orientVal(result.normalized());
+    }
+    // Orient * vector: rotate a 3D vector
+    if (isOrient(l) && isVector(r)) {
+        const ObjVector* rv = asVector(r);
+        if (rv->length() != 3)
+            throw std::invalid_argument("orient * vector requires a 3D vector");
+        Eigen::Vector3d v(rv->vec()[0], rv->vec()[1], rv->vec()[2]);
+        Eigen::Vector3d rotated = asOrient(l)->quat() * v;
+        Eigen::VectorXd result(3);
+        result[0] = rotated[0]; result[1] = rotated[1]; result[2] = rotated[2];
+        return Value::vectorVal(result);
+    }
+
     if (isSignal(l) || isSignal(r)) {
         return signalBinaryOp("multiply",
                               [](Value a, Value b) { return multiply(a, b); },
@@ -2617,6 +2669,11 @@ void roxal::copyInto(Value& lhs, const Value& rhs)
             if (!isMatrix(rhs))
                 throw std::invalid_argument("copy into matrix requires matrix RHS");
             asMatrix(lhs)->set(asMatrix(rhs));
+            break;
+        case ObjType::Orient:
+            if (!isOrient(rhs))
+                throw std::invalid_argument("copy into orient requires orient RHS");
+            asOrient(lhs)->set(asOrient(rhs));
             break;
         case ObjType::Signal:
             if (!isSignal(rhs))
@@ -3240,6 +3297,7 @@ void roxal::writeValue(std::ostream& out, const Value& v, roxal::ptr<Serializati
         case ValueType::Dict:
         case ValueType::Vector:
         case ValueType::Matrix:
+        case ValueType::Orient:
         case ValueType::Tensor:
         case ValueType::Signal:
         case ValueType::Object:
@@ -3459,6 +3517,9 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
         }
         case ValueType::Tensor: {
             return readOwnedObject([&](){ return Value::tensorVal(); });
+        }
+        case ValueType::Orient: {
+            return readOwnedObject([&](){ return Value::orientVal(); });
         }
         case ValueType::Signal: {
             return readOwnedObject([&](){ return Value::signalVal(nullptr); });

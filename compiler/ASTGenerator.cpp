@@ -2996,7 +2996,7 @@ std::any ASTGenerator::visitVector(RoxalParser::VectorContext *context)
     ptr<Vector> vec = make_ptr<Vector>();
     setSourceInfo(vec,context);
     for(int i=0; i<context->signed_num().size(); ++i)
-        vec->elements.push_back(as<Num>(visitSigned_num(context->signed_num().at(i))));
+        vec->elements.push_back(as<Expression>(visitSigned_num(context->signed_num().at(i))));
 
     return typeValue(vec);
     visitEnd();
@@ -3022,7 +3022,7 @@ std::any ASTGenerator::visitRow(RoxalParser::RowContext *context)
     ptr<Vector> vec = make_ptr<Vector>();
     setSourceInfo(vec,context);
     for(int i=0; i<context->signed_num().size(); ++i)
-        vec->elements.push_back(as<Num>(visitSigned_num(context->signed_num().at(i))));
+        vec->elements.push_back(as<Expression>(visitSigned_num(context->signed_num().at(i))));
 
     return typeValue(vec);
     visitEnd();
@@ -3032,7 +3032,22 @@ std::any ASTGenerator::visitSigned_num(RoxalParser::Signed_numContext *context)
 {
     visitStart();
 
-    auto num = as<Num>(visitNum(context->num()));
+    auto result = visitNum(context->num());
+    if (isa<SuffixedNum>(result)) {
+        // Suffixed number (e.g. 90deg, 3.14m) — negate the numeric part
+        auto snum = as<SuffixedNum>(result);
+        if (context->MINUS()) {
+            if (std::holds_alternative<int32_t>(snum->num))
+                snum->num = -std::get<int32_t>(snum->num);
+            else if (std::holds_alternative<int64_t>(snum->num))
+                snum->num = -std::get<int64_t>(snum->num);
+            else
+                snum->num = -std::get<double>(snum->num);
+        }
+        return typeValue(snum);
+    }
+    // Plain Num
+    auto num = as<Num>(result);
     if (context->MINUS()) {
         if (std::holds_alternative<int32_t>(num->num))
             num->num = -std::get<int32_t>(num->num);

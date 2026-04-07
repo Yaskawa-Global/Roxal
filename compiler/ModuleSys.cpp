@@ -42,6 +42,7 @@ constexpr int64_t MICROS_PER_DAY = 24 * MICROS_PER_HOUR;
 
 ObjObjectType* gSysTimeType = nullptr;
 ObjObjectType* gSysTimeSpanType = nullptr;
+ObjObjectType* gSysQuantityType = nullptr;
 
 struct NormalizedParts {
     int32_t seconds;
@@ -484,6 +485,95 @@ std::string roxal::sysTimeSpanDefaultString(ObjectInstance* inst)
     return defaultSpanString(inst);
 }
 
+ObjObjectType* roxal::sysQuantityType()
+{
+    return gSysQuantityType;
+}
+
+std::string roxal::sysQuantityDefaultString(ObjectInstance* inst)
+{
+    double v = readNumberProperty(Value::objRef(inst), "_v");
+    Value dVal = inst->getProperty("_d");
+    if (!isList(dVal) || asList(dVal)->length() != 4)
+        return "quantity(?)";
+
+    int32_t dL = readListIntElement(dVal, 0, "_d");
+    int32_t dT = readListIntElement(dVal, 1, "_d");
+    int32_t dM = readListIntElement(dVal, 2, "_d");
+    int32_t dA = readListIntElement(dVal, 3, "_d");
+
+    double av = std::abs(v);
+
+    // Length [1,0,0,0]
+    if (dL==1 && dT==0 && dM==0 && dA==0) {
+        if (av >= 1.0)        return format("%g", v) + "m";
+        if (av >= 0.01)       return format("%g", v * 100.0) + "cm";
+        if (av >= 0.001)      return format("%g", v * 1000.0) + "mm";
+        return format("%g", v * 1000000.0) + "um";
+    }
+    // Time [0,1,0,0]
+    if (dL==0 && dT==1 && dM==0 && dA==0) {
+        if (av >= 3600.0)     return format("%g", v / 3600.0) + "hr";
+        if (av >= 60.0)       return format("%g", v / 60.0) + "min";
+        if (av >= 1.0)        return format("%g", v) + "s";
+        if (av >= 0.001)      return format("%g", v * 1000.0) + "ms";
+        return format("%g", v * 1000000.0) + "us";
+    }
+    // Mass [0,0,1,0]
+    if (dL==0 && dT==0 && dM==1 && dA==0) {
+        if (av >= 1.0)        return format("%g", v) + "kg";
+        if (av >= 0.001)      return format("%g", v * 1000.0) + "g";
+        return format("%g", v * 1000000.0) + "mg";
+    }
+    // Angle [0,0,0,1]
+    if (dL==0 && dT==0 && dM==0 && dA==1)
+        return format("%g", v * 180.0 / M_PI) + "\u00B0";
+    // Velocity [1,-1,0,0]
+    if (dL==1 && dT==-1 && dM==0 && dA==0)
+        return format("%g", v) + "m/s";
+    // Acceleration [1,-2,0,0]
+    if (dL==1 && dT==-2 && dM==0 && dA==0)
+        return format("%g", v) + "ms\u207B\u00B2";
+    // Force [1,-2,1,0]
+    if (dL==1 && dT==-2 && dM==1 && dA==0)
+        return format("%g", v) + "N";
+    // Torque [2,-2,1,0]
+    if (dL==2 && dT==-2 && dM==1 && dA==0)
+        return format("%g", v) + "Nm";
+    // Angular velocity [0,-1,0,1]
+    if (dL==0 && dT==-1 && dM==0 && dA==1)
+        return format("%g", v * 180.0 / M_PI) + "\u00B0/s";
+    // Dimensionless [0,0,0,0]
+    if (dL==0 && dT==0 && dM==0 && dA==0)
+        return format("%g", v);
+    // Unknown dimension — show as SI units with superscript exponents
+    auto superscriptExp = [](int e) -> std::string {
+        // Unicode superscript digits: ⁰¹²³⁴⁵⁶⁷⁸⁹  minus: ⁻
+        static const char* sup[] = {
+            "\u2070", "\u00B9", "\u00B2", "\u00B3", "\u2074",
+            "\u2075", "\u2076", "\u2077", "\u2078", "\u2079"
+        };
+        std::string s;
+        int ae = e;
+        if (ae < 0) { s += "\u207B"; ae = -ae; }
+        if (ae >= 10) s += sup[ae / 10];
+        s += sup[ae % 10];
+        return s;
+    };
+
+    std::string units;
+    const char* names[] = {"m", "s", "kg", "rad"};
+    int dims[] = {dL, dT, dM, dA};
+    for (int i = 0; i < 4; ++i) {
+        if (dims[i] != 0) {
+            units += names[i];
+            if (dims[i] != 1)
+                units += superscriptExp(dims[i]);
+        }
+    }
+    return format("%g", v) + units;
+}
+
 Value roxal::sysNewTimeSpan(int64_t totalMicros)
 {
     if (!gSysTimeSpanType)
@@ -669,6 +759,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         throw std::runtime_error("sys.quantity type not found");
     quantityTypeValue = maybeQuantity.value();
     quantityTypeObj = asObjectType(quantityTypeValue);
+    gSysQuantityType = quantityTypeObj;
     if (!vm.loadGlobal(toUnicodeString("quantity")).has_value())
         vm.globals.storeGlobal(toUnicodeString("quantity"), quantityTypeValue);
 

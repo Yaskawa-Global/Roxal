@@ -160,6 +160,7 @@ tests = [
     'vector1', 'vector2', 'vector3', 'vector4', 'vector5','vector_methods', 'vector_equal', 'vector_matrix_equal',
     'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'unary_vector_matrix',
     'matrix_index', 'matrix_methods', 'matrix_assign', 'matrix_equal', 'matrix_math',
+    'vector_quantity_test', 'orient_test',
     'tensor_basic', 'tensor_math', 'tensor_compare', 'tensor_convert', 'math_min_max_sum',
     'tensor_convert_err', 'matrix_tensor_err', 'vector_tensor_err',
     'tensor_slice',

@@ -1,3 +1,7 @@
+
+const pi :real = 3.1415926535897932
+const e :real  = 2.718281828459045235
+
 @builtin
 func sin(x:real) -> real:
   """sine of x"""

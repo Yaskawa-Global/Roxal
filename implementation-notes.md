@@ -867,3 +867,16 @@ programmer's responsibility to break explicitly.
 - Cross-remote actor reference method calls are routed hop-by-hop, not directly.
 - No fully-disctributed GC
 - Seperate server TCP connection per-actor-instance rather than shared
+
+## Controversial Design Decisions
+
+- The language allows the `/` character in user-defined literal suffixes and the builtin sys module defines literal suffix `m/s`
+  - This means that writing `1m/s` is interpreted as a quantity 1 with unit meters per second.  However, if the user declared a variable `s` and wrote `1m/s` expecting to have 1 meter divided by the scalar value of the `s` var, that is not the language interpretation.
+  - On one hand, if the user is utilizing units, they should know that `m/s` is a unit and that they should include a space after units, like `1m / s`.  Alternatively, `1{m}/s` also works.
+  - In addition, if the value `1m/s` is used somewhere expecting a distance, an error would indicate it is a velocity instead.
+
+- The vector() constructor accepts quantities in vector literals for elements and for list elements for the from-list constructor.  However, it it not dimensioned.  It converts to SI units and discards the dimension.
+  - e.g. `[1m 2m 3m]` converts to `[1 2 3]`, but `[1in 2m 3m]` converts to `[0.0254 2 3]`. Similarly for vector([1in,2m,3m]). All elements must have the same dimension type (e.g. can't mix distance and time), though 0 can be 'bare' (no units)
+  - This is convenient for specifying vector forms of orientations, like the orient() constructor args such as rpy.  So that `orient(rpy=[10deg 20deg 30deg])` is valid and as expected. (the vector values are converted to radians and passed and orient stores a quaternion).
+  - It may be convenient for specifying robot joint configuration vectors also (but only if all the joints are of the same type), as in `[10deg 20deg -30deg 0 3.1rad 0]`, but won't help if the joints mix revolute and prismatic, forcing use of a list with comma separator syntax in that case, which can cause confusion
+  - matrix and tensor don't have this behaviour

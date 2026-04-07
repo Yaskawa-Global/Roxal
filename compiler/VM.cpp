@@ -371,9 +371,105 @@ static ptr<type::Type> builtinConstructorType(ValueType t)
             }
             return tensorType;
         }
+        case ValueType::Orient: {
+            static ptr<type::Type> orientType;
+            if (!orientType) {
+                orientType = make_ptr<type::Type>(type::BuiltinType::Func);
+                orientType->func = type::Type::FuncType();
+                PT pRpy(toUnicodeString("rpy"));    pRpy.hasDefault = true;
+                PT pR(toUnicodeString("r"));        pR.hasDefault = true;
+                PT pP(toUnicodeString("p"));        pP.hasDefault = true;
+                PT pY(toUnicodeString("y"));        pY.hasDefault = true;
+                PT pEuler(toUnicodeString("euler")); pEuler.hasDefault = true;
+                PT pAxes(toUnicodeString("axes"));  pAxes.hasDefault = true;
+                PT pQuat(toUnicodeString("quat"));  pQuat.hasDefault = true;
+                PT pMat(toUnicodeString("mat"));    pMat.hasDefault = true;
+                PT pAxis(toUnicodeString("axis"));  pAxis.hasDefault = true;
+                PT pAngle(toUnicodeString("angle")); pAngle.hasDefault = true;
+                orientType->func->params = {pRpy, pR, pP, pY, pEuler, pAxes, pQuat, pMat, pAxis, pAngle};
+            }
+            return orientType;
+        }
         default:
             return nullptr;
     }
+}
+
+
+// Orient constructor helpers
+
+static std::array<int,3> parseEulerAxes(const std::string& axes)
+{
+    if (axes.size() != 3)
+        throw std::runtime_error("orient euler axes must be 3 characters (e.g., 'ZXZ', 'XYZ'), got '" + axes + "'");
+    std::array<int,3> result;
+    for (int i = 0; i < 3; ++i) {
+        switch (axes[i]) {
+            case 'X': case 'x': result[i] = 0; break;
+            case 'Y': case 'y': result[i] = 1; break;
+            case 'Z': case 'z': result[i] = 2; break;
+            default: throw std::runtime_error("orient euler axes must be X, Y, or Z, got '" + std::string(1, axes[i]) + "'");
+        }
+    }
+    return result;
+}
+
+static Eigen::Vector3d axisVector(int axisIndex)
+{
+    switch (axisIndex) {
+        case 0: return Eigen::Vector3d::UnitX();
+        case 1: return Eigen::Vector3d::UnitY();
+        case 2: return Eigen::Vector3d::UnitZ();
+        default: throw std::runtime_error("invalid axis index");
+    }
+}
+
+// Extract angle in radians from a Value that is either a sys.quantity with angle dimension
+// or a bare zero. Non-zero bare reals are rejected.
+static double extractAngleRadians(const Value& v)
+{
+    if (v.isNumber()) {
+        double val = v.isReal() ? v.asReal() : static_cast<double>(v.asInt());
+        if (val == 0.0) return 0.0;
+        throw std::runtime_error("orient angle arguments must be quantity (e.g. 45deg or 0.785rad), not bare numbers");
+    }
+    if (!isObjectInstance(v))
+        throw std::runtime_error("orient angle arguments must be quantity (e.g. 45deg or 0.785rad)");
+
+    ObjectInstance* inst = asObjectInstance(v);
+    Value dVal = inst->getProperty("_d");
+    if (!isList(dVal) || asList(dVal)->length() != 4)
+        throw std::runtime_error("orient angle argument is not a valid quantity");
+
+    ObjList* dList = asList(dVal);
+    // Verify angle dimension [0,0,0,1]
+    if (dList->getElement(0).asInt() != 0 || dList->getElement(1).asInt() != 0 ||
+        dList->getElement(2).asInt() != 0 || dList->getElement(3).asInt() != 1)
+        throw std::runtime_error("orient angle argument must have angle dimension (e.g. deg or rad)");
+
+    Value vVal = inst->getProperty("_v");
+    return vVal.isReal() ? vVal.asReal() : static_cast<double>(vVal.asInt());
+}
+
+// Extract 3 angle radians from a vector (already quantity-extracted to SI) or a list of 3 quantities
+static Eigen::Vector3d extractAngleVector3(const Value& v)
+{
+    if (isVector(v)) {
+        auto* vec = asVector(v);
+        if (vec->length() != 3)
+            throw std::runtime_error("orient angle vector must have 3 elements");
+        return Eigen::Vector3d(vec->vec()[0], vec->vec()[1], vec->vec()[2]);
+    }
+    if (isList(v)) {
+        auto* lst = asList(v);
+        if (lst->length() != 3)
+            throw std::runtime_error("orient angle list must have 3 elements");
+        return Eigen::Vector3d(
+            extractAngleRadians(lst->getElement(0)),
+            extractAngleRadians(lst->getElement(1)),
+            extractAngleRadians(lst->getElement(2)));
+    }
+    throw std::runtime_error("orient expects a vector or list of 3 angles");
 }
 
 
@@ -1920,6 +2016,153 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
     auto argBegin = thread->stackTop - callSpec.argCount;
     auto argEnd = thread->stackTop;
     try {
+        // Orient constructor with named parameters
+        if (builtinType == ValueType::Orient && callSpec.argCount > 0) {
+            static const uint16_t rpyHash   = toUnicodeString("rpy").hashCode() & 0x7fff;
+            static const uint16_t rHash     = toUnicodeString("r").hashCode() & 0x7fff;
+            static const uint16_t pHash     = toUnicodeString("p").hashCode() & 0x7fff;
+            static const uint16_t yHash     = toUnicodeString("y").hashCode() & 0x7fff;
+            static const uint16_t eulerHash = toUnicodeString("euler").hashCode() & 0x7fff;
+            static const uint16_t axesHash  = toUnicodeString("axes").hashCode() & 0x7fff;
+            static const uint16_t quatHash  = toUnicodeString("quat").hashCode() & 0x7fff;
+            static const uint16_t matHash   = toUnicodeString("mat").hashCode() & 0x7fff;
+            static const uint16_t axisHash  = toUnicodeString("axis").hashCode() & 0x7fff;
+            static const uint16_t angleHash = toUnicodeString("angle").hashCode() & 0x7fff;
+
+            Value vRpy, vR, vP, vY, vEuler, vAxes, vQuat, vMat, vAxis, vAngle;
+
+            for (size_t i = 0; i < callSpec.argCount; ++i) {
+                Value arg = *(argBegin + i);
+                bool isNamed = !callSpec.allPositional && !callSpec.args[i].positional;
+                if (!isNamed)
+                    throw std::runtime_error("orient constructor requires named parameters (e.g. orient(r=0deg, p=45deg, y=0deg))");
+
+                uint16_t hash = callSpec.args[i].paramNameHash & 0x7fff;
+                if      (hash == rpyHash)   vRpy = arg;
+                else if (hash == rHash)     vR = arg;
+                else if (hash == pHash)     vP = arg;
+                else if (hash == yHash)     vY = arg;
+                else if (hash == eulerHash) vEuler = arg;
+                else if (hash == axesHash)  vAxes = arg;
+                else if (hash == quatHash)  vQuat = arg;
+                else if (hash == matHash)   vMat = arg;
+                else if (hash == axisHash)  vAxis = arg;
+                else if (hash == angleHash) vAngle = arg;
+                else throw std::runtime_error("orient constructor: unknown parameter");
+            }
+
+            Eigen::Quaterniond q = Eigen::Quaterniond::Identity();
+            int groups = 0;
+
+            // Group: r=, p=, y=
+            if (!vR.isNil() || !vP.isNil() || !vY.isNil()) {
+                if (vR.isNil() || vP.isNil() || vY.isNil())
+                    throw std::runtime_error("orient: r=, p=, y= must all be specified together");
+                double roll  = extractAngleRadians(vR);
+                double pitch = extractAngleRadians(vP);
+                double yaw   = extractAngleRadians(vY);
+                q = Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ())
+                  * Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY())
+                  * Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
+                groups++;
+            }
+
+            // Group: rpy=
+            if (!vRpy.isNil()) {
+                auto angles = extractAngleVector3(vRpy);
+                q = Eigen::AngleAxisd(angles[2], Eigen::Vector3d::UnitZ())
+                  * Eigen::AngleAxisd(angles[1], Eigen::Vector3d::UnitY())
+                  * Eigen::AngleAxisd(angles[0], Eigen::Vector3d::UnitX());
+                groups++;
+            }
+
+            // Group: euler= + axes=
+            if (!vEuler.isNil()) {
+                if (vAxes.isNil())
+                    throw std::runtime_error("orient: euler= requires axes= (e.g. axes=\"ZXZ\")");
+                if (!isString(vAxes))
+                    throw std::runtime_error("orient: axes= must be a string (e.g. \"ZXZ\")");
+                auto axes = parseEulerAxes(toUTF8StdString(asStringObj(vAxes)->s));
+                auto angles = extractAngleVector3(vEuler);
+                q = Eigen::AngleAxisd(angles[0], axisVector(axes[0]))
+                  * Eigen::AngleAxisd(angles[1], axisVector(axes[1]))
+                  * Eigen::AngleAxisd(angles[2], axisVector(axes[2]));
+                groups++;
+            }
+
+            // Group: quat=
+            if (!vQuat.isNil()) {
+                if (!isVector(vQuat) || asVector(vQuat)->length() != 4)
+                    throw std::runtime_error("orient: quat= must be a vector of 4 elements [x y z w]");
+                auto* vec = asVector(vQuat);
+                q = Eigen::Quaterniond(vec->vec()[3], vec->vec()[0], vec->vec()[1], vec->vec()[2]); // w,x,y,z
+                q.normalize();
+                groups++;
+            }
+
+            // Group: mat=
+            if (!vMat.isNil()) {
+                if (!isMatrix(vMat))
+                    throw std::runtime_error("orient: mat= must be a 3x3 rotation matrix");
+                auto* mat = asMatrix(vMat);
+                if (mat->rows() != 3 || mat->cols() != 3)
+                    throw std::runtime_error("orient: mat= must be a 3x3 rotation matrix");
+                Eigen::Matrix3d m;
+                for (int r = 0; r < 3; ++r)
+                    for (int c = 0; c < 3; ++c)
+                        m(r,c) = mat->mat()(r,c);
+                q = Eigen::Quaterniond(m);
+                q.normalize();
+                groups++;
+            }
+
+            // Group: axis= + angle=
+            if (!vAxis.isNil() || !vAngle.isNil()) {
+                if (vAxis.isNil() || vAngle.isNil())
+                    throw std::runtime_error("orient: axis= and angle= must be specified together");
+                Eigen::Vector3d axis;
+                if (isVector(vAxis)) {
+                    if (asVector(vAxis)->length() != 3)
+                        throw std::runtime_error("orient: axis= must be a 3D vector");
+                    axis = Eigen::Vector3d(asVector(vAxis)->vec()[0], asVector(vAxis)->vec()[1], asVector(vAxis)->vec()[2]);
+                } else if (isList(vAxis)) {
+                    auto* lst = asList(vAxis);
+                    if (lst->length() != 3)
+                        throw std::runtime_error("orient: axis= must have 3 elements");
+                    // Extract values — could be quantities (lengths) or bare reals
+                    std::array<int32_t,4> dims = {0,0,0,0};
+                    bool isDimensioned = false;
+                    for (int i = 0; i < 3; ++i) {
+                        double siVal;
+                        if (!tryExtractQuantity(lst->getElement(i), siVal, dims, isDimensioned)) {
+                            if (lst->getElement(i).isNumber())
+                                siVal = lst->getElement(i).isReal() ? lst->getElement(i).asReal() : static_cast<double>(lst->getElement(i).asInt());
+                            else
+                                throw std::runtime_error("orient: axis= list elements must be numbers or quantities");
+                        }
+                        axis[i] = siVal;
+                    }
+                } else {
+                    throw std::runtime_error("orient: axis= must be a vector or list");
+                }
+                axis.normalize();
+                double angle = extractAngleRadians(vAngle);
+                q = Eigen::Quaterniond(Eigen::AngleAxisd(angle, axis));
+                groups++;
+            }
+
+            if (groups > 1)
+                throw std::runtime_error("orient constructor: specify only one parameter group (rpy, r/p/y, euler+axes, quat, mat, or axis+angle)");
+
+            // Handle stray axes= without euler=
+            if (!vAxes.isNil() && vEuler.isNil())
+                throw std::runtime_error("orient: axes= requires euler=");
+
+            *(thread->stackTop - callSpec.argCount - 1) = Value::orientVal(q);
+            popN(callSpec.argCount);
+            return true;
+        }
+
         // Special handling for tensor - supports varargs ints + named params
         if (builtinType == ValueType::Tensor && callSpec.argCount > 0) {
             // Hash codes for named param lookup
@@ -6880,9 +7123,37 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             case OpCode::NewVector: {
                 int eltCount = readByte();
                 Eigen::VectorXd vals(eltCount);
-                for(int i=0; i<eltCount; i++)
-                    vals[i] = toType(ValueType::Real, peek(eltCount-i-1), false).asReal();
-                for(int i=0; i<eltCount; i++) pop();
+
+                // Check if any element is a quantity; if so, extract SI values
+                bool hasQuantity = false;
+                bool hasBareNonZero = false;
+                for (int i = 0; i < eltCount; i++) {
+                    Value elt = peek(eltCount - i - 1);
+                    if (isObjectInstance(elt))
+                        hasQuantity = true;
+                    else if (elt.isNumber()) {
+                        double v = elt.isReal() ? elt.asReal() : static_cast<double>(elt.asInt());
+                        if (v != 0.0) hasBareNonZero = true;
+                    }
+                }
+
+                if (hasQuantity) {
+                    if (hasBareNonZero)
+                        throw std::runtime_error("vector literal mixes non-zero bare numbers with quantity values");
+                    std::array<int32_t,4> dims = {0,0,0,0};
+                    bool isDimensioned = false;
+                    for (int i = 0; i < eltCount; i++) {
+                        double siVal;
+                        if (!tryExtractQuantity(peek(eltCount - i - 1), siVal, dims, isDimensioned))
+                            throw std::runtime_error("vector literal with quantities: all elements must be quantities or zero");
+                        vals[i] = siVal;
+                    }
+                } else {
+                    for (int i = 0; i < eltCount; i++)
+                        vals[i] = toType(ValueType::Real, peek(eltCount - i - 1), false).asReal();
+                }
+
+                for (int i = 0; i < eltCount; i++) pop();
                 push(Value::vectorVal(vals));
                 break;
             }
@@ -8977,6 +9248,16 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Tensor, "sum", std::mem_fn(&VM::tensor_sum_builtin),
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
 
+    // Orient methods — all read-only on self
+    defineBuiltinMethod(ValueType::Orient, "rotate", std::mem_fn(&VM::orient_rotate_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::Orient, "slerp", std::mem_fn(&VM::orient_slerp_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x3);
+    defineBuiltinMethod(ValueType::Orient, "angle_to", std::mem_fn(&VM::orient_angle_to_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::Orient, "euler", std::mem_fn(&VM::orient_euler_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+
     // List methods — append mutates self; filter/map/reduce read-only on self
     defineBuiltinMethod(ValueType::List, "append", std::mem_fn(&VM::list_append_builtin),
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
@@ -9058,6 +9339,17 @@ void VM::defineBuiltinProperties()
     defineBuiltinProperty(ValueType::Range, "closed", &VM::range_closed_getter);
     defineBuiltinProperty(ValueType::Range, "first", &VM::range_first_getter);
     defineBuiltinProperty(ValueType::Range, "last", &VM::range_last_getter);
+
+    // Orient properties
+    defineBuiltinProperty(ValueType::Orient, "rpy", &VM::orient_rpy_getter);
+    defineBuiltinProperty(ValueType::Orient, "r", &VM::orient_r_getter);
+    defineBuiltinProperty(ValueType::Orient, "p", &VM::orient_p_getter);
+    defineBuiltinProperty(ValueType::Orient, "y", &VM::orient_y_getter);
+    defineBuiltinProperty(ValueType::Orient, "quat", &VM::orient_quat_getter);
+    defineBuiltinProperty(ValueType::Orient, "mat", &VM::orient_mat_getter);
+    defineBuiltinProperty(ValueType::Orient, "axis", &VM::orient_axis_getter);
+    defineBuiltinProperty(ValueType::Orient, "angle", &VM::orient_angle_getter);
+    defineBuiltinProperty(ValueType::Orient, "inverse", &VM::orient_inverse_getter);
 }
 
 void VM::defineBuiltinProperty(ValueType type, const std::string& name, NativePropertyGetter getter, NativePropertySetter setter)
@@ -9618,6 +9910,147 @@ Value VM::tensor_sum_builtin(ArgsView args)
         s += t->at(i);
     return Value::realVal(s);
 }
+
+// Orient helpers for creating quantity(rad) return values
+
+static Value makeAngleQuantity(double radians)
+{
+    // Get the quantity type from globals
+    auto maybeType = VM::instance().loadGlobal(toUnicodeString("quantity"));
+    if (!maybeType.has_value())
+        throw std::runtime_error("sys.quantity type not available");
+    Value inst = Value::objectInstanceVal(maybeType.value());
+    asObjectInstance(inst)->setProperty("_v", Value::realVal(radians));
+    auto dims = Value::listVal(std::vector<Value>{Value::intVal(0), Value::intVal(0), Value::intVal(0), Value::intVal(1)});
+    asObjectInstance(inst)->setProperty("_d", dims);
+    return inst;
+}
+
+static Eigen::Vector3d orientToRPY(const Eigen::Quaterniond& q)
+{
+    Eigen::Matrix3d m = q.toRotationMatrix();
+    Eigen::Vector3d ea = m.canonicalEulerAngles(2, 1, 0); // [yaw, pitch, roll]
+    return Eigen::Vector3d(ea[2], ea[1], ea[0]); // [roll, pitch, yaw]
+}
+
+// Orient property getters
+
+Value VM::orient_rpy_getter(Value& receiver)
+{
+    auto rpy = orientToRPY(asOrient(receiver)->quat());
+    // Return a list of 3 angle quantities
+    return Value::listVal(std::vector<Value>{
+        makeAngleQuantity(rpy[0]),
+        makeAngleQuantity(rpy[1]),
+        makeAngleQuantity(rpy[2])
+    });
+}
+
+Value VM::orient_r_getter(Value& receiver)
+{
+    auto rpy = orientToRPY(asOrient(receiver)->quat());
+    return makeAngleQuantity(rpy[0]);
+}
+
+Value VM::orient_p_getter(Value& receiver)
+{
+    auto rpy = orientToRPY(asOrient(receiver)->quat());
+    return makeAngleQuantity(rpy[1]);
+}
+
+Value VM::orient_y_getter(Value& receiver)
+{
+    auto rpy = orientToRPY(asOrient(receiver)->quat());
+    return makeAngleQuantity(rpy[2]);
+}
+
+Value VM::orient_quat_getter(Value& receiver)
+{
+    auto& q = asOrient(receiver)->quat();
+    Eigen::VectorXd v(4);
+    v[0] = q.x(); v[1] = q.y(); v[2] = q.z(); v[3] = q.w();
+    return Value::vectorVal(v);
+}
+
+Value VM::orient_mat_getter(Value& receiver)
+{
+    Eigen::Matrix3d m3 = asOrient(receiver)->quat().toRotationMatrix();
+    Eigen::MatrixXd m(3,3);
+    m = m3;
+    return Value::matrixVal(m);
+}
+
+Value VM::orient_axis_getter(Value& receiver)
+{
+    Eigen::AngleAxisd aa(asOrient(receiver)->quat());
+    Eigen::Vector3d axis = aa.axis();
+    // For identity (angle ~0), AngleAxis may return arbitrary axis
+    if (aa.angle() < 1e-12)
+        axis = Eigen::Vector3d::UnitZ();
+    Eigen::VectorXd v(3);
+    v[0] = axis[0]; v[1] = axis[1]; v[2] = axis[2];
+    return Value::vectorVal(v);
+}
+
+Value VM::orient_angle_getter(Value& receiver)
+{
+    Eigen::AngleAxisd aa(asOrient(receiver)->quat());
+    return makeAngleQuantity(aa.angle());
+}
+
+Value VM::orient_inverse_getter(Value& receiver)
+{
+    return Value::orientVal(asOrient(receiver)->quat().inverse());
+}
+
+// Orient methods
+
+Value VM::orient_rotate_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isOrient(args[0]) || !isVector(args[1]))
+        throw std::invalid_argument("orient.rotate expects a single 3D vector argument");
+    auto* rv = asVector(args[1]);
+    if (rv->length() != 3)
+        throw std::invalid_argument("orient.rotate requires a 3D vector");
+    Eigen::Vector3d v(rv->vec()[0], rv->vec()[1], rv->vec()[2]);
+    Eigen::Vector3d rotated = asOrient(args[0])->quat() * v;
+    Eigen::VectorXd result(3);
+    result[0] = rotated[0]; result[1] = rotated[1]; result[2] = rotated[2];
+    return Value::vectorVal(result);
+}
+
+Value VM::orient_slerp_builtin(ArgsView args)
+{
+    if (args.size() != 3 || !isOrient(args[0]) || !isOrient(args[1]) || !args[2].isNumber())
+        throw std::invalid_argument("orient.slerp expects (other_orient, t) where t is 0..1");
+    double t = args[2].isReal() ? args[2].asReal() : static_cast<double>(args[2].asInt());
+    Eigen::Quaterniond result = asOrient(args[0])->quat().slerp(t, asOrient(args[1])->quat());
+    return Value::orientVal(result);
+}
+
+Value VM::orient_angle_to_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isOrient(args[0]) || !isOrient(args[1]))
+        throw std::invalid_argument("orient.angle_to expects a single orient argument");
+    double dot = asOrient(args[0])->quat().dot(asOrient(args[1])->quat());
+    double angle = 2.0 * std::acos(std::min(std::abs(dot), 1.0));
+    return makeAngleQuantity(angle);
+}
+
+Value VM::orient_euler_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isOrient(args[0]) || !isString(args[1]))
+        throw std::invalid_argument("orient.euler expects a string argument (e.g. \"ZXZ\")");
+    auto axes = parseEulerAxes(toUTF8StdString(asStringObj(args[1])->s));
+    Eigen::Matrix3d m = asOrient(args[0])->quat().toRotationMatrix();
+    Eigen::Vector3d ea = m.canonicalEulerAngles(axes[0], axes[1], axes[2]);
+    return Value::listVal(std::vector<Value>{
+        makeAngleQuantity(ea[0]),
+        makeAngleQuantity(ea[1]),
+        makeAngleQuantity(ea[2])
+    });
+}
+
 
 Value VM::list_append_builtin(ArgsView args)
 {

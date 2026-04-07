@@ -102,8 +102,10 @@ private:
 
 ObjObjectType* sysTimeType();
 ObjObjectType* sysTimeSpanType();
+ObjObjectType* sysQuantityType();
 std::string sysTimeDefaultString(ObjectInstance* inst);
 std::string sysTimeSpanDefaultString(ObjectInstance* inst);
+std::string sysQuantityDefaultString(ObjectInstance* inst);
 Value sysNewTimeSpan(int64_t totalMicros);
 
 }

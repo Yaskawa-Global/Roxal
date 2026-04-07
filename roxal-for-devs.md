@@ -26,8 +26,9 @@ Value types:
   * `real` - IEEE 64bit float (aka C double)
   * `decimal` - (unimplemented) fixed point (designed for no roundoff error for fractions in base 10)
   * `enum` - enumerated int labelled (similar to C)
-  * `vector` - [number number number] - arbitrary n dim real scalar elements
+  * `vector` - [number number number] - arbitrary n dim real scalar elements (accepts quantity elements, extracting SI values)
   * `matrix` - [num num num; num num num] - arbitrary n x m dim real scalar elements (can use newline between rows in literals)
+  * `orient` - 3D orientation (backed by unit quaternion; see orient section below)
   * `tensor` - multi-dimensional array with arbitrary shape (see tensor section below)
 
 Reference types:
@@ -422,6 +423,60 @@ print(v1 * v2)       // dot product: 32
 var t1 = tensor(3, data=[1.0, 2.0, 3.0])
 var t2 = tensor(3, data=[1.0, 1.0, 1.0])
 print(t1 + t2)       // element-wise addition
+```
+
+## Orient
+
+The `orient` type represents a 3D orientation (backed by a unit quaternion). It has value semantics (like vector and matrix).
+
+### Construction
+
+All construction uses named parameters. Exactly one parameter group may be specified (or none for identity):
+
+```php
+var o = orient()                                   // identity (no rotation)
+var o = orient(r=0deg, p=45deg, y=90deg)           // roll, pitch, yaw
+var o = orient(rpy=[0deg 45deg 90deg])             // RPY as vector or list
+var o = orient(axis=[0 0 1], angle=90deg)          // axis + angle
+var o = orient(quat=[0 0 0.707 0.707])             // quaternion [x y z w]
+var o = orient(mat=m)                              // 3x3 rotation matrix
+var o = orient(euler=[30deg 45deg 60deg], axes="ZXZ")  // Euler angles
+```
+
+Angle arguments require `sys.quantity` with angle dimension (e.g., `45deg` or `0.785rad`). Bare zeros are accepted.
+
+RPY convention: Roll about X, Pitch about Y, Yaw about Z (intrinsic XYZ / extrinsic ZYX, aerospace convention).
+
+### Properties (read-only)
+
+```php
+var o = orient(r=0deg, p=0deg, y=90deg)
+o.r              // -> 0°  (roll as quantity)
+o.p              // -> 0°  (pitch as quantity)
+o.y              // -> 90° (yaw as quantity)
+o.rpy            // -> [0°, 0°, 90°] (list of 3 quantities)
+o.quat           // -> [0 0 0.707107 0.707107] (vector [x y z w])
+o.mat            // -> 3x3 rotation matrix
+o.axis           // -> [0 0 1] (unit rotation axis vector)
+o.angle          // -> 90° (rotation angle as quantity)
+o.inverse        // -> orient (inverse rotation)
+```
+
+### Operators
+
+```php
+var o2 = o1 * o2          // composition (Hamilton product)
+var v = o * [1 0 0]       // rotate a 3D vector
+print(o1 == o2)           // equality (handles q/-q equivalence)
+```
+
+### Methods
+
+```php
+o.rotate([1 0 0])         // rotate a vector (same as o * v)
+o1.slerp(o2, 0.5)         // spherical linear interpolation at t=0.5
+o1.angle_to(o2)           // angular distance as quantity
+o.euler("ZXZ")            // Euler angles for given axis convention
 ```
 
 ## Control Statements
@@ -827,7 +882,7 @@ The `sys` module defines suffixes for physical units — see the `quantity` type
 var d = 10m + 500mm       // 10.5m  (auto-converts to common unit)
 var speed = 100m / 4s     // 25m/s  (derived dimension)
 var force = 5kg * 9.81m/s^2  // 49.05N (Force = Mass × Acceleration)
-var angle = 90deg         // 90deg  (stored as radians internally)
+var angle = 90deg         // 90°  (stored as radians internally)
 print(d.inches)           // 413.386  (property getter converts from SI)
 ```
 
@@ -1691,7 +1746,7 @@ A dimensional physical quantity type for type-safe unit handling.  Stores a real
 | `lb`, `oz` | pounds, ounces | Mass |
 | `s`, `ms`, `us`/`μs` | seconds, milliseconds, microseconds | Time |
 | `min`, `hr` | minutes, hours | Time |
-| `rad`, `deg` | radians, degrees | Angle |
+| `rad`, `deg`, `°` | radians, degrees | Angle |
 | `m/s`, `cm/s`, `mm/s` | velocity | Length/Time |
 | `m/s^2`, `m/s²` | acceleration | Length/Time² |
 | `N` | Newtons | Force |
@@ -1713,7 +1768,7 @@ A dimensional physical quantity type for type-safe unit handling.  Stores a real
 *Time:* `.seconds`, `.milliseconds`, `.microseconds`, `.minutes`, `.hours`
 *Angle:* `.radians`, `.degrees`
 
-**String display:** `quantity` implicitly converts to string, choosing the most natural unit for the magnitude (e.g., `0.005 m` displays as `5 mm`).
+**String display:** `quantity` implicitly converts to string, choosing the most natural unit for the magnitude (e.g., `0.005m` displays as `5mm`). Angles display with the degree symbol (e.g., `90°`). Unknown dimension combinations display using SI unit symbols with Unicode superscript exponents (e.g., `1ms⁻³`).
 
 #### Internal (likely to be removed or renamed)
 * `fork(fn)` - run `fn` in a new thread and return its id

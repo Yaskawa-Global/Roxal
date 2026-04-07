@@ -5,17 +5,18 @@ type A actor:
 
   proc init(id :int):
     this.id = id
-    print("Actor {id} initialized.")
+    print("Actor {id} initialized.",flush=true)
 
   func greet(name: string) -> bool:
-    print("Actor {id} says: Hello, {name}!")
+    print("Actor {id} says: Hello, {name}!",flush=true)
     return true
 
   func callOther(other: A, name: string) -> bool:
-    print("Actor {id} is calling other actor...")
+    print("Actor {id} is calling other actor...",flush=true)
     return other.greet(name)
 
 var a = A(1)
+wait(ms=30)
 var b = A(2)
-wait(ms=10)
+wait(ms=30)
 wait(for=a.callOther(b, "Alice"))

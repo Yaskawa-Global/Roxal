@@ -15,6 +15,7 @@
 #include <core/memory.h>
 #include <core/types.h>
 #include <Eigen/Dense>
+#include <Eigen/Geometry>
 
 // #if USE_GC_SGCL
 // #include <core/sgcl/sgcl.h>
@@ -233,6 +234,9 @@ public:
     static Value matrixVal(); // ObjMatrix
     static Value matrixVal(int32_t rows, int32_t cols);
     static Value matrixVal(const Eigen::MatrixXd& values);
+
+    static Value orientVal(); // ObjOrient (identity quaternion)
+    static Value orientVal(const Eigen::Quaterniond& q);
 
     static Value tensorVal(); // ObjTensor
     static Value tensorVal(const std::vector<int64_t>& shape, TensorDType dtype);
@@ -459,6 +463,7 @@ public:
         switch (type()) {
             case ValueType::Vector:
             case ValueType::Matrix:
+            case ValueType::Orient:
             case ValueType::Tensor:
                 return true;
             default:

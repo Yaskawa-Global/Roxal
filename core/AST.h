@@ -881,7 +881,7 @@ struct Dict : public Literal {
 struct Vector : public Literal {
     Vector() { literalType = LiteralType::Vector; }
 
-    std::vector<ptr<ast::Num>> elements;
+    std::vector<ptr<ast::Expression>> elements;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
