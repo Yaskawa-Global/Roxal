@@ -1,0 +1,10 @@
+// Bug: list.map callback constructs @builtin object
+// nativeContinuation from list.map clobbers nested constructor
+
+var durations = [1, 2, 3]
+var spans = durations.map(func(d):
+  return TimeSpan(seconds=d)
+)
+print(spans[0].total_seconds())
+print(spans[1].total_seconds())
+print(spans[2].total_seconds())

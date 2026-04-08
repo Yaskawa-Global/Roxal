@@ -2680,10 +2680,16 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 calleeVal = Value::boundMethodVal(inst, initMethod->closure);
                             }
                             *(thread->stackTop - callSpec.argCount - 1) = calleeVal;
+                            bool contWasActive = thread->nativeContinuation.active;
                             bool ok = callValue(calleeVal, callSpec);
-                            // Skip instance restoration if native call was deferred (continuation active)
-                            // In deferred case, processNativeDefaultParamDispatch handles this
-                            if (isNative && !thread->nativeContinuation.active)
+                            // Skip instance restoration only if THIS callValue activated a
+                            // new continuation (i.e., the native init was deferred for param
+                            // default/conversion evaluation).  If nativeContinuation was
+                            // already active from an outer context (e.g. list.map, print
+                            // param conversion), the inner native init completed synchronously
+                            // and we must restore the instance.
+                            bool deferredByThisCall = !contWasActive && thread->nativeContinuation.active;
+                            if (isNative && !deferredByThisCall)
                                 *(thread->stackTop - 1) = inst; // native init returns instance
                             return ok;
                         } else {

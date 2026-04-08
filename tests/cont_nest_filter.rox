@@ -1,0 +1,19 @@
+// Bug: list.filter predicate triggers string conversion with nested @builtin constructor
+// nativeContinuation from list.filter + string param conversion + nested constructor
+
+type Wrapper object:
+  private var _span:TimeSpan
+
+  proc init(s:int, us:int):
+    _span = TimeSpan(seconds=s, micros=us)
+
+  @implicit
+  func operator string() -> string:
+    var copy = TimeSpan(seconds=_span.seconds(), micros=_span.microseconds())
+    return copy.human()
+
+var items = [Wrapper(1, 0), Wrapper(2, 0), Wrapper(3, 0)]
+var filtered = items.filter(func(item):
+  return string(item) != '1s'
+)
+print(len(filtered))
