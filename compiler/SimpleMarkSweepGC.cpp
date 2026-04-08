@@ -115,35 +115,35 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
         visitStrongValue(visitor, thread.waitSuspension.storedValue);
     }
 
-    // Trace native continuation state (e.g., filter/map/reduce iteration)
-    if (thread.nativeContinuation.active) {
-        visitStrongValue(visitor, thread.nativeContinuation.state);
+    // Trace native continuation stack (e.g., filter/map/reduce iteration, param conversions)
+    for (const auto& cont : thread.nativeContinuationStack) {
+        visitStrongValue(visitor, cont.state);
     }
 
-    // Trace native default param state (deferred native call with closure defaults)
-    if (thread.nativeDefaultParamState.active) {
-        visitStrongValue(visitor, thread.nativeDefaultParamState.receiver);
-        visitStrongValue(visitor, thread.nativeDefaultParamState.declFunction);
-        for (const auto& val : thread.nativeDefaultParamState.argsBuffer) {
+    // Trace native default param state stack
+    for (const auto& state : thread.nativeDefaultParamStack) {
+        visitStrongValue(visitor, state.receiver);
+        visitStrongValue(visitor, state.declFunction);
+        for (const auto& val : state.argsBuffer) {
             visitStrongValue(visitor, val);
         }
-        for (const auto& entry : thread.nativeDefaultParamState.paramDefaultFuncs) {
+        for (const auto& entry : state.paramDefaultFuncs) {
             visitStrongValue(visitor, entry.second);
         }
     }
 
-    // Trace native param conversion state (deferred native call with async param conversions)
-    if (thread.nativeParamConversionState.active) {
-        visitStrongValue(visitor, thread.nativeParamConversionState.receiver);
-        visitStrongValue(visitor, thread.nativeParamConversionState.declFunction);
-        for (const auto& val : thread.nativeParamConversionState.argsBuffer) {
+    // Trace native param conversion state stack
+    for (const auto& state : thread.nativeParamConversionStack) {
+        visitStrongValue(visitor, state.receiver);
+        visitStrongValue(visitor, state.declFunction);
+        for (const auto& val : state.argsBuffer) {
             visitStrongValue(visitor, val);
         }
     }
 
-    // Trace closure param conversion state (deferred closure call with async param conversions)
-    if (thread.closureParamConversionState.active) {
-        visitStrongValue(visitor, thread.closureParamConversionState.moduleType);
+    // Trace closure param conversion stack (deferred closure call with async param conversions)
+    for (const auto& state : thread.closureParamConversionStack) {
+        visitStrongValue(visitor, state.moduleType);
     }
 }
 

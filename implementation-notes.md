@@ -118,7 +118,7 @@ re-enter the dispatch loop, it uses a deferred call pattern via
    `needsAsyncConversion()` — checks for `findConversionMethod()` matches
    or constructor auto-conversion eligibility
 2. If async params found: marshals args (skipping conversion for async params),
-   saves state in `NativeParamConversionState`, sets up `NativeContinuation`
+   pushes state onto `nativeParamConversionStack`, pushes a `NativeContinuation`
    with `onComplete = processNativeParamConversion`, and pushes the first
    conversion frame via `pushParamConversionFrame()`
 3. Each conversion frame returns to `processNativeParamConversion()` which
@@ -129,6 +129,11 @@ re-enter the dispatch loop, it uses a deferred call pattern via
 This is the same pattern as `NativeDefaultParamState` (for closure-evaluated
 default parameters) — both defer the native call until async pre-call work
 completes.
+
+All continuation states are stack-based (vectors), supporting arbitrary nesting.
+For example, `print(obj)` inside an `operator->string` body triggers nested
+param conversion — the inner conversion pushes its own state onto the stacks
+without clobbering the outer's.
 
 Note: for `@builtin` functions declared in `.rox` files, the compiled closure's
 bytecode (including parameter conversion opcodes) is never executed — the
@@ -156,8 +161,8 @@ loop), not via compiler-emitted opcodes. When a new frame begins execution,
    `type->isConst` are frozen via `createFrozenSnapshot()`. This covers both
    explicit `const` params and implicit actor method const (isolation boundary).
 
-For async conversions, `ClosureParamConversionState` (sibling to
-`NativeParamConversionState`) stores the target frame depth and param indices
+For async conversions, `ClosureParamConversionState` is pushed onto
+`closureParamConversionStack` with the target frame depth and param indices
 needing conversion. Conversion frames are pushed one at a time via
 `pushParamConversionFrame()`, and `processClosureParamConversion()` routes
 each result into the target frame's param slot. Const-freezing runs after all
@@ -203,24 +208,36 @@ When a native function needs to execute Roxal code iteratively (e.g.,
 `list.map()` calling a predicate for each element), it cannot re-enter
 the dispatch loop. Instead it uses the `NativeContinuation` mechanism:
 
-1. The native sets up `thread->nativeContinuation` (state + `onComplete`
-   callback) and optionally sets `resultSlot` / `stackBase` for stack cleanup
+1. The native pushes a `NativeContinuation` onto `nativeContinuationStack`
+   (state + `onComplete` callback) and sets `resultSlotIndex` / `stackBaseIndex`
+   for stack cleanup (stored as indices, not pointers, to survive reallocation)
 2. It calls `pushContinuationCall()`, which pushes closure + args and calls
-   `call()`, creating a new frame marked `isContinuationCallback = true`
+   `call()`, creating a new frame marked `isContinuationCallback = true`.
+   The continuation's `callbackFrameDepth` is set to the current frame depth.
 3. The native returns a dummy value — `callNativeFn` detects that new frames
    were pushed (`thisCallPushedFrames`) and skips the normal callee+args
    cleanup, since the continuation frames sit on top of that area
-4. If the continuation did not set a `resultSlot`, `callNativeFn` fills one in
-   automatically to cover the original callee+args area
+4. If the continuation did not set a `resultSlotIndex`, `callNativeFn` fills one
+   in automatically to cover the original callee+args area
 5. The dispatch loop executes the Roxal callback naturally
 6. When the callback returns, `opReturn` sets `continuationCallbackReturned`
 7. `processContinuationDispatch()` pops the result, calls `onComplete`, and
    either pushes the next iteration's frame or finalizes: pops the original
-   call's footprint (via `resultSlot` / `stackBase`) and pushes the final result
+   call's footprint (via `resultSlotIndex` / `stackBaseIndex`) and pushes the
+   final result
+
+Continuations nest correctly — e.g., a `list.map` callback can itself call
+`list.filter`. `processContinuationDispatch` uses `callbackFrameDepth` to
+distinguish "this continuation pushed another iteration frame" (frame depth
+matches) from "an outer continuation's callback frame is on top" (shallower
+depth = this continuation is done). The `NativeDefaultParamState` and
+`NativeParamConversionState` handlers do not call `clearContinuation()`
+themselves — `processContinuationDispatch` handles popping the continuation
+stack after `onComplete` returns.
 
 On exception unwind, `unwindFrame()` detects continuation callback frames and
 extends the pop range to include the original call's footprint using
-`resultSlot`, then clears the continuation.
+`resultSlotIndex`, then pops the continuation stack.
 
 
 ## Types & Values
@@ -357,7 +374,11 @@ calling Roxal closures from native code. Rather than recursively calling
 the main `execute()` loop. When the closure completes, a handler processes
 the result.
 
-Four continuation mechanisms exist in the `Thread` class:
+All continuation states are stored as **stacks** (vectors) on the `Thread`
+object, supporting arbitrary nesting depth. For example, a `list.map` callback
+can itself call `list.filter`, and an `operator->string` body can call `print`
+which triggers another param conversion. Each mechanism pushes state when
+activated and pops when complete.
 
 ### EventDispatchState
 
@@ -380,86 +401,72 @@ struct EventDispatchState {
 ### NativeContinuation
 
 A general-purpose continuation for native functions that call Roxal closures
-iteratively, such as `list.filter()`, `list.map()`, and `list.reduce()`.
+iteratively, such as `list.filter()`, `list.map()`, and `list.reduce()`. Also
+used as the dispatch trampoline for `NativeDefaultParamState` and
+`NativeParamConversionState`.
 
 ```cpp
 struct NativeContinuation {
-    std::function<bool(VM&, Value)> onComplete;  // Called when closure returns
-    Value state;                                  // Iteration state (e.g., index)
+    std::function<bool(VM&, Value)> onComplete;
+    Value state;
     bool active;
-    Value* resultSlot;                           // Where to write final result
-    ValueStack::iterator stackBase;              // Stack position for cleanup
+    ptrdiff_t resultSlotIndex;   // Index into value stack (-1 = not set)
+    ptrdiff_t stackBaseIndex;    // Index into value stack (-1 = not set)
+    size_t callbackFrameDepth;   // Frame depth when callback frames are pushed
 };
 ```
 
-The native function sets up state, pushes a closure frame with
-`isContinuationCallback = true`, and returns. When the closure returns,
-`processContinuationDispatch()` invokes `onComplete`, which either pushes
-another closure frame or completes with the final result.
+Stored as `std::vector<NativeContinuation> nativeContinuationStack` on Thread,
+with helpers `pushContinuation()`, `currentContinuation()`, `popContinuation()`,
+`hasContinuation()`.
+
+Stack positions use **indices** (not raw pointers or iterators) because the
+value stack vector may reallocate during nested operations. `callbackFrameDepth`
+is set by `pushContinuationCall()` and used by `processContinuationDispatch()`
+to distinguish "this continuation pushed another iteration frame" (depth matches)
+from "an outer continuation's callback frame is on top" (shallower depth = done).
 
 ### NativeDefaultParamState
 
 Handles closure-based default parameter evaluation for native functions.
-When a native function has parameters with closure defaults (computed at
-call time), this mechanism evaluates each default before invoking the
-native function.
+Piggybacks on `NativeContinuation` with
+`onComplete = processNativeDefaultParamDispatch`.
 
-```cpp
-struct NativeDefaultParamState {
-    bool active;
-    NativeFn nativeFunc;                         // Native function to invoke
-    ptr<type::Type> funcType;
-    std::vector<Value> staticDefaults;
-    CallSpec callSpec;
-    bool includeReceiver;
-    Value receiver;
-    Value declFunction;
-    uint32_t resolveArgMask;
-    std::vector<Value> argsBuffer;               // Args being built
-    std::vector<size_t> closureParamIndices;     // Params needing evaluation
-    size_t nextClosureIndex;
-    std::map<int32_t, Value> paramDefaultFuncs;  // Param hash -> closure
-    size_t originalArgCount;
-};
-```
+Stored as `std::vector<NativeDefaultParamState> nativeDefaultParamStack`.
 
 `callNativeFn()` detects closure defaults via `getClosureDefaultParamIndices()`,
 partially marshals args with `marshalArgsPartial()`, and pushes default closure
 frames one at a time. `processNativeDefaultParamDispatch()` stores each result
 and either pushes the next closure or invokes the native function with
-complete args.
+complete args. It does not call `clearContinuation()` — `processContinuationDispatch`
+handles popping the continuation stack.
 
 ### NativeParamConversionState
 
 Handles async user-defined type conversion for native function parameters.
-When a native function has typed parameters and an argument requires executing
-Roxal code to convert (e.g., an object with `@implicit operator->string()`
-passed to `print(value:string)`), this mechanism defers the native call until
-all async conversions complete.
+Piggybacks on `NativeContinuation` with
+`onComplete = processNativeParamConversion`.
 
-```cpp
-struct NativeParamConversionState {
-    bool active;
-    NativeFn nativeFunc;
-    ptr<type::Type> funcType;
-    CallSpec callSpec;
-    bool includeReceiver;
-    Value receiver;
-    Value declFunction;
-    uint32_t resolveArgMask;
-    std::vector<Value> argsBuffer;               // Args with conversions applied
-    std::vector<size_t> conversionParamIndices;   // Params needing async conversion
-    size_t nextConversionIndex;
-    size_t originalArgCount;
-};
-```
+Stored as `std::vector<NativeParamConversionState> nativeParamConversionStack`.
 
 `callNativeFn()` detects params needing async conversion via
 `needsAsyncConversion()`, marshals args (storing originals for async params),
 and pushes conversion frames one at a time via `pushParamConversionFrame()`.
 `processNativeParamConversion()` stores each converted value and either
 pushes the next conversion frame or invokes the native function with
-complete args.
+complete args. Like `NativeDefaultParamState`, it does not call
+`clearContinuation()` — the dispatch handles stack popping.
+
+### ClosureParamConversionState
+
+Handles async type conversion for Roxal function parameters (activated in
+`frameStart`). Stored as
+`std::vector<ClosureParamConversionState> closureParamConversionStack`.
+
+When a closure param conversion frame returns inside a native continuation
+(e.g., calling a typed Roxal function inside an `operator->string` body),
+`processContinuationDispatch` checks frame depths to route the return to
+`processClosureParamConversion()` instead of the native continuation's handler.
 
 ### CallFrame Fields
 

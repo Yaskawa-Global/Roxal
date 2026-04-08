@@ -157,6 +157,8 @@ tests = [
     'typededucer_binop', 'typededucer_ops', 'typededucer_until', 'typededucer_bitwise',
     'time_basic', 'time_quantity',
     'cont_nest_print', 'cont_nest_map', 'cont_nest_filter',
+    'cont_nest_map_in_map', 'cont_nest_filter_in_map', 'cont_nest_reduce_in_map',
+    'cont_nest_print_in_opstr', 'cont_nest_closure_conv',
     'mathfuncs',
     'typeassign1', 'typeassign2', 'typeassign3',
     'vector1', 'vector2', 'vector3', 'vector4', 'vector5','vector_methods', 'vector_equal', 'vector_matrix_equal',

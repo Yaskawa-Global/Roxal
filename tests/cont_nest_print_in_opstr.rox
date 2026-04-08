@@ -1,0 +1,22 @@
+// Test: print() inside operator->string — nested param conversion
+// Inner print triggers its own param conversion while outer conversion is active.
+
+type Logger object:
+  private var _name:string
+  proc init(n:string):
+    _name = n
+  @implicit
+  func operator string() -> string:
+    return 'Logger(' + _name + ')'
+
+type Verbose object:
+  private var _log:Logger
+  proc init(name:string):
+    _log = Logger(name)
+  @implicit
+  func operator string() -> string:
+    print(_log)
+    return 'Verbose(' + string(_log) + ')'
+
+var v = Verbose('test')
+print(v)

@@ -152,19 +152,44 @@ public:
 
         bool active { false };
 
-        // Stack cleanup: where to write final result and stack position to restore
-        Value* resultSlot { nullptr };
-        ValueStack::iterator stackBase;
+        // Stack cleanup: indices into the value stack (relative to stack.begin()).
+        // Using indices instead of pointers/iterators because the stack vector may
+        // reallocate during nested operations, invalidating raw pointers.
+        ptrdiff_t resultSlotIndex { -1 };  // -1 = not set
+        ptrdiff_t stackBaseIndex { -1 };
+
+        // Frame depth when callback frames are pushed (set by pushContinuationCall).
+        // Used by processContinuationDispatch to distinguish "this continuation pushed
+        // another iteration" from "an outer continuation's callback frame is on top."
+        size_t callbackFrameDepth { 0 };
 
         void clear() {
             onComplete = nullptr;
             state = Value::nilVal();
             active = false;
-            resultSlot = nullptr;
+            resultSlotIndex = -1;
+            stackBaseIndex = -1;
+            callbackFrameDepth = 0;
         }
     };
-    NativeContinuation nativeContinuation;
+    std::vector<NativeContinuation> nativeContinuationStack;
     bool continuationCallbackReturned { false };
+
+    NativeContinuation& pushContinuation() {
+        if (nativeContinuationStack.size() == nativeContinuationStack.capacity())
+            nativeContinuationStack.reserve(nativeContinuationStack.capacity() + 8);
+        nativeContinuationStack.emplace_back();
+        auto& cont = nativeContinuationStack.back();
+        cont.active = true;
+        return cont;
+    }
+    NativeContinuation& currentContinuation() { return nativeContinuationStack.back(); }
+    const NativeContinuation& currentContinuation() const { return nativeContinuationStack.back(); }
+    void popContinuation() {
+        if (!nativeContinuationStack.empty())
+            nativeContinuationStack.pop_back();
+    }
+    bool hasContinuation() const { return !nativeContinuationStack.empty(); }
 
     // State for deferred native function call when default params need closure evaluation.
     // We push closure frames and use this state to complete the native call after all defaults are evaluated.
@@ -211,7 +236,20 @@ public:
             originalArgCount = 0;
         }
     };
-    NativeDefaultParamState nativeDefaultParamState;
+    std::vector<NativeDefaultParamState> nativeDefaultParamStack;
+
+    NativeDefaultParamState& pushNativeDefaultParam() {
+        nativeDefaultParamStack.emplace_back();
+        auto& state = nativeDefaultParamStack.back();
+        state.active = true;
+        return state;
+    }
+    NativeDefaultParamState& currentNativeDefaultParam() { return nativeDefaultParamStack.back(); }
+    void popNativeDefaultParam() {
+        if (!nativeDefaultParamStack.empty())
+            nativeDefaultParamStack.pop_back();
+    }
+    bool hasNativeDefaultParam() const { return !nativeDefaultParamStack.empty(); }
 
     // State for deferred native function call when params need async type conversion.
     // Used when a native function has typed params that require executing Roxal code
@@ -253,7 +291,20 @@ public:
             originalArgCount = 0;
         }
     };
-    NativeParamConversionState nativeParamConversionState;
+    std::vector<NativeParamConversionState> nativeParamConversionStack;
+
+    NativeParamConversionState& pushNativeParamConversion() {
+        nativeParamConversionStack.emplace_back();
+        auto& state = nativeParamConversionStack.back();
+        state.active = true;
+        return state;
+    }
+    NativeParamConversionState& currentNativeParamConversion() { return nativeParamConversionStack.back(); }
+    void popNativeParamConversion() {
+        if (!nativeParamConversionStack.empty())
+            nativeParamConversionStack.pop_back();
+    }
+    bool hasNativeParamConversion() const { return !nativeParamConversionStack.empty(); }
 
     // State for deferred closure (Roxal function) call when params need async type conversion.
     // Mirrors NativeParamConversionState but stores results directly into frame stack slots
@@ -284,7 +335,20 @@ public:
             moduleType = Value::nilVal();
         }
     };
-    ClosureParamConversionState closureParamConversionState;
+    std::vector<ClosureParamConversionState> closureParamConversionStack;
+
+    ClosureParamConversionState& pushClosureParamConversion() {
+        closureParamConversionStack.emplace_back();
+        auto& state = closureParamConversionStack.back();
+        state.active = true;
+        return state;
+    }
+    ClosureParamConversionState& currentClosureParamConversion() { return closureParamConversionStack.back(); }
+    void popClosureParamConversion() {
+        if (!closureParamConversionStack.empty())
+            closureParamConversionStack.pop_back();
+    }
+    bool hasClosureParamConversion() const { return !closureParamConversionStack.empty(); }
 
     void pruneEventRegistrations();
 

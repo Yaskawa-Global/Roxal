@@ -1,0 +1,9 @@
+// Test: list.reduce nested inside list.map — cross continuation nesting
+var rows = [[1, 2, 3], [4, 5, 6]]
+var sums = rows.map(func(row):
+  return row.reduce(func(a, b):
+    return a + b
+  , 0)
+)
+print(sums[0])
+print(sums[1])

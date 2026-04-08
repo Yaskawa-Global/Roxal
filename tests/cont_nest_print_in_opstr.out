@@ -1,0 +1,2 @@
+Logger(test)
+Verbose(Logger(test))

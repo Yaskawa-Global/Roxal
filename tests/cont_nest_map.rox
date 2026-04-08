@@ -1,5 +1,5 @@
-// Bug: list.map callback constructs @builtin object
-// nativeContinuation from list.map clobbers nested constructor
+// Test: list.map callback constructs @builtin object
+// Exercises continuation nesting: map's callback body calls a @builtin constructor.
 
 var durations = [1, 2, 3]
 var spans = durations.map(func(d):

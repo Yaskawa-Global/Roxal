@@ -691,8 +691,7 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
 
             if (!closureIndices.empty()) {
                 // Defer native call: set up state and push first closure default frame
-                auto& state = thread->nativeDefaultParamState;
-                state.active = true;
+                auto& state = thread->pushNativeDefaultParam();
                 state.nativeFunc = fn;
                 state.funcType = funcType;
                 state.staticDefaults = defaults;
@@ -720,7 +719,7 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
 
                 // Check for captured variables (not allowed in default params)
                 if (asClosure(defClosure)->upvalues.size() > 0) {
-                    state.clear();
+                    thread->popNativeDefaultParam();
                     auto paramName = params[paramIdx]->name;
                     runtimeError("Captured variables in default parameter '" + toUTF8StdString(paramName) +
                                 "' value expressions are not allowed.");
@@ -728,10 +727,9 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 }
 
                 // Set up continuation callback that will process each default value
-                auto& cont = thread->nativeContinuation;
-                cont.active = true;
+                auto& cont = thread->pushContinuation();
                 cont.state = Value::nilVal();  // State is in nativeDefaultParamState
-                cont.resultSlot = nullptr;     // We handle stack cleanup ourselves
+                cont.resultSlotIndex = -1;     // We handle stack cleanup ourselves
                 cont.onComplete = [](VM& vm, Value defaultValue) -> bool {
                     return vm.processNativeDefaultParamDispatch(defaultValue);
                 };
@@ -739,11 +737,13 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 // Push closure and call it using continuation mechanism
                 push(defClosure);
                 if (!call(asClosure(defClosure), CallSpec(0))) {
-                    state.clear();
-                    cont.clear();
+                    thread->popNativeDefaultParam();
+                    thread->popContinuation();
                     return false;
                 }
                 thread->frames.back().isContinuationCallback = true;
+                if (thread->hasContinuation())
+                    thread->currentContinuation().callbackFrameDepth = thread->frames.size();
                 return true;  // Deferred - execute() will continue with closure frame
             }
 
@@ -765,8 +765,7 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
 
                 if (!asyncConvIndices.empty()) {
                     // Defer: marshal args without converting async params, then push conversion frames
-                    auto& state = thread->nativeParamConversionState;
-                    state.active = true;
+                    auto& state = thread->pushNativeParamConversion();
                     state.nativeFunc = fn;
                     state.funcType = funcType;
                     state.callSpec = callSpec;
@@ -797,10 +796,9 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                     state.nextConversionIndex = 0;
 
                     // Set up continuation
-                    auto& cont = thread->nativeContinuation;
-                    cont.active = true;
+                    auto& cont = thread->pushContinuation();
                     cont.state = Value::nilVal();
-                    cont.resultSlot = nullptr;
+                    cont.resultSlotIndex = -1;
                     cont.onComplete = [](VM& vm, Value convertedValue) -> bool {
                         return vm.processNativeParamConversion(convertedValue);
                     };
@@ -811,8 +809,8 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                     const auto& firstParamType = params[firstParamIdx]->type.value();
                     bool nativeStrictCtx2 = !thread->frames.empty() && (thread->frames.end()-1)->strict;
                     if (!pushParamConversionFrame(state.argsBuffer[firstBufIdx], firstParamType, nativeStrictCtx2)) {
-                        state.clear();
-                        cont.clear();
+                        thread->popNativeParamConversion();
+                        thread->popContinuation();
                         runtimeError("Failed to set up parameter conversion");
                         return false;
                     }
@@ -880,11 +878,11 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 // Native set up a continuation — ensure resultSlot/stackBase are set
                 // so processContinuationDispatch (or unwindFrame on exception) can
                 // clean up the original callee+args area.
-                auto& cont = thread->nativeContinuation;
-                if (cont.active && !cont.resultSlot) {
-                    size_t calleePos = stackDepthBefore - callSpec.argCount - 1;
-                    cont.resultSlot = &*(thread->stack.begin() + calleePos);
-                    cont.stackBase = thread->stack.begin() + calleePos + 1;
+                if (thread->hasContinuation() && thread->currentContinuation().resultSlotIndex < 0) {
+                    auto& cont = thread->currentContinuation();
+                    ptrdiff_t calleePos = static_cast<ptrdiff_t>(stackDepthBefore - callSpec.argCount - 1);
+                    cont.resultSlotIndex = calleePos;
+                    cont.stackBaseIndex = calleePos + 1;
                 }
                 return true;
             }
@@ -956,11 +954,11 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 return true;
             }
             if (thisCallPushedFrames2) {
-                auto& cont = thread->nativeContinuation;
-                if (cont.active && !cont.resultSlot) {
-                    size_t calleePos = stackDepthBefore - callSpec.argCount - 1;
-                    cont.resultSlot = &*(thread->stack.begin() + calleePos);
-                    cont.stackBase = thread->stack.begin() + calleePos + 1;
+                if (thread->hasContinuation() && thread->currentContinuation().resultSlotIndex < 0) {
+                    auto& cont = thread->currentContinuation();
+                    ptrdiff_t calleePos = static_cast<ptrdiff_t>(stackDepthBefore - callSpec.argCount - 1);
+                    cont.resultSlotIndex = calleePos;
+                    cont.stackBaseIndex = calleePos + 1;
                 }
                 return true;
             }
@@ -2680,15 +2678,13 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 calleeVal = Value::boundMethodVal(inst, initMethod->closure);
                             }
                             *(thread->stackTop - callSpec.argCount - 1) = calleeVal;
-                            bool contWasActive = thread->nativeContinuation.active;
+                            size_t contDepthBefore = thread->nativeContinuationStack.size();
                             bool ok = callValue(calleeVal, callSpec);
-                            // Skip instance restoration only if THIS callValue activated a
+                            // Skip instance restoration only if THIS callValue pushed a
                             // new continuation (i.e., the native init was deferred for param
-                            // default/conversion evaluation).  If nativeContinuation was
-                            // already active from an outer context (e.g. list.map, print
-                            // param conversion), the inner native init completed synchronously
-                            // and we must restore the instance.
-                            bool deferredByThisCall = !contWasActive && thread->nativeContinuation.active;
+                            // default/conversion evaluation).  If the stack depth didn't
+                            // change, the native init completed synchronously.
+                            bool deferredByThisCall = thread->nativeContinuationStack.size() > contDepthBefore;
                             if (isNative && !deferredByThisCall)
                                 *(thread->stackTop - 1) = inst; // native init returns instance
                             return ok;
@@ -5023,8 +5019,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
                         // Handle async conversions by setting up state and pushing first frame
                         if (!asyncIndices.empty()) {
-                            auto& state = thread->closureParamConversionState;
-                            state.active = true;
+                            auto& state = thread->pushClosureParamConversion();
                             state.targetFrameDepth = thread->frames.size();
                             state.conversionParamIndices = std::move(asyncIndices);
                             state.nextConversionIndex = 0;
@@ -5034,7 +5029,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                             size_t firstIdx = state.conversionParamIndices[0];
                             Value& firstSlot = *(frame->slots + 1 + firstIdx);
                             if (!pushParamConversionFrame(firstSlot, params[firstIdx]->type.value(), strictCtx)) {
-                                state.clear();
+                                thread->popClosureParamConversion();
                                 runtimeError("Failed to set up parameter conversion");
                                 return errorReturn;
                             }
@@ -8240,13 +8235,14 @@ bool VM::pushContinuationCall(ObjClosure* closure, const std::vector<Value>& arg
         return false;
 
     thread->frames.back().isContinuationCallback = true;
+    if (thread->hasContinuation())
+        thread->currentContinuation().callbackFrameDepth = thread->frames.size();
     return true;
 }
 
 void VM::clearContinuation()
 {
-    thread->nativeContinuation.clear();
-    thread->continuationCallbackReturned = false;
+    thread->popContinuation();
 }
 
 bool VM::processContinuationDispatch()
@@ -8255,40 +8251,62 @@ bool VM::processContinuationDispatch()
         return true;
 
     thread->continuationCallbackReturned = false;
-    auto& cont = thread->nativeContinuation;
 
-    if (!cont.active || !cont.onComplete) {
+    if (!thread->hasContinuation()) {
         // Check for closure param conversion (uses isContinuationCallback but not nativeContinuation)
-        if (thread->closureParamConversionState.active) {
+        if (thread->hasClosureParamConversion()) {
             Value result = pop();
             return processClosureParamConversion(result);
         }
         return true;  // No active continuation
     }
 
+    // Check if a closure param conversion is active AND its callback frame just returned
+    // (i.e., the returning frame is deeper than the native continuation's callback frame).
+    // This happens when a Roxal function with typed params is called inside a native
+    // param conversion body.
+    if (thread->hasClosureParamConversion()) {
+        auto& closureConv = thread->currentClosureParamConversion();
+        auto& cont = thread->currentContinuation();
+        // If the current frame depth is past the native continuation's callback depth,
+        // this return belongs to the closure param conversion, not the native continuation.
+        if (thread->frames.size() >= closureConv.targetFrameDepth
+            && cont.callbackFrameDepth > 0
+            && thread->frames.size() < cont.callbackFrameDepth) {
+            Value result = pop();
+            return processClosureParamConversion(result);
+        }
+    }
+
+    auto& cont = thread->currentContinuation();
+
     // Get closure return value from stack
     Value result = pop();
 
     // Invoke handler - it may push another frame or finalize
+    size_t contDepth = thread->nativeContinuationStack.size();
     bool ok = cont.onComplete(*this, result);
 
-    // If handler didn't push another continuation frame, we're done
-    if (thread->frames.empty() ||
-        !thread->frames.back().isContinuationCallback) {
-        // Write final result to the original call's result slot and restore stack
-        if (cont.resultSlot) {
-            // The handler pushed the final result; pop it, then pop the original
-            // method call's args and receiver (to properly clean up Values),
-            // then push the final result back
-            Value finalResult = pop();
-            // Pop items from current position down to (and including) the result slot
-            // stackBase is one past resultSlot, so we pop (stackTop - stackBase + 1) items
-            size_t itemsToPop = static_cast<size_t>(thread->stackTop - cont.stackBase) + 1;
+    // If handler pushed another callback frame for this continuation (next iteration),
+    // continue. Use callbackFrameDepth to distinguish "this continuation's next iteration"
+    // from "an outer continuation's callback frame that happens to be on top."
+    if (!thread->frames.empty() && thread->frames.back().isContinuationCallback
+        && thread->frames.size() == cont.callbackFrameDepth)
+        return ok;
+
+    // This continuation is done — clean up
+    // Re-acquire reference since stack may have changed during onComplete
+    auto& doneCont = thread->currentContinuation();
+    if (doneCont.resultSlotIndex >= 0) {
+        Value finalResult = pop();
+        auto stackBase = thread->stack.begin() + doneCont.stackBaseIndex;
+        if (thread->stackTop >= stackBase) {
+            size_t itemsToPop = static_cast<size_t>(thread->stackTop - stackBase) + 1;
             popN(itemsToPop);
-            push(finalResult);
         }
-        clearContinuation();
+        push(finalResult);
     }
+    clearContinuation();
 
     return ok;
 }
@@ -8296,9 +8314,9 @@ bool VM::processContinuationDispatch()
 bool VM::processNativeDefaultParamDispatch(Value defaultValue)
 {
 
-    auto& state = thread->nativeDefaultParamState;
-    if (!state.active)
+    if (!thread->hasNativeDefaultParam())
         return true;
+    auto& state = thread->currentNativeDefaultParam();
 
     // Store the result in the args buffer at the correct position
     size_t paramIdx = state.closureParamIndices[state.nextClosureIndex];
@@ -8330,7 +8348,7 @@ bool VM::processNativeDefaultParamDispatch(Value defaultValue)
         // Check for captured variables (not allowed in default params)
         if (asClosure(defClosure)->upvalues.size() > 0) {
             auto paramName = params[nextParamIdx]->name;
-            state.clear();
+            thread->popNativeDefaultParam();
             runtimeError("Captured variables in default parameter '" + toUTF8StdString(paramName) +
                         "' value expressions are not allowed.");
             return false;
@@ -8339,16 +8357,18 @@ bool VM::processNativeDefaultParamDispatch(Value defaultValue)
         // Push closure and call it using continuation mechanism
         push(defClosure);
         if (!call(asClosure(defClosure), CallSpec(0))) {
-            state.clear();
+            thread->popNativeDefaultParam();
             clearContinuation();
             return false;
         }
         thread->frames.back().isContinuationCallback = true;
+        if (thread->hasContinuation())
+            thread->currentContinuation().callbackFrameDepth = thread->frames.size();
         return true;  // Continue with next closure frame
     }
 
-    // All defaults evaluated - clear continuation and call the native function
-    clearContinuation();
+    // All defaults evaluated — call the native function
+    // Note: don't clearContinuation() here — processContinuationDispatch handles it
     NativeFn fn = state.nativeFunc;
     size_t actual = state.argsBuffer.size();
     Value* buf = state.argsBuffer.data();
@@ -8360,14 +8380,12 @@ bool VM::processNativeDefaultParamDispatch(Value defaultValue)
                 auto s = buf[i].tryResolveFuture();
                 if (s == FutureStatus::Pending) {
                     thread->awaitedFuture = buf[i];
-                    // Can't defer further - state is consumed. This is an edge case.
-                    // For now, clear and error.
-                    state.clear();
+                    thread->popNativeDefaultParam();
                     runtimeError("Cannot await future in native function with deferred default params");
                     return false;
                 }
                 if (s == FutureStatus::Error) {
-                    state.clear();
+                    thread->popNativeDefaultParam();
                     return false;
                 }
             }
@@ -8399,7 +8417,7 @@ bool VM::processNativeDefaultParamDispatch(Value defaultValue)
     *(thread->stackTop - argCount - 1) = finalResult;
     popN(argCount);
 
-    state.clear();
+    thread->popNativeDefaultParam();
     return true;
 }
 
@@ -8645,6 +8663,8 @@ bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, b
             if (!call(asClosure(closure), CallSpec(0)))
                 return false;
             thread->frames.back().isContinuationCallback = true;
+            if (thread->hasContinuation())
+                thread->currentContinuation().callbackFrameDepth = thread->frames.size();
             return true;
         }
     }
@@ -8684,6 +8704,8 @@ bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, b
                     if (!callValue(typeVal, CallSpec(1)))
                         return false;
                     thread->frames.back().isContinuationCallback = true;
+                    if (thread->hasContinuation())
+                        thread->currentContinuation().callbackFrameDepth = thread->frames.size();
                     return true;
                 }
 
@@ -8701,6 +8723,8 @@ bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, b
                         if (!call(asClosure(closure), CallSpec(0)))
                             return false;
                         thread->frames.back().isContinuationCallback = true;
+                        if (thread->hasContinuation())
+                            thread->currentContinuation().callbackFrameDepth = thread->frames.size();
                         return true;
                     }
                 }
@@ -8714,9 +8738,9 @@ bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, b
 
 bool VM::processNativeParamConversion(Value convertedValue)
 {
-    auto& state = thread->nativeParamConversionState;
-    if (!state.active)
+    if (!thread->hasNativeParamConversion())
         return true;
+    auto& state = thread->currentNativeParamConversion();
 
     // Store the converted value in the args buffer
     size_t paramIdx = state.conversionParamIndices[state.nextConversionIndex];
@@ -8745,7 +8769,7 @@ bool VM::processNativeParamConversion(Value convertedValue)
         Value val = state.argsBuffer[nextBufIdx];
         bool nativeStrict = !thread->frames.empty() && (thread->frames.end()-1)->strict;
         if (!pushParamConversionFrame(val, params[nextParamIdx]->type.value(), nativeStrict)) {
-            state.clear();
+            thread->popNativeParamConversion();
             clearContinuation();
             runtimeError("Failed to convert parameter for native function call");
             return false;
@@ -8754,7 +8778,7 @@ bool VM::processNativeParamConversion(Value convertedValue)
     }
 
     // All conversions done — call the native function
-    clearContinuation();
+    // Note: don't clearContinuation() here — processContinuationDispatch handles it
     NativeFn fn = state.nativeFunc;
     size_t actual = state.argsBuffer.size();
     Value* buf = state.argsBuffer.data();
@@ -8766,12 +8790,12 @@ bool VM::processNativeParamConversion(Value convertedValue)
                 auto s = buf[i].tryResolveFuture();
                 if (s == FutureStatus::Pending) {
                     thread->awaitedFuture = buf[i];
-                    state.clear();
+                    thread->popNativeParamConversion();
                     runtimeError("Cannot await future in native function with deferred param conversion");
                     return false;
                 }
                 if (s == FutureStatus::Error) {
-                    state.clear();
+                    thread->popNativeParamConversion();
                     return false;
                 }
             }
@@ -8796,23 +8820,24 @@ bool VM::processNativeParamConversion(Value convertedValue)
     *(thread->stackTop - argCount - 1) = finalResult;
     popN(argCount);
 
-    state.clear();
+    thread->popNativeParamConversion();
     return true;
 }
 
 
 bool VM::processClosureParamConversion(Value convertedValue)
 {
-    auto& state = thread->closureParamConversionState;
-    if (!state.active)
+    if (!thread->hasClosureParamConversion())
         return true;
+
+    auto& state = thread->currentClosureParamConversion();
 
     // Store the converted value directly into the target frame's param slot
     size_t paramIdx = state.conversionParamIndices[state.nextConversionIndex];
 
     // Find the target frame by depth
     if (thread->frames.size() < state.targetFrameDepth) {
-        state.clear();
+        thread->popClosureParamConversion();
         runtimeError("Closure param conversion: target frame no longer exists");
         return false;
     }
@@ -8840,7 +8865,7 @@ bool VM::processClosureParamConversion(Value convertedValue)
         auto& params = state.funcType->func.value().params;
         bool strictCtx = targetFrame->callerStrict;
         if (!pushParamConversionFrame(nextSlot, params[nextIdx]->type.value(), strictCtx)) {
-            state.clear();
+            thread->popClosureParamConversion();
             runtimeError("Failed to convert parameter for function call");
             return false;
         }
@@ -8860,7 +8885,7 @@ bool VM::processClosureParamConversion(Value convertedValue)
         }
     }
 
-    state.clear();
+    thread->popClosureParamConversion();
     return true;
 }
 
@@ -8877,18 +8902,20 @@ void VM::unwindFrame()
     }
     // If a continuation callback frame is being unwound, clear the continuation state
     // and clean up the original method call's stack area (receiver + args)
-    if (f.isContinuationCallback && thread->nativeContinuation.active) {
-        auto& cont = thread->nativeContinuation;
-        if (cont.resultSlot) {
+    if (f.isContinuationCallback && thread->hasContinuation()) {
+        auto& cont = thread->currentContinuation();
+        if (cont.resultSlotIndex >= 0) {
             // The original method call's args are below this frame's slots.
             // We need to mark them for cleanup. We can't pop them now (frame's stack
             // area hasn't been popped yet), so we adjust the frame's slots pointer
             // to include the original args. This way, the normal unwinding will
             // pop everything including the original args.
             // Calculate: slots should be at resultSlot (to include receiver)
-            f.slots = cont.resultSlot;
+            f.slots = &*(thread->stack.begin() + cont.resultSlotIndex);
         }
         clearContinuation();
+    } else if (f.isContinuationCallback && thread->hasClosureParamConversion()) {
+        thread->popClosureParamConversion();
     }
     closeUpvalues(f.slots);
     size_t popCount = &(*thread->stackTop) - f.slots;
@@ -10199,14 +10226,13 @@ Value VM::list_filter_builtin(ArgsView args)
     asDict(state)->store(Value::stringVal(toUnicodeString("index")), Value::intVal(0));
     asDict(state)->store(Value::stringVal(toUnicodeString("arity")), Value::intVal(arity));
 
-    auto& cont = thread->nativeContinuation;
-    cont.active = true;
+    auto& cont = thread->pushContinuation();
     cont.state = state;
     // Set up stack cleanup: result goes to receiver slot, stack shrinks by arg count
-    cont.resultSlot = &*(thread->stackTop - args.size());  // receiver position
-    cont.stackBase = thread->stackTop - (args.size() - 1); // one past result slot
+    cont.resultSlotIndex = static_cast<ptrdiff_t>((thread->stackTop - thread->stack.begin()) - args.size());
+    cont.stackBaseIndex = cont.resultSlotIndex + 1;
     cont.onComplete = [](VM& vm, Value callbackResult) -> bool {
-        auto& st = vm.thread->nativeContinuation.state;
+        auto& st = vm.thread->currentContinuation().state;
         auto* d = asDict(st);
         ObjList* list = asList(d->at(Value::stringVal(toUnicodeString("list"))));
         ObjList* result = asList(d->at(Value::stringVal(toUnicodeString("result"))));
@@ -10277,14 +10303,13 @@ Value VM::list_map_builtin(ArgsView args)
     asDict(state)->store(Value::stringVal(toUnicodeString("index")), Value::intVal(0));
     asDict(state)->store(Value::stringVal(toUnicodeString("arity")), Value::intVal(arity));
 
-    auto& cont = thread->nativeContinuation;
-    cont.active = true;
+    auto& cont = thread->pushContinuation();
     cont.state = state;
     // Set up stack cleanup: result goes to receiver slot, stack shrinks by arg count
-    cont.resultSlot = &*(thread->stackTop - args.size());  // receiver position
-    cont.stackBase = thread->stackTop - (args.size() - 1); // one past result slot
+    cont.resultSlotIndex = static_cast<ptrdiff_t>((thread->stackTop - thread->stack.begin()) - args.size());
+    cont.stackBaseIndex = cont.resultSlotIndex + 1;
     cont.onComplete = [](VM& vm, Value callbackResult) -> bool {
-        auto& st = vm.thread->nativeContinuation.state;
+        auto& st = vm.thread->currentContinuation().state;
         auto* d = asDict(st);
         ObjList* list = asList(d->at(Value::stringVal(toUnicodeString("list"))));
         ObjList* result = asList(d->at(Value::stringVal(toUnicodeString("result"))));
@@ -10354,14 +10379,13 @@ Value VM::list_reduce_builtin(ArgsView args)
     asDict(state)->store(Value::stringVal(toUnicodeString("index")), Value::intVal(0));
     asDict(state)->store(Value::stringVal(toUnicodeString("arity")), Value::intVal(arity));
 
-    auto& cont = thread->nativeContinuation;
-    cont.active = true;
+    auto& cont = thread->pushContinuation();
     cont.state = state;
     // Set up stack cleanup: result goes to receiver slot, stack shrinks by arg count
-    cont.resultSlot = &*(thread->stackTop - args.size());  // receiver position
-    cont.stackBase = thread->stackTop - (args.size() - 1); // one past result slot
+    cont.resultSlotIndex = static_cast<ptrdiff_t>((thread->stackTop - thread->stack.begin()) - args.size());
+    cont.stackBaseIndex = cont.resultSlotIndex + 1;
     cont.onComplete = [](VM& vm, Value callbackResult) -> bool {
-        auto& st = vm.thread->nativeContinuation.state;
+        auto& st = vm.thread->currentContinuation().state;
         auto* d = asDict(st);
         ObjList* list = asList(d->at(Value::stringVal(toUnicodeString("list"))));
         int idx = d->at(Value::stringVal(toUnicodeString("index"))).asInt();

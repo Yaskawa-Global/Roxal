@@ -1,0 +1,12 @@
+// Test: list.filter nested inside list.map — cross continuation nesting
+var lists = [[1, 2, 3], [4, 5, 6]]
+var evens = lists.map(func(lst):
+  return lst.filter(func(x):
+    return x % 2 == 0
+  )
+)
+print(len(evens[0]))
+print(evens[0][0])
+print(len(evens[1]))
+print(evens[1][0])
+print(evens[1][1])

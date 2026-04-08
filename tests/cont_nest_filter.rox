@@ -1,5 +1,5 @@
-// Bug: list.filter predicate triggers string conversion with nested @builtin constructor
-// nativeContinuation from list.filter + string param conversion + nested constructor
+// Test: list.filter predicate with string conversion and nested @builtin constructor
+// Exercises continuation nesting: filter + string param conversion + constructor.
 
 type Wrapper object:
   private var _span:TimeSpan

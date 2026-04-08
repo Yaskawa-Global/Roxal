@@ -1,6 +1,6 @@
-// Bug: print() implicit param conversion + nested @builtin constructor
-// nativeContinuation.active from outer param conversion causes
-// callValue to skip instance restoration for the nested constructor
+// Test: print() implicit param conversion with nested @builtin constructor
+// Exercises continuation nesting: print's param conversion frame contains
+// a @builtin constructor call (TimeSpan) that must complete correctly.
 
 type Wrapper object:
   private var _span:TimeSpan

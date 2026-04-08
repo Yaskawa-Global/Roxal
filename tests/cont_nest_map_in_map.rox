@@ -1,0 +1,11 @@
+// Test: nested list.map — same-kind continuation nesting
+var grid = [[1, 2], [3, 4]]
+var doubled = grid.map(func(row):
+  return row.map(func(x):
+    return x * 2
+  )
+)
+print(doubled[0][0])
+print(doubled[0][1])
+print(doubled[1][0])
+print(doubled[1][1])
