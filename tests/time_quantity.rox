@@ -1,0 +1,84 @@
+// TimeSpan arithmetic
+var s1 = TimeSpan(seconds=10)
+var s2 = TimeSpan(seconds=5)
+print((s1 + s2).total_seconds())
+print((s1 - s2).total_seconds())
+print((-s1).total_seconds())
+
+// TimeSpan + quantity
+print((s1 + 5s).total_seconds())
+print((s1 - 2s).total_seconds())
+
+// TimeSpan comparisons
+print(s1 > s2)
+print(s1 < s2)
+print(s1 == s1)
+print(s1 != s2)
+print(s1 >= s1)
+print(s2 <= s1)
+
+// TimeSpan compare with quantity
+print(s1 == 10s)
+print(s1 < 20s)
+print(s1 > 3s)
+
+// TimeSpan string conversion
+print(s1)
+print(TimeSpan(hours=1, minutes=30))
+
+// TimeSpan negation
+var neg = -TimeSpan(seconds=3)
+print(neg.total_seconds())
+
+// Time arithmetic
+var t1 = Time.from_parts(seconds=1000, micros=0, kind='wall')
+var t2 = Time.from_parts(seconds=1010, micros=0, kind='wall')
+var diff = t2 - t1
+print(diff.total_seconds())
+
+// Time + TimeSpan
+var t3 = t1 + TimeSpan(seconds=30)
+print(t3.seconds())
+
+// Time + quantity
+var t4 = t1 + 30s
+print(t4.seconds())
+
+// Time - TimeSpan
+var t5 = t2 - TimeSpan(seconds=5)
+print(t5.seconds())
+
+// Time - quantity
+var t6 = t2 - 5s
+print(t6.seconds())
+
+// Time comparisons
+print(t1 < t2)
+print(t2 > t1)
+print(t1 == t1)
+print(t1 != t2)
+print(t1 <= t1)
+print(t2 >= t1)
+
+// Time string (just check it doesn't crash - output is time-dependent for wall_now)
+var tstr = string(Time.from_parts(seconds=0, micros=500, kind='steady'))
+print(tstr)
+
+// quantity -> TimeSpan conversion
+var q = 5s
+var span = TimeSpan(q)
+print(span.total_seconds())
+
+// TimeSpan -> quantity conversion
+var span2 = TimeSpan(seconds=10)
+var q2 = quantity(span2)
+print(q2)
+
+// quantity comparison with TimeSpan
+print(10s == TimeSpan(seconds=10))
+print(5s < TimeSpan(seconds=10))
+print(20s > TimeSpan(seconds=10))
+
+// quantity arithmetic with TimeSpan
+print((5s + TimeSpan(seconds=3)).seconds)
+print((10s - TimeSpan(seconds=4)).seconds)

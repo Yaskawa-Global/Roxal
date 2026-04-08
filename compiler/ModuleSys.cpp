@@ -359,10 +359,10 @@ int64_t microsFromSeconds(double seconds, const char* context)
     return static_cast<int64_t>(std::llround(totalMicros));
 }
 
-int64_t quantityTimeMicros(const Value& instanceValue)
+int64_t quantityTimeMicros(const Value& instanceValue, const char* context = "wait duration")
 {
     if (!isObjectInstance(instanceValue))
-        throw std::runtime_error("expected object instance for wait duration");
+        throw std::runtime_error(std::string("expected object instance for ") + context);
     Value dimsValue = asObjectInstance(instanceValue)->getProperty("_d");
     if (!isList(dimsValue) || asList(dimsValue)->length() != 4)
         throw std::runtime_error("expected four-element list property '_d'");
@@ -372,9 +372,9 @@ int64_t quantityTimeMicros(const Value& instanceValue)
     int32_t massDim = readListIntElement(dimsValue, 2, "_d");
     int32_t angleDim = readListIntElement(dimsValue, 3, "_d");
     if (lenDim != 0 || timeDim != 1 || massDim != 0 || angleDim != 0)
-        throw std::invalid_argument("wait duration quantity must have time dimensions");
+        throw std::invalid_argument(std::string(context) + " quantity must have time dimensions");
 
-    return microsFromSeconds(readNumberProperty(instanceValue, "_v"), "wait duration");
+    return microsFromSeconds(readNumberProperty(instanceValue, "_v"), context);
 }
 
 int64_t waitFieldMicros(int64_t value, int64_t scale)
@@ -403,6 +403,21 @@ int64_t spanTotalMicros(ObjectInstance* inst)
     int64_t seconds = readIntProperty(inst, "_seconds");
     int64_t micros = readIntProperty(inst, "_micros");
     return seconds * MICROS_PER_SECOND + micros;
+}
+
+// Extract total microseconds from a TimeSpan instance or time-dimensioned quantity.
+// Throws if the value is neither.
+int64_t otherToTimeMicros(const Value& val, ObjObjectType* timeSpanTypeObj,
+                          ObjObjectType* quantityTypeObj, const char* opName)
+{
+    if (isObjectInstance(val)) {
+        ObjectInstance* inst = asObjectInstance(val);
+        if (instanceOf(inst, timeSpanTypeObj))
+            return spanTotalMicros(inst);
+        if (instanceOf(inst, quantityTypeObj))
+            return quantityTimeMicros(val, opName);
+    }
+    throw std::invalid_argument(std::string(opName) + " expects TimeSpan or time quantity");
 }
 
 void assignTime(ObjectInstance* inst, int64_t totalMicros, bool steady)

@@ -149,6 +149,68 @@ type Time object:
   func from_parts(seconds:int, micros:int=0, kind:string='wall') -> Time:
     """construct a Time from explicit seconds and microseconds"""
 
+  func operator+(other):
+    """add TimeSpan or time quantity, return new Time"""
+    if other is TimeSpan:
+      var us = (_seconds * 1000000 + _micros) + (other.seconds() * 1000000 + other.microseconds())
+      return Time.from_parts(seconds=us / 1000000, micros=us % 1000000, kind=kind())
+    if other is quantity:
+      var span = TimeSpan(other)
+      return this + span
+    raise 'Time.operator+ expects TimeSpan or time quantity'
+
+  func operator-(other):
+    """subtract Time (->TimeSpan), TimeSpan or quantity (->Time)"""
+    if other is Time:
+      if _steady != other._steady:
+        raise 'Time.operator- requires both times from the same clock'
+      return diff(other)
+    if other is TimeSpan:
+      var us = (_seconds * 1000000 + _micros) - (other.seconds() * 1000000 + other.microseconds())
+      return Time.from_parts(seconds=us / 1000000, micros=us % 1000000, kind=kind())
+    if other is quantity:
+      var span = TimeSpan(other)
+      return this - span
+    raise 'Time.operator- expects Time, TimeSpan or time quantity'
+
+  func operator==(other) -> bool:
+    if other is Time:
+      if _steady != other._steady:
+        return false
+      return _seconds == other._seconds and _micros == other._micros
+    return false
+
+  func operator!=(other) -> bool:
+    if other is Time:
+      if _steady != other._steady:
+        return true
+      return _seconds != other._seconds or _micros != other._micros
+    return true
+
+  func operator<(other) -> bool:
+    if not (other is Time):
+      raise 'Time.operator< expects Time'
+    if _steady != other._steady:
+      raise 'Time.operator< requires both times from the same clock'
+    if _seconds != other._seconds:
+      return _seconds < other._seconds
+    return _micros < other._micros
+
+  func operator>(other) -> bool:
+    if not (other is Time):
+      raise 'Time.operator> expects Time'
+    if _steady != other._steady:
+      raise 'Time.operator> requires both times from the same clock'
+    if _seconds != other._seconds:
+      return _seconds > other._seconds
+    return _micros > other._micros
+
+  func operator<=(other) -> bool:
+    return not (this > other)
+
+  func operator>=(other) -> bool:
+    return not (this < other)
+
 @builtin
 type TimeSpan object:
 
@@ -202,6 +264,71 @@ type TimeSpan object:
   @builtin
   func from_fields(days:int=0, hours:int=0, minutes:int=0, seconds:int=0, millis:int=0, micros:int=0) -> TimeSpan:
     """construct a new TimeSpan from component fields"""
+
+  func operator+(other):
+    """add TimeSpan or time quantity to this span"""
+    if other is TimeSpan:
+      var us = (_seconds * 1000000 + _micros) + (other.seconds() * 1000000 + other.microseconds())
+      return TimeSpan(micros=us)
+    if other is quantity:
+      return this + TimeSpan(other)
+    raise 'TimeSpan.operator+ expects TimeSpan or time quantity'
+
+  func operator-(other):
+    """subtract TimeSpan or time quantity from this span"""
+    if other is TimeSpan:
+      var us = (_seconds * 1000000 + _micros) - (other.seconds() * 1000000 + other.microseconds())
+      return TimeSpan(micros=us)
+    if other is quantity:
+      return this - TimeSpan(other)
+    raise 'TimeSpan.operator- expects TimeSpan or time quantity'
+
+  func operator-():
+    """negate this span"""
+    return TimeSpan(micros=-(_seconds * 1000000 + _micros))
+
+  func operator==(other) -> bool:
+    if other is TimeSpan:
+      return _seconds == other.seconds() and _micros == other.microseconds()
+    if other is quantity:
+      return this == TimeSpan(other)
+    return false
+
+  func operator!=(other) -> bool:
+    if other is TimeSpan:
+      return _seconds != other.seconds() or _micros != other.microseconds()
+    if other is quantity:
+      return this != TimeSpan(other)
+    return true
+
+  func operator<(other) -> bool:
+    if other is quantity:
+      return this < TimeSpan(other)
+    if not (other is TimeSpan):
+      raise 'TimeSpan.operator< expects TimeSpan or time quantity'
+    var lhs = _seconds * 1000000 + _micros
+    var rhs = other.seconds() * 1000000 + other.microseconds()
+    return lhs < rhs
+
+  func operator>(other) -> bool:
+    if other is quantity:
+      return this > TimeSpan(other)
+    if not (other is TimeSpan):
+      raise 'TimeSpan.operator> expects TimeSpan or time quantity'
+    var lhs = _seconds * 1000000 + _micros
+    var rhs = other.seconds() * 1000000 + other.microseconds()
+    return lhs > rhs
+
+  func operator<=(other) -> bool:
+    return not (this > other)
+
+  func operator>=(other) -> bool:
+    return not (this < other)
+
+  @implicit
+  func operator quantity() -> quantity:
+    """convert to a time-dimensioned quantity"""
+    return quantity(v=total_seconds(), d=[0, 1, 0, 0])
 
 @builtin
 func _clock() -> real:
@@ -332,16 +459,46 @@ type quantity object:
 
   // --- arithmetic operators ---
 
-  func operator+(other :quantity) -> quantity:
-    check_same_dim(other, '+')
-    return quantity(v=_v + other._v, d=_d)
-
-  func operator-(other :quantity) -> quantity:
-    check_same_dim(other, '-')
-    return quantity(v=_v - other._v, d=_d)
-
   func operator-() -> quantity:
     return quantity(v=-_v, d=_d)
+
+  // self + other (self is on the left)
+  func loperator+(other) -> quantity:
+    if other is quantity:
+      check_same_dim(other, '+')
+      return quantity(v=_v + other._v, d=_d)
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in +: ' + dim_label() + ' vs time'
+      return quantity(v=_v + other.total_seconds(), d=[0,1,0,0])
+    raise 'unsupported operand type for quantity +'
+
+  // other + self (self is on the right)
+  func roperator+(other) -> quantity:
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in +: time vs ' + dim_label()
+      return quantity(v=other.total_seconds() + _v, d=[0,1,0,0])
+    raise 'unsupported operand type for quantity +'
+
+  // self - other (self is on the left)
+  func loperator-(other) -> quantity:
+    if other is quantity:
+      check_same_dim(other, '-')
+      return quantity(v=_v - other._v, d=_d)
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in -: ' + dim_label() + ' vs time'
+      return quantity(v=_v - other.total_seconds(), d=[0,1,0,0])
+    raise 'unsupported operand type for quantity -'
+
+  // other - self (self is on the right)
+  func roperator-(other) -> quantity:
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in -: time vs ' + dim_label()
+      return quantity(v=other.total_seconds() - _v, d=[0,1,0,0])
+    raise 'unsupported operand type for quantity -'
 
   // quantity * other
   func loperator*(other) -> quantity:
@@ -372,6 +529,10 @@ type quantity object:
   // --- comparison operators ---
 
   func operator==(other) -> bool:
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in ==: ' + dim_label() + ' vs time'
+      return _v == other.total_seconds()
     if other is quantity:
       check_same_dim(other, '==')
       return _v == other._v
@@ -381,6 +542,10 @@ type quantity object:
     return false
 
   func operator!=(other) -> bool:
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in !=: ' + dim_label() + ' vs time'
+      return _v != other.total_seconds()
     if other is quantity:
       check_same_dim(other, '!=')
       return _v != other._v
@@ -388,21 +553,45 @@ type quantity object:
       return _v != 0.0
     return true
 
-  func operator<(other :quantity) -> bool:
-    check_same_dim(other, '<')
-    return _v < other._v
+  func operator<(other) -> bool:
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in <: ' + dim_label() + ' vs time'
+      return _v < other.total_seconds()
+    if other is quantity:
+      check_same_dim(other, '<')
+      return _v < other._v
+    raise 'unsupported operand type for quantity <'
 
-  func operator>(other :quantity) -> bool:
-    check_same_dim(other, '>')
-    return _v > other._v
+  func operator>(other) -> bool:
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in >: ' + dim_label() + ' vs time'
+      return _v > other.total_seconds()
+    if other is quantity:
+      check_same_dim(other, '>')
+      return _v > other._v
+    raise 'unsupported operand type for quantity >'
 
-  func operator<=(other :quantity) -> bool:
-    check_same_dim(other, '<=')
-    return _v <= other._v
+  func operator<=(other) -> bool:
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in <=: ' + dim_label() + ' vs time'
+      return _v <= other.total_seconds()
+    if other is quantity:
+      check_same_dim(other, '<=')
+      return _v <= other._v
+    raise 'unsupported operand type for quantity <='
 
-  func operator>=(other :quantity) -> bool:
-    check_same_dim(other, '>=')
-    return _v >= other._v
+  func operator>=(other) -> bool:
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in >=: ' + dim_label() + ' vs time'
+      return _v >= other.total_seconds()
+    if other is quantity:
+      check_same_dim(other, '>=')
+      return _v >= other._v
+    raise 'unsupported operand type for quantity >='
 
   // --- conversion operators ---
 
@@ -410,6 +599,13 @@ type quantity object:
     if not is_dimensionless():
       raise 'cannot convert quantity with dimensions ' + dim_label() + ' to real; only dimensionless quantities can be converted'
     return _v
+
+  @implicit
+  func operator TimeSpan() -> TimeSpan:
+    if _d != [0,1,0,0]:
+      raise 'cannot convert quantity with dimensions ' + dim_label() + ' to TimeSpan; must be time dimension'
+    var total_us = int(_v * 1000000.0)
+    return TimeSpan(micros=total_us)
 
   // --- string display ---
 
