@@ -1,0 +1,32 @@
+// Test: user-defined conversion operator from one object type to another
+// e.g. operator TargetType() on SourceType
+
+type Quantity object:
+  var val :real = 0.0
+  proc init(v :real):
+    this.val = v
+  @implicit
+  func operator string():
+    return "Qty(" + string(val) + ")"
+
+type Duration object:
+  var seconds :real = 0.0
+  proc init(s :real):
+    this.seconds = s
+  @implicit
+  func operator Quantity():
+    return Quantity(seconds)
+  @implicit
+  func operator string():
+    return "Dur(" + string(seconds) + "s)"
+
+// Explicit conversion: Duration -> Quantity
+var d = Duration(5.0)
+var q = Quantity(d)
+print(q)
+
+// Implicit conversion: pass Duration where Quantity is expected
+func show_qty(q :Quantity):
+  print(q)
+
+show_qty(d)

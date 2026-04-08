@@ -2571,6 +2571,56 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
                     }
 
+                    // Check for user-defined conversion operator as explicit fallback
+                    // (e.g. Quantity(duration) where Duration has operator Quantity())
+                    // Tried when there is no init, or init can't directly accept the arg type.
+                    if (callSpec.argCount == 1
+                        && (isObjectInstance(peek(0)) || isActorInstance(peek(0)))) {
+                        // Check if init can handle this argument natively
+                        bool initCanHandle = false;
+                        if (initMethod && isClosure(initMethod->closure)) {
+                            ObjFunction* initFunc = asFunction(asClosure(initMethod->closure)->function);
+                            if (initFunc->arity == 1 && initFunc->funcType.has_value()) {
+                                auto ftype = initFunc->funcType.value();
+                                if (ftype->builtin == type::BuiltinType::Func && ftype->func.has_value()) {
+                                    const auto& params = ftype->func.value().params;
+                                    if (!params.empty() && params[0].has_value() && params[0]->type.has_value()) {
+                                        auto paramBuiltin = params[0]->type.value()->builtin;
+                                        // If init expects an object/actor, it can handle obj args
+                                        if (paramBuiltin == type::BuiltinType::Object
+                                            || paramBuiltin == type::BuiltinType::Actor)
+                                            initCanHandle = true;
+                                        // If param is untyped, init can handle anything
+                                    } else {
+                                        // Untyped param — init can handle anything
+                                        initCanHandle = true;
+                                    }
+                                }
+                            }
+                        }
+                        if (!initCanHandle) {
+                        Value arg = peek(0);
+                        Value instType = isObjectInstance(arg)
+                            ? asObjectInstance(arg)->instanceType
+                            : asActorInstance(arg)->instanceType;
+                        UnicodeString convName = UnicodeString("operator->") + type->name;
+                        int32_t convHash = convName.hashCode();
+                        bool strictCtx = !thread->frames.empty() && (thread->frames.end()-1)->strict;
+                        Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/false, strictCtx);
+                        if (!closure.isNil()) {
+                            // Remove callee+arg from stack; set up conversion call
+                            popN(callSpec.argCount + 1);
+                            thread->pendingConversions.push_back({
+                                Thread::PendingConversion::Kind::TypeConversion, Value::nilVal(), arg, thread->frames.size()
+                            });
+                            thread->conversionInProgress.push_back({arg, thread->frames.size()});
+                            push(arg); // push as receiver for method call
+                            call(asClosure(closure), CallSpec(0));
+                            return true;
+                        }
+                        }
+                    }
+
                     if (initMethod == nullptr && isExceptionType(type) && callSpec.argCount == 1) {
                         Value msg = peek(0);
                         *(thread->stackTop - callSpec.argCount - 1) = Value::exceptionVal(msg, Value::objRef(type));
@@ -3407,6 +3457,19 @@ bool VM::canConvertToType(const Value& val, const Value& targetTypeSpec, bool im
                 return true;
             }
         }
+
+        // 3b. Fall through: check for user-defined conversion operator on source (object → object)
+        if (isObjectInstance(val) || isActorInstance(val)) {
+            Value instType = isObjectInstance(val)
+                ? asObjectInstance(val)->instanceType
+                : asActorInstance(val)->instanceType;
+            UnicodeString convName = UnicodeString("operator->") + targetType->name;
+            int32_t convHash = convName.hashCode();
+            bool strictCtx = !thread->frames.empty() && (thread->frames.end()-1)->strict;
+            Value closure = const_cast<VM*>(this)->findConversionMethod(instType, convHash, implicitCall, strictCtx);
+            if (!closure.isNil())
+                return true;
+        }
     }
 
     return false;
@@ -3465,17 +3528,23 @@ VM::ConversionOutcome VM::tryConvertValue(
                 return { ConversionResult::NeedsAsyncFrame, Value::nilVal() };
             }
         }
-        // Object/Actor target with no eligible constructor
-        return { ConversionResult::Failed, Value::nilVal() };
+        // Object/Actor target with no eligible constructor — fall through to
+        // try conversion operators on the source type
     }
 
-    // 3. User-defined conversion operator (source is Object/Actor, target is builtin)
+    // 3. User-defined conversion operator (source is Object/Actor)
     if ((isObjectInstance(val) || isActorInstance(val))
         && targetVT != ValueType::Nil) {
         Value instType = isObjectInstance(val)
             ? asObjectInstance(val)->instanceType
             : asActorInstance(val)->instanceType;
-        UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(targetVT));
+        // For object/actor targets, use the specific type name (e.g. "operator->Quantity");
+        // for builtin targets, use the ValueType name (e.g. "operator->string")
+        UnicodeString convName;
+        if (ts && (targetVT == ValueType::Object || targetVT == ValueType::Actor))
+            convName = UnicodeString("operator->") + asObjectType(targetTypeSpec)->name;
+        else
+            convName = UnicodeString("operator->") + toUnicodeString(to_string(targetVT));
         int32_t convHash = convName.hashCode();
 
         // Recursion guard
@@ -8589,12 +8658,46 @@ bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, b
                 }
             }
             if (!typeVal.isNil() && isTypeSpec(typeVal)) {
-                push(typeVal);  // callee (type constructor)
-                push(val);     // argument
-                if (!callValue(typeVal, CallSpec(1)))
-                    return false;
-                thread->frames.back().isContinuationCallback = true;
-                return true;
+                // Try constructor auto-conversion first
+                ObjObjectType* targetType = asObjectType(typeVal);
+                ObjObjectType* tInit = targetType;
+                const ObjObjectType::Method* initMethod = nullptr;
+                while (tInit && !initMethod) {
+                    auto it = tInit->methods.find(asStringObj(initString)->hash);
+                    if (it != tInit->methods.end())
+                        initMethod = &it->second;
+                    else
+                        tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
+                }
+                bool hasImplicitInit = initMethod && isClosure(initMethod->closure)
+                    && asFunction(asClosure(initMethod->closure)->function)->arity == 1
+                    && hasImplicitAnnotation(initMethod->closure);
+                if (hasImplicitInit) {
+                    push(typeVal);  // callee (type constructor)
+                    push(val);     // argument
+                    if (!callValue(typeVal, CallSpec(1)))
+                        return false;
+                    thread->frames.back().isContinuationCallback = true;
+                    return true;
+                }
+
+                // Fall through: try conversion operator on source (object → object)
+                if (isObjectInstance(val) || isActorInstance(val)) {
+                    Value instType = isObjectInstance(val)
+                        ? asObjectInstance(val)->instanceType
+                        : asActorInstance(val)->instanceType;
+                    UnicodeString convName = UnicodeString("operator->") + targetType->name;
+                    int32_t convHash = convName.hashCode();
+                    Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true, strictCtx);
+                    if (!closure.isNil()) {
+                        thread->conversionInProgress.push_back({val, thread->frames.size()});
+                        push(val); // push as receiver for method call
+                        if (!call(asClosure(closure), CallSpec(0)))
+                            return false;
+                        thread->frames.back().isContinuationCallback = true;
+                        return true;
+                    }
+                }
             }
         }
     }

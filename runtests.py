@@ -201,6 +201,7 @@ tests = [
     'operator_conv_string_inherit', 'operator_conv_string_strict',
     'operator_conv_string_implicit',
     'operator_conv_proc_err', 'operator_conv_arity_err', 'operator_conv_rettype_err',
+    'operator_conv_object',
     'suffix_basic', 'suffix_braced', 'suffix_compound', 'suffix_string',
     'suffix_unknown_err', 'suffix_edge_cases',
     'quantity_basic',
