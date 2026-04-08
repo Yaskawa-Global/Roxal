@@ -155,7 +155,7 @@ tests = [
     'operator_overload_proc_err', 'operator_overload_unpaired_err', 'operator_overload_both_err',
     'complex_type',
     'typededucer_binop', 'typededucer_ops', 'typededucer_until', 'typededucer_bitwise',
-    'time_basic', 'time_quantity',
+    'time_basic', 'time_quantity', 'time_quantity_arith',
     'cont_nest_print', 'cont_nest_map', 'cont_nest_filter',
     'cont_nest_map_in_map', 'cont_nest_filter_in_map', 'cont_nest_reduce_in_map',
     'cont_nest_print_in_opstr', 'cont_nest_closure_conv',
