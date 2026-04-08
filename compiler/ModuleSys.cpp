@@ -73,8 +73,8 @@ int64_t addChecked(int64_t total, int64_t delta)
     return total + delta;
 }
 
-int64_t durationFromFields(int days, int hours, int minutes, int seconds,
-                           int millis, int micros)
+int64_t durationFromFields(int64_t days, int64_t hours, int64_t minutes, int64_t seconds,
+                           int64_t millis, int64_t micros)
 {
     int64_t total = 0;
     total = addChecked(total, static_cast<int64_t>(days) * MICROS_PER_DAY);
@@ -2634,7 +2634,7 @@ Value ModuleSys::timespan_init_native(VM& vm, ArgsView args)
 
     ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.init", "TimeSpan");
 
-    auto readArg = [&](size_t index, const char* name) -> int {
+    auto readArg = [&](size_t index, const char* name) -> int64_t {
         if (index >= args.size())
             return 0;
         if (!args[index].isNumber())
@@ -2642,12 +2642,12 @@ Value ModuleSys::timespan_init_native(VM& vm, ArgsView args)
         return toType(ValueType::Int, args[index], false).asInt();
     };
 
-    int days = readArg(1, "days");
-    int hours = readArg(2, "hours");
-    int minutes = readArg(3, "minutes");
-    int seconds = readArg(4, "seconds");
-    int millis = readArg(5, "millis");
-    int micros = readArg(6, "micros");
+    int64_t days = readArg(1, "days");
+    int64_t hours = readArg(2, "hours");
+    int64_t minutes = readArg(3, "minutes");
+    int64_t seconds = readArg(4, "seconds");
+    int64_t millis = readArg(5, "millis");
+    int64_t micros = readArg(6, "micros");
 
     int64_t total = durationFromFields(days, hours, minutes, seconds, millis, micros);
     assignSpan(inst, total);
@@ -2871,7 +2871,7 @@ Value ModuleSys::timespan_type_from_fields(VM& vm, ArgsView args)
     if (!isObjectType(args[0]) || asObjectType(args[0]) != timeSpanTypeObj)
         throw std::invalid_argument("TimeSpan.from_fields must be called on sys.TimeSpan");
 
-    auto readArg = [&](size_t index, const char* name) -> int {
+    auto readArg = [&](size_t index, const char* name) -> int64_t {
         if (index >= args.size())
             return 0;
         if (!args[index].isNumber())
@@ -2879,12 +2879,12 @@ Value ModuleSys::timespan_type_from_fields(VM& vm, ArgsView args)
         return toType(ValueType::Int, args[index], false).asInt();
     };
 
-    int days = readArg(1, "days");
-    int hours = readArg(2, "hours");
-    int minutes = readArg(3, "minutes");
-    int seconds = readArg(4, "seconds");
-    int millis = readArg(5, "millis");
-    int micros = readArg(6, "micros");
+    int64_t days = readArg(1, "days");
+    int64_t hours = readArg(2, "hours");
+    int64_t minutes = readArg(3, "minutes");
+    int64_t seconds = readArg(4, "seconds");
+    int64_t millis = readArg(5, "millis");
+    int64_t micros = readArg(6, "micros");
 
     int64_t total = durationFromFields(days, hours, minutes, seconds, millis, micros);
     return newSpanInstance(timeSpanTypeValue, total);
