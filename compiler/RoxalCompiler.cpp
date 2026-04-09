@@ -1093,10 +1093,14 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         emitOpArgsBytes(OpCode::EventType, typeNameConstant);
         defineVariable(typeNameConstant);
 
-        auto moduleScopePtr = asModuleScope(moduleScope());
-        ObjModuleType* moduleTypeObj = asModuleType(moduleScopePtr->moduleType);
-        moduleScopePtr->moduleConstLines[ast->name] = currentNode->interval.first;
-        moduleTypeObj->constVars.insert(ast->name.hashCode());
+        if (asFuncScope(funcScope())->scopeDepth == 0) {
+            auto moduleScopePtr = asModuleScope(moduleScope());
+            ObjModuleType* moduleTypeObj = asModuleType(moduleScopePtr->moduleType);
+            moduleScopePtr->moduleConstLines[ast->name] = currentNode->interval.first;
+            moduleTypeObj->constVars.insert(ast->name.hashCode());
+        } else {
+            asFuncScope(funcScope())->locals.back().isConst = true;
+        }
 
         if (ast->extends.has_value()) {
             asTypeScope(typeScope())->hasSuperType = true;
@@ -1211,10 +1215,14 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     else emitOpArgsBytes(OpCode::ObjectType, typeNameConstant);
     defineVariable(typeNameConstant);
 
-    auto moduleScopePtr = asModuleScope(moduleScope());
-    ObjModuleType* moduleTypeObj = asModuleType(moduleScopePtr->moduleType);
-    moduleScopePtr->moduleConstLines[ast->name] = currentNode->interval.first;
-    moduleTypeObj->constVars.insert(ast->name.hashCode());
+    if (asFuncScope(funcScope())->scopeDepth == 0) {
+        auto moduleScopePtr = asModuleScope(moduleScope());
+        ObjModuleType* moduleTypeObj = asModuleType(moduleScopePtr->moduleType);
+        moduleScopePtr->moduleConstLines[ast->name] = currentNode->interval.first;
+        moduleTypeObj->constVars.insert(ast->name.hashCode());
+    } else {
+        asFuncScope(funcScope())->locals.back().isConst = true;
+    }
 
 
     // handle extension (inheritance)

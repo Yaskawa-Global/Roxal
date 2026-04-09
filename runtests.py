@@ -148,7 +148,7 @@ tests = [
     'actor_method_order',
     'actor_closure1', 'actor_closure2', 'actor_closure3',
     'actor_inter',
-    'clone1', 'clone_shared', 'clone_cycle', 'extends1', 'nothis', 'superprop', 'scopetest4',
+    'clone1', 'clone_shared', 'clone_cycle', 'extends1', 'nothis', 'superprop', 'scopetest4', 'local_type_scope',
     'private_prop', 'private_method', 'private_inherit',
     'operator_overload', 'operator_overload_cmp', 'operator_overload_commutative',
     'operator_overload_lr', 'operator_overload_inherit', 'operator_overload_fallthrough',
