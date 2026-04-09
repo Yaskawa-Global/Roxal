@@ -1200,7 +1200,9 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     }
 
     uint16_t typeNameConstant = identifierConstant(ast->name);
-    declareVariable(ast->name);
+
+    if (!compilingNestedType)
+        declareVariable(ast->name);
 
     if (ast->implements.size()>2)
         throw std::runtime_error("Multiple implements types unimplemented.");
@@ -1213,15 +1215,18 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     else if (isInterface) emitOpArgsBytes(OpCode::InterfaceType, typeNameConstant);
     else if (isEnumeration) emitOpArgsBytes(OpCode::EnumerationType, typeNameConstant);
     else emitOpArgsBytes(OpCode::ObjectType, typeNameConstant);
-    defineVariable(typeNameConstant);
 
-    if (asFuncScope(funcScope())->scopeDepth == 0) {
-        auto moduleScopePtr = asModuleScope(moduleScope());
-        ObjModuleType* moduleTypeObj = asModuleType(moduleScopePtr->moduleType);
-        moduleScopePtr->moduleConstLines[ast->name] = currentNode->interval.first;
-        moduleTypeObj->constVars.insert(ast->name.hashCode());
-    } else {
-        asFuncScope(funcScope())->locals.back().isConst = true;
+    if (!compilingNestedType) {
+        defineVariable(typeNameConstant);
+
+        if (asFuncScope(funcScope())->scopeDepth == 0) {
+            auto moduleScopePtr = asModuleScope(moduleScope());
+            ObjModuleType* moduleTypeObj = asModuleType(moduleScopePtr->moduleType);
+            moduleScopePtr->moduleConstLines[ast->name] = currentNode->interval.first;
+            moduleTypeObj->constVars.insert(ast->name.hashCode());
+        } else {
+            asFuncScope(funcScope())->locals.back().isConst = true;
+        }
     }
 
 
@@ -1242,12 +1247,18 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         addLocal("super");
         defineVariable(0);
 
-        namedVariable(ast->name, /*assign=*/false); // child (sub)
+        if (compilingNestedType)
+            emitByte(OpCode::Dup); // nested: type is on stack
+        else
+            namedVariable(ast->name, /*assign=*/false); // child (sub)
         emitByte(OpCode::Extend);
     }
 
 
-    namedVariable(ast->name, false); // make type accessible on the stack
+    if (compilingNestedType)
+        emitByte(OpCode::Dup); // nested: type is on stack
+    else
+        namedVariable(ast->name, false); // make type accessible on the stack
 
     // Compile nested type declarations before properties,
     // so nested type names are available as property types
@@ -1256,12 +1267,15 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         asTypeScope(typeScope())->propertyNames[nestedType->name] =
             {ast::Access::Public, ast->name, /*isConst=*/true};
 
-        // Recursively compile the nested type declaration
-        // (creates the nested type as a module-level const variable)
+        // Compile the nested type without module-level registration.
+        // The type value stays on the stack (no defineVariable/DefineModuleConst).
+        bool wasCompilingNestedType = compilingNestedType;
+        compilingNestedType = true;
         nestedType->accept(*this);
+        compilingNestedType = wasCompilingNestedType;
 
-        // Push the nested type value and associate with enclosing type
-        namedVariable(nestedType->name, false);
+        // The type value is on the stack from the type opcode.
+        // NestedType pops it and stores on the enclosing type.
         uint16_t nestedNameConstant = identifierConstant(nestedType->name);
         emitOpArgsBytes(OpCode::NestedType, nestedNameConstant,
                         "nested type " + toUTF8StdString(nestedType->name));
@@ -1379,7 +1393,10 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         // Register backing field as private property
         asTypeScope(typeScope())->propertyNames[backingFieldName] = {Access::Private, ast->name, /*isConst=*/false};
 
-        namedVariable(ast->name, false); // make type accessible on the stack
+        if (compilingNestedType)
+            emitByte(OpCode::Dup); // nested: type is on stack
+        else
+            namedVariable(ast->name, false); // make type accessible on the stack
 
         // Emit type for backing field
         if (std::holds_alternative<BuiltinType>(propAccessor->propType)) {

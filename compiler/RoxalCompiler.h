@@ -405,6 +405,7 @@ protected:
 
     ptr<ast::AST> currentNode;
 
+    bool compilingNestedType { false }; // true during nested type compilation — skips module registration
 
     void error(const std::string& message);
 

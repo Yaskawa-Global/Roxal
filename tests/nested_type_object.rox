@@ -7,6 +7,6 @@ type Outer object:
 var inner = Outer.Inner(99)
 print(inner.y)
 
-# also accessible unqualified (module-level variable)
-var inner2 = Inner(7)
+# nested type is NOT accessible unqualified
+var inner2 = Outer.Inner(7)
 print(inner2.y)
