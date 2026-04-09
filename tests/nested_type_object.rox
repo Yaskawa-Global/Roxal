@@ -1,0 +1,12 @@
+type Outer object:
+    var x: int
+    type Inner object:
+        var y: int
+
+# construct nested type via enclosing type
+var inner = Outer.Inner(99)
+print(inner.y)
+
+# also accessible unqualified (module-level variable)
+var inner2 = Inner(7)
+print(inner2.y)

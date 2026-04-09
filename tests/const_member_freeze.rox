@@ -1,0 +1,9 @@
+type Inner object:
+    var x: int
+
+type Outer object:
+    const inner: Inner = Inner(0)
+
+var o = Outer()
+print(o.inner.x)
+o.inner.x = 99

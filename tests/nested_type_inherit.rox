@@ -1,0 +1,13 @@
+type Base object:
+    var x: int
+    type Status enum: active, inactive
+
+type Derived object extends Base:
+    var y: int
+
+# nested type inherited from Base
+print(Derived.Status.active)
+print(Derived.Status.inactive)
+
+var d = Derived(1, 2)
+print(d.Status.active)

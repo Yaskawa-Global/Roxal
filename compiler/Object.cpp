@@ -5357,9 +5357,11 @@ ObjectInstance::ObjectInstance(const Value& objectType)
     for(const auto& property : ot->properties) {
         const auto& prop { property.second };
         auto propInitialvalue { prop.initialValue };
-        // Clone reference types to avoid sharing between instances
-        if (!propInitialvalue.isPrimitive()) {
-            // Special handling for signals - only clone clocks and source signals
+        // Const members with const (or untyped) type are frozen and can be shared
+        // across instances without cloning
+        bool isConstType = prop.isConst && (prop.type.isNil() || prop.type.isConst());
+        if (!isConstType && !propInitialvalue.isPrimitive()) {
+            // Clone reference types to avoid sharing between instances
             if (isSignal(propInitialvalue)) {
                 auto sig = asSignal(propInitialvalue)->signal;
                 if (!sig) {

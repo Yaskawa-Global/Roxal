@@ -1323,6 +1323,12 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             emitByte(OpCode::ConstNil, "prop "+toUTF8StdString(propName)+" (no type)"); // nil value will be interpreted as no type (or any type)
         }
 
+        // Mark the property type as const for const members without mutable qualifier.
+        // This enables type-level access (e.g. Type.constMember) and ensures the
+        // initial value will be frozen in defineProperty.
+        if (prop->isConst && !prop->isTypeMutable)
+            emitByte(OpCode::MakeConst);
+
         // initial value
         if (prop->initializer.has_value()) {
             prop->initializer.value()->accept(*this);

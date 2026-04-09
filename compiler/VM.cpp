@@ -4384,6 +4384,11 @@ void VM::defineProperty(ObjString* name)
     ObjObjectType::Property property{};
     property.name = name->s;
     property.type = propertyType;
+    // Freeze initial value for const members with const (or untyped) type,
+    // so the template is safe to share via type-level access
+    if (isConst && (propertyType.isNil() || propertyType.isConst())
+        && propertyInitial.isObj() && !propertyInitial.isConst())
+        propertyInitial = propertyInitial.constRef();
     property.initialValue = propertyInitial;
     property.access = access;
     property.isConst = isConst;
@@ -5486,6 +5491,18 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         push(it->second.second);
                         break;
                     }
+                    // const properties (to const types) are accessible via the type (like static members);
+                    // excludes 'const x: mutable T' since those are instance-specific
+                    {
+                        auto pit = objType->properties.find(name->hash);
+                        if (pit != objType->properties.end() && pit->second.isConst
+                            && pit->second.access == ast::Access::Public
+                            && (pit->second.type.isNil() || pit->second.type.isConst())) {
+                            pop();
+                            push(pit->second.initialValue);
+                            break;
+                        }
+                    }
                     // fall through to builtin methods/properties check
                 }
                 if (isModuleType(inst)) {
@@ -5819,6 +5836,18 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         pop();
                         push(it->second.second);
                         break;
+                    }
+                    // const properties (to const types) are accessible via the type (like static members);
+                    // excludes 'const x: mutable T' since those are instance-specific
+                    {
+                        auto pit = objType->properties.find(name->hash);
+                        if (pit != objType->properties.end() && pit->second.isConst
+                            && pit->second.access == ast::Access::Public
+                            && (pit->second.type.isNil() || pit->second.type.isConst())) {
+                            pop();
+                            push(pit->second.initialValue);
+                            break;
+                        }
                     }
                     // fall through to builtin methods/properties check
                 }
