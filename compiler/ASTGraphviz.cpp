@@ -198,6 +198,9 @@ std::any ASTGraphviz::visit(ptr<ast::TypeDecl> ast)
     for(int i=0; i<ast->methods.size();i++)
         addLink(name, stackPop());
 
+    for(int i=0; i<ast->nestedTypes.size();i++)
+        addLink(name, stackPop());
+
     std::string kindLabel;
     switch (ast->kind) {
         case TypeDecl::Object: kindLabel = "object"; break;

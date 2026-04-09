@@ -1,0 +1,9 @@
+func test():
+    type Color enum: red, green, blue
+    var c = Color.red
+    print("{c}")
+
+test()
+
+# Color should not be visible here at module scope
+var x = Color.red

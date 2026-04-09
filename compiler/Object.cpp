@@ -2950,6 +2950,17 @@ void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
         out.write(ln.data(), llen);
         writeValue(out, label.second, ctx);
     }
+
+    uint32_t ntcount = nestedTypes.size();
+    out.write(reinterpret_cast<char*>(&ntcount),4);
+    for(const auto& kv : nestedTypes) {
+        const auto& nt = kv.second;
+        std::string nn; nt.first.toUTF8String(nn);
+        uint32_t nlen = nn.size();
+        out.write(reinterpret_cast<char*>(&nlen),4);
+        out.write(nn.data(), nlen);
+        writeValue(out, nt.second, ctx);
+    }
 }
 
 void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
@@ -3029,6 +3040,17 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         enumLabelValues[hash] = {uname, val};
     }
 
+    uint32_t ntcount; in.read(reinterpret_cast<char*>(&ntcount),4);
+    nestedTypes.clear();
+    for(uint32_t i=0;i<ntcount;i++) {
+        uint32_t nlen; in.read(reinterpret_cast<char*>(&nlen),4);
+        std::string nn(nlen,'\0'); if(nlen>0) in.read(nn.data(), nlen);
+        icu::UnicodeString uname = icu::UnicodeString::fromUTF8(nn);
+        Value val = readValue(in, ctx);
+        int32_t hash = uname.hashCode();
+        nestedTypes[hash] = {uname, val};
+    }
+
     if(isEnumeration) {
         enumTypes[enumTypeId] = this;
     }
@@ -3051,6 +3073,9 @@ void ObjObjectType::trace(ValueVisitor& visitor) const
     for (const auto& entry : enumLabelValues) {
         visitor.visit(entry.second.second);
     }
+    for (const auto& entry : nestedTypes) {
+        visitor.visit(entry.second.second);
+    }
 }
 
 void ObjObjectType::dropReferences()
@@ -3071,6 +3096,9 @@ void ObjObjectType::dropReferences()
     }
 
     for (auto& entry : enumLabelValues) {
+        entry.second.second = Value::nilVal();
+    }
+    for (auto& entry : nestedTypes) {
         entry.second.second = Value::nilVal();
     }
 }

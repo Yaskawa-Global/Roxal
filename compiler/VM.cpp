@@ -5397,6 +5397,17 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         if (br == BindResult::Private)
                             return errorReturn;
 
+                        // check if it is a nested type on the instance's type
+                        {
+                            ObjObjectType* t = asObjectType(objInst->instanceType);
+                            auto ntIt = t->nestedTypes.find(name->hash);
+                            if (ntIt != t->nestedTypes.end()) {
+                                pop();
+                                push(ntIt->second.second);
+                                break;
+                            }
+                        }
+
                         runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(asObjectType(objInst->instanceType)->name)+"'.");
                         return errorReturn;
                     }
@@ -5438,6 +5449,17 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                             }
                         }
 
+                        // check if it is a nested type on the actor's type
+                        {
+                            ObjObjectType* t = asObjectType(actorInst->instanceType);
+                            auto ntIt = t->nestedTypes.find(name->hash);
+                            if (ntIt != t->nestedTypes.end()) {
+                                pop();
+                                push(ntIt->second.second);
+                                break;
+                            }
+                        }
+
                         runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(asObjectType(actorInst->instanceType)->name)+"'.");
                         return errorReturn;
                     }
@@ -5456,7 +5478,17 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     runtimeError("Undefined enum label '"+toUTF8StdString(name->s)+"' for enum type '"+toUTF8StdString(enumObjType->name)+"'.");
                     return errorReturn;
                 }
-                else if (isModuleType(inst)) {
+                else if (isObjectType(inst)) {
+                    auto objType = asObjectType(inst);
+                    auto it = objType->nestedTypes.find(name->hash);
+                    if (it != objType->nestedTypes.end()) {
+                        pop();
+                        push(it->second.second);
+                        break;
+                    }
+                    // fall through to builtin methods/properties check
+                }
+                if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
 
                     auto optValue { moduleType->vars.load(name->hash) };
@@ -5690,6 +5722,16 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         if (br == BindResult::Private)
                             return errorReturn;
 
+                        // check if it is a nested type on the instance's type
+                        {
+                            auto ntIt = t->nestedTypes.find(name->hash);
+                            if (ntIt != t->nestedTypes.end()) {
+                                pop();
+                                push(ntIt->second.second);
+                                break;
+                            }
+                        }
+
                         runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(t->name)+"'.");
                         return errorReturn;
                     }
@@ -5745,6 +5787,16 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                             }
                         }
 
+                        // check if it is a nested type on the actor's type
+                        {
+                            auto ntIt = t->nestedTypes.find(name->hash);
+                            if (ntIt != t->nestedTypes.end()) {
+                                pop();
+                                push(ntIt->second.second);
+                                break;
+                            }
+                        }
+
                         runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(t->name)+"'.");
                         return errorReturn;
                     }
@@ -5760,7 +5812,17 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
                     runtimeError("Undefined enum label '"+toUTF8StdString(name->s)+"' for enum type '"+toUTF8StdString(enumObjType->name)+"'.");
                     return errorReturn;
-                } else if (isModuleType(inst)) {
+                } else if (isObjectType(inst)) {
+                    auto objType = asObjectType(inst);
+                    auto it = objType->nestedTypes.find(name->hash);
+                    if (it != objType->nestedTypes.end()) {
+                        pop();
+                        push(it->second.second);
+                        break;
+                    }
+                    // fall through to builtin methods/properties check
+                }
+                if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
 
                     auto optValue { moduleType->vars.load(name->hash) };
@@ -7652,6 +7714,14 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
+            case OpCode::NestedType: {
+                ObjString* name = readString();
+                Value nestedTypeVal = peek(0);
+                ObjObjectType* enclosingType = asObjectType(peek(1));
+                enclosingType->nestedTypes[name->hash] = {name->s, nestedTypeVal};
+                pop();
+                break;
+            }
             case OpCode::Extend: {
                 if (!isObjectType(peek(1))) {
                     runtimeError("Super type to extend must be an object or actor type");
@@ -7672,6 +7742,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 subType->propertyOrder.insert(subType->propertyOrder.end(),
                                              superType->propertyOrder.begin(),
                                              superType->propertyOrder.end());
+                subType->nestedTypes.insert(superType->nestedTypes.cbegin(), superType->nestedTypes.cend());
                 pop();
                 break;
             }

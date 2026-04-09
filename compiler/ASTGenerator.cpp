@@ -1607,6 +1607,12 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
             typeDecl->methods.push_back(as<Function>(func));
         }
 
+        // Nested type declarations
+        for (auto* typeDeclContext : context->type_decl()) {
+            auto nested = as<TypeDecl>(visitType_decl(typeDeclContext));
+            typeDecl->nestedTypes.push_back(nested);
+        }
+
     return typeValue(typeDecl);
 
     visitEnd();

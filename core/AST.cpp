@@ -1041,6 +1041,9 @@ void TypeDecl::acceptChildren(ASTVisitor& v, Anys& results)
     for(auto& enumLabel : enumLabels)
         if (enumLabel.second != nullptr)
             results.push_back( enumLabel.second->accept(v) );
+
+    for(auto& nestedType : nestedTypes)
+        results.push_back( nestedType->accept(v) );
 }
 
 
@@ -1084,6 +1087,8 @@ void TypeDecl::output(std::ostream& os, int indent) const
         else
             os << std::endl;
     }
+    for(auto& nestedType : nestedTypes)
+        nestedType->output(os, indent+1);
 }
 
 

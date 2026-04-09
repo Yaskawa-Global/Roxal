@@ -592,6 +592,9 @@ struct TypeDecl : public Declaration {
     // only for enumerations
     std::vector<std::pair<icu::UnicodeString, ptr<Expression>>> enumLabels;
 
+    // nested type declarations within object/actor types
+    std::vector<ptr<TypeDecl>> nestedTypes;
+
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
 

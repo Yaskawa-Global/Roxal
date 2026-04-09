@@ -219,7 +219,7 @@ type_decl
 object_type_decl
  : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE)
     (EXTENDS IDENTIFIER)? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)?
-    (   (':' NEWLINE INDENT (str NEWLINE)? (member_var|method)* DEDENT)
+    (   (':' NEWLINE INDENT (str NEWLINE)? (member_var|method|type_decl)* DEDENT)
       | NEWLINE
     )
  ;

@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 28;
+constexpr std::uint32_t ModuleCacheVersion = 29;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -1249,6 +1249,24 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     namedVariable(ast->name, false); // make type accessible on the stack
 
+    // Compile nested type declarations before properties,
+    // so nested type names are available as property types
+    for (const auto& nestedType : ast->nestedTypes) {
+        // Register nested type name as a const member of the enclosing type
+        asTypeScope(typeScope())->propertyNames[nestedType->name] =
+            {ast::Access::Public, ast->name, /*isConst=*/true};
+
+        // Recursively compile the nested type declaration
+        // (creates the nested type as a module-level const variable)
+        nestedType->accept(*this);
+
+        // Push the nested type value and associate with enclosing type
+        namedVariable(nestedType->name, false);
+        uint16_t nestedNameConstant = identifierConstant(nestedType->name);
+        emitOpArgsBytes(OpCode::NestedType, nestedNameConstant,
+                        "nested type " + toUTF8StdString(nestedType->name));
+    }
+
     for(size_t i=0; i<ast->properties.size(); i++) {
 
         if (isInterface) {
@@ -1649,7 +1667,6 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         emitOpArgsBytes(OpCode::Method, methodNameConstant, "method "+toUTF8StdString(methodName));
     }
-
 
     if (isEnumeration) {
 

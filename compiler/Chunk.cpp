@@ -353,6 +353,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("METHOD", offset, doubleByteArg);
         case OpCode::EnumLabel:
             return constantInstruction("ENUM_LABEL", offset, doubleByteArg);
+        case OpCode::NestedType:
+            return constantInstruction("NESTED_TYPE", offset, doubleByteArg);
         case OpCode::EventPayload:
             return constantInstruction("EVENT_PAYLOAD", offset, doubleByteArg);
         case OpCode::EventExtend:
