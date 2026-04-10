@@ -1,0 +1,10 @@
+# dotted enum type used in type annotations
+type UI object:
+    type State enum: idle, loading, done
+
+func describe(s: UI.State) -> string:
+    return "{s}"
+
+var s: UI.State = UI.State.loading
+print(describe(s))
+print(s)

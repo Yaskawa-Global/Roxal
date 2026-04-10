@@ -153,7 +153,7 @@ with_stmt
 
 
 var_decl // FIXME: use ident_opt_type
- : annotation* (VAR | CONST) IDENTIFIER (':' const_qualifier? (builtin_type | IDENTIFIER))? (EQUALS expression at_clause?)?
+ : annotation* (VAR | CONST) IDENTIFIER (':' const_qualifier? (builtin_type | type_name))? (EQUALS expression at_clause?)?
  ;
 
 ident_opt_type
@@ -194,8 +194,8 @@ parameters
  ;
 
 parameter
- : annotation* DOTDOT identifier_word (':' const_qualifier? (builtin_type | IDENTIFIER) )?  // variadic ...rest param (no default allowed)
- | annotation* identifier_word (':' const_qualifier? (builtin_type | IDENTIFIER) )? (EQUALS expression)?
+ : annotation* DOTDOT identifier_word (':' const_qualifier? (builtin_type | type_name) )?  // variadic ...rest param (no default allowed)
+ | annotation* identifier_word (':' const_qualifier? (builtin_type | type_name) )? (EQUALS expression)?
  ;
 
 const_qualifier
@@ -218,7 +218,7 @@ type_decl
 
 object_type_decl
  : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE)
-    (EXTENDS IDENTIFIER)? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)?
+    (EXTENDS type_name)? (IMPLEMENTS type_name (',' type_name)*)?
     (   (':' NEWLINE INDENT (str NEWLINE)? (member_var|method|type_decl)* DEDENT)
       | NEWLINE
     )
@@ -236,7 +236,7 @@ enum_type_decl
  ;
 
 event_type_decl
- : annotation* TYPE IDENTIFIER EVENT (EXTENDS IDENTIFIER)?
+ : annotation* TYPE IDENTIFIER EVENT (EXTENDS type_name)?
     (   (':' NEWLINE INDENT (str NEWLINE)? member_var* DEDENT)
       | NEWLINE
     )
@@ -249,7 +249,7 @@ method
  ;
 
 member_var
- : annotation* PRIVATE? (VAR | CONST) IDENTIFIER (':' const_qualifier? (builtin_type | IDENTIFIER))? (EQUALS expression)?
+ : annotation* PRIVATE? (VAR | CONST) IDENTIFIER (':' const_qualifier? (builtin_type | type_name))? (EQUALS expression)?
    ( NEWLINE
    | ':' NEWLINE INDENT (property_getter | property_setter)+ DEDENT
    )
@@ -435,7 +435,11 @@ return_type
 
 type_spec
  : builtin_type
- | IDENTIFIER
+ | type_name
+ ;
+
+type_name
+ : IDENTIFIER (DOT IDENTIFIER)*
  ;
 
 

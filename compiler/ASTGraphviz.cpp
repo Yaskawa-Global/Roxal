@@ -213,7 +213,7 @@ std::any ASTGraphviz::visit(ptr<ast::TypeDecl> ast)
 
     std::string details = toUTF8StdString(ast->name);
     if (ast->extends.has_value())
-        details += " : " + toUTF8StdString(ast->extends.value());
+        details += " : " + toUTF8StdString(joinTypeName(ast->extends.value()));
 
     nodes[name] = node(name,
                        std::string("TypeDecl ") + kindLabel,
@@ -493,8 +493,8 @@ std::any ASTGraphviz::visit(ptr<ast::Function> ast)
             if (std::holds_alternative<BuiltinType>(returnTypes[0])) {
                 nameReturn += to_string(std::get<BuiltinType>(returnTypes[0]));
             }
-            else if (std::holds_alternative<icu::UnicodeString>(returnTypes[0])){
-                nameReturn += toUTF8StdString(std::get<icu::UnicodeString>(returnTypes[0]));
+            else if (std::holds_alternative<TypeName>(returnTypes[0])){
+                nameReturn += toUTF8StdString(joinTypeName(std::get<TypeName>(returnTypes[0])));
             }
         } else {
             // Multiple return types
@@ -504,8 +504,8 @@ std::any ASTGraphviz::visit(ptr<ast::Function> ast)
                 if (std::holds_alternative<BuiltinType>(returnTypes[i])) {
                     nameReturn += to_string(std::get<BuiltinType>(returnTypes[i]));
                 }
-                else if (std::holds_alternative<icu::UnicodeString>(returnTypes[i])){
-                    nameReturn += toUTF8StdString(std::get<icu::UnicodeString>(returnTypes[i]));
+                else if (std::holds_alternative<TypeName>(returnTypes[i])){
+                    nameReturn += toUTF8StdString(joinTypeName(std::get<TypeName>(returnTypes[i])));
                 }
             }
             nameReturn += "]";
@@ -533,8 +533,8 @@ std::any ASTGraphviz::visit(ptr<ast::Parameter> ast)
         if (std::holds_alternative<BuiltinType>(ast->type.value())) {
             nametype += " : "+to_string(std::get<BuiltinType>(ast->type.value()));
         }
-        else if (std::holds_alternative<icu::UnicodeString>(ast->type.value())){
-            nametype += " : "+toUTF8StdString(std::get<icu::UnicodeString>(ast->type.value()));
+        else if (std::holds_alternative<TypeName>(ast->type.value())){
+            nametype += " : "+toUTF8StdString(joinTypeName(std::get<TypeName>(ast->type.value())));
         }
      }
 

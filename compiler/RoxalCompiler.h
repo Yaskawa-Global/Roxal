@@ -121,7 +121,7 @@ public:
     };
 
 public:
-    using VarTypeSpec = std::variant<type::BuiltinType, icu::UnicodeString>;
+    using VarTypeSpec = std::variant<type::BuiltinType, ast::TypeName>;
 
 protected:
     bool outputBytecodeDisassembly;
@@ -291,7 +291,7 @@ protected:
 
         // AST-level return types (preserves user-defined type names that TypeDeducer loses).
         // Used by visit(ReturnStatement) to emit return type conversion.
-        std::optional<std::vector<std::variant<type::BuiltinType, icu::UnicodeString>>> astReturnTypes;
+        std::optional<std::vector<VarTypeSpec>> astReturnTypes;
 
         std::vector<uint16_t> identConsts;
     };
@@ -304,7 +304,7 @@ protected:
         TypeScope(const icu::UnicodeString& typeName)
           : LexicalScope(ScopeType::Type, typeName), hasSuperType(false) {}
 
-        icu::UnicodeString superTypeName;
+        ast::TypeName superTypeName;
 
         bool hasSuperType;
         bool isActor { false };
@@ -312,7 +312,7 @@ protected:
             ast::Access access { ast::Access::Public };
             icu::UnicodeString owner;
             bool isConst { false };
-            std::optional<std::variant<type::BuiltinType, icu::UnicodeString>> propType;
+            std::optional<VarTypeSpec> propType;
         };
         std::unordered_map<icu::UnicodeString, MemberInfo> propertyNames;
     };
@@ -411,6 +411,7 @@ protected:
 
     ValueType builtinToValueType(ast::BuiltinType bt);
 
+    void emitTypeName(const ast::TypeName& components); // emit namedVariable + GetProp chain for dotted type names
     void emitByte(uint8_t byte, const std::string& comment = "");
     void emitByte(OpCode op, const std::string& comment = "");
     void emitBytes(uint8_t byte1, uint8_t byte2, const std::string& comment = "");

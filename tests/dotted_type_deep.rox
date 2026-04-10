@@ -1,0 +1,12 @@
+# deeply nested types: A.B.C
+type A object:
+    type B object:
+        type C object:
+            var val: int
+
+var c: A.B.C = A.B.C(42)
+print(c.val)
+
+func take(x: A.B.C):
+    print(x.val)
+take(A.B.C(7))

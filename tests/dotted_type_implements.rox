@@ -1,0 +1,11 @@
+type Lib object:
+    type Showable interface:
+        func show()
+
+type Widget object implements Lib.Showable:
+    var label: string
+    func show():
+        print(this.label)
+
+var w = Widget("hello")
+w.show()

@@ -8,6 +8,8 @@ using namespace roxal;
 using roxal::type::BuiltinType;
 using roxal::type::Type;
 using roxal::type::to_string;
+using roxal::ast::TypeName;
+using roxal::ast::joinTypeName;
 
 static std::string linePos(ptr<ast::AST> node)
 {
@@ -125,7 +127,7 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
 
         ptr<type::Type> underlyingType;
         if (ast->extends.has_value()) {
-            auto extendsStr = toUTF8StdString(ast->extends.value());
+            auto extendsStr = toUTF8StdString(joinTypeName(ast->extends.value()));
             if (extendsStr == to_string(BuiltinType::Byte))
                 underlyingType = make_ptr<type::Type>(BuiltinType::Byte);
             else if (extendsStr == to_string(BuiltinType::Int))
@@ -305,9 +307,9 @@ std::any TypeDeducer::visit(ptr<ast::VarDecl> ast)
     if (ast->varType.has_value()) {
         if (std::holds_alternative<BuiltinType>(ast->varType.value())) {
             ast->type = make_ptr<type::Type>(std::get<BuiltinType>(ast->varType.value()));
-        } else if (std::holds_alternative<icu::UnicodeString>(ast->varType.value())) {
+        } else if (std::holds_alternative<TypeName>(ast->varType.value())) {
             // Custom type (like Widget, MyClass, etc.) or runtime type variable
-            auto typeName = std::get<icu::UnicodeString>(ast->varType.value());
+            auto typeName = joinTypeName(std::get<TypeName>(ast->varType.value()));
             auto typeInfo = lookupVar(typeName);
             if (typeInfo.has_value() && typeInfo->type != nullptr) {
                 // Only use as compile-time type if it's not a runtime type variable
@@ -521,7 +523,7 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
             if (std::holds_alternative<BuiltinType>(returnTypes[ri])) {
                 retType = make_ptr<Type>(std::get<BuiltinType>(returnTypes[ri]));
             }
-            else if (std::holds_alternative<icu::UnicodeString>(returnTypes[ri])) {
+            else if (std::holds_alternative<TypeName>(returnTypes[ri])) {
                 // lookup name - for now create a placeholder
                 // TODO: implement proper name lookup
                 retType = make_ptr<Type>(BuiltinType::Object);
@@ -555,7 +557,7 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
                 paramType.variadic = param->variadic;
                 type->func.value().params[i] = paramType;
             }
-            else if (std::holds_alternative<icu::UnicodeString>(param->type.value())) {
+            else if (std::holds_alternative<TypeName>(param->type.value())) {
                 // Named type (user-defined object/actor) — use Object as placeholder
                 // builtin type with the type name stored in obj for runtime resolution.
                 Type::FuncType::ParamType paramType {};
@@ -563,7 +565,7 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
                 paramType.nameHashCode = param->name.hashCode();
                 paramType.type = make_ptr<Type>(BuiltinType::Object);
                 paramType.type.value()->obj = Type::ObjectType{};
-                paramType.type.value()->obj->name = std::get<icu::UnicodeString>(param->type.value());
+                paramType.type.value()->obj->name = joinTypeName(std::get<TypeName>(param->type.value()));
                 if (param->isConst || (inActorScope() && !param->isMutable))
                     paramType.type.value()->isConst = true;
                 paramType.hasDefault = param->defaultValue.has_value();

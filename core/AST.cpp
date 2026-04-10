@@ -760,8 +760,8 @@ void VarDecl::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"VarDecl " << (access==Access::Private?"private ":"") << (isConst ? "const " : "") << toUTF8StdString(name);
     if (varType.has_value()) {
-        if (std::holds_alternative<icu::UnicodeString>(varType.value()))
-            os << " :" << toUTF8StdString(std::get<icu::UnicodeString>(varType.value()));
+        if (std::holds_alternative<TypeName>(varType.value()))
+            os << " :" << toUTF8StdString(joinTypeName(std::get<TypeName>(varType.value())));
         else if (std::holds_alternative<BuiltinType>(varType.value()))
             os << " :" << to_string(std::get<BuiltinType>(varType.value()));
     }
@@ -819,8 +819,8 @@ void PropertyAccessor::acceptChildren(ASTVisitor& v, Anys& results)
 void PropertyAccessor::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"PropertyAccessor " << (access==Access::Private?"private ":"") << toUTF8StdString(name);
-    if (std::holds_alternative<icu::UnicodeString>(propType))
-        os << " :" << toUTF8StdString(std::get<icu::UnicodeString>(propType));
+    if (std::holds_alternative<TypeName>(propType))
+        os << " :" << toUTF8StdString(joinTypeName(std::get<TypeName>(propType)));
     else if (std::holds_alternative<BuiltinType>(propType))
         os << " :" << to_string(std::get<BuiltinType>(propType));
 
@@ -931,16 +931,16 @@ void Function::output(std::ostream& os, int indent) const
         if (types.size() == 1) {
             if (std::holds_alternative<BuiltinType>(types[0]))
                 os << to_string(std::get<BuiltinType>(types[0]));
-            else if (std::holds_alternative<icu::UnicodeString>(types[0]))
-                os << toUTF8StdString(std::get<icu::UnicodeString>(types[0]));
+            else if (std::holds_alternative<TypeName>(types[0]))
+                os << toUTF8StdString(joinTypeName(std::get<TypeName>(types[0])));
         } else {
             os << "[";
             for (size_t i = 0; i < types.size(); i++) {
                 if (i > 0) os << ", ";
                 if (std::holds_alternative<BuiltinType>(types[i]))
                     os << to_string(std::get<BuiltinType>(types[i]));
-                else if (std::holds_alternative<icu::UnicodeString>(types[i]))
-                    os << toUTF8StdString(std::get<icu::UnicodeString>(types[i]));
+                else if (std::holds_alternative<TypeName>(types[i]))
+                    os << toUTF8StdString(joinTypeName(std::get<TypeName>(types[i])));
             }
             os << "]";
         }
@@ -993,8 +993,8 @@ void Parameter::output(std::ostream& os, int indent) const
         os << " : ";
         if (std::holds_alternative<BuiltinType>(type.value()))
             os << to_string(std::get<BuiltinType>(type.value()));
-        else if (std::holds_alternative<icu::UnicodeString>(type.value()))
-            os << toUTF8StdString(std::get<icu::UnicodeString>(type.value()));
+        else if (std::holds_alternative<TypeName>(type.value()))
+            os << toUTF8StdString(joinTypeName(std::get<TypeName>(type.value())));
     }
     os << std::endl;
     if (defaultValue.has_value()) {
@@ -1061,13 +1061,13 @@ void TypeDecl::output(std::ostream& os, int indent) const
     }
     os << spaces(indent)+"TypeDecl " << kindName
        << " " << toUTF8StdString(name)
-       << (extends.has_value() ? " "+toUTF8StdString(extends.value()) :"")
+       << (extends.has_value() ? " "+toUTF8StdString(joinTypeName(extends.value())) :"")
        << std::endl;
     if (!implements.empty()) {
         os << spaces(indent)
-           << " implements " << toUTF8StdString(implements.at(0));
+           << " implements " << toUTF8StdString(joinTypeName(implements.at(0)));
         for(int i=1; i<implements.size();i++)
-            os << ", " << toUTF8StdString(implements.at(i));
+            os << ", " << toUTF8StdString(joinTypeName(implements.at(i)));
         os << std::endl;
     }
     for(auto& annot : annotations)

@@ -993,7 +993,7 @@ std::any ASTGenerator::visitFor_stmt(RoxalParser::For_stmtContext *context)
         if (std::holds_alternative<BuiltinType>(ident_opt_type.second))
             vardecl->varType = std::get<BuiltinType>(ident_opt_type.second);
         if (std::holds_alternative<icu::UnicodeString>(ident_opt_type.second))
-            vardecl->varType = std::get<icu::UnicodeString>(ident_opt_type.second);
+            vardecl->varType = TypeName{std::get<icu::UnicodeString>(ident_opt_type.second)};
 
         forStmt->targetList.push_back(vardecl);
     }
@@ -1247,7 +1247,7 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
 {
     visitStart();
 
-    UnicodeString ident { identifierFromTerminal(context->IDENTIFIER().at(0)) };
+    UnicodeString ident { identifierFromTerminal(context->IDENTIFIER()) };
 
     ptr<VarDecl> vardecl = make_ptr<VarDecl>();
     setSourceInfo(vardecl,context);
@@ -1279,9 +1279,11 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
             auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
             vardecl->varType = builtinType;
         }
-        else if (context->IDENTIFIER().size()>1) {
-            auto typeIdent { identifierFromTerminal(context->IDENTIFIER().at(1)) };
-            vardecl->varType = typeIdent;
+        else if (context->type_name()) {
+            TypeName components;
+            for (auto* ident : context->type_name()->IDENTIFIER())
+                components.push_back(identifierFromTerminal(ident));
+            vardecl->varType = components;
         }
     }
 
@@ -1408,7 +1410,7 @@ std::any ASTGenerator::visitFunc_sig(RoxalParser::Func_sigContext *context)
 
     // return types (optional)
     if (context->return_type()) {
-        using ReturnInfo = std::pair<std::vector<std::variant<BuiltinType,icu::UnicodeString>>, std::vector<bool>>;
+        using ReturnInfo = std::pair<std::vector<VarType>, std::vector<bool>>;
         auto info = anyas<ReturnInfo>(visitReturn_type(context->return_type()));
         func->returnTypes = info.first;
         func->returnTypeConst = info.second;
@@ -1486,9 +1488,11 @@ std::any ASTGenerator::visitParameter(RoxalParser::ParameterContext *context)
         auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
         param->type = builtinType;
     }
-    else if (auto typeIdentNode = context->IDENTIFIER()) {
-        auto typeIdent { identifierFromTerminal(typeIdentNode) };
-        param->type = typeIdent;
+    else if (context->type_name()) {
+        TypeName components;
+        for (auto* ident : context->type_name()->IDENTIFIER())
+            components.push_back(identifierFromTerminal(ident));
+        param->type = components;
     }
     else {} // type is optional
 
@@ -1564,17 +1568,26 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
             typeDecl->annotations.push_back(annotation);
         }
 
-        size_t identIndex = 0;
-        typeDecl->name = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
+        typeDecl->name = identifierFromTerminal(context->IDENTIFIER());
+
+        auto typeNames = context->type_name();
+        size_t tnIndex = 0;
 
         if (context->EXTENDS()) {
-            if (identIndex >= context->IDENTIFIER().size())
+            if (tnIndex >= typeNames.size())
                 throw std::runtime_error("type extends clause missing identifier");
-            typeDecl->extends = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
+            TypeName components;
+            for (auto* ident : typeNames[tnIndex++]->IDENTIFIER())
+                components.push_back(identifierFromTerminal(ident));
+            typeDecl->extends = components;
         }
 
-        while (identIndex < context->IDENTIFIER().size())
-            typeDecl->implements.push_back(identifierFromTerminal(context->IDENTIFIER().at(identIndex++)));
+        while (tnIndex < typeNames.size()) {
+            TypeName components;
+            for (auto* ident : typeNames[tnIndex++]->IDENTIFIER())
+                components.push_back(identifierFromTerminal(ident));
+            typeDecl->implements.push_back(components);
+        }
 
         if (isInterface && !typeDecl->implements.empty())
             throw std::runtime_error("Interface "+toUTF8StdString(typeDecl->name)+" cannot implement, use extends instead");
@@ -1641,9 +1654,10 @@ std::any ASTGenerator::visitEnum_type_decl(RoxalParser::Enum_type_declContext *c
         if (context->EXTENDS()) {
             if (identIndex >= context->IDENTIFIER().size())
                 throw std::runtime_error("enum extends clause missing identifier");
-            typeDecl->extends = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
+            auto extendsName = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
+            typeDecl->extends = TypeName{extendsName};
 
-            if (typeDecl->extends != UnicodeString("byte") && typeDecl->extends != UnicodeString("int"))
+            if (extendsName != UnicodeString("byte") && extendsName != UnicodeString("int"))
                 throw std::runtime_error("Enum(eration) "+toUTF8StdString(typeDecl->name)+" can only extend byte or int");
         }
 
@@ -1674,13 +1688,13 @@ std::any ASTGenerator::visitEvent_type_decl(RoxalParser::Event_type_declContext 
             typeDecl->annotations.push_back(annotation);
         }
 
-        size_t identIndex = 0;
-        typeDecl->name = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
+        typeDecl->name = identifierFromTerminal(context->IDENTIFIER());
 
-        if (context->EXTENDS()) {
-            if (identIndex >= context->IDENTIFIER().size())
-                throw std::runtime_error("event extends clause missing identifier");
-            typeDecl->extends = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
+        if (context->EXTENDS() && context->type_name()) {
+            TypeName components;
+            for (auto* ident : context->type_name()->IDENTIFIER())
+                components.push_back(identifierFromTerminal(ident));
+            typeDecl->extends = components;
         }
 
         if (context->str()) {
@@ -1778,7 +1792,7 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
 
         propAccessor->access = (context->PRIVATE() != nullptr) ? Access::Private : Access::Public;
         propAccessor->isConst = (context->CONST() != nullptr);
-        propAccessor->name = identifierFromTerminal(context->IDENTIFIER().at(0));
+        propAccessor->name = identifierFromTerminal(context->IDENTIFIER());
 
         // Get annotations
         for (auto* annotCtx : context->annotation()) {
@@ -1797,9 +1811,11 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
             auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
             propAccessor->propType = builtinType;
         }
-        else if (context->IDENTIFIER().size() > 1) {
-            auto typeIdent { identifierFromTerminal(context->IDENTIFIER(1)) };
-            propAccessor->propType = typeIdent;
+        else if (context->type_name()) {
+            TypeName components;
+            for (auto* ident : context->type_name()->IDENTIFIER())
+                components.push_back(identifierFromTerminal(ident));
+            propAccessor->propType = components;
         }
 
         // Get initializer
@@ -1836,7 +1852,7 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
 
         varDecl->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
         varDecl->isConst = (context->CONST() != nullptr);
-        varDecl->name = identifierFromTerminal(context->IDENTIFIER().at(0));
+        varDecl->name = identifierFromTerminal(context->IDENTIFIER());
 
         for (auto* annotCtx : context->annotation()) {
             auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(annotCtx));
@@ -1857,9 +1873,11 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
             auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
             varDecl->varType = builtinType;
         }
-        else if (context->IDENTIFIER().size()>1) {
-            auto typeIdent { identifierFromTerminal(context->IDENTIFIER().at(1)) };
-            varDecl->varType = typeIdent;
+        else if (context->type_name()) {
+            TypeName components;
+            for (auto* ident : context->type_name()->IDENTIFIER())
+                components.push_back(identifierFromTerminal(ident));
+            varDecl->varType = components;
         }
         else {} // type is optional
 
@@ -2001,7 +2019,7 @@ std::any ASTGenerator::visitLambda_func(RoxalParser::Lambda_funcContext *context
 
     // return types (optional)
     if (context->return_type()) {
-        using ReturnInfo = std::pair<std::vector<std::variant<BuiltinType,icu::UnicodeString>>, std::vector<bool>>;
+        using ReturnInfo = std::pair<std::vector<VarType>, std::vector<bool>>;
         auto info = anyas<ReturnInfo>(visitReturn_type(context->return_type()));
         func->returnTypes = info.first;
         func->returnTypeConst = info.second;
@@ -2870,8 +2888,8 @@ std::any ASTGenerator::visitReturn_type(RoxalParser::Return_typeContext *context
 {
     visitStart();
 
-    using ReturnInfo = std::pair<std::vector<std::variant<BuiltinType,icu::UnicodeString>>, std::vector<bool>>;
-    std::vector<std::variant<BuiltinType,icu::UnicodeString>> returnTypes;
+    using ReturnInfo = std::pair<std::vector<VarType>, std::vector<bool>>;
+    std::vector<VarType> returnTypes;
     std::vector<bool> constFlags;
 
     // Walk children in order to pair const_qualifier with following type_spec
@@ -2880,7 +2898,7 @@ std::any ASTGenerator::visitReturn_type(RoxalParser::Return_typeContext *context
     size_t qi = 0; // qualifier index
 
     for (size_t ti = 0; ti < typeSpecs.size(); ti++) {
-        auto typeSpec = anyas<std::variant<BuiltinType,icu::UnicodeString>>(visitType_spec(typeSpecs[ti]));
+        auto typeSpec = anyas<VarType>(visitType_spec(typeSpecs[ti]));
         returnTypes.push_back(typeSpec);
 
         // Check if there's a const_qualifier preceding this type_spec
@@ -2913,11 +2931,13 @@ std::any ASTGenerator::visitType_spec(RoxalParser::Type_specContext *context)
 
     if (context->builtin_type()) {
         auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
-        return std::variant<BuiltinType,icu::UnicodeString>(builtinType);
+        return VarType(builtinType);
     }
-    else if (context->IDENTIFIER()) {
-        auto typeIdent = identifierFromTerminal(context->IDENTIFIER());
-        return std::variant<BuiltinType,icu::UnicodeString>(typeIdent);
+    else if (context->type_name()) {
+        TypeName components;
+        for (auto* ident : context->type_name()->IDENTIFIER())
+            components.push_back(identifierFromTerminal(ident));
+        return VarType(components);
     }
     else {
         throw std::runtime_error("Invalid type specification.");

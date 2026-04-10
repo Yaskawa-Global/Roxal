@@ -16,6 +16,21 @@ using roxal::type::to_string;
 
 enum class Access { Public, Private };
 
+// Qualified type name: ["Outer", "Inner"] for Outer.Inner, or ["Foo"] for simple Foo
+using TypeName = std::vector<icu::UnicodeString>;
+// Type reference: either a builtin type or a qualified user type name
+using VarType = std::variant<BuiltinType, TypeName>;
+
+inline icu::UnicodeString joinTypeName(const TypeName& components) {
+    icu::UnicodeString result = components[0];
+    for (size_t i = 1; i < components.size(); i++) {
+        result += ".";
+        result += components[i];
+    }
+    return result;
+}
+
+
 
 
 class File;
@@ -495,7 +510,7 @@ struct VarDecl : public Declaration {
 
     icu::UnicodeString name;
     std::optional<ptr<Expression>> initializer;
-    std::optional<std::variant<BuiltinType,icu::UnicodeString>> varType;
+    std::optional<VarType> varType;
     Access access { Access::Public };
     bool isConst { false };        // declaration is 'const' (cannot reassign)
     bool isTypeConst { false };    // type is qualified with 'const' (e.g. var x: const T)
@@ -511,7 +526,7 @@ struct VarDecl : public Declaration {
 
 struct PropertyAccessor : public AST {
     icu::UnicodeString name;
-    std::variant<BuiltinType, icu::UnicodeString> propType;
+    VarType propType;
     std::optional<ptr<Expression>> initializer;
     Access access { Access::Public };
     bool isConst { false }; // true if declared with const instead of var
@@ -544,7 +559,7 @@ struct Function : public AST {
     bool isProc;
     std::optional<icu::UnicodeString> name; // none if lambda func
     std::vector<ptr<Parameter>> params;
-    std::optional<std::vector<std::variant<BuiltinType,icu::UnicodeString>>> returnTypes;
+    std::optional<std::vector<VarType>> returnTypes;
     std::vector<bool> returnTypeConst; // parallel to returnTypes: true if 'const' qualifier
     std::variant<ptr<Suite>, ptr<Expression>, std::monostate> body; // no body if abstract
     Access access { Access::Public };
@@ -558,7 +573,7 @@ struct Function : public AST {
 
 struct Parameter : public AST {
     icu::UnicodeString name;
-    std::optional<std::variant<BuiltinType,icu::UnicodeString>> type;
+    std::optional<VarType> type;
     std::optional<ptr<Expression>> defaultValue;
     bool variadic = false;  // true if ...name syntax (collects remaining positional args)
     bool isConst = false;   // true if parameter type is qualified with 'const'
@@ -578,8 +593,8 @@ struct TypeDecl : public Declaration {
     Kind kind;
 
     icu::UnicodeString name;
-    std::optional<icu::UnicodeString> extends;
-    std::vector<icu::UnicodeString> implements;
+    std::optional<TypeName> extends;
+    std::vector<TypeName> implements;
 
     std::vector<ptr<Function>> methods;
 

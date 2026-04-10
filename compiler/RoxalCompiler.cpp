@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 29;
+constexpr std::uint32_t ModuleCacheVersion = 30;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -1082,7 +1082,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             error("Events cannot implement interfaces");
 
         if (ast->extends.has_value()) {
-            auto superName = ast->extends.value();
+            auto superName = joinTypeName(ast->extends.value());
             auto it = typePropertyRegistry.find(superName);
             if (it != typePropertyRegistry.end())
                 asTypeScope(typeScope())->propertyNames.insert(it->second.begin(), it->second.end());
@@ -1106,7 +1106,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             asTypeScope(typeScope())->hasSuperType = true;
             asTypeScope(typeScope())->superTypeName = ast->extends.value();
 
-            namedVariable(ast->extends.value(), false);
+            emitTypeName(ast->extends.value());
             enterLocalScope();
             addLocal("super");
             defineVariable(0);
@@ -1134,7 +1134,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                     Value typeValue { Value::typeSpecVal(builtinToValueType(builtinType)) };
                     emitConstant(typeValue, "event payload " + toUTF8StdString(propName) + " type");
                 } else {
-                    namedVariable(std::get<icu::UnicodeString>(varType), false);
+                    emitTypeName(std::get<TypeName>(varType));
                 }
             } else {
                 emitByte(OpCode::ConstNil, "event payload " + toUTF8StdString(propName) + " (no type)");
@@ -1193,7 +1193,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     // inherit property registry from super type if available
     if (ast->extends.has_value()) {
-        auto superName = ast->extends.value();
+        auto superName = joinTypeName(ast->extends.value());
         auto it = typePropertyRegistry.find(superName);
         if (it != typePropertyRegistry.end())
             asTypeScope(typeScope())->propertyNames.insert(it->second.begin(), it->second.end());
@@ -1238,10 +1238,10 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         auto superTypeName = ast->extends.value();
 
         // can't inherit yourself
-        if (superTypeName == ast->name)
+        if (superTypeName.size() == 1 && superTypeName[0] == ast->name)
             error("Type object, actor or interface '"+toUTF8StdString(ast->name)+"' can't extend itself.");
 
-        namedVariable(superTypeName, /*assign=*/false); // parent (super)
+        emitTypeName(superTypeName); // parent (super)
 
         enterLocalScope();
         addLocal("super");
@@ -1329,7 +1329,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             }
             else { // assume string names module scope (local?) type var
                 // will emit GetLocal or GetModuleVar (or GetUpValue)
-                namedVariable( std::get<icu::UnicodeString>(varType), false );
+                emitTypeName(std::get<TypeName>(varType));
             }
 
         }
@@ -1405,7 +1405,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             emitConstant(typeValue, "backing field " + toUTF8StdString(backingFieldName) + " type");
         } else {
             // Named type
-            namedVariable(std::get<icu::UnicodeString>(propAccessor->propType), false);
+            emitTypeName(std::get<TypeName>(propAccessor->propType));
         }
 
         // Emit initial value for backing field
@@ -1578,11 +1578,11 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                 if (!func->returnTypes.has_value()) {
                     // Infer return type from target type
                     if (bt.has_value()) {
-                        func->returnTypes = std::vector<std::variant<BuiltinType,icu::UnicodeString>>{ bt.value() };
+                        func->returnTypes = std::vector<VarType>{ bt.value() };
                         func->returnTypeConst = std::vector<bool>{ false };
                     } else {
                         // User-defined type
-                        func->returnTypes = std::vector<std::variant<BuiltinType,icu::UnicodeString>>{ targetType };
+                        func->returnTypes = std::vector<VarType>{ TypeName{targetType} };
                         func->returnTypeConst = std::vector<bool>{ false };
                     }
                 } else {
@@ -1596,7 +1596,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                             if (std::holds_alternative<BuiltinType>(rt) && std::get<BuiltinType>(rt) == bt.value())
                                 matches = true;
                         } else {
-                            if (std::holds_alternative<icu::UnicodeString>(rt) && std::get<icu::UnicodeString>(rt) == targetType)
+                            if (std::holds_alternative<TypeName>(rt) && joinTypeName(std::get<TypeName>(rt)) == targetType)
                                 matches = true;
                         }
                         if (!matches)
@@ -1830,7 +1830,7 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
         if (std::holds_alternative<BuiltinType>(ast->varType.value()))
             declType = std::get<BuiltinType>(ast->varType.value());
         else
-            declType = std::get<icu::UnicodeString>(ast->varType.value());
+            declType = std::get<TypeName>(ast->varType.value());
     }
 
     if (ast->isConst) {
@@ -1896,7 +1896,7 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
                 emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
                           uint8_t(builtinToValueType(std::get<BuiltinType>(*declType))));
             else {
-                namedVariable(std::get<icu::UnicodeString>(*declType), false);
+                emitTypeName(std::get<TypeName>(*declType));
                 emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
             }
         }
@@ -1952,7 +1952,7 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
                 emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
                           uint8_t(builtinToValueType(std::get<BuiltinType>(*declType))));
             else {
-                namedVariable(std::get<icu::UnicodeString>(*declType), false);
+                emitTypeName(std::get<TypeName>(*declType));
                 emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
             }
         }
@@ -2137,8 +2137,7 @@ std::any RoxalCompiler::visit(ptr<ast::ReturnStatement> ast)
                 emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
                           uint8_t(builtinToValueType(std::get<BuiltinType>(rt))));
             else {
-                if (!namedVariable(std::get<icu::UnicodeString>(rt), false))
-                    namedModuleVariable(std::get<icu::UnicodeString>(rt));
+                emitTypeName(std::get<TypeName>(rt));
                 emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
             }
         }
@@ -2258,7 +2257,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
             if (std::holds_alternative<BuiltinType>(vdecl->varType.value()))
                 vtype = std::get<BuiltinType>(vdecl->varType.value());
             else
-                vtype = std::get<icu::UnicodeString>(vdecl->varType.value());
+                vtype = std::get<TypeName>(vdecl->varType.value());
         }
         targetVarNames.push_back(name);
         targetVarTypes.push_back(vtype);
@@ -2342,7 +2341,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
                 emitBytes(strict ? OpCode::ToTypeStrict : OpCode::ToType,
                           uint8_t(builtinToValueType(std::get<BuiltinType>(tv))));
             else {
-                namedVariable(std::get<icu::UnicodeString>(tv), false);
+                emitTypeName(std::get<TypeName>(tv));
                 emitByte(strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
             }
         }
@@ -2368,7 +2367,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
                     emitBytes(strict ? OpCode::ToTypeStrict : OpCode::ToType,
                               uint8_t(builtinToValueType(std::get<BuiltinType>(tv))));
                 else {
-                    namedVariable(std::get<icu::UnicodeString>(tv), false);
+                    emitTypeName(std::get<TypeName>(tv));
                     emitByte(strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
                 }
             }
@@ -2896,8 +2895,7 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
                 emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
                           uint8_t(builtinToValueType(std::get<BuiltinType>(rt))));
             else {
-                if (!namedVariable(std::get<icu::UnicodeString>(rt), false))
-                    namedModuleVariable(std::get<icu::UnicodeString>(rt));
+                emitTypeName(std::get<TypeName>(rt));
                 emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
             }
         }
@@ -3061,7 +3059,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                     emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
                               uint8_t(builtinToValueType(std::get<BuiltinType>(*vtype))));
                 else {
-                    namedVariable(std::get<icu::UnicodeString>(*vtype), false);
+                    emitTypeName(std::get<TypeName>(*vtype));
                     emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
                 }
             }
@@ -3168,7 +3166,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                 emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
                           uint8_t(builtinToValueType(std::get<BuiltinType>(*vtype))));
             else {
-                namedVariable(std::get<icu::UnicodeString>(*vtype), false);
+                emitTypeName(std::get<TypeName>(*vtype));
                 emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
             }
         }
@@ -3199,7 +3197,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
         OpCode op = OpCode::SetPropCheck;
         bool useSetter = false;
-        std::optional<std::variant<type::BuiltinType, icu::UnicodeString>> propType;
+        std::optional<VarTypeSpec> propType;
 
         if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
             auto typeScopePtr = asTypeScope(typeScope());
@@ -3229,9 +3227,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                 emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
                           uint8_t(builtinToValueType(std::get<BuiltinType>(*propType))));
             } else {
-                auto& typeName = std::get<icu::UnicodeString>(*propType);
-                if (!namedVariable(typeName, false))
-                    namedModuleVariable(typeName);
+                emitTypeName(std::get<TypeName>(*propType));
                 emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
             }
         }
@@ -3300,7 +3296,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                         emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
                                   uint8_t(builtinToValueType(std::get<BuiltinType>(*vtype))));
                     else {
-                        namedVariable(std::get<icu::UnicodeString>(*vtype), false);
+                        emitTypeName(std::get<TypeName>(*vtype));
                         emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
                     }
                 }
@@ -3451,7 +3447,7 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
             throw std::runtime_error("super. accessor requires member name");
 
         // check access of member in super type
-        auto superName = asTypeScope(typeScope())->superTypeName;
+        auto superName = joinTypeName(asTypeScope(typeScope())->superTypeName);
         auto itType = typePropertyRegistry.find(superName);
         if (itType != typePropertyRegistry.end()) {
             auto itMem = itType->second.find(ast->member.value());
@@ -4676,6 +4672,15 @@ ValueType RoxalCompiler::builtinToValueType(ast::BuiltinType bt)
     return type;
 }
 
+
+void RoxalCompiler::emitTypeName(const ast::TypeName& components)
+{
+    namedVariable(components[0], false);
+    for (size_t i = 1; i < components.size(); i++) {
+        uint16_t nameConst = identifierConstant(components[i]);
+        emitOpArgsBytes(OpCode::GetProp, nameConst);
+    }
+}
 
 void RoxalCompiler::emitByte(uint8_t byte, const std::string& comment)
 {
