@@ -1584,8 +1584,13 @@ struct ObjObjectType : public ObjTypeSpec
     // name -> value
     std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> enumLabelValues;
 
-    // nested type declarations (name hash -> (name, type value))
-    std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> nestedTypes;
+    // nested type declarations
+    struct NestedType {
+        icu::UnicodeString name;
+        Value type;
+        ast::Access access { ast::Access::Public };
+    };
+    std::unordered_map<int32_t, NestedType> nestedTypes;
 
     // global enum type id -> ObjObjectType
     //  TODO: make thread safe?

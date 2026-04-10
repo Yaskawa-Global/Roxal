@@ -593,6 +593,7 @@ struct TypeDecl : public Declaration {
     Kind kind;
 
     icu::UnicodeString name;
+    Access access { Access::Public }; // for nested type declarations
     std::optional<TypeName> extends;
     std::vector<TypeName> implements;
 

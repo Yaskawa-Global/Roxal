@@ -81,6 +81,7 @@ public:
     virtual std::any visitSuite(RoxalParser::SuiteContext *context);
 
     virtual std::any visitType_name(RoxalParser::Type_nameContext *context) override { return {}; } // handled inline
+    virtual std::any visitNested_type_decl(RoxalParser::Nested_type_declContext *context) override { return {}; } // handled inline
     virtual std::any visitType_decl(RoxalParser::Type_declContext *context);
     virtual std::any visitObject_type_decl(RoxalParser::Object_type_declContext *context);
     virtual std::any visitEnum_type_decl(RoxalParser::Enum_type_declContext *context);

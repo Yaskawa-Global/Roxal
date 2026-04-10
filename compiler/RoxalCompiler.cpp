@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 30;
+constexpr std::uint32_t ModuleCacheVersion = 32;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -1261,21 +1261,24 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         namedVariable(ast->name, false); // make type accessible on the stack
 
     // Compile nested type declarations before properties,
-    // so nested type names are available as property types
+    // so nested type names are available as property types.
+    // Nested types compile normally (creating module vars) so sibling types can
+    // reference each other. After the enclosing type body is fully compiled,
     for (const auto& nestedType : ast->nestedTypes) {
-        // Register nested type name as a const member of the enclosing type
+        // Register nested type name as a const member of the enclosing type.
+        // This enables sibling resolution via TypeScope in namedVariable().
         asTypeScope(typeScope())->propertyNames[nestedType->name] =
-            {ast::Access::Public, ast->name, /*isConst=*/true};
+            {nestedType->access, ast->name, /*isConst=*/true};
 
         // Compile the nested type without module-level registration.
-        // The type value stays on the stack (no defineVariable/DefineModuleConst).
         bool wasCompilingNestedType = compilingNestedType;
         compilingNestedType = true;
         nestedType->accept(*this);
         compilingNestedType = wasCompilingNestedType;
 
         // The type value is on the stack from the type opcode.
-        // NestedType pops it and stores on the enclosing type.
+        // Store on enclosing type via NestedType opcode (with access flag).
+        emitByte(nestedType->access == Access::Private ? OpCode::ConstTrue : OpCode::ConstFalse);
         uint16_t nestedNameConstant = identifierConstant(nestedType->name);
         emitOpArgsBytes(OpCode::NestedType, nestedNameConstant,
                         "nested type " + toUTF8StdString(nestedType->name));
@@ -1727,6 +1730,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             emitOpArgsBytes(OpCode::EnumLabel, propNameConstant, "enum value "+toUTF8StdString(labelName));
         }
     }
+
 
 
     emitByte(OpCode::Pop, "type name");
@@ -5323,6 +5327,24 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
                         return true;
                     }
                 }
+            }
+        }
+    }
+
+    // If in a type body (not a method), check if the name is a const member of any
+    // enclosing type (e.g., nested type or const value). Resolve as EnclosingType.name.
+    // Walk up through nested TypeScopes to find the member.
+    if (!found && inTypeScope()
+        && asFuncScope(funcScope())->functionType == FunctionType::Module) {
+        for (auto si = lexicalScopes.rbegin(); si != lexicalScopes.rend(); ++si) {
+            if ((*si)->scopeType != LexicalScope::ScopeType::Type) continue;
+            auto ts = dynamic_ptr_cast<TypeScope>(*si);
+            auto itMem = ts->propertyNames.find(name);
+            if (itMem != ts->propertyNames.end() && itMem->second.isConst) {
+                namedVariable(ts->name, false); // push enclosing type (module var or outer type)
+                uint16_t nameConst = identifierConstant(name);
+                emitOpArgsBytes(OpCode::GetProp, nameConst);
+                return true;
             }
         }
     }

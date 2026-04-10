@@ -157,7 +157,7 @@ var_decl // FIXME: use ident_opt_type
  ;
 
 ident_opt_type
- : IDENTIFIER (':' builtin_type | IDENTIFIER)?
+ : IDENTIFIER (':' (builtin_type | type_name))?
  ;
 
 func_decl
@@ -180,7 +180,7 @@ operator_name
 
 conversion_target
  : builtin_type
- | IDENTIFIER
+ | type_name
  ;
 
 operator_symbol
@@ -219,15 +219,19 @@ type_decl
 object_type_decl
  : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE)
     (EXTENDS type_name)? (IMPLEMENTS type_name (',' type_name)*)?
-    (   (':' NEWLINE INDENT (str NEWLINE)? (member_var|method|type_decl)* DEDENT)
+    (   (':' NEWLINE INDENT (str NEWLINE)? (member_var|method|nested_type_decl)* DEDENT)
       | NEWLINE
     )
+ ;
+
+nested_type_decl
+ : PRIVATE? type_decl
  ;
 
 enum_type_decl
  : annotation* TYPE IDENTIFIER ENUM
     // only enum can extend byte or int
-    (EXTENDS (IDENTIFIER | BYTE | INT))?
+    (EXTENDS (type_name | BYTE | INT))?
     // for enums, allow mixture of comma & line separated labels
     (   (':' NEWLINE INDENT (enum_label (NEWLINE|COMMA) )* DEDENT)
       | (':' (enum_label COMMA)* enum_label NEWLINE)

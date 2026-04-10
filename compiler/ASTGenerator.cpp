@@ -128,8 +128,12 @@ UnicodeString ASTGenerator::operatorNameFromContext(RoxalParser::Operator_nameCo
         UnicodeString target;
         if (ct->builtin_type())
             target = toUnicodeString(ct->builtin_type()->getText());
-        else if (ct->IDENTIFIER())
-            target = identifierFromTerminal(ct->IDENTIFIER());
+        else if (ct->type_name()) {
+            TypeName components;
+            for (auto* ident : ct->type_name()->IDENTIFIER())
+                components.push_back(identifierFromTerminal(ident));
+            target = joinTypeName(components);
+        }
         return UnicodeString("operator->") + target;
     }
 
@@ -1305,15 +1309,18 @@ std::any ASTGenerator::visitIdent_opt_type(RoxalParser::Ident_opt_typeContext *c
 {
     visitStart();
 
-    auto ident { identifierFromTerminal(context->IDENTIFIER().at(0)) };
+    auto ident { identifierFromTerminal(context->IDENTIFIER()) };
 
     if (context->COLON()) { // type specified
         if (context->builtin_type())
             return std::make_pair(ident, std::variant<std::monostate,BuiltinType,icu::UnicodeString>(anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()))));
-        else {
-            auto identType { identifierFromTerminal(context->IDENTIFIER().at(1)) };
-
-            return std::make_pair(ident, std::variant<std::monostate,BuiltinType,icu::UnicodeString>(identType));
+        else if (context->type_name()) {
+            // For ident_opt_type, join dotted type name into single string
+            // (consumed by visitFor_stmt which wraps it in TypeName)
+            TypeName components;
+            for (auto* id : context->type_name()->IDENTIFIER())
+                components.push_back(identifierFromTerminal(id));
+            return std::make_pair(ident, std::variant<std::monostate,BuiltinType,icu::UnicodeString>(joinTypeName(components)));
         }
     }
     else
@@ -1621,8 +1628,9 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
         }
 
         // Nested type declarations
-        for (auto* typeDeclContext : context->type_decl()) {
-            auto nested = as<TypeDecl>(visitType_decl(typeDeclContext));
+        for (auto* nestedCtx : context->nested_type_decl()) {
+            auto nested = as<TypeDecl>(visitType_decl(nestedCtx->type_decl()));
+            nested->access = nestedCtx->PRIVATE() ? Access::Private : Access::Public;
             typeDecl->nestedTypes.push_back(nested);
         }
 
@@ -1648,13 +1656,20 @@ std::any ASTGenerator::visitEnum_type_decl(RoxalParser::Enum_type_declContext *c
             typeDecl->annotations.push_back(annotation);
         }
 
-        size_t identIndex = 0;
-        typeDecl->name = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
+        typeDecl->name = identifierFromTerminal(context->IDENTIFIER());
 
         if (context->EXTENDS()) {
-            if (identIndex >= context->IDENTIFIER().size())
-                throw std::runtime_error("enum extends clause missing identifier");
-            auto extendsName = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
+            icu::UnicodeString extendsName;
+            if (context->BYTE())
+                extendsName = "byte";
+            else if (context->INT())
+                extendsName = "int";
+            else if (context->type_name()) {
+                TypeName components;
+                for (auto* id : context->type_name()->IDENTIFIER())
+                    components.push_back(identifierFromTerminal(id));
+                extendsName = joinTypeName(components);
+            }
             typeDecl->extends = TypeName{extendsName};
 
             if (extendsName != UnicodeString("byte") && extendsName != UnicodeString("int"))

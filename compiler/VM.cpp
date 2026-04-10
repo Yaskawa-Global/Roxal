@@ -5408,7 +5408,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                             auto ntIt = t->nestedTypes.find(name->hash);
                             if (ntIt != t->nestedTypes.end()) {
                                 pop();
-                                push(ntIt->second.second);
+                                push(ntIt->second.type);
                                 break;
                             }
                         }
@@ -5460,7 +5460,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                             auto ntIt = t->nestedTypes.find(name->hash);
                             if (ntIt != t->nestedTypes.end()) {
                                 pop();
-                                push(ntIt->second.second);
+                                push(ntIt->second.type);
                                 break;
                             }
                         }
@@ -5488,7 +5488,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     auto it = objType->nestedTypes.find(name->hash);
                     if (it != objType->nestedTypes.end()) {
                         pop();
-                        push(it->second.second);
+                        push(it->second.type);
                         break;
                     }
                     // const properties (to const types) are accessible via the type (like static members);
@@ -5496,14 +5496,13 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     {
                         auto pit = objType->properties.find(name->hash);
                         if (pit != objType->properties.end() && pit->second.isConst
-                            && pit->second.access == ast::Access::Public
                             && (pit->second.type.isNil() || pit->second.type.isConst())) {
                             pop();
                             push(pit->second.initialValue);
                             break;
                         }
                     }
-                    // fall through to builtin methods/properties check
+                    // fall through to builtin methods/properties check below
                 }
                 if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
@@ -5559,6 +5558,10 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
                 if (inst.isNil())
                     runtimeError("Attempted member or property access on nil");
+                else if (isObjectType(inst))
+                    runtimeError("Undefined property '"+toUTF8StdString(name->s)+
+                                 "' for type '"+toUTF8StdString(asObjectType(inst)->name)+
+                                 "'. Only nested types and public const members are accessible on type values.");
                 else
                     runtimeError("Only object and actor instances have methods and only object, actor, and dictionary instances have properties (string keys only).");
 #ifdef DEBUG_BUILD
@@ -5744,7 +5747,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                             auto ntIt = t->nestedTypes.find(name->hash);
                             if (ntIt != t->nestedTypes.end()) {
                                 pop();
-                                push(ntIt->second.second);
+                                push(ntIt->second.type);
                                 break;
                             }
                         }
@@ -5809,7 +5812,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                             auto ntIt = t->nestedTypes.find(name->hash);
                             if (ntIt != t->nestedTypes.end()) {
                                 pop();
-                                push(ntIt->second.second);
+                                push(ntIt->second.type);
                                 break;
                             }
                         }
@@ -5833,8 +5836,13 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     auto objType = asObjectType(inst);
                     auto it = objType->nestedTypes.find(name->hash);
                     if (it != objType->nestedTypes.end()) {
+                        if (it->second.access == ast::Access::Private &&
+                            !isAccessAllowed(Value::objRef(objType).weakRef(), ast::Access::Private)) {
+                            runtimeError("Cannot access private nested type '%s'", toUTF8StdString(name->s).c_str());
+                            return errorReturn;
+                        }
                         pop();
-                        push(it->second.second);
+                        push(it->second.type);
                         break;
                     }
                     // const properties (to const types) are accessible via the type (like static members);
@@ -5842,14 +5850,18 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     {
                         auto pit = objType->properties.find(name->hash);
                         if (pit != objType->properties.end() && pit->second.isConst
-                            && pit->second.access == ast::Access::Public
                             && (pit->second.type.isNil() || pit->second.type.isConst())) {
+                            if (pit->second.access == ast::Access::Private &&
+                                !isAccessAllowed(pit->second.ownerType, ast::Access::Private)) {
+                                runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+                                return errorReturn;
+                            }
                             pop();
                             push(pit->second.initialValue);
                             break;
                         }
                     }
-                    // fall through to builtin methods/properties check
+                    // fall through to builtin methods/properties check below
                 }
                 if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
@@ -5904,6 +5916,10 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
                 if (inst.isNil())
                     runtimeError("Attempted member or property access on nil");
+                else if (isObjectType(inst))
+                    runtimeError("Undefined property '"+toUTF8StdString(name->s)+
+                                 "' for type '"+toUTF8StdString(asObjectType(inst)->name)+
+                                 "'. Only nested types and public const members are accessible on type values.");
                 else
                     runtimeError("Only object and actor instances have methods and only object, actor, and dictionary instances have properties (string keys only).");
                 return errorReturn;
@@ -7745,10 +7761,13 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             }
             case OpCode::NestedType: {
                 ObjString* name = readString();
-                Value nestedTypeVal = peek(0);
-                ObjObjectType* enclosingType = asObjectType(peek(1));
-                enclosingType->nestedTypes[name->hash] = {name->s, nestedTypeVal};
-                pop();
+                Value accessVal = peek(0);
+                Value nestedTypeVal = peek(1);
+                ObjObjectType* enclosingType = asObjectType(peek(2));
+                ast::Access access = (accessVal.isBool() && accessVal.asBool())
+                    ? ast::Access::Private : ast::Access::Public;
+                enclosingType->nestedTypes[name->hash] = {name->s, nestedTypeVal, access};
+                popN(2);
                 break;
             }
             case OpCode::Extend: {

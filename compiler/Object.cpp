@@ -2955,11 +2955,13 @@ void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
     out.write(reinterpret_cast<char*>(&ntcount),4);
     for(const auto& kv : nestedTypes) {
         const auto& nt = kv.second;
-        std::string nn; nt.first.toUTF8String(nn);
+        std::string nn; nt.name.toUTF8String(nn);
         uint32_t nlen = nn.size();
         out.write(reinterpret_cast<char*>(&nlen),4);
         out.write(nn.data(), nlen);
-        writeValue(out, nt.second, ctx);
+        writeValue(out, nt.type, ctx);
+        uint8_t acc = static_cast<uint8_t>(nt.access);
+        out.write(reinterpret_cast<char*>(&acc),1);
     }
 }
 
@@ -3007,6 +3009,10 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         if (ownerType.isNil())
             ownerType = Value::objRef(this).weakRef();
         Property prop{uname, ptype, init, static_cast<ast::Access>(acc), isConst != 0, ownerType, ct};
+        // Re-freeze initial value for const members with const type (const bit lost during serialization)
+        if (prop.isConst && (prop.type.isNil() || prop.type.isConst())
+            && prop.initialValue.isObj() && !prop.initialValue.isConst())
+            prop.initialValue = prop.initialValue.constRef();
         properties[hash] = prop;
         propertyOrder.push_back(hash);
     }
@@ -3047,8 +3053,9 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         std::string nn(nlen,'\0'); if(nlen>0) in.read(nn.data(), nlen);
         icu::UnicodeString uname = icu::UnicodeString::fromUTF8(nn);
         Value val = readValue(in, ctx);
+        uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
         int32_t hash = uname.hashCode();
-        nestedTypes[hash] = {uname, val};
+        nestedTypes[hash] = {uname, val, static_cast<ast::Access>(acc)};
     }
 
     if(isEnumeration) {
@@ -3074,7 +3081,7 @@ void ObjObjectType::trace(ValueVisitor& visitor) const
         visitor.visit(entry.second.second);
     }
     for (const auto& entry : nestedTypes) {
-        visitor.visit(entry.second.second);
+        visitor.visit(entry.second.type);
     }
 }
 
@@ -3099,7 +3106,7 @@ void ObjObjectType::dropReferences()
         entry.second.second = Value::nilVal();
     }
     for (auto& entry : nestedTypes) {
-        entry.second.second = Value::nilVal();
+        entry.second.type = Value::nilVal();
     }
 }
 

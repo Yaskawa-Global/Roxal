@@ -1,1 +1,1 @@
-.*error: Only object and actor instances have methods and only object, actor, and dictionary instances have properties.*
+.*error: Undefined property 'Nonexistent' for type 'Foo'. Only nested types and public const members are accessible on type values.*
