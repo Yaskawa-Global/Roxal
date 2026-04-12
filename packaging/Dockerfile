@@ -144,6 +144,7 @@ RUN cmake -B build --fresh \
       -DROXAL_ENABLE_AI_NN=ON \
       -DOnnxRuntime_ROOT=/opt/onnxruntime \
       -DROXAL_ENABLE_MEDIA=ON \
+      -DROXAL_COMPUTE_SERVER=ON \
     && for attempt in 1 2 3 4 5; do \
          echo "=== Roxal build attempt ${attempt}/5 ===" && \
          cmake --build build -j${JOBS} && break; \
