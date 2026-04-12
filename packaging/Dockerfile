@@ -20,9 +20,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 ARG JOBS=1
 
 # CUDA architectures to compile ONNX Runtime for.
-# 70=V100 75=T4 80=A100 86=RTX3090 87=Orin 89=L40/RTX4090 90=H100
+# 75=T4 80=A100 86=RTX3090 87=Orin 89=L40/RTX4090 90=H100
 # 100=B100/B200 120=RTX5090 121=GB10/DGX-Spark
-ARG CUDA_ARCHITECTURES="70;75;80;86;87;89;90;100;120;121"
+# Note: CUDA 13 dropped support for sm_70 (Volta) and earlier — do not add it back
+# unless the base image is downgraded to CUDA 12.x.
+ARG CUDA_ARCHITECTURES="75;80;86;87;89;90;100;120;121"
 
 # cmake from Kitware APT repo (Ubuntu 24.04's cmake 3.28 is too old for
 # ONNX Runtime's CUDA build; we need 3.31+)
@@ -36,11 +38,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends gpg wget ca-cer
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake pkg-config git wget ca-certificates \
     python3 python3-pip default-jre-headless \
-    libicu-dev libffi-dev libboost-program-options-dev libeigen3-dev \
+    libicu-dev libffi-dev libboost-program-options-dev \
     libpcre2-dev protobuf-compiler libprotobuf-dev libprotoc-dev libgrpc++-dev \
     libpng-dev libjpeg-dev \
     patchelf file \
     && rm -rf /var/lib/apt/lists/*
+
+# Eigen 5.0.1 from source (header-only). Ubuntu 24.04's libeigen3-dev is 3.4.0,
+# but Roxal has a hard runtime check for exactly 5.0.1 (see compiler/roxal.cpp).
+RUN git clone --depth 1 --branch 5.0.1 https://gitlab.com/libeigen/eigen.git /tmp/eigen \
+    && cmake -B /tmp/eigen/build -S /tmp/eigen \
+         -DCMAKE_INSTALL_PREFIX=/opt/eigen \
+         -DBUILD_TESTING=OFF -DEIGEN_BUILD_BLAS=OFF -DEIGEN_BUILD_LAPACK=OFF \
+    && cmake --install /tmp/eigen/build \
+    && rm -rf /tmp/eigen
 
 # antlr4 command-line tool (Java-based parser generator)
 RUN pip install --break-system-packages antlr4-tools
@@ -62,8 +73,12 @@ RUN cmake -B /tmp/antlr4/build -S /tmp/antlr4/runtime/Cpp \
     && cmake --install /tmp/antlr4/build \
     && rm -rf /tmp/antlr4
 
-# CycloneDDS from source (not in Ubuntu 24.04 repos)
-RUN git clone --depth 1 \
+# CycloneDDS from source, pinned to the version in install-deps.sh.
+# IMPORTANT: Roxal has a runtime version check that aborts on mismatch.
+# Master has since changed the idl_array_size API incompatibly, so do not
+# bump this without also updating compiler/dds/DdsAdapter.cpp and verifying
+# the runtime check.
+RUN git clone --depth 1 --branch 11.0.0 \
       https://github.com/eclipse-cyclonedds/cyclonedds.git /tmp/cdds
 
 RUN cmake -B /tmp/cdds/build -S /tmp/cdds \
@@ -85,7 +100,7 @@ RUN git clone --depth 1 --branch v1.24.1 --recursive \
 RUN cd /tmp/ort \
     && for attempt in 1 2 3 4 5; do \
          echo "=== ONNX Runtime build attempt ${attempt}/5 ===" && \
-         ./build.sh --config Release --parallel \
+         ./build.sh --config Release --parallel ${JOBS} \
            --use_cuda --cuda_home /usr/local/cuda --cudnn_home /usr \
            --build_shared_lib --skip_tests --allow_running_as_root \
            --cmake_extra_defines CMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
@@ -118,15 +133,16 @@ WORKDIR /src
 # --fresh clears any stale CMakeCache.txt copied from host
 RUN cmake -B build --fresh \
       -DCMAKE_BUILD_TYPE=Release \
-      -DROXAL_ANTLR4_ROOT=/opt/antlr4 \
+      -DEigen3_ROOT=/opt/eigen \
+      -Dantlr4_ROOT=/opt/antlr4 \
       -DROXAL_ENABLE_FILEIO=ON \
       -DROXAL_ENABLE_REGEX=ON \
       -DROXAL_ENABLE_SOCKET=ON \
       -DROXAL_ENABLE_GRPC=ON \
       -DROXAL_ENABLE_DDS=ON \
-      -DROXAL_DDS_ROOT=/usr/local \
+      -DCycloneDDS_ROOT=/usr/local \
       -DROXAL_ENABLE_AI_NN=ON \
-      -DROXAL_ONNX_ROOT=/opt/onnxruntime \
+      -DOnnxRuntime_ROOT=/opt/onnxruntime \
       -DROXAL_ENABLE_MEDIA=ON \
     && for attempt in 1 2 3 4 5; do \
          echo "=== Roxal build attempt ${attempt}/5 ===" && \

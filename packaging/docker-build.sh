@@ -17,7 +17,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 PLATFORM="linux/arm64"
-CUDA_ARCHITECTURES="70;75;80;86;87;89;90;100"
+# CUDA 13 dropped sm_70 (Volta) — keep this list aligned with the Dockerfile.
+CUDA_ARCHITECTURES="75;80;86;87;89;90;100"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
