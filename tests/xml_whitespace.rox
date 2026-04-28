@@ -1,0 +1,13 @@
+var xml = "<robot>\n  <link>  base  </link>\n</robot>"
+
+var doc1 = from_xml(xml, 'raw')
+print(len(doc1.children))
+print(doc1.children[0].tag)
+print('[' + doc1.children[0].children[0] + ']')
+
+var doc2 = from_xml(xml, 'raw', true)
+print(len(doc2.children))
+print(len(doc2.children[0]))
+print(doc2.children[1].tag)
+print('[' + doc2.children[1].children[0] + ']')
+print(len(doc2.children[2]))

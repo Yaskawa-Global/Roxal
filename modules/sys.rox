@@ -87,6 +87,14 @@ func from_json(json:string):
   """parse JSON string into a value"""
 
 @builtin
+func to_xml(value, indent:bool=true, mode:string='auto') -> string:
+  """convert XML-shaped value to an XML string"""
+
+@builtin
+func from_xml(xml:string, mode:string='compact', preserve_whitespace:bool=false):
+  """parse XML string into compact or raw value form"""
+
+@builtin
 type Time object:
 
   private var _seconds:int

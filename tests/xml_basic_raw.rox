@@ -1,0 +1,8 @@
+var doc = from_xml('<robot name="arm">hello<link name="base"/>world</robot>', 'raw')
+print(doc.tag)
+print(doc.attrs.name)
+print(len(doc.children))
+print(doc.children[0])
+print(doc.children[1].tag)
+print(doc.children[1].attrs.name)
+print(doc.children[2])

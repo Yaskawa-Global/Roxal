@@ -229,6 +229,12 @@ fileio_tests = [
 ]
 dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok', 'dds_array_struct', 'dds_array_multi']
 regex_tests = ['regex_test']
+xml_tests = [
+    'xml_basic_compact', 'xml_basic_raw', 'xml_attrs', 'xml_mixed_raw',
+    'xml_compact_lossy', 'xml_whitespace', 'xml_to_xml_compact',
+    'xml_to_xml_raw', 'xml_invalid', 'xml_mode_errors',
+    'xml_write_mode_error', 'xml_shape_error'
+]
 socket_tests = ['socket_basic']
 nn_tests = ['nn_mnist', 'nn_signal', 'nn_chain', 'nn_signal_chain', 'nn_dynamic', 'nn_multi_io', 'nn_async', 'nn_tokenizer']
 nn_lfs_tests = ['nn_dfine']  # require LFS model files (only run with --all)
@@ -254,6 +260,7 @@ compute_server_double_hop_tests = ['remote_actor_forwarded_type', 'remote_actor_
 # Add feature-specific tests to the full list; feature gating happens later.
 tests += dds_tests
 tests += regex_tests
+tests += xml_tests
 tests += socket_tests
 tests += nn_tests
 tests += media_tests
@@ -348,6 +355,7 @@ has_grpc = 'grpc' in features
 has_fileio = 'fileio' in features
 has_dds = 'dds' in features
 has_regex = 'regex' in features
+has_xml = 'xml' in features
 has_socket = 'socket' in features
 has_nn = 'nn' in features
 has_compute_server = 'server' in features
@@ -365,6 +373,10 @@ if not has_regex:
     if any(test in tests for test in regex_tests):
         print("Skipping regex tests (feature not enabled).")
         tests = [t for t in tests if t not in regex_tests]
+if not has_xml:
+    if any(test in tests for test in xml_tests):
+        print("Skipping XML tests (feature not enabled).")
+        tests = [t for t in tests if t not in xml_tests]
 if not has_socket:
     if any(test in tests for test in socket_tests):
         print("Skipping socket tests (feature not enabled).")

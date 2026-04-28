@@ -1721,6 +1721,11 @@ The functions in the sys module are always globally available (- as if `import s
 * `deserialize(bytes, protocol='default')` - deserialize bytes using protocol
 * `to_json(value, indent=true)` - convert value to a JSON string
 * `from_json(json)` - parse JSON string into a value
+* `to_xml(value, indent=true, mode='auto')` - convert XML-shaped value to an XML string (requires build with `ROXAL_ENABLE_XML=ON`, otherwise raises at runtime)
+* `from_xml(xml, mode='compact', preserve_whitespace=false)` - parse XML string into a value (requires build with `ROXAL_ENABLE_XML=ON`, otherwise raises at runtime)
+  * `mode='compact'` returns element dicts with `tag`, optional `attrs`, optional `text`, and child tags as keys
+  * `mode='raw'` returns `{tag, attrs, children}` where `children` preserves ordered child elements and text nodes
+  * compact XML reserves the keys `tag`, `attrs`, and `text`; use raw mode if those names appear as child elements
 * `filter(items, predicate)` - return a new list containing elements for which `predicate(element)` returns true; predicate can optionally take `(element, index)`. Also a list method: `list.filter(predicate)`
 * `map(items, transform)` - return a new list with `transform(element)` applied to each element; transform can optionally take `(element, index)`. Also a list method: `list.map(transform)`
 * `reduce(items, reducer, initial)` - reduce list to a single value by calling `reducer(accumulator, element)` for each element; reducer can optionally take `(accumulator, element, index)`. Also a list method: `list.reduce(reducer, initial)`

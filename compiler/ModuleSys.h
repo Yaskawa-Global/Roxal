@@ -43,6 +43,8 @@ public:
     Value deserialize_builtin(VM& vm, ArgsView args);
     Value to_json_builtin(VM& vm, ArgsView args);
     Value from_json_builtin(VM& vm, ArgsView args);
+    Value to_xml_builtin(VM& vm, ArgsView args);
+    Value from_xml_builtin(VM& vm, ArgsView args);
     // filter_builtin, map_builtin, reduce_builtin removed - now in sys.rox
 
     // Time type natives

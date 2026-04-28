@@ -1,0 +1,11 @@
+var xml = '<p>hello <b>robot</b> world</p>'
+var doc = from_xml(xml, 'raw')
+print(doc.tag)
+print(len(doc.children))
+print('[' + doc.children[0] + ']')
+print(doc.children[1].tag)
+print(doc.children[1].children[0])
+print('[' + doc.children[2] + ']')
+var xml2 = to_xml(doc, false, 'raw')
+var doc2 = from_xml(xml2, 'raw')
+print(len(doc2.children))

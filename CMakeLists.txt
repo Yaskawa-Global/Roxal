@@ -30,6 +30,7 @@ option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
 option(ROXAL_ENABLE_GRPC "Enable gRPC/protobuf import support" OFF)
 option(ROXAL_ENABLE_DDS "Enable CycloneDDS support" OFF)
 option(ROXAL_ENABLE_REGEX "Enable regex module (requires libpcre2)" OFF)
+option(ROXAL_ENABLE_XML "Enable XML parsing/writing support" OFF)
 option(ROXAL_ENABLE_SOCKET "Enable socket module (POSIX sockets)" ON)
 option(ROXAL_COMPUTE_SERVER "Enable compute server (roxal --server) and 'at' remote actor support" OFF)
 if(ROXAL_COMPUTE_SERVER)
@@ -46,6 +47,7 @@ if(ROXAL_ENABLE_ALL)
     set(ROXAL_ENABLE_GRPC ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
     set(ROXAL_ENABLE_DDS ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
     set(ROXAL_ENABLE_REGEX ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
+    set(ROXAL_ENABLE_XML ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
     set(ROXAL_ENABLE_SOCKET ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
     set(ROXAL_COMPUTE_SERVER ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
     set(ROXAL_ENABLE_ONNX ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
@@ -187,6 +189,23 @@ endif()
 if(ROXAL_ENABLE_REGEX)
     pkg_check_modules(PCRE2 REQUIRED libpcre2-8)
     include_directories(${PCRE2_INCLUDE_DIRS})
+endif()
+
+# pugixml for XML builtins
+if(ROXAL_ENABLE_XML)
+    if(NOT DEFINED pugixml_ROOT)
+      if(EXISTS "${ROXAL_DEPS_DIR}/pugixml/lib/cmake/pugixml")
+        set(pugixml_ROOT "${ROXAL_DEPS_DIR}/pugixml")
+      endif()
+    endif()
+    if(pugixml_ROOT)
+      set(pugixml_ROOT "${pugixml_ROOT}" CACHE PATH "pugixml install prefix")
+      list(APPEND CMAKE_PREFIX_PATH "${pugixml_ROOT}")
+      message(STATUS "pugixml: using ${pugixml_ROOT}")
+    else()
+      message(STATUS "pugixml: using system")
+    endif()
+    find_package(pugixml CONFIG REQUIRED)
 endif()
 
 # ONNX Runtime — check: explicit override, then deps/onnxruntime (see install-deps.sh)
@@ -395,6 +414,7 @@ target_link_libraries(roxalcore
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::libidlc>
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::idl>
         $<$<BOOL:${ROXAL_ENABLE_REGEX}>:${PCRE2_LIBRARIES}>
+        $<$<BOOL:${ROXAL_ENABLE_XML}>:pugixml::pugixml>
         $<$<BOOL:${ROXAL_ENABLE_ONNX}>:${ONNXRUNTIME_LIBRARY}>
         $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:PNG::PNG>
         $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:JPEG::JPEG>
@@ -414,6 +434,7 @@ target_compile_definitions(roxalcore PRIVATE
     $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
     $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
     $<$<BOOL:${ROXAL_ENABLE_REGEX}>:ROXAL_ENABLE_REGEX>
+    $<$<BOOL:${ROXAL_ENABLE_XML}>:ROXAL_ENABLE_XML>
     $<$<BOOL:${ROXAL_ENABLE_SOCKET}>:ROXAL_ENABLE_SOCKET>
     $<$<BOOL:${ROXAL_ENABLE_ONNX}>:ROXAL_ENABLE_ONNX>
     $<$<BOOL:${ROXAL_ENABLE_AI_NN}>:ROXAL_ENABLE_AI_NN>
@@ -438,6 +459,7 @@ if(ROXAL_BUILD_MAIN)
         $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
         $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
         $<$<BOOL:${ROXAL_ENABLE_REGEX}>:ROXAL_ENABLE_REGEX>
+        $<$<BOOL:${ROXAL_ENABLE_XML}>:ROXAL_ENABLE_XML>
         $<$<BOOL:${ROXAL_ENABLE_SOCKET}>:ROXAL_ENABLE_SOCKET>
         $<$<BOOL:${ROXAL_ENABLE_ONNX}>:ROXAL_ENABLE_ONNX>
         $<$<BOOL:${ROXAL_ENABLE_AI_NN}>:ROXAL_ENABLE_AI_NN>
@@ -466,6 +488,7 @@ file(WRITE "${CMAKE_BINARY_DIR}/roxal_features.cmake"
     "set(ROXAL_HAS_DDS ${ROXAL_ENABLE_DDS})\n"
     "set(ROXAL_HAS_ONNX ${ROXAL_ENABLE_ONNX})\n"
     "set(ROXAL_HAS_REGEX ${ROXAL_ENABLE_REGEX})\n"
+    "set(ROXAL_HAS_XML ${ROXAL_ENABLE_XML})\n"
     "set(ROXAL_HAS_MEDIA ${ROXAL_ENABLE_MEDIA})\n"
     "set(ROXAL_HAS_COMPUTE_SERVER ${ROXAL_COMPUTE_SERVER})\n"
 )

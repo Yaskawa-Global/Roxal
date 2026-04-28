@@ -14,6 +14,9 @@
 #include "FFI.h"
 #include "Introspection.h"
 #include "CallableInfo.h"
+#ifdef ROXAL_ENABLE_XML
+#include <pugixml.hpp>
+#endif
 #include <sstream>
 #include <time.h>
 #include <cmath>
@@ -26,6 +29,7 @@
 #include <cstdio>
 #include <iomanip>
 #include <locale>
+#include <optional>
 #include <stdexcept>
 #include <future>
 #include <numeric>
@@ -118,6 +122,387 @@ TimeKind parseKind(const std::string& kind)
         return TimeKind::Steady;
     throw std::invalid_argument("unknown time kind '" + kind + "'");
 }
+
+constexpr const char* XML_MODE_COMPACT = "compact";
+constexpr const char* XML_MODE_RAW = "raw";
+constexpr const char* XML_MODE_AUTO = "auto";
+
+#ifdef ROXAL_ENABLE_XML
+
+struct XmlNode;
+
+struct XmlChild {
+    bool isText { false };
+    std::string text;
+    std::unique_ptr<XmlNode> node;
+};
+
+struct XmlNode {
+    std::string tag;
+    std::vector<std::pair<std::string, std::string>> attrs;
+    std::vector<XmlChild> children;
+};
+
+Value xmlStringValue(const std::string& s)
+{
+    return Value::stringVal(toUnicodeString(s));
+}
+
+bool dictHasStringKey(const Value& dictValue, const char* key)
+{
+    if (!isDict(dictValue))
+        return false;
+    return asDict(dictValue)->contains(xmlStringValue(key));
+}
+
+std::optional<Value> dictGetStringKey(const Value& dictValue, const char* key)
+{
+    if (!isDict(dictValue))
+        return std::nullopt;
+    Value keyValue = xmlStringValue(key);
+    if (!asDict(dictValue)->contains(keyValue))
+        return std::nullopt;
+    return asDict(dictValue)->at(keyValue);
+}
+
+void dictStoreStringKey(Value& dictValue, const char* key, const Value& value)
+{
+    asDict(dictValue)->store(xmlStringValue(key), value);
+}
+
+bool isWhitespaceOnly(const std::string& text)
+{
+    return std::all_of(text.begin(), text.end(), [](unsigned char ch) {
+        return std::isspace(ch) != 0;
+    });
+}
+
+std::pair<int, int> xmlLineColFromOffset(const std::string& text, ptrdiff_t offset)
+{
+    if (offset < 0)
+        return {1, 1};
+
+    size_t pos = static_cast<size_t>(offset);
+    if (pos > text.size())
+        pos = text.size();
+
+    int line = 1;
+    int col = 1;
+    for (size_t i = 0; i < pos; ++i) {
+        if (text[i] == '\n') {
+            ++line;
+            col = 1;
+        } else {
+            ++col;
+        }
+    }
+    return {line, col};
+}
+
+std::string requireStringValue(const Value& value, const std::string& context)
+{
+    if (!isString(value))
+        throw std::invalid_argument(context + " must be string");
+    return toUTF8StdString(asStringObj(value)->s);
+}
+
+void requireExactKeys(const Value& dictValue,
+                      const std::vector<std::string>& requiredKeys,
+                      const std::string& context)
+{
+    if (!isDict(dictValue))
+        throw std::invalid_argument(context + " must be dict");
+
+    const auto items = asDict(dictValue)->items();
+    if (items.size() != requiredKeys.size())
+        throw std::invalid_argument(context + " must contain exactly keys tag, attrs, children");
+
+    for (const auto& key : requiredKeys) {
+        if (!dictHasStringKey(dictValue, key.c_str()))
+            throw std::invalid_argument(context + " must contain exactly keys tag, attrs, children");
+    }
+}
+
+bool isExactRawNodeShape(const Value& value)
+{
+    if (!isDict(value))
+        return false;
+
+    const auto items = asDict(value)->items();
+    if (items.size() != 3)
+        return false;
+
+    return dictHasStringKey(value, "tag") &&
+           dictHasStringKey(value, "attrs") &&
+           dictHasStringKey(value, "children");
+}
+
+std::string parseXmlReadMode(const Value& value)
+{
+    const std::string mode = requireStringValue(value, "from_xml mode");
+    if (mode != XML_MODE_COMPACT && mode != XML_MODE_RAW)
+        throw std::invalid_argument("from_xml mode must be 'compact' or 'raw'");
+    return mode;
+}
+
+std::string parseXmlWriteMode(const Value& value)
+{
+    const std::string mode = requireStringValue(value, "to_xml mode");
+    if (mode != XML_MODE_AUTO && mode != XML_MODE_COMPACT && mode != XML_MODE_RAW)
+        throw std::invalid_argument("to_xml mode must be 'auto', 'compact' or 'raw'");
+    return mode;
+}
+
+Value elementToRawValue(const pugi::xml_node& node, bool preserveWhitespace);
+Value elementToCompactValue(const pugi::xml_node& node, bool preserveWhitespace);
+XmlNode rawValueToXmlNode(const Value& value, const std::string& context);
+XmlNode compactValueToXmlNode(const Value& value,
+                              const std::optional<std::string>& tagHint,
+                              const std::string& context);
+
+Value elementToRawValue(const pugi::xml_node& node, bool preserveWhitespace)
+{
+    Value attrs = Value::dictVal();
+    for (pugi::xml_attribute attr : node.attributes())
+        asDict(attrs)->store(xmlStringValue(attr.name()), xmlStringValue(attr.value()));
+
+    std::vector<Value> children;
+    for (pugi::xml_node child : node.children()) {
+        switch (child.type()) {
+            case pugi::node_element:
+                children.push_back(elementToRawValue(child, preserveWhitespace));
+                break;
+            case pugi::node_pcdata:
+            case pugi::node_cdata: {
+                std::string text = child.value();
+                if (!preserveWhitespace && isWhitespaceOnly(text))
+                    break;
+                children.push_back(xmlStringValue(text));
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    Value result = Value::dictVal();
+    dictStoreStringKey(result, "tag", xmlStringValue(node.name()));
+    dictStoreStringKey(result, "attrs", attrs);
+    dictStoreStringKey(result, "children", Value::listVal(children));
+    return result;
+}
+
+Value elementToCompactValue(const pugi::xml_node& node, bool preserveWhitespace)
+{
+    Value result = Value::dictVal();
+    dictStoreStringKey(result, "tag", xmlStringValue(node.name()));
+
+    Value attrs = Value::dictVal();
+    bool hasAttrs = false;
+    for (pugi::xml_attribute attr : node.attributes()) {
+        hasAttrs = true;
+        asDict(attrs)->store(xmlStringValue(attr.name()), xmlStringValue(attr.value()));
+    }
+    if (hasAttrs)
+        dictStoreStringKey(result, "attrs", attrs);
+
+    std::string directText;
+    for (pugi::xml_node child : node.children()) {
+        switch (child.type()) {
+            case pugi::node_element: {
+                std::string childName = child.name();
+                if (childName == "tag" || childName == "attrs" || childName == "text") {
+                    throw std::invalid_argument(
+                        "compact XML mode cannot represent child element named '" + childName +
+                        "'; use raw mode");
+                }
+
+                Value childValue = elementToCompactValue(child, preserveWhitespace);
+                Value keyValue = xmlStringValue(childName);
+                if (!asDict(result)->contains(keyValue)) {
+                    asDict(result)->store(keyValue, childValue);
+                } else {
+                    Value existing = asDict(result)->at(keyValue);
+                    if (isList(existing)) {
+                        asList(existing)->append(childValue);
+                    } else {
+                        std::vector<Value> grouped{existing, childValue};
+                        asDict(result)->store(keyValue, Value::listVal(grouped));
+                    }
+                }
+                break;
+            }
+            case pugi::node_pcdata:
+            case pugi::node_cdata: {
+                std::string text = child.value();
+                if (!preserveWhitespace && isWhitespaceOnly(text))
+                    break;
+                directText += text;
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    if (!directText.empty())
+        dictStoreStringKey(result, "text", xmlStringValue(directText));
+
+    return result;
+}
+
+XmlChild makeTextChild(std::string text)
+{
+    XmlChild child;
+    child.isText = true;
+    child.text = std::move(text);
+    return child;
+}
+
+XmlChild makeNodeChild(XmlNode node)
+{
+    XmlChild child;
+    child.node = std::make_unique<XmlNode>(std::move(node));
+    return child;
+}
+
+XmlNode rawValueToXmlNode(const Value& value, const std::string& context)
+{
+    requireExactKeys(value, {"tag", "attrs", "children"}, context);
+
+    XmlNode node;
+    node.tag = requireStringValue(dictGetStringKey(value, "tag").value(), context + ".tag");
+    if (node.tag.empty())
+        throw std::invalid_argument(context + ".tag must not be empty");
+
+    Value attrsValue = dictGetStringKey(value, "attrs").value();
+    if (!isDict(attrsValue))
+        throw std::invalid_argument(context + ".attrs must be dict");
+    for (const auto& kv : asDict(attrsValue)->items()) {
+        if (!isString(kv.first))
+            throw std::invalid_argument(context + ".attrs keys must be string");
+        if (!isString(kv.second))
+            throw std::invalid_argument(context + ".attrs values must be string");
+        node.attrs.emplace_back(toUTF8StdString(asStringObj(kv.first)->s),
+                                toUTF8StdString(asStringObj(kv.second)->s));
+    }
+
+    Value childrenValue = dictGetStringKey(value, "children").value();
+    if (!isList(childrenValue))
+        throw std::invalid_argument(context + ".children must be list");
+    ObjList* list = asList(childrenValue);
+    for (int i = 0; i < list->length(); ++i) {
+        Value childValue = list->getElement(i);
+        if (isString(childValue)) {
+            node.children.push_back(makeTextChild(toUTF8StdString(asStringObj(childValue)->s)));
+        } else if (isDict(childValue)) {
+            node.children.push_back(
+                makeNodeChild(rawValueToXmlNode(childValue,
+                                                context + ".children[" + std::to_string(i) + "]")));
+        } else {
+            throw std::invalid_argument(context + ".children elements must be string or raw XML dict");
+        }
+    }
+
+    return node;
+}
+
+XmlNode compactValueToXmlNode(const Value& value,
+                              const std::optional<std::string>& tagHint,
+                              const std::string& context)
+{
+    if (!isDict(value))
+        throw std::invalid_argument(context + " must be dict");
+
+    XmlNode node;
+    auto tagValue = dictGetStringKey(value, "tag");
+    if (tagValue.has_value()) {
+        node.tag = requireStringValue(tagValue.value(), context + ".tag");
+    } else if (tagHint.has_value()) {
+        node.tag = *tagHint;
+    } else {
+        throw std::invalid_argument(context + " must contain string key 'tag'");
+    }
+    if (tagHint.has_value() && !node.tag.empty() && node.tag != *tagHint) {
+        throw std::invalid_argument(context + ".tag '" + node.tag +
+                                    "' does not match parent key '" + *tagHint + "'");
+    }
+    if (node.tag.empty())
+        throw std::invalid_argument(context + ".tag must not be empty");
+
+    auto attrsValue = dictGetStringKey(value, "attrs");
+    if (attrsValue.has_value()) {
+        if (!isDict(attrsValue.value()))
+            throw std::invalid_argument(context + ".attrs must be dict");
+        for (const auto& kv : asDict(attrsValue.value())->items()) {
+            if (!isString(kv.first))
+                throw std::invalid_argument(context + ".attrs keys must be string");
+            if (!isString(kv.second))
+                throw std::invalid_argument(context + ".attrs values must be string");
+            node.attrs.emplace_back(toUTF8StdString(asStringObj(kv.first)->s),
+                                    toUTF8StdString(asStringObj(kv.second)->s));
+        }
+    }
+
+    auto textValue = dictGetStringKey(value, "text");
+    if (textValue.has_value()) {
+        if (!isString(textValue.value()))
+            throw std::invalid_argument(context + ".text must be string");
+        node.children.push_back(makeTextChild(toUTF8StdString(asStringObj(textValue.value())->s)));
+    }
+
+    for (const auto& kv : asDict(value)->items()) {
+        if (!isString(kv.first))
+            throw std::invalid_argument(context + " keys must be string");
+
+        std::string key = toUTF8StdString(asStringObj(kv.first)->s);
+        if (key == "tag" || key == "attrs" || key == "text")
+            continue;
+
+        if (isList(kv.second)) {
+            ObjList* grouped = asList(kv.second);
+            for (int i = 0; i < grouped->length(); ++i) {
+                node.children.push_back(
+                    makeNodeChild(compactValueToXmlNode(grouped->getElement(i),
+                                                        key,
+                                                        context + "." + key + "[" +
+                                                        std::to_string(i) + "]")));
+            }
+        } else {
+            node.children.push_back(
+                makeNodeChild(compactValueToXmlNode(kv.second, key, context + "." + key)));
+        }
+    }
+
+    return node;
+}
+
+void appendXmlNode(pugi::xml_node& parent, const XmlNode& node)
+{
+    pugi::xml_node element = parent.append_child(node.tag.c_str());
+    if (!element)
+        throw std::invalid_argument("invalid xml element name '" + node.tag + "'");
+
+    for (const auto& attr : node.attrs) {
+        if (attr.first.empty())
+            throw std::invalid_argument("xml attribute names must not be empty");
+        pugi::xml_attribute xmlAttr = element.append_attribute(attr.first.c_str());
+        if (!xmlAttr)
+            throw std::invalid_argument("invalid xml attribute name '" + attr.first + "'");
+        xmlAttr.set_value(attr.second.c_str());
+    }
+
+    for (const auto& child : node.children) {
+        if (child.isText) {
+            pugi::xml_node textNode = element.append_child(pugi::node_pcdata);
+            textNode.set_value(child.text.c_str());
+        } else if (child.node) {
+            appendXmlNode(element, *child.node);
+        }
+    }
+}
+
+#endif
 
 std::string moduleDisplayName(ObjModuleType* module)
 {
@@ -725,6 +1110,28 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("deserialize", [this](VM& vm, ArgsView a){ return deserialize_builtin(vm,a); }, nullptr, {}, 0x1);
         addSys("to_json", [this](VM& vm, ArgsView a){ return to_json_builtin(vm,a); }, nullptr, {}, 0x1);
         addSys("from_json", [this](VM& vm, ArgsView a){ return from_json_builtin(vm,a); }, nullptr, {}, 0x1);
+        addSys("to_xml",
+               [this](VM& vm, ArgsView a){ return to_xml_builtin(vm,a); },
+               makeFuncType({
+                    {"value", std::nullopt},
+                    {"indent", type::BuiltinType::Bool},
+                    {"mode", type::BuiltinType::String}
+               }, {Value::nilVal(), Value::trueVal(), Value::stringVal(toUnicodeString(XML_MODE_AUTO))}),
+               {Value::nilVal(), Value::trueVal(), Value::stringVal(toUnicodeString(XML_MODE_AUTO))},
+               0x1);
+        addSys("from_xml",
+               [this](VM& vm, ArgsView a){ return from_xml_builtin(vm,a); },
+               makeFuncType({
+                    {"xml", type::BuiltinType::String},
+                    {"mode", type::BuiltinType::String},
+                    {"preserve_whitespace", type::BuiltinType::Bool}
+               }, {Value::nilVal(),
+                   Value::stringVal(toUnicodeString(XML_MODE_COMPACT)),
+                   Value::falseVal()}),
+               {Value::nilVal(),
+                Value::stringVal(toUnicodeString(XML_MODE_COMPACT)),
+                Value::falseVal()},
+               0x1);
         // filter, map, reduce are now implemented in pure Roxal in sys.rox
     }
 
@@ -2446,6 +2853,91 @@ Value ModuleSys::from_json_builtin(VM& vm, ArgsView args)
     if(!err.empty())
         throw std::invalid_argument(std::string("invalid json: ")+err);
     return jsonToValue(j);
+}
+
+Value ModuleSys::from_xml_builtin(VM& vm, ArgsView args)
+{
+    (void)vm;
+#ifndef ROXAL_ENABLE_XML
+    (void)args;
+    throw std::runtime_error("XML support not enabled in this build");
+#else
+    if (args.size() < 1 || args.size() > 3 || !isString(args[0]))
+        throw std::invalid_argument(
+            "from_xml expects xml string and optional mode string and preserve_whitespace bool");
+
+    std::string mode = XML_MODE_COMPACT;
+    if (args.size() >= 2)
+        mode = parseXmlReadMode(args[1]);
+
+    bool preserveWhitespace = false;
+    if (args.size() >= 3)
+        preserveWhitespace = toType(ValueType::Bool, args[2], false).asBool();
+
+    const std::string xml = toUTF8StdString(asStringObj(args[0])->s);
+    pugi::xml_document doc;
+    const unsigned int parseFlags = preserveWhitespace
+        ? static_cast<unsigned int>(pugi::parse_default | pugi::parse_ws_pcdata)
+        : static_cast<unsigned int>(pugi::parse_default);
+    pugi::xml_parse_result result = doc.load_string(xml.c_str(), parseFlags);
+    if (!result) {
+        auto [line, col] = xmlLineColFromOffset(xml, result.offset);
+        throw std::invalid_argument("invalid xml: line " + std::to_string(line) +
+                                    ", col " + std::to_string(col) + ": " +
+                                    std::string(result.description()));
+    }
+
+    pugi::xml_node root = doc.document_element();
+    if (!root)
+        throw std::invalid_argument("invalid xml: document has no root element");
+
+    if (mode == XML_MODE_RAW)
+        return elementToRawValue(root, preserveWhitespace);
+    return elementToCompactValue(root, preserveWhitespace);
+#endif
+}
+
+Value ModuleSys::to_xml_builtin(VM& vm, ArgsView args)
+{
+    (void)vm;
+#ifndef ROXAL_ENABLE_XML
+    (void)args;
+    throw std::runtime_error("XML support not enabled in this build");
+#else
+    if (args.size() < 1 || args.size() > 3)
+        throw std::invalid_argument("to_xml expects value and optional indent bool and mode string");
+
+    bool indent = true;
+    if (args.size() >= 2)
+        indent = toType(ValueType::Bool, args[1], false).asBool();
+
+    std::string mode = XML_MODE_AUTO;
+    if (args.size() >= 3)
+        mode = parseXmlWriteMode(args[2]);
+
+    if (!isDict(args[0]))
+        throw std::invalid_argument("to_xml expects XML-shaped dict value");
+
+    if (mode == XML_MODE_AUTO)
+        mode = isExactRawNodeShape(args[0]) ? XML_MODE_RAW : XML_MODE_COMPACT;
+
+    XmlNode root = (mode == XML_MODE_RAW)
+        ? rawValueToXmlNode(args[0], "raw XML root")
+        : compactValueToXmlNode(args[0], std::nullopt, "compact XML root");
+
+    pugi::xml_document doc;
+    appendXmlNode(doc, root);
+
+    std::ostringstream out;
+    const unsigned int flags = indent
+        ? static_cast<unsigned int>(pugi::format_default | pugi::format_no_declaration)
+        : static_cast<unsigned int>(pugi::format_raw | pugi::format_no_declaration);
+    doc.save(out, indent ? "  " : "", flags, pugi::encoding_utf8);
+    std::string xml = out.str();
+    if (!xml.empty() && xml.back() == '\n')
+        xml.pop_back();
+    return Value::stringVal(toUnicodeString(xml));
+ #endif
 }
 
 Value ModuleSys::time_init_native(VM& vm, ArgsView args)

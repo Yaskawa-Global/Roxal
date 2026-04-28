@@ -92,6 +92,16 @@ RUN cmake -B /tmp/cdds/build -S /tmp/cdds \
     && cmake --install /tmp/cdds/build \
     && rm -rf /tmp/cdds
 
+# pugixml 1.15 from source (static)
+RUN git clone --depth 1 --branch v1.15 https://github.com/zeux/pugixml.git /tmp/pugixml
+
+RUN cmake -B /tmp/pugixml/build -S /tmp/pugixml \
+       -DCMAKE_INSTALL_PREFIX=/opt/pugixml -DCMAKE_BUILD_TYPE=Release \
+       -DBUILD_SHARED_LIBS=OFF -DPUGIXML_BUILD_TESTS=OFF \
+    && cmake --build /tmp/pugixml/build -j${JOBS} \
+    && cmake --install /tmp/pugixml/build \
+    && rm -rf /tmp/pugixml
+
 # ONNX Runtime — built from source with CUDA support
 # Clone and build are separate layers so the ~2GB recursive clone is cached.
 RUN git clone --depth 1 --branch v1.24.1 --recursive \
@@ -141,6 +151,8 @@ RUN cmake -B build --fresh \
       -DROXAL_ENABLE_GRPC=ON \
       -DROXAL_ENABLE_DDS=ON \
       -DCycloneDDS_ROOT=/usr/local \
+      -DROXAL_ENABLE_XML=ON \
+      -Dpugixml_ROOT=/opt/pugixml \
       -DROXAL_ENABLE_AI_NN=ON \
       -DOnnxRuntime_ROOT=/opt/onnxruntime \
       -DROXAL_ENABLE_MEDIA=ON \

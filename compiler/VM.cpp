@@ -237,6 +237,9 @@ std::vector<std::string> VM::featureStrings()
 #ifdef ROXAL_ENABLE_REGEX
     features.push_back("regex");
 #endif
+#ifdef ROXAL_ENABLE_XML
+    features.push_back("xml");
+#endif
 #ifdef ROXAL_ENABLE_SOCKET
     features.push_back("socket");
 #endif

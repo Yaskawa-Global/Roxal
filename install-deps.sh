@@ -10,7 +10,7 @@
 #   bash install-deps.sh onnxruntime    # just ONNX Runtime (GPU)
 #   bash install-deps.sh onnxruntime --cpu-only
 #
-# Available targets: eigen antlr4 cyclonedds grpc media onnxruntime
+# Available targets: eigen antlr4 cyclonedds grpc media pugixml onnxruntime
 #
 set -euo pipefail
 
@@ -20,7 +20,7 @@ JOBS="${JOBS:-$(nproc)}"
 BUILD_TMP="/tmp/roxal-deps-build"
 
 CORE_TARGETS=(eigen antlr4)
-ALL_TARGETS=(eigen antlr4 cyclonedds grpc media onnxruntime)
+ALL_TARGETS=(eigen antlr4 cyclonedds grpc media pugixml onnxruntime)
 
 # Parse --cpu-only flag
 ONNX_CPU_ONLY=false
@@ -155,6 +155,21 @@ fi
 # ---------- Media (PNG/JPEG — apt only, no from-source build needed) ----------
 if should_build media; then
     echo "=== Media dependencies (libpng, libjpeg) installed via apt ==="
+fi
+
+# ---------- pugixml 1.15 ----------
+if should_build pugixml; then
+    echo "=== Building pugixml 1.15 ==="
+    cd "$BUILD_TMP"
+    [ -d pugixml ] || git clone --depth 1 --branch v1.15 https://github.com/zeux/pugixml.git
+    cmake -B pugixml/build -S pugixml \
+        -DCMAKE_INSTALL_PREFIX="$DEPS_DIR/pugixml" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DPUGIXML_BUILD_TESTS=OFF
+    cmake --build pugixml/build -j"$JOBS"
+    cmake --install pugixml/build
+    echo "  -> installed to $DEPS_DIR/pugixml"
 fi
 
 # ---------- ONNX Runtime 1.24.1 ----------
