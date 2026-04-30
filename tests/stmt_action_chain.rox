@@ -1,0 +1,22 @@
+// Statement-action method that returns another action-bearing value:
+// the resulting value is itself processed by StmtAction (loops until
+// terminal). Demonstrates compositional behaviour.
+//
+// Note: run() omits an explicit return type because it returns nil at
+// chain termination. See memory project_nil_to_typed_return.md — Roxal
+// currently rejects nil-to-typed-reference at return sites; this test
+// avoids the issue rather than hitting it.
+
+type Step object:
+  var label = ""
+  var nextStep = nil
+  proc init(label, next):
+    this.label = label
+    this.nextStep = next
+  statement action func run():
+    print("run " + label)
+    return this.nextStep   // nil terminates the chain
+
+// Build a 3-step chain and run it as a statement.
+Step("a", Step("b", Step("c", nil)))
+print("done")

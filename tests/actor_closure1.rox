@@ -11,7 +11,7 @@ type A actor:
 
 print('creating actor instance')
 var a = A()
-a.printSecret()
+ignore(a.printSecret())
 
 print('exfiltrating secret')
 var getter = a.makeGetter()
@@ -22,7 +22,7 @@ lst[0] = 55  // really just mutating clone of secret
 print(lst)
 
 print('asking actor to print secret')
-a.printSecret() // should print [1,2]
+ignore(a.printSecret()) // should print [1,2]
 
 wait(ms=100)
 

@@ -28,6 +28,11 @@ enum class BuiltinType {
     Event
 };
 
+// Member visibility — paralleled by ast::Access (which uses the same
+// underlying ordering). Defined here so the static type system can carry
+// access information without requiring AST.h.
+enum class Access : uint8_t { Public = 0, Private = 1 };
+
 std::string to_string(BuiltinType t);
 std::optional<BuiltinType> builtinTypeFromName(const std::string& name);
 
@@ -93,6 +98,7 @@ struct Type {
             int32_t nameHashCode; // hashCode() of above (for use at runtime)
             std::optional<ptr<Type>> type;
             bool hasDefault;
+            Access access { Access::Public };
 
             // Property accessor flags
             // If true, accessing this property calls __get_<name>() or __set_<name>(value)

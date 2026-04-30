@@ -16,6 +16,24 @@ using roxal::type::to_string;
 
 enum class Access { Public, Private };
 
+
+// Method modifier flags. Stored as a bitset so multiple modifiers can be
+// combined where the combination is meaningful (e.g. `implicit statement
+// action`). Contradictions are rejected during compilation, not by the
+// representation.
+enum class MethodModifier : uint8_t {
+    None             = 0,
+    Implicit         = 1 << 0,
+    StatementAction  = 1 << 1,
+};
+using MethodModifiers = uint8_t;
+inline bool hasModifier(MethodModifiers m, MethodModifier flag) {
+    return (m & static_cast<MethodModifiers>(flag)) != 0;
+}
+inline void setModifier(MethodModifiers& m, MethodModifier flag) {
+    m = static_cast<MethodModifiers>(m | static_cast<MethodModifiers>(flag));
+}
+
 // Qualified type name: ["Outer", "Inner"] for Outer.Inner, or ["Foo"] for simple Foo
 using TypeName = std::vector<icu::UnicodeString>;
 // Type reference: either a builtin type or a qualified user type name
@@ -563,7 +581,8 @@ struct Function : public AST {
     std::vector<bool> returnTypeConst; // parallel to returnTypes: true if 'const' qualifier
     std::variant<ptr<Suite>, ptr<Expression>, std::monostate> body; // no body if abstract
     Access access { Access::Public };
-    bool isImplicit { false }; // 'implicit' modifier on init/operator T() conversions
+    MethodModifiers methodModifiers { 0 }; // bitset of MethodModifier flags
+                                            // (Implicit, StatementAction, ...)
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

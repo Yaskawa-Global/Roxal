@@ -247,13 +247,21 @@ event_type_decl
  ;
 
 method
- : annotation* PRIVATE? implicit_kw?
+ : annotation* PRIVATE? implicit_kw? stmt_action_kw?
    func_sig
    ((':' suite) | NEWLINE)  // abstract methods have no body
  ;
 
 implicit_kw
  : {_input->LT(1)->getText() == "implicit"}? IDENTIFIER
+ ;
+
+// Two-word soft keyword: 'statement action'.  Recognised only as a
+// method modifier; ordinary identifiers named 'statement' or 'action'
+// elsewhere are unaffected.
+stmt_action_kw
+ : {_input->LT(1)->getText() == "statement" && _input->LT(2)->getText() == "action"}?
+   IDENTIFIER IDENTIFIER
  ;
 
 member_var

@@ -1082,6 +1082,25 @@ void ModuleSys::registerBuiltins(VM& vm)
             for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
             addSys("wait", [this](VM& vm, ArgsView a){ return wait_builtin(vm,a); }, t, defaults);
         }
+        // ignore(value): escape hatch for expressions whose value would
+        // otherwise auto-trigger at statement position — i.e. a Future
+        // (auto-await) or an instance of a type with a `statement action`
+        // method (auto-execute). The parameter is untyped (std::nullopt)
+        // so the value passes through without the implicit-await ToTypeSpec
+        // coercion. ignore() raises if the argument has no statement-action
+        // behaviour to suppress (see ignore_builtin).
+        {
+            ptr<type::Type> t = make_ptr<type::Type>(type::BuiltinType::Func);
+            t->func = type::Type::FuncType();
+            t->func->isProc = true;
+            std::vector<Value> defaults {};
+            auto params = BuiltinModule::constructParams(
+                { {"value", std::nullopt} }, defaults);
+            t->func->params.resize(params.size());
+            for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
+            addSys("ignore", [this](VM& vm, ArgsView a){ return ignore_builtin(vm,a); },
+                   t, defaults);
+        }
         addSys("is_ready", [this](VM& vm, ArgsView a){ return is_ready_builtin(vm,a); });
         addSys("fork", [this](VM& vm, ArgsView a){ return fork_builtin(vm,a); });
         addSys("join", [this](VM& vm, ArgsView a){ return join_builtin(vm,a); }, nullptr, {}, 0x1);
@@ -1415,6 +1434,55 @@ Value ModuleSys::clone_builtin(VM& vm, ArgsView args)
 
     ptr<CloneContext> ctx = make_ptr<CloneContext>();
     return args[0].clone(ctx);
+}
+
+Value ModuleSys::ignore_builtin(VM& vm, ArgsView args)
+{
+    // ignore(value) suppresses statement-position auto-triggering for the
+    // argument. After we return nil, the surrounding StmtAction sees nil
+    // and pops without invoking either auto-await (futures) or a
+    // statement-action method (user types).
+    //
+    // Strict check: the argument must be either a future, an instance of a
+    // type that has a `statement action` method (possibly inherited), or
+    // nil.
+    //
+    // Nil is accepted silently: actor proc calls currently return nil
+    // internally and we don't want a refactor that flips a func to a proc
+    // to break every `ignore(...)` call site.
+    (void)vm;
+    if (args.size() != 1)
+        throw std::invalid_argument("ignore expects exactly one argument");
+
+    const Value& v = args[0];
+    bool ok = false;
+
+    if (v.isNil() || isFuture(v)) {
+        ok = true;
+    } else {
+        ObjObjectType* otype = nullptr;
+        if (isObjectInstance(v))
+            otype = asObjectType(asObjectInstance(v)->instanceType);
+        else if (isActorInstance(v))
+            otype = asObjectType(asActorInstance(v)->instanceType);
+        if (otype) {
+            for (ObjObjectType* t = otype; t; ) {
+                if (t->statementActionMethodHash >= 0) {
+                    ok = true;
+                    break;
+                }
+                t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+            }
+        }
+    }
+
+    if (!ok) {
+        throw std::runtime_error(
+            "ignore() argument has type " + v.typeName() +
+            " — which has no statement-action behaviour to suppress; remove ignore(...)");
+    }
+
+    return Value::nilVal();
 }
 
 Value ModuleSys::wait_builtin(VM& vm, ArgsView args)

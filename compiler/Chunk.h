@@ -41,6 +41,8 @@ enum class OpCode {
     BitNot,
     Pop,
     PopN,
+    StmtAction,    // expression-statement disposition: peek top, await futures,
+                   // invoke 'statement action' methods, loop until terminal then pop
     Dup,
     DupBelow,
     Swap,

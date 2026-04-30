@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 33;
+constexpr std::uint32_t ModuleCacheVersion = 34;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -2110,9 +2110,23 @@ std::any RoxalCompiler::visit(ptr<ast::ExpressionStatement> ast)
         }
         emitByte(OpCode::Pop); // discard print return
     } else {
-        // expressions leave their value on the stack, but statements don't
-        // have a value, so discard it
-        emitByte(OpCode::Pop, "expr_stmt value");
+        // Expression-statement disposition. Assignments leave their RHS on
+        // the stack as an incidental "expression value" so they can also be
+        // used inside enclosing expressions; in *statement* position that
+        // leftover is not meaningful and must not trigger statement-action
+        // dispatch. Other expressions (calls, binary ops, variable reads,
+        // etc.) put their actual result on the stack and may meaningfully
+        // be a statement-action receiver — emit StmtAction for those.
+        bool isAssignment = false;
+        if (ast->expr) {
+            if (auto exprNode = dynamic_ptr_cast<ast::Expression>(ast->expr))
+                isAssignment = (exprNode->exprType == ast::Expression::Assignment);
+        }
+        if (isAssignment) {
+            emitByte(OpCode::Pop, "expr_stmt assignment leftover");
+        } else {
+            emitByte(OpCode::StmtAction, "expr_stmt value");
+        }
     }
     return results;
 }
@@ -2871,7 +2885,7 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     ObjFunction* funcObj = asFunction(funcScopePtr->function);
     funcObj->strict = strictContext;
     funcObj->access = ast->access;
-    funcObj->isImplicit = ast->isImplicit;
+    funcObj->methodModifiers = ast->methodModifiers;
 
     #ifdef DEBUG_BUILD
     emitByte(OpCode::Nop, "func "+toUTF8StdString(funcName));

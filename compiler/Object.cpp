@@ -2488,7 +2488,7 @@ void ObjFunction::write(std::ostream& out, roxal::ptr<SerializationContext> ctx)
     writeValue(out, ownerType, ctx);
 
     uint8_t acc = static_cast<uint8_t>(access); out.write(reinterpret_cast<char*>(&acc),1);
-    uint8_t imp = isImplicit ? 1 : 0; out.write(reinterpret_cast<char*>(&imp),1);
+    uint8_t mods = static_cast<uint8_t>(methodModifiers); out.write(reinterpret_cast<char*>(&mods),1);
 
     uint32_t defCount = paramDefaultFunc.size();
     out.write(reinterpret_cast<char*>(&defCount),4);
@@ -2555,7 +2555,7 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         ownerType = ownerType.weakRef();
 
     uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1); access = static_cast<ast::Access>(acc);
-    uint8_t imp; in.read(reinterpret_cast<char*>(&imp),1); isImplicit = imp != 0;
+    uint8_t mods; in.read(reinterpret_cast<char*>(&mods),1); methodModifiers = mods;
 
     uint32_t defCount; in.read(reinterpret_cast<char*>(&defCount),4);
     paramDefaultFunc.clear();
@@ -2939,8 +2939,8 @@ void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
         writeValue(out, method.closure, ctx);
         uint8_t acc = static_cast<uint8_t>(method.access);
         out.write(reinterpret_cast<char*>(&acc),1);
-        uint8_t imp = method.isImplicit ? 1 : 0;
-        out.write(reinterpret_cast<char*>(&imp),1);
+        uint8_t mods = static_cast<uint8_t>(method.methodModifiers);
+        out.write(reinterpret_cast<char*>(&mods),1);
         writeValue(out, method.ownerType, ctx);
     }
 
@@ -3029,15 +3029,18 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         icu::UnicodeString uname = icu::UnicodeString::fromUTF8(mn);
         Value clos = readValue(in, ctx);
         uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
-        uint8_t imp; in.read(reinterpret_cast<char*>(&imp),1);
+        uint8_t mods; in.read(reinterpret_cast<char*>(&mods),1);
         Value ownerType = readValue(in, ctx);
         if (!ownerType.isNil())
             ownerType = ownerType.weakRef();
         int32_t hash = uname.hashCode();
         if (ownerType.isNil())
             ownerType = Value::objRef(this).weakRef();
-        Method m{uname, clos, static_cast<ast::Access>(acc), imp != 0, ownerType};
+        Method m{uname, clos, static_cast<ast::Access>(acc),
+                 static_cast<ast::MethodModifiers>(mods), ownerType};
         methods[hash] = m;
+        if (ast::hasModifier(m.methodModifiers, ast::MethodModifier::StatementAction))
+            statementActionMethodHash = hash;
     }
 
     uint32_t lcount; in.read(reinterpret_cast<char*>(&lcount),4);

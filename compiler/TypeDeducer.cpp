@@ -229,6 +229,8 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
                 propType.type = make_ptr<type::Type>(std::get<BuiltinType>(prop->varType.value()));
             }
             propType.hasDefault = prop->initializer.has_value();
+            propType.access = (prop->access == ast::Access::Private)
+                                  ? type::Access::Private : type::Access::Public;
             objType->obj->properties.push_back(propType);
         }
 
@@ -245,6 +247,8 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
             // TODO: handle custom type identifiers (non-builtin types)
 
             propType.hasDefault = propAccessor->initializer.has_value();
+            propType.access = (propAccessor->access == ast::Access::Private)
+                                  ? type::Access::Private : type::Access::Public;
 
             // Set accessor flags
             propType.hasGetter = propAccessor->getter.has_value();

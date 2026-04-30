@@ -1,0 +1,17 @@
+// Statement-action method runs when an instance appears as a statement.
+type Motion object:
+  var n = 0
+  proc init(n):
+    this.n = n
+  statement action proc execute():
+    print("execute Motion " + string(this.n))
+
+// As a statement: should auto-execute
+Motion(1)
+
+// As an expression to assign: should NOT execute
+var m = Motion(2)
+print("assigned m, n=" + string(m.n))
+
+// Explicit method call still works
+m.execute()

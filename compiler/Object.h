@@ -1287,7 +1287,7 @@ struct ObjFunction : public Obj
     FunctionType fnType { FunctionType::Function };
     Value ownerType { Value::nilVal() }; // weak ref owning type
     ast::Access access { ast::Access::Public };
-    bool isImplicit { false }; // user-defined implicit conversion (init or operator T())
+    ast::MethodModifiers methodModifiers { 0 }; // bitset of MethodModifier flags
 
     // for parameters with default values that must be re-evaluated on each call
     //  this is map from param name UnicodeString::hashCode() -> Value ObjFunction
@@ -1578,10 +1578,15 @@ struct ObjObjectType : public ObjTypeSpec
         icu::UnicodeString name;
         Value closure;
         ast::Access access { ast::Access::Public };
-        bool isImplicit { false };
+        ast::MethodModifiers methodModifiers { 0 };
         Value ownerType { Value::nilVal() }; // weak ref to owning type
     };
     std::unordered_map<int32_t, Method> methods;
+
+    // Cached method-name hash of the @statement-action method on this type
+    // (or the inherited one). Set during method registration; -1 means none.
+    // Avoids a scan over methods on the StmtAction opcode hot path.
+    int32_t statementActionMethodHash { -1 };
 
     // name -> value
     std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> enumLabelValues;

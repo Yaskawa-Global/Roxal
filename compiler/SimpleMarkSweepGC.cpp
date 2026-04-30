@@ -110,6 +110,9 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
 #endif
     visitStrongValue(visitor, thread.pendingWaitFor);
     visitStrongValue(visitor, thread.awaitedFuture);
+    for (const auto& session : thread.stmtActionStack) {
+        visitStrongValue(visitor, session.lastReceiver);
+    }
     visitStrongValue(visitor, thread.pendingConstructorInstance);
     if (thread.waitSuspension.active) {
         visitStrongValue(visitor, thread.waitSuspension.storedValue);

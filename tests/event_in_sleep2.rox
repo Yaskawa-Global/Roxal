@@ -19,7 +19,7 @@ type EventConsumer actor:
 type E event
 p = EventConsumer()
 //p.printid()
-p.handleEvents()
+ignore(p.handleEvents())
 
 wait(us=100000)
 

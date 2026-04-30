@@ -440,6 +440,29 @@ public:
     };
     std::vector<ConversionGuard> conversionInProgress;
 
+    // State for the StmtAction opcode loop. The opcode peeks the stack top,
+    // dispatches by runtime type (future → await, has statement-action method
+    // → invoke, otherwise → pop), and re-fires until terminal. Iterations are
+    // bounded; same-instance returns are detected as cycles.
+    //
+    // We use a stack of sessions because StmtAction can be nested: the action
+    // method invoked by an outer StmtAction often contains its own statement
+    // statements (with their own StmtAction opcodes). Each session is keyed by
+    // (ip, frameDepth) so re-entries at the same site continue the same
+    // session, while entries at different sites push new ones. Stale entries
+    // from inner sessions that errored are cleaned up on entry.
+    //
+    // lastReceiver is held as a Value (not a raw Obj*) so it stays GC-rooted
+    // between yields — see Thread::trace for the visit.
+    struct StmtActionSession {
+        Chunk::iterator ip;
+        size_t frameDepth;
+        int iters;
+        Value lastReceiver;
+    };
+    std::vector<StmtActionSession> stmtActionStack;
+    static constexpr int kStmtActionIterCap = 1024;
+
 private:
     ptr<std::thread> osthread;
 

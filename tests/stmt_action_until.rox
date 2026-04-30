@@ -1,0 +1,27 @@
+// `until` interaction: the statement-action's execute() runs interruptibly,
+// so an event can interrupt it cleanly. We just check that the post-until
+// line is reached (count of iterations is timing-sensitive).
+
+var done :event
+
+type Looper object:
+  statement action proc run():
+    var i = 0
+    while true:
+      wait(ms=10)
+      i = i + 1
+      if i > 10000:
+        print("not interrupted")
+        return
+
+type Stopper actor:
+  proc trigger(ev):
+    wait(ms=50)
+    emit ev()
+
+stopper = Stopper()
+stopper.trigger(done)
+
+// Looper().run() runs forever; the until-event must interrupt it.
+Looper() until done
+print("interrupted")

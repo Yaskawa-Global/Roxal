@@ -263,6 +263,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("POP", offset);
         case OpCode::PopN:
             return byteInstruction("POPN", offset);
+        case OpCode::StmtAction:
+            return simpleInstruction("STMT_ACTION", offset);
         case OpCode::Dup:
             return simpleInstruction("DUP", offset);
         case OpCode::DupBelow:

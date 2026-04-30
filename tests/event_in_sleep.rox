@@ -24,7 +24,7 @@ p = EventProducer()
 when E occurs:
   print('e occured')
 
-p.emitEvents()
+ignore(p.emitEvents())
 
 print('sleeping for .5s')
 wait(us=500000)

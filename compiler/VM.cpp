@@ -3351,7 +3351,8 @@ Value VM::findOperatorMethod(ObjObjectType* type, int32_t hash)
 
 static bool isImplicitMethod(const Value& closureVal)
 {
-    return asFunction(asClosure(closureVal)->function)->isImplicit;
+    return ast::hasModifier(asFunction(asClosure(closureVal)->function)->methodModifiers,
+                            ast::MethodModifier::Implicit);
 }
 
 Value VM::findConversionMethod(const Value& instanceType, int32_t hash, bool implicitCall)
@@ -3419,7 +3420,8 @@ bool VM::canConvertToType(const Value& val, const Value& targetTypeSpec, bool im
             ObjFunction* initFunc = asFunction(asClosure(initMethod->closure)->function);
 
             // Single-arg implicit init enables auto-construction
-            if (initFunc->arity == 1 && initFunc->isImplicit) {
+            if (initFunc->arity == 1 &&
+                ast::hasModifier(initFunc->methodModifiers, ast::MethodModifier::Implicit)) {
                 return true;
             }
         }
@@ -3481,7 +3483,8 @@ VM::ConversionOutcome VM::tryConvertValue(
         }
         if (initMethod && isClosure(initMethod->closure)) {
             ObjFunction* initFunc = asFunction(asClosure(initMethod->closure)->function);
-            if (initFunc->arity == 1 && initFunc->isImplicit) {
+            if (initFunc->arity == 1 &&
+                ast::hasModifier(initFunc->methodModifiers, ast::MethodModifier::Implicit)) {
                 // Auto-construct: set up callValue frame
                 push(targetTypeSpec);  // callee (type constructor)
                 push(val);             // argument
@@ -4454,8 +4457,32 @@ void VM::defineMethod(ObjString* name)
     ObjFunction* function = asFunction(closure->function);
     function->ownerType = Value::objRef(type).weakRef();
 
-    type->methods[name->hash] = {name->s, method, function->access, function->isImplicit,
+    type->methods[name->hash] = {name->s, method, function->access, function->methodModifiers,
                                  Value::objRef(type).weakRef()};
+
+    // Cache the statement-action method's name hash for fast lookup at runtime.
+    // Validation: at most one per type.
+    if (ast::hasModifier(function->methodModifiers, ast::MethodModifier::StatementAction)) {
+        if (type->statementActionMethodHash >= 0 &&
+            type->statementActionMethodHash != name->hash) {
+            throw std::runtime_error("Type '"+toUTF8StdString(type->name)+
+                                     "' declares more than one 'statement action' method");
+        }
+        // Statement-action methods must be public — clients of the type trigger them.
+        if (function->access == ast::Access::Private) {
+            throw std::runtime_error("'statement action' method '"+name->toStdString()+
+                                     "' on type '"+toUTF8StdString(type->name)+
+                                     "' may not be private");
+        }
+        // Must take no user-visible parameters beyond self.
+        // (arity counts user params; self is implicit and not included.)
+        if (function->arity != 0) {
+            throw std::runtime_error("'statement action' method '"+name->toStdString()+
+                                     "' on type '"+toUTF8StdString(type->name)+
+                                     "' must take no parameters beyond self");
+        }
+        type->statementActionMethodHash = name->hash;
+    }
     pop();
 }
 
@@ -6687,6 +6714,140 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 pop();
                 break;
             }
+            case OpCode::StmtAction: {
+                // Expression-statement disposition. Peek the top, dispatch by
+                // runtime type, and loop (via IP rewind) until the value is
+                // popped. Sessions are stacked so nested StmtAction (e.g. an
+                // inner expression-statement inside a called action method)
+                // doesn't clobber the outer session's iter/lastReceiver state.
+                // See plan: i-was-considering-an-whimsical-puzzle.md.
+
+                auto& sessions = thread->stmtActionStack;
+                size_t curDepth = thread->frames.size();
+
+                // Drop stale sessions from inner method calls that errored
+                // before they could pop their own session.
+                while (!sessions.empty() && sessions.back().frameDepth > curDepth)
+                    sessions.pop_back();
+
+                // Identify session: same StmtAction site (same IP) at same
+                // frame depth means we're continuing; otherwise this is a
+                // fresh session.
+                if (sessions.empty()
+                    || sessions.back().ip != instructionStart
+                    || sessions.back().frameDepth != curDepth) {
+                    sessions.push_back({instructionStart, curDepth, 0,
+                                        Value::nilVal()});
+                }
+                auto* session = &sessions.back();
+
+                auto endSession = [&]() {
+                    if (!sessions.empty())
+                        sessions.pop_back();
+                    session = nullptr;
+                };
+
+                if (++session->iters > Thread::kStmtActionIterCap) {
+                    endSession();
+                    runtimeError("statement-action chain exceeded depth limit");
+                    return errorReturn;
+                }
+
+                Value& top = peek(0);
+
+                // Terminal: nil — nothing to do.
+                if (top.isNil()) {
+                    pop();
+                    endSession();
+                    break;
+                }
+
+                // Future: await, then re-fire to inspect the resolved value.
+                if (isFuture(top)) {
+                    auto s = tryAwaitFuture(top);
+                    if (s == FutureStatus::Pending)
+                        goto postInstructionDispatch;  // tryAwaitFuture rewound IP
+                    if (s == FutureStatus::Error) {
+                        endSession();
+                        return errorReturn;
+                    }
+                    // Resolved: re-fire so the now-resolved value is reinspected.
+                    frame->ip = instructionStart;
+                    break;
+                }
+
+                // Object/actor instance with a 'statement action' method?
+                ObjObjectType* otype = nullptr;
+                if (isObjectInstance(top))
+                    otype = asObjectType(asObjectInstance(top)->instanceType);
+                else if (isActorInstance(top))
+                    otype = asObjectType(asActorInstance(top)->instanceType);
+
+                int32_t saHash = -1;
+                if (otype) {
+                    // Walk superType chain for an inherited statement-action.
+                    for (ObjObjectType* t = otype; t; ) {
+                        if (t->statementActionMethodHash >= 0) {
+                            saHash = t->statementActionMethodHash;
+                            break;
+                        }
+                        t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+                    }
+                }
+
+                if (otype && saHash >= 0) {
+                    // Same-instance cycle check: the previous iteration's
+                    // receiver returned reference-equal to itself.
+                    if (session->lastReceiver.isNonNil()
+                        && session->lastReceiver.isObj()
+                        && top.isObj()
+                        && session->lastReceiver.asObj() == top.asObj()) {
+                        endSession();
+                        runtimeError("statement-action method returned the same instance — cycle");
+                        return errorReturn;
+                    }
+                    session->lastReceiver = top;
+
+                    // Resolve the method's closure (walk supertypes).
+                    Value methodClosure = Value::nilVal();
+                    for (ObjObjectType* t = otype; t; ) {
+                        auto it = t->methods.find(saHash);
+                        if (it != t->methods.end()) {
+                            methodClosure = it->second.closure;
+                            break;
+                        }
+                        t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+                    }
+                    if (methodClosure.isNil() || !isClosure(methodClosure)) {
+                        endSession();
+                        runtimeError("statement-action method not found on type");
+                        return errorReturn;
+                    }
+
+                    // Calling convention for methods: the receiver occupies
+                    // peek(argCount) — i.e. the slot that becomes slot 0
+                    // (self) of the new frame. With no extra args (CallSpec(0))
+                    // the receiver is already at peek(0), so we just invoke
+                    // the closure. cf. VM::invokeFromType → call().
+                    //
+                    // Rewind IP first so that when the called frame returns,
+                    // dispatch re-enters this StmtAction opcode and re-inspects
+                    // the new top-of-stack (the action method's return value).
+                    frame->ip = instructionStart;
+                    if (!call(asClosure(methodClosure), CallSpec(0))) {
+                        endSession();
+                        return errorReturn;
+                    }
+                    // Switch to the new (called) frame for the dispatch loop.
+                    frame = thread->frames.end() - 1;
+                    goto postInstructionDispatch;
+                }
+
+                // Terminal: ordinary value with no statement action — discard.
+                pop();
+                endSession();
+                break;
+            }
             case OpCode::PopN: {
                 uint8_t count = readByte();
                 for(auto i=0; i<count; i++)
@@ -8779,7 +8940,9 @@ bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, b
                 }
                 bool hasImplicitInit = initMethod && isClosure(initMethod->closure)
                     && asFunction(asClosure(initMethod->closure)->function)->arity == 1
-                    && asFunction(asClosure(initMethod->closure)->function)->isImplicit;
+                    && ast::hasModifier(
+                        asFunction(asClosure(initMethod->closure)->function)->methodModifiers,
+                        ast::MethodModifier::Implicit);
                 if (hasImplicitInit) {
                     push(typeVal);  // callee (type constructor)
                     push(val);     // argument

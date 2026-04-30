@@ -90,6 +90,7 @@ public:
     virtual std::any visitMethod(RoxalParser::MethodContext *context);
 
     virtual std::any visitImplicit_kw(RoxalParser::Implicit_kwContext *context) { return {}; }
+    virtual std::any visitStmt_action_kw(RoxalParser::Stmt_action_kwContext *context) { return {}; }
 
     virtual std::any visitMember_var(RoxalParser::Member_varContext *context);
 
