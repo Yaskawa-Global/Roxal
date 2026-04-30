@@ -2606,8 +2606,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             : asActorInstance(arg)->instanceType;
                         UnicodeString convName = UnicodeString("operator->") + type->name;
                         int32_t convHash = convName.hashCode();
-                        bool strictCtx = !thread->frames.empty() && (thread->frames.end()-1)->strict;
-                        Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/false, strictCtx);
+                        Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/false);
                         if (!closure.isNil()) {
                             // Remove callee+arg from stack; set up conversion call
                             popN(callSpec.argCount + 1);
@@ -3350,54 +3349,20 @@ Value VM::findOperatorMethod(ObjObjectType* type, int32_t hash)
 }
 
 
-// Annotation mode for user-defined conversion operators
-enum class ImplicitMode {
-    ExplicitOnly,    // no annotation — explicit conversion required everywhere
-    Everywhere,      // @implicit — implicit conversion allowed in all contexts
-    NonstrictOnly    // @implicit(nonstrict_only=true) — implicit in non-strict only
-};
-
-static ImplicitMode getImplicitMode(const Value& closureVal)
+static bool isImplicitMethod(const Value& closureVal)
 {
-    auto* funcObj = asFunction(asClosure(closureVal)->function);
-    for (const auto& annot : funcObj->annotations) {
-        if (annot->name == "implicit") {
-            for (const auto& arg : annot->args) {
-                if (arg.first == toUnicodeString("nonstrict_only")) {
-                    if (auto b = dynamic_ptr_cast<ast::Bool>(arg.second))
-                        if (b->value) return ImplicitMode::NonstrictOnly;
-                }
-            }
-            return ImplicitMode::Everywhere;
-        }
-    }
-    return ImplicitMode::ExplicitOnly;
+    return asFunction(asClosure(closureVal)->function)->isImplicit;
 }
 
-static bool hasImplicitAnnotation(const Value& closureVal)
-{
-    auto* funcObj = asFunction(asClosure(closureVal)->function);
-    for (const auto& annot : funcObj->annotations)
-        if (annot->name == "implicit") return true;
-    return false;
-}
-
-Value VM::findConversionMethod(const Value& instanceType, int32_t hash, bool implicitCall, bool strictContext)
+Value VM::findConversionMethod(const Value& instanceType, int32_t hash, bool implicitCall)
 {
     Value closure = findOperatorMethod(asObjectType(instanceType), hash);
     if (closure.isNil())
         return Value::nilVal();
 
-    if (implicitCall) {
-        ImplicitMode mode = getImplicitMode(closure);
-        if (mode == ImplicitMode::ExplicitOnly)
-            return Value::nilVal();  // no @implicit — require explicit conversion
-        if (mode == ImplicitMode::NonstrictOnly) {
-            if (strictContext)
-                return Value::nilVal();  // nonstrict_only in strict context — block
-        }
-        // ImplicitMode::Everywhere always proceeds
-    }
+    if (implicitCall && !isImplicitMethod(closure))
+        return Value::nilVal();  // not implicit — require explicit conversion
+
     return closure;
 }
 
@@ -3428,10 +3393,7 @@ bool VM::canConvertToType(const Value& val, const Value& targetTypeSpec, bool im
                 : asActorInstance(val)->instanceType;
             UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(ts->typeValue));
             int32_t convHash = convName.hashCode();
-            // Use const_cast since findConversionMethod isn't const but doesn't modify state
-            // when only checking (implicitCall logic reads thread which is safe)
-            bool strictCtx = !thread->frames.empty() && (thread->frames.end()-1)->strict;
-            Value closure = const_cast<VM*>(this)->findConversionMethod(instType, convHash, implicitCall, strictCtx);
+            Value closure = const_cast<VM*>(this)->findConversionMethod(instType, convHash, implicitCall);
             if (!closure.isNil())
                 return true;
         }
@@ -3456,9 +3418,8 @@ bool VM::canConvertToType(const Value& val, const Value& targetTypeSpec, bool im
         if (initMethod != nullptr && isClosure(initMethod->closure)) {
             ObjFunction* initFunc = asFunction(asClosure(initMethod->closure)->function);
 
-            // Check: single required param (arity == 1) and @implicit
-            if (initFunc->arity == 1 && hasImplicitAnnotation(initMethod->closure)) {
-                // Constructor auto-conversion eligible
+            // Single-arg implicit init enables auto-construction
+            if (initFunc->arity == 1 && initFunc->isImplicit) {
                 return true;
             }
         }
@@ -3470,8 +3431,7 @@ bool VM::canConvertToType(const Value& val, const Value& targetTypeSpec, bool im
                 : asActorInstance(val)->instanceType;
             UnicodeString convName = UnicodeString("operator->") + targetType->name;
             int32_t convHash = convName.hashCode();
-            bool strictCtx = !thread->frames.empty() && (thread->frames.end()-1)->strict;
-            Value closure = const_cast<VM*>(this)->findConversionMethod(instType, convHash, implicitCall, strictCtx);
+            Value closure = const_cast<VM*>(this)->findConversionMethod(instType, convHash, implicitCall);
             if (!closure.isNil())
                 return true;
         }
@@ -3521,7 +3481,7 @@ VM::ConversionOutcome VM::tryConvertValue(
         }
         if (initMethod && isClosure(initMethod->closure)) {
             ObjFunction* initFunc = asFunction(asClosure(initMethod->closure)->function);
-            if (initFunc->arity == 1 && hasImplicitAnnotation(initMethod->closure)) {
+            if (initFunc->arity == 1 && initFunc->isImplicit) {
                 // Auto-construct: set up callValue frame
                 push(targetTypeSpec);  // callee (type constructor)
                 push(val);             // argument
@@ -3558,7 +3518,7 @@ VM::ConversionOutcome VM::tryConvertValue(
             if (g.receiver.is(val, false)) { inProgress = true; break; }
 
         if (!inProgress) {
-            Value closure = findConversionMethod(instType, convHash, implicitCall, strict);
+            Value closure = findConversionMethod(instType, convHash, implicitCall);
             if (!closure.isNil()) {
                 // Set up async conversion call
                 thread->pendingConversions.push_back({
@@ -4494,7 +4454,7 @@ void VM::defineMethod(ObjString* name)
     ObjFunction* function = asFunction(closure->function);
     function->ownerType = Value::objRef(type).weakRef();
 
-    type->methods[name->hash] = {name->s, method, function->access,
+    type->methods[name->hash] = {name->s, method, function->access, function->isImplicit,
                                  Value::objRef(type).weakRef()};
     pop();
 }
@@ -8759,7 +8719,7 @@ bool VM::needsAsyncConversion(const Value& val, ptr<type::Type> paramType, bool 
             : asActorInstance(val)->instanceType;
         UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(vt.value()));
         int32_t convHash = convName.hashCode();
-        Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true, strictCtx);
+        Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true);
         return !closure.isNil();
     }
 
@@ -8778,7 +8738,7 @@ bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, b
             : asActorInstance(val)->instanceType;
         UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(vt.value()));
         int32_t convHash = convName.hashCode();
-        Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true, strictCtx);
+        Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true);
         if (!closure.isNil()) {
             thread->conversionInProgress.push_back({val, thread->frames.size()});
             push(val); // push as receiver for method call
@@ -8819,7 +8779,7 @@ bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, b
                 }
                 bool hasImplicitInit = initMethod && isClosure(initMethod->closure)
                     && asFunction(asClosure(initMethod->closure)->function)->arity == 1
-                    && hasImplicitAnnotation(initMethod->closure);
+                    && asFunction(asClosure(initMethod->closure)->function)->isImplicit;
                 if (hasImplicitInit) {
                     push(typeVal);  // callee (type constructor)
                     push(val);     // argument
@@ -8838,7 +8798,7 @@ bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, b
                         : asActorInstance(val)->instanceType;
                     UnicodeString convName = UnicodeString("operator->") + targetType->name;
                     int32_t convHash = convName.hashCode();
-                    Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true, strictCtx);
+                    Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true);
                     if (!closure.isNil()) {
                         thread->conversionInProgress.push_back({val, thread->frames.size()});
                         push(val); // push as receiver for method call

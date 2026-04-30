@@ -1,4 +1,4 @@
-// Without @implicit, operator string() only works with explicit string(obj)
+// Without `implicit`, operator string() only works with explicit string(obj)
 type Item object:
   var val = 0
   proc init(val):
@@ -9,5 +9,5 @@ type Item object:
 var i = Item(42)
 // Explicit always works
 print(string(i))
-// print() without @implicit falls back to default repr
+// print() without `implicit` falls back to default repr
 print(i)

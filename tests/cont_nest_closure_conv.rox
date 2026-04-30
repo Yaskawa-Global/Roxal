@@ -5,16 +5,14 @@ type Widget object:
   private var _id:int
   proc init(id:int):
     _id = id
-  @implicit
-  func operator string() -> string:
+  implicit func operator string() -> string:
     return 'Widget#' + string(_id)
 
 func format_widget(s:string) -> string:
   return '<' + s + '>'
 
 type Container object:
-  @implicit
-  func operator string() -> string:
+  implicit func operator string() -> string:
     var inner = Widget(50)
     return 'Container(' + format_widget(inner) + ')'
 

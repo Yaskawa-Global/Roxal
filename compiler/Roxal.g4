@@ -247,9 +247,13 @@ event_type_decl
  ;
 
 method
- : annotation* PRIVATE? 
+ : annotation* PRIVATE? implicit_kw?
    func_sig
    ((':' suite) | NEWLINE)  // abstract methods have no body
+ ;
+
+implicit_kw
+ : {_input->LT(1)->getText() == "implicit"}? IDENTIFIER
  ;
 
 member_var

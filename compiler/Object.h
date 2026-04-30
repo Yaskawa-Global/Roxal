@@ -1287,6 +1287,7 @@ struct ObjFunction : public Obj
     FunctionType fnType { FunctionType::Function };
     Value ownerType { Value::nilVal() }; // weak ref owning type
     ast::Access access { ast::Access::Public };
+    bool isImplicit { false }; // user-defined implicit conversion (init or operator T())
 
     // for parameters with default values that must be re-evaluated on each call
     //  this is map from param name UnicodeString::hashCode() -> Value ObjFunction
@@ -1577,6 +1578,7 @@ struct ObjObjectType : public ObjTypeSpec
         icu::UnicodeString name;
         Value closure;
         ast::Access access { ast::Access::Public };
+        bool isImplicit { false };
         Value ownerType { Value::nilVal() }; // weak ref to owning type
     };
     std::unordered_map<int32_t, Method> methods;

@@ -7,8 +7,7 @@ type Color object:
     this.r = r
     this.g = g
     this.b = b
-  @implicit
-  func operator string() -> string:
+  implicit func operator string() -> string:
     return "rgb(" + string(r) + "," + string(g) + "," + string(b) + ")"
 
 var c = Color(255, 128, 0)

@@ -563,6 +563,7 @@ struct Function : public AST {
     std::vector<bool> returnTypeConst; // parallel to returnTypes: true if 'const' qualifier
     std::variant<ptr<Suite>, ptr<Expression>, std::monostate> body; // no body if abstract
     Access access { Access::Public };
+    bool isImplicit { false }; // 'implicit' modifier on init/operator T() conversions
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

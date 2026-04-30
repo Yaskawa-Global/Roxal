@@ -4,8 +4,7 @@ type Point object:
   proc init(x: real, y: real):
     this.x = x
     this.y = y
-  @implicit
-  func operator string():
+  implicit func operator string():
     return "(" + string(x) + ", " + string(y) + ")"
 
 var p = Point(3.0, 4.0)

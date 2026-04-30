@@ -58,15 +58,14 @@ Some non-strict automatic conversions: (see conversions.md for details):
 Function body scope is strict by default.  To convert types in strict context, casting/constructor syntax is required. e.g. `byte(5)`, `string(6)`.  Most automatic convenience conversions available in non-strict context can be used with explicit construction in strict context.
 (strict vs non-strict can be controlled via annotations)
 
-**User-defined conversions** can be declared via `operator <type>()` methods on object types (see Operator Overloading section).  By default, user-defined conversions require explicit invocation (e.g., `string(obj)`).  Use annotations to control implicit behavior:
+**User-defined conversions** can be declared via `operator <type>()` methods on object types (see Operator Overloading section).  By default, user-defined conversions require explicit invocation (e.g., `string(obj)`).  Mark the method with the `implicit` modifier (placed inline before `func`/`proc`, after `private` if present) to allow implicit invocation:
 
-| Annotation | Non-strict | Strict |
-|------------|-----------|--------|
+| Form | Non-strict | Strict |
+|------|-----------|--------|
 | *(none)* | Explicit only | Explicit only |
-| `@implicit` | Implicit OK | Implicit OK |
-| `@implicit(nonstrict_only=true)` | Implicit OK | Explicit only |
+| `implicit` | Implicit OK | Implicit OK |
 
-**Constructor auto-conversion:** When a typed variable expects type `T` and receives a value of type `S`, if `T` has an `@implicit` constructor (`init`) with exactly one required parameter, `T(value)` is called automatically.  Constructors are explicit by default — mark with `@implicit` to enable auto-conversion.
+**Constructor auto-conversion:** When a typed variable expects type `T` and receives a value of type `S`, if `T` has an `implicit` constructor (`init`) with exactly one required parameter, `T(value)` is called automatically.  Constructors are explicit by default — mark with `implicit` to enable auto-conversion.
 
 ## Variables
 

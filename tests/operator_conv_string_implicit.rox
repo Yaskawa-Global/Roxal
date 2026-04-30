@@ -1,16 +1,15 @@
-# @implicit annotation makes conversion available in strict contexts
+# implicit modifier makes conversion available in strict contexts
 type Vec2 object:
   var x: real = 0.0
   var y: real = 0.0
   proc init(x: real, y: real):
     this.x = x
     this.y = y
-  @implicit
-  func operator string():
+  implicit func operator string():
     return "[" + string(x) + "," + string(y) + "]"
 
 func format_vec(v):
-  # This is strict context, but @implicit allows implicit conversion
+  # This is strict context, but implicit allows implicit conversion
   return "vec=" + v
 
 var v = Vec2(1.0, 2.0)

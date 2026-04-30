@@ -250,7 +250,7 @@ public:
 
     // Conversion operator lookup. Returns method closure Value (nil if not found
     // or not allowed in current strict context when implicitCall is true).
-    Value findConversionMethod(const Value& instanceType, int32_t hash, bool implicitCall, bool strictContext);
+    Value findConversionMethod(const Value& instanceType, int32_t hash, bool implicitCall);
 
     // Check if a value can be converted to the target type (pure predicate, no side effects).
     bool canConvertToType(const Value& val, const Value& targetTypeSpec, bool implicitCall) const;
@@ -340,7 +340,6 @@ public:
 
     // Returns true if converting val to the given param type requires executing Roxal code
     // (user-defined conversion operator or constructor auto-conversion).
-    // strictCtx: the caller's lexical strict setting (for @implicit(nonstrict_only) checks)
     bool needsAsyncConversion(const Value& val, ptr<type::Type> paramType, bool strictCtx);
 
     // Process native param conversion continuation after a conversion frame returns

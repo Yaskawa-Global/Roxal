@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 32;
+constexpr std::uint32_t ModuleCacheVersion = 33;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -2871,6 +2871,7 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     ObjFunction* funcObj = asFunction(funcScopePtr->function);
     funcObj->strict = strictContext;
     funcObj->access = ast->access;
+    funcObj->isImplicit = ast->isImplicit;
 
     #ifdef DEBUG_BUILD
     emitByte(OpCode::Nop, "func "+toUTF8StdString(funcName));

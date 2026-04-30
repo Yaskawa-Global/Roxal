@@ -177,8 +177,9 @@ non-strict caller can pass `"2"` to a strict function's `int` parameter — the
 string-to-int conversion is evaluated in the caller's non-strict context.
 
 `callerStrict` is set on `CallFrame` during frame push from the calling frame's
-`strict` flag. `findConversionMethod()` also takes an explicit `strictContext`
-parameter for checking `@implicit(nonstrict_only=true)` annotations.
+`strict` flag. The `implicit` modifier on a conversion method is stored as
+`ObjFunction::isImplicit` (and mirrored on `ObjObjectType::Method::isImplicit`),
+read by `findConversionMethod()` to gate implicit invocation.
 
 ### Return Type Conversion
 

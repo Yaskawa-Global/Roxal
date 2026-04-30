@@ -309,7 +309,7 @@ public:
     // State for deferred closure (Roxal function) call when params need async type conversion.
     // Mirrors NativeParamConversionState but stores results directly into frame stack slots
     // instead of an args buffer.  Activated from frameStart when funcType has typed params
-    // needing user-defined conversion (operator->T, @implicit constructor).
+    // needing user-defined conversion (operator->T, implicit constructor).
     struct ClosureParamConversionState {
         bool active { false };
 

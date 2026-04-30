@@ -315,8 +315,7 @@ type complex object:
     return complex(re, -im)
 
   // String representation: "a+bi", "a-bi", "bi", or "a"
-  @implicit
-  func operator string() -> string:
+  implicit func operator string() -> string:
     if im == 0.0:
       return string(re)
     if re == 0.0:

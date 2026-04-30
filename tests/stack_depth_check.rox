@@ -6,8 +6,7 @@ type Foo object:
   var x = 0
   proc init(x):
     this.x = x
-  @implicit
-  func operator string() -> string:
+  implicit func operator string() -> string:
     var items = ['a', 'b', 'c']
     var r = ''
     for item in items:

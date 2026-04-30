@@ -333,8 +333,7 @@ type TimeSpan object:
   func operator>=(other) -> bool:
     return not (this < other)
 
-  @implicit
-  func operator quantity() -> quantity:
+  implicit func operator quantity() -> quantity:
     """convert to a time-dimensioned quantity"""
     return quantity(v=total_seconds(), d=[0, 1, 0, 0])
 
@@ -608,8 +607,7 @@ type quantity object:
       raise 'cannot convert quantity with dimensions ' + dim_label() + ' to real; only dimensionless quantities can be converted'
     return _v
 
-  @implicit
-  func operator TimeSpan() -> TimeSpan:
+  implicit func operator TimeSpan() -> TimeSpan:
     if _d != [0,1,0,0]:
       raise 'cannot convert quantity with dimensions ' + dim_label() + ' to TimeSpan; must be time dimension'
     var total_us = int(_v * 1000000.0)
@@ -617,8 +615,7 @@ type quantity object:
 
   // --- string display ---
 
-  @implicit
-  func operator string() -> string:
+  implicit func operator string() -> string:
     // Display in the most natural unit for the dimension vector
     // Use absolute value for range selection so negatives display correctly
     var av = _v

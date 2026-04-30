@@ -1,11 +1,10 @@
 // Constructor auto-conversion via typed variable assignment.
-// A type with a single-required-param @implicit init() can auto-construct
+// A type with a single-required-param implicit init() can auto-construct
 // when a compatible value is assigned to a typed variable.
 
 type Wrapper object:
   var val :string = ''
-  @implicit
-  proc init(s :string):
+  implicit proc init(s :string):
     val = s
 
 // Explicit construction
@@ -19,8 +18,7 @@ print(w2.val)
 // Also works with different source types
 type IntBox object:
   var n :int = 0
-  @implicit
-  proc init(n :int):
+  implicit proc init(n :int):
     this.n = n
 
 var b :IntBox = 42

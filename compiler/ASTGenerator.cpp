@@ -1743,6 +1743,7 @@ std::any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
 
     auto function = as<Function>(func);
     function->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
+    function->isImplicit = (context->implicit_kw()!=nullptr);
 
     // has body suite?
     if (context->COLON()) {

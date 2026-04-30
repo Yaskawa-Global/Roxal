@@ -5,8 +5,7 @@ type Animal object:
   var name: string = ""
   proc init(name: string):
     this.name = name
-  @implicit
-  func operator string():
+  implicit func operator string():
     return "Animal(" + name + ")"
 
 type Dog object extends Animal:
@@ -14,8 +13,7 @@ type Dog object extends Animal:
   proc init(name: string, breed: string):
     super.init(name)
     this.breed = breed
-  @implicit
-  func operator string():
+  implicit func operator string():
     return "Dog(" + name + ", " + breed + ")"
 
 # Return child where parent is declared — should pass through (upcast)

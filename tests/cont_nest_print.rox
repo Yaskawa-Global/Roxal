@@ -8,8 +8,7 @@ type Wrapper object:
   proc init(s:int, us:int):
     _span = TimeSpan(seconds=s, micros=us)
 
-  @implicit
-  func operator string() -> string:
+  implicit func operator string() -> string:
     var copy = TimeSpan(seconds=_span.seconds(), micros=_span.microseconds())
     return copy.human()
 

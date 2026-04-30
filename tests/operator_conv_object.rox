@@ -5,19 +5,16 @@ type Quantity object:
   var val :real = 0.0
   proc init(v :real):
     this.val = v
-  @implicit
-  func operator string():
+  implicit func operator string():
     return "Qty(" + string(val) + ")"
 
 type Duration object:
   var seconds :real = 0.0
   proc init(s :real):
     this.seconds = s
-  @implicit
-  func operator Quantity():
+  implicit func operator Quantity():
     return Quantity(seconds)
-  @implicit
-  func operator string():
+  implicit func operator string():
     return "Dur(" + string(seconds) + "s)"
 
 // Explicit conversion: Duration -> Quantity
