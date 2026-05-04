@@ -1,0 +1,8 @@
+// Regression: assigning nil to a typed property of a value-shaped type
+// (here :int) was silently succeeding. Should raise a runtime error.
+type O object:
+  var i :int
+
+var o = O()
+o.i = nil
+print(o.i)

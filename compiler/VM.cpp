@@ -6014,7 +6014,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     }
                     Value value { peek(0) };
 
-                    if (!value.isNil()) {
+                    {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
                         // if type object specified the property type in the declaration,
                         //  convert the value to that type (if possible)
@@ -6024,7 +6024,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
                                     try {
-                                        // TODO: implement & use a canConvertToType()
                                         value = toType(prop.type, value, strictConv);
                                     } catch(std::exception& e) {
                                         runtimeError(e.what());
@@ -6051,7 +6050,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     }
                     Value value { peek(0) };
 
-                    if (!value.isNil()) {
+                    {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
                         if (propertyIt != properties.end()) {
                             const auto& prop { propertyIt->second };
@@ -6194,7 +6193,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
                     Value value { peek(0) };
 
-                    if (!value.isNil()) {
+                    {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
                         if (propertyIt != properties.end()) {
                             const auto& prop { propertyIt->second };
@@ -6240,7 +6239,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
                     Value value { peek(0) };
 
-                    if (!value.isNil()) {
+                    {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
                         if (propertyIt != properties.end()) {
                             const auto& prop { propertyIt->second };
