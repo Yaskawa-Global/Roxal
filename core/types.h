@@ -36,6 +36,26 @@ enum class Access : uint8_t { Public = 0, Private = 1 };
 std::string to_string(BuiltinType t);
 std::optional<BuiltinType> builtinTypeFromName(const std::string& name);
 
+// True when nil is a valid coercion target for this builtin type.
+// Mirrors isNilAcceptableTargetType(ValueType) in compiler/Value.h — the
+// reference-identity types (handles whose "no value yet" state is meaningful).
+inline bool isNilAcceptableTargetBuiltinType(BuiltinType t) {
+    switch (t) {
+        case BuiltinType::String:
+        case BuiltinType::List:
+        case BuiltinType::Dict:
+        case BuiltinType::Object:
+        case BuiltinType::Actor:
+        case BuiltinType::Signal:
+        case BuiltinType::Event:
+        case BuiltinType::Func:
+        case BuiltinType::Tensor:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // check if a value of builtin type `from` can be converted to builtin type
 // `to` using the same rules as `toType` in compiler/Value.cpp. The strict flag
 // determines whether strict conversions are required (as per conversions.md).

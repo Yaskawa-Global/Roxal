@@ -3467,6 +3467,12 @@ VM::ConversionOutcome VM::tryConvertValue(
 
     ObjTypeSpec* ts = isTypeSpec(targetTypeSpec) ? asTypeSpec(targetTypeSpec) : nullptr;
 
+    // 1b. nil flows into any reference-identity target type. Must come before
+    //     the implicit-init constructor branch — otherwise nil would be passed
+    //     as the argument to a 1-arg @implicit init, which is never the intent.
+    if (val.isNil() && isNilAcceptableTargetType(targetVT))
+        return { ConversionResult::ConvertedSync, val };
+
     // 2. Constructor auto-conversion for Object/Actor target types.
     //    Takes precedence over conversion operators.
     //    Eligible when target type has init with arity==1 and @implicit.
@@ -8793,6 +8799,10 @@ Value resolveCanonicalRuntimeObjectType(const Value& typeVal)
 bool isCompatibleRuntimeObjectArg(const Value& slot, const Value& expectedType)
 {
     if (slot.is(expectedType))
+        return true;
+    // nil is compatible with any object/actor target — reference-identity types
+    // accept nil as the natural absence-of-value.
+    if (slot.isNil())
         return true;
     if (!isObjectType(expectedType))
         return false;

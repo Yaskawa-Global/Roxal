@@ -36,6 +36,11 @@ bool roxal::type::convertibleTo(BuiltinType from, BuiltinType to, bool strict)
     if (from == to)
         return true;
 
+    // nil flows into reference-identity target types; rejected for value-shaped
+    // types (range, vector, matrix, orient, enum, primitives).
+    if (from == BuiltinType::Nil)
+        return isNilAcceptableTargetBuiltinType(to);
+
     auto idx = [](BuiltinType t) -> int {
         switch(t) {
             case BuiltinType::Bool:    return 0;

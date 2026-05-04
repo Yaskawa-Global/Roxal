@@ -91,6 +91,30 @@ enum class ValueType {
 
 std::string to_string(ValueType t);
 
+/// True when nil is a valid coercion target for this type.
+/// nil is the natural absence-of-value for types whose user-facing semantics
+/// are reference-identity (you hold a handle, and "no handle yet" is meaningful).
+/// Rejected for types that have a natural value-shaped identity (empty range,
+/// zero vector, identity orient) since those should default to a constructed
+/// value, not nil.
+inline bool isNilAcceptableTargetType(ValueType t) {
+    switch (t) {
+        case ValueType::String:
+        case ValueType::List:
+        case ValueType::Dict:
+        case ValueType::Object:
+        case ValueType::Actor:
+        case ValueType::Signal:
+        case ValueType::Event:
+        case ValueType::Function:
+        case ValueType::Closure:
+        case ValueType::Tensor:
+        case ValueType::Module:
+            return true;
+        default:
+            return false;
+    }
+}
 
 
 struct SerializationContext {

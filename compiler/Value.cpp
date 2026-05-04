@@ -1042,6 +1042,16 @@ bool Value::equals(const Value& rhs, bool strict) const
     else if (isDict(*this) && isDict(rhs)) {
         return asDict(*this)->equals(asDict(rhs));
     }
+    else if (isRange(*this) && isRange(rhs)) {
+        if (asObj() == rhs.asObj())
+            return true;
+        auto r1 = asRange(*this);
+        auto r2 = asRange(rhs);
+        return r1->start.equals(r2->start, strict) &&
+               r1->stop.equals(r2->stop, strict) &&
+               r1->step.equals(r2->step, strict) &&
+               r1->closed == r2->closed;
+    }
     else if (referenceSemantics() || rhs.referenceSemantics()) {
         if (!(referenceSemantics() && rhs.referenceSemantics()))
             return false;
@@ -1561,6 +1571,16 @@ Value roxal::defaultValue(ValueType t)
 
 Value roxal::toType(ValueType t, Value v, bool strict)
 {
+    // nil flows freely into reference-identity target types (list, dict,
+    // object, actor, string, signal, event, function, closure, tensor,
+    // module). Rejected for value-shaped types (vector, matrix, range,
+    // orient, enum, primitives), which must default to a constructed value.
+    if (v.isNil() && t != ValueType::Nil) {
+        if (isNilAcceptableTargetType(t))
+            return v;
+        throw std::invalid_argument("unable to convert nil to " + to_string(t));
+    }
+
     if (!v.isBoxed()) {
         if (v.type() == t)
             return v;
@@ -1650,6 +1670,12 @@ Value roxal::toType(const Value& typeSpec, Value v, bool strict)
 
         if (ts->typeValue == ValueType::Nil)
             return v;
+
+        if (v.isNil()) {
+            if (isNilAcceptableTargetType(ts->typeValue))
+                return v;
+            throw std::invalid_argument("unable to convert nil to " + to_string(ts->typeValue));
+        }
 
         if (ts->typeValue == ValueType::Enum) {
             ObjObjectType* enumType = dynamic_cast<ObjObjectType*>(ts);

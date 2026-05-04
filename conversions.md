@@ -45,6 +45,33 @@ All conversions as in the implicit non-strict table are allowed,
 including those that will lose precision.
 
 
+## nil to typed targets
+
+`nil` is the natural absence-of-value for types whose user-facing semantics
+are *reference-identity* — types where the user holds a handle and "no
+handle yet" is a meaningful state. `nil` coerces silently into any of these
+target types, in both strict and non-strict modes, at every conversion site
+(variable declaration, function return, parameter, typed assignment, field
+assignment, etc.):
+
+  * `string`, `list`, `dict`, `object` (any user object type), `actor` (any
+    user actor type), `signal`, `event`, `function`, `closure`, `tensor`,
+    `module`
+
+`nil` is *rejected* (with a runtime error) for the value-shaped types,
+which have a natural identity element and should default to a constructed
+value rather than nil:
+
+  * `range`, `vector`, `matrix`, `orient`, `enum`, all primitives (`bool`,
+    `byte`, `int`, `real`, `decimal`, `type`)
+
+The default value when no initializer is given follows the same split:
+nil-accepting types may default to nil (most often when no zero-arg
+constructor is available), while nil-rejecting types default to a
+constructed identity value (empty range, zero vector, identity orient,
+zero numeric, etc.).
+
+
 ## Operators
 
 ### Primitives

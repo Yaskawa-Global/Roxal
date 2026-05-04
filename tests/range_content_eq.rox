@@ -1,0 +1,11 @@
+// Ranges with equal start/stop/step/closed compare equal even when
+// they are separately constructed (content equality, not reference identity).
+var r1 = range(1..5)
+var r2 = range(1..5)
+print(r1 == r2)
+print(r1 == range(1..5))
+print(r1 == range(1..6))
+print(r1 == range(2..5))
+print(r1 == range(1..<5))      // half-open vs closed differ
+print(range(1..10:2) == range(1..10:2))
+print(range(1..10:2) == range(1..10:3))

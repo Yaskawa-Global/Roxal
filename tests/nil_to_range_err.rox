@@ -1,0 +1,3 @@
+// nil should NOT coerce into range — range is value-shaped.
+var r :range = nil
+print(r)
