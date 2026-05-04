@@ -1,22 +1,4 @@
-// ignore() escape hatch: the surrounding statement does NOT auto-await the
-// future. We verify by ordering against an in-work print: with ignore, the
-// outer flow continues and "after" prints BEFORE work("a")'s internal print;
-// without it (next call), the func auto-awaits and "done" prints AFTER work
-// "b"'s internal print.
-
-type Slow actor:
-  func work(label) -> int:
-    wait(ms=50)
-    print("work " + label + " done")
-    return 42
-
-s = Slow()
-
-print("before")
-// fire-and-forget: must NOT block. Outer flow advances immediately.
-ignore(s.work("a"))
-print("after")
-
-// auto-await default: this DOES block until "work b done" prints, then "done".
-s.work("b")
-print("done")
+// ignore() must reject values that have no statement-action behaviour to
+// suppress. An int has no statement action and isn't a future, so this
+// should raise at runtime.
+ignore(42)

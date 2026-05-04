@@ -218,9 +218,7 @@ tests = [
     'conv_constructor_auto', 'conv_constructor_explicit',
     'conv_func_param_auto',
     'stmt_action_basic', 'stmt_action_chain', 'stmt_action_until',
-    'stmt_action_actor_func_blocks', 'stmt_action_ignore',
-    'stmt_action_ignore_strict_err',
-    'stmt_action_cycle_err',
+    'stmt_action_ignore', 'stmt_action_cycle_err',
     'stack_depth_check'
 ]
 

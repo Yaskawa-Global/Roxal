@@ -6762,20 +6762,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     break;
                 }
 
-                // Future: await, then re-fire to inspect the resolved value.
-                if (isFuture(top)) {
-                    auto s = tryAwaitFuture(top);
-                    if (s == FutureStatus::Pending)
-                        goto postInstructionDispatch;  // tryAwaitFuture rewound IP
-                    if (s == FutureStatus::Error) {
-                        endSession();
-                        return errorReturn;
-                    }
-                    // Resolved: re-fire so the now-resolved value is reinspected.
-                    frame->ip = instructionStart;
-                    break;
-                }
-
                 // Object/actor instance with a 'statement action' method?
                 ObjObjectType* otype = nullptr;
                 if (isObjectInstance(top))

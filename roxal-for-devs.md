@@ -823,6 +823,48 @@ print( (20.0 / w).v )  // 2  (roperator/)
 - Comparison operators (`==`, `!=`, `<`, `>`, `<=`, `>=`) do not support l/r variants
 
 
+### Statement Action
+
+A method on an object or actor type can be marked `statement action` to make it run automatically whenever an instance of the type appears as a discarded expression-statement. This lets a type combine cheap, side-effect-free *construction* with a separate *execution* phase that the language triggers at the right moment — useful for builders that should "do their thing" once they're written as a statement.
+
+```php
+type Motion object:
+  var dist :real = 0.0
+  proc init(dist):
+    this.dist = dist
+
+  // Composition: build composite Motion via operator+
+  func operator+(other :Motion) -> Motion:
+    return Motion(dist + other.dist)   // illustrative
+
+  // The 'statement action' modifier
+  //  The method takes no parameters beyond self.
+  statement action func execute() -> Motion:
+    print("executing motion of " + string(dist))
+    return nil    // nil terminates statement-action chaining
+
+// As a statement: execute() runs automatically.
+Motion(10.0)
+
+// As an expression: just constructs; nothing runs.
+var m = Motion(20.0) + Motion(5.0)
+
+// Explicit invocation still works.
+m.execute()
+```
+
+**Triggering:** the action only runs when the *whole expression-statement* is the instance — *not* on `var` RHS, function arguments, condition contexts, or operator operands. So `Motion(10) + Motion(5)` as a statement runs `execute()` on the *composite* Motion (the result of `+`), not on the operands.
+
+**Chaining:** if the action method returns another value of an action-bearing type, that returned value also runs (until a non-action value or `nil` is reached).
+
+**`ignore(value)`:** if you have an expression that *would* trigger a statement-action and want to suppress that triggering at the call site, wrap it with the `ignore(...)` builtin. Acceptable arguments are: futures, instances of types with a `statement action` method, and `nil` (the latter accepted silently to be tolerant of `proc` calls). For other types `ignore()` raises a runtime error — wrapping a value that has no auto-trigger behaviour is almost always a bug.
+
+```php
+// suppress the auto-execute() on the discarded composite Motion
+ignore(Motion(10.0) + Motion(5.0))
+```
+
+
 ### Literal Suffixes
 
 Numeric and string literals can have a *suffix* glued directly after them (no whitespace).  A suffix is resolved to a call to a function annotated with `@suffix`:

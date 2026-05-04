@@ -195,13 +195,13 @@ a conversion on its return would be redundant or recursive).
 ### Constructor Auto-Conversion
 
 Constructors are **explicit by default** — a 1-argument `init` is not eligible
-for auto-conversion unless marked `@implicit`. This matches modern language
-conventions (C++ recommends `explicit` on single-arg constructors; Rust and
-Swift have no implicit constructors). The `@explicit` annotation on
-constructors is a no-op (the default is already explicit).
+for auto-conversion unless marked with the `implicit` modifier. This matches
+modern language conventions (C++ recommends `explicit` on single-arg
+constructors; Rust and Swift have no implicit constructors).
 
-Auto-conversion eligibility is checked in `tryConvertValue()` via
-`hasImplicitAnnotation()`.
+Auto-conversion eligibility is checked in `tryConvertValue()`. The `implicit`
+flag is stored on each method as a bit in the `ast::MethodModifiers` bitset
+(see Object & Actor types: Method modifiers).
 
 ### Native Functions with Continuations
 
@@ -269,6 +269,106 @@ A new object type (like a C++ class) can be declared and have its own methods (`
 An actor type is similar to an object, but additionally has its own thread of execution associated with it.  This thread is the only thread that can execute the actor's methods. Hence, when another thread (e.g. the main script thread or another actor's thread) calls an actor instance's methods, a future for the return value (if any) is immediately returned to the caller, which can continue to execute asynchronously.  Only if that future needs to be converted into the return value will the execution block, if necessary, until the called actor's method has completed and returned to provide the value.  Hence, execution of methods within an actor are serialized, since there is only one thread, so that developers need not worry about shared state between multiple threads.
 
 Complex reference types passed to an actor's method (or returned from it) behave as if deep-copied (cloned).  In practice they use Multi-Version Concurrency Control (MVCC), as discussed below, to avoid actually copying.
+
+### Method modifiers
+
+Methods can carry zero or more compiler-recognised modifiers stored as a bitset
+(`ast::MethodModifiers`, defined in `core/AST.h`):
+
+- `Implicit` — set by the `implicit` keyword. Allows the method (typically a
+  `init` constructor or `operator T()` conversion) to be invoked implicitly
+  during type coercion. See *Constructor Auto-Conversion* and `isImplicitMethod()`
+  in `VM.cpp`.
+- `StatementAction` — set by the two-word `statement action` modifier.
+  Designates the method as the type's *statement-action handler* (see next
+  section).
+
+The same bitset lives in three layers — AST (`core::ast::Function::methodModifiers`),
+the static type system (currently still pair-based in `core/types.h` with the
+modifier carried in the AST), and runtime metadata
+(`ObjObjectType::Method::methodModifiers` in `compiler/Object.h`). The runtime
+representation is the load-bearing one for dispatch.
+
+### Statement Action
+
+A method on an object/actor type marked with the `statement action` modifier is
+invoked automatically by the VM whenever an instance of that type appears in
+expression-statement position (i.e. the discarded value of an `expr_stmt`).
+This drives builder-style domain APIs (e.g. a robotics `Motion` type whose
+construction is cheap and whose `execute()` is the action triggered by writing
+the motion as a statement).
+
+**Compile-time validation** (in `defineMethod` / `VM.cpp:~4457`):
+- At most one `statement action` per type. Inheriting types must re-mark the
+  override.
+- Cannot be combined with `private`.
+- Method takes no parameters beyond `self` (`arity == 0`).
+
+The hash of the method name is cached on the type as
+`ObjObjectType::statementActionMethodHash` so the runtime hot path does not
+need to scan the methods map.
+
+**Codegen.** `RoxalCompiler::visit(ast::ExpressionStatement)` emits
+`OpCode::StmtAction` instead of `OpCode::Pop` for non-assignment expression
+statements. Assignments still emit `OpCode::Pop` because their RHS-leftover
+value is a calling-convention artefact, not a meaningful "statement value", so
+auto-trigger would fire on values like `next` in `this.nextStep = next`.
+
+**`OpCode::StmtAction` runtime semantics.** The opcode peeks the stack top and
+dispatches:
+
+- `nil` or any value with no statement-action method on its type → pop and
+  exit.
+- An `ObjectInstance` / `ActorInstance` whose type (walking supertype chain)
+  has a `statement action` method → invoke it. Re-fires the opcode after the
+  call returns so the method's return value is itself processed (chaining).
+
+A *future* at expression-statement position falls through to the terminal
+pop. This is intentional: the future's local refcount drops, the actor's
+underlying `returnPromise` continues independently. An earlier design
+auto-awaited futures here (treating them as having an implicit
+"statement-action of await") but was reverted — that policy was inconsistent
+with unused futures held by ordinary locals (which already silently
+fire-and-forget at scope exit) and forced motion-style APIs that prefer per-call
+`wait=true/false` parameters into a global rule that didn't fit. See
+`project_stmt_action_reverted_future_await.md` in the project memory.
+
+**Per-thread session stack.** Statement-action sessions can nest: the action
+method invoked by an outer `StmtAction` may itself contain expression
+statements with their own `StmtAction` opcodes. Iter-counter and last-receiver
+state therefore live on a per-thread stack
+(`Thread::stmtActionStack`), keyed by `(opcodeIp, frameDepth)`. Re-entries at
+the same key continue the same session; entries at different keys push new
+sessions; stale sessions whose `frameDepth` exceeds the current frame depth
+(left over from inner sessions that errored without popping) are pruned on
+entry.
+
+**Termination protections.** Each session has an iteration cap
+(`Thread::kStmtActionIterCap = 1024`) and a same-instance cycle check that
+fires immediately if a method's return value is reference-equal to the
+previous receiver (catches the common `return this` mistake with a clear
+diagnostic). Indirect cycles still rely on the iter cap.
+
+**Method invocation pattern.** The opcode rewinds `frame->ip` to its own
+`instructionStart` *before* calling the action method via `call(ObjClosure*,
+CallSpec(0))`. The receiver already sits at `peek(0)` and becomes slot 0
+(`self`) of the new frame per the standard method-call convention. When the
+called frame returns, dispatch resumes at the rewound IP and re-fires
+`StmtAction`, observing the return value as the new top.
+
+**GC.** The session stack's `lastReceiver` Values are visited by
+`SimpleMarkSweepGC.cpp` so the receiver's `Obj*` address remains stable
+across the call (otherwise GC could free and reallocate at the same address,
+producing a false cycle match).
+
+**`ignore(value)` builtin.** Registered in `compiler/ModuleSys.cpp`
+alongside `wait()` with an untyped (`std::nullopt`) parameter so the
+argument bypasses the implicit-coercion path in `OpCode::ToTypeSpec`. The
+builtin's only effect is its strict argument check: it raises a runtime
+error unless the value is a future, an instance with a `statement action`
+method, or `nil`. Nil is accepted silently to tolerate the actor-proc case
+(procs return `nilVal` directly, so `ignore(actor.someproc())` shouldn't
+break).
 
 
 ## Futures

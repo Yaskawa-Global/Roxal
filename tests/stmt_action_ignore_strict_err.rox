@@ -1,4 +1,0 @@
-// ignore() must reject values that have no statement-action behaviour to
-// suppress. An int has no statement action and isn't a future, so this
-// should raise at runtime.
-ignore(42)
