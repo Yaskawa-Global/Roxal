@@ -782,9 +782,8 @@ print(Widget is Showable)   // true
 | Form | Meaning |
 |---|---|
 | `func foo()` | abstract method — implementer must provide a body |
-| `var X :T` | abstract get + set requirement |
-| `const X :T` | abstract get-only requirement |
-| `var X :T:` followed by abstract `get`/`set` | same as `var X :T` (verbose form, useful when only one of get/set is required) |
+| `var X :T` | abstract get + set requirement (sugar for the verbose form below) |
+| `var X :T:` followed by abstract `get` and/or `set` | abstract read-only / write-only / read-write |
 | `const X :T = literal` | concrete static const — inherited by implementers as `Impl.X` |
 | `type Inner ...` | nested type — inherited by implementers as `Impl.Inner` |
 
@@ -795,9 +794,9 @@ For each abstract requirement, the implementer must supply a satisfying declarat
 
 | Interface declares | Plain `var X` | Plain `const X = lit` | Explicit `get` only | Explicit `set` only | Explicit `get` + `set` |
 |---|---|---|---|---|---|
-| Abstract `get` only (≈ `const X :T`) | ✅ | ✅ | ✅ | ❌ | ✅ |
-| Abstract `set` only | ✅ | ❌ | ❌ | ✅ | ✅ |
-| Abstract `get` + `set` (≈ `var X :T`) | ✅ | ❌ | ❌ | ❌ | ✅ |
+| Abstract `get` only (`var X :T:` `get`) | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Abstract `set` only (`var X :T:` `set`) | ✅ | ❌ | ❌ | ✅ | ✅ |
+| Abstract `get` + `set` (`var X :T`) | ✅ | ❌ | ❌ | ❌ | ✅ |
 
 
 **Inheritance**

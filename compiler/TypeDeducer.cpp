@@ -306,13 +306,7 @@ std::any TypeDeducer::visit(ptr<ast::VarDecl> ast)
     ast::Anys results {};
     ast->acceptChildren(*this, results);
     if (ast->isConst && !ast->initializer.has_value()) {
-        // Inside an interface, `const X :T` (no initializer) is sugar for an
-        // abstract getter-only requirement; the compiler synthesizes the
-        // `__get_X` method. So allow it in interface scope.
-        bool inInterface = !typeKindStack.empty()
-                           && typeKindStack.back() == ast::TypeDecl::Kind::Interface;
-        if (!inInterface)
-            throw std::logic_error(linePos(ast) + " - const declarations require an initializer");
+        throw std::logic_error(linePos(ast) + " - const declarations require an initializer");
     }
     if (ast->varType.has_value()) {
         if (std::holds_alternative<BuiltinType>(ast->varType.value())) {

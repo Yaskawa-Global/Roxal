@@ -1,0 +1,1 @@
+Interface const property 'a' requires an initializer; for an abstract read-only API use `var X :T:` `get`

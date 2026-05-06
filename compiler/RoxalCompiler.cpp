@@ -1288,9 +1288,12 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         // In an interface:
         //   `const X :T = <literal>` → concrete static const inherited by implementers
         //                              (falls through to the normal property emission below).
-        //   `var X :T` / `const X :T` (no initializer) → sugar for abstract
-        //   `get`+`set` / abstract `get` only.
+        //   `var X :T` (no initializer) → sugar for abstract `get`+`set`.
         //   `var X :T = <literal>` → forbidden (writable static is dangerous).
+        //   `const X :T` (no initializer) → already rejected by TypeDeducer
+        //     (const requires initializer). Use `var X :T:` `get` for an
+        //     abstract read-only API: the `const` keyword would otherwise
+        //     promise value-stability that a computed getter can't honor.
         if (isInterface && prop->initializer.has_value()) {
             if (!prop->isConst)
                 error("Interface property '" + toUTF8StdString(prop->name) +
@@ -1301,7 +1304,8 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             // implementers, mirroring how Extend copies parent properties.
         }
         else if (isInterface) {
-            // Sugar path: abstract accessor synthesis.
+            // Sugar path: `var X :T` no-init → abstract get+set.
+            // (const-no-init was rejected by TypeDeducer; we only get var here.)
             if (!prop->varType.has_value())
                 error("Interface property '" + toUTF8StdString(prop->name) +
                       "' must declare a type");
@@ -1352,8 +1356,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                 };
 
             emitAbstractAccessor(UnicodeString("__get_") + prop->name, /*isSetter=*/false);
-            if (!prop->isConst)
-                emitAbstractAccessor(UnicodeString("__set_") + prop->name, /*isSetter=*/true);
+            emitAbstractAccessor(UnicodeString("__set_") + prop->name, /*isSetter=*/true);
 
             continue;
         }
@@ -1467,6 +1470,14 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                 error("Interface property accessors must be abstract (no body)");
             if (propAccessor->initializer.has_value())
                 error("Interface property accessor cannot have an initializer");
+            // `const X :T:` get (no initializer) is rejected for the same
+            // reason `const X :T` (sugar) is: the `const` keyword promises
+            // value stability, but a future implementer's getter could
+            // return different values. Use `var X :T:` `get` for an abstract
+            // read-only API instead.
+            if (propAccessor->isConst)
+                error("Interface const property '" + toUTF8StdString(propAccessor->name) +
+                      "' requires an initializer; for an abstract read-only API use `var X :T:` `get`");
         }
         else {
             if (hasAbstractAccessor)

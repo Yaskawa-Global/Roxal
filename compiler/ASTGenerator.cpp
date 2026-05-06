@@ -1889,6 +1889,7 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
     else {
         // Regular var declaration without accessors
         ptr<VarDecl> varDecl = make_ptr<VarDecl>();
+        setSourceInfo(varDecl, context);
 
         varDecl->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
         varDecl->isConst = (context->CONST() != nullptr);
