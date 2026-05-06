@@ -155,6 +155,7 @@ tests = [
     'const_member_freeze', 'const_member_shared', 'const_member_untyped_freeze',
     'nested_type_enum', 'nested_type_object', 'nested_type_inherit',
     'nested_type_sibling', 'nested_type_private', 'nested_type_shadow',
+    'nested_type_sibling_property',
     'dotted_type_name', 'dotted_type_implements', 'dotted_type_deep', 'dotted_type_enum_anno', 'dotted_type_err',
     'interface_basic', 'interface_var_satisfies_accessors', 'interface_const_satisfies_get',
     'interface_extends', 'interface_layered', 'interface_multi', 'interface_setter_only_iface',

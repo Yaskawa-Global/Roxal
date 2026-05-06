@@ -1286,6 +1286,18 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     else
         namedVariable(ast->name, false); // make type accessible on the stack
 
+    // Anchor the in-flight type as a local so the typescope walker can load it
+    // directly via OpCode::GetLocal, bypassing the parent-attachment chain. This
+    // matters for triply-nested cases where references to a sibling nested type
+    // would otherwise emit `GetModuleVar grandparent + GetProp parent + GetProp
+    // sibling` — but `parent`'s NESTED_TYPE attachment to grandparent runs after
+    // the body finishes, so the chain fails at runtime.
+    enterLocalScope();
+    addLocal(UnicodeString("__selfType_") + ast->name);
+    defineVariable(0);
+    asTypeScope(typeScope())->inFlightStackSlot =
+        static_cast<int16_t>(asFuncScope(funcScope())->locals.size() - 1);
+
     // Compile nested type declarations before properties,
     // so nested type names are available as property types.
     // Nested types compile normally (creating module vars) so sibling types can
@@ -1876,7 +1888,10 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         emitByte(OpCode::Implements, "implements " + toUTF8StdString(joinTypeName(ifaceName)));
     }
 
-    emitByte(OpCode::Pop, "type name");
+    // Exit the in-flight-type local scope; emits a Pop for the $selfType local,
+    // which serves the role the explicit `Pop "type name"` had previously.
+    asTypeScope(typeScope())->inFlightStackSlot = -1;
+    exitLocalScope();
 
     if (asTypeScope(typeScope())->hasSuperType)
         exitLocalScope();
@@ -5523,6 +5538,28 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
         }
     }
 
+    // If `name` matches an in-flight enclosing type's own name, load it directly
+    // from its anchor slot. Without this, references like `Middle.Inner` from
+    // inside Middle's body would fall through to the const-member walker below,
+    // find Middle in Outer's typescope, and emit `GetLocal Outer + GetProp Middle`
+    // — which fails at runtime because Outer's NESTED_TYPE attachment for Middle
+    // hasn't run yet.
+    if (!found && inTypeScope()
+        && asFuncScope(funcScope())->functionType == FunctionType::Module) {
+        for (auto si = lexicalScopes.rbegin(); si != lexicalScopes.rend(); ++si) {
+            if ((*si)->scopeType != LexicalScope::ScopeType::Type) continue;
+            auto ts = dynamic_ptr_cast<TypeScope>(*si);
+            if (ts->name == name && ts->inFlightStackSlot >= 0) {
+                if (assign)
+                    error("Cannot assign to type '" + toUTF8StdString(name) + "'");
+                emitOpArgsBytes(OpCode::GetLocal,
+                                static_cast<uint16_t>(ts->inFlightStackSlot),
+                                "in-flight " + toUTF8StdString(name));
+                return true;
+            }
+        }
+    }
+
     // If in a type body (not a method), check if the name is a const member of any
     // enclosing type (e.g., nested type or const value). Resolve as EnclosingType.name.
     // Walk up through nested TypeScopes to find the member.
@@ -5533,8 +5570,20 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
             auto ts = dynamic_ptr_cast<TypeScope>(*si);
             auto itMem = ts->propertyNames.find(name);
             if (itMem != ts->propertyNames.end() && itMem->second.isConst) {
-                namedVariable(ts->name, false); // push enclosing type (module var or outer type)
                 uint16_t nameConst = identifierConstant(name);
+                if (ts->inFlightStackSlot >= 0) {
+                    // Load the in-flight enclosing type from its anchor slot.
+                    // Going through namedVariable(ts->name) would emit
+                    // `GetModuleVar grandparent + GetProp ts->name`, which fails
+                    // at runtime when ts is itself a nested type still under
+                    // construction (its NESTED_TYPE attachment to its parent
+                    // hasn't run yet).
+                    emitOpArgsBytes(OpCode::GetLocal,
+                                    static_cast<uint16_t>(ts->inFlightStackSlot),
+                                    "in-flight " + toUTF8StdString(ts->name));
+                } else {
+                    namedVariable(ts->name, false); // push enclosing type
+                }
                 emitOpArgsBytes(OpCode::GetProp, nameConst);
                 return true;
             }

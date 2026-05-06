@@ -309,6 +309,14 @@ protected:
 
         bool hasSuperType;
         bool isActor { false };
+        // Stack slot of the in-flight type during its own body emission, anchored
+        // by an unnamed local. -1 means not set. Set after the type's value is
+        // pushed onto the runtime stack (via Dup for nested or GetModuleVar for
+        // top-level), and cleared when the body finishes. Used by the
+        // typescope-const walker to load the in-flight enclosing type directly,
+        // bypassing the parent-attachment chain (which fails at runtime when the
+        // enclosing type's NESTED_TYPE attachment hasn't run yet).
+        int16_t inFlightStackSlot { -1 };
         struct MemberInfo {
             ast::Access access { ast::Access::Public };
             icu::UnicodeString owner;
