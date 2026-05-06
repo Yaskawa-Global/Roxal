@@ -194,7 +194,7 @@ operator_symbol
  ;
 
 parameters
- : parameter (',' parameter)*
+ : NEWLINE* parameter ( (COMMA | NEWLINE) NEWLINE* parameter )* COMMA? NEWLINE*
  ;
 
 parameter
