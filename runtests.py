@@ -236,7 +236,8 @@ tests = [
     'stmt_action_basic', 'stmt_action_chain', 'stmt_action_until',
     'stmt_action_ignore', 'stmt_action_cycle_err',
     'if_suffix_stmt_action',
-    'stack_depth_check'
+    'stack_depth_check',
+    'forward_decl_field', 'forward_decl_chain', 'forward_decl_module_var'
 ]
 
 grpc_tests = ['grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error', 'grpc_streaming', 'grpc_args']

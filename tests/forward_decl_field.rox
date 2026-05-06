@@ -1,0 +1,16 @@
+// Object field forward-references an interface declared below.
+type A object:
+  var name :string = ""
+  var b :B = nil
+
+type B interface:
+  proc add(a :A)
+
+type BImpl object implements B:
+  proc add(a :A):
+    print("add: " + a.name)
+
+var a = A()
+a.name = "hello"
+a.b = BImpl()
+a.b.add(a)

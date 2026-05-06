@@ -7845,6 +7845,20 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             }
             case OpCode::ObjectType: {
                 ObjString* name = readString();
+                // Forward-decl support: if a placeholder of the same kind was
+                // hoisted to the module slot at module-load top, reuse that
+                // identity so any earlier captured reference (e.g. another
+                // type's property type annotation) sees the populated type.
+                {
+                    auto opt = moduleVars().load(name->hash);
+                    if (opt.has_value() && isObjectType(opt.value())) {
+                        auto t = asObjectType(opt.value());
+                        if (!t->isActor && !t->isInterface && !t->isEnumeration) {
+                            push(opt.value());
+                            break;
+                        }
+                    }
+                }
                 Value tv { Value::objectTypeVal(name->s, false) }; // ObjObjectType
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
@@ -7861,6 +7875,16 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             }
             case OpCode::ActorType: {
                 ObjString* name = readString();
+                {
+                    auto opt = moduleVars().load(name->hash);
+                    if (opt.has_value() && isObjectType(opt.value())) {
+                        auto t = asObjectType(opt.value());
+                        if (t->isActor) {
+                            push(opt.value());
+                            break;
+                        }
+                    }
+                }
                 Value tv { Value::objectTypeVal(name->s, true) }; // ObjObjectType
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
@@ -7878,6 +7902,16 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             case OpCode::InterfaceType: {
                 // interface types are represented as object types (but are abstract - all abstract methods)
                 ObjString* name = readString();
+                {
+                    auto opt = moduleVars().load(name->hash);
+                    if (opt.has_value() && isObjectType(opt.value())) {
+                        auto t = asObjectType(opt.value());
+                        if (t->isInterface) {
+                            push(opt.value());
+                            break;
+                        }
+                    }
+                }
                 Value tv { Value::objectTypeVal(name->s, false, true) };
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
@@ -7894,6 +7928,16 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             }
             case OpCode::EnumerationType: {
                 ObjString* name = readString();
+                {
+                    auto opt = moduleVars().load(name->hash);
+                    if (opt.has_value() && isObjectType(opt.value())) {
+                        auto t = asObjectType(opt.value());
+                        if (t->isEnumeration) {
+                            push(opt.value());
+                            break;
+                        }
+                    }
+                }
                 Value tv { Value::objectTypeVal(name->s, false, false, true) };
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
@@ -7910,6 +7954,13 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             }
             case OpCode::EventType: {
                 ObjString* name = readString();
+                {
+                    auto opt = moduleVars().load(name->hash);
+                    if (opt.has_value() && isEventType(opt.value())) {
+                        push(opt.value());
+                        break;
+                    }
+                }
                 Value tv { Value::objVal(newEventTypeObj(name->s)) };
                 push(tv);
                 break;

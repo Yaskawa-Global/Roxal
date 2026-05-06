@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 37;
+constexpr std::uint32_t ModuleCacheVersion = 38;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -714,6 +714,35 @@ std::any RoxalCompiler::visit(ptr<ast::File> ast)
 {
     currentNode = ast;
     Anys results {};
+
+    // Hoist top-level type declarations: emit "create empty placeholder type
+    // and bind to module slot" for each TypeDecl directly in the file body,
+    // before any other module-level code runs. The actual TypeDecl bodies
+    // later mutate these placeholders in place — the type-creation opcodes
+    // are reuse-aware (see VM.cpp). This makes module-scope type names
+    // forward-referenceable in type annotations (object/actor field types,
+    // extends/implements, return types, parameter types, top-level var types).
+    for (const auto& declOrStmt : ast->declsOrStmts) {
+        if (!std::holds_alternative<ptr<Declaration>>(declOrStmt))
+            continue;
+        auto typeDecl = dynamic_ptr_cast<ast::TypeDecl>(std::get<ptr<Declaration>>(declOrStmt));
+        if (!typeDecl)
+            continue;
+        uint16_t typeNameConstant = identifierConstant(typeDecl->name);
+        OpCode op = OpCode::ObjectType;
+        switch (typeDecl->kind) {
+            case ast::TypeDecl::Object:      op = OpCode::ObjectType; break;
+            case ast::TypeDecl::Actor:       op = OpCode::ActorType; break;
+            case ast::TypeDecl::Interface:   op = OpCode::InterfaceType; break;
+            case ast::TypeDecl::Enumeration: op = OpCode::EnumerationType; break;
+            case ast::TypeDecl::Event:       op = OpCode::EventType; break;
+        }
+        emitOpArgsBytes(op, typeNameConstant,
+                        "forward-decl placeholder " + toUTF8StdString(typeDecl->name));
+        emitOpArgsBytes(OpCode::DefineModuleVar, typeNameConstant,
+                        "bind placeholder " + toUTF8StdString(typeDecl->name));
+    }
+
     ast->acceptChildren(*this, results);
     emitReturn();
     return {};
