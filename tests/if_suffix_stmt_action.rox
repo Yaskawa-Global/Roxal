@@ -1,0 +1,21 @@
+// Statement-action method runs only when the adhering `if` guard is true.
+type Motion object:
+  var n = 0
+  proc init(n):
+    this.n = n
+  statement action proc execute():
+    print("execute Motion " + string(this.n))
+
+// guard true: stmt-action fires
+Motion(1) if true
+
+// guard false: stmt-action does NOT fire (no print)
+Motion(2) if false
+
+// guard from a runtime expression
+var ready = true
+Motion(3) if ready
+ready = false
+Motion(4) if ready
+
+print("done")

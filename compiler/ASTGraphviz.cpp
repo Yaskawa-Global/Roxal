@@ -415,6 +415,20 @@ std::any ASTGraphviz::visit(ptr<ast::UntilStatement> ast)
     return {};
 }
 
+std::any ASTGraphviz::visit(ptr<ast::AdheringIfStatement> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+
+    addLink(name, stackPop(), "condition");
+    addLink(name, stackPop(), "stmt");
+    nodes[name] = node(name, "if-suffix");
+    stackPush(name);
+
+    endVisit();
+    return {};
+}
+
 std::any ASTGraphviz::visit(ptr<ast::TryStatement> ast)
 {
     startVisit();

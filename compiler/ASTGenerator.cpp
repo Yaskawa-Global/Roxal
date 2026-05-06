@@ -831,6 +831,7 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
     else
         throw std::runtime_error("unhandled statement parse alternative");
 
+    // Grammar admits at most one of `if_clause` or `until_clause` per statement.
     if (context->until_clause()) {
         auto ucExpr = as<Expression>(visitExpression(context->until_clause()->expression()));
         ptr<UntilStatement> untilStmt = make_ptr<UntilStatement>();
@@ -838,6 +839,14 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
         untilStmt->stmt = stmt;
         untilStmt->condition = ucExpr;
         stmt = untilStmt;
+    }
+    else if (context->if_clause()) {
+        auto cond = as<Expression>(visitExpression(context->if_clause()->expression()));
+        ptr<AdheringIfStatement> ifStmt = make_ptr<AdheringIfStatement>();
+        setSourceInfo(ifStmt, context->if_clause());
+        ifStmt->stmt = stmt;
+        ifStmt->condition = cond;
+        stmt = ifStmt;
     }
 
     setSourceInfo(stmt, context);
@@ -1225,6 +1234,16 @@ std::any ASTGenerator::visitFinally_clause(RoxalParser::Finally_clauseContext *c
 }
 
 std::any ASTGenerator::visitUntil_clause(RoxalParser::Until_clauseContext *context)
+{
+    visitStart();
+
+    auto expr = visitExpression(context->expression());
+    return expr;
+
+    visitEnd();
+}
+
+std::any ASTGenerator::visitIf_clause(RoxalParser::If_clauseContext *context)
 {
     visitStart();
 

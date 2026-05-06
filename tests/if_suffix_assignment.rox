@@ -1,0 +1,8 @@
+// Adhering `if` on an assignment-statement: the assignment is gated by the
+// condition. When the condition is false, the RHS is not evaluated and x
+// keeps its prior value.
+var x = 10
+x = 20 if true
+print(x)
+x = 30 if false
+print(x)

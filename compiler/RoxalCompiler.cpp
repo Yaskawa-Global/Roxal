@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 36;
+constexpr std::uint32_t ModuleCacheVersion = 37;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -2658,6 +2658,33 @@ std::any RoxalCompiler::visit(ptr<ast::UntilStatement> ast)
     patchJump(jumpOverHandlers);
 
     exitLocalScope();
+
+    return {};
+}
+
+std::any RoxalCompiler::visit(ptr<ast::AdheringIfStatement> ast)
+{
+    currentNode = ast;
+
+    // <stmt> if <cond>
+    //   is compiled like a no-else if-statement that wraps the entire wrapped
+    //   statement's bytecode. The wrapped statement (typically an
+    //   ExpressionStatement) emits its own StmtAction/Pop terminator, so when
+    //   the guard is true the value is disposed normally; when false, the body
+    //   is skipped wholesale and nothing is left on the stack.
+
+    ast->condition->accept(*this);                       // [cond]
+    auto jumpOver = emitJump(OpCode::JumpIfFalse);
+    emitByte(OpCode::Pop, "if-suffix cond (true)");      // pop true cond
+
+    enterLocalScope();
+    ast->stmt->accept(*this);
+    exitLocalScope();
+
+    auto jumpEnd = emitJump(OpCode::Jump);
+    patchJump(jumpOver);
+    emitByte(OpCode::Pop, "if-suffix cond (false)");     // pop false cond
+    patchJump(jumpEnd);
 
     return {};
 }

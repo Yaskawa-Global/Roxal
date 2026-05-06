@@ -45,12 +45,16 @@ declaration
  ;
 
 statement
- : expr_stmt until_clause? NEWLINE
+ : expr_stmt (if_clause | until_clause)? NEWLINE
  | compound_stmt
  ;
 
 until_clause
  : UNTIL expression
+ ;
+
+if_clause
+ : IF expression
  ;
 
 at_clause

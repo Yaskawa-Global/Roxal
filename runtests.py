@@ -119,6 +119,7 @@ tests = [
     'event_payload', 'event_implicit_constructor', 'event_type_when', 'event_target_filter',
     'event_in_sleep', 'event_in_sleep2', 'event_cascade',
     'until_event', 'until_signal', 'signal_vector_dot',
+    'if_suffix_basic', 'if_suffix_assignment', 'if_suffix_mutex_err',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
     'module_strict_assign_err', 'var_redeclare_err', 'var_redeclare_assign_err', 'repl_var_redeclare_err', 'func_nonstrict', 'conversions1',
     'serialize_values', 'serialize_signal', 'serialize_objects', 'serialize_user_objects', 'serialize_func', 'serialize_actor',
@@ -173,7 +174,7 @@ tests = [
     'operator_overload_lr', 'operator_overload_inherit', 'operator_overload_fallthrough',
     'operator_overload_proc_err', 'operator_overload_unpaired_err', 'operator_overload_both_err',
     'complex_type',
-    'typededucer_binop', 'typededucer_ops', 'typededucer_until', 'typededucer_bitwise',
+    'typededucer_binop', 'typededucer_ops', 'typededucer_until', 'typededucer_if_suffix', 'typededucer_bitwise',
     'time_basic', 'time_quantity', 'time_quantity_arith',
     'cont_nest_print', 'cont_nest_map', 'cont_nest_filter',
     'cont_nest_map_in_map', 'cont_nest_filter_in_map', 'cont_nest_reduce_in_map',
@@ -233,6 +234,7 @@ tests = [
     'conv_func_param_auto',
     'stmt_action_basic', 'stmt_action_chain', 'stmt_action_until',
     'stmt_action_ignore', 'stmt_action_cycle_err',
+    'if_suffix_stmt_action',
     'stack_depth_check'
 ]
 

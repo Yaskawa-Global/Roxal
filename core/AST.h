@@ -71,6 +71,7 @@ class WhileStatement;
 class ForStatement;
 class WhenStatement;
 class UntilStatement;
+class AdheringIfStatement;
 class TryStatement;
 class MatchStatement;
 class WithStatement;
@@ -129,6 +130,7 @@ public:
     virtual std::any visit(ptr<ForStatement> ast) = 0;
     virtual std::any visit(ptr<WhenStatement> ast) = 0;
     virtual std::any visit(ptr<UntilStatement> ast) = 0;
+    virtual std::any visit(ptr<AdheringIfStatement> ast) = 0;
     virtual std::any visit(ptr<TryStatement> ast) = 0;
     virtual std::any visit(ptr<MatchStatement> ast) = 0;
     virtual std::any visit(ptr<WithStatement> ast) = 0;
@@ -314,6 +316,7 @@ struct Statement : public AST {
         For,
         When,
         Until,
+        AdheringIf,
         Try,
         Raise,
         Match,
@@ -426,6 +429,19 @@ struct WhenStatement : public Statement {
 
 struct UntilStatement : public Statement {
     UntilStatement() : Statement(StmtType::Until) {}
+
+    ptr<ast::Statement> stmt;
+    ptr<ast::Expression> condition;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
+struct AdheringIfStatement : public Statement {
+    AdheringIfStatement() : Statement(StmtType::AdheringIf) {}
 
     ptr<ast::Statement> stmt;
     ptr<ast::Expression> condition;

@@ -114,6 +114,7 @@ public:
     std::any visit(ptr<roxal::ast::ForStatement> ast) override { throw std::runtime_error("Not implemented"); }
     std::any visit(ptr<roxal::ast::WhenStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::UntilStatement> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::AdheringIfStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::TryStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::MatchStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::WithStatement> ast) override { if(m_f) m_f(ast); return{}; }

@@ -887,7 +887,7 @@ type Motion object:
     return Motion(dist + other.dist)   // illustrative
 
   // The 'statement action' modifier
-  //  The method takes no parameters beyond self.
+  //  The method takes no parameters.
   statement action func execute() -> Motion:
     print("executing motion of " + string(dist))
     return nil    // nil terminates statement-action chaining
@@ -1206,6 +1206,23 @@ c.run()
 take_a_while() until c > 20
 
 ```
+
+
+## Adhering `if`
+
+The `if` modifier can be used as a suffix for simple statements - to gate execution on a condition.
+
+```php
+var ready = true
+move(p1) if ready              // runs because ready is true
+
+var speed = 120
+print('high') if speed > 130   // doesn't print
+
+x = compute() if cond          // assignment is gated; if cond is false, x is unchanged
+```
+
+`if` and `until` cannot be used together on the same statement.
 
 
 ## Advanced: Compute Server

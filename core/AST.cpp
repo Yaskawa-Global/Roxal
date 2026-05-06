@@ -570,6 +570,38 @@ void UntilStatement::acceptChildren(ASTVisitor& v, Anys& results)
 }
 
 
+std::any AdheringIfStatement::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(dynamic_ptr_cast<AdheringIfStatement>(ptr_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(dynamic_ptr_cast<AdheringIfStatement>(ptr_from_this())) );
+
+    return results;
+}
+
+void AdheringIfStatement::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"AdheringIf" << std::endl;
+    os << spaces(indent+1) << "stmt:" << std::endl;
+    stmt->output(os, indent+2);
+    os << spaces(indent+1) << "condition:" << std::endl;
+    condition->output(os, indent+2);
+}
+
+void AdheringIfStatement::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    results.push_back( stmt->accept(v) );
+    results.push_back( condition->accept(v) );
+}
+
+
 std::any RaiseStatement::accept(ASTVisitor& v)
 {
     Anys results {};
