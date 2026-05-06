@@ -1181,24 +1181,24 @@ The until condition can be an event or a boolean valued signal.
 
 ```php
 
-var e :event
+type E event
 
 func take_a_while():
-  wait(10s)  // do nothing for 10s
+  wait(s=10)  // do nothing for 10s
 
 type MyWorker actor:
-  proc triggerEventAfterDelay(e :event, aftersecs :int):
-    wait(aftersecs)
-    emit e()
+  proc triggerEventAfterDelay(secs :int):
+    wait(s=secs)
+    emit E()
 
 worker = MyWorker()
-worker.triggerEventAfterDelay(e,5) // async (immediate return)
+worker.triggerEventAfterDelay(5) // async (immediate return)
 
-// this will execute take_a_while for ~5s until interrupted by e triggered by worker
-take_a_while() until e
+// this will execute take_a_while for ~5s until interrupted by E from worker
+take_a_while() until E
 
 
-c = clock(freq=10)  # 10Hz clock signal
+c = clock(10)  // 10Hz clock signal
 c.run()
 
 // this will execute take_a_while for ~2s
