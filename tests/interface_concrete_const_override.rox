@@ -1,0 +1,9 @@
+type I interface:
+    const VERSION :string = "1.0"
+
+type T object implements I:
+    const VERSION :string = "2.0"
+
+# Each type holds its own value
+print(I.VERSION)
+print(T.VERSION)
