@@ -1,0 +1,4 @@
+type I interface:
+    var name :string:
+        get:
+            return "concrete"

@@ -298,6 +298,12 @@ public:
     void defineEventPayload(ObjString* name);
     void extendEventType();
     void defineMethod(ObjString* name);
+    // Verify `impl` (and its `extends` chain) supplies a non-abstract method
+    // for every abstract method declared on `iface` (and its own extends
+    // chain). Property-accessor satisfaction (`__get_X`/`__set_X`) accepts a
+    // plain property `X` on the implementer chain; setters reject `const`
+    // properties. Returns "" on success, or a multi-line error otherwise.
+    std::string checkInterfaceConformance(ObjObjectType* impl, ObjObjectType* iface);
     void defineEnumLabel(ObjString* name);
     void defineNative(const std::string& name, NativeFn function,
                       ptr<type::Type> funcType = nullptr,

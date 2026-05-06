@@ -9,3 +9,4 @@ type Widget object implements Lib.Showable:
 
 var w = Widget("hello")
 w.show()
+print(w is Lib.Showable)

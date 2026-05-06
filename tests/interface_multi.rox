@@ -1,0 +1,22 @@
+type I1 interface:
+    func a()
+type I2 interface:
+    func b()
+type I3 interface:
+    func c()
+
+type T object implements I1, I2, I3:
+    func a():
+        print("a")
+    func b():
+        print("b")
+    func c():
+        print("c")
+
+var t = T()
+t.a()
+t.b()
+t.c()
+print(t is I1)
+print(t is I2)
+print(t is I3)

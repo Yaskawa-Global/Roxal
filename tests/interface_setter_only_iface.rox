@@ -1,0 +1,22 @@
+type WriteOnly interface:
+    var sink :string:
+        set
+
+# satisfied by plain var
+type WithVar object implements WriteOnly:
+    var sink :string
+
+# satisfied by explicit setter only
+type WithSetter object implements WriteOnly:
+    var sink :string:
+        set:
+            print("got: {value}")
+            _sink = value
+
+var a = WithVar("x")
+a.sink = "ya"
+print(a is WriteOnly)
+
+var b = WithSetter()
+b.sink = "yb"
+print(b is WriteOnly)

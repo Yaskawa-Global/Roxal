@@ -1,0 +1,11 @@
+type I interface:
+    var name :string:
+        get
+        set
+
+type Bad object implements I:
+    var name :string:
+        set:
+            _name = value
+
+var b = Bad()

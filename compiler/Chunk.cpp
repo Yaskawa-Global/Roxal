@@ -363,6 +363,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("EVENT_EXTEND", offset);
         case OpCode::Extend:
             return simpleInstruction("EXTEND", offset);
+        case OpCode::Implements:
+            return simpleInstruction("IMPLEMENTS", offset);
         case OpCode::DefineModuleConst:
             return constantInstruction("DEFINE_MODULE_CONST", offset, doubleByteArg);
         case OpCode::DefineModuleVar:

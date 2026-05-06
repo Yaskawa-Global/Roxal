@@ -1,0 +1,36 @@
+# Interface declared as a nested type inside an object
+type Lib object:
+    type Showable interface:
+        func show()
+    type Status enum: active, inactive
+
+type Widget object implements Lib.Showable:
+    var label :string
+    func show():
+        print(this.label)
+
+var w = Widget("hello")
+w.show()
+print(w is Lib.Showable)
+print(Lib.Status.active)
+
+# Interface containing nested object/enum/interface types
+type IOuter interface:
+    type Status enum: ready, busy
+    type Inner object:
+        var z :int
+    type IDeep interface:
+        func deep()
+    func ping()
+
+print(IOuter.Status.ready)
+var inner = IOuter.Inner(42)
+print(inner.z)
+
+type DeepImpl object implements IOuter.IDeep:
+    func deep():
+        print("deep ok")
+
+var d = DeepImpl()
+d.deep()
+print(d is IOuter.IDeep)

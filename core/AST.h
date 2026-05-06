@@ -25,6 +25,7 @@ enum class MethodModifier : uint8_t {
     None             = 0,
     Implicit         = 1 << 0,
     StatementAction  = 1 << 1,
+    Abstract         = 1 << 2,
 };
 using MethodModifiers = uint8_t;
 inline bool hasModifier(MethodModifiers m, MethodModifier flag) {
@@ -549,11 +550,13 @@ struct PropertyAccessor : public AST {
     Access access { Access::Public };
     bool isConst { false }; // true if declared with const instead of var
 
-    // At least one must be present (validated during semantic analysis)
-    // For one-liner: variant holds ptr<Statement> (compound_stmt or expr_stmt)
-    // For block: variant holds ptr<Suite>
-    std::optional<std::variant<ptr<Suite>, ptr<Statement>>> getter;
-    std::optional<std::variant<ptr<Suite>, ptr<Statement>>> setter;
+    // At least one must be present (validated during semantic analysis).
+    // - std::optional empty: accessor not declared.
+    // - variant holds ptr<Suite>: block body.
+    // - variant holds ptr<Statement>: one-liner (compound_stmt or expr_stmt).
+    // - variant holds std::monostate: declared abstract (no body) -- only valid in interfaces.
+    std::optional<std::variant<ptr<Suite>, ptr<Statement>, std::monostate>> getter;
+    std::optional<std::variant<ptr<Suite>, ptr<Statement>, std::monostate>> setter;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

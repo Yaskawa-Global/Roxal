@@ -1547,6 +1547,13 @@ struct ObjObjectType : public ObjTypeSpec
     bool isInterface;
     bool isEnumeration;
     Value superType { Value::nilVal() }; // parent type
+
+    // `implements` clauses on this type. Each entry is an objRef to an
+    // ObjObjectType with isInterface=true. Does NOT include interfaces
+    // inherited transitively via superType — those are reached by walking
+    // the chain in isSubtypeOf.
+    std::vector<Value> implementedInterfaces;
+
     bool isCStruct { false };
     int cstructArch { hostArch };
     uint16_t enumTypeId;
@@ -1622,6 +1629,15 @@ inline bool isSubtypeOf(ObjObjectType* sourceType, ObjObjectType* targetType) {
     ObjObjectType* t = sourceType;
     while (t) {
         if (t == targetType) return true;
+        // implements: each interface in the list, plus its own extends chain
+        for (const Value& ifaceVal : t->implementedInterfaces) {
+            if (!isObjectType(ifaceVal)) continue;
+            for (ObjObjectType* it = asObjectType(ifaceVal); it; ) {
+                if (it == targetType) return true;
+                if (it->superType.isNil()) break;
+                it = asObjectType(it->superType);
+            }
+        }
         if (t->superType.isNil()) break;
         t = asObjectType(t->superType);
     }

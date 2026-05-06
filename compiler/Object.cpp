@@ -2899,6 +2899,11 @@ void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
 
     writeValue(out, superType, ctx);
 
+    uint32_t icount = static_cast<uint32_t>(implementedInterfaces.size());
+    out.write(reinterpret_cast<char*>(&icount),4);
+    for (const Value& iv : implementedInterfaces)
+        writeValue(out, iv, ctx);
+
     b = isCStruct ? 1 : 0; out.write(reinterpret_cast<char*>(&b),1);
     out.write(reinterpret_cast<const char*>(&cstructArch),4);
     out.write(reinterpret_cast<const char*>(&enumTypeId),2);
@@ -2984,6 +2989,12 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     in.read(reinterpret_cast<char*>(&b),1); isEnumeration = b!=0;
 
     superType = readValue(in, ctx);
+
+    uint32_t icount; in.read(reinterpret_cast<char*>(&icount),4);
+    implementedInterfaces.clear();
+    implementedInterfaces.reserve(icount);
+    for (uint32_t i=0; i<icount; i++)
+        implementedInterfaces.push_back(readValue(in, ctx));
 
     in.read(reinterpret_cast<char*>(&b),1); isCStruct = b!=0;
     in.read(reinterpret_cast<char*>(&cstructArch),4);
@@ -3074,6 +3085,8 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 void ObjObjectType::trace(ValueVisitor& visitor) const
 {
     visitor.visit(superType);
+    for (const Value& iv : implementedInterfaces)
+        visitor.visit(iv);
     for (const auto& entry : properties) {
         const auto& prop = entry.second;
         visitor.visit(prop.type);
@@ -3096,6 +3109,7 @@ void ObjObjectType::trace(ValueVisitor& visitor) const
 void ObjObjectType::dropReferences()
 {
     superType = Value::nilVal();
+    implementedInterfaces.clear();
 
     for (auto& entry : properties) {
         auto& prop = entry.second;

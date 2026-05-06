@@ -1204,11 +1204,8 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     if (!compilingNestedType)
         declareVariable(ast->name);
 
-    if (ast->implements.size()>2)
-        throw std::runtime_error("Multiple implements types unimplemented.");
-
-    if (isInterface && (ast->implements.size() > 0))
-        throw std::runtime_error("Interfaces can't implement (only extend)");
+    if (isInterface && !ast->implements.empty())
+        error("Interfaces can't implement (only extend)");
 
     // Write type opcode with automatic single/double-byte argument handling
     if (isActor) emitOpArgsBytes(OpCode::ActorType, typeNameConstant);
@@ -1286,12 +1283,70 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     for(size_t i=0; i<ast->properties.size(); i++) {
 
-        if (isInterface) {
-            error("Interfaces cannot declare properties");
-            break;
-        }
-
         ptr<VarDecl> prop { ast->properties.at(i) };
+
+        // In an interface, a plain `var X :T` / `const X :T` (no initializer) is
+        // sugar for abstract `get`+`set` / abstract `get` only respectively.
+        // No backing field is emitted; only the abstract accessor methods.
+        if (isInterface) {
+            if (prop->initializer.has_value())
+                error("Interface property '" + toUTF8StdString(prop->name) +
+                      "' cannot have an initializer");
+            if (!prop->varType.has_value())
+                error("Interface property '" + toUTF8StdString(prop->name) +
+                      "' must declare a type");
+
+            auto enclosingModuleScope = asModuleScope(moduleScope());
+            asTypeScope(typeScope())->propertyNames[prop->name] =
+                {prop->access, ast->name, /*isConst=*/false, prop->varType};
+
+            auto emitAbstractAccessor =
+                [&](const icu::UnicodeString& accName, bool isSetter) {
+                    asTypeScope(typeScope())->propertyNames[accName] =
+                        {prop->access, ast->name, /*isConst=*/false};
+                    uint16_t methodNameConstant = identifierConstant(accName);
+
+                    ptr<type::Type> accType = make_ptr<type::Type>(BuiltinType::Func);
+                    accType->func = type::Type::FuncType{};
+                    accType->func->isProc = isSetter;
+
+                    enterFuncScope(enclosingModuleScope->moduleType,
+                                   accName, FunctionType::Method, accType);
+                    asFunction(asFuncScope(funcScope())->function)->access = prop->access;
+                    asFunction(asFuncScope(funcScope())->function)->arity = isSetter ? 1 : 0;
+                    ast::setModifier(asFunction(asFuncScope(funcScope())->function)->methodModifiers,
+                                     ast::MethodModifier::Abstract);
+
+                    enterLocalScope();
+                    if (isSetter) {
+                        addLocal("value");
+                        defineVariable(0);
+                    }
+                    // No body for abstract — trailing emitReturn supplies a return-nil tail.
+                    if (lastByte() != uint8_t(OpCode::Return))
+                        emitReturn();
+
+                    auto accFuncScope = *asFuncScope(funcScope());
+                    ObjFunction* accFunc = asFunction(accFuncScope.function);
+                    exitFuncScope();
+
+                    uint16_t constIdx = makeConstant(Value::objRef(accFunc));
+                    emitOpArgsBytes(OpCode::Closure, constIdx);
+                    for (int u = 0; u < accFunc->upvalueCount; u++) {
+                        emitByte(accFuncScope.upvalues[u].isLocal ? 1 : 0);
+                        emitByte(accFuncScope.upvalues[u].index);
+                    }
+                    emitOpArgsBytes(OpCode::Method, methodNameConstant,
+                                    (isSetter ? "abstract setter " : "abstract getter ")
+                                    + toUTF8StdString(accName));
+                };
+
+            emitAbstractAccessor(UnicodeString("__get_") + prop->name, /*isSetter=*/false);
+            if (!prop->isConst)
+                emitAbstractAccessor(UnicodeString("__set_") + prop->name, /*isSetter=*/true);
+
+            continue;
+        }
 
         if (isActor && prop->access != Access::Private) {
             error("Actors cannot declare shared properties (use private)");
@@ -1389,48 +1444,69 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             error("Property accessor name cannot start with '_': " + toUTF8StdString(propAccessor->name));
         }
 
-        // Step 1: Create implicit backing field _<name>
-        icu::UnicodeString backingFieldName = UnicodeString("_") + propAccessor->name;
-        uint16_t backingFieldConstant = identifierConstant(backingFieldName);
+        bool getterAbstract = propAccessor->getter.has_value()
+                              && std::holds_alternative<std::monostate>(*propAccessor->getter);
+        bool setterAbstract = propAccessor->setter.has_value()
+                              && std::holds_alternative<std::monostate>(*propAccessor->setter);
+        bool hasAbstractAccessor = getterAbstract || setterAbstract;
+        bool getterConcrete = propAccessor->getter.has_value() && !getterAbstract;
+        bool setterConcrete = propAccessor->setter.has_value() && !setterAbstract;
 
-        // Register backing field as private property
-        asTypeScope(typeScope())->propertyNames[backingFieldName] = {Access::Private, ast->name, /*isConst=*/false};
-
-        if (compilingNestedType)
-            emitByte(OpCode::Dup); // nested: type is on stack
-        else
-            namedVariable(ast->name, false); // make type accessible on the stack
-
-        // Emit type for backing field
-        if (std::holds_alternative<BuiltinType>(propAccessor->propType)) {
-            auto builtinType = std::get<BuiltinType>(propAccessor->propType);
-            Value typeValue { Value::typeSpecVal(builtinToValueType(builtinType)) };
-            emitConstant(typeValue, "backing field " + toUTF8StdString(backingFieldName) + " type");
-        } else {
-            // Named type
-            emitTypeName(std::get<TypeName>(propAccessor->propType));
+        if (isInterface) {
+            if (getterConcrete || setterConcrete)
+                error("Interface property accessors must be abstract (no body)");
+            if (propAccessor->initializer.has_value())
+                error("Interface property accessor cannot have an initializer");
+        }
+        else {
+            if (hasAbstractAccessor)
+                error("Abstract property accessor only allowed inside an interface declaration");
         }
 
-        // Emit initial value for backing field
-        if (propAccessor->initializer.has_value()) {
-            propAccessor->initializer.value()->accept(*this);
-        } else {
-            // Default value based on type
+        if (!isInterface) {
+            // Step 1: Create implicit backing field _<name>
+            icu::UnicodeString backingFieldName = UnicodeString("_") + propAccessor->name;
+            uint16_t backingFieldConstant = identifierConstant(backingFieldName);
+
+            // Register backing field as private property
+            asTypeScope(typeScope())->propertyNames[backingFieldName] = {Access::Private, ast->name, /*isConst=*/false};
+
+            if (compilingNestedType)
+                emitByte(OpCode::Dup); // nested: type is on stack
+            else
+                namedVariable(ast->name, false); // make type accessible on the stack
+
+            // Emit type for backing field
             if (std::holds_alternative<BuiltinType>(propAccessor->propType)) {
-                auto bt = std::get<BuiltinType>(propAccessor->propType);
-                if (bt == BuiltinType::Signal)
-                    error("Can't default-construct signal");
-                emitConstant(defaultValue(builtinToValueType(bt)));
+                auto builtinType = std::get<BuiltinType>(propAccessor->propType);
+                Value typeValue { Value::typeSpecVal(builtinToValueType(builtinType)) };
+                emitConstant(typeValue, "backing field " + toUTF8StdString(backingFieldName) + " type");
             } else {
-                emitByte(OpCode::ConstNil);
+                // Named type
+                emitTypeName(std::get<TypeName>(propAccessor->propType));
             }
+
+            // Emit initial value for backing field
+            if (propAccessor->initializer.has_value()) {
+                propAccessor->initializer.value()->accept(*this);
+            } else {
+                // Default value based on type
+                if (std::holds_alternative<BuiltinType>(propAccessor->propType)) {
+                    auto bt = std::get<BuiltinType>(propAccessor->propType);
+                    if (bt == BuiltinType::Signal)
+                        error("Can't default-construct signal");
+                    emitConstant(defaultValue(builtinToValueType(bt)));
+                } else {
+                    emitByte(OpCode::ConstNil);
+                }
+            }
+
+            // Emit isPrivate=true, isConst based on property declaration
+            emitByte(OpCode::ConstTrue);  // private
+            emitByte(propAccessor->isConst ? OpCode::ConstTrue : OpCode::ConstFalse); // const if property is const
+
+            emitOpArgsBytes(OpCode::Property, backingFieldConstant, "backing field " + toUTF8StdString(backingFieldName));
         }
-
-        // Emit isPrivate=true, isConst based on property declaration
-        emitByte(OpCode::ConstTrue);  // private
-        emitByte(propAccessor->isConst ? OpCode::ConstTrue : OpCode::ConstFalse); // const if property is const
-
-        emitOpArgsBytes(OpCode::Property, backingFieldConstant, "backing field " + toUTF8StdString(backingFieldName));
 
         // Step 2: Register the property name itself in propertyNames so it can be accessed
         asTypeScope(typeScope())->propertyNames[propAccessor->name] = {propAccessor->access, ast->name, /*isConst=*/false};
@@ -1450,6 +1526,9 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             enterFuncScope(enclosingModuleScope->moduleType, getterName, FunctionType::Method, getterType);
             asFunction(asFuncScope(funcScope())->function)->access = propAccessor->access;
             asFunction(asFuncScope(funcScope())->function)->arity = 0; // No parameters
+            if (getterAbstract)
+                ast::setModifier(asFunction(asFuncScope(funcScope())->function)->methodModifiers,
+                                 ast::MethodModifier::Abstract);
 
             enterLocalScope();
 
@@ -1466,6 +1545,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                     stmt->accept(*this);
                 }
             }
+            // monostate: abstract — no body, the trailing emitReturn below handles it.
 
             // Ensure function ends with return
             if (lastByte() != uint8_t(OpCode::Return))
@@ -1501,6 +1581,9 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             enterFuncScope(enclosingModuleScope->moduleType, setterName, FunctionType::Method, setterType);
             asFunction(asFuncScope(funcScope())->function)->access = propAccessor->access;
             asFunction(asFuncScope(funcScope())->function)->arity = 1; // One parameter: value
+            if (setterAbstract)
+                ast::setModifier(asFunction(asFuncScope(funcScope())->function)->methodModifiers,
+                                 ast::MethodModifier::Abstract);
 
             enterLocalScope();
 
@@ -1521,6 +1604,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                     stmt->accept(*this);
                 }
             }
+            // monostate: abstract — no body, the trailing emitReturn below handles it.
 
             // Ensure function ends with return
             if (lastByte() != uint8_t(OpCode::Return))
@@ -1731,7 +1815,16 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         }
     }
 
-
+    // Emit Implements opcodes -- AFTER methods/properties have been registered
+    // on the type, so the runtime conformance check sees the full method set.
+    for (const auto& ifaceName : ast->implements) {
+        emitTypeName(ifaceName);                   // push interface type
+        if (compilingNestedType)
+            emitByte(OpCode::Dup);                 // push implementer type
+        else
+            namedVariable(ast->name, /*assign=*/false);
+        emitByte(OpCode::Implements, "implements " + toUTF8StdString(joinTypeName(ifaceName)));
+    }
 
     emitByte(OpCode::Pop, "type name");
 
@@ -2834,6 +2927,13 @@ std::any RoxalCompiler::visit(ptr<ast::RaiseStatement> ast)
 std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 {
     currentNode = ast;
+
+    // A function declared without a body (`func foo()<NEWLINE>`) is abstract.
+    // Mark it so the runtime conformance check can distinguish it from a
+    // user-written empty body, and so abstract methods can be detected on
+    // interfaces.
+    if (std::holds_alternative<std::monostate>(ast->body))
+        ast::setModifier(ast->methodModifiers, ast::MethodModifier::Abstract);
 
     bool isProc = ast->isProc;
     bool isMethod = inTypeScope() // methods can't be outside type decl

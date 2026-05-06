@@ -1,0 +1,13 @@
+type HasName interface:
+    var name :string:
+        get
+        set
+
+type WithVar object implements HasName:
+    var name :string
+
+var w = WithVar("alice")
+print(w.name)
+w.name = "bob"
+print(w.name)
+print(w is HasName)

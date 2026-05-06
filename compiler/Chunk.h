@@ -70,6 +70,7 @@ enum class OpCode {
     EventPayload,
     EventExtend,
     Extend,
+    Implements,
     DefineModuleVar,
     DefineModuleConst,
     GetModuleVar,

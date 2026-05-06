@@ -1,0 +1,27 @@
+type Parent object:
+    var x :int
+type Child object extends Parent:
+    var y :int
+
+# instance-on-type via extends (already worked)
+var c = Child(1, 2)
+print(c is Child)
+print(c is Parent)
+
+# type-on-type via extends (latent bug fix)
+print(Child is Child)
+print(Child is Parent)
+print(Parent is Child)
+
+# now with an interface
+type IPing interface:
+    func ping()
+
+type P object implements IPing:
+    func ping():
+        print("p")
+
+var p = P()
+print(p is IPing)
+print(P is IPing)
+print(p is P)

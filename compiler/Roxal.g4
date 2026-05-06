@@ -272,11 +272,17 @@ member_var
  ;
 
 property_getter
- : {_input->LT(1)->getText() == "get"}? IDENTIFIER ':' ( compound_stmt NEWLINE | suite )
+ : {_input->LT(1)->getText() == "get"}? IDENTIFIER
+   ( ':' ( compound_stmt NEWLINE | suite )
+   | NEWLINE
+   )
  ;
 
 property_setter
- : {_input->LT(1)->getText() == "set"}? IDENTIFIER ':' ( (compound_stmt | expr_stmt) NEWLINE | suite )
+ : {_input->LT(1)->getText() == "set"}? IDENTIFIER
+   ( ':' ( (compound_stmt | expr_stmt) NEWLINE | suite )
+   | NEWLINE
+   )
  ;
 
 enum_label

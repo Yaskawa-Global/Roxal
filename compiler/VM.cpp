@@ -2562,6 +2562,11 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 ObjTypeSpec* ts = asTypeSpec(callee);
                 if ((ts->typeValue == ValueType::Object) || (ts->typeValue == ValueType::Actor)) {
                     ObjObjectType* type = asObjectType(callee);
+                    if (type->isInterface) {
+                        runtimeError("Cannot instantiate interface '" +
+                                     toUTF8StdString(type->name) + "'");
+                        return false;
+                    }
                     ObjObjectType* tInit = type;
                     const ObjObjectType::Method* initMethod = nullptr;
                     while (tInit != nullptr && initMethod == nullptr) {
@@ -4490,6 +4495,82 @@ void VM::defineMethod(ObjString* name)
         type->statementActionMethodHash = name->hash;
     }
     pop();
+}
+
+
+std::string VM::checkInterfaceConformance(ObjObjectType* impl, ObjObjectType* iface)
+{
+    static const icu::UnicodeString getPrefix("__get_");
+    static const icu::UnicodeString setPrefix("__set_");
+
+    auto isAbstract = [](const ObjObjectType::Method& m) {
+        return ast::hasModifier(m.methodModifiers, ast::MethodModifier::Abstract);
+    };
+
+    auto findConcreteMethod = [&](int32_t hash) -> bool {
+        for (ObjObjectType* t = impl; t; ) {
+            auto it = t->methods.find(hash);
+            if (it != t->methods.end() && !isAbstract(it->second))
+                return true;
+            t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+        }
+        return false;
+    };
+
+    auto findProperty = [&](int32_t hash, bool* outIsConst) -> bool {
+        // Extend already copies parent properties into the subtype, so the
+        // direct lookup is sufficient. Walking the chain is harmless.
+        for (ObjObjectType* t = impl; t; ) {
+            auto it = t->properties.find(hash);
+            if (it != t->properties.end()) {
+                if (outIsConst) *outIsConst = it->second.isConst;
+                return true;
+            }
+            t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+        }
+        return false;
+    };
+
+    std::vector<std::string> missing;
+
+    // Walk the interface and any interfaces it extends.
+    for (ObjObjectType* it = iface; it; ) {
+        for (const auto& kv : it->methods) {
+            const auto& m = kv.second;
+            if (!isAbstract(m)) continue;
+
+            if (findConcreteMethod(kv.first)) continue;
+
+            // Accessor synthesis fallback: __get_X / __set_X may be satisfied
+            // by a plain property X on the implementer's chain.
+            if (m.name.startsWith(getPrefix) || m.name.startsWith(setPrefix)) {
+                icu::UnicodeString plain = m.name.tempSubString(6);
+                bool propIsConst = false;
+                if (findProperty(plain.hashCode(), &propIsConst)) {
+                    if (m.name.startsWith(setPrefix) && propIsConst) {
+                        std::string disp = toUTF8StdString(plain);
+                        missing.push_back("setter for property '" + disp +
+                                          "' (implementer's '" + disp + "' is const)");
+                    }
+                    // satisfied (or already reported)
+                    continue;
+                }
+                std::string kind = m.name.startsWith(getPrefix) ? "getter" : "setter";
+                missing.push_back(kind + " for property '" + toUTF8StdString(plain) + "'");
+            }
+            else {
+                missing.push_back("method '" + toUTF8StdString(m.name) + "'");
+            }
+        }
+        it = it->superType.isNil() ? nullptr : asObjectType(it->superType);
+    }
+
+    if (missing.empty()) return "";
+    std::string out = "Type '" + toUTF8StdString(impl->name) +
+        "' does not satisfy interface '" + toUTF8StdString(iface->name) + "':";
+    for (const auto& m : missing)
+        out += "\n  missing " + m;
+    return out;
 }
 
 
@@ -7899,6 +7980,21 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     return errorReturn;
                 }
 
+                // an interface can only extend another interface; a non-interface
+                // can only extend a non-interface.
+                if (subType->isInterface && !superType->isInterface) {
+                    runtimeError("Interface '" + toUTF8StdString(subType->name) +
+                                 "' can only extend another interface, not '" +
+                                 toUTF8StdString(superType->name) + "'");
+                    return errorReturn;
+                }
+                if (!subType->isInterface && superType->isInterface) {
+                    runtimeError("Type '" + toUTF8StdString(subType->name) +
+                                 "' cannot extend interface '" +
+                                 toUTF8StdString(superType->name) + "' (use 'implements' instead)");
+                    return errorReturn;
+                }
+
                 // record inheritance relationship and copy properties
                 subType->superType = Value::objRef(superType);
                 subType->properties.insert(superType->properties.cbegin(), superType->properties.cend());
@@ -7907,6 +8003,42 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                                              superType->propertyOrder.end());
                 subType->nestedTypes.insert(superType->nestedTypes.cbegin(), superType->nestedTypes.cend());
                 pop();
+                break;
+            }
+            case OpCode::Implements: {
+                // Stack from emitter (top to bottom): implementer, iface, ...
+                if (!isObjectType(peek(0))) {
+                    runtimeError("Implementer must be an object or actor type");
+                    return errorReturn;
+                }
+                if (!isObjectType(peek(1))) {
+                    runtimeError("Implements target must be an interface type");
+                    return errorReturn;
+                }
+                ObjObjectType* implementer = asObjectType(peek(0));
+                ObjObjectType* iface       = asObjectType(peek(1));
+                if (!iface->isInterface) {
+                    runtimeError("Cannot implement non-interface type '" +
+                                 toUTF8StdString(iface->name) + "'");
+                    return errorReturn;
+                }
+                if (implementer->isInterface) {
+                    runtimeError("Interfaces cannot implement (only extend)");
+                    return errorReturn;
+                }
+
+                implementer->implementedInterfaces.push_back(Value::objRef(iface));
+
+                std::string err = checkInterfaceConformance(implementer, iface);
+                if (!err.empty()) {
+                    runtimeError(err);
+                    return errorReturn;
+                }
+
+                // Pop both: the duplicate implementer pushed by the emitter,
+                // AND the iface. The original implementer (pushed earlier for
+                // the type body) remains for the trailing OpCode::Pop.
+                popN(2);
                 break;
             }
             case OpCode::ImportModuleVars: {

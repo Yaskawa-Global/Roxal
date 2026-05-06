@@ -1,0 +1,23 @@
+type HasName interface:
+    var name :string
+
+type WithVar object implements HasName:
+    var name :string
+
+type WithAccessors object implements HasName:
+    var name :string:
+        get:
+            return _name
+        set:
+            _name = value
+
+var a = WithVar("alice")
+print(a.name)
+a.name = "amy"
+print(a.name)
+print(a is HasName)
+
+var b = WithAccessors()
+b.name = "ben"
+print(b.name)
+print(b is HasName)

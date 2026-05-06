@@ -1,0 +1,10 @@
+type ReadOnly interface:
+    var name :string:
+        get
+
+type WithConst object implements ReadOnly:
+    const name :string = "fixed"
+
+var w = WithConst()
+print(w.name)
+print(w is ReadOnly)

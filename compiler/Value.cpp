@@ -1067,8 +1067,14 @@ bool Value::equals(const Value& rhs, bool strict) const
 bool Value::is(const Value& rhs, bool strict) const
 {
     if (isTypeSpec(*this)) {
-        if (isTypeSpec(rhs))
-            return asTypeSpec(*this) == asTypeSpec(rhs);
+        if (isTypeSpec(rhs)) {
+            if (asTypeSpec(*this) == asTypeSpec(rhs)) return true;
+            // Type-on-type subtype check: ChildType is ParentType, or
+            // Implementer is Interface (covers extends + implements).
+            if (isObjectType(*this) && isObjectType(rhs))
+                return isSubtypeOf(asObjectType(*this), asObjectType(rhs));
+            return false;
+        }
         if (rhs.isType())
             return asTypeSpec(*this)->typeValue == rhs.asType();
     }

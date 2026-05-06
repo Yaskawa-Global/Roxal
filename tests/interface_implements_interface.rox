@@ -1,0 +1,5 @@
+type I1 interface:
+    func a()
+
+type I2 interface implements I1:
+    func b()

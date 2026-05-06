@@ -709,7 +709,27 @@ print(child is MyObjType)        // true
 print(ChildObjType is MyObjType) // true
 ```
 
-(`interface` is not fully implemented, but it'll be possible to inherit from multiple interfaces and one object type)
+An object or actor type can declare conformance to one or more interfaces with `implements`:
+
+```php
+type Showable interface:
+  func show()
+  var label :string:    // abstract get/set property
+    get
+    set
+
+type Widget object implements Showable:
+  var label :string     // a plain var satisfies abstract get+set
+  func show():
+    print(this.label)
+
+w = Widget("hi")
+w.show()
+print(w is Showable)        // true
+print(Widget is Showable)   // true
+```
+
+Interface declarations contain only abstract methods (no body) and abstract property accessors (`get`/`set` with no body, no initializer). The implementer must supply a non-abstract method or accessor for each — a plain `var X :T` satisfies an interface's abstract `get`/`set` for `X`; a `const X :T` satisfies a getter-only interface. Conformance is checked at type creation time, with a clear error message listing missing methods or accessors. An interface can `extends` another interface; an object type can `extends` one parent type and `implements` any number of interfaces in any combination — `is` correctly walks both relationships.
 
 ### Property Accessors
 

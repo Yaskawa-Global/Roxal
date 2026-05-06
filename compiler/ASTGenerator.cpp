@@ -1596,8 +1596,9 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
             typeDecl->implements.push_back(components);
         }
 
-        if (isInterface && !typeDecl->implements.empty())
-            throw std::runtime_error("Interface "+toUTF8StdString(typeDecl->name)+" cannot implement, use extends instead");
+        // Note: validation that an interface cannot have `implements` clauses
+        // is performed in RoxalCompiler::visit(TypeDecl) using the standard
+        // `error()` mechanism, which produces a single clean diagnostic.
 
         if (context->str()) {
             auto strVal = as<Str>(visitStr(context->str()));
@@ -1846,13 +1847,13 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
 
         // Get getter (if present)
         for (auto* getterCtx : context->property_getter()) {
-            propAccessor->getter = std::any_cast<std::variant<ptr<Suite>, ptr<Statement>>>(
+            propAccessor->getter = std::any_cast<std::variant<ptr<Suite>, ptr<Statement>, std::monostate>>(
                 visitProperty_getter(getterCtx));
         }
 
         // Get setter (if present)
         for (auto* setterCtx : context->property_setter()) {
-            propAccessor->setter = std::any_cast<std::variant<ptr<Suite>, ptr<Statement>>>(
+            propAccessor->setter = std::any_cast<std::variant<ptr<Suite>, ptr<Statement>, std::monostate>>(
                 visitProperty_setter(setterCtx));
         }
 
@@ -1934,9 +1935,8 @@ std::any ASTGenerator::visitProperty_getter(RoxalParser::Property_getterContext 
 {
     visitStart();
 
-    std::variant<ptr<Suite>, ptr<Statement>> result;
+    std::variant<ptr<Suite>, ptr<Statement>, std::monostate> result;
 
-    // Check if it's 'compound_stmt' or 'suite'
     if (context->suite()) {
         // Block form: get: <newline> <indent> ... <dedent>
         auto suite = visitSuite(context->suite());
@@ -1946,7 +1946,9 @@ std::any ASTGenerator::visitProperty_getter(RoxalParser::Property_getterContext 
         auto stmt = visitCompound_stmt(context->compound_stmt());
         result = as<Statement>(stmt);
     } else {
-        throw std::runtime_error("Property getter must be a Suite or compound statement (e.g., return)");
+        // body-less form: `get<NEWLINE>` -- abstract (only valid in interfaces;
+        // enforced later in RoxalCompiler)
+        result = std::monostate{};
     }
 
     return result;
@@ -1958,9 +1960,8 @@ std::any ASTGenerator::visitProperty_setter(RoxalParser::Property_setterContext 
 {
     visitStart();
 
-    std::variant<ptr<Suite>, ptr<Statement>> result;
+    std::variant<ptr<Suite>, ptr<Statement>, std::monostate> result;
 
-    // Check if it's 'statement' or 'suite'
     if (context->suite()) {
         // Block form: set: <newline> <indent> ... <dedent>
         auto suite = visitSuite(context->suite());
@@ -1971,13 +1972,13 @@ std::any ASTGenerator::visitProperty_setter(RoxalParser::Property_setterContext 
         result = as<Statement>(stmt);
     } else if (context->expr_stmt()) {
         // One-liner expression statement form (e.g., _b = value)
-        // visitExpr_stmt returns an Expression, so wrap it in an ExpressionStatement
         auto expr = visitExpr_stmt(context->expr_stmt());
         auto exprStmt = make_ptr<ExpressionStatement>();
         exprStmt->expr = as<Expression>(expr);
         result = std::move(exprStmt);
     } else {
-        throw std::runtime_error("Property setter must be a Suite or Statement");
+        // body-less form: `set<NEWLINE>` -- abstract (only valid in interfaces)
+        result = std::monostate{};
     }
 
     return result;

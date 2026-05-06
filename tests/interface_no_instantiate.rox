@@ -1,0 +1,4 @@
+type I interface:
+    func foo()
+
+var i = I()

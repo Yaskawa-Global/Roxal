@@ -1,0 +1,1 @@
+Type 'Bad' does not satisfy interface 'I':\n  missing setter for property 'name' \(implementer's 'name' is const\)

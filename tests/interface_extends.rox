@@ -1,0 +1,17 @@
+type Greeter interface:
+    func greet()
+
+type LoudGreeter interface extends Greeter:
+    func shout()
+
+type Loud object implements LoudGreeter:
+    func greet():
+        print("hi")
+    func shout():
+        print("HEY!")
+
+var l = Loud()
+l.greet()
+l.shout()
+print(l is LoudGreeter)
+print(l is Greeter)
