@@ -1,2 +1,0 @@
-type I interface:
-    var x :int = 5

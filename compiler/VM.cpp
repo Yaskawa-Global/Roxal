@@ -4314,10 +4314,6 @@ void VM::defineProperty(ObjString* name)
         throw std::runtime_error("Can't create property without object or actor type on stack");
     #endif
     ObjObjectType* objType = asObjectType(peek(typeObjOffset));
-    #ifdef DEBUG_BUILD
-    if (objType->isInterface)
-        throw std::runtime_error("Can't create property for an interface");
-    #endif
 
     if (objType->properties.contains(name->hash))
         throw std::runtime_error("Duplicate property '"+name->toStdString()+"' declared in type "+(objType->isActor?"actor":"object")+" "+toUTF8StdString(objType->name));
@@ -4329,6 +4325,15 @@ void VM::defineProperty(ObjString* name)
     bool hasConstFlag = (typeObjOffset == 4);
     if (hasConstFlag)
         constVal = peek(0);
+
+    // Interfaces may declare concrete `const X = literal` (inherited by
+    // implementers); they may NOT declare writable storage.
+    if (objType->isInterface) {
+        bool isConstFlag = (!constVal.isNil() && constVal.isBool() && constVal.asBool());
+        if (!isConstFlag)
+            throw std::runtime_error("Interface '"+toUTF8StdString(objType->name)+
+                                     "' cannot declare writable storage property '"+name->toStdString()+"'");
+    }
 
     if (!propertyInitial.isNil()) {
         // if the property type is specified, convert the initial value (if given) to the declared propType
@@ -8033,6 +8038,24 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 if (!err.empty()) {
                     runtimeError(err);
                     return errorReturn;
+                }
+
+                // Java-style inheritance of concrete interface members:
+                // copy the interface's concrete properties (only consts at this
+                // point — sugar abstract accessors are stored as methods, not
+                // properties, so they don't appear here) and nested types
+                // into the implementer. `insert` semantics: implementer's own
+                // declarations win on name conflict; among multiple interfaces,
+                // the first listed wins. Mirrors Extend's parent->child copy
+                // (VM.cpp Extend handler).
+                for (const auto& kv : iface->properties) {
+                    if (implementer->properties.find(kv.first) == implementer->properties.end()) {
+                        implementer->properties.insert(kv);
+                        implementer->propertyOrder.push_back(kv.first);
+                    }
+                }
+                for (const auto& kv : iface->nestedTypes) {
+                    implementer->nestedTypes.insert(kv);
                 }
 
                 // Pop both: the duplicate implementer pushed by the emitter,

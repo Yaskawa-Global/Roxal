@@ -709,27 +709,6 @@ print(child is MyObjType)        // true
 print(ChildObjType is MyObjType) // true
 ```
 
-An object or actor type can declare conformance to one or more interfaces with `implements`:
-
-```php
-type Showable interface:
-  func show()
-  var label :string:    // abstract get/set property
-    get
-    set
-
-type Widget object implements Showable:
-  var label :string     // a plain var satisfies abstract get+set
-  func show():
-    print(this.label)
-
-w = Widget("hi")
-w.show()
-print(w is Showable)        // true
-print(Widget is Showable)   // true
-```
-
-Interface declarations contain only abstract methods (no body) and abstract property accessors (`get`/`set` with no body, no initializer). The implementer must supply a non-abstract method or accessor for each — a plain `var X :T` satisfies an interface's abstract `get`/`set` for `X`; a `const X :T` satisfies a getter-only interface. Conformance is checked at type creation time, with a clear error message listing missing methods or accessors. An interface can `extends` another interface; an object type can `extends` one parent type and `implements` any number of interfaces in any combination — `is` correctly walks both relationships.
 
 ### Property Accessors
 
@@ -776,6 +755,56 @@ w.depth = 30       // Calls the setter (write-only)
 - A private member var `_<name>` is automatically created
 - The `value` parameter is available in setters
 - For `const` properties, the backing field is also marked as const (and the getter should only return a constant expression)
+
+
+### Interfaces
+
+An object or actor type can declare conformance to one or more interfaces with `implements`:
+
+```php
+type Showable interface:
+  func show()
+  var label :string         // abstract: requires get + set on implementer
+
+type Widget object implements Showable:
+  var label :string         // a plain `var` satisfies the abstract get/set
+  func show():
+    print(this.label)
+
+w = Widget("hi")
+w.show()
+print(w is Showable)        // true
+print(Widget is Showable)   // true
+```
+
+**What an interface can declare**
+
+| Form | Meaning |
+|---|---|
+| `func foo()` | abstract method — implementer must provide a body |
+| `var X :T` | abstract get + set requirement |
+| `const X :T` | abstract get-only requirement |
+| `var X :T:` followed by abstract `get`/`set` | same as `var X :T` (verbose form, useful when only one of get/set is required) |
+| `const X :T = literal` | concrete static const — inherited by implementers as `Impl.X` |
+| `type Inner ...` | nested type — inherited by implementers as `Impl.Inner` |
+
+
+**Conformance**
+
+For each abstract requirement, the implementer must supply a satisfying declaration:
+
+| Interface declares | Plain `var X` | Plain `const X = lit` | Explicit `get` only | Explicit `set` only | Explicit `get` + `set` |
+|---|---|---|---|---|---|
+| Abstract `get` only (≈ `const X :T`) | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Abstract `set` only | ✅ | ❌ | ❌ | ✅ | ✅ |
+| Abstract `get` + `set` (≈ `var X :T`) | ✅ | ❌ | ❌ | ❌ | ✅ |
+
+
+**Inheritance**
+
+Concrete interface members (consts and nested types) are inherited by implementers, so `Impl.X`, `Impl.Inner`, and instance access (`inst.X`, `inst.Inner`) all work. The implementer's own declaration takes precedence over an inherited one with the same name; among multiple `implements` clauses, the first listed wins.
+
+An interface may `extends` another interface (single inheritance, interface→interface only). An object/actor type may `extends` one parent type and `implements` any number of interfaces — `is` walks both relationships, so `inst is I` is true whether `I` is reached via `extends` or `implements`. Interfaces themselves cannot be instantiated.
 
 
 ### Operator Overloading

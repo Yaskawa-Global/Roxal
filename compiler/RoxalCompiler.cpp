@@ -1285,13 +1285,23 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         ptr<VarDecl> prop { ast->properties.at(i) };
 
-        // In an interface, a plain `var X :T` / `const X :T` (no initializer) is
-        // sugar for abstract `get`+`set` / abstract `get` only respectively.
-        // No backing field is emitted; only the abstract accessor methods.
-        if (isInterface) {
-            if (prop->initializer.has_value())
+        // In an interface:
+        //   `const X :T = <literal>` → concrete static const inherited by implementers
+        //                              (falls through to the normal property emission below).
+        //   `var X :T` / `const X :T` (no initializer) → sugar for abstract
+        //   `get`+`set` / abstract `get` only.
+        //   `var X :T = <literal>` → forbidden (writable static is dangerous).
+        if (isInterface && prop->initializer.has_value()) {
+            if (!prop->isConst)
                 error("Interface property '" + toUTF8StdString(prop->name) +
-                      "' cannot have an initializer");
+                      "' cannot be a writable storage property; only `const X = literal` is allowed");
+            // Concrete const: fall through to the normal storage-property emission
+            // path (OpCode::Property). At runtime, defineProperty allows const
+            // properties on interfaces; OpCode::Implements then copies them into
+            // implementers, mirroring how Extend copies parent properties.
+        }
+        else if (isInterface) {
+            // Sugar path: abstract accessor synthesis.
             if (!prop->varType.has_value())
                 error("Interface property '" + toUTF8StdString(prop->name) +
                       "' must declare a type");
