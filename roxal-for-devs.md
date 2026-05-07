@@ -505,6 +505,20 @@ for [k,v] in d:  // keys and values of dict d
   print("k={k} v={v})
 ```
 
+Inside a loop body, `break` exits the loop and `continue` skips to the next iteration. Both compose with the `if` modifier:
+
+```php
+for i in range(..<10):
+  break if i == 5     // stop the loop
+  print(i)            // prints 0..4
+
+for n in nums:
+  continue if n < 0     // skip negatives
+  process(n)
+```
+
+`break` and `continue` always target the innermost enclosing loop. They are not valid outside a loop.
+
 ### Match Statement
 
 The `match` statement provides pattern matching similar to Python's match or C's switch. It works with any type and supports multiple patterns per case, range matching for numeric types, and a default case.
