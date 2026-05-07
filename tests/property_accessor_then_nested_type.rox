@@ -1,0 +1,20 @@
+// Regression: a type with a property accessor (getter/setter), followed by
+// a type with a nested type whose name is referenced by a property of the
+// outer type. The accessor block was leaving an extra copy of its receiver
+// on the stack, so the in-flight type anchor for the next type collided
+// with the orphan and the typescope walker loaded the wrong type.
+
+type Mechanism object:
+  var body :int :
+    get:
+      return 1
+
+type DHParams object:
+  type Convention enum:
+    Standard
+    Modified
+  var convention :Convention = Convention.Standard
+
+var d = DHParams()
+print(d.convention)
+print(Mechanism().body)

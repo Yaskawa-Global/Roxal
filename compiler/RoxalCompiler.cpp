@@ -1533,10 +1533,11 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             // Register backing field as private property
             asTypeScope(typeScope())->propertyNames[backingFieldName] = {Access::Private, ast->name, /*isConst=*/false};
 
-            if (compilingNestedType)
-                emitByte(OpCode::Dup); // nested: type is on stack
-            else
-                namedVariable(ast->name, false); // make type accessible on the stack
+            // The in-flight enclosing type is already on the stack at slot
+            // inFlightStackSlot (anchored above), so we can let the subsequent
+            // Property and Method opcodes reach it via peek(...). Pushing
+            // another copy here would orphan a stale Value that shifts the
+            // anchored slot for the next type.
 
             // Emit type for backing field
             if (std::holds_alternative<BuiltinType>(propAccessor->propType)) {

@@ -4908,10 +4908,13 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             return errorReturn;
 
         // Constructor setter cleanup: after setter frames execute and return,
-        // clean up their results and push the saved instance
+        // clean up their results and push the saved instance.
+        // Only one nil survives after the cascading setter opReturns: each
+        // returning setter's popCount loop sweeps everything between its slots
+        // pointer and stackTop, which folds in the prior setter's leftover nil.
+        // So we pop exactly one regardless of how many setters ran.
         if (thread->pendingSetterCount > 0 && thread->frames.size() == frame_depth_on_entry) {
-            // All setter frames have returned, clean up
-            popN(thread->pendingSetterCount);
+            pop();
             push(thread->pendingConstructorInstance);
             thread->pendingSetterCount = 0;
             thread->pendingConstructorInstance = Value::nilVal();
