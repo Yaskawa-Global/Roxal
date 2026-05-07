@@ -375,6 +375,62 @@ void ReturnStatement::output(std::ostream& os, int indent) const
 
 
 
+std::any BreakStatement::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(dynamic_ptr_cast<BreakStatement>(ptr_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(dynamic_ptr_cast<BreakStatement>(ptr_from_this())) );
+
+    return results;
+}
+
+void BreakStatement::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    (void)v; (void)results;
+}
+
+void BreakStatement::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"Break" << std::endl;
+}
+
+
+
+std::any ContinueStatement::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(dynamic_ptr_cast<ContinueStatement>(ptr_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(dynamic_ptr_cast<ContinueStatement>(ptr_from_this())) );
+
+    return results;
+}
+
+void ContinueStatement::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    (void)v; (void)results;
+}
+
+void ContinueStatement::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"Continue" << std::endl;
+}
+
+
+
 
 std::any IfStatement::accept(ASTVisitor& v)
 {

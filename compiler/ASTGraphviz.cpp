@@ -322,6 +322,28 @@ std::any ASTGraphviz::visit(ptr<ast::ReturnStatement> ast)
 }
 
 
+std::any ASTGraphviz::visit(ptr<ast::BreakStatement> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+    nodes[name] = node(name,"Break");
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
+
+std::any ASTGraphviz::visit(ptr<ast::ContinueStatement> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+    nodes[name] = node(name,"Continue");
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
+
 std::any ASTGraphviz::visit(ptr<ast::IfStatement> ast)
 {
     startVisit();

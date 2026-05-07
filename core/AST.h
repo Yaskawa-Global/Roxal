@@ -66,6 +66,8 @@ class Expression;
 class Suite;
 class ExpressionStatement;
 class ReturnStatement;
+class BreakStatement;
+class ContinueStatement;
 class IfStatement;
 class WhileStatement;
 class ForStatement;
@@ -125,6 +127,8 @@ public:
     virtual std::any visit(ptr<Suite> ast) = 0;
     virtual std::any visit(ptr<ExpressionStatement> ast) = 0;
     virtual std::any visit(ptr<ReturnStatement> ast) = 0;
+    virtual std::any visit(ptr<BreakStatement> ast) = 0;
+    virtual std::any visit(ptr<ContinueStatement> ast) = 0;
     virtual std::any visit(ptr<IfStatement> ast) = 0;
     virtual std::any visit(ptr<WhileStatement> ast) = 0;
     virtual std::any visit(ptr<ForStatement> ast) = 0;
@@ -311,6 +315,8 @@ struct Statement : public AST {
         Suite,
         Expression,
         Return,
+        Break,
+        Continue,
         If,
         While,
         For,
@@ -360,6 +366,26 @@ struct ReturnStatement : public Statement {
     ReturnStatement() : Statement(StmtType::Return) {}
 
     std::optional<ptr<ast::Expression>> expr;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
+struct BreakStatement : public Statement {
+    BreakStatement() : Statement(StmtType::Break) {}
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
+struct ContinueStatement : public Statement {
+    ContinueStatement() : Statement(StmtType::Continue) {}
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

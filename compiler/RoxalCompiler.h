@@ -54,6 +54,8 @@ public:
     virtual std::any visit(ptr<ast::Suite> ast);
     virtual std::any visit(ptr<ast::ExpressionStatement> ast);
     virtual std::any visit(ptr<ast::ReturnStatement> ast);
+    virtual std::any visit(ptr<ast::BreakStatement> ast);
+    virtual std::any visit(ptr<ast::ContinueStatement> ast);
     virtual std::any visit(ptr<ast::IfStatement> ast);
     virtual std::any visit(ptr<ast::WhileStatement> ast);
     virtual std::any visit(ptr<ast::ForStatement> ast);
@@ -475,6 +477,23 @@ protected:
     bool moduleConstExists(const icu::UnicodeString& name) const;
     Value evaluateConstExpression(ptr<ast::Expression> expr, bool strictContext);
     Value applyConstType(Value value, std::optional<VarTypeSpec> type, bool strictContext);
+
+    // Stack of enclosing loops, used to resolve break/continue jump targets.
+    // bodyScopeDepth is the scopeDepth at the loop body's entry — break/continue
+    // emit Pop opcodes for any locals declared at greater depth before jumping.
+    // For while: continue emits a backward Loop opcode directly to loopStart.
+    // For for: continue emits a forward Jump (target is before the increment),
+    //   patched by the for-stmt visitor after body emission.
+    struct LoopContext {
+        int bodyScopeDepth;
+        bool isForLoop;
+        Chunk::size_type whileLoopStart;  // unused for for-loops
+        std::vector<Chunk::size_type> breakOffsets;
+        std::vector<Chunk::size_type> continueOffsets;  // for-loops only
+    };
+    std::vector<LoopContext> loopStack;
+
+    void emitPopsForLoopExit(int targetDepth);
 
 };
 

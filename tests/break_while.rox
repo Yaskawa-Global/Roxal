@@ -1,0 +1,12 @@
+var n = 0
+while n < 100:
+  n = n + 1
+  break if n == 7
+print(n)
+
+var m = 0
+while m < 10:
+  m = m + 1
+  continue if m % 3 != 0
+  print(m)
+print("done")

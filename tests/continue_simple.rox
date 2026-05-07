@@ -1,0 +1,4 @@
+for i in range(..<5):
+  continue if i % 2 == 0
+  print(i)
+print("done")

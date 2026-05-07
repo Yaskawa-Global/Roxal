@@ -795,6 +795,16 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
         if (is<ReturnStatement>(compound)) {
             stmt = as<ReturnStatement>(compound);
         }
+        else if (is<BreakStatement>(compound)) {
+            stmt = as<BreakStatement>(compound);
+        }
+        else if (is<ContinueStatement>(compound)) {
+            stmt = as<ContinueStatement>(compound);
+        }
+        else if (is<AdheringIfStatement>(compound)) {
+            // break/continue with `if` clause are wrapped in AdheringIfStatement by their visitors.
+            stmt = as<AdheringIfStatement>(compound);
+        }
         else if (is<WhileStatement>(compound)) {
             stmt = as<WhileStatement>(compound);
         }
@@ -888,6 +898,10 @@ std::any ASTGenerator::visitCompound_stmt(RoxalParser::Compound_stmtContext *con
 
     if (context->return_stmt())
         return visitReturn_stmt(context->return_stmt());
+    else if (context->break_stmt())
+        return visitBreak_stmt(context->break_stmt());
+    else if (context->continue_stmt())
+        return visitContinue_stmt(context->continue_stmt());
     else if (context->block_stmt())
         return visitBlock_stmt(context->block_stmt());
     else if (context->if_stmt())
@@ -935,6 +949,50 @@ std::any ASTGenerator::visitReturn_stmt(RoxalParser::Return_stmtContext *context
         returnStmt->expr = as<Expression>(visitExpression(context->expression()));
 
     return typeValue(returnStmt);
+    visitEnd();
+}
+
+
+
+std::any ASTGenerator::visitBreak_stmt(RoxalParser::Break_stmtContext *context)
+{
+    visitStart();
+
+    ptr<BreakStatement> breakStmt = make_ptr<BreakStatement>();
+    setSourceInfo(breakStmt, context);
+
+    if (context->if_clause()) {
+        auto cond = as<Expression>(visitExpression(context->if_clause()->expression()));
+        ptr<AdheringIfStatement> ifStmt = make_ptr<AdheringIfStatement>();
+        setSourceInfo(ifStmt, context->if_clause());
+        ifStmt->stmt = breakStmt;
+        ifStmt->condition = cond;
+        return typeValue(ifStmt);
+    }
+
+    return typeValue(breakStmt);
+    visitEnd();
+}
+
+
+
+std::any ASTGenerator::visitContinue_stmt(RoxalParser::Continue_stmtContext *context)
+{
+    visitStart();
+
+    ptr<ContinueStatement> continueStmt = make_ptr<ContinueStatement>();
+    setSourceInfo(continueStmt, context);
+
+    if (context->if_clause()) {
+        auto cond = as<Expression>(visitExpression(context->if_clause()->expression()));
+        ptr<AdheringIfStatement> ifStmt = make_ptr<AdheringIfStatement>();
+        setSourceInfo(ifStmt, context->if_clause());
+        ifStmt->stmt = continueStmt;
+        ifStmt->condition = cond;
+        return typeValue(ifStmt);
+    }
+
+    return typeValue(continueStmt);
     visitEnd();
 }
 

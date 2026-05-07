@@ -28,7 +28,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 39;
+constexpr std::uint32_t ModuleCacheVersion = 40;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -2328,6 +2328,58 @@ std::any RoxalCompiler::visit(ptr<ast::ReturnStatement> ast)
 }
 
 
+void RoxalCompiler::emitPopsForLoopExit(int targetDepth)
+{
+    // Read-only walk: emit Pop / CloseUpvalue for each local declared at depth
+    // greater than targetDepth, without mutating the locals vector or scopeDepth.
+    // The body's natural exitLocalScope (at end of body) — or the outer loop's
+    // exitLocalScope — will do the bookkeeping.
+    auto& locals = asFuncScope(funcScope())->locals;
+    for (auto it = locals.rbegin(); it != locals.rend() && it->depth > targetDepth; ++it) {
+        if (it->isCaptured)
+            emitByte(OpCode::CloseUpvalue, "loop-exit local "+toUTF8StdString(it->name));
+        else
+            emitByte(OpCode::Pop, "loop-exit local "+toUTF8StdString(it->name));
+    }
+}
+
+
+std::any RoxalCompiler::visit(ptr<ast::BreakStatement> ast)
+{
+    currentNode = ast;
+    if (loopStack.empty()) {
+        error("'break' outside of a loop");
+        return {};
+    }
+    auto& ctx = loopStack.back();
+    emitPopsForLoopExit(ctx.bodyScopeDepth);
+    auto off = emitJump(OpCode::Jump, "break");
+    ctx.breakOffsets.push_back(off);
+    return {};
+}
+
+
+std::any RoxalCompiler::visit(ptr<ast::ContinueStatement> ast)
+{
+    currentNode = ast;
+    if (loopStack.empty()) {
+        error("'continue' outside of a loop");
+        return {};
+    }
+    auto& ctx = loopStack.back();
+    emitPopsForLoopExit(ctx.bodyScopeDepth);
+    if (ctx.isForLoop) {
+        // Forward jump to the position right before the increment block.
+        auto off = emitJump(OpCode::Jump, "continue");
+        ctx.continueOffsets.push_back(off);
+    } else {
+        // While loop: backward jump straight to loop start.
+        emitLoop(ctx.whileLoopStart, "continue");
+    }
+    return {};
+}
+
+
 std::any RoxalCompiler::visit(ptr<ast::IfStatement> ast)
 {
     currentNode = ast;
@@ -2379,12 +2431,25 @@ std::any RoxalCompiler::visit(ptr<ast::WhileStatement> ast)
     auto jumpToExit = emitJump(OpCode::JumpIfFalse);
     emitByte(OpCode::Pop, "while cond");
 
+    loopStack.push_back(LoopContext {
+        asFuncScope(funcScope())->scopeDepth,
+        /*isForLoop*/ false,
+        /*whileLoopStart*/ loopStart,
+        {}, {}
+    });
+
     ast->body->accept(*this);
 
     emitLoop(loopStart);
 
     patchJump(jumpToExit);
     emitByte(OpCode::Pop, "while cond");
+
+    // break jumps land here (after the cond Pop, since break doesn't have a cond on the stack)
+    for (auto off : loopStack.back().breakOffsets)
+        patchJump(off);
+
+    loopStack.pop_back();
 
     return {};
 }
@@ -2496,6 +2561,13 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     emitByte(OpCode::Nop, "for loop body");
     #endif
 
+    loopStack.push_back(LoopContext {
+        asFuncScope(funcScope())->scopeDepth,
+        /*isForLoop*/ true,
+        /*whileLoopStart*/ 0,
+        {}, {}
+    });
+
     // check condition iname < len(iterable)
     namedVariable(iname);
     namedVariable(lenName);
@@ -2558,6 +2630,10 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     // generate code for the body
     ast->body->accept(*this);
 
+    // 'continue' lands here — before increment, so the index still advances
+    for (auto off : loopStack.back().continueOffsets)
+        patchJump(off);
+
     // increment the loop index
     //  TODO: add Inc opcode (or IncLocal?)
     namedVariable(iname);
@@ -2571,6 +2647,12 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     patchJump(jumpToExit);
     patchJump(jumpToAbort);
     emitByte(OpCode::Pop, "exit/abort cond");
+
+    // 'break' lands here — synthetic locals will be popped by the outer exitLocalScope
+    for (auto off : loopStack.back().breakOffsets)
+        patchJump(off);
+
+    loopStack.pop_back();
 
     exitLocalScope();
 

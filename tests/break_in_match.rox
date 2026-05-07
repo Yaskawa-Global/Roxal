@@ -1,0 +1,11 @@
+# break inside a match-case inside a for must exit the for, not just the match
+for i in range(..<5):
+  match i:
+    case 0:
+      print("zero")
+    case 2:
+      print("two, breaking")
+      break
+    default:
+      print("other={i}")
+print("done")

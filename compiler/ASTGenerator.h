@@ -40,6 +40,10 @@ public:
 
     virtual std::any visitReturn_stmt(RoxalParser::Return_stmtContext *context);
 
+    virtual std::any visitBreak_stmt(RoxalParser::Break_stmtContext *context);
+
+    virtual std::any visitContinue_stmt(RoxalParser::Continue_stmtContext *context);
+
     virtual std::any visitIf_stmt(RoxalParser::If_stmtContext *context);
 
     virtual std::any visitWhile_stmt(RoxalParser::While_stmtContext *context);

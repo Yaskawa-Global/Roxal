@@ -69,6 +69,8 @@ expr_stmt
 compound_stmt
  : block_stmt
  | return_stmt
+ | break_stmt
+ | continue_stmt
  | if_stmt
  | while_stmt
  | for_stmt
@@ -87,6 +89,16 @@ block_stmt
 
 return_stmt
  : RETURN expression?
+ ;
+
+
+break_stmt
+ : BREAK if_clause?
+ ;
+
+
+continue_stmt
+ : CONTINUE if_clause?
  ;
 
 
@@ -574,6 +586,8 @@ UNTIL: 'until';
 MATCH: 'match';
 CASE: 'case';
 DEFAULT: 'default';
+BREAK: 'break';
+CONTINUE: 'continue';
 
 
 NEWLINE : ( '\r'? '\n' | '\r' | '\f' ) SPACES?;

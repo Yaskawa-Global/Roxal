@@ -30,6 +30,8 @@ public:
     virtual std::any visit(ptr<ast::Suite> ast);
     virtual std::any visit(ptr<ast::ExpressionStatement> ast);
     virtual std::any visit(ptr<ast::ReturnStatement> ast);
+    virtual std::any visit(ptr<ast::BreakStatement> ast);
+    virtual std::any visit(ptr<ast::ContinueStatement> ast);
     virtual std::any visit(ptr<ast::IfStatement> ast);
     virtual std::any visit(ptr<ast::WhileStatement> ast);
     virtual std::any visit(ptr<ast::TryStatement> ast);
@@ -109,6 +111,8 @@ public:
     std::any visit(ptr<roxal::ast::Suite> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::ExpressionStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::ReturnStatement> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::BreakStatement> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::ContinueStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::IfStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::WhileStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::ForStatement> ast) override { throw std::runtime_error("Not implemented"); }
