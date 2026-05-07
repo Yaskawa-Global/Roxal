@@ -527,7 +527,6 @@ VAR : 'var';
 CONST : 'const';
 MUTABLE : 'mutable';
 PRIVATE: 'private';
-LET : 'let';
 FUNC: 'func';
 PROC: 'proc';
 WHEN: 'when';
