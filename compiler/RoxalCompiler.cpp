@@ -1146,6 +1146,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         namedVariable(ast->name, false);
 
         for (const auto& prop : ast->properties) {
+            currentNode = prop;
             if (prop->access == Access::Private)
                 error("Event payload member '" + toUTF8StdString(prop->name) + "' cannot be private");
 
@@ -1325,6 +1326,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     for(size_t i=0; i<ast->properties.size(); i++) {
 
         ptr<VarDecl> prop { ast->properties.at(i) };
+        currentNode = prop;
 
         // In an interface:
         //   `const X :T = <literal>` → concrete static const inherited by implementers
@@ -1490,6 +1492,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     // Compile property accessors (with implicit backing fields) BEFORE regular methods
     // This ensures getter/setter method names are registered before methods that might access them
     for (const auto& propAccessor : ast->propertyAccessors) {
+        currentNode = propAccessor;
         auto enclosingModuleScope = asModuleScope(moduleScope());
 
         // Property accessor names cannot start with '_' (reserved for backing fields)
@@ -2493,6 +2496,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     for(auto i = 0; i < numTargets; i++) {
         assert(isa<VarDecl>(ast->targetList.at(i)));
         auto vdecl = as<VarDecl>(ast->targetList.at(i));
+        currentNode = vdecl;
         auto name = vdecl->name;
         std::optional<VarTypeSpec> vtype{};
         if (vdecl->varType.has_value()) {
