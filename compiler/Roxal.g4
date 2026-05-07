@@ -638,8 +638,8 @@ CLOSE_BRACE : '}';
  * Literals
  */
 
-LTRUE : 'True'|'true'|'ON'|'On';
-LFALSE : 'False'|'false'|'OFF'|'Off'|'off';
+LTRUE : 'true';
+LFALSE : 'false';
 LNIL: 'nil';
 
  str
