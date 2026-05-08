@@ -110,6 +110,11 @@ enum class OpCode {
     MoveModuleVar,  // like GetModuleVar but nils the source variable
     MoveProp,       // like GetProp but nils the source property
     NestedType,     // associate nested type with enclosing type
+    DefineModuleOverload,  // pop closure; create or append to module-scope OverloadSet bound to name
+    GetOverloadAt,         // load module OverloadSet by name, push closures[index] (compile-time-resolved overload)
+    DefineLocalOverload,   // pop closure; create or append to local-slot OverloadSet
+    GetLocalOverloadAt,    // load local OverloadSet by slot, push closures[index] (compile-time-resolved overload)
+    InvokeOverloadAt,      // like Invoke but with explicit overload index — compile-time-resolved method dispatch
     _Last
 };
 
@@ -176,6 +181,16 @@ protected:
     size_type byteInstruction(const std::string& name, size_type offset) const;
     size_type argInstruction(const std::string& name, size_type offset, bool doubleByteArg) const;
     size_type jumpInstruction(const std::string& name, int sign, size_type offset) const;
+    // For opcodes whose first arg is a name (single/double-byte) and second arg
+    // is a 2-byte uint16_t (e.g. an overload index).
+    size_type constantPlusIndexInstruction(const std::string& name, size_type offset, bool doubleByteArg) const;
+    // For opcodes whose first arg is a slot (single/double-byte) and second arg
+    // is a 2-byte uint16_t.
+    size_type argPlusIndexInstruction(const std::string& name, size_type offset, bool doubleByteArg) const;
+    // For opcodes like InvokeOverloadAt: name (variable) + 2-byte overload index
+    // + 1-byte CallSpec (matches the existing Invoke disasm assumption of
+    // single-byte CallSpec — fine for all-positional calls).
+    size_type invokeOverloadAtInstruction(const std::string& name, size_type offset, bool doubleByteArg) const;
 
 
 };

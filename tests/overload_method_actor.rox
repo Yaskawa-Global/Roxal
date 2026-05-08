@@ -1,0 +1,17 @@
+// Method overloading on actor types. Actor methods return futures.
+
+type Worker actor:
+    private var name :string = ""
+
+    proc init():
+        this.name = "w"
+
+    func handle(x :int) -> string:
+        return "worker-int:{x}"
+
+    func handle(x :string) -> string:
+        return "worker-str:{x}"
+
+var w = Worker()
+print(string(w.handle(42)))
+print(string(w.handle("hello")))

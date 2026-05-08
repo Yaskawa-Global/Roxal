@@ -1,0 +1,11 @@
+// Two overloads that match equally well via implicit conversion.
+// f(x:int) and f(x:real) both match f(byte_val) by implicit conversion.
+
+func f(x :int):
+    print("int")
+
+func f(x :real):
+    print("real")
+
+var b :byte = 5
+f(b)

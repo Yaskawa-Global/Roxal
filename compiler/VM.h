@@ -234,6 +234,10 @@ public:
     bool invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec,
                         const Value& receiver);
     bool invoke(ObjString* name, const CallSpec& callSpec);
+    // Compile-time-resolved method dispatch: like invoke() but skips the
+    // OverloadResolver and goes directly to the overload at the given index
+    // in the named method's overload set on the receiver's type chain.
+    bool invokeOverloadAt(ObjString* name, uint16_t overloadIndex, const CallSpec& callSpec);
 
     // Operator method name hashes for fast lookup during operator dispatch
     struct OperatorHashes {

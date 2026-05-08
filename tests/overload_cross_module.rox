@@ -1,0 +1,7 @@
+// Imports a module with overloaded `g`. Calls work via short name.
+// Local declaration of `g` would replace the imported set entirely.
+
+import overload_cross_module_lib.*
+
+g(5)
+g("hi")

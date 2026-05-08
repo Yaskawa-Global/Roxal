@@ -282,6 +282,7 @@ ValueType Obj::valueType() const
         case ObjType::EventInstance: return ValueType::Object;
         case ObjType::Function: return ValueType::Function;
         case ObjType::Closure: return ValueType::Closure;
+        case ObjType::OverloadSet: return ValueType::Closure;
         case ObjType::Upvalue: return ValueType::Upvalue;
         case ObjType::Exception: return ValueType::Object;
         case ObjType::Instance: {
@@ -2933,20 +2934,26 @@ void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
         }
     }
 
-    uint32_t mcount = methods.size();
+    // Method serialization: write the total number of overloads across all
+    // names, then one record per overload. The reader appends each into the
+    // appropriate name's overload set, so the on-disk format does not need
+    // to encode name grouping explicitly.
+    uint32_t mcount = 0;
+    for (const auto& kv : methods) mcount += kv.second.overloads.size();
     out.write(reinterpret_cast<char*>(&mcount),4);
     for(const auto& kv : methods) {
-        const auto& method = kv.second;
-        std::string mn; method.name.toUTF8String(mn);
-        uint32_t mlen = mn.size();
-        out.write(reinterpret_cast<char*>(&mlen),4);
-        out.write(mn.data(), mlen);
-        writeValue(out, method.closure, ctx);
-        uint8_t acc = static_cast<uint8_t>(method.access);
-        out.write(reinterpret_cast<char*>(&acc),1);
-        uint8_t mods = static_cast<uint8_t>(method.methodModifiers);
-        out.write(reinterpret_cast<char*>(&mods),1);
-        writeValue(out, method.ownerType, ctx);
+        for (const auto& method : kv.second.overloads) {
+            std::string mn; method.name.toUTF8String(mn);
+            uint32_t mlen = mn.size();
+            out.write(reinterpret_cast<char*>(&mlen),4);
+            out.write(mn.data(), mlen);
+            writeValue(out, method.closure, ctx);
+            uint8_t acc = static_cast<uint8_t>(method.access);
+            out.write(reinterpret_cast<char*>(&acc),1);
+            uint8_t mods = static_cast<uint8_t>(method.methodModifiers);
+            out.write(reinterpret_cast<char*>(&mods),1);
+            writeValue(out, method.ownerType, ctx);
+        }
     }
 
     uint32_t lcount = enumLabelValues.size();
@@ -3049,7 +3056,7 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             ownerType = Value::objRef(this).weakRef();
         Method m{uname, clos, static_cast<ast::Access>(acc),
                  static_cast<ast::MethodModifiers>(mods), ownerType};
-        methods[hash] = m;
+        methods[hash].overloads.push_back(m);
         if (ast::hasModifier(m.methodModifiers, ast::MethodModifier::StatementAction))
             statementActionMethodHash = hash;
     }
@@ -3094,9 +3101,10 @@ void ObjObjectType::trace(ValueVisitor& visitor) const
         visitor.visit(prop.ownerType);
     }
     for (const auto& entry : methods) {
-        const auto& method = entry.second;
-        visitor.visit(method.closure);
-        visitor.visit(method.ownerType);
+        for (const auto& method : entry.second.overloads) {
+            visitor.visit(method.closure);
+            visitor.visit(method.ownerType);
+        }
     }
     for (const auto& entry : enumLabelValues) {
         visitor.visit(entry.second.second);
@@ -3119,9 +3127,10 @@ void ObjObjectType::dropReferences()
     }
 
     for (auto& entry : methods) {
-        auto& method = entry.second;
-        method.closure = Value::nilVal();
-        method.ownerType = Value::nilVal();
+        for (auto& method : entry.second.overloads) {
+            method.closure = Value::nilVal();
+            method.ownerType = Value::nilVal();
+        }
     }
 
     for (auto& entry : enumLabelValues) {
@@ -5222,7 +5231,12 @@ std::string roxal::objToString(const Value& v)
             return std::string("actor "+toUTF8StdString(asObjectType(inst->instanceType)->name));
         }
         case ObjType::BoundMethod: {
-            return objFunctionToString(asFunction(asClosure(asBoundMethod(v)->method)->function));
+            const Value& m = asBoundMethod(v)->method;
+            if (isOverloadSet(m)) {
+                std::string name; asOverloadSet(m)->name.toUTF8String(name);
+                return "<overloaded function " + name + ">";
+            }
+            return objFunctionToString(asFunction(asClosure(m)->function));
         }
         case ObjType::BoundNative: {
             return std::string("<native method>");
@@ -5953,13 +5967,73 @@ Value roxal::makeRemoteActor(const Value& actorType, int64_t remoteId, ptr<Compu
 #endif
 
 ObjBoundMethod::ObjBoundMethod(const Value& instance, const Value& closure)
-    : receiver(instance), method(closure.weakRef())
+    : receiver(instance),
+      // Closures are weak-referenced because they're strong-rooted by the
+      // owning type's method map. OverloadSets bound here are freshly
+      // allocated by bindMethod and have no other strong root, so we keep
+      // a strong ref to prevent collection while the BoundMethod is alive.
+      method(isOverloadSet(closure) ? closure : closure.weakRef())
 {
-    debug_assert_msg(isClosure(closure), "ObjBoundMethod constructed with non-closure");
+    debug_assert_msg(isClosure(closure) || isOverloadSet(closure),
+                     "ObjBoundMethod constructed with non-closure / non-overload-set");
     type = ObjType::BoundMethod;
 }
 
 ObjBoundMethod::~ObjBoundMethod() {}
+
+
+ObjOverloadSet::ObjOverloadSet(const icu::UnicodeString& n) : name(n)
+{
+    type = ObjType::OverloadSet;
+}
+
+ObjOverloadSet::~ObjOverloadSet() {}
+
+unique_ptr<Obj, UnreleasedObj> ObjOverloadSet::clone(roxal::ptr<CloneContext> ctx) const
+{
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
+    auto fresh = newOverloadSetObj(name);
+    fresh->importedFromModule = importedFromModule;
+    fresh->closures = closures;
+
+    if (ctx) {
+        ctx->originalToClone[this] = fresh.get();
+    }
+    return fresh;
+}
+
+void ObjOverloadSet::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
+{
+    // OverloadSets are constructed at module init by DefineModuleOverload
+    // opcodes from the chunk's constant pool of closures; they should never
+    // need to be serialized as a Value. Defensive check.
+    (void)out; (void)ctx;
+    throw std::runtime_error("ObjOverloadSet::write — overload sets are not serializable as values");
+}
+
+void ObjOverloadSet::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
+{
+    (void)in; (void)ctx;
+    throw std::runtime_error("ObjOverloadSet::read — overload sets are not serializable as values");
+}
+
+void ObjOverloadSet::trace(ValueVisitor& visitor) const
+{
+    for (auto& c : closures)
+        visitor.visit(c);
+}
+
+void ObjOverloadSet::dropReferences()
+{
+    closures.clear();
+}
 
 
 
@@ -6027,6 +6101,7 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::Library: return "library";
     case ObjType::ForeignPtr: return "foreignptr";
     case ObjType::Exception: return "exception";
+    case ObjType::OverloadSet: return "function";
     }
     return "unknown";
 }

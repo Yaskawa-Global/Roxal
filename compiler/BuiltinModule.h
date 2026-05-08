@@ -198,8 +198,9 @@ inline void BuiltinModule::linkMethod(const std::string& typeName,
     if (typeVal.has_value() && isObjectType(typeVal.value())) {
         ObjObjectType* type = asObjectType(typeVal.value());
         auto it = type->methods.find(toUnicodeString(methodName).hashCode());
-        if (it != type->methods.end()) {
-            Value val = it->second.closure;
+        // Builtin modules register methods one-by-one — never overloaded.
+        if (it != type->methods.end() && it->second.overloads.size() == 1) {
+            Value val = it->second.overloads[0].closure;
             if (isClosure(val)) {
                 ObjClosure* cl = asClosure(val);
                 asFunction(cl->function)->builtinInfo = make_ptr<BuiltinFuncInfo>(

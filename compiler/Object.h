@@ -100,7 +100,8 @@ enum class ObjType {
     File,
     EventType,
     EventInstance,
-    Exception
+    Exception,
+    OverloadSet
 };
 
 /// Returns true if the object type is user-mutable and can hold Value references
@@ -1588,7 +1589,44 @@ struct ObjObjectType : public ObjTypeSpec
         ast::MethodModifiers methodModifiers { 0 };
         Value ownerType { Value::nilVal() }; // weak ref to owning type
     };
-    std::unordered_map<int32_t, Method> methods;
+    // Methods on a type are stored as overload sets, keyed by name hash.
+    // A name with one declaration has overloads.size() == 1 — the common case;
+    // call sites that don't care about overloading use the findUniqueMethod
+    // helper to retrieve the single member.
+    struct MethodOverloadSet {
+        std::vector<Method> overloads;
+    };
+    std::unordered_map<int32_t, MethodOverloadSet> methods;
+
+    // Returns the single overload for `hash` if exactly one exists, else nullptr.
+    // Use this at call sites that pre-date overloading and never had to handle
+    // multiple methods of the same name (getters/setters, statement-action,
+    // operator dispatch, remote-actor lookup, builtin modules).
+    Method* findUniqueMethod(int32_t hash) {
+        auto it = methods.find(hash);
+        if (it == methods.end() || it->second.overloads.size() != 1) return nullptr;
+        return &it->second.overloads[0];
+    }
+    const Method* findUniqueMethod(int32_t hash) const {
+        auto it = methods.find(hash);
+        if (it == methods.end() || it->second.overloads.size() != 1) return nullptr;
+        return &it->second.overloads[0];
+    }
+
+    // Returns the first overload for `hash`, or nullptr if no method has that
+    // name. For sites that walk an inheritance chain looking for "is this
+    // method declared on this type at all?" (e.g. init lookup) — true overload
+    // resolution among the set happens at the call site separately.
+    Method* firstOverload(int32_t hash) {
+        auto it = methods.find(hash);
+        if (it == methods.end() || it->second.overloads.empty()) return nullptr;
+        return &it->second.overloads[0];
+    }
+    const Method* firstOverload(int32_t hash) const {
+        auto it = methods.find(hash);
+        if (it == methods.end() || it->second.overloads.empty()) return nullptr;
+        return &it->second.overloads[0];
+    }
 
     // Cached method-name hash of the @statement-action method on this type
     // (or the inherited one). Set during method registration; -1 means none.
@@ -1931,6 +1969,49 @@ inline unique_ptr<ObjBoundMethod, UnreleasedObj> newBoundMethodObj(const Value& 
     return newObj<ObjBoundMethod>(__func__, __FILE__, __LINE__, instance, closure);
 #else
     return newObj<ObjBoundMethod>(instance, closure);
+#endif
+}
+
+//
+// OverloadSet — a name bound to multiple closures distinguished by parameter
+// signature. Constructed at module init by DefineModuleOverload opcodes;
+// resolved at call sites by OverloadResolver. Names with exactly one
+// declaration bind to a plain closure (no OverloadSet allocated).
+//
+struct ObjOverloadSet : public Obj
+{
+    ObjOverloadSet(const icu::UnicodeString& name);
+    virtual ~ObjOverloadSet();
+
+    icu::UnicodeString name;
+    std::vector<Value> closures;        // each entry is an ObjClosure*
+    bool importedFromModule = false;    // true if populated by ImportModuleVars
+
+    // Append a closure. Caller is responsible for ensuring the new closure's
+    // parameter signature is distinguishable from the existing ones (validated
+    // at the DefineModuleOverload opcode handler).
+    void add(const Value& closure) { closures.push_back(closure); }
+
+    // If exactly one overload, return it; else nilVal().
+    Value asSingle() const { return closures.size() == 1 ? closures[0] : Value::nilVal(); }
+
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
+};
+
+inline bool isOverloadSet(const Value& v) { return isObjType(v, ObjType::OverloadSet); }
+inline ObjOverloadSet* asOverloadSet(const Value& v) { return static_cast<ObjOverloadSet*>(v.asObj()); }
+
+inline unique_ptr<ObjOverloadSet, UnreleasedObj> newOverloadSetObj(const icu::UnicodeString& name) {
+#ifdef DEBUG_BUILD
+    return newObj<ObjOverloadSet>(__func__, __FILE__, __LINE__, name);
+#else
+    return newObj<ObjOverloadSet>(name);
 #endif
 }
 

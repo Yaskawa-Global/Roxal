@@ -1,0 +1,13 @@
+// Two method overloads that match equally well via implicit conversion.
+// Calling with a byte arg ties handle(int) and handle(real) at rank 2.
+
+type Box object:
+    func handle(x :int):
+        print("int")
+
+    func handle(x :real):
+        print("real")
+
+var b = Box()
+var v :byte = 5
+b.handle(v)

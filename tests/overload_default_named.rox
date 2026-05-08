@@ -1,0 +1,12 @@
+// Overload with a default param + named arg.
+// f(x:int) and f(x:int, y:int=0): calling f(x=5) should pick the
+// arity-1 overload (no defaults activated wins the tie-break).
+
+func f(x :int):
+    print("one:{x}")
+
+func f(x :int, y :int = 0):
+    print("two:{x},{y}")
+
+f(x=5)
+f(x=5, y=7)

@@ -277,6 +277,7 @@ set(COMPILER_SOURCES
     compiler/Introspection.cpp
     compiler/BuiltinModule.cpp
     compiler/Object.cpp
+    compiler/OverloadResolver.cpp
     compiler/FFI.cpp
     compiler/RoxalCompiler.cpp
     compiler/RoxalIndentationLexer.cpp

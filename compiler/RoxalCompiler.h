@@ -297,6 +297,17 @@ protected:
         std::optional<std::vector<VarTypeSpec>> astReturnTypes;
 
         std::vector<uint16_t> identConsts;
+
+        // Local-scope function overload tracking. Populated by a pre-pass in
+        // visit(Function) over the function body. A name with count > 1 will
+        // bind to an OverloadSet in its local slot; visit(FuncDecl) emits
+        // DefineLocalOverload accordingly. Each new FuncType is appended to
+        // localOverloadCandidates as the FuncDecl is processed; visit(Call)
+        // consults this for compile-time resolution.
+        std::unordered_map<icu::UnicodeString, int> localFuncDeclCounts;
+        std::unordered_map<icu::UnicodeString, int16_t> localOverloadSlots;
+        std::unordered_map<icu::UnicodeString,
+                           std::vector<ptr<type::Type>>> localOverloadCandidates;
     };
 
 
@@ -381,6 +392,15 @@ protected:
         std::unordered_set<icu::UnicodeString> moduleVarTypeConst; // vars declared as var x: const T
         std::unordered_map<icu::UnicodeString, ast::LinePos> moduleVarLines;
         std::unordered_map<icu::UnicodeString, ast::LinePos> moduleConstLines;
+
+        // Module-level function overload tracking. Populated by a pre-pass in
+        // visit(File) over the file's top-level FuncDecls. A name with count > 1
+        // will bind to an OverloadSet via DefineModuleOverload. Each new FuncType
+        // is appended to moduleOverloadCandidates as the FuncDecl is processed;
+        // visit(Call) consults this for compile-time resolution.
+        std::unordered_map<icu::UnicodeString, int> moduleFuncDeclCounts;
+        std::unordered_map<icu::UnicodeString,
+                           std::vector<ptr<type::Type>>> moduleOverloadCandidates;
     };
 
     ptr<ModuleScope> asModuleScope(Scope s) const { return dynamic_ptr_cast<ModuleScope>(*s); }
@@ -440,6 +460,19 @@ protected:
             emitBytes(op, uint8_t(arg), comment);
         else
             emitBytes(OpCode(uint8_t(op) | DoubleByteArg), uint8_t(arg >> 8), uint8_t(arg & 0xFF), comment);
+    }
+    // Two-arg variant: first arg uses single/double-byte encoding (auto-promotes),
+    // second arg is always emitted as a 2-byte big-endian uint16_t. Used by
+    // OpCode::GetOverloadAt and OpCode::GetLocalOverloadAt.
+    void emitOpArgsBytesPlusIndex(OpCode op, uint16_t arg, uint16_t index, const std::string& comment = "") {
+        debug_assert_msg(!isDoubleByte(op), "emitOpArgsBytesPlusIndex(OpCode, ...) accepts only regular OpCode (automatically promoted to double-byte variant).");
+        if (arg <= 255) {
+            emitBytes(op, uint8_t(arg), comment);
+        } else {
+            emitBytes(OpCode(uint8_t(op) | DoubleByteArg), uint8_t(arg >> 8), uint8_t(arg & 0xFF), comment);
+        }
+        emitByte(uint8_t(index >> 8));
+        emitByte(uint8_t(index & 0xFF));
     }
     uint8_t lastByte();
 

@@ -371,6 +371,269 @@ method, or `nil`. Nil is accepted silently to tolerate the actor-proc case
 break).
 
 
+## Function and Method Overloading
+
+A name (function, proc, object/actor method, or interface method) may be
+declared multiple times in the same scope when the parameter signatures
+distinguish each declaration. Roxal discriminates only by positional
+parameter types and arity (NOT named-arg names); two declarations with
+identical positional signatures and arity are an error.
+
+The feature spans four runtime data structures, the `OverloadResolver`
+class (compile-time and runtime ranker), four new bytecode opcodes, and
+small surgical changes to TypeDeducer and call-site emission. A name with
+exactly one declaration takes the existing fast path and pays no overhead.
+
+### Data structures
+
+#### `ObjOverloadSet` — runtime overload set for functions and locals
+
+Defined in `compiler/Object.h`. A heap-allocated `Obj` subclass:
+
+```cpp
+struct ObjOverloadSet : public Obj {
+    icu::UnicodeString  name;            // for diagnostics
+    std::vector<Value>  closures;        // each is an ObjClosure*
+    bool                importedFromModule = false;
+    void  add(const Value& closure);
+    Value asSingle() const;              // for the size==1 fast path
+};
+```
+
+`ObjType::OverloadSet` is its enum tag. From `Obj::valueType()` it returns
+`ValueType::Closure`, so all existing `isClosure`-style first-class
+predicates still work — `g = foo` (foo overloaded) gives a normal-looking
+"function" value to the user. `objTypeName` returns "function".
+
+Lifetime:
+
+* Constructed at module init by `OpCode::DefineModuleOverload` (module
+  scope) or `OpCode::DefineLocalOverload` (local scope). Stored in the
+  module's `vars` map or the function frame's local slot.
+* `bindMethod` allocates an OverloadSet on the fly when binding an
+  overloaded method — these have no other strong root, so the BoundMethod
+  ctor stores a *strong* ref to the OverloadSet (vs the usual weak ref to
+  closures, which are strong-rooted by the type's method map).
+* Trace walks `closures`. Not serializable as a Value (overload sets are
+  rebuilt by opcodes on each module init); `write`/`read` throw
+  defensively.
+
+#### `MethodOverloadSet` and `MethodInfo` — methods on object/actor types
+
+Defined inside `ObjObjectType` in `compiler/Object.h`:
+
+```cpp
+struct Method {
+    icu::UnicodeString    name;
+    Value                 closure;
+    ast::Access           access;
+    ast::MethodModifiers  methodModifiers;
+    Value                 ownerType;       // weak ref
+};
+struct MethodOverloadSet { std::vector<Method> overloads; };
+std::unordered_map<int32_t, MethodOverloadSet> methods;
+```
+
+The map is keyed by name hash. A name declared once still goes through
+this structure, with `overloads.size() == 1`. Two helpers gate access by
+call sites that pre-date overloading:
+
+* `findUniqueMethod(hash)` — returns the single overload's `Method*` if
+  exactly one exists, else nullptr. Used by getter/setter synthesis,
+  statement-action lookup, operator dispatch, builtin modules — sites
+  that never need to discriminate by signature.
+* `firstOverload(hash)` — returns the first overload of any size set, or
+  nullptr. Used by chain walks looking for "is the name declared on this
+  type at all?" (init lookup, BoundMethod construction, remote-actor
+  binding).
+
+The compile-time analog lives in `core/types.h` on
+`type::Type::ObjectType`:
+
+```cpp
+struct MethodInfo {
+    icu::UnicodeString  name;
+    ptr<FuncType>       funcType;
+    uint8_t             methodModifiers;   // bits match ast::MethodModifier
+    Access              access;
+};
+std::vector<MethodInfo> methods;
+```
+
+Populated by TypeDeducer when it visits a TypeDecl. Carries the
+parameter-list FuncType (so the resolver can rank candidates statically),
+plus modifiers and access — used by `OverloadResolver` for proper
+implicit-conversion detection (`implicit operator->T`,
+`implicit init(S)`) without re-walking the AST.
+
+#### `OverloadResolver` — the ranker
+
+Defined in `compiler/OverloadResolver.{h,cpp}`. Class with nested types:
+
+```cpp
+class OverloadResolver {
+public:
+    struct ArgInfo {
+        ptr<type::Type>  type;       // nullptr = unknown at compile time
+        bool             isNamed = false;
+        int32_t          nameHash = 0;
+    };
+    struct Candidate {
+        ptr<type::Type>  funcType;   // FuncType (params + returns)
+        Value            target;     // ObjClosure*; nilVal at compile time
+        bool             isMethod;   // affects 'this' arity bookkeeping
+    };
+    struct Score {
+        bool      feasible          = false;
+        uint32_t  totalRank         = 0;   // sum of per-arg ArgRank values
+        uint16_t  defaultsActivated = 0;   // tie-breaker
+    };
+    struct ResolveResult {
+        enum Kind { ResolvedUnique, Ambiguous, NoMatch, NeedsRuntime };
+        Kind                  kind;
+        uint16_t              chosenIndex;
+        std::vector<uint16_t> tiedIndices;
+    };
+
+    explicit OverloadResolver(VM* vm = nullptr);
+    ResolveResult resolve(const std::vector<Candidate>&,
+                          const std::vector<ArgInfo>&,
+                          bool staticDispatchAttempt,
+                          bool strictMode);
+    Score scoreOne(const Candidate&, const std::vector<ArgInfo>&, bool strict);
+    static bool isBetter(const Score& a, const Score& b);
+    std::string ambiguityDiagnostic(...);
+    std::string noMatchDiagnostic(...);
+    static bool signatureCompatibleForOverride(const ptr<type::Type>& abstract,
+                                               const ptr<type::Type>& concrete);
+    static std::string signatureToString(const icu::UnicodeString&,
+                                         const ptr<type::Type>&);
+};
+```
+
+The same instance is used for both compile-time resolution (`vm_ ==
+nullptr`, args may have nullptr types) and runtime resolution (`vm_ !=
+nullptr`, args carry types derived from actual Values via the free
+helper `valueRuntimeType`).
+
+Indices are `uint16_t` for portability and to keep `ResolveResult`
+compact. The struct is in-memory only — never serialized.
+
+### Per-arg ranking
+
+`scoreOne` classifies each argument against its candidate parameter and
+sums rank values into `Score::totalRank`. Lower rank = better match.
+
+| Rank | Name | Triggered by |
+|---|---|---|
+| 0 | Exact | builtin equality, or same `ObjectType::name` |
+| 1 | Subtype | arg's object/actor type chains via `extends`/`implements` to param's name |
+| 2 | StrictImplicitConv | `type::convertibleTo(from, to, /*strict=*/true)` — safe widening (`byte→int`, `int→real`) — valid in any context |
+| 3 | Untyped | param has no declared type — wildcard |
+| 4 | NonStrictImplicitConv | `convertibleTo(from, to, /*strict=*/false)` minus strict cases — only feasible when the call site is non-strict |
+| 5 | UserDefinedImplicitConv | one side is object/actor; `userDefinedImplicitConvFeasible` checks for `implicit operator->T()` on the source or `implicit init(S)` on the target. Permissive when type info is incomplete; runtime `tryConvertValue` is the final gatekeeper |
+| 6 | VariadicAbsorb | arg consumed by a `...args` variadic param |
+
+`isBetter(a, b)` is `feasible > !feasible`, then lower `totalRank`, then
+lower `defaultsActivated`. Equal scores → tied → ambiguity error.
+
+### Hybrid dispatch
+
+`visit(Call)` consults per-scope `localOverloadCandidates` /
+`moduleOverloadCandidates` maps populated by pre-passes in `visit(File)`
+and `visit(Function)`. When all arg types are TypeDeducer-known AND the
+resolver returns `ResolvedUnique`, the compiler emits a direct opcode
+encoding the chosen overload index — runtime does zero dispatch work:
+
+* **Functions/local funcs** — `OpCode::GetOverloadAt <name-const>
+  <overload-index>` or `GetLocalOverloadAt <slot> <overload-index>`,
+  followed by args and the existing `Call`.
+* **Object/actor methods** — `OpCode::InvokeOverloadAt <name-const>
+  <overload-index> <CallSpec>`. Runtime walks the receiver's type chain
+  to the named method's overload set and calls `overloads[index]`
+  directly.
+
+When some arg types are unknown OR the resolver returns `NeedsRuntime`
+(another candidate could be promoted by the unknown), the compiler emits
+the existing `GetModuleVar`/`GetLocal` + `Call` (or
+`GET_PROP_CHECK + CALL` for methods) sequence — the OverloadSet flows
+to `VM::callValue`'s OverloadSet branch (or `VM::invokeFromType` for
+methods) which dispatches via the same resolver against actual stack
+values. `valueRuntimeType` synthesizes a minimal `type::Type` from a
+runtime Value.
+
+`NoMatch` and `Ambiguous` results with all types known surface as
+compile errors; otherwise they become runtime errors with a candidate
+listing rendered by `signatureToString`.
+
+The compile-time path's reach depends on TypeDeducer's coverage. Three
+narrow improvements landed alongside this work:
+
+* Properties typed with a builtin (`var x :int`) or a user TypeName
+  (`var engine :Engine`, resolved by `lookupVar` during the TypeDecl
+  visit) populate `PropType::type`.
+* `visit(UnaryOp)` for the Accessor case propagates the property type
+  to the accessor expression — enabling chains like
+  `obj.prop.method(args)`.
+* `MethodInfo` carries the full FuncType param list (vs the previous
+  `pair<name, isProc-only-FuncType>`).
+
+### Cross-module imports
+
+`OpCode::ImportModuleVars` clones any imported `ObjOverloadSet` and tags
+the clone with `importedFromModule = true`. A subsequent local
+`DefineModuleOverload` for the same name discards the imported set
+rather than appending — local declarations take precedence; no
+cross-module merging.
+
+### Interface conformance
+
+`VM::checkInterfaceConformance` iterates per-overload of each abstract
+method on the interface (and any extended interface). For each abstract
+overload signature, the implementer chain must contain a concrete
+overload that passes `OverloadResolver::signatureCompatibleForOverride`
+— invariant parameter types (same builtin, same `ObjectType::name`) and
+a covariant return type (same builtin; for object/actor returns,
+accepted permissively here since the compile-time
+`type::Type::ObjectType.extends` chain isn't reliably populated on a
+FuncType return ref — runtime type-assignment at the call site enforces
+the actual subtype safety).
+
+The diagnostic distinguishes "missing method 'X'" (no overload at all)
+from "missing method overload 'X(types)'" (some overloads exist but
+this signature isn't satisfied).
+
+### Bytecode opcodes added
+
+| Opcode | Operands | Effect |
+|---|---|---|
+| `DefineModuleOverload` | name-const | pop closure; create or append to module-scope OverloadSet under name |
+| `GetOverloadAt` | name-const + 2-byte index | push module OverloadSet's `closures[index]` directly |
+| `DefineLocalOverload` | slot | pop closure; first call wraps the slot's closure in a fresh OverloadSet, subsequent calls append |
+| `GetLocalOverloadAt` | slot + 2-byte index | push local-slot OverloadSet's `closures[index]` |
+| `InvokeOverloadAt` | name-const + 2-byte index + CallSpec | walk receiver chain to find method, call `overloads[index]` directly |
+
+### Limitations / future work
+
+* Object→object return-type covariance in interface conformance is
+  permissive (admit-and-trust); a stricter check requires threading the
+  runtime `ObjObjectType` chain through to the resolver.
+* Statement-action methods with overloaded names: the existing per-type
+  invariant ("at most one statement-action method") is preserved; the
+  semantics of multiple overloads where some are statement-action are
+  not yet pinned down.
+* Operator method overloading (multiple `operator+` on the same type):
+  out of scope for the current implementation. The existing
+  `tryDispatchBinaryOperator` keeps its bespoke parameter-type check
+  using the first overload; refactoring it to call
+  `OverloadResolver::resolve` over an operator overload set is a clean
+  follow-up — designed in the plan as Phase 5 (operator overloading).
+* Cross-thread actor invocation through a BoundMethod wrapping an
+  OverloadSet substitutes the resolved closure into the BoundMethod
+  before queueing — adequate but not the cleanest factoring; a small
+  refactor could route via a fresh BoundMethod per call.
+
+
 ## Futures
 
 When a non-proc actor method is called from another thread, the caller receives

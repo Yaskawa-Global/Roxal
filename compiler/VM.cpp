@@ -34,6 +34,7 @@
 #include <core/TimePoint.h>
 #include "VM.h"
 #include "Object.h"
+#include "OverloadResolver.h"
 #ifdef ROXAL_COMPUTE_SERVER
 #include "ComputeConnection.h"
 #endif
@@ -2405,17 +2406,104 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
         return true;
     }
 
+    if (callee.isObj() && objType(callee) == ObjType::OverloadSet) {
+        // Runtime overload dispatch: the call survived to runtime because
+        // compile-time information was insufficient (e.g. arg pushed via a
+        // dynamically-typed local). Pick the best-matching overload using the
+        // resolver, then re-dispatch with the chosen closure in place of the
+        // OverloadSet on the stack.
+        auto* set = asOverloadSet(callee);
+
+        std::vector<OverloadResolver::Candidate> cands;
+        cands.reserve(set->closures.size());
+        for (const auto& c : set->closures) {
+            OverloadResolver::Candidate cand;
+            if (c.isObj() && isClosure(c)) {
+                auto* fn = asFunction(asClosure(c)->function);
+                if (fn->funcType.has_value())
+                    cand.funcType = fn->funcType.value();
+            }
+            cand.target = c;
+            cand.isMethod = false;
+            cands.push_back(cand);
+        }
+
+        std::vector<OverloadResolver::ArgInfo> argInfos;
+        argInfos.reserve(callSpec.argCount);
+        for (int i = callSpec.argCount - 1; i >= 0; --i) {
+            OverloadResolver::ArgInfo info;
+            info.type = valueRuntimeType(peek(i));
+            argInfos.push_back(info);
+        }
+
+        OverloadResolver resolver(this);
+        auto rr = resolver.resolve(cands, argInfos,
+                                   /*staticDispatchAttempt=*/false,
+                                   /*strictMode=*/true);
+
+        if (rr.kind == OverloadResolver::ResolveResult::ResolvedUnique) {
+            // Replace the OverloadSet on the stack with the chosen closure
+            // and re-dispatch.
+            peek(callSpec.argCount) = cands[rr.chosenIndex].target;
+            return callValue(cands[rr.chosenIndex].target, callSpec);
+        }
+        if (rr.kind == OverloadResolver::ResolveResult::Ambiguous) {
+            runtimeError(resolver.ambiguityDiagnostic(set->name, cands, rr.tiedIndices, argInfos));
+            return false;
+        }
+        runtimeError(resolver.noMatchDiagnostic(set->name, cands, argInfos));
+        return false;
+    }
+
     if (callee.isObj()) {
         switch (objType(callee)) {
             case ObjType::BoundMethod: {
                 Value boundValue = callee;
                 ObjBoundMethod* boundMethod { asBoundMethod(boundValue) };
 
+                // If the bound method wraps an OverloadSet, resolve here
+                // (we now have call args on the stack) and continue with
+                // the chosen closure. Same routing for object & actor.
+                Value chosenMethodVal = boundMethod->method;
+                if (isOverloadSet(chosenMethodVal)) {
+                    auto* set = asOverloadSet(chosenMethodVal);
+                    std::vector<OverloadResolver::Candidate> cands;
+                    cands.reserve(set->closures.size());
+                    for (const auto& c : set->closures) {
+                        OverloadResolver::Candidate cand;
+                        if (isClosure(c)) {
+                            auto* fn = asFunction(asClosure(c)->function);
+                            if (fn->funcType.has_value()) cand.funcType = fn->funcType.value();
+                        }
+                        cand.target = c;
+                        cand.isMethod = true;
+                        cands.push_back(cand);
+                    }
+                    std::vector<OverloadResolver::ArgInfo> argInfos;
+                    argInfos.reserve(callSpec.argCount);
+                    for (int i = callSpec.argCount - 1; i >= 0; --i) {
+                        OverloadResolver::ArgInfo info;
+                        info.type = valueRuntimeType(peek(i));
+                        argInfos.push_back(info);
+                    }
+                    OverloadResolver resolver(this);
+                    auto rr = resolver.resolve(cands, argInfos, /*staticDispatchAttempt=*/false, true);
+                    if (rr.kind == OverloadResolver::ResolveResult::ResolvedUnique) {
+                        chosenMethodVal = cands[rr.chosenIndex].target;
+                    } else if (rr.kind == OverloadResolver::ResolveResult::Ambiguous) {
+                        runtimeError(resolver.ambiguityDiagnostic(set->name, cands, rr.tiedIndices, argInfos));
+                        return false;
+                    } else {
+                        runtimeError(resolver.noMatchDiagnostic(set->name, cands, argInfos));
+                        return false;
+                    }
+                }
+
                 if (!isActorInstance(boundMethod->receiver)) {
                     thread->currentBoundCall = boundValue;
                     BoundCallGuard guard(thread.get());
                     *(thread->stackTop - callSpec.argCount - 1) = boundMethod->receiver;
-                    return call(asClosure(boundMethod->method), callSpec);
+                    return call(asClosure(chosenMethodVal), callSpec);
                 }
                 else {
                     // call to actor method.
@@ -2430,15 +2518,25 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         thread->currentBoundCall = boundValue;
                         BoundCallGuard guard(thread.get());
                         *(thread->stackTop - callSpec.argCount - 1) = boundMethod->receiver; // FIXME: or inst??
-                        return call(asClosure(boundMethod->method), callSpec);
+                        return call(asClosure(chosenMethodVal), callSpec);
                     } else {
                         // call to other actor
                         if (!inst->alive.load(std::memory_order_acquire)) {
-                            auto methodName = toUTF8StdString(asFunction(asClosure(boundMethod->method)->function)->name);
+                            auto methodName = isClosure(chosenMethodVal)
+                                ? toUTF8StdString(asFunction(asClosure(chosenMethodVal)->function)->name)
+                                : "<overloaded>";
                             auto typeName   = toUTF8StdString(asObjectType(inst->instanceType)->name);
                             runtimeError("method '%s' called on terminated actor of type '%s'",
                                          methodName.c_str(), typeName.c_str());
                             return false;
+                        }
+                        // Cross-thread actor invocation: substitute the chosen
+                        // closure into the bound method so queueCall's marshalling
+                        // uses the resolved overload's funcType. (We picked an
+                        // overload above; this just makes the existing queue
+                        // path see the chosen closure.)
+                        if (isOverloadSet(boundMethod->method)) {
+                            boundMethod->method = chosenMethodVal;
                         }
                         bool forceCompletionFuture = false;
 #ifdef ROXAL_COMPUTE_SERVER
@@ -2567,14 +2665,55 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                      toUTF8StdString(type->name) + "'");
                         return false;
                     }
+                    // Walk the chain to the first level that defines init.
+                    // If that level has multiple init overloads, resolve
+                    // against the constructor call args.
                     ObjObjectType* tInit = type;
-                    const ObjObjectType::Method* initMethod = nullptr;
-                    while (tInit != nullptr && initMethod == nullptr) {
+                    const ObjObjectType::MethodOverloadSet* initSet = nullptr;
+                    while (tInit != nullptr && initSet == nullptr) {
                         auto it = tInit->methods.find(asStringObj(initString)->hash);
-                        if (it != tInit->methods.end())
-                            initMethod = &it->second;
+                        if (it != tInit->methods.end() && !it->second.overloads.empty())
+                            initSet = &it->second;
                         else
                             tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
+                    }
+
+                    const ObjObjectType::Method* initMethod = nullptr;
+                    if (initSet) {
+                        if (initSet->overloads.size() == 1) {
+                            initMethod = &initSet->overloads[0];
+                        } else {
+                            std::vector<OverloadResolver::Candidate> cands;
+                            cands.reserve(initSet->overloads.size());
+                            for (const auto& m : initSet->overloads) {
+                                OverloadResolver::Candidate c;
+                                if (isClosure(m.closure)) {
+                                    auto* fn = asFunction(asClosure(m.closure)->function);
+                                    if (fn->funcType.has_value()) c.funcType = fn->funcType.value();
+                                }
+                                c.target = m.closure;
+                                c.isMethod = true;
+                                cands.push_back(c);
+                            }
+                            std::vector<OverloadResolver::ArgInfo> argInfos;
+                            argInfos.reserve(callSpec.argCount);
+                            for (int i = callSpec.argCount - 1; i >= 0; --i) {
+                                OverloadResolver::ArgInfo info;
+                                info.type = valueRuntimeType(peek(i));
+                                argInfos.push_back(info);
+                            }
+                            OverloadResolver resolver(this);
+                            auto rr = resolver.resolve(cands, argInfos, /*staticDispatchAttempt=*/false, true);
+                            if (rr.kind == OverloadResolver::ResolveResult::ResolvedUnique) {
+                                initMethod = &initSet->overloads[rr.chosenIndex];
+                            } else if (rr.kind == OverloadResolver::ResolveResult::Ambiguous) {
+                                runtimeError(resolver.ambiguityDiagnostic(toUnicodeString("init"),
+                                                                          cands, rr.tiedIndices, argInfos));
+                                return false;
+                            }
+                            // NoMatch: fall through with initMethod==nullptr,
+                            // letting the conversion-operator fallback below handle the case.
+                        }
                     }
 
                     // Check for user-defined conversion operator as explicit fallback
@@ -2744,13 +2883,13 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 icu::UnicodeString setterName = UnicodeString("__set_") + keyStr->s;
                                 Value setterNameValue = Value::stringVal(setterName);
                                 ObjString* setterNameStr = asStringObj(setterNameValue);
-                                auto setterIt = type->methods.find(setterNameStr->hash);
+                                // __set_<prop> is a synthetic name — never overloaded.
+                                auto* setterMethod = type->findUniqueMethod(setterNameStr->hash);
 
-                                if (setterIt != type->methods.end()) {
+                                if (setterMethod) {
                                     // Property has a setter - queue the call
                                     // Type conversion will be handled by the setter
-                                    const auto& methodInfo = setterIt->second;
-                                    Value setterClosure = methodInfo.closure;
+                                    Value setterClosure = setterMethod->closure;
 
                                     CallFrame setterFrame{};
                                     setterFrame.closure = Value::objRef(asClosure(setterClosure));
@@ -2920,7 +3059,10 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                             int32_t setterMethodHash = 0;
 
                                             for (const auto& methodPair : type->methods) {
-                                                const auto& method = methodPair.second;
+                                                // __set_<prop> setter methods are synthesized from
+                                                // property names — never overloaded, so .overloads[0] is fine.
+                                                if (methodPair.second.overloads.empty()) continue;
+                                                const auto& method = methodPair.second.overloads[0];
                                                 ObjFunction* func = asFunction(asClosure(method.closure)->function);
                                                 icu::UnicodeString methodName = func->name;
 
@@ -2988,14 +3130,13 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                     icu::UnicodeString setterName = UnicodeString("__set_") + assignment.propertyName;
                                     Value setterNameValue = Value::stringVal(setterName);
                                     ObjString* setterNameStr = asStringObj(setterNameValue);
-                                    auto setterIt = type->methods.find(setterNameStr->hash);
+                                    auto* setterMethod = type->findUniqueMethod(setterNameStr->hash);
 
                                     #ifdef DEBUG_BUILD
-                                    assert(setterIt != type->methods.end());
+                                    assert(setterMethod != nullptr);
                                     #endif
 
-                                    const auto& methodInfo = setterIt->second;
-                                    Value setterClosure = methodInfo.closure;
+                                    Value setterClosure = setterMethod->closure;
 
                                     // Create frame for setter call (similar to default parameter frames)
                                     CallFrame setterFrame{};
@@ -3306,19 +3447,64 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
 bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec,
                         const Value& receiver)
 {
+    // Walk the inheritance chain to find the FIRST level that declares the
+    // method name. Subclass declarations shadow parent declarations entirely
+    // (Roxal does not merge overload sets across inheritance levels — match
+    // existing single-method override semantics).
     ObjObjectType* t = type;
-    const ObjObjectType::Method* methodPtr = nullptr;
-    while (t != nullptr && methodPtr == nullptr) {
+    const ObjObjectType::MethodOverloadSet* setPtr = nullptr;
+    while (t != nullptr && setPtr == nullptr) {
         auto it = t->methods.find(name->hash);
-        if (it != t->methods.end())
-            methodPtr = &it->second;
+        if (it != t->methods.end() && !it->second.overloads.empty())
+            setPtr = &it->second;
         else
             t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
     }
 
-    if (methodPtr == nullptr) {
+    if (setPtr == nullptr) {
         runtimeError("Undefined property '%s'", toUTF8StdString(name->s).c_str());
         return false;
+    }
+
+    // Pick the matching overload. With a single overload, fast path. With
+    // multiple, run OverloadResolver against the call args on the stack.
+    const ObjObjectType::Method* methodPtr = nullptr;
+    if (setPtr->overloads.size() == 1) {
+        methodPtr = &setPtr->overloads[0];
+    } else {
+        std::vector<OverloadResolver::Candidate> cands;
+        cands.reserve(setPtr->overloads.size());
+        for (const auto& m : setPtr->overloads) {
+            OverloadResolver::Candidate c;
+            if (isClosure(m.closure)) {
+                auto* fn = asFunction(asClosure(m.closure)->function);
+                if (fn->funcType.has_value())
+                    c.funcType = fn->funcType.value();
+            }
+            c.target = m.closure;
+            c.isMethod = true;
+            cands.push_back(c);
+        }
+        std::vector<OverloadResolver::ArgInfo> argInfos;
+        argInfos.reserve(callSpec.argCount);
+        for (int i = callSpec.argCount - 1; i >= 0; --i) {
+            OverloadResolver::ArgInfo info;
+            info.type = valueRuntimeType(peek(i));
+            argInfos.push_back(info);
+        }
+        OverloadResolver resolver(this);
+        auto rr = resolver.resolve(cands, argInfos,
+                                   /*staticDispatchAttempt=*/false,
+                                   /*strictMode=*/true);
+        if (rr.kind == OverloadResolver::ResolveResult::ResolvedUnique) {
+            methodPtr = &setPtr->overloads[rr.chosenIndex];
+        } else if (rr.kind == OverloadResolver::ResolveResult::Ambiguous) {
+            runtimeError(resolver.ambiguityDiagnostic(name->s, cands, rr.tiedIndices, argInfos));
+            return false;
+        } else {
+            runtimeError(resolver.noMatchDiagnostic(name->s, cands, argInfos));
+            return false;
+        }
     }
     const auto& methodInfo = *methodPtr;
     if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
@@ -3343,11 +3529,13 @@ bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& ca
 
 Value VM::findOperatorMethod(ObjObjectType* type, int32_t hash)
 {
+    // Operator method dispatch is single-overload by design (the existing
+    // tryDispatchBinaryOperator path does its own arg-type compatibility
+    // check). We pick the first overload at the deepest matching level.
     ObjObjectType* t = type;
     while (t) {
-        auto it = t->methods.find(hash);
-        if (it != t->methods.end())
-            return it->second.closure;
+        if (auto* m = t->firstOverload(hash))
+            return m->closure;
         t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
     }
     return Value::nilVal();
@@ -3410,26 +3598,31 @@ bool VM::canConvertToType(const Value& val, const Value& targetTypeSpec, bool im
     if (ts->typeValue == ValueType::Object || ts->typeValue == ValueType::Actor) {
         ObjObjectType* targetType = asObjectType(targetTypeSpec);
 
-        // Find init method on target type
+        // Find init method on target type. With overloads, scan all overloads
+        // at each level for a single-arg implicit init that accepts our source.
         ObjObjectType* tInit = targetType;
-        const ObjObjectType::Method* initMethod = nullptr;
-        while (tInit != nullptr && initMethod == nullptr) {
+        bool foundImplicitInit = false;
+        while (tInit != nullptr && !foundImplicitInit) {
             auto it = tInit->methods.find(asStringObj(initString)->hash);
-            if (it != tInit->methods.end())
-                initMethod = &it->second;
-            else
-                tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
-        }
-
-        if (initMethod != nullptr && isClosure(initMethod->closure)) {
-            ObjFunction* initFunc = asFunction(asClosure(initMethod->closure)->function);
-
-            // Single-arg implicit init enables auto-construction
-            if (initFunc->arity == 1 &&
-                ast::hasModifier(initFunc->methodModifiers, ast::MethodModifier::Implicit)) {
-                return true;
+            if (it != tInit->methods.end()) {
+                for (const auto& m : it->second.overloads) {
+                    if (!isClosure(m.closure)) continue;
+                    ObjFunction* initFunc = asFunction(asClosure(m.closure)->function);
+                    if (initFunc->arity == 1 &&
+                        ast::hasModifier(initFunc->methodModifiers, ast::MethodModifier::Implicit)) {
+                        foundImplicitInit = true;
+                        break;
+                    }
+                }
+                if (foundImplicitInit) break;
+                // No matching overload at this level; init declared here
+                // shadows any in supertypes — stop walking.
+                break;
             }
+            tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
         }
+        if (foundImplicitInit)
+            return true;
 
         // 3b. Fall through: check for user-defined conversion operator on source (object → object)
         if (isObjectInstance(val) || isActorInstance(val)) {
@@ -3486,10 +3679,8 @@ VM::ConversionOutcome VM::tryConvertValue(
         ObjObjectType* tInit = targetType;
         const ObjObjectType::Method* initMethod = nullptr;
         while (tInit && !initMethod) {
-            auto it = tInit->methods.find(asStringObj(initString)->hash);
-            if (it != tInit->methods.end())
-                initMethod = &it->second;
-            else
+            initMethod = tInit->firstOverload(asStringObj(initString)->hash);
+            if (!initMethod)
                 tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
         }
         if (initMethod && isClosure(initMethod->closure)) {
@@ -3664,6 +3855,50 @@ bool VM::tryDispatchUnaryOperator(int32_t hash)
 }
 
 
+bool VM::invokeOverloadAt(ObjString* name, uint16_t overloadIndex, const CallSpec& callSpec)
+{
+    Value receiver { peek(callSpec.argCount) };
+
+    ObjObjectType* type = nullptr;
+    if (isObjectInstance(receiver))
+        type = asObjectType(asObjectInstance(receiver)->instanceType);
+    else if (isActorInstance(receiver))
+        type = asObjectType(asActorInstance(receiver)->instanceType);
+    else {
+        runtimeError("Internal: InvokeOverloadAt receiver is not an object/actor instance");
+        return false;
+    }
+
+    // Walk the chain to the first level that defines this method name.
+    const ObjObjectType::MethodOverloadSet* setPtr = nullptr;
+    for (ObjObjectType* t = type; t; t = t->superType.isNil() ? nullptr : asObjectType(t->superType)) {
+        auto it = t->methods.find(name->hash);
+        if (it != t->methods.end() && !it->second.overloads.empty()) { setPtr = &it->second; break; }
+    }
+    if (!setPtr || overloadIndex >= setPtr->overloads.size()) {
+        runtimeError("Internal: InvokeOverloadAt index %u out of range for method '%s'",
+                     overloadIndex, toUTF8StdString(name->s).c_str());
+        return false;
+    }
+    const auto& methodInfo = setPtr->overloads[overloadIndex];
+    if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
+        runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+        return false;
+    }
+
+    // Cross-thread actor call dispatch: if the receiver is on a different
+    // thread, fall back to the regular invoke() path which queues the call
+    // (the queue path needs a BoundMethod-style structure we don't build here).
+    if (isActorInstance(receiver)) {
+        ActorInstance* inst = asActorInstance(receiver);
+        if (std::this_thread::get_id() != inst->thread_id)
+            return invoke(name, callSpec);  // delegate to regular invoke
+    }
+
+    return call(asClosure(methodInfo.closure), callSpec);
+}
+
+
 bool VM::invoke(ObjString* name, const CallSpec& callSpec)
 {
     Value receiver { peek(callSpec.argCount) };
@@ -3693,16 +3928,54 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
             return callValue(value, callSpec);
         }
 
-        // Try to invoke from the actor's type (user-defined methods)
+        // Try to invoke from the actor's type (user-defined methods).
         ObjObjectType* type = asObjectType(instance->instanceType);
         auto methodIt = type->methods.find(name->hash);
-        if (methodIt != type->methods.end()) {
-            const auto& methodInfo = methodIt->second;
-            if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
+        if (methodIt != type->methods.end() && !methodIt->second.overloads.empty()) {
+            const auto& set = methodIt->second;
+            const ObjObjectType::Method* methodInfo = nullptr;
+            if (set.overloads.size() == 1) {
+                methodInfo = &set.overloads[0];
+            } else {
+                std::vector<OverloadResolver::Candidate> cands;
+                cands.reserve(set.overloads.size());
+                for (const auto& m : set.overloads) {
+                    OverloadResolver::Candidate c;
+                    if (isClosure(m.closure)) {
+                        auto* fn = asFunction(asClosure(m.closure)->function);
+                        if (fn->funcType.has_value())
+                            c.funcType = fn->funcType.value();
+                    }
+                    c.target = m.closure;
+                    c.isMethod = true;
+                    cands.push_back(c);
+                }
+                std::vector<OverloadResolver::ArgInfo> argInfos;
+                argInfos.reserve(callSpec.argCount);
+                for (int i = callSpec.argCount - 1; i >= 0; --i) {
+                    OverloadResolver::ArgInfo info;
+                    info.type = valueRuntimeType(peek(i));
+                    argInfos.push_back(info);
+                }
+                OverloadResolver resolver(this);
+                auto rr = resolver.resolve(cands, argInfos,
+                                           /*staticDispatchAttempt=*/false,
+                                           /*strictMode=*/true);
+                if (rr.kind == OverloadResolver::ResolveResult::ResolvedUnique) {
+                    methodInfo = &set.overloads[rr.chosenIndex];
+                } else if (rr.kind == OverloadResolver::ResolveResult::Ambiguous) {
+                    runtimeError(resolver.ambiguityDiagnostic(name->s, cands, rr.tiedIndices, argInfos));
+                    return false;
+                } else {
+                    runtimeError(resolver.noMatchDiagnostic(name->s, cands, argInfos));
+                    return false;
+                }
+            }
+            if (!isAccessAllowed(methodInfo->ownerType, methodInfo->access)) {
                 runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
                 return false;
             }
-            Value method { methodInfo.closure };
+            Value method { methodInfo->closure };
             return call(asClosure(method), callSpec);
         }
 
@@ -4160,26 +4433,40 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
 
 VM::BindResult VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
 {
+    // Walk the chain to the FIRST level that defines the method name. With
+    // overloads, the BoundMethod wraps the whole MethodOverloadSet (as a
+    // freshly-allocated ObjOverloadSet) so calls through the bound reference
+    // dispatch via callValue's OverloadSet branch.
     ObjObjectType* t = instanceType;
-    const ObjObjectType::Method* methodPtr = nullptr;
-    while (t != nullptr && methodPtr == nullptr) {
+    const ObjObjectType::MethodOverloadSet* setPtr = nullptr;
+    while (t != nullptr && setPtr == nullptr) {
         auto it = t->methods.find(name->hash);
-        if (it != t->methods.end())
-            methodPtr = &it->second;
+        if (it != t->methods.end() && !it->second.overloads.empty())
+            setPtr = &it->second;
         else
             t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
     }
 
-    if (methodPtr == nullptr)
+    if (setPtr == nullptr)
         return BindResult::NotFound;
 
-    const auto& methodInfo = *methodPtr;
+    const auto& methodInfo = setPtr->overloads[0];  // representative for access check
     if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
         runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
         return BindResult::Private;
     }
 
-    Value method { methodInfo.closure };
+    Value method;
+    if (setPtr->overloads.size() > 1) {
+        // Wrap all overloads in an OverloadSet so a call through the bound
+        // reference can dispatch on the actual runtime arg types.
+        auto setObj = newOverloadSetObj(name->s);
+        for (const auto& m : setPtr->overloads)
+            setObj->add(m.closure);
+        method = Value::objRef(setObj.release());
+    } else {
+        method = methodInfo.closure;
+    }
 
     if (isClosure(method) && asFunction(asClosure(method)->function)->builtinInfo) {
         ObjClosure* cl = asClosure(method);
@@ -4466,15 +4753,44 @@ void VM::defineMethod(ObjString* name)
     #endif
     ObjObjectType* type = asObjectType(peek(1));
 
-    if (type->methods.contains(name->hash))
-        throw std::runtime_error("Duplicate method '"+name->toStdString()+"' declared in type "+(type->isActor?"actor":"object")+" '"+toUTF8StdString(type->name)+"'");
-
     ObjClosure* closure = asClosure(method);
     ObjFunction* function = asFunction(closure->function);
     function->ownerType = Value::objRef(type).weakRef();
 
-    type->methods[name->hash] = {name->s, method, function->access, function->methodModifiers,
-                                 Value::objRef(type).weakRef()};
+    // Append to the overload set. Validate that the new method's signature is
+    // distinguishable from existing overloads of the same name — two overloads
+    // with identical parameter types and arity are an error (the resolver
+    // would always tie them).
+    auto& set = type->methods[name->hash];
+    if (function->funcType.has_value()) {
+        auto newFt = function->funcType.value();
+        if (newFt->func.has_value()) {
+            auto& newParams = newFt->func.value().params;
+            for (const auto& existing : set.overloads) {
+                if (!isClosure(existing.closure)) continue;
+                auto* exFn = asFunction(asClosure(existing.closure)->function);
+                if (!exFn->funcType.has_value() || !exFn->funcType.value()->func.has_value()) continue;
+                auto& exParams = exFn->funcType.value()->func.value().params;
+                if (exParams.size() != newParams.size()) continue;
+                bool same = true;
+                for (size_t i = 0; i < exParams.size(); ++i) {
+                    auto& a = exParams[i];
+                    auto& b = newParams[i];
+                    if (a.has_value() != b.has_value()) { same = false; break; }
+                    if (!a.has_value()) continue;
+                    if (a->type.has_value() != b->type.has_value()) { same = false; break; }
+                    if (a->type.has_value() &&
+                        a->type.value()->builtin != b->type.value()->builtin) { same = false; break; }
+                }
+                if (same) {
+                    throw std::runtime_error("Duplicate signature for method '"+name->toStdString()+
+                                             "' on type '"+toUTF8StdString(type->name)+"'");
+                }
+            }
+        }
+    }
+    set.overloads.push_back({name->s, method, function->access, function->methodModifiers,
+                             Value::objRef(type).weakRef()});
 
     // Cache the statement-action method's name hash for fast lookup at runtime.
     // Validation: at most one per type.
@@ -4512,11 +4828,40 @@ std::string VM::checkInterfaceConformance(ObjObjectType* impl, ObjObjectType* if
         return ast::hasModifier(m.methodModifiers, ast::MethodModifier::Abstract);
     };
 
-    auto findConcreteMethod = [&](int32_t hash) -> bool {
+    // Per-overload conformance: for an abstract method `M(sig)` in the
+    // interface, look across the impl chain for a concrete overload of the
+    // same name whose signature is compatible (invariant params + covariant
+    // return). Synthetic accessor methods (__get_X / __set_X) take 0 or 1
+    // params and never have meaningful overload sets, so the legacy "any
+    // concrete overload" check is sufficient for them.
+    auto findConcreteMethodMatching = [&](int32_t hash,
+                                          const ptr<type::Type>& abstractFt) -> bool {
         for (ObjObjectType* t = impl; t; ) {
             auto it = t->methods.find(hash);
-            if (it != t->methods.end() && !isAbstract(it->second))
-                return true;
+            if (it != t->methods.end()) {
+                for (const auto& m : it->second.overloads) {
+                    if (isAbstract(m)) continue;
+                    if (!isClosure(m.closure)) continue;
+                    auto* fn = asFunction(asClosure(m.closure)->function);
+                    if (!fn->funcType.has_value()) continue;
+                    if (OverloadResolver::signatureCompatibleForOverride(
+                            abstractFt, fn->funcType.value()))
+                        return true;
+                }
+            }
+            t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+        }
+        return false;
+    };
+
+    auto findAnyConcreteMethod = [&](int32_t hash) -> bool {
+        for (ObjObjectType* t = impl; t; ) {
+            auto it = t->methods.find(hash);
+            if (it != t->methods.end()) {
+                for (const auto& m : it->second.overloads) {
+                    if (!isAbstract(m)) return true;
+                }
+            }
             t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
         }
         return false;
@@ -4541,30 +4886,51 @@ std::string VM::checkInterfaceConformance(ObjObjectType* impl, ObjObjectType* if
     // Walk the interface and any interfaces it extends.
     for (ObjObjectType* it = iface; it; ) {
         for (const auto& kv : it->methods) {
-            const auto& m = kv.second;
-            if (!isAbstract(m)) continue;
+            for (const auto& m : kv.second.overloads) {
+                if (!isAbstract(m)) continue;
 
-            if (findConcreteMethod(kv.first)) continue;
-
-            // Accessor synthesis fallback: __get_X / __set_X may be satisfied
-            // by a plain property X on the implementer's chain.
-            if (m.name.startsWith(getPrefix) || m.name.startsWith(setPrefix)) {
-                icu::UnicodeString plain = m.name.tempSubString(6);
-                bool propIsConst = false;
-                if (findProperty(plain.hashCode(), &propIsConst)) {
-                    if (m.name.startsWith(setPrefix) && propIsConst) {
-                        std::string disp = toUTF8StdString(plain);
-                        missing.push_back("setter for property '" + disp +
-                                          "' (implementer's '" + disp + "' is const)");
+                // Accessor synthesis fallback for __get_X / __set_X — a plain
+                // property X on the impl chain satisfies the abstract.
+                if (m.name.startsWith(getPrefix) || m.name.startsWith(setPrefix)) {
+                    if (findAnyConcreteMethod(kv.first)) continue;
+                    icu::UnicodeString plain = m.name.tempSubString(6);
+                    bool propIsConst = false;
+                    if (findProperty(plain.hashCode(), &propIsConst)) {
+                        if (m.name.startsWith(setPrefix) && propIsConst) {
+                            std::string disp = toUTF8StdString(plain);
+                            missing.push_back("setter for property '" + disp +
+                                              "' (implementer's '" + disp + "' is const)");
+                        }
+                        // satisfied (or already reported)
+                        continue;
                     }
-                    // satisfied (or already reported)
+                    std::string kind = m.name.startsWith(getPrefix) ? "getter" : "setter";
+                    missing.push_back(kind + " for property '" + toUTF8StdString(plain) + "'");
                     continue;
                 }
-                std::string kind = m.name.startsWith(getPrefix) ? "getter" : "setter";
-                missing.push_back(kind + " for property '" + toUTF8StdString(plain) + "'");
-            }
-            else {
-                missing.push_back("method '" + toUTF8StdString(m.name) + "'");
+
+                // Regular method overload: require a signature-compatible
+                // concrete impl. If no concrete overload of this name exists
+                // at all, fall back to the simple "missing method 'X'" diag
+                // (matches the pre-overload error message for backwards
+                // compatibility); otherwise list the missing signature.
+                if (!isClosure(m.closure) && !m.closure.isNil()) {
+                    // m.closure is nil for purely-abstract; that's the normal case.
+                }
+                ptr<type::Type> absFt = nullptr;
+                if (isClosure(m.closure)) {
+                    auto* fn = asFunction(asClosure(m.closure)->function);
+                    if (fn->funcType.has_value()) absFt = fn->funcType.value();
+                }
+                if (absFt && findConcreteMethodMatching(kv.first, absFt))
+                    continue;
+
+                if (!findAnyConcreteMethod(kv.first)) {
+                    missing.push_back("method '" + toUTF8StdString(m.name) + "'");
+                } else {
+                    missing.push_back("method overload '" +
+                                      OverloadResolver::signatureToString(m.name, absFt) + "'");
+                }
             }
         }
         it = it->superType.isNil() ? nullptr : asObjectType(it->superType);
@@ -6888,12 +7254,14 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     }
                     session->lastReceiver = top;
 
-                    // Resolve the method's closure (walk supertypes).
+                    // Resolve the statement-action method's closure (walk
+                    // supertypes). Statement-action is single-method per type
+                    // by validation in defineMethod, so we want any overload
+                    // declared at the deepest matching level.
                     Value methodClosure = Value::nilVal();
                     for (ObjObjectType* t = otype; t; ) {
-                        auto it = t->methods.find(saHash);
-                        if (it != t->methods.end()) {
-                            methodClosure = it->second.closure;
+                        if (auto* m = t->firstOverload(saHash)) {
+                            methodClosure = m->closure;
                             break;
                         }
                         t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
@@ -7119,6 +7487,28 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             }
             // TODO: reimplement optimization to use Invoke as single step for object.method()
             //  instead of current two step push & call (see original Antlr visitor compiler impl)
+            case OpCode::InvokeOverloadAt: {
+                ObjString* method = readString();
+                uint16_t overloadIdx = readShort();
+                CallSpec callSpec{frame->ip};
+                // Resolve future on receiver before method dispatch
+                {
+                    Value& receiver = peek(callSpec.argCount);
+                    if (isFuture(receiver)) {
+                        auto s = tryAwaitFuture(receiver);
+                        if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                        if (s == FutureStatus::Error) return errorReturn;
+                    }
+                }
+                if (!invokeOverloadAt(method, overloadIdx, callSpec))
+                    return errorReturn;
+                if (thread->awaitedFuture.isNonNil()) {
+                    frame->ip = instructionStart;
+                    goto postInstructionDispatch;
+                }
+                frame = thread->frames.end()-1;
+                break;
+            }
             case OpCode::Invoke: {
                 ObjString* method = readString();
                 CallSpec callSpec{frame->ip};
@@ -7336,6 +7726,106 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 ObjString* name = readString();
                 // Clone vector/matrix/tensor for by-value semantics
                 moduleVars().store(name->hash, name->s, cloneIfValueSemantics(pop()));
+                break;
+            }
+            case OpCode::DefineModuleOverload: {
+                // Pop the closure and append it to (or initialize) an OverloadSet
+                // bound to `name` in the current module's vars.
+                ObjString* name = readString();
+                Value newClosure = pop();
+                auto& vars { moduleVars() };
+                auto existing { vars.load(name->hash) };
+                if (!existing.has_value() || existing->isNil()) {
+                    auto setObj = newOverloadSetObj(name->s);
+                    setObj->add(newClosure);
+                    vars.store(name->hash, name->s, Value::objRef(setObj.release()));
+                } else if (isOverloadSet(existing.value())) {
+                    auto* s = asOverloadSet(existing.value());
+                    if (s->importedFromModule) {
+                        // Local declarations replace any imported overload set.
+                        auto setObj = newOverloadSetObj(name->s);
+                        setObj->add(newClosure);
+                        vars.store(name->hash, name->s, Value::objRef(setObj.release()));
+                    } else {
+                        s->add(newClosure);
+                    }
+                } else if (isClosure(existing.value())) {
+                    // Promote: existing single closure + new closure -> OverloadSet.
+                    auto setObj = newOverloadSetObj(name->s);
+                    setObj->add(existing.value());
+                    setObj->add(newClosure);
+                    vars.store(name->hash, name->s, Value::objRef(setObj.release()));
+                } else {
+                    runtimeError("Name '"+name->toStdString()+"' is not a function and cannot be redeclared as an overload");
+                    return errorReturn;
+                }
+                break;
+            }
+            case OpCode::GetOverloadAt: {
+                // Load the OverloadSet by name from module vars and push the
+                // closure at the given index. Used for compile-time-resolved
+                // overloaded calls — runtime does no dispatch work.
+                ObjString* name = readString();
+                uint16_t overloadIndex = readShort();
+                auto& vars { moduleVars() };
+                auto optValue { vars.load(name->hash) };
+                if (!optValue.has_value()) {
+                    runtimeError("Undefined variable '"+name->toStdString()+"'");
+                    return errorReturn;
+                }
+                Value v = optValue.value();
+                if (!isOverloadSet(v)) {
+                    runtimeError("Internal: GetOverloadAt expected OverloadSet for '"+name->toStdString()+"'");
+                    return errorReturn;
+                }
+                auto* set = asOverloadSet(v);
+                if (overloadIndex >= set->closures.size()) {
+                    runtimeError("Internal: GetOverloadAt index out of range");
+                    return errorReturn;
+                }
+                push(set->closures[overloadIndex]);
+                break;
+            }
+            case OpCode::DefineLocalOverload: {
+                // For the FIRST decl of an overloaded local name, the closure
+                // was just pushed and the slot IS the top of stack — wrap it
+                // in a fresh OverloadSet in place (no pop). For SUBSEQUENT
+                // decls, the slot already holds the OverloadSet at a lower
+                // position and the new closure is at top — pop and append.
+                uint16_t slot = singleByteArg ? readByte() : readShort();
+                Value& topRef = peek(0);
+                Value& slotRef = frame->slots[slot];
+                if (&topRef == &slotRef) {
+                    // First decl: wrap the closure at slot/top in place.
+                    auto setObj = newOverloadSetObj(icu::UnicodeString());
+                    setObj->add(slotRef);
+                    slotRef = Value::objRef(setObj.release());
+                } else {
+                    // Subsequent decl: pop the closure off top, append to the
+                    // OverloadSet at slot.
+                    Value newClosure = pop();
+                    if (!isOverloadSet(slotRef)) {
+                        runtimeError("Internal: DefineLocalOverload expected OverloadSet at slot");
+                        return errorReturn;
+                    }
+                    asOverloadSet(slotRef)->add(newClosure);
+                }
+                break;
+            }
+            case OpCode::GetLocalOverloadAt: {
+                uint16_t slot = singleByteArg ? readByte() : readShort();
+                uint16_t overloadIndex = readShort();
+                Value v = frame->slots[slot];
+                if (!isOverloadSet(v)) {
+                    runtimeError("Internal: GetLocalOverloadAt expected OverloadSet in slot");
+                    return errorReturn;
+                }
+                auto* set = asOverloadSet(v);
+                if (overloadIndex >= set->closures.size()) {
+                    runtimeError("Internal: GetLocalOverloadAt index out of range");
+                    return errorReturn;
+                }
+                push(set->closures[overloadIndex]);
                 break;
             }
             case OpCode::GetModuleVar: {
@@ -8141,14 +8631,29 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     auto fromModuleType { asModuleType(fromModule) };
                     auto toModuleType { asModuleType(toModule) };
 
+                    // OverloadSets need special handling: clone them on import
+                    // and tag the clone as importedFromModule. This lets a
+                    // subsequent local FuncDecl (DefineModuleOverload) replace
+                    // them rather than appending to imported overloads — local
+                    // declarations take precedence.
+                    auto storeImported = [&](int32_t hash, const icu::UnicodeString& name, const Value& v) {
+                        if (v.isObj() && isOverloadSet(v)) {
+                            auto cloneObj = newOverloadSetObj(name);
+                            auto* src = asOverloadSet(v);
+                            cloneObj->closures = src->closures;
+                            cloneObj->importedFromModule = true;
+                            toModuleType->vars.store(hash, name, Value::objRef(cloneObj.release()));
+                        } else {
+                            toModuleType->vars.store(hash, name, v);
+                        }
+                    };
+
                     // special case, if list is just [*], then import all symbols
                     const auto& firstElement { symbolsListObj->getElement(0) };
                     if (isString(firstElement) && asStringObj(firstElement)->s == "*") {
                         fromModuleType->vars.forEach(
                             [&](const VariablesMap::NameValue& nameValue) {
-                                //const icu::UnicodeString& name { nameValue.first };
-                                toModuleType->vars.store(nameValue);
-                                //std::cout << "declaring " << toUTF8StdString(nameValue.first) << " into " << toUTF8StdString(toModuleType->name) << std::endl;
+                                storeImported(nameValue.first.hashCode(), nameValue.first, nameValue.second);
                             });
                     }
                     else { // import the symbols explicitly listed
@@ -8161,8 +8666,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                                 runtimeError("Symbol '"+toUTF8StdString(name)+"' not found in imported module "+toUTF8StdString(fromModuleType->name));
                                 return errorReturn;
                             }
-                            toModuleType->vars.store(symbolString->hash, name, optValue.value());
-                            //std::cout << "declaring " << toUTF8StdString(name) << " into " << toUTF8StdString(toModuleType->name) << std::endl;
+                            storeImported(symbolString->hash, name, optValue.value());
                         }
                     }
                 }
@@ -8987,12 +9491,14 @@ Value resolveCanonicalRuntimeObjectType(const Value& typeVal)
         return Value::nilVal();
     };
 
-    for (const auto& [_, method] : objectType->methods) {
-        if (!isClosure(method.closure))
-            continue;
-        Value resolved = tryModule(asFunction(asClosure(method.closure)->function)->moduleType.strongRef());
-        if (resolved.isNonNil())
-            return resolved;
+    for (const auto& [_, methodSet] : objectType->methods) {
+        for (const auto& method : methodSet.overloads) {
+            if (!isClosure(method.closure))
+                continue;
+            Value resolved = tryModule(asFunction(asClosure(method.closure)->function)->moduleType.strongRef());
+            if (resolved.isNonNil())
+                return resolved;
+        }
     }
 
     for (const Value& modVal : ObjModuleType::allModules.get()) {
@@ -9133,20 +9639,27 @@ bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, b
             if (!typeVal.isNil() && isTypeSpec(typeVal)) {
                 // Try constructor auto-conversion first
                 ObjObjectType* targetType = asObjectType(typeVal);
+                // Look for any single-arg implicit init in the target type's
+                // overload set (or its supertype chain).
                 ObjObjectType* tInit = targetType;
-                const ObjObjectType::Method* initMethod = nullptr;
-                while (tInit && !initMethod) {
+                bool hasImplicitInit = false;
+                while (tInit && !hasImplicitInit) {
                     auto it = tInit->methods.find(asStringObj(initString)->hash);
-                    if (it != tInit->methods.end())
-                        initMethod = &it->second;
-                    else
-                        tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
+                    if (it != tInit->methods.end()) {
+                        for (const auto& m : it->second.overloads) {
+                            if (!isClosure(m.closure)) continue;
+                            auto* fn = asFunction(asClosure(m.closure)->function);
+                            if (fn->arity == 1 &&
+                                ast::hasModifier(fn->methodModifiers, ast::MethodModifier::Implicit)) {
+                                hasImplicitInit = true;
+                                break;
+                            }
+                        }
+                        // init declared at this level shadows any in supertypes
+                        break;
+                    }
+                    tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
                 }
-                bool hasImplicitInit = initMethod && isClosure(initMethod->closure)
-                    && asFunction(asClosure(initMethod->closure)->function)->arity == 1
-                    && ast::hasModifier(
-                        asFunction(asClosure(initMethod->closure)->function)->methodModifiers,
-                        ast::MethodModifier::Implicit);
                 if (hasImplicitInit) {
                     push(typeVal);  // callee (type constructor)
                     push(val);     // argument

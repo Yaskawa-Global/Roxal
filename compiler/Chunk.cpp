@@ -182,6 +182,66 @@ Chunk::size_type Chunk::invokeInstruction(const std::string& name, size_type off
 }
 
 
+Chunk::size_type Chunk::constantPlusIndexInstruction(const std::string& name, size_type offset, bool doubleByteArg) const
+{
+    size_type cur = offset + 1;
+    uint16_t constant;
+    if (doubleByteArg) {
+        constant = (uint16_t(code.at(cur)) << 8) | code.at(cur+1);
+        cur += 2;
+    } else {
+        constant = code.at(cur);
+        cur += 1;
+    }
+    uint16_t index = (uint16_t(code.at(cur)) << 8) | code.at(cur+1);
+    cur += 2;
+    std::cout << format("%-16s [%d] %4d '", name.c_str(), index, constant);
+    auto value = constants.at(constant);
+    std::cout << toString(value) << "'" << std::endl;
+    return cur;
+}
+
+
+Chunk::size_type Chunk::argPlusIndexInstruction(const std::string& name, size_type offset, bool doubleByteArg) const
+{
+    size_type cur = offset + 1;
+    uint16_t arg;
+    if (doubleByteArg) {
+        arg = (uint16_t(code.at(cur)) << 8) | code.at(cur+1);
+        cur += 2;
+    } else {
+        arg = code.at(cur);
+        cur += 1;
+    }
+    uint16_t index = (uint16_t(code.at(cur)) << 8) | code.at(cur+1);
+    cur += 2;
+    std::cout << format("%-16s [%d] slot=%d", name.c_str(), index, arg) << std::endl;
+    return cur;
+}
+
+
+Chunk::size_type Chunk::invokeOverloadAtInstruction(const std::string& name, size_type offset, bool doubleByteArg) const
+{
+    size_type cur = offset + 1;
+    uint16_t constant;
+    if (doubleByteArg) {
+        constant = (uint16_t(code.at(cur)) << 8) | code.at(cur+1);
+        cur += 2;
+    } else {
+        constant = code.at(cur);
+        cur += 1;
+    }
+    uint16_t index = (uint16_t(code.at(cur)) << 8) | code.at(cur+1);
+    cur += 2;
+    uint8_t argCount = code.at(cur);  // single-byte CallSpec for all-positional
+    cur += 1;
+    std::cout << format("%-16s [%d] (%d args) %4d '", name.c_str(), index, argCount, constant);
+    auto value = constants.at(constant);
+    std::cout << toString(value) << "'" << std::endl;
+    return cur;
+}
+
+
 
 Chunk::size_type Chunk::disassembleInstruction(size_type offset)
 {
@@ -441,6 +501,16 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("MOVE_MODULE_VAR", offset, doubleByteArg);
         case OpCode::MoveProp:
             return constantInstruction("MOVE_PROP", offset, doubleByteArg);
+        case OpCode::DefineModuleOverload:
+            return constantInstruction("DEFINE_MODULE_OVERLOAD", offset, doubleByteArg);
+        case OpCode::GetOverloadAt:
+            return constantPlusIndexInstruction("GET_OVERLOAD_AT", offset, doubleByteArg);
+        case OpCode::DefineLocalOverload:
+            return argInstruction("DEFINE_LOCAL_OVERLOAD", offset, doubleByteArg);
+        case OpCode::GetLocalOverloadAt:
+            return argPlusIndexInstruction("GET_LOCAL_OVERLOAD_AT", offset, doubleByteArg);
+        case OpCode::InvokeOverloadAt:
+            return invokeOverloadAtInstruction("INVOKE_OVERLOAD_AT", offset, doubleByteArg);
         case OpCode::Nop:
             return simpleInstruction("NOP", offset);
         default:

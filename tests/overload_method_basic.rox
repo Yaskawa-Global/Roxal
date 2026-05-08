@@ -1,0 +1,12 @@
+type Box object:
+    var v :int = 0
+
+    func handle(x :int):
+        print("int:{x}")
+
+    func handle(x :string):
+        print("str:{x}")
+
+var b = Box()
+b.handle(5)
+b.handle("hi")

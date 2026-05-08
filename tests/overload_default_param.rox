@@ -1,0 +1,11 @@
+// f(x:int) and f(x:int, y:int=0): with one int arg, the no-default
+// overload should win (more specific arity).
+
+func f(x :int):
+    print("one:{x}")
+
+func f(x :int, y :int = 0):
+    print("two:{x},{y}")
+
+f(5)
+f(5, 7)

@@ -232,16 +232,18 @@ std::optional<std::pair<icu::UnicodeString, icu::UnicodeString>> findOwningModul
     if (!isObjectType(typeValue))
         return std::nullopt;
 
-    for (const auto& [_, method] : asObjectType(typeValue)->methods) {
-        if (!isClosure(method.closure))
-            continue;
-        Value moduleValue = asFunction(asClosure(method.closure)->function)->moduleType.strongRef();
-        if (!isModuleType(moduleValue))
-            continue;
+    for (const auto& [_, methodSet] : asObjectType(typeValue)->methods) {
+        for (const auto& method : methodSet.overloads) {
+            if (!isClosure(method.closure))
+                continue;
+            Value moduleValue = asFunction(asClosure(method.closure)->function)->moduleType.strongRef();
+            if (!isModuleType(moduleValue))
+                continue;
 
-        ObjModuleType* module = asModuleType(moduleValue);
-        icu::UnicodeString fullName = module->fullName.isEmpty() ? module->name : module->fullName;
-        return std::make_pair(fullName, module->name);
+            ObjModuleType* module = asModuleType(moduleValue);
+            icu::UnicodeString fullName = module->fullName.isEmpty() ? module->name : module->fullName;
+            return std::make_pair(fullName, module->name);
+        }
     }
 
     return std::nullopt;
@@ -329,8 +331,8 @@ std::vector<RemoteTypeDependency> collectRemoteTypeDependencies(const Value& act
                     collectFromTypeInfo(property.type.value(), moduleValue);
             }
             for (const auto& method : objInfo.methods) {
-                if (method.second)
-                    collectFromFuncInfo(*method.second, moduleValue);
+                if (method.funcType)
+                    collectFromFuncInfo(*method.funcType, moduleValue);
             }
         }
     };
@@ -393,11 +395,13 @@ std::vector<RemoteTypeDependency> collectRemoteTypeDependencies(const Value& act
                 collectTypeValue(property.ownerType.strongRef());
         }
 
-        for (const auto& [_, method] : objectType->methods) {
-            if (isObjectType(method.ownerType.strongRef()))
-                collectTypeValue(method.ownerType.strongRef());
-            if (isClosure(method.closure))
-                collectFunctionValue(asClosure(method.closure)->function);
+        for (const auto& [_, methodSet] : objectType->methods) {
+            for (const auto& method : methodSet.overloads) {
+                if (isObjectType(method.ownerType.strongRef()))
+                    collectTypeValue(method.ownerType.strongRef());
+                if (isClosure(method.closure))
+                    collectFunctionValue(asClosure(method.closure)->function);
+            }
         }
     };
 
@@ -407,13 +411,16 @@ std::vector<RemoteTypeDependency> collectRemoteTypeDependencies(const Value& act
         if (isObjectType(property.type.strongRef()))
             collectTypeValue(property.type.strongRef());
     }
-    for (const auto& [_, method] : rootType->methods) {
-        if (isClosure(method.closure))
-            collectFunctionValue(asClosure(method.closure)->function);
+    for (const auto& [_, methodSet] : rootType->methods) {
+        for (const auto& method : methodSet.overloads) {
+            if (isClosure(method.closure))
+                collectFunctionValue(asClosure(method.closure)->function);
+        }
     }
 
     std::unordered_set<const Obj*> visitedOwnerModules;
-    for (const auto& [_, method] : rootType->methods) {
+    for (const auto& [_, methodSet] : rootType->methods) {
+        for (const auto& method : methodSet.overloads) {
         if (!isClosure(method.closure))
             continue;
         Value moduleValue = asFunction(asClosure(method.closure)->function)->moduleType.strongRef();
@@ -430,6 +437,7 @@ std::vector<RemoteTypeDependency> collectRemoteTypeDependencies(const Value& act
                 continue;
             collectTypeValue(exported);
         }
+        }  // close per-overload loop
     }
 
     return dependencies;
@@ -964,12 +972,13 @@ void ComputeConnection::handleIncomingCall(uint64_t callId, int64_t actorId,
                 return;
 
             ObjObjectType* type = asObjectType(asActorInstance(actorVal)->instanceType);
-            // Walk supertype chain to find the method
+            // Walk supertype chain to find the method (back-channel doesn't
+            // yet support overloaded remote methods — first overload wins).
             const ObjObjectType::Method* methodEntry = nullptr;
             for (ObjObjectType* t = type; t != nullptr;
                  t = t->superType.isNil() ? nullptr : asObjectType(t->superType)) {
-                auto it = t->methods.find(method.hashCode());
-                if (it != t->methods.end()) { methodEntry = &it->second; break; }
+                methodEntry = t->firstOverload(method.hashCode());
+                if (methodEntry) break;
             }
             if (!methodEntry)
                 throw std::runtime_error("back-channel: undefined actor method '"

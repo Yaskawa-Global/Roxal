@@ -18,6 +18,7 @@
 #include "TypeDeducer.h"
 #include "VM.h"
 #include "Error.h"
+#include "OverloadResolver.h"
 
 #include "RoxalCompiler.h"
 
@@ -741,6 +742,21 @@ std::any RoxalCompiler::visit(ptr<ast::File> ast)
                         "forward-decl placeholder " + toUTF8StdString(typeDecl->name));
         emitOpArgsBytes(OpCode::DefineModuleVar, typeNameConstant,
                         "bind placeholder " + toUTF8StdString(typeDecl->name));
+    }
+
+    // Function-overload pre-pass: count module-level FuncDecls per name. A
+    // name with count > 1 will bind to an OverloadSet rather than overwrite.
+    // visit(FuncDecl) reads this map to decide which opcode to emit.
+    {
+        auto modScope = asModuleScope(moduleScope());
+        for (const auto& declOrStmt : ast->declsOrStmts) {
+            if (!std::holds_alternative<ptr<Declaration>>(declOrStmt))
+                continue;
+            auto funcDecl = dynamic_ptr_cast<ast::FuncDecl>(std::get<ptr<Declaration>>(declOrStmt));
+            if (!funcDecl || !funcDecl->func->name.has_value())
+                continue;
+            ++modScope->moduleFuncDeclCounts[funcDecl->func->name.value()];
+        }
     }
 
     ast->acceptChildren(*this, results);
@@ -1916,14 +1932,54 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
     assert(func->name.has_value()); // func declarations must have names
     auto name { func->name.value() };
 
-    declareVariable(name);
+    bool atModuleScope = (asFuncScope(funcScope())->scopeDepth == 0);
+
+    // Determine whether this name is part of an overload set in this scope
+    // (count > 1, populated by the pre-passes in visit(File) / visit(Function)).
+    bool overloaded = false;
+    if (atModuleScope) {
+        auto modScope = asModuleScope(moduleScope());
+        overloaded = modScope->moduleFuncDeclCounts[name] > 1;
+    } else {
+        auto fs = asFuncScope(funcScope());
+        overloaded = fs->localFuncDeclCounts[name] > 1;
+    }
+
+    // Within an overload set, distinguish first vs subsequent decl by whether
+    // we've already recorded a candidate FuncType for this name.
+    bool firstOverloadDecl = false;
+    int16_t existingLocalSlot = -1;
+    if (overloaded) {
+        if (atModuleScope) {
+            auto& cands = asModuleScope(moduleScope())->moduleOverloadCandidates;
+            firstOverloadDecl = (cands.find(name) == cands.end());
+        } else {
+            auto fs = asFuncScope(funcScope());
+            firstOverloadDecl = (fs->localOverloadCandidates.find(name) == fs->localOverloadCandidates.end());
+            if (!firstOverloadDecl)
+                existingLocalSlot = fs->localOverloadSlots[name];
+        }
+    }
+
+    // Declare the variable on the FIRST decl only. Subsequent overload decls
+    // reuse the same module slot (DefineModuleOverload appends) or local slot
+    // (DefineLocalOverload appends) — calling declareVariable again would
+    // either error on duplicate or add an unwanted second local.
+    if (!overloaded || firstOverloadDecl) {
+        declareVariable(name);
+        if (!atModuleScope && overloaded) {
+            int16_t slot = (int16_t)(asFuncScope(funcScope())->locals.size() - 1);
+            asFuncScope(funcScope())->localOverloadSlots[name] = slot;
+            existingLocalSlot = slot;
+        }
+    }
 
     uint16_t var { 0 };
-    if (asFuncScope(funcScope())->scopeDepth == 0) // module variable
+    if (atModuleScope) // module variable
         var = identifierConstant(name); // create constant table entry for name
 
-    if (asFuncScope(funcScope())->scopeDepth > 0) {
-        // mark initialized
+    if (!atModuleScope && (!overloaded || firstOverloadDecl)) {
+        // mark initialized so the function body can refer to itself by name
         asFuncScope(funcScope())->locals.back().depth = asFuncScope(funcScope())->scopeDepth;
     }
 
@@ -1971,7 +2027,27 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
         }
     }
 
-    defineVariable(var);
+    // Record this overload's FuncType for compile-time resolution by visit(Call).
+    if (overloaded && ast->func->type.has_value()) {
+        auto funcType = ast->func->type.value();
+        if (atModuleScope) {
+            asModuleScope(moduleScope())->moduleOverloadCandidates[name].push_back(funcType);
+        } else {
+            asFuncScope(funcScope())->localOverloadCandidates[name].push_back(funcType);
+        }
+    }
+
+    if (overloaded) {
+        if (atModuleScope) {
+            emitOpArgsBytes(OpCode::DefineModuleOverload, var,
+                            "overload of " + toUTF8StdString(name));
+        } else {
+            emitOpArgsBytes(OpCode::DefineLocalOverload, (uint16_t)existingLocalSlot,
+                            "local overload of " + toUTF8StdString(name));
+        }
+    } else {
+        defineVariable(var);
+    }
 
     return {};
 }
@@ -3146,6 +3222,25 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 
     enterFuncScope(enclosingModuleScope->moduleType, funcName, ftype, ast->type.value());
 
+    // Local function-overload pre-pass: count FuncDecls at the top level of
+    // this function's body. A name with count > 1 binds to an OverloadSet
+    // in its local slot (DefineLocalOverload); single-decl names use the
+    // existing fast path. We only count immediate children of the body
+    // Suite — FuncDecls inside nested if/for/while blocks belong to their
+    // own block scopes and are not yet supported as overloads.
+    if (std::holds_alternative<ptr<Suite>>(ast->body)) {
+        auto bodySuite = std::get<ptr<Suite>>(ast->body);
+        auto fs = asFuncScope(funcScope());
+        for (const auto& declOrStmt : bodySuite->declsOrStmts) {
+            if (!std::holds_alternative<ptr<Declaration>>(declOrStmt))
+                continue;
+            auto fd = dynamic_ptr_cast<ast::FuncDecl>(std::get<ptr<Declaration>>(declOrStmt));
+            if (!fd || !fd->func->name.has_value())
+                continue;
+            ++fs->localFuncDeclCounts[fd->func->name.value()];
+        }
+    }
+
     // Store AST-level return types so visit(ReturnStatement) can emit conversion opcodes.
     // Skip for conversion operators (would recurse — the operator IS the conversion).
     if (ast->returnTypes.has_value() && !(ast->name.has_value() && ast->name.value().startsWith("operator->")))
@@ -3909,6 +4004,204 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
             // move(non-lvalue expr) — just evaluate (temporary, already sole-owner)
             argExpr->accept(*this);
             return {};
+        }
+    }
+
+    // Compile-time function-overload resolution.
+    // If the callable is a bare name that resolves to an overload set in this
+    // scope, attempt to pick a unique overload using the deduced argument
+    // types. On success we emit GetOverloadAt/GetLocalOverloadAt to push the
+    // chosen closure directly — bypassing all runtime dispatch overhead.
+    // On failure (ambiguous or no-match) we report a compile error. If the
+    // result is NeedsRuntime (some arg types are unknown and can't be safely
+    // narrowed), we fall through to the existing runtime dispatch path.
+    if (auto callVar = dynamic_ptr_cast<ast::Variable>(ast->callable)) {
+        const auto& name = callVar->name;
+        std::vector<ptr<type::Type>>* candTypes = nullptr;
+        bool isLocalOverload = false;
+        int16_t localSlot = -1;
+
+        // Local scope first (innermost), then module scope.
+        if (asFuncScope(funcScope())->scopeDepth > 0) {
+            auto fs = asFuncScope(funcScope());
+            auto it = fs->localOverloadCandidates.find(name);
+            if (it != fs->localOverloadCandidates.end()) {
+                candTypes = &it->second;
+                isLocalOverload = true;
+                auto sit = fs->localOverloadSlots.find(name);
+                if (sit != fs->localOverloadSlots.end())
+                    localSlot = sit->second;
+            }
+        }
+        if (candTypes == nullptr) {
+            auto modScope = asModuleScope(moduleScope());
+            auto it = modScope->moduleOverloadCandidates.find(name);
+            if (it != modScope->moduleOverloadCandidates.end())
+                candTypes = &it->second;
+        }
+
+        if (candTypes != nullptr && candTypes->size() > 1) {
+            // Build candidate list and ArgInfo.
+            OverloadResolver resolver;
+            std::vector<OverloadResolver::Candidate> cands;
+            cands.reserve(candTypes->size());
+            for (const auto& ft : *candTypes) {
+                OverloadResolver::Candidate c;
+                c.funcType = ft;
+                c.target   = Value::nilVal();  // not needed for compile-time selection
+                c.isMethod = false;
+                cands.push_back(c);
+            }
+            std::vector<OverloadResolver::ArgInfo> argInfos;
+            argInfos.reserve(ast->args.size());
+            for (const auto& a : ast->args) {
+                OverloadResolver::ArgInfo info;
+                info.type = a.second->type.has_value() ? a.second->type.value() : nullptr;
+                info.isNamed = !a.first.isEmpty();
+                info.nameHash = a.first.isEmpty() ? 0 : a.first.hashCode();
+                argInfos.push_back(info);
+            }
+
+            bool strictMode = asFuncScope(funcScope())->strict;
+            auto rr = resolver.resolve(cands, argInfos,
+                                       /*staticDispatchAttempt=*/true, strictMode);
+
+            if (rr.kind == OverloadResolver::ResolveResult::ResolvedUnique) {
+                // Emit the chosen overload directly, then args, then Call.
+                if (isLocalOverload) {
+                    emitOpArgsBytesPlusIndex(OpCode::GetLocalOverloadAt,
+                                             (uint16_t)localSlot, rr.chosenIndex,
+                                             "overload " + std::to_string(rr.chosenIndex) + " of "
+                                             + toUTF8StdString(name));
+                } else {
+                    uint16_t nameConst = identifierConstant(name);
+                    emitOpArgsBytesPlusIndex(OpCode::GetOverloadAt,
+                                             nameConst, rr.chosenIndex,
+                                             "overload " + std::to_string(rr.chosenIndex) + " of "
+                                             + toUTF8StdString(name));
+                }
+                // Visit args only (skip callable, which we just emitted).
+                for (auto& a : ast->args)
+                    a.second->accept(*this);
+
+                currentNode = ast;
+                CallSpec callSpec = buildCallSpec(ast);
+                auto bytes = callSpec.toBytes();
+                if (bytes.size() == 1)
+                    emitBytes(OpCode::Call, bytes[0]);
+                else {
+                    emitByte(OpCode::Call);
+                    for (auto i = 0u; i < bytes.size(); i++)
+                        emitByte(bytes[i]);
+                }
+                return {};
+            }
+
+            if (rr.kind == OverloadResolver::ResolveResult::Ambiguous) {
+                error(resolver.ambiguityDiagnostic(name, cands, rr.tiedIndices, argInfos));
+                return {};
+            }
+            if (rr.kind == OverloadResolver::ResolveResult::NoMatch) {
+                error(resolver.noMatchDiagnostic(name, cands, argInfos));
+                return {};
+            }
+            // NeedsRuntime: fall through to existing runtime dispatch path.
+        }
+    }
+
+    // Compile-time METHOD-overload resolution.
+    // If the callable is `receiver.methodName` (an Accessor) and the
+    // receiver's type was deduced to an object/actor with a known
+    // overload set for that method, attempt unique resolution against the
+    // deduced arg types. On ResolvedUnique we emit InvokeOverloadAt —
+    // bypassing the GET_PROP_CHECK + CALL + runtime resolver path. On
+    // NeedsRuntime / NoMatch / Ambiguous (with all types known) we either
+    // fall through to runtime dispatch or report a compile error.
+    if (auto accessor = dynamic_ptr_cast<ast::UnaryOp>(ast->callable);
+        accessor && accessor->op == ast::UnaryOp::Accessor && accessor->member.has_value())
+    {
+        const auto& methodName = accessor->member.value();
+        if (accessor->arg->type.has_value()) {
+            auto recvType = accessor->arg->type.value();
+            // Only attempt for object/actor receivers with a populated obj.
+            if (recvType && recvType->obj.has_value() &&
+                (recvType->builtin == type::BuiltinType::Object ||
+                 recvType->builtin == type::BuiltinType::Actor))
+            {
+                // Walk the compile-time extends chain to find the first
+                // level that declares the method (matches the runtime
+                // shadow-by-name semantics from Phase 2).
+                std::vector<ptr<type::Type>> methodFTs;
+                ptr<type::Type> walked = recvType;
+                while (walked && walked->obj.has_value() && methodFTs.empty()) {
+                    for (const auto& mi : walked->obj.value().methods) {
+                        if (mi.name == methodName && mi.funcType) {
+                            ptr<type::Type> wrapper = make_ptr<type::Type>(type::BuiltinType::Func);
+                            wrapper->func = *mi.funcType;
+                            methodFTs.push_back(wrapper);
+                        }
+                    }
+                    if (!methodFTs.empty()) break;  // shadow-by-name
+                    if (walked->obj.value().extends.has_value())
+                        walked = walked->obj.value().extends.value();
+                    else
+                        walked = nullptr;
+                }
+
+                if (methodFTs.size() > 1) {
+                    OverloadResolver resolver;
+                    std::vector<OverloadResolver::Candidate> cands;
+                    cands.reserve(methodFTs.size());
+                    for (const auto& ft : methodFTs) {
+                        OverloadResolver::Candidate c;
+                        c.funcType = ft;
+                        c.target = Value::nilVal();
+                        c.isMethod = true;
+                        cands.push_back(c);
+                    }
+                    std::vector<OverloadResolver::ArgInfo> argInfos;
+                    argInfos.reserve(ast->args.size());
+                    for (const auto& a : ast->args) {
+                        OverloadResolver::ArgInfo info;
+                        info.type = a.second->type.has_value() ? a.second->type.value() : nullptr;
+                        info.isNamed = !a.first.isEmpty();
+                        info.nameHash = a.first.isEmpty() ? 0 : a.first.hashCode();
+                        argInfos.push_back(info);
+                    }
+                    bool strictMode = asFuncScope(funcScope())->strict;
+                    auto rr = resolver.resolve(cands, argInfos,
+                                               /*staticDispatchAttempt=*/true,
+                                               strictMode);
+                    if (rr.kind == OverloadResolver::ResolveResult::ResolvedUnique) {
+                        // Emit: receiver, then args, then InvokeOverloadAt.
+                        accessor->arg->accept(*this);
+                        for (auto& a : ast->args)
+                            a.second->accept(*this);
+                        currentNode = ast;
+                        uint16_t nameConst = identifierConstant(methodName);
+                        // Build a single-byte CallSpec (all-positional / matched).
+                        CallSpec callSpec = buildCallSpec(ast);
+                        // Emit the opcode + name + 2-byte index + CallSpec bytes.
+                        emitOpArgsBytesPlusIndex(OpCode::InvokeOverloadAt,
+                                                 nameConst, rr.chosenIndex,
+                                                 "method overload " + std::to_string(rr.chosenIndex)
+                                                 + " of " + toUTF8StdString(methodName));
+                        auto bytes = callSpec.toBytes();
+                        for (auto i = 0u; i < bytes.size(); ++i)
+                            emitByte(bytes[i]);
+                        return {};
+                    }
+                    if (rr.kind == OverloadResolver::ResolveResult::Ambiguous) {
+                        error(resolver.ambiguityDiagnostic(methodName, cands, rr.tiedIndices, argInfos));
+                        return {};
+                    }
+                    if (rr.kind == OverloadResolver::ResolveResult::NoMatch) {
+                        error(resolver.noMatchDiagnostic(methodName, cands, argInfos));
+                        return {};
+                    }
+                    // NeedsRuntime: fall through.
+                }
+            }
         }
     }
 
@@ -5607,8 +5900,8 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
                 }
 
                 // Check methods
-                for (const auto& [methodName, methodType] : objType.methods) {
-                    if (methodName == name) {
+                for (const auto& mi : objType.methods) {
+                    if (mi.name == name) {
                         if (assign)
                             error("Cannot assign to method '" + toUTF8StdString(name) + "'");
                         if (asSignal)

@@ -116,12 +116,14 @@ Value resolveCanonicalSerializedObjectType(const Value& typeVal)
         return Value::nilVal();
     };
 
-    for (const auto& [_, method] : objectType->methods) {
-        if (!isClosure(method.closure))
-            continue;
-        Value resolved = tryModule(asFunction(asClosure(method.closure)->function)->moduleType.strongRef());
-        if (resolved.isNonNil())
-            return resolved;
+    for (const auto& [_, methodSet] : objectType->methods) {
+        for (const auto& method : methodSet.overloads) {
+            if (!isClosure(method.closure))
+                continue;
+            Value resolved = tryModule(asFunction(asClosure(method.closure)->function)->moduleType.strongRef());
+            if (resolved.isNonNil())
+                return resolved;
+        }
     }
 
     for (const Value& modVal : ObjModuleType::allModules.get()) {
@@ -452,7 +454,8 @@ Value Value::actorInstanceVal(const Value& objectType)
 Value Value::boundMethodVal(const Value& instance, const Value& closure)
 {
     debug_assert_msg(isObjectInstance(instance) || isActorInstance(instance), "Value is an ObjObject");
-    debug_assert_msg(isClosure(closure), "Value is an ObjClosure");
+    debug_assert_msg(isClosure(closure) || isOverloadSet(closure),
+                     "Value is an ObjClosure or ObjOverloadSet");
     return Value::objVal(newBoundMethodObj(instance, closure));
 }
 

@@ -1006,11 +1006,12 @@ Value ModuleSys::typeMethodDecl(const Value& typeValue, const std::string& metho
 
     ObjObjectType* type = asObjectType(typeValue);
     auto hash = toUnicodeString(methodName).hashCode();
-    auto it = type->methods.find(hash);
-    if (it == type->methods.end())
+    // First overload; sys helpers don't yet pick among overloads.
+    auto* method = type->firstOverload(hash);
+    if (method == nullptr)
         return Value::nilVal();
 
-    Value closure = it->second.closure;
+    Value closure = method->closure;
     if (!isClosure(closure))
         return Value::nilVal();
 

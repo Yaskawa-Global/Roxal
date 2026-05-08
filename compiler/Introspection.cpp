@@ -155,18 +155,19 @@ std::vector<SymbolEntry> collectMethodEntries(ObjObjectType* type)
         return entries;
 
     for (const auto& kv : type->methods) {
-        const auto& method = kv.second;
-        if (method.access != ast::Access::Public)
-            continue;
+        for (const auto& method : kv.second.overloads) {
+            if (method.access != ast::Access::Public)
+                continue;
 
-        SymbolEntry entry;
-        entry.name = toUTF8StdString(method.name);
-        if (method.closure.isNil()) {
-            entry.type = "<abstract>";
-        } else {
-            entry.type = describeValueType(method.closure, &entry.doc);
+            SymbolEntry entry;
+            entry.name = toUTF8StdString(method.name);
+            if (method.closure.isNil()) {
+                entry.type = "<abstract>";
+            } else {
+                entry.type = describeValueType(method.closure, &entry.doc);
+            }
+            entries.push_back(std::move(entry));
         }
-        entries.push_back(std::move(entry));
     }
     std::sort(entries.begin(), entries.end(),
               [](const SymbolEntry& a, const SymbolEntry& b) {

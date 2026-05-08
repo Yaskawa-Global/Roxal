@@ -509,7 +509,7 @@ void ModuleGrpc::addNativeMethod(ObjObjectType* type,
     m.closure = closure;
     m.access = ast::Access::Public;
     m.ownerType = Value::objRef(type);
-    type->methods[toUnicodeString(name).hashCode()] = m;
+    type->methods[toUnicodeString(name).hashCode()].overloads.push_back(m);
 }
 
 Value ModuleGrpc::makeServiceType(const std::string& serviceName)

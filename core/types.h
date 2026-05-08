@@ -127,7 +127,21 @@ struct Type {
         };
 
         std::vector<PropType> properties;
-        std::vector<std::pair<icu::UnicodeString, ptr<FuncType>>> methods;
+
+        // Compile-time view of a method on this type. The numeric
+        // methodModifiers bits match ast::MethodModifier (Implicit,
+        // StatementAction, Abstract); we use uint8_t here to avoid a
+        // circular dependency on AST.h. Populated by TypeDeducer.
+        struct MethodInfo {
+            MethodInfo() {}
+            MethodInfo(const icu::UnicodeString& n, ptr<FuncType> ft)
+              : name(n), funcType(std::move(ft)) {}
+            icu::UnicodeString name;
+            ptr<FuncType>      funcType;
+            uint8_t            methodModifiers = 0;
+            Access             access = Access::Public;
+        };
+        std::vector<MethodInfo> methods;
 
         std::string toString() const;
     };

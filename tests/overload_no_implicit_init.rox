@@ -1,0 +1,26 @@
+// With a typed-int candidate and a NON-implicit-init Box(string) overload,
+// resolution for f(complex_obj) should NOT silently route through the
+// non-implicit init. The presence of `g(x :int)` and `g(x :Box)` calling
+// g(b) where b is a Box should pick g(x :Box) (exact). Calling g("hi")
+// with g(x :int) and g(x :Box) — Box has only NON-implicit init(string),
+// so g("hi") should pick g(x :int) via non-strict implicit conv (rank 4)
+// because the user-def-conv path is rejected (no implicit init).
+
+type Box object:
+    var s :string = ""
+    proc init(x :string):  // NOT implicit
+        this.s = x
+
+func g(x :int):
+    print("int:{x}")
+
+func g(x :Box):
+    print("box:{x.s}")
+
+var b = Box("hello")
+g(b)         // exact match Box → "box:hello"
+
+// Now call g with a string. Box has init(string) but it's NOT implicit.
+// In non-strict mode, builtin string→int is allowed (rank 4); user-def
+// implicit conv path is now provably absent. So pick g(x :int).
+g("hi")

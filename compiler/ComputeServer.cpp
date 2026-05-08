@@ -422,21 +422,24 @@ struct RemoteTypeCanonicalizer {
             canonicalizeValueInPlace(property.ownerType);
         }
 
-        for (auto& [_, method] : objectType->methods) {
-            canonicalizeValueInPlace(method.ownerType);
-            if (isClosure(method.closure))
-                canonicalizeFunction(asFunction(asClosure(method.closure)->function));
+        for (auto& [_, methodSet] : objectType->methods) {
+            for (auto& method : methodSet.overloads) {
+                canonicalizeValueInPlace(method.ownerType);
+                if (isClosure(method.closure))
+                    canonicalizeFunction(asFunction(asClosure(method.closure)->function));
+            }
         }
     }
 };
 
 const ObjObjectType::Method* findMethodRecursive(ObjObjectType* type, int32_t nameHash)
 {
+    // Remote actor binding: take the first overload at the deepest matching
+    // level. Overloaded remote method dispatch is not yet supported.
     for (ObjObjectType* t = type; t != nullptr;
          t = t->superType.isNil() ? nullptr : asObjectType(t->superType)) {
-        auto it = t->methods.find(nameHash);
-        if (it != t->methods.end())
-            return &it->second;
+        if (auto* m = t->firstOverload(nameHash))
+            return m;
     }
     return nullptr;
 }

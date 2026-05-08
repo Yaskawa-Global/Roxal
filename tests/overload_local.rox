@@ -1,0 +1,9 @@
+func outer():
+    func inner(x :int):
+        print("inner-int:{x}")
+    func inner(x :string):
+        print("inner-str:{x}")
+    inner(7)
+    inner("hi")
+
+outer()

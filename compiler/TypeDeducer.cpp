@@ -224,9 +224,22 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
             type::Type::ObjectType::PropType propType;
             propType.name = prop->name;
             propType.nameHashCode = prop->name.hashCode();
-            // Set type if available
-            if (prop->varType.has_value() && std::holds_alternative<BuiltinType>(prop->varType.value())) {
-                propType.type = make_ptr<type::Type>(std::get<BuiltinType>(prop->varType.value()));
+            // Set type if available — builtin annotation directly, or
+            // resolve a TypeName by lookup (so e.g. `var engine :Engine`
+            // gets a fully-fledged Engine type::Type with its methods,
+            // enabling compile-time method overload dispatch through
+            // property chains like `car.engine.handle(...)`).
+            if (prop->varType.has_value()) {
+                if (std::holds_alternative<BuiltinType>(prop->varType.value())) {
+                    propType.type = make_ptr<type::Type>(std::get<BuiltinType>(prop->varType.value()));
+                } else {
+                    const auto& tn = std::get<ast::TypeName>(prop->varType.value());
+                    if (!tn.empty()) {
+                        auto info = lookupVar(tn.back());
+                        if (info.has_value() && info->type)
+                            propType.type = info->type;
+                    }
+                }
             }
             propType.hasDefault = prop->initializer.has_value();
             propType.access = (prop->access == ast::Access::Private)
@@ -263,13 +276,41 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
             objType->obj->properties.push_back(propType);
         }
 
-        // Register methods
+        // Register methods. We populate the FuncType params so the
+        // OverloadResolver can rank candidates by signature, and carry
+        // the AST's methodModifiers/access through so callers can check
+        // for `implicit`, `abstract`, etc. without re-walking the AST.
         for (const auto& method : ast->methods) {
             if (method->name.has_value()) {
-                // Create a basic function type for the method
                 ptr<type::Type::FuncType> methodType = make_ptr<type::Type::FuncType>();
                 methodType->isProc = method->isProc;
-                objType->obj->methods.emplace_back(method->name.value(), methodType);
+                for (const auto& p : method->params) {
+                    type::Type::FuncType::ParamType pt(p->name);
+                    pt.hasDefault = p->defaultValue.has_value();
+                    pt.variadic = p->variadic;
+                    if (p->type.has_value()) {
+                        ptr<type::Type> paramT = make_ptr<type::Type>();
+                        if (std::holds_alternative<ast::BuiltinType>(p->type.value())) {
+                            paramT->builtin = std::get<ast::BuiltinType>(p->type.value());
+                        } else {
+                            // TypeName — leave builtin unset; resolver treats
+                            // a typed param without builtin info as Object/Actor
+                            // by name when needed.
+                            paramT->builtin = type::BuiltinType::Object;
+                            type::Type::ObjectType ot;
+                            const auto& tn = std::get<ast::TypeName>(p->type.value());
+                            if (!tn.empty()) ot.name = tn.back();
+                            paramT->obj = ot;
+                        }
+                        pt.type = paramT;
+                    }
+                    methodType->params.push_back(pt);
+                }
+                type::Type::ObjectType::MethodInfo info(method->name.value(), methodType);
+                info.methodModifiers = method->methodModifiers;
+                info.access = (method->access == ast::Access::Private)
+                              ? type::Access::Private : type::Access::Public;
+                objType->obj->methods.push_back(info);
             }
         }
 
@@ -797,6 +838,24 @@ std::any TypeDeducer::visit(ptr<ast::UnaryOp> ast)
                         ast->type = make_ptr<Type>(BuiltinType::Int);
                     break;
                 case ast::UnaryOp::Accessor:
+                    // Property access on a typed receiver: if the receiver
+                    // is an object/actor with a known properties list,
+                    // look up the property by name and propagate its type
+                    // up to this accessor expression. This lets chains
+                    // like `obj.prop.method(args)` resolve `prop`'s type
+                    // for downstream compile-time method dispatch.
+                    if (ast->member.has_value() &&
+                        (argType == BuiltinType::Object || argType == BuiltinType::Actor) &&
+                        ast->arg->type.value()->obj.has_value())
+                    {
+                        const auto& objT = ast->arg->type.value()->obj.value();
+                        for (const auto& p : objT.properties) {
+                            if (p.name == ast->member.value() && p.type.has_value()) {
+                                ast->type = p.type.value();
+                                break;
+                            }
+                        }
+                    }
                     break;
                 default:
                     break;

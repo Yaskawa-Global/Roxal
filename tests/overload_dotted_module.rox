@@ -1,0 +1,6 @@
+// Overloaded function imported from another module, called via the
+// module-dotted form (no `import *`).
+import overload_cross_module_lib
+
+overload_cross_module_lib.g(7)
+overload_cross_module_lib.g("dotted")

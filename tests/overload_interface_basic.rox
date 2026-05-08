@@ -1,0 +1,19 @@
+// Interface declares two abstract overloads of `handle`. Implementer
+// provides concrete overloads for each. Conformance check passes;
+// dispatch picks the right overload at the call site.
+
+type Handler interface:
+    func handle(x :int)
+    func handle(x :string)
+
+type Box object implements Handler:
+    func handle(x :int):
+        print("box-int:{x}")
+    func handle(x :string):
+        print("box-str:{x}")
+
+var b = Box()
+b.handle(5)
+b.handle("hi")
+print(b is Handler)
+print(Box is Handler)
