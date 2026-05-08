@@ -12,7 +12,7 @@ namespace roxal {
 // Keep this independent from the module cache version because the wire shape
 // can evolve without changing .roc serialization.
 constexpr char ComputeMagic[4] = {'R', 'X', 'C', 'S'};
-constexpr std::uint32_t ComputeVersion = 30;
+constexpr std::uint32_t ComputeVersion = 31;
 
 // Default listen port for `roxal --server`
 constexpr std::uint16_t ComputeDefaultPort = 26925;
