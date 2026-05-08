@@ -3636,10 +3636,37 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             });
         }
         case ValueType::Closure: {
-            return readOwnedObject([&](){
+            // Both ObjClosure and ObjOverloadSet flow through ValueType::Closure
+            // (ObjOverloadSet::valueType() returns Closure so first-class
+            // references stay transparent). Discriminate by peeking the
+            // per-object type tag that ObjClosure::write / ObjOverloadSet::write
+            // both place as the first byte of their payload.
+            uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
+            uint64_t id;  in.read(reinterpret_cast<char*>(&id),8);
+            if (useCtx && flag == 0) {
+                auto it = ctx->idToObj.find(id);
+                if (it == ctx->idToObj.end())
+                    throw std::runtime_error("Unknown object ref id");
+                return Value::objRef(it->second);
+            }
+            // Peek the obj-type tag without consuming it.
+            auto pos = in.tellg();
+            uint8_t typeTag;
+            if (!in.read(reinterpret_cast<char*>(&typeTag),1))
+                throw std::runtime_error("readValue: unable to peek obj-type tag");
+            in.seekg(pos);
+
+            Value owned;
+            if (typeTag == static_cast<uint8_t>(ObjType::OverloadSet)) {
+                owned = Value::objVal(newOverloadSetObj(icu::UnicodeString()));
+            } else {
                 Value func { Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString()) };
-                return Value::closureVal(func);
-            });
+                owned = Value::closureVal(func);
+            }
+            Obj* obj = owned.asObj();
+            if (useCtx) ctx->idToObj[id] = obj;
+            obj->read(in, ctx);
+            return owned;
         }
         case ValueType::Upvalue: {
             return readOwnedObject([&](){ return Value::upvalueVal(nullptr); });

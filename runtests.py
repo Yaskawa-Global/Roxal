@@ -187,6 +187,7 @@ tests = [
     'overload_interface_covariant_return',
     'overload_named_args', 'overload_default_named', 'overload_dotted_module',
     'overload_no_implicit_init', 'overload_method_chain',
+    'overload_first_class',
     'complex_type',
     'typededucer_binop', 'typededucer_ops', 'typededucer_until', 'typededucer_if_suffix', 'typededucer_bitwise',
     'time_basic', 'time_quantity', 'time_quantity_arith',

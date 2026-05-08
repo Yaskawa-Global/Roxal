@@ -215,80 +215,6 @@ print( format("x", "y", "z") )           // "x, y, z" (sep uses default)
 print( format(sep=" | ", "a", "b", "c") ) // "a | b | c"
 ```
 
-### Overloading
-
-A name (`func`, `proc`, or method) can be declared multiple times in the same scope when the parameter signatures distinguish each declaration. The compiler picks the best match at the call site:
-
-```php
-func handle(x :int):
-  print("int " + x)
-
-func handle(x :string):
-  print("str " + x)
-
-handle(5)        // → "int 5"
-handle("hello")  // → "str hello"
-```
-
-The same applies to methods on object/actor types and to `init` constructors:
-
-```php
-type Box object:
-  var v :int = 0
-  var s :string = ""
-
-  proc init(x :int):
-    this.v = x
-
-  proc init(x :string):
-    this.s = x
-
-  func handle(x :int): print("int " + x)
-  func handle(x :string): print("str " + x)
-
-var a = Box(5)       // picks init(int)
-var b = Box("hi")    // picks init(string)
-b.handle(42)         // → "int 42"
-```
-
-**Resolution rules** (best to worst):
-
-1. **Exact** type match
-2. **Subtype** match (object/actor `extends` or `implements` chain)
-3. **Strict-implicit conversion** — safe widening (`byte → int`, `int → real`, etc.) — works in any context
-4. **Untyped wildcard** — a parameter with no declared type matches anything
-5. **Non-strict-only implicit conversion** — lossy or surprising conversions like `string → int`, only allowed when the call site is non-strict (e.g., module-scope code) — ranked below untyped so a wildcard catches the conversion before it silently fires
-6. **User-defined implicit conversion** — `implicit operator T()` on the source or `implicit init(S)` on the target
-7. **Variadic absorption** — args consumed by a `...args` variadic param
-
-A candidate's score is the sum of its per-arg ranks. The lowest-summed candidate wins. Ties are broken by "fewer params filled by their default value." If a tie still remains, the call is **ambiguous** and reported as an error — at compile time when all argument types are known statically, otherwise at runtime, with the conflicting overloads listed.
-
-**First-class references** preserve overloading. Assigning `g = foo` (where `foo` is overloaded) binds `g` to the whole overload set; calling `g(...)` still dispatches to the right overload. Same for `g = obj.method`:
-
-```php
-g = handle
-g(5)        // → "int 5"
-g("world")  // → "str world"
-```
-
-**Compile-time vs runtime resolution.** When all arg types are known at compile time (typically: typed locals, typed parameters, literal values), the compiler picks the unique overload and emits a direct call — zero runtime dispatch overhead. When arg types are dynamic (e.g., from an untyped local or a value pulled out of a `dict`), resolution happens at runtime against the actual argument values. The set of candidates and the ranking rules are the same in both paths.
-
-**Interfaces** can declare multiple abstract overloads of a name. An implementer must satisfy each abstract overload signature with a matching concrete one (same parameter types, return type same or a subtype):
-
-```php
-type Handler interface:
-  func handle(x :int)
-  func handle(x :string)
-
-type Box object implements Handler:
-  func handle(x :int):    print("int")
-  func handle(x :string): print("str")
-```
-
-If the implementer omits an overload, the conformance error names the missing signature, not just the method name.
-
-**Limitations.** Overloading does **not** apply to operator methods (`operator+`, etc.) — a type still has at most one `operator+`. Statement-action methods are also single-overload per name.
-
 
 ## Operators
 
@@ -892,6 +818,78 @@ For each abstract requirement, the implementer must supply a satisfying declarat
 Concrete interface members (consts and nested types) are inherited by implementers, so `Impl.X`, `Impl.Inner`, and instance access (`inst.X`, `inst.Inner`) all work. The implementer's own declaration takes precedence over an inherited one with the same name; among multiple `implements` clauses, the first listed wins.
 
 An interface may `extends` another interface (single inheritance, interface→interface only). An object/actor type may `extends` one parent type and `implements` any number of interfaces — `is` walks both relationships, so `inst is I` is true whether `I` is reached via `extends` or `implements`. Interfaces themselves cannot be instantiated.
+
+
+### Overloading
+
+A name function or method can be declared multiple times in the same scope when the parameter signatures distinguish each declaration. The compiler picks the best match at the call site:
+
+```php
+func handle(x :int):
+  print("int " + x)
+
+func handle(x :string):
+  print("str " + x)
+
+handle(5)        // → "int 5"
+handle("hello")  // → "str hello"
+```
+
+The same applies to methods on object/actor types and to `init` constructors:
+
+```php
+type Box object:
+  var v :int = 0
+  var s :string = ""
+
+  proc init(x :int):
+    this.v = x
+
+  proc init(x :string):
+    this.s = x
+
+  func handle(x :int): print("int " + x)
+  func handle(x :string): print("str " + x)
+
+var a = Box(5)       // picks init(int)
+var b = Box("hi")    // picks init(string)
+b.handle(42)         // → "int 42"
+```
+
+**Resolution rules** (best to worst):
+
+1. **Exact** type match
+2. **Subtype** match (object/actor `extends` or `implements` chain)
+3. **Strict-implicit conversion** — safe widening (`byte → int`, `int → real`, etc.) — works in any context
+4. **Untyped wildcard** — a parameter with no declared type matches anything
+5. **Non-strict-only implicit conversion** — lossy or surprising conversions like `string → int`, only allowed when the call site is non-strict (e.g., module-scope code) — ranked below untyped so a wildcard catches the conversion before it silently fires
+6. **User-defined implicit conversion** — `implicit operator T()` on the source or `implicit init(S)` on the target
+7. **Variadic absorption** — args consumed by a `...args` variadic param
+
+A candidate's score is the sum of its per-arg ranks. The lowest-summed candidate wins. Ties are broken by "fewer params filled by their default value." If a tie still remains, the call is **ambiguous** and reported as an error — at compile time when all argument types are known statically, otherwise at runtime, with the conflicting overloads listed.
+
+**First-class references** preserve overloading. Assigning `g = foo` (where `foo` is overloaded) binds `g` to the whole overload set; calling `g(...)` still dispatches to the right overload. Same for `g = obj.method`:
+
+```php
+g = handle
+g(5)        // → "int 5"
+g("world")  // → "str world"
+```
+
+**Interfaces** can declare multiple abstract overloads of a name. An implementer must satisfy each abstract overload signature with a matching concrete one (same parameter types, return type same or a subtype):
+
+```php
+type Handler interface:
+  func handle(x :int)
+  func handle(x :string)
+
+type Box object implements Handler:
+  func handle(x :int):    print("int")
+  func handle(x :string): print("str")
+```
+
+**Limitations.** Overloading does **not** apply to operator methods (`operator+`, etc.) — a type still has at most one `operator+`. Statement-action methods are also single-overload per name.
+
 
 
 ### Operator Overloading

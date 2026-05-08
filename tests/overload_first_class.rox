@@ -1,0 +1,15 @@
+// First-class reference to an overloaded function: g = f.
+// Roundtrip through cache (load from .roc) preserves the OverloadSet so
+// later calls still dispatch correctly. The mere fact that this test
+// runs cleanly under the test runner's automatic cache reuse exercises
+// the writeValue/readValue path for ObjOverloadSet.
+
+func handle(x :int):
+    print("int:{x}")
+
+func handle(x :string):
+    print("str:{x}")
+
+g = handle
+g(7)
+g("ref")

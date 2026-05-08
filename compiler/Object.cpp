@@ -6011,17 +6011,46 @@ unique_ptr<Obj, UnreleasedObj> ObjOverloadSet::clone(roxal::ptr<CloneContext> ct
 
 void ObjOverloadSet::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
-    // OverloadSets are constructed at module init by DefineModuleOverload
-    // opcodes from the chunk's constant pool of closures; they should never
-    // need to be serialized as a Value. Defensive check.
-    (void)out; (void)ctx;
-    throw std::runtime_error("ObjOverloadSet::write — overload sets are not serializable as values");
+    // The first byte is the ObjType tag — same convention as ObjClosure.
+    // readValue's case ValueType::Closure peeks it to discriminate
+    // between a Closure and an OverloadSet (both report
+    // valueType() == Closure for first-class-ref transparency).
+    uint8_t tag = static_cast<uint8_t>(ObjType::OverloadSet);
+    out.write(reinterpret_cast<char*>(&tag),1);
+
+    std::string nm; name.toUTF8String(nm);
+    uint32_t nlen = nm.size();
+    out.write(reinterpret_cast<char*>(&nlen),4);
+    out.write(nm.data(), nlen);
+
+    uint8_t imported = importedFromModule ? 1 : 0;
+    out.write(reinterpret_cast<char*>(&imported),1);
+
+    uint32_t count = closures.size();
+    out.write(reinterpret_cast<char*>(&count),4);
+    for (const auto& c : closures)
+        writeValue(out, c, ctx);
 }
 
 void ObjOverloadSet::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
-    (void)in; (void)ctx;
-    throw std::runtime_error("ObjOverloadSet::read — overload sets are not serializable as values");
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
+    if (tag != static_cast<uint8_t>(ObjType::OverloadSet))
+        throw std::runtime_error("ObjOverloadSet::read mismatched tag");
+    type = ObjType::OverloadSet;
+
+    uint32_t nlen; in.read(reinterpret_cast<char*>(&nlen),4);
+    std::string nm(nlen,'\0'); if (nlen > 0) in.read(nm.data(), nlen);
+    name = icu::UnicodeString::fromUTF8(nm);
+
+    uint8_t imported; in.read(reinterpret_cast<char*>(&imported),1);
+    importedFromModule = (imported != 0);
+
+    uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
+    closures.clear();
+    closures.reserve(count);
+    for (uint32_t i = 0; i < count; ++i)
+        closures.push_back(readValue(in, ctx));
 }
 
 void ObjOverloadSet::trace(ValueVisitor& visitor) const
