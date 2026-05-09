@@ -732,7 +732,7 @@ try:
 
         opt_expected = (" [expected]" if test in failing_tests else '')
 
-        if test == 'gc_stress':
+        if test in long_running_tests:
             timeout_secs = GC_STRESS_TIMEOUT_SECS
         elif test in nn_lfs_tests:
             timeout_secs = NN_LFS_TIMEOUT_SECS
