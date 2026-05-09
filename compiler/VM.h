@@ -512,6 +512,12 @@ protected:
     ptr<Thread> dataflowEngineThread;
 
     Value conditionalInterruptClosure {}; // ObjClosure
+    // Sentinel function for sys.allof/anyof slot wakeups. Each slot
+    // registration creates a fresh ObjClosure wrapping this function so the
+    // closure's handlerThread is per-registration (avoids cross-thread
+    // mutation of a shared closure). Dispatch recognises the sentinel by
+    // identity of the underlying ObjFunction.
+    Value combinatorRelayFunction {}; // ObjFunction
     Value replModuleValue { Value::nilVal() }; // ObjModuleType
 
     // RT REPL synchronization
@@ -547,6 +553,7 @@ public:
     static bool onDataflowThread() { return onDataflowThread_; }
     static void setOnDataflowThread(bool v) { onDataflowThread_ = v; }
     Value getConditionalInterruptClosure() const { return conditionalInterruptClosure; } // ObjClosure
+    Value getCombinatorRelayFunction() const { return combinatorRelayFunction; } // ObjFunction
     ObjModuleType* replModuleType() const;
 
 

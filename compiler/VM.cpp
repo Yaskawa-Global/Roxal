@@ -1279,6 +1279,21 @@ VM::VM()
         globals.storeGlobal(toUnicodeString("__conditional_interrupt"), conditionalInterruptClosure);
     }
 
+    // Sentinel function for sys.allof / sys.anyof slot wakeups. Each slot
+    // registration creates a fresh ObjClosure wrapping this function — see
+    // sys.allof/anyof builtin. Dispatch recognises the sentinel by checking
+    // closure->function identity. The function body is never executed.
+    {
+        Value fn { Value::functionVal(toUnicodeString("__combinator_relay"),
+                                      toUnicodeString("sys"), toUnicodeString("__internal"), toUnicodeString("internal")) };
+        ObjFunction* fnObj = asFunction(fn);
+        fnObj->arity = 1;
+        fnObj->upvalueCount = 0;
+        fnObj->chunk->write(OpCode::ConstNil, 0, 0);
+        fnObj->chunk->write(OpCode::Return, 0, 0);
+        combinatorRelayFunction = fn;
+    }
+
     vmConstructed.store(true, std::memory_order_release);
 
     //CallSpec::testParamPositions();
@@ -1365,6 +1380,7 @@ VM::~VM()
     lazyModuleRegistry.clear();
 
     conditionalInterruptClosure = Value::nilVal();
+    combinatorRelayFunction = Value::nilVal();
     replModuleValue = Value::nilVal();
     pendingRTClosure_ = Value::nilVal();
 
@@ -8314,7 +8330,17 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     exObj->stackTrace = captureStacktrace();
                 while (true) {
                     if (thread->frames.empty()) {
-                        runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
+                        // Forward the exception through actor return future
+                        // when running inside an actor call; otherwise
+                        // surface as a global runtime error (the original
+                        // behaviour for top-level scripts and non-actor threads).
+                        thread->pendingUncaughtException = exc;
+                        bool willForward = thread->isActorThread() && thread->currentActorCall.isNonNil();
+                        if (!willForward) {
+                            runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
+                        } else {
+                            resetStack();
+                        }
                         return errorReturn;
                     }
                     auto &cf = thread->frames.back();
@@ -8786,8 +8812,20 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             if (isFuture(waitTarget)) {
                 auto s = tryResolveValue(waitTarget);
                 if (s == FutureStatus::Error) {
+                    // tryResolveValue called raiseException, which has either
+                    // set up an exception handler in a Roxal frame (and we
+                    // should let execute() continue at that handler) or
+                    // escalated to runtimeError (which sets the global flag,
+                    // caught at the top of the next loop iteration).
                     thread->waitSuspension.clear();
-                    return errorReturn;
+                    thread->pendingWaitFor = Value::nilVal();
+                    thread->awaitedFuture = Value::nilVal();
+                    if (runtimeErrorFlag.load())
+                        return errorReturn;
+                    // Refresh frame pointer; raiseException may have unwound.
+                    if (!thread->frames.empty())
+                        frame = thread->frames.end()-1;
+                    goto postInstructionDispatch;
                 }
                 if (s == FutureStatus::Pending) {
                     thread->awaitedFuture = waitTarget;
@@ -8876,6 +8914,9 @@ bool VM::processPendingEvents()
         size_t previous = thread->pendingEventCount.fetch_sub(1, std::memory_order_acq_rel);
         assert(previous > 0);
         auto handlersIt = thread->eventHandlers.find(tev.eventType);
+        // Collect oneShot relay handlers that fire so they can be removed
+        // after the loop (we can't mutate the vector during iteration).
+        std::vector<Obj*> firedRelayClosures;
         if (handlersIt != thread->eventHandlers.end()) {
             for(const auto& handler : handlersIt->second) {
                 // Check target filter before invoking handler
@@ -8905,8 +8946,6 @@ bool VM::processPendingEvents()
                         continue;
                     }
                 }
-
-                auto closureObj = asClosure(handler.closure);
 
                 auto prevThreadSleep = thread->threadSleep.load();
                 auto prevThreadSleepUntil = thread->threadSleepUntil.load();
@@ -8941,7 +8980,23 @@ bool VM::processPendingEvents()
                         Value exc = Value::exceptionVal(Value::nilVal(), excType);
                         raiseException(exc);
                     }
+                } else if (isClosure(handler.closure)
+                           && combinatorRelayFunction.isNonNil()
+                           && asClosure(handler.closure)->function.asObj() == combinatorRelayFunction.asObj()) {
+                    // Sentinel relay: route directly to the combinator's
+                    // notifySlotReady (no user closure invoked). Idempotent
+                    // — already-fulfilled combinators silently ignore.
+                    Value cbStrong = handler.combinatorTarget.strongRef();
+                    if (!cbStrong.isNil() && isCombinator(cbStrong)) {
+                        asCombinator(cbStrong)->notifySlotReady(
+                            handler.combinatorSlot, tev.instance);
+                    }
+                    if (handler.oneShot)
+                        firedRelayClosures.push_back(handler.closure.asObj());
+                    thread->threadSleep = prevThreadSleep;
+                    thread->threadSleepUntil = prevThreadSleepUntil;
                 } else {
+                    auto closureObj = asClosure(handler.closure);
                     // Skip handler if closure has been cleaned up (function is nil)
                     if (closureObj->function.isNil()) {
                         continue;
@@ -8969,6 +9024,28 @@ bool VM::processPendingEvents()
 
                     thread->threadSleep = prevThreadSleep;
                     thread->threadSleepUntil = prevThreadSleepUntil;
+                }
+            }
+            // Remove oneShot combinator-relay handlers that fired this cycle
+            // (active fire-time cleanup so subscriptions don't accumulate).
+            if (!firedRelayClosures.empty()) {
+                std::unordered_set<Obj*> firedSet(firedRelayClosures.begin(), firedRelayClosures.end());
+                auto& vec = handlersIt->second;
+                vec.erase(std::remove_if(vec.begin(), vec.end(),
+                    [&](const Thread::HandlerRegistration& r) {
+                        return r.closure.isNonNil() && firedSet.count(r.closure.asObj()) > 0;
+                    }), vec.end());
+                if (vec.empty()) {
+                    thread->eventHandlers.erase(handlersIt);
+                }
+                // Prune matching weak entries from the event's subscriber list.
+                Value evStrong = tev.eventType.strongRef();
+                if (!evStrong.isNil() && isEventType(evStrong)) {
+                    auto& subs = asEventType(evStrong)->subscribers;
+                    subs.erase(std::remove_if(subs.begin(), subs.end(),
+                        [&](const Value& sub) {
+                            return sub.isNonNil() && firedSet.count(sub.asObj()) > 0;
+                        }), subs.end());
                 }
             }
         }
@@ -9052,6 +9129,43 @@ bool VM::invokeNextEventHandler()
                 // raiseException modified the frame/IP state directly;
                 // return true so execute() continues with the exception handler.
                 return true;
+            }
+            continue;
+        }
+
+        // Combinator relay: handle inline (no frame push, no user code run)
+        if (isClosure(handler.closure)
+            && combinatorRelayFunction.isNonNil()
+            && asClosure(handler.closure)->function.asObj() == combinatorRelayFunction.asObj()) {
+            Value cbStrong = handler.combinatorTarget.strongRef();
+            if (!cbStrong.isNil() && isCombinator(cbStrong)) {
+                asCombinator(cbStrong)->notifySlotReady(
+                    handler.combinatorSlot, tev.instance);
+            }
+            // Active fire-time cleanup: remove the matching oneShot
+            // HandlerRegistration from the live map and the matching weak
+            // ref from the event's subscribers. Safe — runs on the
+            // registering thread. The handlerSnapshot we're iterating is a
+            // copy, so this mutation doesn't affect dispatch.
+            if (handler.oneShot) {
+                Obj* relayObj = handler.closure.asObj();
+                auto regIt = thread->eventHandlers.find(tev.eventType);
+                if (regIt != thread->eventHandlers.end()) {
+                    auto& vec = regIt->second;
+                    vec.erase(std::remove_if(vec.begin(), vec.end(),
+                        [&](const Thread::HandlerRegistration& r) {
+                            return r.closure.isNonNil() && r.closure.asObj() == relayObj;
+                        }), vec.end());
+                    if (vec.empty()) thread->eventHandlers.erase(regIt);
+                }
+                Value evStrong = tev.eventType.strongRef();
+                if (!evStrong.isNil() && isEventType(evStrong)) {
+                    auto& subs = asEventType(evStrong)->subscribers;
+                    subs.erase(std::remove_if(subs.begin(), subs.end(),
+                        [&](const Value& sub) {
+                            return sub.isNonNil() && sub.asObj() == relayObj;
+                        }), subs.end());
+                }
             }
             continue;
         }
@@ -9909,7 +10023,23 @@ void VM::raiseException(Value exc)
 
     while (true) {
         if (thread->frames.empty()) {
-            runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
+            // Stash the exception so the actor return path can forward it
+            // through the actor's return future (so wait(for=fut), allof/anyof
+            // etc. observe and re-raise on the awaiting thread).
+            thread->pendingUncaughtException = exc;
+            // If we're inside an actor call, the actor's main loop will see
+            // the unwound state and forward the exception through the return
+            // promise. Don't trigger the global runtimeErrorFlag — that would
+            // abort *all* threads, defeating the whole point of cross-actor
+            // exception propagation.
+            bool willForward = thread->isActorThread() && thread->currentActorCall.isNonNil();
+            if (!willForward) {
+                runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
+            } else {
+                // Reset stack on this thread (so the actor loop can pick up
+                // cleanly) without setting the global flag.
+                resetStack();
+            }
             return;
         }
 

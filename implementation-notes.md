@@ -698,6 +698,108 @@ allows native functions to use futures internally for non-blocking IO while
 presenting a synchronous API to the user (e.g., file `close()`).
 
 
+## Combinators: `sys.allof` / `sys.anyof`
+
+`sys.allof(...items)` and `sys.anyof(...items)` await multiple things at once.
+Inputs may be futures, event types, or bool signal expressions (`c > 20`),
+freely mixed. `allof` resolves to a list of values when all inputs resolve;
+`anyof` resolves to `{"index": i, "value": v}` when the first input resolves.
+
+A "combinator" here is an `ObjCombinator` (`Object.h`): a small runtime object
+that owns a `std::promise<Value>`, a list of slots, and a mode (`All` / `Any`).
+The promise's `shared_future` is wrapped in an `ObjFuture` returned to user
+code — the combinator is *itself a future*, so it can be passed to
+`wait(for=...)`, fed into another `allof`/`anyof`, or used anywhere a future
+is accepted. Composability falls out for free.
+
+### Slot wiring
+
+Each input awaitable becomes one `Slot`. Wakeup wiring depends on the kind
+(`wireCombinatorSlot` in `ModuleSys.cpp`):
+
+- **Future slot:** the combinator registers as a waiter on the input
+  `ObjFuture` via `addCombinatorWaiter` (a weak Value ref + slot index).
+  `ObjFuture::wakeWaiters` already runs after `set_value`; we extended its
+  `waiters` vector to a `Waiter` variant (Thread *or* Combinator, in
+  `Object.h`) so combinator wakeups go through the same path.
+- **Event-type slot:** registers a one-shot `HandlerRegistration` on the
+  calling thread whose closure wraps a sentinel ObjFunction
+  `__combinator_relay` (kept on `VM::combinatorRelayFunction`, alongside
+  `__conditional_interrupt`). The closure is per-registration so its
+  `handlerThread` is correct, but identity is checked by underlying
+  ObjFunction so dispatch can recognise the relay regardless of which
+  closure carries it.
+- **Bool signal slot:** identical to event-type slot but uses the signal's
+  change event (`ensureChangeEventType`) with a `becomes`-filter
+  (`matchValue = trueVal`). Reuses the existing signal/event filtering in
+  the dispatcher — no grammar additions needed for `c > 20` to work as an
+  awaitable, since signal comparisons already produce derived bool signals.
+
+When the dispatcher (`processPendingEvents` / `invokeNextEventHandler`) sees
+a relay closure, it routes to `ObjCombinator::notifySlotReady` instead of
+running user code. `notifySlotReady` is idempotent under a mutex:
+- **Any** mode → first slot wins, builds the `{index, value}` dict, fulfils
+  the promise, calls `cancel()`.
+- **All** mode → decrements `pendingCount`; on zero, builds the value list,
+  fulfils, calls `cancel()`.
+- An `isException` value short-circuits both modes (forwards the exception
+  through the output future).
+
+After fulfilling, `notifySlotReady` calls `wakeWaiters` on the *output*
+ObjFuture (held weakly via `ObjCombinator::outputFuture`). Without this,
+nested combinators wouldn't propagate — the outer's future-slot waiter
+relies on this wake-up.
+
+### Lifetime and cleanup
+
+The combinator is kept alive while its output future is reachable: the
+output `ObjFuture` has a `producer` field (`Object.h`) that holds the
+combinator strongly. Conversely, slots hold their input awaitable strongly,
+plus the per-registration relay closure for event/signal slots, so the
+inputs aren't reclaimed mid-flight.
+
+Subscriptions are cleaned up two ways so long-running programs don't
+accumulate dead registrations:
+
+1. **Fire-time cleanup.** When the dispatcher fires a relay, the matching
+   `oneShot` HandlerRegistration is removed from `thread->eventHandlers`
+   and the matching weak entry is dropped from `evt->subscribers`. Safe
+   because dispatch runs on the registering thread.
+2. **Prune-time cleanup.** `Thread::pruneEventRegistrations`, run after
+   every GC, additionally removes any HandlerRegistration whose
+   `combinatorTarget` weak ref is dead or whose combinator is `fulfilled`
+   (and drops the matching subscriber entry). This catches the
+   never-fires-again case — e.g. an `AbortRequested` that was a losing
+   slot in an `anyof` and is no longer needed.
+
+`cancel()` itself just drops the slot's strong refs (input + relay
+closure). It is callable from any thread; the cross-thread cleanup of
+event-handler maps deliberately runs only on the registering thread via
+the pathways above, avoiding any need for a mutex on `eventHandlers`.
+
+### Exception forwarding from actors
+
+Actor methods that `raise` had previously aborted the entire VM
+(via `runtimeError`); for combinators (and `wait(for=fut)` generally) to
+catch the exception on the awaiting thread, the actor must forward the
+exception through its return future instead.
+
+`raiseException` (and the inline `OpCode::Throw` exception path) save the
+unwound exception in `Thread::pendingUncaughtException` before deciding
+what to do. If the thread is an actor thread inside a method invocation
+(`isActorThread() && currentActorCall.isNonNil()`), we skip the global
+`runtimeErrorFlag` and just `resetStack()`. The actor's main loop sees the
+failed `execute()` result, picks up the saved exception value, and
+fulfils the return promise with it (Roxal exceptions travel through
+futures as plain `Value`s passing `isException(v)` — no `set_exception`).
+The actor stays healthy and continues serving subsequent calls.
+
+Awaiting code resolves the future, sees `isException`, and re-raises via
+`vm.raiseException`. The wait dispatcher's future-resolved-with-exception
+path was also fixed to *not* prematurely return `errorReturn` so the
+handler frame state set up by `raiseException` actually runs.
+
+
 ## Signals and Data-Flow
 
 The VM includes a data-flow engine (in `Dataflow/`) that can represent a set of signals (`Signal` & `ObjSignal`) of Values that interconnect as inputs and outputs to function nodes (`FuncNode`).

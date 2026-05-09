@@ -1103,6 +1103,18 @@ void ModuleSys::registerBuiltins(VM& vm)
                    t, defaults);
         }
         addSys("is_ready", [this](VM& vm, ArgsView a){ return is_ready_builtin(vm,a); });
+        // sys.allof(...items) / sys.anyof(...items): combinators over
+        // futures, event types, and bool signals. Each positional arg may
+        // be an awaitable or a list of awaitables (flattened one level).
+        // Result: a future. allof resolves to a list of values in arg order;
+        // anyof resolves to a dict {"index": i, "value": v} for the first
+        // resolved slot. No funcType so positional args pass through as a
+        // raw ArgsView (variadic-via-typing isn't supported for natives).
+        // resolveArgMask=0 because futures are first-class inputs and must
+        // not be auto-resolved at the call site.
+        addSys("allof", [this](VM& vm, ArgsView a){ return allof_builtin(vm,a); }, nullptr, {}, 0x0);
+        addSys("anyof", [this](VM& vm, ArgsView a){ return anyof_builtin(vm,a); }, nullptr, {}, 0x0);
+        addSys("_event_subscriber_count", [this](VM& vm, ArgsView a){ return event_subscriber_count_builtin(vm,a); });
         addSys("fork", [this](VM& vm, ArgsView a){ return fork_builtin(vm,a); });
         addSys("join", [this](VM& vm, ArgsView a){ return join_builtin(vm,a); }, nullptr, {}, 0x1);
         {
@@ -1585,6 +1597,210 @@ Value ModuleSys::is_ready_builtin(VM& vm, ArgsView args)
 
     auto status = fut->future.wait_for(std::chrono::microseconds(0));
     return status == std::future_status::ready ? Value::trueVal() : Value::falseVal();
+}
+
+// Helpers for sys.allof / sys.anyof.
+//
+// Acceptable awaitable kinds: future, event type, bool signal. (A signal
+// returned by a comparison expression like `c > 20` is itself an ObjSignal
+// whose dataflow output is bool.)
+static bool isAwaitable(const Value& v)
+{
+    return isFuture(v) || isEventType(v) || isSignal(v);
+}
+
+// Walk args and build a single flat list of awaitables. Each top-level arg
+// can be an awaitable directly, or a list of awaitables (flattened one level).
+static std::vector<Value> flattenAwaitables(ArgsView args, const char* fnName)
+{
+    std::vector<Value> awaitables;
+
+    auto append = [&](const Value& v) {
+        if (!isAwaitable(v)) {
+            throw std::runtime_error(std::string(fnName) +
+                ": each argument must be a future, event type, or signal — got " +
+                v.typeName());
+        }
+        awaitables.push_back(v);
+    };
+
+    // ArgsView when registered as a single variadic param yields one List
+    // value containing all positional args. Detect both shapes.
+    auto walk = [&](const Value& v) {
+        if (isList(v)) {
+            ObjList* list = asList(v);
+            for (int32_t i = 0; i < list->length(); i++) {
+                Value elem = list->getElement(i);
+                if (isList(elem)) {
+                    ObjList* inner = asList(elem);
+                    for (int32_t j = 0; j < inner->length(); j++)
+                        append(inner->getElement(j));
+                } else {
+                    append(elem);
+                }
+            }
+        } else {
+            append(v);
+        }
+    };
+
+    for (size_t i = 0; i < args.size(); i++)
+        walk(args[i]);
+
+    return awaitables;
+}
+
+// Wire one slot of a freshly-constructed combinator to its input awaitable.
+// `combinatorVal` must be a strong Value reference to the combinator (used
+// to derive a weak ref for storage in the future-waiter or
+// HandlerRegistration). The combinator itself is also passed for direct
+// access to its slots.
+static void wireCombinatorSlot(VM& vm, Thread* thread,
+                               ObjCombinator* combinator,
+                               const Value& combinatorVal,
+                               uint32_t slotIndex, const Value& input)
+{
+    auto& slot = combinator->slots[slotIndex];
+    slot.input = input;
+
+    if (isFuture(input)) {
+        slot.kind = ObjCombinator::SlotKind::Future;
+        ObjFuture* fut = asFuture(input);
+        fut->addCombinatorWaiter(combinatorVal.weakRef(), slotIndex);
+        // Synchronous already-ready check: wakeWaiters fires on set_value but
+        // if the future was already resolved before addCombinatorWaiter we'd
+        // miss it. tryResolveValue is non-blocking and returns Resolved when
+        // the future is ready, replacing `sample` with the resolved Value.
+        Value sample = input;
+        auto status = vm.tryResolveValue(sample);
+        if (status == FutureStatus::Resolved) {
+            combinator->notifySlotReady(slotIndex, sample);
+        }
+        return;
+    }
+
+    // Event-type or signal. Both register a HandlerRegistration with a
+    // fresh closure wrapping the combinator-relay sentinel function so the
+    // dispatcher can recognise the relay and route to notifySlotReady.
+    Value eventVal;
+    std::optional<Value> matchValue;
+    if (isSignal(input)) {
+        slot.kind = ObjCombinator::SlotKind::Signal;
+        ObjSignal* sigObj = asSignal(input);
+        matchValue = Value::trueVal();  // bool signal predicates fire on true
+        sigObj->ensureChangeEventType();
+        eventVal = sigObj->changeEventType;
+        thread->eventToSignal[eventVal.weakRef()] = input.weakRef();
+    } else {
+        slot.kind = ObjCombinator::SlotKind::EventType;
+        eventVal = input;
+    }
+
+    Value relayFn = vm.getCombinatorRelayFunction();
+    if (relayFn.isNil())
+        throw std::runtime_error("combinator relay function not initialised");
+    Value relayClosure = Value::closureVal(relayFn);
+    ObjClosure* cl = asClosure(relayClosure);
+    cl->handlerThread = thread->ptr_from_this();
+
+    // Combinator slot holds the closure strongly so cancel() can drop it.
+    // HandlerRegistration also holds a strong ref so the closure survives
+    // until the registration is removed (either at fire-time cleanup or by
+    // pruneEventRegistrations seeing a fulfilled combinatorTarget).
+    slot.relayClosure = relayClosure;
+
+    Thread::HandlerRegistration reg;
+    reg.closure = relayClosure;
+    reg.matchValue = matchValue;
+    reg.combinatorTarget = combinatorVal.weakRef();
+    reg.combinatorSlot = slotIndex;
+    reg.oneShot = true;
+
+    Value key = eventVal.weakRef();
+    thread->eventHandlers[key].push_back(std::move(reg));
+
+    ObjEventType* ev = asEventType(eventVal);
+    ev->subscribers.push_back(relayClosure.weakRef());
+
+    // Synchronous already-true check for signal predicates.
+    if (slot.kind == ObjCombinator::SlotKind::Signal) {
+        ObjSignal* sigObj = asSignal(input);
+        if (sigObj->signal) {
+            Value cur = sigObj->signal->lastValue();
+            if (cur.isBool() && cur.asBool()) {
+                combinator->notifySlotReady(slotIndex, cur);
+            }
+        }
+    }
+}
+
+Value ModuleSys::allof_builtin(VM& vm, ArgsView args)
+{
+    auto* thread = VM::thread.get();
+    if (!thread)
+        throw std::runtime_error("allof requires an active thread");
+
+    std::vector<Value> awaitables = flattenAwaitables(args, "allof");
+
+    // allof() with zero awaitables resolves immediately to [].
+    if (awaitables.empty()) {
+        std::promise<Value> p;
+        p.set_value(Value::listVal());
+        return Value::objVal(newFutureObj(p.get_future().share()));
+    }
+
+    Value combinatorVal = Value::objVal(newCombinatorObj(ObjCombinator::Mode::All, awaitables.size()));
+    ObjCombinator* combinator = asCombinator(combinatorVal);
+
+    auto outFut = newFutureObj(combinator->sharedFuture());
+    outFut->producer = combinatorVal;
+    Value futureVal = Value::objVal(std::move(outFut));
+    combinator->outputFuture = futureVal.weakRef();
+
+    for (size_t i = 0; i < awaitables.size(); i++) {
+        wireCombinatorSlot(vm, thread, combinator, combinatorVal,
+                           static_cast<uint32_t>(i), awaitables[i]);
+    }
+
+    return futureVal;
+}
+
+Value ModuleSys::anyof_builtin(VM& vm, ArgsView args)
+{
+    auto* thread = VM::thread.get();
+    if (!thread)
+        throw std::runtime_error("anyof requires an active thread");
+
+    std::vector<Value> awaitables = flattenAwaitables(args, "anyof");
+
+    if (awaitables.empty())
+        throw std::runtime_error("anyof requires at least one awaitable");
+
+    Value combinatorVal = Value::objVal(newCombinatorObj(ObjCombinator::Mode::Any, awaitables.size()));
+    ObjCombinator* combinator = asCombinator(combinatorVal);
+
+    auto outFut = newFutureObj(combinator->sharedFuture());
+    outFut->producer = combinatorVal;
+    Value futureVal = Value::objVal(std::move(outFut));
+    combinator->outputFuture = futureVal.weakRef();
+
+    for (size_t i = 0; i < awaitables.size(); i++) {
+        wireCombinatorSlot(vm, thread, combinator, combinatorVal,
+                           static_cast<uint32_t>(i), awaitables[i]);
+    }
+
+    return futureVal;
+}
+
+// Diagnostic helper: returns the number of entries in an event type's
+// subscribers list (alive + dead weak refs combined). Used by tests that
+// verify combinator one-shot subscriptions get cleaned up.
+Value ModuleSys::event_subscriber_count_builtin(VM& /*vm*/, ArgsView args)
+{
+    if (args.size() != 1 || !isEventType(args[0]))
+        throw std::runtime_error("_event_subscriber_count expects an event type argument");
+    ObjEventType* ev = asEventType(args[0]);
+    return Value::intVal(static_cast<int32_t>(ev->subscribers.size()));
 }
 
 Value ModuleSys::fork_builtin(VM& vm, ArgsView args)

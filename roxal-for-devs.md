@@ -1112,6 +1112,54 @@ print( real(amt) ) // 3
 
 (Note: the VM doesn't currently prohibit accessing/mutating any module scope vars from an actor, but in future it will prohibit mutating all module scope variables and prohibit access to non-const or reference module variable.  So, for now, only 'read' value-type module variables that are not modified elsewhere (i.e. logical 'constants'))
 
+### Awaiting multiple things: `allof` and `anyof`
+
+`wait(for=fut)` awaits a single future. To await several at once, the `sys` module provides two combinators:
+
+* `allof(...items)` — returns a future that resolves when **all** input items resolve. The resolved value is a list of values in argument order.
+* `anyof(...items)` — returns a future that resolves when **the first** input resolves. The resolved value is a dict `{"index": i, "value": v}` where `i` is the position of the winning slot.
+
+Each input may be a future, an event type, or a bool signal expression (e.g. `c > 20`). Different kinds may be mixed in the same call. Each positional argument can be a single awaitable or a list of awaitables (lists are flattened one level).
+
+Because both return a future, the combinators compose — the output of one can be fed into another.
+
+```php
+type W actor:
+  func compute(n :int) -> int:
+    wait(ms=10)
+    return n * 10
+
+w1 = W()
+w2 = W()
+
+# Wait for ALL — get values in argument order
+results = wait(for=allof(w1.compute(1), w1.compute(2), w2.compute(3)))
+print(results)             # [10, 20, 30]
+
+# Wait for FIRST — w2 is a separate actor, so it can race ahead
+got = wait(for=anyof(w1.compute(1), w2.compute(2)))
+print(got.index, got.value)
+
+# Mix kinds: future + event + bool signal — useful for cancellation
+type AbortRequested event
+c = clock(20)
+c.run()
+got = wait(for=anyof(w1.compute(99), AbortRequested, c > 50))
+
+# A list arg is flattened one level
+results = wait(for=allof([w1.compute(1), w1.compute(2)], w1.compute(3)))
+
+# Combinators nest naturally — both return real futures
+nested = wait(for=allof(anyof(w1.compute(7), w1.compute(8)), w2.compute(9)))
+```
+
+Edge cases:
+
+* `allof()` with zero awaitables resolves immediately to `[]`.
+* `anyof()` with zero awaitables raises (it would deadlock).
+* For event/signal slots, the slot's resolved value is the event instance / the signal value at the moment its predicate became true.
+* Currently, exceptions raised in actor methods do not propagate through futures — see the Exceptions section.
+
 ## Exceptions
 
 ```php
@@ -1908,6 +1956,8 @@ The functions in the sys module are always globally available (- as if `import s
 * `help(fn)` - return signature and doc string for `fn`
 * `clone(v)` - deep copy `v`
 * `wait(duration=nil, s=0, ms=0, us=0, ns=0, for=nil)` - pause execution for the specified time and optionally await a single future afterwards. Prefer time quantities such as `250ms` or `1s`; numeric seconds such as `0.5` are also accepted. Named-unit arguments are also supported. The function returns `nil` for a pure delay, the resolved value for a future, or the supplied nonfuture value after any delay. Do not mix `duration` with `s/ms/us/ns`.
+* `allof(...items)` - returns a future that resolves when all input items resolve. Resolved value is a list of values in argument order. Each item may be a future, event type, or bool signal; arg can be a single awaitable or a list (flattened one level). Empty input resolves to `[]`.
+* `anyof(...items)` - returns a future that resolves when the first input resolves. Resolved value is a dict `{"index": i, "value": v}`. Same input rules as `allof`. Empty input raises.
 * `stacktrace()` - return the current call stack as a list
 * `serialize(value, protocol='default')` - serialize `value` using protocol
 * `deserialize(bytes, protocol='default')` - deserialize bytes using protocol

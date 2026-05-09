@@ -26,6 +26,9 @@ public:
     Value wait_builtin(VM& vm, ArgsView args);
     Value ignore_builtin(VM& vm, ArgsView args);
     Value is_ready_builtin(VM& vm, ArgsView args);
+    Value allof_builtin(VM& vm, ArgsView args);
+    Value anyof_builtin(VM& vm, ArgsView args);
+    Value event_subscriber_count_builtin(VM& vm, ArgsView args);
     Value fork_builtin(VM& vm, ArgsView args);
     Value join_builtin(VM& vm, ArgsView args);
     Value exit_builtin(VM& vm, ArgsView args);

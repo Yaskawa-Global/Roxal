@@ -1,0 +1,2 @@
+# anyof() with zero awaitables raises (would deadlock).
+ignore(anyof())

@@ -3219,8 +3219,16 @@ void roxal::writeValue(std::ostream& out, const Value& v, roxal::ptr<Serializati
 
     if (isFuture(v)) {
         Value resolved = v;
-        if (!resolved.resolveFuture())
-            return;
+        if (!resolved.resolveFuture()) {
+            // resolveFuture has already raised the Roxal-level exception via
+            // vm.raiseException, but we must not return silently — that would
+            // leave the output stream missing this value and desynchronise
+            // the eventual readValue. Throw a C++ runtime_error so the
+            // surrounding native-call wrapper sets ok=false (its existing
+            // catch) and the Roxal exception that resolveFuture already set
+            // up propagates to user code.
+            throw std::runtime_error("writeValue: future resolution raised an exception");
+        }
         writeValue(out, resolved, ctx);
         return;
     }

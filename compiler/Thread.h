@@ -96,6 +96,14 @@ public:
         Value closure;
         std::optional<Value> matchValue;    // for 'becomes' clause
         std::optional<Value> targetFilter;  // for 'where evt.target == <value>' clause
+        // For combinator slot wakeups: closure wraps the shared sentinel
+        // function combinatorRelayFunction and the dispatcher routes the
+        // event to combinatorTarget instead of running user code.
+        // combinatorTarget is a weak Value ref to an ObjCombinator;
+        // oneShot causes the registration to be skipped after fulfilment.
+        Value combinatorTarget { Value::nilVal() };
+        uint32_t combinatorSlot { 0 };
+        bool oneShot { false };
     };
     std::unordered_map<Value, std::vector<HandlerRegistration>, ValueHasher, ValueEqual> eventHandlers;
 
@@ -416,6 +424,14 @@ public:
 
     std::atomic_bool exceptionJumpPending;
     int nativeCallDepth;
+
+    // Set by VM::raiseException when an exception is about to escape all
+    // frames on this thread (uncaught). Read by the actor return path so
+    // the exception Value is forwarded through the actor's return future
+    // (where downstream code — e.g. wait(for=fut) or sys.allof / sys.anyof
+    // — can detect it via isException(resolved) and re-raise). Cleared
+    // after consumption.
+    Value pendingUncaughtException { Value::nilVal() };
 
     // Constructor setter support: track pending setter cleanup
     Value pendingConstructorInstance { Value::nilVal() };

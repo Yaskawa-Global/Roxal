@@ -1,0 +1,13 @@
+type W actor:
+  func compute(n :int, ms :int) -> int:
+    wait(ms=ms)
+    return n
+
+# Outer allof of: inner anyof, plain future. Verifies that a combinator's
+# output future is wired correctly into another combinator's slot.
+w1 = W()
+w2 = W()
+nested = wait(for=allof(anyof(w1.compute(7, 5), w1.compute(8, 50)), w2.compute(9, 5)))
+print(nested[0].index)
+print(nested[0].value)
+print(nested[1])

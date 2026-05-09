@@ -1,0 +1,3 @@
+# allof() with zero awaitables resolves immediately to [].
+result = wait(for=allof())
+print(result)

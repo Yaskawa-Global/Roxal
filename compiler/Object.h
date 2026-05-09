@@ -101,7 +101,8 @@ enum class ObjType {
     EventType,
     EventInstance,
     Exception,
-    OverloadSet
+    OverloadSet,
+    Combinator
 };
 
 /// Returns true if the object type is user-mutable and can hold Value references
@@ -1414,6 +1415,20 @@ inline unique_ptr<ObjClosure, UnreleasedObj> newClosureObj(Value function) { // 
 
 // future
 
+struct ObjCombinator; // forward
+
+// Waiter on an ObjFuture. Either a Thread (woken via Thread::wake()) or a
+// Combinator slot (woken via ObjCombinator::notifySlotReady()). The
+// combinator entry holds a weak Value reference to avoid keeping the
+// combinator alive past its useful lifetime.
+struct ObjFutureWaiter {
+    enum class Kind { Thread, Combinator };
+    Kind kind { Kind::Thread };
+    weak_ptr<Thread> thread;
+    Value combinator { Value::nilVal() };  // weak ref to ObjCombinator
+    uint32_t slotIndex { 0 };
+};
+
 struct ObjFuture : public Obj
 {
     ObjFuture(const std::shared_future<Value>& fv,
@@ -1429,10 +1444,17 @@ struct ObjFuture : public Obj
     std::shared_future<Value> future;
     ptr<type::Type> promisedType;  // type of the promised value (nullptr = unknown)
 
+    // Strong reference to the producer object (e.g. an ObjCombinator) so the
+    // producer is kept alive while the future is reachable. nilVal for plain
+    // actor-method futures.
+    Value producer { Value::nilVal() };
+
     mutable std::mutex waitMutex;
-    std::vector<weak_ptr<Thread>> waiters;
+    std::vector<ObjFutureWaiter> waiters;
 
     void addWaiter(const ptr<Thread>& t);
+    // `cbWeak` must be a weak Value reference to an ObjCombinator.
+    void addCombinatorWaiter(const Value& cbWeak, uint32_t slotIndex);
     void wakeWaiters();
 
     unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
@@ -1456,6 +1478,92 @@ inline unique_ptr<ObjFuture, UnreleasedObj> newFutureObj(const std::shared_futur
     return newObj<ObjFuture>(__func__, __FILE__,__LINE__,fv, std::move(promisedType));
     #else
     return newObj<ObjFuture>(fv, std::move(promisedType));
+    #endif
+}
+
+
+
+// combinator (allof / anyof)
+//
+// Composes a set of futures, event types, and bool-signal values into a
+// single future that resolves when all (Mode::All) or the first (Mode::Any)
+// inputs resolve. Each slot is wired up at construction with a wakeup that
+// calls notifySlotReady — futures via ObjFuture::waiters, event/signal
+// slots via a one-shot HandlerRegistration with combinatorTarget set.
+//
+// The output future is kept alive (and the combinator with it) until either
+// the user releases all references to the future, or the combinator is
+// fulfilled and its subscriptions are released.
+struct ObjCombinator : public Obj
+{
+    enum class Mode { All, Any };
+    enum class SlotKind { Future, EventType, Signal };
+
+    struct Slot {
+        SlotKind kind { SlotKind::Future };
+        Value input { Value::nilVal() };       // strong ref to ObjFuture / ObjEventType / ObjSignal
+        Value resolvedValue { Value::nilVal() }; // captured for All mode list assembly
+        // Strong ref to the relay closure (event/signal slots only). Held
+        // so the closure stays alive while the slot is unfulfilled. Cleared
+        // on cancel(); HandlerRegistration also holds a strong ref so the
+        // closure survives until the registration is itself removed.
+        Value relayClosure { Value::nilVal() };
+        bool resolved { false };
+    };
+
+    ObjCombinator(Mode m, size_t slotCount)
+      : mode(m), pendingCount(slotCount), promise(make_ptr<std::promise<Value>>())
+    {
+        type = ObjType::Combinator;
+        slots.resize(slotCount);
+    }
+    virtual ~ObjCombinator() {}
+
+    std::shared_future<Value> sharedFuture() {
+        return promise->get_future().share();
+    }
+
+    // Called when slot[slotIndex] becomes ready with `value`.
+    // Thread-safe; idempotent once fulfilled.
+    void notifySlotReady(uint32_t slotIndex, const Value& value);
+
+    // Unsubscribe combinator from any unfulfilled slots. Safe to call multiple
+    // times; called automatically when fulfilled or when dropping references.
+    void cancel();
+
+    Mode mode;
+    size_t pendingCount;
+    bool fulfilled { false };
+    std::vector<Slot> slots;
+    ptr<std::promise<Value>> promise;
+    // Weak Value reference to the output ObjFuture wrapping our promise's
+    // shared_future. We wake its waiter list after set_value so a combinator
+    // composed of combinators (nested) propagates correctly. Set by the
+    // builtin once the output future is constructed.
+    Value outputFuture { Value::nilVal() };
+    mutable std::mutex mutex;
+
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
+};
+
+inline bool isCombinator(const Value& v) { return isObjType(v, ObjType::Combinator); }
+inline ObjCombinator* asCombinator(const Value& v) {
+    debug_assert_msg(isCombinator(v), "Value is an ObjCombinator");
+    return static_cast<ObjCombinator*>(v.asObj());
+}
+
+inline unique_ptr<ObjCombinator, UnreleasedObj> newCombinatorObj(ObjCombinator::Mode mode,
+                                                                  size_t slotCount) {
+    #ifdef DEBUG_BUILD
+    return newObj<ObjCombinator>(__func__, __FILE__,__LINE__,mode, slotCount);
+    #else
+    return newObj<ObjCombinator>(mode, slotCount);
     #endif
 }
 

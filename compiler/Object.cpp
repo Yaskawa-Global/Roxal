@@ -2806,11 +2806,13 @@ void ObjFuture::trace(ValueVisitor& visitor) const
             visitor.visit(future.get());
         }
     }
+    visitor.visit(producer);
 }
 
 void ObjFuture::dropReferences()
 {
     future = std::shared_future<Value>();
+    producer = Value::nilVal();
     std::lock_guard<std::mutex> lk(waitMutex);
     waiters.clear();
 }
@@ -2818,34 +2820,190 @@ void ObjFuture::dropReferences()
 void ObjFuture::addWaiter(const ptr<Thread>& t)
 {
     std::lock_guard<std::mutex> lk(waitMutex);
-    for (auto it = waiters.begin(); it != waiters.end(); ++it) {
-        if (auto sp = it->lock()) {
-            if (sp == t)
-                return;
-        } else {
-            it = waiters.erase(it);
-            if (it == waiters.end()) break;
-        }
-    }
-    waiters.push_back(t);
-}
-
-void ObjFuture::wakeWaiters()
-{
-    std::vector<ptr<Thread>> toWake;
-    {
-        std::lock_guard<std::mutex> lk(waitMutex);
-        for (auto it = waiters.begin(); it != waiters.end(); ) {
-            if (auto sp = it->lock()) {
-                toWake.push_back(sp);
+    for (auto it = waiters.begin(); it != waiters.end(); ) {
+        if (it->kind == ObjFutureWaiter::Kind::Thread) {
+            if (auto sp = it->thread.lock()) {
+                if (sp == t)
+                    return;
                 ++it;
             } else {
                 it = waiters.erase(it);
             }
+        } else {
+            ++it;
+        }
+    }
+    ObjFutureWaiter w;
+    w.kind = ObjFutureWaiter::Kind::Thread;
+    w.thread = t;
+    waiters.push_back(std::move(w));
+}
+
+void ObjFuture::addCombinatorWaiter(const Value& cbWeak, uint32_t slotIndex)
+{
+    std::lock_guard<std::mutex> lk(waitMutex);
+    ObjFutureWaiter w;
+    w.kind = ObjFutureWaiter::Kind::Combinator;
+    w.combinator = cbWeak;
+    w.slotIndex = slotIndex;
+    waiters.push_back(std::move(w));
+}
+
+void ObjFuture::wakeWaiters()
+{
+    std::vector<ptr<Thread>> threadsToWake;
+    std::vector<std::pair<Value, uint32_t>> combinatorsToNotify;
+    Value resolvedValue = Value::nilVal();
+    bool haveResolved = false;
+    if (future.valid() && future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        try {
+            resolvedValue = future.get();
+            haveResolved = true;
+        } catch (...) {
+            haveResolved = false;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(waitMutex);
+        for (auto& w : waiters) {
+            if (w.kind == ObjFutureWaiter::Kind::Thread) {
+                if (auto sp = w.thread.lock())
+                    threadsToWake.push_back(sp);
+            } else {
+                Value strong = w.combinator.strongRef();
+                if (!strong.isNil() && isCombinator(strong))
+                    combinatorsToNotify.emplace_back(strong, w.slotIndex);
+            }
         }
         waiters.clear();
     }
-    for (auto& t : toWake) t->wake();
+    for (auto& t : threadsToWake) t->wake();
+    for (auto& [cbVal, slot] : combinatorsToNotify) {
+        ObjCombinator* cb = asCombinator(cbVal);
+        cb->notifySlotReady(slot, haveResolved ? resolvedValue : Value::nilVal());
+    }
+}
+
+//
+// ObjCombinator
+//
+
+void ObjCombinator::notifySlotReady(uint32_t slotIndex, const Value& value)
+{
+    bool fireAllReady = false;
+    bool fireAnyReady = false;
+    bool propagateException = false;
+    Value resultValue = Value::nilVal();
+    std::vector<Value> valuesForList;
+
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        if (fulfilled)
+            return;
+        if (slotIndex >= slots.size())
+            return;
+        auto& slot = slots[slotIndex];
+        if (slot.resolved)
+            return;
+        slot.resolved = true;
+        slot.resolvedValue = value;
+
+        if (isException(value)) {
+            fulfilled = true;
+            propagateException = true;
+            resultValue = value;
+        } else if (mode == Mode::Any) {
+            fulfilled = true;
+            fireAnyReady = true;
+            std::vector<std::pair<Value, Value>> entries {
+                { Value::stringVal(toUnicodeString("index")), Value::intVal(static_cast<int32_t>(slotIndex)) },
+                { Value::stringVal(toUnicodeString("value")), value }
+            };
+            resultValue = Value::dictVal(entries);
+        } else { // All
+            if (pendingCount > 0)
+                pendingCount--;
+            if (pendingCount == 0) {
+                fulfilled = true;
+                fireAllReady = true;
+                valuesForList.reserve(slots.size());
+                for (auto& s : slots) valuesForList.push_back(s.resolvedValue);
+            }
+        }
+    }
+
+    auto wakeOutput = [&]() {
+        Value out = outputFuture.strongRef();
+        if (!out.isNil() && isFuture(out)) {
+            asFuture(out)->wakeWaiters();
+        }
+    };
+
+    if (propagateException) {
+        try { promise->set_value(resultValue); } catch (...) {}
+        wakeOutput();
+        cancel();
+    } else if (fireAnyReady) {
+        try { promise->set_value(resultValue); } catch (...) {}
+        wakeOutput();
+        cancel();
+    } else if (fireAllReady) {
+        Value listVal = Value::listVal(valuesForList);
+        try { promise->set_value(listVal); } catch (...) {}
+        wakeOutput();
+        cancel();
+    }
+}
+
+void ObjCombinator::cancel()
+{
+    // Drop strong references to inputs and relay closures so unfired
+    // event/signal subscriptions become eligible for cleanup:
+    //  - Future-slot waiters are pruned on next wakeWaiters().
+    //  - Event/signal slots: the HandlerRegistration on the registering
+    //    thread still holds the relay closure strongly. The
+    //    combinatorTarget weak ref is now released-from-our-side; on the
+    //    registering thread's next pruneEventRegistrations() pass, any
+    //    HandlerRegistration whose combinatorTarget points to a fulfilled
+    //    combinator is removed (which frees the closure).
+    std::lock_guard<std::mutex> lk(mutex);
+    for (auto& slot : slots) {
+        slot.input = Value::nilVal();
+        slot.relayClosure = Value::nilVal();
+    }
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjCombinator::clone(roxal::ptr<CloneContext>) const
+{
+    throw std::runtime_error("combinator cannot be cloned");
+}
+
+void ObjCombinator::write(std::ostream&, roxal::ptr<SerializationContext>) const
+{
+    throw std::runtime_error("combinator cannot be serialized");
+}
+
+void ObjCombinator::read(std::istream&, roxal::ptr<SerializationContext>)
+{
+    throw std::runtime_error("combinator cannot be deserialized");
+}
+
+void ObjCombinator::trace(ValueVisitor& visitor) const
+{
+    std::lock_guard<std::mutex> lk(mutex);
+    for (const auto& slot : slots) {
+        visitor.visit(slot.input);
+        visitor.visit(slot.resolvedValue);
+        visitor.visit(slot.relayClosure);
+    }
+    // outputFuture is a weak ref; visit() handles weak refs correctly
+    // (strong-ref visitors don't keep weak entries alive).
+    visitor.visit(outputFuture);
+}
+
+void ObjCombinator::dropReferences()
+{
+    cancel();
 }
 unique_ptr<Obj, UnreleasedObj> ObjNative::clone(roxal::ptr<CloneContext> ctx) const {
     (void)ctx; // native functions are immutable; share the reference
@@ -5246,6 +5404,9 @@ std::string roxal::objToString(const Value& v)
             fv.resolveFuture();
             return toString(fv);
         }
+        case ObjType::Combinator: {
+            return "<combinator>";
+        }
         default: ;
     }
     return "";
@@ -6131,6 +6292,7 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::ForeignPtr: return "foreignptr";
     case ObjType::Exception: return "exception";
     case ObjType::OverloadSet: return "function";
+    case ObjType::Combinator: return "future";
     }
     return "unknown";
 }

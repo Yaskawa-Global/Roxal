@@ -1,0 +1,24 @@
+type Sig event
+
+type W actor:
+  func compute(n :int, ms :int) -> int:
+    wait(ms=ms)
+    return n
+
+# Run many anyof's where the future wins (Sig never fires). Verify the event
+# subscriber list does NOT grow without bound — pruneEventRegistrations runs
+# after GC and removes registrations targeting fulfilled combinators.
+w = W()
+i = 0
+while i < 50:
+  var got = wait(for=anyof(w.compute(i, 1), Sig))
+  i = i + 1
+
+# Trigger GC + cleanup so any pending dead combinator registrations are pruned.
+gc()
+
+# Subscribers count should be small (≤ 1, accounting for the in-flight
+# baseline). Without active fire-time cleanup AND prune-time cleanup this
+# would be ≥ 50.
+n = _event_subscriber_count(Sig)
+print('subs<=1: '+(n <= 1))

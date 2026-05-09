@@ -1,0 +1,11 @@
+type W actor:
+  func slow(n :int) -> int:
+    wait(ms=500)
+    return n
+
+# Signal predicate becomes true before slow future resolves.
+c = clock(freq=20)  # 20Hz int signal
+c.run()
+w = W()
+got = wait(for=anyof(w.slow(99), c > 5))
+print(got.index)

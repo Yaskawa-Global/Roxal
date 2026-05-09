@@ -95,9 +95,31 @@ void Thread::pruneEventRegistrations()
 
         auto& handlers = it->second;
         handlers.erase(std::remove_if(handlers.begin(), handlers.end(),
-                                      [](const HandlerRegistration& handler) {
-                                          return !handler.closure.isAlive() ||
-                                                 (handler.closure.isWeak() && !handler.closure.isAlive());
+                                      [&ev](const HandlerRegistration& handler) {
+                                          if (!handler.closure.isAlive() ||
+                                              (handler.closure.isWeak() && !handler.closure.isAlive()))
+                                              return true;
+                                          // Combinator relay registrations whose target combinator is
+                                          // dead or already fulfilled are dead weight — prune them
+                                          // (also drops the matching weak entry in ev->subscribers).
+                                          if (handler.combinatorTarget.isWeak() &&
+                                              handler.combinatorTarget.isNonNil()) {
+                                              Value cbStrong = handler.combinatorTarget.strongRef();
+                                              bool dead = cbStrong.isNil() || !isCombinator(cbStrong);
+                                              bool fulfilled = !dead && asCombinator(cbStrong)->fulfilled;
+                                              if (dead || fulfilled) {
+                                                  if (ev && handler.closure.isNonNil()) {
+                                                      Obj* relayObj = handler.closure.asObj();
+                                                      auto& subs = ev->subscribers;
+                                                      subs.erase(std::remove_if(subs.begin(), subs.end(),
+                                                          [&](const Value& sub) {
+                                                              return sub.isNonNil() && sub.asObj() == relayObj;
+                                                          }), subs.end());
+                                                  }
+                                                  return true;
+                                              }
+                                          }
+                                          return false;
                                       }),
                        handlers.end());
 
@@ -429,7 +451,16 @@ void Thread::act(Value actorInstance)
                                         }
                                     }
                                 }
-                                callInfo.returnPromise->set_value(ok ? ret : Value::nilVal());
+                                Value forward;
+                                if (ok) {
+                                    forward = ret;
+                                } else {
+                                    forward = pendingUncaughtException;
+                                    pendingUncaughtException = Value::nilVal();
+                                    if (!isException(forward))
+                                        forward = Value::nilVal();
+                                }
+                                callInfo.returnPromise->set_value(forward);
                                 if (!callInfo.returnFuture.isNil()) {
                                     asFuture(callInfo.returnFuture)->wakeWaiters();
                                     callInfo.returnFuture = Value::nilVal();
@@ -477,14 +508,28 @@ void Thread::act(Value actorInstance)
                             }
                         }
                     } else {
+                        // Forward an uncaught exception (if any) through the
+                        // return future so awaiting code can observe and
+                        // re-raise it; otherwise fall back to nilVal. When we
+                        // successfully forward a Roxal-level exception, the
+                        // actor itself is still healthy — just this method
+                        // invocation failed — so we keep serving subsequent
+                        // calls (don't quit) and reset the per-call result.
+                        bool forwardedException = false;
                         if (callInfo.returnPromise != nullptr) {
-                            callInfo.returnPromise->set_value(Value::nilVal());
+                            Value forward = pendingUncaughtException;
+                            pendingUncaughtException = Value::nilVal();
+                            if (isException(forward)) {
+                                forwardedException = true;
+                            } else {
+                                forward = Value::nilVal();
+                            }
+                            callInfo.returnPromise->set_value(forward);
                             if (!callInfo.returnFuture.isNil()) {
                                 asFuture(callInfo.returnFuture)->wakeWaiters();
                                 callInfo.returnFuture = Value::nilVal();
                             }
                         }
-                        quit = true;
                         // reset stack before breaking
                         {
                             auto diff = this->stackTop - (this->stack.begin()+1);
@@ -492,7 +537,13 @@ void Thread::act(Value actorInstance)
                             this->stack[0] = this->actorInstance;
                         }
                         currentActorCall = Value::nilVal();
-                        break;
+                        if (forwardedException) {
+                            result = ExecutionStatus::OK;
+                            // Continue serving subsequent calls.
+                        } else {
+                            quit = true;
+                            break;
+                        }
                     }
 
                         {
@@ -547,8 +598,18 @@ void Thread::act(Value actorInstance)
                                     }
                                 }
                             }
-                            // On failure, resolve to nil to avoid broken promises.
-                            callInfo.returnPromise->set_value(ok ? ret : Value::nilVal());
+                            // On failure, forward the pending exception (if any)
+                            // through the future so awaiters can re-raise.
+                            Value forward;
+                            if (ok) {
+                                forward = ret;
+                            } else {
+                                forward = pendingUncaughtException;
+                                pendingUncaughtException = Value::nilVal();
+                                if (!isException(forward))
+                                    forward = Value::nilVal();
+                            }
+                            callInfo.returnPromise->set_value(forward);
                             if (!callInfo.returnFuture.isNil()) {
                                 asFuture(callInfo.returnFuture)->wakeWaiters();
                                 callInfo.returnFuture = Value::nilVal();

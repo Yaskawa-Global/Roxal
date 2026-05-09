@@ -110,6 +110,7 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
 #endif
     visitStrongValue(visitor, thread.pendingWaitFor);
     visitStrongValue(visitor, thread.awaitedFuture);
+    visitStrongValue(visitor, thread.pendingUncaughtException);
     for (const auto& session : thread.stmtActionStack) {
         visitStrongValue(visitor, session.lastReceiver);
     }
@@ -788,6 +789,7 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
 
     visitStrongValue(visitor, vm.dataflowEngineActor);
     visitStrongValue(visitor, vm.conditionalInterruptClosure);
+    visitStrongValue(visitor, vm.combinatorRelayFunction);
     visitStrongValue(visitor, vm.initString);
 
     // RT REPL pending closure (in-flight between setupLine and runFor)

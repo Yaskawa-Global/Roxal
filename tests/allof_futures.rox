@@ -1,0 +1,10 @@
+type W actor:
+  func compute(n :int, ms :int) -> int:
+    wait(ms=ms)
+    return n * 10
+
+# Three futures from one actor: completion order is sequential (queue)
+# but allof must return values in argument order.
+w = W()
+results = wait(for=allof(w.compute(1, 5), w.compute(2, 5), w.compute(3, 5)))
+print(results)
