@@ -21,7 +21,7 @@
 #include <ffi.h>
 #include <dlfcn.h>
 
-#include <core/json11.h>
+#include <core/json5.h>
 
 
 #include "ASTGenerator.h"

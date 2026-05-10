@@ -1,3 +1,8 @@
+/* Modified for Roxal (JSON5 support and writer bypass) - 2026.
+ * The original json11 source is below; modifications add a JSON5
+ * parse mode to JsonParser. The json11:: namespace is retained.
+ */
+
 /* Copyright (c) 2013 Dropbox, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -19,7 +24,7 @@
  * THE SOFTWARE.
  */
 
-#include "json11.h"
+#include "json5.h"
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
@@ -211,10 +216,14 @@ public:
 
 class JsonObject final : public Value<Json::OBJECT, Json::object> {
     const Json::object &object_items() const override { return m_value; }
+    const std::vector<std::string> &keys_in_order() const override { return m_keys_in_order; }
     const Json & operator[](const string &key) const override;
+    const std::vector<std::string> m_keys_in_order;
 public:
     explicit JsonObject(const Json::object &value) : Value(value) {}
     explicit JsonObject(Json::object &&value)      : Value(move(value)) {}
+    JsonObject(Json::object &&value, std::vector<std::string> &&order)
+        : Value(move(value)), m_keys_in_order(move(order)) {}
 };
 
 class JsonNull final : public Value<Json::NUL, NullStruct> {
@@ -232,6 +241,7 @@ struct Statics {
     const string empty_string;
     const vector<Json> empty_vector;
     const map<string, Json> empty_map;
+    const vector<string> empty_keys;
     Statics() {}
 };
 
@@ -262,6 +272,8 @@ Json::Json(const Json::array &values)  : m_ptr(make_shared<JsonArray>(values)) {
 Json::Json(Json::array &&values)       : m_ptr(make_shared<JsonArray>(move(values))) {}
 Json::Json(const Json::object &values) : m_ptr(make_shared<JsonObject>(values)) {}
 Json::Json(Json::object &&values)      : m_ptr(make_shared<JsonObject>(move(values))) {}
+Json::Json(Json::object &&values, std::vector<std::string> &&order)
+    : m_ptr(make_shared<JsonObject>(move(values), move(order))) {}
 
 /* * * * * * * * * * * * * * * * * * * *
  * Accessors
@@ -274,6 +286,7 @@ bool Json::bool_value()                           const { return m_ptr->bool_val
 const string & Json::string_value()               const { return m_ptr->string_value(); }
 const vector<Json> & Json::array_items()          const { return m_ptr->array_items();  }
 const map<string, Json> & Json::object_items()    const { return m_ptr->object_items(); }
+const vector<string> & Json::keys_in_order()      const { return m_ptr->keys_in_order(); }
 const Json & Json::operator[] (size_t i)          const { return (*m_ptr)[i];           }
 const Json & Json::operator[] (const string &key) const { return (*m_ptr)[key];         }
 
@@ -283,6 +296,7 @@ bool                      JsonValue::bool_value()                const { return 
 const string &            JsonValue::string_value()              const { return statics().empty_string; }
 const vector<Json> &      JsonValue::array_items()               const { return statics().empty_vector; }
 const map<string, Json> & JsonValue::object_items()              const { return statics().empty_map; }
+const vector<string> &    JsonValue::keys_in_order()             const { return statics().empty_keys; }
 const Json &              JsonValue::operator[] (size_t)         const { return static_null(); }
 const Json &              JsonValue::operator[] (const string &) const { return static_null(); }
 
@@ -354,6 +368,33 @@ struct JsonParser final {
     bool failed;
     const JsonParse strategy;
 
+    /* JSON5 helpers
+     */
+    bool json5() const { return strategy == JsonParse::JSON5; }
+
+    static bool is_ident_start(char ch) {
+        unsigned char c = static_cast<unsigned char>(ch);
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c == '$';
+    }
+    static bool is_ident_cont(char ch) {
+        unsigned char c = static_cast<unsigned char>(ch);
+        return is_ident_start(ch) || (c >= '0' && c <= '9');
+    }
+
+    // Parse an unquoted ECMAScript-style identifier key (JSON5).
+    // Caller must have positioned i at the identifier start char.
+    string parse_identifier() {
+        string out;
+        if (i == str.size() || !is_ident_start(str[i])) {
+            fail("expected identifier", false);
+            return out;
+        }
+        out += str[i++];
+        while (i < str.size() && is_ident_cont(str[i]))
+            out += str[i++];
+        return out;
+    }
+
     /* fail(msg, err_ret = Json())
      *
      * Mark this parse as failed.
@@ -423,7 +464,7 @@ struct JsonParser final {
      */
     void consume_garbage() {
       consume_whitespace();
-      if(strategy == JsonParse::COMMENTS) {
+      if(strategy == JsonParse::COMMENTS || strategy == JsonParse::JSON5) {
         bool comment_found = false;
         do {
           comment_found = consume_comment();
@@ -473,11 +514,13 @@ struct JsonParser final {
         }
     }
 
-    /* parse_string()
+    /* parse_string(q)
      *
-     * Parse a string, starting at the current position.
+     * Parse a string, starting at the current position. `q` is the opening
+     * quote character ('"' for standard JSON, '\'' additionally allowed in
+     * JSON5).
      */
-    string parse_string() {
+    string parse_string(char q) {
         string out;
         long last_escaped_codepoint = -1;
         while (true) {
@@ -486,7 +529,7 @@ struct JsonParser final {
 
             char ch = str[i++];
 
-            if (ch == '"') {
+            if (ch == q) {
                 encode_utf8(last_escaped_codepoint, out);
                 return out;
             }
@@ -560,6 +603,31 @@ struct JsonParser final {
                 out += '\t';
             } else if (ch == '"' || ch == '\\' || ch == '/') {
                 out += ch;
+            } else if (json5() && ch == 'v') {
+                out += '\v';
+            } else if (json5() && ch == '0' && !in_range(str[i], '0', '9')) {
+                out += '\0';
+            } else if (json5() && ch == 'x') {
+                // 2-digit hex escape (JSON5)
+                if (i + 2 > str.size())
+                    return fail("bad \\x escape", "");
+                string hex = str.substr(i, 2);
+                for (size_t j = 0; j < 2; j++) {
+                    if (!in_range(hex[j], 'a', 'f') && !in_range(hex[j], 'A', 'F')
+                            && !in_range(hex[j], '0', '9'))
+                        return fail("bad \\x escape: " + hex, "");
+                }
+                long val = strtol(hex.data(), nullptr, 16);
+                encode_utf8(val, out);
+                i += 2;
+            } else if (json5() && (ch == '\n' || ch == '\r')) {
+                // line continuation (JSON5): consume the newline (already past)
+                if (ch == '\r' && i < str.size() && str[i] == '\n')
+                    i++;
+                // emit nothing
+            } else if (json5()) {
+                // JSON5 NonEscapeCharacter: \X means X for any X not above
+                out += ch;
             } else {
                 return fail("invalid escape character " + esc(ch), "");
             }
@@ -568,16 +636,61 @@ struct JsonParser final {
 
     /* parse_number()
      *
-     * Parse a double.
+     * Parse a double. In JSON5 mode also accepts: leading +, leading-dot
+     * (.5), trailing-dot (5.), hex literals (0x..), Infinity, -Infinity, NaN.
      */
     Json parse_number() {
         size_t start_pos = i;
+        bool negative = false;
 
-        if (str[i] == '-')
+        if (str[i] == '-') {
+            negative = true;
             i++;
+        } else if (json5() && str[i] == '+') {
+            i++;
+        }
 
-        // Integer part
-        if (str[i] == '0') {
+        // JSON5: Infinity / NaN after optional sign
+        if (json5() && i < str.size()) {
+            if (str[i] == 'I') {
+                if (str.compare(i, 8, "Infinity") == 0) {
+                    i += 8;
+                    return Json(negative ? -std::numeric_limits<double>::infinity()
+                                         :  std::numeric_limits<double>::infinity());
+                }
+                return fail("invalid number, expected 'Infinity'");
+            }
+            if (str[i] == 'N') {
+                if (str.compare(i, 3, "NaN") == 0) {
+                    i += 3;
+                    return Json(std::numeric_limits<double>::quiet_NaN());
+                }
+                return fail("invalid number, expected 'NaN'");
+            }
+
+            // JSON5: hex literal 0x or 0X
+            if (str[i] == '0' && i + 1 < str.size()
+                && (str[i+1] == 'x' || str[i+1] == 'X')) {
+                i += 2;
+                size_t hex_start = i;
+                while (i < str.size()
+                       && (in_range(str[i], '0', '9')
+                           || in_range(str[i], 'a', 'f')
+                           || in_range(str[i], 'A', 'F')))
+                    i++;
+                if (i == hex_start)
+                    return fail("at least one digit required in hex number");
+                long val = std::strtol(str.c_str() + hex_start, nullptr, 16);
+                if (negative) val = -val;
+                return Json(static_cast<double>(val));
+            }
+        }
+
+        // Integer part. JSON5 may have a leading '.' with no integer.
+        bool has_int_part = true;
+        if (json5() && str[i] == '.') {
+            has_int_part = false;
+        } else if (str[i] == '0') {
             i++;
             if (in_range(str[i], '0', '9'))
                 return fail("leading 0s not permitted in numbers");
@@ -589,19 +702,26 @@ struct JsonParser final {
             return fail("invalid " + esc(str[i]) + " in number");
         }
 
-        if (str[i] != '.' && str[i] != 'e' && str[i] != 'E'
+        // Fast path for plain integers (no decimal or exponent).
+        // Uses strtol so leading '+' is handled correctly under JSON5.
+        if (has_int_part && str[i] != '.' && str[i] != 'e' && str[i] != 'E'
                 && (i - start_pos) <= static_cast<size_t>(std::numeric_limits<int>::digits10)) {
-            return std::atoi(str.c_str() + start_pos);
+            return static_cast<int>(std::strtol(str.c_str() + start_pos, nullptr, 10));
         }
 
         // Decimal part
         if (str[i] == '.') {
             i++;
-            if (!in_range(str[i], '0', '9'))
-                return fail("at least one digit required in fractional part");
-
-            while (in_range(str[i], '0', '9'))
-                i++;
+            if (!in_range(str[i], '0', '9')) {
+                if (!json5())
+                    return fail("at least one digit required in fractional part");
+                // JSON5: trailing '.' OK if there's an integer part (e.g. 5.).
+                if (!has_int_part)
+                    return fail("at least one digit required in number");
+            } else {
+                while (in_range(str[i], '0', '9'))
+                    i++;
+            }
         }
 
         // Exponent part
@@ -650,7 +770,8 @@ struct JsonParser final {
         if (failed)
             return Json();
 
-        if (ch == '-' || (ch >= '0' && ch <= '9')) {
+        if (ch == '-' || (ch >= '0' && ch <= '9')
+            || (json5() && (ch == '+' || ch == '.' || ch == 'I' || ch == 'N'))) {
             i--;
             return parse_number();
         }
@@ -664,20 +785,26 @@ struct JsonParser final {
         if (ch == 'n')
             return expect("null", Json());
 
-        if (ch == '"')
-            return parse_string();
+        if (ch == '"' || (json5() && ch == '\''))
+            return parse_string(ch);
 
         if (ch == '{') {
             map<string, Json> data;
+            vector<string> order;
             ch = get_next_token();
             if (ch == '}')
-                return data;
+                return Json(std::move(data), std::move(order));
 
             while (1) {
-                if (ch != '"')
+                string key;
+                if (ch == '"' || (json5() && ch == '\'')) {
+                    key = parse_string(ch);
+                } else if (json5() && is_ident_start(ch)) {
+                    i--;
+                    key = parse_identifier();
+                } else {
                     return fail("expected '\"' in object, got " + esc(ch));
-
-                string key = parse_string();
+                }
                 if (failed)
                     return Json();
 
@@ -685,7 +812,9 @@ struct JsonParser final {
                 if (ch != ':')
                     return fail("expected ':' in object, got " + esc(ch));
 
-                data[std::move(key)] = parse_json(depth + 1);
+                auto inserted = data.emplace(key, parse_json(depth + 1));
+                if (inserted.second)
+                    order.push_back(key);
                 if (failed)
                     return Json();
 
@@ -696,8 +825,10 @@ struct JsonParser final {
                     return fail("expected ',' in object, got " + esc(ch));
 
                 ch = get_next_token();
+                if (json5() && ch == '}')
+                    break;
             }
-            return data;
+            return Json(std::move(data), std::move(order));
         }
 
         if (ch == '[') {
@@ -719,7 +850,9 @@ struct JsonParser final {
                     return fail("expected ',' in list, got " + esc(ch));
 
                 ch = get_next_token();
-                (void)ch;
+                if (json5() && ch == ']')
+                    break;
+                // ch was peeked for trailing-comma check; loop body's i-- backs up
             }
             return data;
         }

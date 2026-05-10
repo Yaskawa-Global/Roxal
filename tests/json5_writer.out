@@ -1,0 +1,8 @@
+{foo_1: 1, "with space": 2, "1bad": 3, $normal: 4}
+{
+  foo_1: 1,
+  "with space": 2,
+  "1bad": 3,
+  $normal: 4
+}
+{"foo_1": 1, "with space": 2, "1bad": 3, "$normal": 4}

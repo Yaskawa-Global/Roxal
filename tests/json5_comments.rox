@@ -1,0 +1,5 @@
+// from_json accepts JSON5 // line and /* block */ comments.
+print(to_json(from_json('// hello\n[1, 2, 3]'), false))
+print(to_json(from_json('/* block */ [4, 5, 6]'), false))
+print(to_json(from_json('[/* mid */ 7, /* mid2 */ 8 /* tail */]'), false))
+print(to_json(from_json('{/* k */ "a": 1 /* after value */}'), false))

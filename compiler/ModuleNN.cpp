@@ -1,7 +1,7 @@
 #include "ModuleNN.h"
 #include "VM.h"
 #include "Object.h"
-#include "core/json11.h"
+#include "core/json5.h"
 #include <stdexcept>
 #include <memory>
 #include <thread>

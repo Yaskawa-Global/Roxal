@@ -5,7 +5,7 @@
 #include "SimpleMarkSweepGC.h"
 #include "RTCallbackManager.h"
 #include "core/AST.h"
-#include <core/json11.h>
+#include <core/json5.h>
 #include <core/TimePoint.h>
 #include <core/TimeDuration.h>
 #include "dataflow/Signal.h"
@@ -1140,7 +1140,15 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("gc_config", [this](VM& vm, ArgsView a){ return gc_config_builtin(vm,a); });
         addSys("serialize", [this](VM& vm, ArgsView a){ return serialize_builtin(vm,a); }, nullptr, {}, 0x1);
         addSys("deserialize", [this](VM& vm, ArgsView a){ return deserialize_builtin(vm,a); }, nullptr, {}, 0x1);
-        addSys("to_json", [this](VM& vm, ArgsView a){ return to_json_builtin(vm,a); }, nullptr, {}, 0x1);
+        addSys("to_json",
+               [this](VM& vm, ArgsView a){ return to_json_builtin(vm,a); },
+               makeFuncType({
+                    {"value", std::nullopt},
+                    {"indent", type::BuiltinType::Bool},
+                    {"json5", type::BuiltinType::Bool}
+               }, {Value::nilVal(), Value::trueVal(), Value::falseVal()}),
+               {Value::nilVal(), Value::trueVal(), Value::falseVal()},
+               0x1);
         addSys("from_json", [this](VM& vm, ArgsView a){ return from_json_builtin(vm,a); }, nullptr, {}, 0x1);
         addSys("to_xml",
                [this](VM& vm, ArgsView a){ return to_xml_builtin(vm,a); },
@@ -3004,98 +3012,177 @@ Value ModuleSys::deserialize_builtin(VM& vm, ArgsView args)
     return readValue(ss, ctx);
 }
 
-static json11::Json valueToJson(const Value& v) {
-    using json11::Json;
-    switch(v.type()) {
-        case ValueType::Nil:   return Json();
-        case ValueType::Bool:  return Json(v.asBool());
-        case ValueType::Byte:  return Json(int(v.asByte()));
-        case ValueType::Int:
-            // TODO: consider emitting ints as double to preserve up to 53 bits exactly and round-trip small ints back as int on read.
-            return Json(int(v.asInt())); // JSON library only has int ctor
-        case ValueType::Real:  return Json(v.asReal());
-        case ValueType::String: return Json(toUTF8StdString(asStringObj(v)->s));
-        case ValueType::List: {
-            Json::array arr; arr.reserve(asList(v)->length());
-            for(int i=0;i<asList(v)->length();++i)
-                arr.push_back(valueToJson(asList(v)->getElement(i)));
-            return Json(arr);
-        }
-        case ValueType::Dict: {
-            Json::object obj;
-            for(const auto& kv : asDict(v)->items()) {
-                if(!isString(kv.first))
-                    throw std::runtime_error("dict key not string");
-                obj[toUTF8StdString(asStringObj(kv.first)->s)] = valueToJson(kv.second);
-            }
-            return Json(obj);
-        }
-        default:
-            if(isObjectInstance(v) || isActorInstance(v))
-                return valueToJson(toType(ValueType::Dict, v, false));
-            throw std::runtime_error("unsupported type for to_json");
-    }
-}
+// Direct writer that walks Roxal Value without going through json11::Json,
+// so dict insertion order (preserved by ObjDict::items()) survives to the
+// emitted text. Supports JSON (default) and JSON5 (unquoted identifier keys,
+// NaN/Infinity literals) output.
+struct JsonWriter {
+    std::string& out;
+    bool indent;   // pretty-print with newlines + 2-space indent
+    bool json5;    // emit unquoted identifier keys; emit NaN/Infinity literals
 
-static void dumpJsonPretty(const json11::Json& j, std::string& out, int indent=0) {
-    using json11::Json;
-    switch(j.type()) {
-        case Json::ARRAY: {
-            out += "[";
-            auto arr = j.array_items();
-            if(!arr.empty()) {
-                out += "\n";
-                int nIndent = indent+2;
-                for(size_t i=0;i<arr.size();++i) {
-                    out += std::string(nIndent,' ');
-                    dumpJsonPretty(arr[i], out, nIndent);
-                    if(i+1<arr.size()) out += ",\n";
-                }
-                out += "\n" + std::string(indent,' ');
-            }
-            out += "]";
-            break;
-        }
-        case Json::OBJECT: {
-            out += "{";
-            auto obj = j.object_items();
-            if(!obj.empty()) {
-                out += "\n";
-                int nIndent = indent+2;
-                size_t count=0;
-                for(auto it=obj.begin(); it!=obj.end(); ++it,++count) {
-                    out += std::string(nIndent,' ');
-                    dumpJsonPretty(Json(it->first), out, nIndent);
-                    out += ": ";
-                    dumpJsonPretty(it->second, out, nIndent);
-                    if(count+1<obj.size()) out += ",\n";
-                }
-                out += "\n" + std::string(indent,' ');
-            }
-            out += "}";
-            break;
-        }
-        default:
-            out += j.dump();
+    static bool isIdentifier(const std::string& s) {
+        if(s.empty()) return false;
+        auto isStart = [](unsigned char c){
+            return (c>='A' && c<='Z') || (c>='a' && c<='z') || c=='_' || c=='$';
+        };
+        auto isCont = [&](unsigned char c){
+            return isStart(c) || (c>='0' && c<='9');
+        };
+        if(!isStart(static_cast<unsigned char>(s[0]))) return false;
+        for(size_t i=1;i<s.size();++i)
+            if(!isCont(static_cast<unsigned char>(s[i]))) return false;
+        return true;
     }
-}
+
+    void writeIndent(int depth) {
+        if(indent) out.append(size_t(depth*2), ' ');
+    }
+    void writeNewline() { if(indent) out += '\n'; }
+
+    // Escape table mirrors core/json5.cpp dump(string&) — handles \b\f\n\r\t,
+    // \uXXXX for <0x20, and U+2028/U+2029.
+    void writeStringRaw(const std::string& s) {
+        out += '"';
+        for(size_t i=0;i<s.length();++i) {
+            const char ch = s[i];
+            if(ch == '\\') out += "\\\\";
+            else if(ch == '"') out += "\\\"";
+            else if(ch == '\b') out += "\\b";
+            else if(ch == '\f') out += "\\f";
+            else if(ch == '\n') out += "\\n";
+            else if(ch == '\r') out += "\\r";
+            else if(ch == '\t') out += "\\t";
+            else if(static_cast<uint8_t>(ch) <= 0x1f) {
+                char buf[8];
+                snprintf(buf, sizeof buf, "\\u%04x", ch);
+                out += buf;
+            } else if(static_cast<uint8_t>(ch) == 0xe2
+                      && i+2 < s.length()
+                      && static_cast<uint8_t>(s[i+1]) == 0x80
+                      && static_cast<uint8_t>(s[i+2]) == 0xa8) {
+                out += "\\u2028";
+                i += 2;
+            } else if(static_cast<uint8_t>(ch) == 0xe2
+                      && i+2 < s.length()
+                      && static_cast<uint8_t>(s[i+1]) == 0x80
+                      && static_cast<uint8_t>(s[i+2]) == 0xa9) {
+                out += "\\u2029";
+                i += 2;
+            } else {
+                out += ch;
+            }
+        }
+        out += '"';
+    }
+
+    void writeKey(const std::string& s) {
+        if(json5 && isIdentifier(s))
+            out += s;
+        else
+            writeStringRaw(s);
+    }
+
+    void writeNumber(double d) {
+        if(std::isfinite(d)) {
+            char buf[32];
+            snprintf(buf, sizeof buf, "%.17g", d);
+            out += buf;
+        } else if(json5) {
+            if(std::isnan(d)) out += "NaN";
+            else if(d > 0)    out += "Infinity";
+            else              out += "-Infinity";
+        } else {
+            throw std::invalid_argument("to_json: non-finite number requires json5=true");
+        }
+    }
+
+    void writeValue(const Value& v, int depth) {
+        switch(v.type()) {
+            case ValueType::Nil:  out += "null"; return;
+            case ValueType::Bool: out += v.asBool() ? "true" : "false"; return;
+            case ValueType::Byte: {
+                char buf[8]; snprintf(buf, sizeof buf, "%d", int(v.asByte()));
+                out += buf; return;
+            }
+            case ValueType::Int: {
+                char buf[16]; snprintf(buf, sizeof buf, "%d", int(v.asInt()));
+                out += buf; return;
+            }
+            case ValueType::Real: writeNumber(v.asReal()); return;
+            case ValueType::String: writeStringRaw(toUTF8StdString(asStringObj(v)->s)); return;
+            case ValueType::List: {
+                ObjList* lst = asList(v);
+                int n = lst->length();
+                if(n == 0) { out += "[]"; return; }
+                out += '[';
+                writeNewline();
+                int nDepth = depth + 1;
+                for(int i=0;i<n;++i) {
+                    writeIndent(nDepth);
+                    writeValue(lst->getElement(i), nDepth);
+                    if(i+1 < n) {
+                        out += ',';
+                        if(indent) out += '\n';
+                        else       out += ' ';
+                    }
+                }
+                writeNewline();
+                writeIndent(depth);
+                out += ']';
+                return;
+            }
+            case ValueType::Dict: {
+                const auto items = asDict(v)->items();
+                if(items.empty()) { out += "{}"; return; }
+                out += '{';
+                writeNewline();
+                int nDepth = depth + 1;
+                for(size_t i=0;i<items.size();++i) {
+                    const auto& kv = items[i];
+                    if(!isString(kv.first))
+                        throw std::runtime_error("dict key not string");
+                    writeIndent(nDepth);
+                    writeKey(toUTF8StdString(asStringObj(kv.first)->s));
+                    out += ": ";
+                    writeValue(kv.second, nDepth);
+                    if(i+1 < items.size()) {
+                        out += ',';
+                        if(indent) out += '\n';
+                        else       out += ' ';
+                    }
+                }
+                writeNewline();
+                writeIndent(depth);
+                out += '}';
+                return;
+            }
+            default:
+                if(isObjectInstance(v) || isActorInstance(v)) {
+                    writeValue(toType(ValueType::Dict, v, false), depth);
+                    return;
+                }
+                throw std::runtime_error("unsupported type for to_json");
+        }
+    }
+};
 
 Value ModuleSys::to_json_builtin(VM& vm, ArgsView args)
 {
-    if(args.size() < 1 || args.size() > 2)
-        throw std::invalid_argument("to_json expects value and optional indent bool");
+    if(args.size() < 1 || args.size() > 3)
+        throw std::invalid_argument("to_json expects value and optional indent bool and json5 bool");
 
     bool indent = true;
-    if(args.size() == 2)
+    if(args.size() >= 2)
         indent = toType(ValueType::Bool, args[1], false).asBool();
 
-    json11::Json j = valueToJson(args[0]);
-    std::string out;
-    if(indent)
-        dumpJsonPretty(j, out, 0);
-    else
-        out = j.dump();
+    bool json5 = false;
+    if(args.size() >= 3)
+        json5 = toType(ValueType::Bool, args[2], false).asBool();
 
+    std::string out;
+    JsonWriter w{out, indent, json5};
+    w.writeValue(args[0], 0);
     return Value::stringVal(toUnicodeString(out));
 }
 
@@ -3118,8 +3205,19 @@ static Value jsonToValue(const json11::Json& j) {
         }
         case Json::OBJECT: {
             Value d { Value::dictVal() };
-            for(const auto& kv : j.object_items()) {
-                asDict(d)->store(Value::stringVal(toUnicodeString(kv.first)), jsonToValue(kv.second));
+            const auto& items = j.object_items();
+            const auto& order = j.keys_in_order();
+            if(!order.empty()) {
+                // Preserve original parse-order for JSON5 round-trips.
+                for(const auto& k : order) {
+                    auto it = items.find(k);
+                    if(it != items.end())
+                        asDict(d)->store(Value::stringVal(toUnicodeString(k)), jsonToValue(it->second));
+                }
+            } else {
+                for(const auto& kv : items) {
+                    asDict(d)->store(Value::stringVal(toUnicodeString(kv.first)), jsonToValue(kv.second));
+                }
             }
             return d;
         }
@@ -3134,7 +3232,7 @@ Value ModuleSys::from_json_builtin(VM& vm, ArgsView args)
 
     std::string s = toUTF8StdString(asStringObj(args[0])->s);
     std::string err;
-    json11::Json j = json11::Json::parse(s, err);
+    json11::Json j = json11::Json::parse(s, err, json11::JsonParse::JSON5);
     if(!err.empty())
         throw std::invalid_argument(std::string("invalid json: ")+err);
     return jsonToValue(j);

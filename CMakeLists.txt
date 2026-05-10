@@ -265,7 +265,7 @@ set(CORE_SOURCES
     core/atomic.cpp
     core/common.cpp
     core/types.cpp
-    core/json11.cpp
+    core/json5.cpp
 )
 
 set(COMPILER_SOURCES

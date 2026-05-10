@@ -1,0 +1,5 @@
+// Trailing commas in JSON5 arrays and objects.
+print(to_json(from_json('[1, 2, 3,]'), false))
+print(to_json(from_json('{"a": 1, "b": 2,}'), false))
+print(to_json(from_json('[ [1,], [2, 3,], ]'), false))
+print(to_json(from_json('{"k": [1,],}'), false))

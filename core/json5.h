@@ -1,3 +1,10 @@
+/* Modified for Roxal (JSON5 support and writer bypass) - 2026.
+ * The original json11 documentation and copyright block are below; modifications
+ * add a JSON5 parse mode to JsonParse / JsonParser. The json11:: namespace is
+ * retained for compatibility with existing callsites. Roxal's writer side bypasses
+ * this library entirely (see compiler/ModuleSys.cpp JsonWriter).
+ */
+
 /* json11
  *
  * json11 is a tiny JSON library for C++11, providing JSON parsing and serialization.
@@ -71,7 +78,7 @@
 namespace json11 {
 
 enum JsonParse {
-    STANDARD, COMMENTS
+    STANDARD, COMMENTS, JSON5
 };
 
 class JsonValue;
@@ -100,6 +107,7 @@ public:
     Json(array &&values);           // ARRAY
     Json(const object &values);     // OBJECT
     Json(object &&values);          // OBJECT
+    Json(object &&values, std::vector<std::string> &&order);  // OBJECT (with key order)
 
     // Implicit constructor: anything with a to_json() function.
     template <class T, class = decltype(&T::to_json)>
@@ -146,6 +154,9 @@ public:
     const array &array_items() const;
     // Return the enclosed std::map if this is an object, or an empty map otherwise.
     const object &object_items() const;
+    // Return object keys in parse-insertion order if this is an object parsed
+    // from text (JSON5 round-trip preservation). Empty otherwise.
+    const std::vector<std::string> &keys_in_order() const;
 
     // Return a reference to arr[i] if this is an array, Json() otherwise.
     const Json & operator[](size_t i) const;
@@ -225,6 +236,7 @@ protected:
     virtual const Json::array &array_items() const;
     virtual const Json &operator[](size_t i) const;
     virtual const Json::object &object_items() const;
+    virtual const std::vector<std::string> &keys_in_order() const;
     virtual const Json &operator[](const std::string &key) const;
     virtual ~JsonValue() {}
 };

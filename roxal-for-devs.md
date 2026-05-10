@@ -1961,8 +1961,8 @@ The functions in the sys module are always globally available (- as if `import s
 * `stacktrace()` - return the current call stack as a list
 * `serialize(value, protocol='default')` - serialize `value` using protocol
 * `deserialize(bytes, protocol='default')` - deserialize bytes using protocol
-* `to_json(value, indent=true)` - convert value to a JSON string
-* `from_json(json)` - parse JSON string into a value
+* `to_json(value, indent=true, json5=false)` - convert value to a JSON string. With `json5=true` emits JSON5: object keys are unquoted when they look like ECMAScript identifiers (`[A-Za-z_$][A-Za-z0-9_$]*`), and non-finite numbers are written as the JSON5 literals `NaN`, `Infinity`, `-Infinity`. Dict insertion order is preserved in the output.
+* `from_json(json)` - parse JSON or JSON5 string into a value (JSON5 is a strict superset of JSON). JSON5 inputs may use `//` and `/* */` comments, trailing commas, unquoted ECMAScript identifier keys, single-quoted strings, `\xNN` and line-continuation string escapes, leading `+`, leading `.5` and trailing `5.` numbers, hex literals (`0xFF`), and `Infinity` / `-Infinity` / `NaN`. Object key order from the source is preserved when round-tripping back through `to_json`. Comment preservation across a round trip is not supported.
 * `to_xml(value, indent=true, mode='auto')` - convert XML-shaped value to an XML string (requires build with `ROXAL_ENABLE_XML=ON`, otherwise raises at runtime)
 * `from_xml(xml, mode='compact', preserve_whitespace=false)` - parse XML string into a value (requires build with `ROXAL_ENABLE_XML=ON`, otherwise raises at runtime)
   * `mode='compact'` returns element dicts with `tag`, optional `attrs`, optional `text`, and child tags as keys

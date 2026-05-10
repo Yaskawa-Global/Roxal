@@ -1,0 +1,4 @@
+// Unquoted ECMAScript-identifier keys in JSON5.
+print(to_json(from_json('{a: 1, b_2: 2, $c: 3}'), false))
+print(to_json(from_json('{_under: 1}'), false))
+print(to_json(from_json('{Infinity_key: 1}'), false))  // "Infinity_key" as ident is fine; conflict only on bare Infinity

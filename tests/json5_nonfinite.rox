@@ -1,0 +1,3 @@
+// In JSON5 mode, NaN and Infinity are emitted as literals.
+var v = from_json('[Infinity, -Infinity, NaN]')
+print(to_json(v, false, true))

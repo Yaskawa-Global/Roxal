@@ -1,0 +1,8 @@
+// Writer with json5=true: emit unquoted keys when identifier-shaped,
+// quoted otherwise. Preserve insertion order.
+var d = {'foo_1': 1, 'with space': 2, '1bad': 3, '$normal': 4}
+print(to_json(d, false, true))
+print(to_json(d, true, true))
+
+// JSON mode (json5=false): all keys quoted, identifier-shaped or not.
+print(to_json(d, false, false))
