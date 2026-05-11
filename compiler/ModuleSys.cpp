@@ -863,6 +863,258 @@ std::string defaultSpanString(ObjectInstance* inst)
     return humanDurationString(spanTotalMicros(inst));
 }
 
+// ============================================================================
+// quantity string parsing
+// ============================================================================
+//
+// Parses strings of the forms emitted by quantity's operator string() plus all
+// @suffix-registered literal forms, plus "natural" caret variants (e.g.
+// `m/s^3`) that aren't valid as code literals but are useful to type in JSON
+// configs. Dimension vector indices: [Length, Time, Mass, Angle].
+
+namespace qtyparse {
+
+struct NamedUnit {
+    icu::UnicodeString text;
+    double scale;
+    std::array<int32_t, 4> dims;
+};
+
+constexpr double kPi = 3.14159265358979323846;
+
+// Broad named-unit table for prefix matching when the suffix contains no
+// Unicode superscript. Compound `*/s` velocity/angular-velocity forms are in
+// the exact-match table only; here we just supply named *singletons* that get
+// composed via `/` and exponents.
+const std::vector<NamedUnit>& broadTable()
+{
+    static const std::vector<NamedUnit> table = {
+        // Length
+        {toUnicodeString("um"),  1e-6,         {1,0,0,0}},
+        {toUnicodeString("μm"), 1e-6,     {1,0,0,0}}, // μm
+        {toUnicodeString("mm"),  1e-3,         {1,0,0,0}},
+        {toUnicodeString("cm"),  1e-2,         {1,0,0,0}},
+        {toUnicodeString("mil"), 2.54e-5,      {1,0,0,0}},
+        {toUnicodeString("in"),  0.0254,       {1,0,0,0}},
+        {toUnicodeString("ft"),  0.3048,       {1,0,0,0}},
+        {toUnicodeString("m"),   1.0,          {1,0,0,0}},
+        // Mass
+        {toUnicodeString("mg"),  1e-6,         {0,0,1,0}},
+        {toUnicodeString("kg"),  1.0,          {0,0,1,0}},
+        {toUnicodeString("lb"),  0.45359237,   {0,0,1,0}},
+        {toUnicodeString("oz"),  0.0283495231, {0,0,1,0}},
+        {toUnicodeString("g"),   1e-3,         {0,0,1,0}},
+        // Time
+        {toUnicodeString("us"),  1e-6,         {0,1,0,0}},
+        {toUnicodeString("μs"), 1e-6,     {0,1,0,0}}, // μs
+        {toUnicodeString("ms"),  1e-3,         {0,1,0,0}},
+        {toUnicodeString("min"), 60.0,         {0,1,0,0}},
+        {toUnicodeString("hr"),  3600.0,       {0,1,0,0}},
+        {toUnicodeString("s"),   1.0,          {0,1,0,0}},
+        // Angle
+        {toUnicodeString("rad"), 1.0,          {0,0,0,1}},
+        {toUnicodeString("deg"), kPi/180.0,    {0,0,0,1}},
+        {toUnicodeString("°"), kPi/180.0, {0,0,0,1}}, // °
+        // Force
+        {toUnicodeString("N"),   1.0,          {1,-2,1,0}},
+    };
+    return table;
+}
+
+// SI-restricted table used when the suffix contains Unicode superscript
+// exponents (matches the dim_label() output exactly).
+const std::vector<NamedUnit>& siTable()
+{
+    static const std::vector<NamedUnit> table = {
+        {toUnicodeString("kg"),  1.0, {0,0,1,0}},
+        {toUnicodeString("rad"), 1.0, {0,0,0,1}},
+        {toUnicodeString("m"),   1.0, {1,0,0,0}},
+        {toUnicodeString("s"),   1.0, {0,1,0,0}},
+    };
+    return table;
+}
+
+int superscriptDigitValue(UChar32 c)
+{
+    switch (c) {
+        case 0x2070: return 0;  // ⁰
+        case 0x00B9: return 1;  // ¹
+        case 0x00B2: return 2;  // ²
+        case 0x00B3: return 3;  // ³
+        case 0x2074: return 4;  // ⁴
+        case 0x2075: return 5;  // ⁵
+        case 0x2076: return 6;  // ⁶
+        case 0x2077: return 7;  // ⁷
+        case 0x2078: return 8;  // ⁸
+        case 0x2079: return 9;  // ⁹
+        default:     return -1;
+    }
+}
+
+bool containsSuperscriptOrMinus(const icu::UnicodeString& s)
+{
+    int32_t i = 0;
+    int32_t len = s.length();
+    while (i < len) {
+        UChar32 c = s.char32At(i);
+        if (superscriptDigitValue(c) >= 0 || c == 0x207B)
+            return true;
+        i += U16_LENGTH(c);
+    }
+    return false;
+}
+
+struct ExpResult {
+    int value;
+    int32_t consumed;
+    bool present;
+};
+
+// Parse an optional exponent at position p of s. Recognises:
+//   - Unicode superscripts: ⁻? [⁰¹²³⁴⁵⁶⁷⁸⁹]+
+//   - Caret notation: ^[+-]?[0-9]+
+// Returns {value=1, consumed=0, present=false} if no exponent is present.
+// Throws on malformed exponent (e.g. lone '^', lone '⁻').
+ExpResult parseExponent(const icu::UnicodeString& s, int32_t p)
+{
+    int32_t len = s.length();
+    if (p >= len) return {1, 0, false};
+
+    UChar32 c = s.char32At(p);
+
+    if (c == U'^') {
+        int32_t i = p + 1;
+        int sign = 1;
+        if (i < len && (s.char32At(i) == U'-' || s.char32At(i) == U'+')) {
+            if (s.char32At(i) == U'-') sign = -1;
+            ++i;
+        }
+        int val = 0;
+        int digits = 0;
+        while (i < len) {
+            UChar32 d = s.char32At(i);
+            if (d < U'0' || d > U'9') break;
+            val = val * 10 + int(d - U'0');
+            ++digits;
+            ++i;
+        }
+        if (digits == 0)
+            throw std::invalid_argument("malformed exponent after '^'");
+        return {sign * val, i - p, true};
+    }
+
+    int sign = 1;
+    int32_t i = p;
+    if (c == 0x207B) {
+        sign = -1;
+        i += 1;
+    }
+    int val = 0;
+    int digits = 0;
+    while (i < len) {
+        UChar32 d = s.char32At(i);
+        int dv = superscriptDigitValue(d);
+        if (dv < 0) break;
+        val = val * 10 + dv;
+        ++digits;
+        i += U16_LENGTH(d);
+    }
+    if (digits == 0) {
+        if (sign == -1)
+            throw std::invalid_argument("dangling Unicode minus-sign superscript");
+        return {1, 0, false};
+    }
+    return {sign * val, i - p, true};
+}
+
+struct PrefixMatch {
+    const NamedUnit* unit;
+    int32_t consumed;
+};
+
+// Find the longest named unit in `table` that is a prefix of s starting at p.
+PrefixMatch longestPrefix(const std::vector<NamedUnit>& table,
+                          const icu::UnicodeString& s, int32_t p)
+{
+    PrefixMatch best { nullptr, 0 };
+    int32_t len = s.length();
+    for (const auto& u : table) {
+        int32_t ulen = u.text.length();
+        if (p + ulen > len) continue;
+        if (s.compare(p, ulen, u.text) == 0) {
+            if (ulen > best.consumed) {
+                best.unit = &u;
+                best.consumed = ulen;
+            }
+        }
+    }
+    return best;
+}
+
+// Apply factor `unit^exp` to (scale, dims).
+void applyUnit(double& scale, std::array<int32_t,4>& dims,
+               const NamedUnit& unit, int exp)
+{
+    if (exp != 0) {
+        // pow(scale, exp) for integer exponents is well-defined; std::pow
+        // handles negative and zero scales correctly here (all our scales > 0).
+        scale *= std::pow(unit.scale, exp);
+        for (int i = 0; i < 4; ++i)
+            dims[i] += exp * unit.dims[i];
+    }
+}
+
+// Parse a unit expression — sequence of (named-unit, optional-exponent)
+// separated by `·`, `*`, or whitespace, with at most one `/` that flips the
+// exponent sign of everything after it. Returns false (and leaves output
+// indeterminate) if parsing fails.
+bool parseUnitExpression(const icu::UnicodeString& s, int32_t start,
+                         const std::vector<NamedUnit>& table,
+                         double& outScale, std::array<int32_t,4>& outDims)
+{
+    outScale = 1.0;
+    outDims = {0,0,0,0};
+
+    int32_t i = start;
+    int32_t len = s.length();
+    int sign = 1;
+    bool any = false;
+
+    while (i < len) {
+        UChar32 c = s.char32At(i);
+        if (c == U' ' || c == U'\t' || c == 0x00B7 /* · */ || c == U'*') {
+            ++i;
+            continue;
+        }
+        if (c == U'/') {
+            if (sign == -1) return false; // only one '/' allowed
+            sign = -1;
+            ++i;
+            continue;
+        }
+
+        PrefixMatch m = longestPrefix(table, s, i);
+        if (m.unit == nullptr) return false;
+        i += m.consumed;
+
+        ExpResult e;
+        try {
+            e = parseExponent(s, i);
+        } catch (...) {
+            return false;
+        }
+        int exp = e.present ? e.value : 1;
+        i += e.consumed;
+
+        applyUnit(outScale, outDims, *m.unit, sign * exp);
+        any = true;
+    }
+
+    return any;
+}
+
+} // namespace qtyparse
+
 } // namespace
 
 ObjObjectType* roxal::sysTimeType()
@@ -1278,6 +1530,8 @@ void ModuleSys::registerBuiltins(VM& vm)
     linkMethod("TimeSpan", "total_millis", [this](VM& vm, ArgsView a){ return timespan_total_millis_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
     linkMethod("TimeSpan", "total_micros", [this](VM& vm, ArgsView a){ return timespan_total_micros_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
     linkMethod("TimeSpan", "human", [this](VM& vm, ArgsView a){ return timespan_human_native(vm,a); }, {}, 0, /*noMutateSelf=*/true);
+
+    linkMethod("quantity", "set", [this](VM& vm, ArgsView a){ return quantity_set_builtin(vm,a); });
 
     {
         std::vector<Value> defaults{ Value::stringVal(toUnicodeString("local")) };
@@ -3659,6 +3913,125 @@ Value ModuleSys::timespan_human_native(VM& vm, ArgsView args)
     ObjectInstance* inst = requireInstance(args[0], timeSpanTypeObj, "TimeSpan.human", "TimeSpan");
     std::string out = humanDurationString(spanTotalMicros(inst));
     return Value::stringVal(toUnicodeString(out));
+}
+
+Value ModuleSys::quantity_set_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 2)
+        throw std::invalid_argument("quantity.set expects (s :string)");
+
+    ObjectInstance* inst = requireInstance(args[0], quantityTypeObj, "quantity.set", "quantity");
+
+    if (!isString(args[1]))
+        throw std::invalid_argument("quantity.set expects a string argument");
+
+    icu::UnicodeString raw = asStringObj(args[1])->s;
+
+    // Trim leading/trailing ASCII whitespace.
+    int32_t lo = 0;
+    int32_t hi = raw.length();
+    while (lo < hi) {
+        UChar32 c = raw.char32At(lo);
+        if (c == U' ' || c == U'\t' || c == U'\n' || c == U'\r') ++lo;
+        else break;
+    }
+    while (hi > lo) {
+        UChar32 c = raw.char32At(hi - 1);
+        if (c == U' ' || c == U'\t' || c == U'\n' || c == U'\r') --hi;
+        else break;
+    }
+    if (lo >= hi)
+        throw std::invalid_argument("quantity.set: empty string");
+
+    icu::UnicodeString trimmed = raw.tempSubString(lo, hi - lo);
+
+    // Parse the numeric prefix via strtod on a UTF-8 copy.
+    std::string utf8;
+    trimmed.toUTF8String(utf8);
+    const char* cstr = utf8.c_str();
+    char* endp = nullptr;
+    double number = std::strtod(cstr, &endp);
+    if (endp == cstr)
+        throw std::invalid_argument("quantity.set: missing numeric prefix in '" + utf8 + "'");
+
+    // Skip an optional single space between number and unit.
+    while (*endp == ' ' || *endp == '\t')
+        ++endp;
+
+    std::string suffixUtf8(endp);
+    icu::UnicodeString suffix = toUnicodeString(suffixUtf8);
+
+    double scale = 1.0;
+    std::array<int32_t, 4> dims = {0, 0, 0, 0};
+
+    if (suffix.isEmpty()) {
+        // Dimensionless quantity.
+    } else {
+        // Tier 1: exact match against the table of named units (covers all
+        // single-token literal forms — `m`, `kg`, `deg`, `s`, `N` etc. — and
+        // compound forms `m/s`, `deg/s`, `Nm`, `N·m`, `m/s^2`, `m/s²`).
+        const auto& broad = qtyparse::broadTable();
+        bool matched = false;
+        // Exact match search: any entry whose text equals the entire suffix.
+        // (Used as a fast path; the general parser below would also succeed.)
+        for (const auto& u : broad) {
+            if (u.text == suffix) {
+                scale = u.scale;
+                dims = u.dims;
+                matched = true;
+                break;
+            }
+        }
+        // Common compound forms not in broadTable (which only holds singletons).
+        if (!matched) {
+            struct Pair { const char* text; double scale; std::array<int32_t,4> dims; };
+            static const Pair kCompound[] = {
+                {"mm/s", 1e-3,         {1,-1,0,0}},
+                {"cm/s", 1e-2,         {1,-1,0,0}},
+                {"m/s",  1.0,          {1,-1,0,0}},
+                {"m/s^2", 1.0,         {1,-2,0,0}},
+                {"m/s²",  1.0,         {1,-2,0,0}},
+                {"Nm",   1.0,          {2,-2,1,0}},
+                {"N·m",  1.0,          {2,-2,1,0}},
+                {"rad/s", 1.0,         {0,-1,0,1}},
+                {"deg/s", qtyparse::kPi/180.0, {0,-1,0,1}},
+                {"°/s",  qtyparse::kPi/180.0, {0,-1,0,1}},
+            };
+            for (const auto& p : kCompound) {
+                if (suffix == toUnicodeString(p.text)) {
+                    scale = p.scale;
+                    dims = p.dims;
+                    matched = true;
+                    break;
+                }
+            }
+        }
+        // Tier 2: general parser.
+        if (!matched) {
+            const auto& table = qtyparse::containsSuperscriptOrMinus(suffix)
+                ? qtyparse::siTable()
+                : qtyparse::broadTable();
+            try {
+                if (!qtyparse::parseUnitExpression(suffix, 0, table, scale, dims))
+                    throw std::invalid_argument(
+                        "quantity.set: unknown unit suffix '" + suffixUtf8 + "'");
+            } catch (const std::exception& ex) {
+                throw std::invalid_argument(
+                    std::string("quantity.set: failed to parse '") + utf8 + "': " + ex.what());
+            }
+        }
+    }
+
+    double si = number * scale;
+    inst->setProperty("_v", Value::realVal(si));
+
+    Value dimsListVal = Value::listVal();
+    ObjList* dimsList = asList(dimsListVal);
+    for (int i = 0; i < 4; ++i)
+        dimsList->append(Value::intVal(static_cast<int64_t>(dims[i])));
+    inst->setProperty("_d", dimsListVal);
+
+    return Value::nilVal();
 }
 
 Value ModuleSys::time_type_wall_now(VM& vm, ArgsView args)

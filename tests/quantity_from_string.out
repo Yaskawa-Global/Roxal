@@ -1,0 +1,54 @@
+1m
+10cm
+5kg
+45°
+30°/s
+10m/s
+9.81ms⁻²
+9.81ms⁻²
+5N
+5Nm
+true
+1s
+100ms
+5us
+2min
+1hr
+true
+true
+true
+true
+true
+true
+45°
+true
+true
+1m³s⁻¹rad²
+1m²
+1e-06m²
+1m²kg
+3.14159s⁻³rad
+1ms⁻³
+exact round-trip ok
+approx round-trip ok
+3.14
+true
+true
+true
+true
+true
+0m
+0kg
+0s
+0°
+5kg
+30°/s
+30°/s
+5kg
+1.5m
+3.14159s⁻³rad
+err: quantity.set: missing numeric prefix in 'abc'
+err: quantity.set: failed to parse '30foo': quantity.set: unknown unit suffix 'foo'
+err: quantity.set: empty string
+err: quantity.set: failed to parse '30m xyz': quantity.set: unknown unit suffix 'm xyz'
+done

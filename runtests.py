@@ -251,7 +251,7 @@ tests = [
     'operator_conv_object',
     'suffix_basic', 'suffix_braced', 'suffix_compound', 'suffix_string',
     'suffix_unknown_err', 'suffix_edge_cases',
-    'quantity_basic',
+    'quantity_basic', 'quantity_from_string',
     'conv_explicit_default',
     'conv_constructor_auto', 'conv_constructor_explicit',
     'conv_func_param_auto',
@@ -647,8 +647,11 @@ try:
         if any(test in tests for test in compute_server_double_hop_tests):
             compute_server_proc_2, compute_test_addr_2, compute_server_log_2 = start_compute_test_server(env_base, COMPUTE_TEST_ADDR_2)
 
-    for test in tests:
-        print(f"Test {test:<{TEST_NAME_WIDTH}} ", end='', flush=True)
+    total_tests = len(tests)
+    counter_width = len(str(total_tests))
+    for test_index, test in enumerate(tests, start=1):
+        print(f"{test_index:>{counter_width}}/{total_tests} Test {test:<{TEST_NAME_WIDTH}} ",
+              end='', flush=True)
         start_time = time.perf_counter()
         if test == 'remote_actor_version_mismatch':
             passed, detail = run_compute_version_mismatch_test(compute_test_addr)

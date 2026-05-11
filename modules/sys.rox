@@ -446,6 +446,14 @@ type quantity object:
     _v = v
     _d = d
 
+  proc init(s :string):
+    """parse a quantity literal like '30deg/s', '5Nm', '9.81m/s^2', '100mm', '45°'; round-trips with operator string()"""
+    set(s)
+
+  @builtin
+  proc set(s :string):
+    """replace this quantity's value and dimension by parsing s (same forms as the string-constructor)"""
+
   // --- helpers ---
 
   private func dim_label() -> string:
@@ -639,7 +647,7 @@ type quantity object:
       av = -av
     // Length [1,0,0,0]
     if _d == [1,0,0,0]:
-      if av >= 1.0:
+      if av >= 1.0 or av == 0.0:
         return string(_v) + 'm'
       if av >= 0.01:
         return string(_v * 100.0) + 'cm'
@@ -652,14 +660,14 @@ type quantity object:
         return string(_v / 3600.0) + 'hr'
       if av >= 60.0:
         return string(_v / 60.0) + 'min'
-      if av >= 1.0:
+      if av >= 1.0 or av == 0.0:
         return string(_v) + 's'
       if av >= 0.001:
         return string(_v * 1000.0) + 'ms'
       return string(_v * 1000000.0) + 'us'
     // Mass [0,0,1,0]
     if _d == [0,0,1,0]:
-      if av >= 1.0:
+      if av >= 1.0 or av == 0.0:
         return string(_v) + 'kg'
       if av >= 0.001:
         return string(_v * 1000.0) + 'g'

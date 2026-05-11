@@ -1,0 +1,153 @@
+// Tests for quantity(string) constructor and the @builtin set() method.
+//
+// Round-trip semantics: quantity(string(q)) is value-equal to q for any value
+// whose display unit doesn't require a non-decimal scale conversion. Values
+// like 3ft (displayed as "91.44cm") or 1rad (displayed as "57.2958°") lose
+// some precision through the FP display roundtrip — for those we use an
+// approximate-equality test.
+
+// --- helpers ---
+func approx_eq(a :quantity, b :quantity, tol :real = 1e-4) -> bool:
+  if a == b:
+    return true
+  var diff = a - b
+  var v :real
+  if b == 0:
+    v = real(diff)
+  else:
+    v = real(diff / b)
+  if v < 0:
+    v = -v
+  return v < tol
+
+
+// --- literal-suffix forms ---
+print(quantity("1m"))                            // 1m
+print(quantity("100mm"))                         // 10cm
+print(quantity("5kg"))                           // 5kg
+print(quantity("45deg"))                         // 45°
+print(quantity("30deg/s"))                       // 30°/s
+print(quantity("10m/s"))                         // 10m/s
+print(quantity("9.81m/s^2"))                     // 9.81ms⁻²
+print(quantity("9.81m/s²"))                      // 9.81ms⁻²
+print(quantity("5N"))                            // 5N
+print(quantity("5Nm"))                           // 5Nm
+print(quantity("5N·m") == 5Nm)                   // true
+print(quantity("1s"))                            // 1s
+print(quantity("100ms"))                         // 100ms
+print(quantity("5us"))                           // 5us
+print(quantity("2min"))                          // 2min
+print(quantity("1hr"))                           // 1hr
+print(quantity("5in") == 5in)                    // true
+print(quantity("3ft") == 3ft)                    // true
+print(quantity("100g") == 100g)                  // true
+print(quantity("1lb") == 1lb)                    // true
+print(quantity("1.5rad") == 1.5rad)              // true
+print(quantity("1rad/s") == 1rad/s)              // true
+
+
+// --- display-emitted forms ---
+print(quantity("45°"))                           // 45°
+print(quantity("30°/s") == 30deg/s)              // true
+print(quantity("9.81ms⁻²") == 9.81m/s^2)         // true
+print(quantity("1m³s⁻¹rad²"))                    // 1m³s⁻¹rad²
+
+
+// --- caret-natural forms (alternatives to superscripts) ---
+print(quantity("1m^2"))                          // 1m²
+print(quantity("1mm^2"))                         // 1e-06m²
+print(quantity("1kg·m^2"))                       // 1m²kg
+print(quantity("180deg/s^3"))                    // 3.14159s⁻³rad
+print(quantity("1m/s^3"))                        // 1ms⁻³
+
+
+// --- decimal-unit round-trip (exact) ---
+var exact = [
+  1m, 100mm, 50cm, 10um,
+  1kg, 100g, 5mg,
+  1s, 100ms, 5us, 2min, 1hr,
+  90deg,
+  10m/s, 100mm/s, 5cm/s,
+  9.81m/s^2,
+  10N,
+  5Nm,
+  30deg/s
+]
+for q in exact:
+  var r = quantity(string(q))
+  if r != q:
+    print("FAIL exact round-trip: " + string(q) + " -> " + string(r))
+print("exact round-trip ok")
+
+
+// --- non-decimal round-trip (approximate due to display FP rounding) ---
+var approx = [5in, 3ft, 2mil, 1lb, 2oz, 1rad, 1rad/s]
+for q in approx:
+  var r = quantity(string(q))
+  if not approx_eq(r, q):
+    print("FAIL approx round-trip: " + string(q) + " -> " + string(r))
+print("approx round-trip ok")
+
+
+// --- dimensionless / scientific / negatives ---
+print(quantity("3.14"))                          // 3.14
+print(quantity("-5") == quantity(v=-5.0))        // true
+print(quantity("1.5e3") == quantity(v=1500.0))   // true
+print(quantity("-1.5m") == -1.5m)                // true
+
+
+// --- whitespace tolerance ---
+print(quantity("  10 m  ") == 10m)               // true
+print(quantity("10 deg/s") == 10deg/s)           // true
+
+
+// --- zero with unit family ---
+print(quantity("0m"))                            // 0m
+print(quantity("0kg"))                           // 0kg
+print(quantity("0s"))                            // 0s
+print(quantity("0deg"))                          // 0°
+
+
+// --- set() reassigns in place ---
+var q :quantity = 1m
+q.set("5kg")
+print(q)                                         // 5kg
+q.set("30deg/s")
+print(q)                                         // 30°/s
+
+
+// --- JSON config use case ---
+var cfg = from_json('{"speed":"30deg/s","mass":"5kg","reach":"1.5m","jerk":"180deg/s^3"}')
+print(quantity(cfg["speed"]))                    // 30°/s
+print(quantity(cfg["mass"]))                     // 5kg
+print(quantity(cfg["reach"]))                    // 1.5m
+print(quantity(cfg["jerk"]))                     // 3.14159s⁻³rad
+
+
+// --- error cases (catchable via try/except) ---
+try:
+  var bad = quantity("abc")
+  print("FAIL no err for 'abc'")
+except e:
+  print("err: " + string(e))
+
+try:
+  var bad = quantity("30foo")
+  print("FAIL no err for '30foo'")
+except e:
+  print("err: " + string(e))
+
+try:
+  var bad = quantity("")
+  print("FAIL no err for empty")
+except e:
+  print("err: " + string(e))
+
+try:
+  var bad = quantity("30m xyz")
+  print("FAIL no err for '30m xyz'")
+except e:
+  print("err: " + string(e))
+
+
+print("done")

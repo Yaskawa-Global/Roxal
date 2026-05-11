@@ -670,6 +670,8 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                       uint32_t resolveArgMask)
 {
     Thread* currentThread = thread.get();
+    if (currentThread)
+        currentThread->lastNativeCallRaised = false;
     auto stackDepthBefore = thread ? static_cast<size_t>(thread->stackTop - thread->stack.begin()) : 0;
     auto frameDepthBefore = thread ? thread->frames.size() : 0;
     struct NativeCallGuard {
@@ -979,8 +981,23 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
             return true;
         }
     } catch (std::exception& e) {
-        runtimeError(e.what());
-        return false;
+        // Convert the C++ exception into a Roxal exception so user code can
+        // catch it via try/except. raiseException() jumps to the nearest
+        // handler frame; if no handler exists on the call stack, it falls
+        // through to runtimeError with an "Uncaught exception" message
+        // (instead of letting the C++ exception escape and abort the VM).
+        Value exc = Value::exceptionVal(Value::stringVal(toUnicodeString(e.what())));
+        raiseException(exc);
+        if (currentThread) {
+            // Mirror the success-path flag clearing so the next native call's
+            // pending-check doesn't see a stale flag.
+            currentThread->exceptionJumpPending.store(false, std::memory_order_relaxed);
+            // Signal to callers that an exception was raised, so they skip
+            // success-path post-processing (e.g. construction overwriting the
+            // result slot with the new instance).
+            currentThread->lastNativeCallRaised = true;
+        }
+        return true;
     }
 }
 
@@ -2847,7 +2864,13 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             // default/conversion evaluation).  If the stack depth didn't
                             // change, the native init completed synchronously.
                             bool deferredByThisCall = thread->nativeContinuationStack.size() > contDepthBefore;
-                            if (isNative && !deferredByThisCall)
+                            // If the native init raised a Roxal exception (converted from a
+                            // C++ exception by callNativeFn's catch), the exception is now
+                            // sitting in the result slot and the IP has been moved to the
+                            // handler.  Overwriting with `inst` would corrupt the handler's
+                            // bound exception, so skip the restoration in that case.
+                            bool nativeRaised = thread && thread->lastNativeCallRaised;
+                            if (isNative && !deferredByThisCall && !nativeRaised)
                                 *(thread->stackTop - 1) = inst; // native init returns instance
                             return ok;
                         } else {

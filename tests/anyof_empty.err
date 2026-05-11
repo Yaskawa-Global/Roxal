@@ -1,1 +1,1 @@
-error: anyof requires at least one awaitable
+.*Uncaught exception:.*anyof requires at least one awaitable.*

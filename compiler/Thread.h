@@ -425,6 +425,14 @@ public:
     std::atomic_bool exceptionJumpPending;
     int nativeCallDepth;
 
+    // Set true by VM::callNativeFn's catch block when a C++ exception thrown
+    // by a builtin was converted via raiseException(). Consumers like the
+    // OpCode::Call construction path read this to know "the call raised — do
+    // not write a synthetic return value into the call's result slot, the
+    // exception is already sitting there." Cleared at the start of every
+    // callNativeFn so each call has a clean signal.
+    bool lastNativeCallRaised { false };
+
     // Set by VM::raiseException when an exception is about to escape all
     // frames on this thread (uncaught). Read by the actor return path so
     // the exception Value is forwarded through the actor's return future

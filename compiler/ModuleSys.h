@@ -63,6 +63,9 @@ public:
     Value time_format_native(VM& vm, ArgsView args);
     Value time_components_native(VM& vm, ArgsView args);
 
+    // quantity type natives
+    Value quantity_set_builtin(VM& vm, ArgsView args);
+
     // TimeSpan type natives
     Value timespan_init_native(VM& vm, ArgsView args);
     Value timespan_seconds_native(VM& vm, ArgsView args);

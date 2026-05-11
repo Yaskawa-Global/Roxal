@@ -1,1 +1,1 @@
-.*error: to_json: non-finite number requires json5=true(.*)?
+.*Uncaught exception:.*to_json: non-finite number requires json5=true.*
