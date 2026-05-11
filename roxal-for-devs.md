@@ -1971,6 +1971,10 @@ The functions in the sys module are always globally available (- as if `import s
 * `filter(items, predicate)` - return a new list containing elements for which `predicate(element)` returns true; predicate can optionally take `(element, index)`. Also a list method: `list.filter(predicate)`
 * `map(items, transform)` - return a new list with `transform(element)` applied to each element; transform can optionally take `(element, index)`. Also a list method: `list.map(transform)`
 * `reduce(items, reducer, initial)` - reduce list to a single value by calling `reducer(accumulator, element)` for each element; reducer can optionally take `(accumulator, element, index)`. Also a list method: `list.reduce(reducer, initial)`
+* `upper(s)` - return `s` with all letters uppercased (Unicode-aware; e.g. `'straße'` → `'STRASSE'`). Also a string method: `s.upper()`
+* `lower(s)` - return `s` with all letters lowercased (Unicode-aware. Also a string method: `s.lower()`
+* `capitalize(s)` - return `s` with the first character uppercased and the rest lowercased (Unicode-aware; matches Python `str.capitalize`). Also a string method: `s.capitalize()`
+* `title(s)` - return `s` with the first letter of each word uppercased and the rest lowercased (Unicode-aware word boundaries; matches Python `str.title`). Also a string method: `s.title()`
 * `Time` - timestamp object; use `Time.wall_now(tz='local')`, `Time.steady_now()`, or `Time.parse(...)` to construct and call instance methods like `format(...)`, `components(...)`, `diff(other)`, `seconds()`, and `microseconds()`
 * `TimeSpan` - duration object; construct via `TimeSpan(...)` or `TimeSpan.from_fields(...)`, query parts with `split()`, `seconds()`, `microseconds()`, and totals such as `total_seconds()` or `human()`
 * `clock(freq)` - create a clock signal at `freq`
@@ -2177,7 +2181,12 @@ print(mNamed['named'])  // {"year": "2024", "month": "03"}
 
 #### String Methods
 
-When the regex module is enabled, strings gain the following methods that accept either a `Regex` object or a plain string pattern (which is auto-compiled):
+* `upper()` - return the string with all letters uppercased (Unicode-aware; e.g. `'straße'.upper()` → `'STRASSE'`)
+* `lower()` - return the string with all letters lowercased (Unicode-aware)
+* `capitalize()` - return the string with the first character uppercased and the rest lowercased (Unicode-aware; matches Python `str.capitalize`)
+* `title()` - return the string with the first letter of each word uppercased and the rest lowercased (Unicode-aware word boundaries; matches Python `str.title`)
+
+When the regex module is enabled, strings additionally gain the following methods that accept either a `Regex` object or a plain string pattern (which is auto-compiled):
 
 * `match(pattern)` - find matches and return a list, or `nil` if no match
 * `search(pattern)` - return the index of the first match, or `-1` if not found

@@ -704,6 +704,11 @@ public:
     Value list_map_builtin(ArgsView args);
     Value list_reduce_builtin(ArgsView args);
 
+    Value string_upper_builtin(ArgsView args);
+    Value string_lower_builtin(ArgsView args);
+    Value string_capitalize_builtin(ArgsView args);
+    Value string_title_builtin(ArgsView args);
+
 #ifdef ROXAL_ENABLE_REGEX
     Value string_match_builtin(ArgsView args);
     Value string_search_builtin(ArgsView args);

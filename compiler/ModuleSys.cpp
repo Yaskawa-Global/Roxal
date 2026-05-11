@@ -1172,6 +1172,22 @@ void ModuleSys::registerBuiltins(VM& vm)
                 Value::stringVal(toUnicodeString(XML_MODE_COMPACT)),
                 Value::falseVal()},
                0x1);
+        addSys("upper",
+               [](VM& vm, ArgsView a){ return vm.string_upper_builtin(a); },
+               makeFuncType({{"s", type::BuiltinType::String}}),
+               {}, 0x1);
+        addSys("lower",
+               [](VM& vm, ArgsView a){ return vm.string_lower_builtin(a); },
+               makeFuncType({{"s", type::BuiltinType::String}}),
+               {}, 0x1);
+        addSys("capitalize",
+               [](VM& vm, ArgsView a){ return vm.string_capitalize_builtin(a); },
+               makeFuncType({{"s", type::BuiltinType::String}}),
+               {}, 0x1);
+        addSys("title",
+               [](VM& vm, ArgsView a){ return vm.string_title_builtin(a); },
+               makeFuncType({{"s", type::BuiltinType::String}}),
+               {}, 0x1);
         // filter, map, reduce are now implemented in pure Roxal in sys.rox
     }
 

@@ -10496,6 +10496,16 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::List, "reduce", std::mem_fn(&VM::list_reduce_builtin),
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x3);
 
+    // String case-conversion methods — read-only on self (return new string)
+    defineBuiltinMethod(ValueType::String, "upper", std::mem_fn(&VM::string_upper_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::String, "lower", std::mem_fn(&VM::string_lower_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::String, "capitalize", std::mem_fn(&VM::string_capitalize_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::String, "title", std::mem_fn(&VM::string_title_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+
 #ifdef ROXAL_ENABLE_REGEX
     // String methods — all read-only on self and args
     defineBuiltinMethod(ValueType::String, "match", std::mem_fn(&VM::string_match_builtin),
@@ -11520,6 +11530,52 @@ Value VM::list_reduce_builtin(ArgsView args)
 
     // Return nil placeholder - actual result pushed by continuation
     return Value::nilVal();
+}
+
+Value VM::string_upper_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isString(args[0]))
+        throw std::invalid_argument("upper expects a single string argument");
+    UnicodeString result(asStringObj(args[0])->s);
+    result.toUpper();
+    return Value::stringVal(result);
+}
+
+Value VM::string_lower_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isString(args[0]))
+        throw std::invalid_argument("lower expects a single string argument");
+    UnicodeString result(asStringObj(args[0])->s);
+    result.toLower();
+    return Value::stringVal(result);
+}
+
+Value VM::string_capitalize_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isString(args[0]))
+        throw std::invalid_argument("capitalize expects a single string argument");
+    UnicodeString result(asStringObj(args[0])->s);
+    result.toLower();
+    if (result.isEmpty())
+        return Value::stringVal(result);
+    // First code point may be a surrogate pair — split on code-point boundary.
+    UChar32 firstCp = result.char32At(0);
+    int32_t firstLen = U16_LENGTH(firstCp);
+    UnicodeString head(result, 0, firstLen);
+    head.toUpper();
+    UnicodeString tail(result, firstLen);
+    head.append(tail);
+    return Value::stringVal(head);
+}
+
+Value VM::string_title_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isString(args[0]))
+        throw std::invalid_argument("title expects a single string argument");
+    UnicodeString result(asStringObj(args[0])->s);
+    // nullptr → ICU creates a default word-break iterator for the root locale.
+    result.toTitle(nullptr);
+    return Value::stringVal(result);
 }
 
 #ifdef ROXAL_ENABLE_REGEX

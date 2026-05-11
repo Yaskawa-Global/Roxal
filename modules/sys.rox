@@ -95,6 +95,22 @@ func from_xml(xml:string, mode:string='compact', preserve_whitespace:bool=false)
   """parse XML string into compact or raw value form"""
 
 @builtin
+func upper(s:string) -> string:
+  """return s with all letters converted to uppercase (Unicode-aware)"""
+
+@builtin
+func lower(s:string) -> string:
+  """return s with all letters converted to lowercase (Unicode-aware)"""
+
+@builtin
+func capitalize(s:string) -> string:
+  """return s with the first character uppercased and the rest lowercased (Unicode-aware; matches Python str.capitalize)"""
+
+@builtin
+func title(s:string) -> string:
+  """return s with the first letter of each word uppercased and the rest lowercased (Unicode-aware via ICU word boundaries; matches Python str.title)"""
+
+@builtin
 type Time object:
 
   private var _seconds:int

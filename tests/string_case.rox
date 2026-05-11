@@ -1,0 +1,42 @@
+// Method form
+print('Hello, World!'.upper())
+print('Hello, World!'.lower())
+print(''.upper())
+print(''.lower())
+
+// Function form (sys.upper / sys.lower available implicitly via import sys.*)
+print(upper('mixed Case STRING'))
+print(lower('mixed Case STRING'))
+
+// Unicode-aware (German, Greek)
+print('straße'.upper())
+print('ΑΘΗΝΑ'.lower())
+
+// Non-letters pass through
+print('123 abc !@#'.upper())
+print('123 ABC !@#'.lower())
+
+// Chaining
+print('hello'.upper().lower())
+
+// Bound to a variable
+var s = 'Roxal'
+print(s.upper())
+print(s)  // original unchanged (strings are immutable)
+
+// capitalize: first char upper, rest lower (Python semantics)
+print('hello WORLD'.capitalize())
+print('HELLO'.capitalize())
+print(''.capitalize())
+print(capitalize('mIxEd cAsE'))
+
+// title: first letter of each word
+print('hello world'.title())
+print('the quick brown fox'.title())
+print(''.title())
+print(title('multi-word string with PUNCTUATION'))
+
+// Unicode-aware capitalize/title
+print('ßtraße'.capitalize())          // ß uppercases to SS
+print('αθηνα'.capitalize())            // Greek alpha uppercases
+print('αθηνα και θεσσαλονικη'.title()) // Greek words titled
