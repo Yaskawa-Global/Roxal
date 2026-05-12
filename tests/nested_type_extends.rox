@@ -1,0 +1,11 @@
+type Base object:
+    var v :int = 1
+
+type Outer object:
+    type Inner object extends Base:
+        var w :int = 2
+
+var i = Outer.Inner()
+print(i.v)
+print(i.w)
+print(i is Base)

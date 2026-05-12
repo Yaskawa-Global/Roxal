@@ -165,6 +165,7 @@ tests = [
     'const_member_type_access', 'const_member_type_var_err', 'const_member_type_mutable_err', 'const_member_type_private_err',
     'const_member_freeze', 'const_member_shared', 'const_member_untyped_freeze',
     'nested_type_enum', 'nested_type_object', 'nested_type_inherit',
+    'nested_type_extends', 'nested_type_implements',
     'nested_type_sibling', 'nested_type_private', 'nested_type_shadow',
     'nested_type_sibling_property', 'property_accessor_then_nested_type',
     'dotted_type_name', 'dotted_type_implements', 'dotted_type_deep', 'dotted_type_enum_anno', 'dotted_type_err',

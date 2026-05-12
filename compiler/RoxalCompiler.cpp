@@ -1291,17 +1291,30 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         defineVariable(0);
 
         if (compilingNestedType)
-            emitByte(OpCode::Dup); // nested: type is on stack
+            // The Type opcode pushed the sub-type, then emitTypeName(super)
+            // pushed super on top. Sub is at peek(1); DupBelow copies it on
+            // top so Extend sees the expected [super, sub] ordering. Plain
+            // Dup would duplicate super, silently linking the type to itself.
+            emitByte(OpCode::DupBelow);
         else
             namedVariable(ast->name, /*assign=*/false); // child (sub)
         emitByte(OpCode::Extend);
     }
 
 
-    if (compilingNestedType)
-        emitByte(OpCode::Dup); // nested: type is on stack
-    else
+    if (compilingNestedType) {
+        // After the Type opcode (and, if applicable, the Extend handler which
+        // pops its top entry), the implementer is the deepest fresh entry on
+        // the stack relative to top: with extends, super sits above it at
+        // peek(0), so DupBelow grabs peek(1); without extends, the implementer
+        // is at peek(0), so plain Dup works.
+        if (ast->extends.has_value() && !isEnumeration)
+            emitByte(OpCode::DupBelow);
+        else
+            emitByte(OpCode::Dup);
+    } else {
         namedVariable(ast->name, false); // make type accessible on the stack
+    }
 
     // Anchor the in-flight type as a local so the typescope walker can load it
     // directly via OpCode::GetLocal, bypassing the parent-attachment chain. This
@@ -1899,12 +1912,13 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     // Emit Implements opcodes -- AFTER methods/properties have been registered
     // on the type, so the runtime conformance check sees the full method set.
+    currentNode = ast;
     for (const auto& ifaceName : ast->implements) {
         emitTypeName(ifaceName);                   // push interface type
-        if (compilingNestedType)
-            emitByte(OpCode::Dup);                 // push implementer type
-        else
-            namedVariable(ast->name, /*assign=*/false);
+        // Push implementer. Dup would duplicate the iface just pushed above,
+        // not the implementer; namedVariable resolves a nested type's own name
+        // via its in-flight anchor slot (set above).
+        namedVariable(ast->name, /*assign=*/false);
         emitByte(OpCode::Implements, "implements " + toUTF8StdString(joinTypeName(ifaceName)));
     }
 
