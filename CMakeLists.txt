@@ -390,6 +390,36 @@ link_directories(
 include_directories(${LIBFFI_INCLUDE_DIRS})
 
 
+# Build a minimal static library containing just the AST + ANTLR-driven
+# parser.  Targeted at out-of-tree tools (codegen, linters, formatters)
+# that consume Roxal AST without needing the VM, GC, or external-protocol
+# modules.  No optional-feature deps (gRPC/DDS/ONNX/etc.).
+set(ROXALAST_SOURCES
+    core/AST.cpp
+    core/common.cpp
+    core/types.cpp
+    compiler/ASTGenerator.cpp
+    compiler/RoxalIndentationLexer.cpp
+)
+add_library(roxalast STATIC ${ROXALAST_SOURCES} ${GENERATED_SOURCES})
+add_dependencies(roxalast generate_parser)
+target_link_libraries(roxalast PUBLIC
+    antlr4-runtime
+    icuio
+    icui18n
+    icuuc
+    icudata
+    pthread
+)
+target_compile_options(roxalast PRIVATE
+    $<$<CONFIG:DEBUG>:-fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1>
+    $<$<CONFIG:RELEASE>:-O3>
+)
+target_compile_definitions(roxalast PRIVATE
+    $<$<CONFIG:DEBUG>:DEBUG_BUILD>
+)
+
+
 # Build the static library containing the core compiler and VM
 add_library(roxalcore STATIC ${CORE_SOURCES} ${COMPILER_SOURCES} ${GENERATED_SOURCES})
 set_target_properties(roxalcore PROPERTIES OUTPUT_NAME roxal)
