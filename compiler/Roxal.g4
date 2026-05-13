@@ -453,9 +453,9 @@ primary
  | THIS
  | str   // str+ ?
  | RANGE '(' range ')'
- | list
  | vector
  | matrix
+ | list
  | dict
  | IDENTIFIER
  | OPEN_PAREN expression CLOSE_PAREN
@@ -496,7 +496,7 @@ list
  ;
 
 vector
- : '[' signed_num signed_num (signed_num)* ']'
+ : '[' vec_elem vec_elem (vec_elem)* ']'
  ;
 
 matrix
@@ -504,8 +504,13 @@ matrix
 ;
 
 row
- : signed_num (signed_num)*
+ : vec_elem (vec_elem)*
 ;
+
+vec_elem
+ : signed_num
+ | '(' expression ')'
+ ;
 
 signed_num
  : MINUS? num

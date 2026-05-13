@@ -1,0 +1,19 @@
+// Parenthesized expression as a vector element.
+
+// Disambiguates the original ambiguous form.
+print([1.0 (-2.0) (-3.0)])
+
+// Mixed bare and parenthesized.
+print([1 -2 (-3)])
+print([1 (-2) -3])
+
+// Runtime expressions in a vector (non-literal elements must be parenthesized).
+var a = 7.0
+var b = 8.0
+print([(a) (a + b) (b - a)])
+
+// Same in a matrix row.
+print([1 (-2); (-3) 4])
+
+// All parenthesized, including products.
+print([(a) (b) (a * b)])

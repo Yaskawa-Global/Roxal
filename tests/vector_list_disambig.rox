@@ -1,0 +1,29 @@
+// Vector vs list disambiguation: unambiguous cases.
+
+// Only middle element negative.
+print([0.0073 -0.0049 0.0412])
+
+// First element negative; some trailing element positive.
+print([-1 -2 3])
+
+// Single trailing negative is unambiguous.
+print([1 2 3 -4])
+
+// Comma-separated form is always a list.
+print([1, -2, -3])
+
+// Parenthesized subtraction in a 1-element list.
+print([(0.0073 - 0.0049 - 0.0412)])
+
+// Subtraction in one list element, comma to next.
+print([1.0 -2.0, 3])
+
+// Empty list.
+print([])
+
+// Single-element list.
+print([1])
+
+// Comma + newline separators stay a list.
+print([1,
+       -2])

@@ -3118,10 +3118,31 @@ std::any ASTGenerator::visitVector(RoxalParser::VectorContext *context)
 {
     visitStart();
 
+    // Ambiguity guard: '[a -b -c ...]' (every trailing element is a bare MINUS-prefixed
+    // signed_num) is matched by both the vector rule and the list rule (single subtraction
+    // expression a - b - c ...). Vector wins via alternative ordering, but the user may
+    // have intended subtraction. Force them to disambiguate. A parenthesized element
+    // ('(' expression ')') is explicit and never triggers the guard.
+    auto elems = context->vec_elem();
+    if (elems.size() >= 2) {
+        bool allTrailingBareNegative = true;
+        for (size_t i = 1; i < elems.size(); ++i) {
+            auto* sn = elems[i]->signed_num();
+            if (!sn || !sn->MINUS()) { allTrailingBareNegative = false; break; }
+        }
+        if (allTrailingBareNegative) {
+            reportError(context->start,
+                "ambiguous bracket literal: could be a vector or a subtraction expression. "
+                "Disambiguate as: [a (-b) (-c) ...] or vector([a, -b, ...]) for a vector, "
+                "[a, -b, ...] for a list, "
+                "or [(a - b - ...)] for a list of one subtraction expression.");
+        }
+    }
+
     ptr<Vector> vec = make_ptr<Vector>();
     setSourceInfo(vec,context);
-    for(int i=0; i<context->signed_num().size(); ++i)
-        vec->elements.push_back(as<Expression>(visitSigned_num(context->signed_num().at(i))));
+    for(int i=0; i<context->vec_elem().size(); ++i)
+        vec->elements.push_back(as<Expression>(visitVec_elem(context->vec_elem().at(i))));
 
     return typeValue(vec);
     visitEnd();
@@ -3146,10 +3167,21 @@ std::any ASTGenerator::visitRow(RoxalParser::RowContext *context)
 
     ptr<Vector> vec = make_ptr<Vector>();
     setSourceInfo(vec,context);
-    for(int i=0; i<context->signed_num().size(); ++i)
-        vec->elements.push_back(as<Expression>(visitSigned_num(context->signed_num().at(i))));
+    for(int i=0; i<context->vec_elem().size(); ++i)
+        vec->elements.push_back(as<Expression>(visitVec_elem(context->vec_elem().at(i))));
 
     return typeValue(vec);
+    visitEnd();
+}
+
+std::any ASTGenerator::visitVec_elem(RoxalParser::Vec_elemContext *context)
+{
+    visitStart();
+
+    if (context->signed_num())
+        return visitSigned_num(context->signed_num());
+    return visitExpression(context->expression());
+
     visitEnd();
 }
 
