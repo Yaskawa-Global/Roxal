@@ -17,11 +17,14 @@
 #include <vector>
 #include <set>
 #include <map>
+#include <unordered_map>
 #include <mutex>
 #include <stack>
 #include <queue>
 #include <optional>
 #include <utility>
+
+#include "ordered_map.h"
 
 
 namespace roxal {
@@ -594,8 +597,147 @@ private:
 };
 
 
+template<typename Key, typename T, typename Hash = std::hash<Key>, typename KeyEqual = std::equal_to<Key>>
+class atomic_ordered_map
+{
+public:
 
+    typedef Key key_type;
+    typedef T mapped_type;
+    typedef ordered_map<Key, T, Hash, KeyEqual> ordered_type;
+    typedef typename ordered_type::value_type value_type;
+    typedef typename ordered_type::map_type map_type;
 
+    atomic_ordered_map() {}
+    ~atomic_ordered_map()
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+    }
+
+    const T load(const Key& key) const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return m.at(key);
+    }
+
+    void store(const Key& key, const T& value)
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        m[key] = value;
+    }
+
+    const T at(const Key& key) const { return load(key); }
+
+    bool containsKey(const Key& key) const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return m.containsKey(key);
+    }
+
+    // returns value if key present, otherwise no value
+    std::optional<T> lookup(const Key& key) const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return m.lookup(key);
+    }
+
+    ordered_type get() const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return m;
+    }
+
+    // apply f to each map entry *while map is locked*
+    //  (exceptions thrown by f are ignored)
+    void apply(std::function<void(const value_type&)> f)
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        m.apply(f);
+    }
+
+    size_t erase(const Key& key)
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return m.erase(key);
+    }
+
+    // if key present, erase it, unlock and apply f to value
+    size_t erase_and_apply(const Key& key, std::function<void(const mapped_type&)> f)
+    {
+        T value {};
+        {
+            std::lock_guard<std::mutex> lock(m_lock);
+            auto it = m.find(key);
+            if (it != m.end()) {
+                value = it->second;
+                m.erase(key);
+                // fall through (unlock)
+            }
+            else
+                return 0;
+        }
+        f(value);
+        return 1;
+    }
+
+    void clear()
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        m.clear();
+    }
+
+    size_t size() const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return m.size();
+    }
+
+    bool empty() const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return m.empty();
+    }
+
+    atomic_ordered_map& operator=(const atomic_ordered_map& rhs)
+    {
+        if (&rhs != this) {
+            std::lock_guard<std::mutex> lock(m_lock);
+            m = rhs.get();
+        }
+        return *this;
+    }
+
+    atomic_ordered_map& operator=(const ordered_type& rhs)
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        m = rhs;
+        return *this;
+    }
+
+    atomic_ordered_map& operator=(const map_type& rhs)
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        m = rhs;
+        return *this;
+    }
+
+    std::vector<Key> keys() const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return m.keys();
+    }
+
+    std::vector<std::pair<Key, T>> entries() const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return m.entries();
+    }
+
+private:
+    mutable std::mutex m_lock;
+
+    ordered_type m;
+};
 
 
 template<typename T>
