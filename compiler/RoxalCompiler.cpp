@@ -1270,6 +1270,21 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         } else {
             asFuncScope(funcScope())->locals.back().isConst = true;
         }
+    } else {
+        // Register the OBJECT_TYPE (or actor/interface/enum) result as an
+        // anchor local at the parent's current scope depth.
+        // (Without this, locals[] indices would drift from actual VM stack
+        // slots: the type value pushed by the Type opcode is an unregistered
+        // stack temp, so the subsequent Dup-and-addLocal($selfType) would
+        // record the wrong slot.
+        //
+        // The anchor lives in the parent's scope so the nested type body's
+        // own enterLocalScope/exitLocalScope dance doesn't touch it. The
+        // parent's NestedType emission loop pops both the runtime value (via
+        // OpCode::NestedType) and this locals[] entry (manually).
+        addLocal(UnicodeString("__nested_anchor_") + ast->name);
+        asFuncScope(funcScope())->locals.back().depth =
+            asFuncScope(funcScope())->scopeDepth;
     }
 
 
@@ -1341,6 +1356,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         // Compile the nested type without module-level registration.
         bool wasCompilingNestedType = compilingNestedType;
         compilingNestedType = true;
+        size_t localsBefore = asFuncScope(funcScope())->locals.size();
         nestedType->accept(*this);
         compilingNestedType = wasCompilingNestedType;
 
@@ -1350,6 +1366,14 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         uint16_t nestedNameConstant = identifierConstant(nestedType->name);
         emitOpArgsBytes(OpCode::NestedType, nestedNameConstant,
                         "nested type " + toUTF8StdString(nestedType->name));
+
+        // The nested-type compile registered an anchor in our locals[] to keep
+        // slot tracking aligned with the VM stack (see visit(TypeDecl)).
+        // NestedType just popped the runtime value; remove the anchor entry so
+        // future addLocal calls compute correct indices.
+        auto& locals = asFuncScope(funcScope())->locals;
+        if (locals.size() > localsBefore)
+            locals.pop_back();
     }
 
     for(size_t i=0; i<ast->properties.size(); i++) {
