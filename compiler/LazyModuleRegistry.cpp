@@ -43,20 +43,32 @@ ptr<BuiltinModule> LazyModuleRegistry::ensureLoaded(const icu::UnicodeString& na
         moduleMutex = it->second.loadMutex.get();
     }
 
-    // Lock per-module mutex to serialize loading of the same module
+    // Lock per-module mutex to serialize loading of the same module.
+    // Do NOT hold registryMutex_ across doLoad: loading scripts may import
+    // other modules and call back into isRegistered/ensureLoaded.
     std::lock_guard<std::mutex> loadLock(*moduleMutex);
 
-    // Double-check after acquiring lock
+    // Double-check under registry lock.
     {
         std::lock_guard<std::mutex> lock(registryMutex_);
-        auto& entry = entries_[nameStr];
-        if (entry.loaded)
-            return entry.instance;
-
-        // Perform loading under locks
-        doLoad(entry, vm, nameStr);
-        return entry.instance;
+        auto it = entries_.find(nameStr);
+        if (it == entries_.end())
+            return nullptr;
+        if (it->second.loaded)
+            return it->second.instance;
     }
+
+    // doLoad re-acquires registryMutex_ for each entry mutation; it never
+    // holds the registry lock across script execution, which is what makes
+    // nested imports safe.
+    doLoad(vm, nameStr);
+
+    // Re-fetch the result under lock.
+    std::lock_guard<std::mutex> lock(registryMutex_);
+    auto it = entries_.find(nameStr);
+    if (it == entries_.end())
+        return nullptr;
+    return it->second.instance;
 }
 
 ptr<BuiltinModule> LazyModuleRegistry::getLoadedModule(const icu::UnicodeString& name) const
@@ -75,35 +87,54 @@ void LazyModuleRegistry::clear()
     entries_.clear();
 }
 
-void LazyModuleRegistry::doLoad(ModuleEntry& entry, VM& vm, const std::string& name)
+void LazyModuleRegistry::doLoad(VM& vm, const std::string& name)
 {
-    // 1. Create module instance from factory
-    entry.instance = entry.factory();
-    if (!entry.instance)
-        return;
+    // Caller holds the per-module loadMutex; this function never holds
+    // registryMutex_ across calls that can re-enter the registry. It briefly
+    // locks for each entry read/write and works against a local instance
+    // pointer the rest of the time.
+
+    // 1. Create the module instance from its factory. Stash the instance in
+    //    the entry under lock so any concurrent (different-thread) query
+    //    sees consistent state once we set loaded=true at the end.
+    ptr<BuiltinModule> instance;
+    {
+        std::lock_guard<std::mutex> lock(registryMutex_);
+        auto it = entries_.find(name);
+        if (it == entries_.end())
+            return;
+        instance = it->second.factory();
+        if (!instance)
+            return;
+        it->second.instance = instance;
+    }
 
     // 2. Add module's additional search paths
-    vm.appendModulePaths(entry.instance->additionalModulePaths());
+    vm.appendModulePaths(instance->additionalModulePaths());
 
     // 3. Add to builtinModules for GC traversal
-    vm.builtinModules.push_back(entry.instance);
+    vm.builtinModules.push_back(instance);
 
-    if (entry.instance->hasModuleScript()) {
+    if (instance->hasModuleScript()) {
         // 4. Parse the .rox file to populate type declarations
         //    Convert dots to path separators for nested modules (e.g. "ai.nn" → "ai/nn.rox")
         std::string roxFile = name;
         std::replace(roxFile.begin(), roxFile.end(), '.', '/');
         roxFile += ".rox";
-        vm.executeBuiltinModuleScript(roxFile, entry.instance->moduleType());
+        vm.executeBuiltinModuleScript(roxFile, instance->moduleType());
     }
 
     // 5. Link native implementations
-    entry.instance->registerBuiltins(vm);
+    instance->registerBuiltins(vm);
 
     // 6. Call module-loaded hook for module-specific initialization
-    entry.instance->onModuleLoaded(vm);
+    instance->onModuleLoaded(vm);
 
-    entry.loaded = true;
+    // 7. Mark loaded under the registry lock.
+    std::lock_guard<std::mutex> lock(registryMutex_);
+    auto it = entries_.find(name);
+    if (it != entries_.end())
+        it->second.loaded = true;
 }
 
 } // namespace roxal

@@ -61,8 +61,10 @@ private:
     mutable std::mutex registryMutex_;
     std::unordered_map<std::string, ModuleEntry> entries_;
 
-    // Helper to perform loading steps (called under per-module lock)
-    void doLoad(ModuleEntry& entry, VM& vm, const std::string& name);
+    // Helper to perform loading steps (called under per-module lock,
+    // without holding the registry mutex — looks up the entry by name
+    // and briefly re-acquires the registry mutex around each write).
+    void doLoad(VM& vm, const std::string& name);
 };
 
 } // namespace roxal

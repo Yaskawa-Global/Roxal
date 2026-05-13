@@ -6,6 +6,9 @@
 #include <core/types.h>
 #include <optional>
 #include <algorithm>
+#ifdef DEBUG_BUILTINS
+#include <cstdio>
+#endif
 #include <string>
 #include <vector>
 
@@ -183,6 +186,12 @@ inline void BuiltinModule::link(const std::string& name, NativeFn fn,
         ObjClosure* cl = asClosure(val.value());
         asFunction(cl->function)->builtinInfo = make_ptr<BuiltinFuncInfo>(
             fn, std::move(defaults), resolveArgMask);
+#ifdef DEBUG_BUILTINS
+        std::string modName;
+        asModuleType(moduleType())->name.toUTF8String(modName);
+        std::fprintf(stderr, "[builtins] linked %s.%s\n",
+                     modName.c_str(), name.c_str());
+#endif
     }
 }
 
@@ -205,6 +214,12 @@ inline void BuiltinModule::linkMethod(const std::string& typeName,
                 ObjClosure* cl = asClosure(val);
                 asFunction(cl->function)->builtinInfo = make_ptr<BuiltinFuncInfo>(
                     fn, std::move(defaults), resolveArgMask, noMutateSelf, noMutateArgs);
+#ifdef DEBUG_BUILTINS
+                std::string modName;
+                asModuleType(moduleType())->name.toUTF8String(modName);
+                std::fprintf(stderr, "[builtins] linked %s.%s.%s\n",
+                             modName.c_str(), typeName.c_str(), methodName.c_str());
+#endif
             }
         }
         else {

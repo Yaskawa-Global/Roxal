@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.12)
 
-project(roxal VERSION 0.8.10 LANGUAGES CXX C)
+project(roxal VERSION 0.8.11 LANGUAGES CXX C)
 set(ROXAL_PRERELEASE "pre" CACHE STRING "SemVer prerelease label (e.g. alpha.1, rc.1)")
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -78,6 +78,7 @@ add_compile_definitions(
 #    DEBUG_TRACE_MEMORY
 #    DEBUG_TRACE_EXECUTION
 #    DEBUG_TRACE_GC
+#    DEBUG_BUILTINS  # print one line per BuiltinModule::link / linkMethod call at startup
 )
 
 # Enable verbose GC tracing when requested.

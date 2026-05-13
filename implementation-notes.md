@@ -832,6 +832,102 @@ actor is restored.  Functions and closures serialise their `Chunk` bytecode and
 captured upvalues so they can be executed after being deserialised.
 
 
+## Module loading, caching, and reconciliation
+
+### Builtin modules
+
+A C++ `BuiltinModule` subclass (e.g. `ModuleSys`, `ModuleNN`, `ModuleRegex`)
+pairs a native implementation with a `.rox` "companion" script. The companion
+declares the module's surface area in Roxal — top‑level functions, object
+types, methods, properties — typically with `@builtin` annotations and empty
+or stub bodies. The C++ side then *links* native implementations to those
+declarations via `BuiltinModule::link()` (for top‑level functions) and
+`BuiltinModule::linkMethod()` (for object methods). Linking sets the
+`builtinInfo` field on the underlying `ObjFunction`, which the VM's dispatch
+paths (`bindMethod`, `callValue`'s Closure branch) check to route the call to
+the native implementation instead of executing the Roxal stub body.
+
+Builtin modules are registered in one of two ways (`VM::VM`):
+
+- **Eagerly** via `registerBuiltinModule(make_ptr<ModuleX>())`. Their `.rox`
+  is executed during VM construction (`executeBuiltinModuleScript`) and
+  `registerBuiltins(vm)` runs via `defineBuiltinFunctions()` — both happen
+  before user scripts compile.
+
+- **Lazily** via `lazyModuleRegistry.registerFactory(name, factory)`. The
+  module instance, its `.rox` execution, and `registerBuiltins` all fire on
+  the first `import name.*` from user code (`LazyModuleRegistry::doLoad`).
+  Lazy loading is preferred for optional features so the cost is only paid
+  when used.
+
+`LazyModuleRegistry::ensureLoaded` holds a *per-module* mutex across `doLoad`
+to serialize concurrent loads of the same module, but releases the
+registry-wide mutex before calling `doLoad` — otherwise nested imports inside
+the loading script (which re-enter the registry to resolve `import` targets)
+would deadlock. `doLoad` itself never holds the registry mutex across script
+execution: it re-acquires the mutex briefly for each entry mutation
+(constructing the instance, marking `loaded=true`) and works against a local
+`ptr<BuiltinModule>` the rest of the time.
+
+### Bytecode cache (`.roc`)
+
+Compiled modules are cached as `.roc` files next to their `.rox` source (the
+dot-prefix is just to keep the directory listing tidy). The compiler reads
+the cache when source mtime ≤ cache mtime; otherwise it recompiles and
+overwrites. `--recompile` deletes all caches under the source root before
+running. Cache reads happen via `compiler.loadFileCache` (top-level scripts
+and builtin-module companions) or `RoxalCompiler::loadModuleFromCache`
+(nested `import`s during compilation).
+
+Each cache read creates a *fresh* `SerializationContext` and reconstructs
+every `Obj` in the file's reachable graph — including `ObjModuleType`s,
+`ObjObjectType`s, `ObjFunction`s, and the `Chunk` constants those functions
+reference. There is **no cross-file dedup**: loading `foo.roc` and `bar.roc`
+where both reference the same `foo.module` produces two distinct
+`ObjModuleType*` instances. This is by design — the cache file is self-
+contained — but it means an extra pass is needed to glue the deserialized
+fragments back into a coherent module graph.
+
+### `reconcileModuleReferences`
+
+After a successful `loadModuleFromCache`, `reconcileModuleReferences`
+([compiler/RoxalCompiler.cpp](compiler/RoxalCompiler.cpp)) walks every
+function in the deserialized chunk and substitutes "duplicate" instances
+with the **canonical** one — the live ObjModuleType already held by either a
+loaded `BuiltinModule`, a global, or a previously-canonicalized peer.
+
+The two invariants that hold after reconcile:
+
+1. **One canonical `ObjModuleType` per module name** for the duration of
+   the program. `canonicalizeModuleValue` is *memoized* per reconcile pass
+   (a `unordered_map<ObjModuleType*, Value>` keyed on the fresh input
+   pointer). The first decision sticks, and both directions of the mapping
+   are recorded — when input X resolves to canonical Y, future queries with
+   either X *or* Y as input return Y. This eliminates non-determinism
+   where two duplicates each pick the other as "canonical" depending on
+   transient `vars` snapshot state.
+
+2. **Merging is non-destructive.** `mergeModuleTypes` walks `source->vars`
+   and stores only entries the target doesn't already have. If source and
+   target both carry a same-named type (`ObjObjectType` / `ObjEventType`)
+   with a different pointer, the source pointer is recorded in a
+   `canonicalTypeMemo` so chunk-constant occurrences of the dup can be
+   substituted later. This preserves "live" state already attached to the
+   canonical module's types — most importantly, `builtinInfo` patched onto
+   method functions by `linkMethod`.
+
+After the per-function walk, a second sweep over each function's
+`chunk->constants` substitutes any `ObjObjectType` / `ObjEventType` constant
+that appears in `canonicalTypeMemo` with its canonical Value, so bytecode
+that references types by chunk-constant index sees the same pointer as
+runtime dispatch.
+
+Builtin-module developers can compile with `-DDEBUG_BUILTINS` (or
+uncommenting `DEBUG_BUILTINS` in `CMakeLists.txt`'s `add_compile_definitions`
+block) to get a `[builtins] linked sys.Time.kind`–style confirmation line
+per successful `link` / `linkMethod` call.
+
+
 ## Continuations
 
 The VM uses continuation-based execution to handle operations that require

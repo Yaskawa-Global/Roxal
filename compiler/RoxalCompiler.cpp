@@ -334,7 +334,28 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
 
     // Helpers --------------------------------------------------------------
 
-    auto mergeModuleTypes = [](ObjModuleType* target, ObjModuleType* source) {
+    // Memo: maps a fresh-deserialized ObjModuleType* to its decided canonical
+    // Value (which itself wraps an ObjModuleType*). Populated lazily by
+    // canonicalizeModuleValue and consulted on every subsequent call within
+    // this reconcile pass — eliminates the target/source role-flipping
+    // previously observed when two deserialized duplicates each picked the
+    // other as "canonical" depending on transient var-count state.
+    std::unordered_map<ObjModuleType*, Value> canonicalModuleMemo;
+
+    // Memo: maps a fresh-deserialized ObjObjectType* (or ObjEventType*) to its
+    // canonical Value, populated when mergeModuleTypes sees the same-named
+    // type already present in the target module. Used to substitute fresh
+    // duplicate type instances out of chunk constants after the module-level
+    // walk completes.
+    std::unordered_map<Obj*, Value> canonicalTypeMemo;
+
+    // Keys in the two memos above are raw Obj* pointers. Pin them with strong
+    // Value refs for the lifetime of this reconcile pass so a future change
+    // that triggers GC mid-walk can't invalidate the keys. (Current code
+    // doesn't run GC during reconcile, but treat memo keys as load-bearing.)
+    std::vector<Value> memoKeyPins;
+
+    auto mergeModuleTypes = [&](ObjModuleType* target, ObjModuleType* source) {
         if (target == nullptr || source == nullptr || target == source)
             return;
 
@@ -343,23 +364,53 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         if (!source->sourcePath.isEmpty())
             target->sourcePath = source->sourcePath;
 
+        // Non-destructive merge: store source entries only if target doesn't
+        // already have the name. When both sides hold a type with the same
+        // name but a different pointer, record source's pointer as aliasing
+        // the canonical (target's) so chunk constants can be substituted later.
         auto sourceVars = source->vars.snapshot();
-        if (!sourceVars.empty()) {
-            target->vars.clear();
-            for (const auto& entry : sourceVars)
-                target->vars.store(entry, true);
-            target->constVars = source->constVars;
+        for (const auto& entry : sourceVars) {
+            int32_t nameHash = entry.first.hashCode();
+            auto existing = target->vars.load(nameHash);
+            if (existing.has_value() && !existing.value().isNil()) {
+                if (entry.second.isObj() && existing.value().isObj()
+                    && entry.second.asObj() != existing.value().asObj()) {
+                    bool isType =
+                        isObjectType(entry.second) || isEventType(entry.second);
+                    bool isExistingType =
+                        isObjectType(existing.value()) || isEventType(existing.value());
+                    if (isType && isExistingType) {
+                        canonicalTypeMemo.emplace(entry.second.asObj(), existing.value().strongRef());
+                        memoKeyPins.push_back(entry.second.strongRef());  // pin key
+                        memoKeyPins.push_back(existing.value().strongRef());  // pin canonical
+                    }
+                }
+                // Keep target's value — don't overwrite.
+            } else {
+                target->vars.store(entry);
+            }
         }
+        // Union of constVar markers (source's set, plus whatever target had).
+        for (auto h : source->constVars)
+            target->constVars.insert(h);
 
         auto sourceAliases = source->moduleAliasSnapshot();
-        if (!sourceAliases.empty()) {
-            target->clearModuleAliases();
-            for (const auto& alias : sourceAliases)
+        for (const auto& alias : sourceAliases) {
+            if (target->moduleAliasFullName(alias.first).isEmpty())
                 target->registerModuleAlias(alias.first, alias.second);
         }
 
-        target->cstructArch = source->cstructArch;
-        target->propertyCTypes = source->propertyCTypes;
+        for (const auto& kv : source->cstructArch) {
+            if (target->cstructArch.find(kv.first) == target->cstructArch.end())
+                target->cstructArch[kv.first] = kv.second;
+        }
+        for (const auto& kv : source->propertyCTypes) {
+            auto& tgtProps = target->propertyCTypes[kv.first];
+            for (const auto& pkv : kv.second) {
+                if (tgtProps.find(pkv.first) == tgtProps.end())
+                    tgtProps[pkv.first] = pkv.second;
+            }
+        }
     };
 
     auto toKey = [](const icu::UnicodeString& value) {
@@ -380,13 +431,37 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
             return strong;
 
         ObjModuleType* module = asModuleType(strong);
+
+        // Memo hit: same fresh input always returns same canonical within
+        // this reconcile pass. Prevents two deserialized duplicates from
+        // each picking the other as canonical on alternate calls.
+        auto memoIt = canonicalModuleMemo.find(module);
+        if (memoIt != canonicalModuleMemo.end())
+            return memoIt->second.strongRef();
+
+        // Decide canonical and record memo. Also memo canonical->canonical so
+        // a later call with the canonical pointer as input stays stable.
+        auto record = [&](const Value& canonical) -> Value {
+            Value strongCanonical = canonical.strongRef();
+            canonicalModuleMemo.emplace(module, strongCanonical);
+            memoKeyPins.push_back(strong);  // pin the input key alive
+            if (isModuleType(strongCanonical)) {
+                ObjModuleType* canonMt = asModuleType(strongCanonical);
+                if (canonMt != module) {
+                    canonicalModuleMemo.emplace(canonMt, strongCanonical);
+                    memoKeyPins.push_back(strongCanonical);  // pin canonical too
+                }
+            }
+            return strongCanonical;
+        };
+
         icu::UnicodeString qualified = moduleQualifiedName(module);
         Value builtin = resolverVM->getBuiltinModuleType(qualified);
         if (builtin.isNil())
             builtin = resolverVM->getBuiltinModuleType(module->name);
         if (builtin.isNonNil()) {
             mergeModuleTypes(asModuleType(builtin), module);
-            return builtin.strongRef();
+            return record(builtin);
         }
 
         // Prefer an existing global module with the same name
@@ -394,7 +469,7 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         if (globalOpt.has_value() && isModuleType(globalOpt.value())) {
             Value globalMod = globalOpt.value();
             mergeModuleTypes(asModuleType(globalMod), module);
-            return globalMod.strongRef();
+            return record(globalMod);
         }
 
         // Try to match an existing module by name/fullName (e.g., dynamically imported IDL/proto)
@@ -428,10 +503,24 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         Value existing = findExistingModule(module->name, qualified);
         if (existing.isNonNil()) {
             mergeModuleTypes(asModuleType(existing), module);
-            return existing.strongRef();
+            return record(existing);
         }
 
-        return strong;
+        return record(strong);
+    };
+
+    // Substitute a constant/value: if it's a fresh-deserialized type that
+    // mergeModuleTypes flagged as duplicating a canonical one, return the
+    // canonical Value; otherwise return the original unchanged.
+    auto canonicalizeTypeIfDup = [&](const Value& v) -> Value {
+        if (!v.isObj())
+            return v;
+        if (!isObjectType(v) && !isEventType(v))
+            return v;
+        auto it = canonicalTypeMemo.find(v.asObj());
+        if (it == canonicalTypeMemo.end())
+            return v;
+        return it->second.strongRef();
     };
 
     // Walk every function owned by the entry chunk and collect the module
@@ -480,7 +569,13 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
             // Fall back to the variable table when the module did not record
             // explicit alias metadata (this covers older cache files or
             // modules that populated the table manually).
+            // Only include MODULE-typed entries — non-module vars (types,
+            // functions, values) belong to the module's content and must not
+            // be funneled through the import-rebuild loop below, which would
+            // replace them with placeholder modules of the same name.
             for (const auto& entry : moduleType->vars.snapshot()) {
+                if (!isModuleType(entry.second))
+                    continue;
                 const icu::UnicodeString& name = entry.first;
                 if (importHashes.insert(name.hashCode()).second)
                     imports.emplace_back(name, icu::UnicodeString());
@@ -506,6 +601,8 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
                     ObjModuleType* imported = asModuleType(moduleValue);
                     canonicalModules[toKey(moduleQualifiedName(imported))] = moduleValue.strongRef();
                 }
+            } else if (isObjectType(constant) || isEventType(constant)) {
+                constant = canonicalizeTypeIfDup(constant);
             }
         }
 
