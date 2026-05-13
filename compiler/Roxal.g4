@@ -212,6 +212,7 @@ parameters
 parameter
  : annotation* DOTDOT identifier_word (':' const_qualifier? (builtin_type | type_name) )?  // variadic ...rest param (no default allowed)
  | annotation* identifier_word (':' const_qualifier? (builtin_type | type_name) )? (EQUALS expression)?
+ | STAR  // sole-param sugar for `proc init(*)` — synthesizes one param per public property
  ;
 
 const_qualifier

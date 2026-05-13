@@ -643,6 +643,7 @@ struct Parameter : public AST {
     bool variadic = false;  // true if ...name syntax (collects remaining positional args)
     bool isConst = false;   // true if parameter type is qualified with 'const'
     bool isMutable = false; // true if parameter type is qualified with 'mutable'
+    bool isStar = false;    // true if user wrote `*` sole-param sugar for `proc init(*)`
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

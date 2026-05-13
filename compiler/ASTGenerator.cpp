@@ -1526,6 +1526,13 @@ std::any ASTGenerator::visitParameters(RoxalParser::ParametersContext *context)
         }
     }
 
+    // Validate: `*` (star) sole-param sugar must be the sole parameter
+    for(size_t i=0; i<params->size(); i++) {
+        if ((*params)[i]->isStar && params->size() != 1) {
+            throw std::runtime_error("`*` parameter must be the sole parameter of `proc init(*)`");
+        }
+    }
+
     return params;
     visitEnd();
 }
@@ -1535,10 +1542,18 @@ std::any ASTGenerator::visitParameters(RoxalParser::ParametersContext *context)
 std::any ASTGenerator::visitParameter(RoxalParser::ParameterContext *context)
 {
     visitStart();
+    ptr<Parameter> param = make_ptr<Parameter>();
+
+    // `*` sole-param sugar for `proc init(*)` — no name, no type, no default
+    if (context->STAR() && !context->identifier_word()) {
+        setSourceInfo(param, context);
+        param->isStar = true;
+        return typeValue(param);
+    }
+
     auto nameCtx = context->identifier_word();
     auto ident { identifierFromContext(nameCtx) };
 
-    ptr<Parameter> param = make_ptr<Parameter>();
     setSourceInfo(param, nameCtx);
     param->name = ident;
 

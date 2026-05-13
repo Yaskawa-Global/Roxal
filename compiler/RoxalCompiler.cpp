@@ -1120,6 +1120,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     if (ast->kind == TypeDecl::Event) {
         enterTypeScope(ast->name);
+        asTypeScope(typeScope())->typeDecl = ast;
 
         if (!ast->methods.empty())
             error("Events cannot declare methods");
@@ -1130,7 +1131,8 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             auto superName = joinTypeName(ast->extends.value());
             auto it = typePropertyRegistry.find(superName);
             if (it != typePropertyRegistry.end())
-                asTypeScope(typeScope())->propertyNames.insert(it->second.begin(), it->second.end());
+                for (const auto& kv : it->second)
+                    asTypeScope(typeScope())->propertyNames.insert(kv);
         }
 
         uint16_t typeNameConstant = identifierConstant(ast->name);
@@ -1236,13 +1238,15 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     enterTypeScope(ast->name);
     asTypeScope(typeScope())->isActor = isActor;
+    asTypeScope(typeScope())->typeDecl = ast;
 
     // inherit property registry from super type if available
     if (ast->extends.has_value()) {
         auto superName = joinTypeName(ast->extends.value());
         auto it = typePropertyRegistry.find(superName);
         if (it != typePropertyRegistry.end())
-            asTypeScope(typeScope())->propertyNames.insert(it->second.begin(), it->second.end());
+            for (const auto& kv : it->second)
+                asTypeScope(typeScope())->propertyNames.insert(kv);
     }
 
     uint16_t typeNameConstant = identifierConstant(ast->name);
@@ -3241,6 +3245,25 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     if (isInitializer && !isProc)
         error("object or actor type 'init' method must be a proc.");
 
+    // `proc init(*)` sugar: a single `*` param expands at compile time into
+    // one synthesized param per public property of the enclosing type, with
+    // an assignment prologue `this.<prop> = <prop>` for each. Validate here;
+    // the actual synthesis happens after enterLocalScope below.
+    bool isStarInit = ast->params.size() == 1 && ast->params[0]->isStar;
+    if (isStarInit) {
+        if (!isInitializer)
+            error("`*` parameter is only allowed in `proc init(*)`");
+        if (!inTypeScope())
+            error("`proc init(*)` only allowed inside a type declaration");
+        else {
+            auto ts = asTypeScope(typeScope());
+            if (ts->isActor)
+                error("`proc init(*)` is not yet supported on actor types");
+            if (ts->typeDecl.expired())
+                error("internal: enclosing TypeDecl missing for `proc init(*)`");
+        }
+    }
+
     FunctionType ftype = isMethod ?
                               (isInitializer ? FunctionType::Initializer : FunctionType::Method)
                             : FunctionType::Function;
@@ -3304,17 +3327,43 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     #endif
     enterLocalScope();
 
+    // For `proc init(*)`, the synthesized arity is the count of public
+    // properties on the enclosing type; collect them here so arity and the
+    // synthesis loop below agree.
+    std::vector<ptr<VarDecl>> starInitPublicProps;
+    if (isStarInit) {
+        auto enclosingTypeDecl = asTypeScope(typeScope())->typeDecl.lock();
+        if (enclosingTypeDecl) {
+            for (auto& prop : enclosingTypeDecl->properties) {
+                if (prop->access == Access::Public)
+                    starInitPublicProps.push_back(prop);
+            }
+        }
+    }
+
     // Count regular params (exclude variadic param from arity)
     size_t regularParamCount = ast->params.size();
     if (!ast->params.empty() && ast->params.back()->variadic) {
         regularParamCount--;
     }
+    if (isStarInit)
+        regularParamCount = starInitPublicProps.size();
     asFunction(asFuncScope(funcScope())->function)->arity = regularParamCount;
     if (asFunction(asFuncScope(funcScope())->function)->arity > 255)
         error("Maximum of function or procedure 255 parameters exceeded.");
 
     Anys results {};
-    ast->acceptChildren(*this, results);
+    if (isStarInit) {
+        emitStarInitPrologue(starInitPublicProps);
+        // Body only — params are synthesized above; no AST params to visit.
+        if (std::holds_alternative<ptr<Suite>>(ast->body)) {
+            auto suite = std::get<ptr<Suite>>(ast->body);
+            results.push_back(suite->accept(*this));
+        }
+        // proc bodies cannot be expression-form; `proc init(*)` is always proc.
+    } else {
+        ast->acceptChildren(*this, results);
+    }
 
     // if the body is an expression (e.g. lambda func), leaves the result on the stack, so return it
     if (std::holds_alternative<ptr<Expression>>(ast->body)) {
@@ -3458,6 +3507,134 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
         asFunction(surroundingFunction)->paramDefaultFunc[ast->name.hashCode()] = function;
     }
     return {};
+}
+
+
+void RoxalCompiler::emitStarInitPrologue(const std::vector<ptr<ast::VarDecl>>& publicProps)
+{
+    // Caller ensures we are inside a `proc init(*)` body with the function scope already entered.
+    auto funcScopePtr { asFuncScope(this->funcScope()) };
+    ObjFunction* funcObj { asFunction(funcScopePtr->function) };
+
+    // 1. Populate the function's FuncType params from the public properties so
+    //    OverloadResolver sees the expanded signature.
+    if (funcObj->funcType.has_value() && funcObj->funcType.value()->func.has_value()) {
+        auto& fts = funcObj->funcType.value()->func.value();
+        fts.params.clear();
+        fts.params.reserve(publicProps.size());
+        for (const auto& prop : publicProps) {
+            type::Type::FuncType::ParamType pt;
+            pt.name = prop->name;
+            pt.nameHashCode = prop->name.hashCode();
+            pt.hasDefault = prop->initializer.has_value();
+            if (prop->varType.has_value()) {
+                if (std::holds_alternative<BuiltinType>(prop->varType.value())) {
+                    pt.type = make_ptr<type::Type>(std::get<BuiltinType>(prop->varType.value()));
+                } else {
+                    pt.type = make_ptr<type::Type>(BuiltinType::Object);
+                    pt.type.value()->obj = type::Type::ObjectType{};
+                    pt.type.value()->obj->name = joinTypeName(std::get<TypeName>(prop->varType.value()));
+                }
+            }
+            fts.params.push_back(pt);
+        }
+    }
+
+    // 2. Declare each property as a local parameter so the body can read it
+    //    by its bare name (matching how regular params behave).
+    for (const auto& prop : publicProps) {
+        declareVariable(prop->name);
+        uint16_t var = identifierConstant(prop->name);
+        defineVariable(var);
+        auto localArg = resolveLocal(funcScope(), prop->name);
+        if (localArg >= 0)
+            asFuncScope(funcScope())->locals[localArg].isParam = true;
+    }
+
+    // 3. For each property that carries an initializer expression, compile a
+    //    paramDefaultFunc closure so calls that omit the corresponding arg fall
+    //    back to the property's declared default. Mirrors the default-value
+    //    handling in visit(Parameter).
+    auto enclosingModuleScope { asModuleScope(moduleScope()) };
+    for (const auto& prop : publicProps) {
+        if (!prop->initializer.has_value())
+            continue;
+
+        ptr<type::Type> defFuncType = make_ptr<type::Type>(BuiltinType::Func);
+        defFuncType->func = type::Type::FuncType();
+
+        enterFuncScope(enclosingModuleScope->moduleType, prop->name, FunctionType::Function, defFuncType);
+        #ifdef DEBUG_BUILD
+        emitByte(OpCode::Nop, "star_init_default " + toUTF8StdString(prop->name));
+        #endif
+        enterLocalScope();
+
+        asFunction(asFuncScope(funcScope())->function)->arity = 0;
+
+        prop->initializer.value()->accept(*this);
+
+        exitLocalScope();
+
+        // ReturnStore copies the top of stack into the caller's placeholder
+        // arg slot (default-value funcs are dispatched directly by OpCode::Call).
+        emitByte(OpCode::ReturnStore);
+
+        ptr<FunctionScope> defFuncScope { asFuncScope(funcScope()) };
+        Value defFunction = defFuncScope->function;
+        if (outputBytecodeDisassembly)
+            asFunction(defFunction)->chunk->disassemble(asFunction(defFunction)->name);
+
+        exitFuncScope();
+
+        asFunction(asFuncScope(funcScope())->function)->paramDefaultFunc[prop->name.hashCode()] = defFunction;
+    }
+
+    // 4. Emit `this.<prop> = <prop>` for each public property. Compose the
+    //    same bytecode that `visit(Assignment)` would produce for an explicit
+    //    assignment to `this.x` (GetLocal this, GetLocal paramSlot,
+    //    [type-conversion], SetProp).
+    int16_t thisSlot = resolveLocal(funcScope(), UnicodeString("this"));
+    if (thisSlot < 0) {
+        error("internal: cannot resolve 'this' local for `proc init(*)` prologue");
+        return;
+    }
+
+    bool strictCtx = funcScopePtr->strict;
+
+    for (const auto& prop : publicProps) {
+        if (prop->isConst) {
+            // const member assignment inside init is the conventional
+            // initialization path, but the SetProp path would still flag
+            // visit(Assignment)-level const guards. Defer const handling to a
+            // follow-up; for v1, reject star-init with const members.
+            error("`proc init(*)` does not yet support const properties; declare init explicitly");
+            return;
+        }
+
+        emitOpArgsBytes(OpCode::GetLocal, thisSlot, "init(*) this");
+
+        int16_t propSlot = resolveLocal(funcScope(), prop->name);
+        if (propSlot < 0) {
+            error("internal: synthesized init(*) param local missing");
+            return;
+        }
+        emitOpArgsBytes(OpCode::GetLocal, propSlot, "init(*) param " + toUTF8StdString(prop->name));
+
+        // Type conversion for typed properties (matches visit(Assignment) at SetProp path).
+        if (prop->varType.has_value()) {
+            auto& varType = prop->varType.value();
+            if (std::holds_alternative<BuiltinType>(varType)) {
+                emitBytes(strictCtx ? OpCode::ToTypeStrict : OpCode::ToType,
+                          uint8_t(builtinToValueType(std::get<BuiltinType>(varType))));
+            } else {
+                emitTypeName(std::get<TypeName>(varType));
+                emitByte(strictCtx ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+            }
+        }
+
+        uint16_t propConst = identifierConstant(prop->name);
+        emitOpArgsBytes(OpCode::SetProp, propConst, "init(*) " + toUTF8StdString(prop->name));
+    }
 }
 
 

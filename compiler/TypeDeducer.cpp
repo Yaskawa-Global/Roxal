@@ -284,27 +284,57 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
             if (method->name.has_value()) {
                 ptr<type::Type::FuncType> methodType = make_ptr<type::Type::FuncType>();
                 methodType->isProc = method->isProc;
-                for (const auto& p : method->params) {
-                    type::Type::FuncType::ParamType pt(p->name);
-                    pt.hasDefault = p->defaultValue.has_value();
-                    pt.variadic = p->variadic;
-                    if (p->type.has_value()) {
-                        ptr<type::Type> paramT = make_ptr<type::Type>();
-                        if (std::holds_alternative<ast::BuiltinType>(p->type.value())) {
-                            paramT->builtin = std::get<ast::BuiltinType>(p->type.value());
-                        } else {
-                            // TypeName — leave builtin unset; resolver treats
-                            // a typed param without builtin info as Object/Actor
-                            // by name when needed.
-                            paramT->builtin = type::BuiltinType::Object;
-                            type::Type::ObjectType ot;
-                            const auto& tn = std::get<ast::TypeName>(p->type.value());
-                            if (!tn.empty()) ot.name = tn.back();
-                            paramT->obj = ot;
+
+                // `proc init(*)` sugar: expand the single `*` param into one
+                // ParamType per public property of the enclosing type so the
+                // compile-time OverloadResolver sees the synthesized signature.
+                bool isStarInit = method->name.value() == icu::UnicodeString("init")
+                                  && method->params.size() == 1
+                                  && method->params[0]->isStar;
+                if (isStarInit) {
+                    for (const auto& prop : ast->properties) {
+                        if (prop->access != ast::Access::Public)
+                            continue;
+                        type::Type::FuncType::ParamType pt(prop->name);
+                        pt.hasDefault = prop->initializer.has_value();
+                        if (prop->varType.has_value()) {
+                            ptr<type::Type> paramT = make_ptr<type::Type>();
+                            if (std::holds_alternative<ast::BuiltinType>(prop->varType.value())) {
+                                paramT->builtin = std::get<ast::BuiltinType>(prop->varType.value());
+                            } else {
+                                paramT->builtin = type::BuiltinType::Object;
+                                type::Type::ObjectType ot;
+                                const auto& tn = std::get<ast::TypeName>(prop->varType.value());
+                                if (!tn.empty()) ot.name = tn.back();
+                                paramT->obj = ot;
+                            }
+                            pt.type = paramT;
                         }
-                        pt.type = paramT;
+                        methodType->params.push_back(pt);
                     }
-                    methodType->params.push_back(pt);
+                } else {
+                    for (const auto& p : method->params) {
+                        type::Type::FuncType::ParamType pt(p->name);
+                        pt.hasDefault = p->defaultValue.has_value();
+                        pt.variadic = p->variadic;
+                        if (p->type.has_value()) {
+                            ptr<type::Type> paramT = make_ptr<type::Type>();
+                            if (std::holds_alternative<ast::BuiltinType>(p->type.value())) {
+                                paramT->builtin = std::get<ast::BuiltinType>(p->type.value());
+                            } else {
+                                // TypeName — leave builtin unset; resolver treats
+                                // a typed param without builtin info as Object/Actor
+                                // by name when needed.
+                                paramT->builtin = type::BuiltinType::Object;
+                                type::Type::ObjectType ot;
+                                const auto& tn = std::get<ast::TypeName>(p->type.value());
+                                if (!tn.empty()) ot.name = tn.back();
+                                paramT->obj = ot;
+                            }
+                            pt.type = paramT;
+                        }
+                        methodType->params.push_back(pt);
+                    }
                 }
                 type::Type::ObjectType::MethodInfo info(method->name.value(), methodType);
                 info.methodModifiers = method->methodModifiers;

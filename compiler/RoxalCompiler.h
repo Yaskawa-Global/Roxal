@@ -7,6 +7,7 @@
 #include <filesystem>
 
 #include <core/AST.h>
+#include <core/ordered_map.h>
 
 #include "Chunk.h"
 #include "Object.h"
@@ -336,14 +337,25 @@ protected:
             bool isConst { false };
             std::optional<VarTypeSpec> propType;
         };
-        std::unordered_map<icu::UnicodeString, MemberInfo> propertyNames;
+        // Insertion order preserved so callers (notably `proc init(*)` and
+        // dict(obj)/to_json) can walk properties in declaration order.
+        ordered_map<icu::UnicodeString, MemberInfo> propertyNames;
+
+        // Weak handle on the enclosing TypeDecl AST. Used by `proc init(*)`
+        // synthesis to walk the type's own properties in declaration order.
+        // Weak so the TypeScope can't accidentally extend the AST's
+        // lifetime; the AST graph is the source of truth and lives at
+        // least as long as the TypeScope by construction. Set right after
+        // enterTypeScope() via `typeDecl = ast;` (assignment from ptr).
+        weak_ptr<ast::TypeDecl> typeDecl;
     };
 
     ptr<TypeScope> asTypeScope(Scope s) const { return dynamic_ptr_cast<TypeScope>(*s); }
 
-    // map type name -> registered member names (properties and methods)
+    // map type name -> registered member names (properties and methods);
+    // inner map preserves declaration order.
     std::unordered_map<icu::UnicodeString,
-                       std::unordered_map<icu::UnicodeString, TypeScope::MemberInfo>> typePropertyRegistry;
+                       ordered_map<icu::UnicodeString, TypeScope::MemberInfo>> typePropertyRegistry;
 
 
     struct ModuleScope : public FunctionScope
@@ -502,6 +514,14 @@ protected:
     CallSpec buildCallSpec(const ptr<ast::Call>& ast);
     bool isRemoteActorConstructorCall(const ptr<ast::Expression>& expr) const;
     void emitRemoteActorConstructorCall(const ptr<ast::Call>& callAst, const ptr<ast::Expression>& hostExpr);
+
+    // Synthesize parameters + assignment prologue for `proc init(*)`. Called
+    // from visit(Function) when the function is a star-init. Declares one
+    // local per public property (in declaration order), populates the
+    // surrounding function's FuncType params accordingly, sets up
+    // paramDefaultFunc entries for properties that carry an initializer,
+    // and emits `this.<prop> = <prop>` for each.
+    void emitStarInitPrologue(const std::vector<ptr<ast::VarDecl>>& publicProps);
 
     std::optional<VarTypeSpec> localVarType(const icu::UnicodeString& name);
     std::optional<VarTypeSpec> moduleVarType(const icu::UnicodeString& name);

@@ -1,0 +1,20 @@
+// v1 of `proc init(*)` synthesizes params from OWN public properties only.
+// Inherited public properties keep their declared defaults; they are not
+// reachable via init(*) named args.
+
+type Parent object:
+  var a :int = 1
+
+type Child object extends Parent:
+  var b :int = 2
+
+  proc init(*):
+    print("init(*) b={this.b}")
+
+var c1 = Child(b=10)
+print(c1.a)
+print(c1.b)
+
+var c2 = Child()
+print(c2.a)
+print(c2.b)

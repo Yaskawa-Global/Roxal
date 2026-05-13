@@ -1,0 +1,22 @@
+type Point object:
+  var x :int = 0
+  var y :int = 0
+
+  proc init(*):
+    print("init(*) x={this.x} y={this.y}")
+
+var p1 = Point(3, 4)
+print(p1.x)
+print(p1.y)
+
+var p2 = Point(y=7)
+print(p2.x)
+print(p2.y)
+
+var p3 = Point(1, y=2)
+print(p3.x)
+print(p3.y)
+
+var p4 = Point()
+print(p4.x)
+print(p4.y)

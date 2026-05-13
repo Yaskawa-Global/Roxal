@@ -856,6 +856,47 @@ var b = Box("hi")    // picks init(string)
 b.handle(42)         // → "int 42"
 ```
 
+
+### `proc init(*)` — auto-init from public properties
+
+When a type's `init` should just take a value for each of its public properties (the same shape the no-init auto-construct already provides), write `proc init(*)`. The single `*` parameter is sugar for one synthesized named parameter per public property, in declaration order, with each property's declared type and default. At entry, the params are auto-assigned to the corresponding members; the body then runs as a post-action.
+
+```php
+type Point object:
+  var x :int = 0
+  var y :int = 0
+
+  proc init(*):                // ≡ proc init(x :int = 0, y :int = 0): this.x=x; this.y=y
+    if x < 0: this.x = 0       // body adjusts AFTER auto-assignment
+
+var a = Point(3, 4)            // x=3, y=4
+var b = Point(y=5)             // x=0 (default), y=5
+var c = Point(1, y=2)          // x=1, y=2 (mixed positional/named)
+var d = Point()                // x=0, y=0 (both default)
+```
+
+`proc init(*)` is a regular overload candidate — it coexists with other `init` signatures and overload resolution picks the best match per call site:
+
+```php
+type Point object:
+  var x :int = 0
+  var y :int = 0
+
+  proc init(*):                // member-by-member
+  proc init(s :string):        // parse "x,y"
+    var parts = s.split(",")
+    this.x = int(parts[0]); this.y = int(parts[1])
+
+Point(1, 2)        // → init(*)
+Point("3,4")       // → init(string)
+```
+
+Dict-form construction (`Point({x:1, y:2})`) is routed by ordinary overload resolution — declare an explicit `init(d :dict)` if you want that call form alongside `init(*)`.
+
+**Note:**
+
+* Only the type's *own* public properties become synthesized params. Inherited public properties keep their declared defaults; they are not reachable via `init(*)` named args (this may relax in a later version).
+
 **Resolution rules** (best to worst):
 
 1. **Exact** type match
