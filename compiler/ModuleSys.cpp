@@ -1602,6 +1602,17 @@ void ModuleSys::registerBuiltins(VM& vm)
                                false, funcType, defaults,
                                typeMethodDecl(timeSpanTypeValue, "from_fields"));
     }
+
+    // List methods filter/map/reduce — read-only on self
+    vm.defineBuiltinMethod(ValueType::List, "filter",
+                           [this](VM& vm, ArgsView a){ return list_filter_builtin(vm, a); },
+                           false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
+    vm.defineBuiltinMethod(ValueType::List, "map",
+                           [this](VM& vm, ArgsView a){ return list_map_builtin(vm, a); },
+                           false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
+    vm.defineBuiltinMethod(ValueType::List, "reduce",
+                           [this](VM& vm, ArgsView a){ return list_reduce_builtin(vm, a); },
+                           false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x3);
 }
 
 Value ModuleSys::print_builtin(VM& vm, ArgsView args)
@@ -4315,4 +4326,205 @@ Value ModuleSys::loadlib_native(VM& vm, ArgsView args)
     return roxal::loadlib_native(args);
 }
 
-// filter_builtin, map_builtin, reduce_builtin removed - now implemented in pure Roxal in sys.rox
+Value ModuleSys::list_filter_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 2 || !isList(args[0]))
+        throw std::invalid_argument("list.filter expects single predicate argument");
+
+    if (!isClosure(args[1]))
+        throw std::invalid_argument("list.filter: argument must be a function");
+
+    ObjList* inputList = asList(args[0]);
+    ObjClosure* predicate = asClosure(args[1]);
+
+    if (inputList->empty())
+        return Value::listVal();
+
+    int arity = asFunction(predicate->function)->arity;
+
+    // Continuation state: {list, pred, result, index, arity}
+    Value state = Value::dictVal();
+    asDict(state)->store(Value::stringVal(toUnicodeString("list")), args[0]);
+    asDict(state)->store(Value::stringVal(toUnicodeString("pred")), args[1]);
+    asDict(state)->store(Value::stringVal(toUnicodeString("result")), Value::listVal());
+    asDict(state)->store(Value::stringVal(toUnicodeString("index")), Value::intVal(0));
+    asDict(state)->store(Value::stringVal(toUnicodeString("arity")), Value::intVal(arity));
+
+    auto& cont = vm.thread->pushContinuation();
+    cont.state = state;
+    cont.resultSlotIndex = static_cast<ptrdiff_t>((vm.thread->stackTop - vm.thread->stack.begin()) - args.size());
+    cont.stackBaseIndex = cont.resultSlotIndex + 1;
+    cont.onComplete = [](VM& vm, Value callbackResult) -> bool {
+        auto& st = vm.thread->currentContinuation().state;
+        auto* d = asDict(st);
+        ObjList* list = asList(d->at(Value::stringVal(toUnicodeString("list"))));
+        ObjList* result = asList(d->at(Value::stringVal(toUnicodeString("result"))));
+        int idx = d->at(Value::stringVal(toUnicodeString("index"))).asInt();
+        int arity = d->at(Value::stringVal(toUnicodeString("arity"))).asInt();
+
+        auto elts = list->getElements();
+        if (isTruthy(callbackResult))
+            result->append(elts[idx]);
+
+        idx++;
+        d->store(Value::stringVal(toUnicodeString("index")), Value::intVal(idx));
+
+        if (static_cast<size_t>(idx) < elts.size()) {
+            ObjClosure* pred = asClosure(d->at(Value::stringVal(toUnicodeString("pred"))));
+            std::vector<Value> callArgs;
+            callArgs.push_back(elts[idx]);
+            if (arity >= 2)
+                callArgs.push_back(Value::intVal(idx));
+            return vm.pushContinuationCall(pred, callArgs);
+        }
+
+        vm.push(d->at(Value::stringVal(toUnicodeString("result"))));
+        return true;
+    };
+
+    auto elts = inputList->getElements();
+    std::vector<Value> callArgs;
+    callArgs.push_back(elts[0]);
+    if (arity >= 2)
+        callArgs.push_back(Value::intVal(0));
+
+    if (!vm.pushContinuationCall(predicate, callArgs))
+        throw std::runtime_error("list.filter: failed to invoke predicate");
+
+    return Value::nilVal();
+}
+
+Value ModuleSys::list_map_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 2 || !isList(args[0]))
+        throw std::invalid_argument("list.map expects single transform argument");
+
+    if (!isClosure(args[1]))
+        throw std::invalid_argument("list.map: argument must be a function");
+
+    ObjList* inputList = asList(args[0]);
+    ObjClosure* transform = asClosure(args[1]);
+
+    if (inputList->empty())
+        return Value::listVal();
+
+    int arity = asFunction(transform->function)->arity;
+
+    // Continuation state: {list, transform, result, index, arity}
+    Value state = Value::dictVal();
+    asDict(state)->store(Value::stringVal(toUnicodeString("list")), args[0]);
+    asDict(state)->store(Value::stringVal(toUnicodeString("transform")), args[1]);
+    asDict(state)->store(Value::stringVal(toUnicodeString("result")), Value::listVal());
+    asDict(state)->store(Value::stringVal(toUnicodeString("index")), Value::intVal(0));
+    asDict(state)->store(Value::stringVal(toUnicodeString("arity")), Value::intVal(arity));
+
+    auto& cont = vm.thread->pushContinuation();
+    cont.state = state;
+    cont.resultSlotIndex = static_cast<ptrdiff_t>((vm.thread->stackTop - vm.thread->stack.begin()) - args.size());
+    cont.stackBaseIndex = cont.resultSlotIndex + 1;
+    cont.onComplete = [](VM& vm, Value callbackResult) -> bool {
+        auto& st = vm.thread->currentContinuation().state;
+        auto* d = asDict(st);
+        ObjList* list = asList(d->at(Value::stringVal(toUnicodeString("list"))));
+        ObjList* result = asList(d->at(Value::stringVal(toUnicodeString("result"))));
+        int idx = d->at(Value::stringVal(toUnicodeString("index"))).asInt();
+        int arity = d->at(Value::stringVal(toUnicodeString("arity"))).asInt();
+
+        result->append(callbackResult);
+
+        idx++;
+        d->store(Value::stringVal(toUnicodeString("index")), Value::intVal(idx));
+
+        auto elts = list->getElements();
+        if (static_cast<size_t>(idx) < elts.size()) {
+            ObjClosure* transform = asClosure(d->at(Value::stringVal(toUnicodeString("transform"))));
+            std::vector<Value> callArgs;
+            callArgs.push_back(elts[idx]);
+            if (arity >= 2)
+                callArgs.push_back(Value::intVal(idx));
+            return vm.pushContinuationCall(transform, callArgs);
+        }
+
+        vm.push(d->at(Value::stringVal(toUnicodeString("result"))));
+        return true;
+    };
+
+    auto elts = inputList->getElements();
+    std::vector<Value> callArgs;
+    callArgs.push_back(elts[0]);
+    if (arity >= 2)
+        callArgs.push_back(Value::intVal(0));
+
+    if (!vm.pushContinuationCall(transform, callArgs))
+        throw std::runtime_error("list.map: failed to invoke transform");
+
+    return Value::nilVal();
+}
+
+Value ModuleSys::list_reduce_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() != 3 || !isList(args[0]))
+        throw std::invalid_argument("list.reduce expects reducer function and initial value");
+
+    if (!isClosure(args[1]))
+        throw std::invalid_argument("list.reduce: first argument must be a function");
+
+    ObjList* inputList = asList(args[0]);
+    ObjClosure* reducer = asClosure(args[1]);
+
+    if (inputList->empty())
+        return args[2];
+
+    int arity = asFunction(reducer->function)->arity;
+
+    // Continuation state: {list, reducer, accumulator, index, arity}
+    Value state = Value::dictVal();
+    asDict(state)->store(Value::stringVal(toUnicodeString("list")), args[0]);
+    asDict(state)->store(Value::stringVal(toUnicodeString("reducer")), args[1]);
+    asDict(state)->store(Value::stringVal(toUnicodeString("accumulator")), args[2]);
+    asDict(state)->store(Value::stringVal(toUnicodeString("index")), Value::intVal(0));
+    asDict(state)->store(Value::stringVal(toUnicodeString("arity")), Value::intVal(arity));
+
+    auto& cont = vm.thread->pushContinuation();
+    cont.state = state;
+    cont.resultSlotIndex = static_cast<ptrdiff_t>((vm.thread->stackTop - vm.thread->stack.begin()) - args.size());
+    cont.stackBaseIndex = cont.resultSlotIndex + 1;
+    cont.onComplete = [](VM& vm, Value callbackResult) -> bool {
+        auto& st = vm.thread->currentContinuation().state;
+        auto* d = asDict(st);
+        ObjList* list = asList(d->at(Value::stringVal(toUnicodeString("list"))));
+        int idx = d->at(Value::stringVal(toUnicodeString("index"))).asInt();
+        int arity = d->at(Value::stringVal(toUnicodeString("arity"))).asInt();
+
+        d->store(Value::stringVal(toUnicodeString("accumulator")), callbackResult);
+
+        idx++;
+        d->store(Value::stringVal(toUnicodeString("index")), Value::intVal(idx));
+
+        auto elts = list->getElements();
+        if (static_cast<size_t>(idx) < elts.size()) {
+            ObjClosure* reducer = asClosure(d->at(Value::stringVal(toUnicodeString("reducer"))));
+            std::vector<Value> callArgs;
+            callArgs.push_back(callbackResult);
+            callArgs.push_back(elts[idx]);
+            if (arity >= 3)
+                callArgs.push_back(Value::intVal(idx));
+            return vm.pushContinuationCall(reducer, callArgs);
+        }
+
+        vm.push(callbackResult);
+        return true;
+    };
+
+    auto elts = inputList->getElements();
+    std::vector<Value> callArgs;
+    callArgs.push_back(args[2]);
+    callArgs.push_back(elts[0]);
+    if (arity >= 3)
+        callArgs.push_back(Value::intVal(0));
+
+    if (!vm.pushContinuationCall(reducer, callArgs))
+        throw std::runtime_error("list.reduce: failed to invoke reducer");
+
+    return Value::nilVal();
+}

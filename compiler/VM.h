@@ -745,9 +745,6 @@ public:
     Value orient_inverse_getter(Value& receiver);
 
     Value list_append_builtin(ArgsView args);
-    Value list_filter_builtin(ArgsView args);
-    Value list_map_builtin(ArgsView args);
-    Value list_reduce_builtin(ArgsView args);
 
     Value string_upper_builtin(ArgsView args);
     Value string_lower_builtin(ArgsView args);

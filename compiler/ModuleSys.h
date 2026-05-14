@@ -49,7 +49,10 @@ public:
     Value from_json_builtin(VM& vm, ArgsView args);
     Value to_xml_builtin(VM& vm, ArgsView args);
     Value from_xml_builtin(VM& vm, ArgsView args);
-    // filter_builtin, map_builtin, reduce_builtin removed - now in sys.rox
+    // list method builtins (registered via defineBuiltinMethod on ValueType::List)
+    Value list_filter_builtin(VM& vm, ArgsView args);
+    Value list_map_builtin(VM& vm, ArgsView args);
+    Value list_reduce_builtin(VM& vm, ArgsView args);
 
     // Time type natives
     Value time_init_native(VM& vm, ArgsView args);
