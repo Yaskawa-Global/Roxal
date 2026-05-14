@@ -1,0 +1,23 @@
+// init(*) writes the synthesized backing field directly, bypassing the
+// user-defined setter. The setter doubles the value; init must store the
+// raw value (5), not the doubled one (10). External writes still go
+// through the setter.
+
+type Widget object:
+  var width :int = 100:
+    get:
+      return _width
+    set:
+      _width = value * 2
+
+  proc init(*):
+    print("init ran")
+
+var w = Widget(width=5)
+print(w.width)        // 5 — setter NOT called during init
+
+w.width = 7
+print(w.width)        // 14 — external write goes through setter
+
+var d = Widget()
+print(d.width)        // 100 — default-init path (no setter)

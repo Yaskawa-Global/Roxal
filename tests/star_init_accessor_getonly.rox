@@ -1,0 +1,16 @@
+// Get-only accessor (no setter) is included as a synthesized init(*) param;
+// init writes the backing field directly. The getter returns it afterward.
+
+type Box object:
+  var label :string = "unset":
+    get:
+      return _label
+
+  proc init(*):
+    print("init")
+
+var b = Box(label="hello")
+print(b.label)        // hello
+
+var d = Box()
+print(d.label)        // unset (default initializer)
