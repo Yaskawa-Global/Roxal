@@ -130,7 +130,7 @@ call_and_print(func (a): a+1, 5) // print 6
 
 ### Assignments
 
-Like most programming languages, `=` is used for assignment (unlike in mathematics, where is means equality).
+Like most programming languages, `=` is used for assignment (unlike in mathematics, where it means equality).
 This works as you'd expect for value types.  For reference types, the references are usually being assigned.
 
 ```php
@@ -859,7 +859,7 @@ b.handle(42)         // → "int 42"
 
 ### `proc init(*)` — auto-init from public properties
 
-When a type's `init` should just take a value for each of its public properties (the same shape the no-init auto-construct already provides), write `proc init(*)`. The single `*` parameter is sugar for one synthesized named parameter per public, writable property: plain data `var` declarations first (in declaration order), followed by accessor-equipped `var` declarations that expose a setter (also in declaration order). Each synthesized parameter takes the corresponding property's declared type. At entry, the params are auto-assigned to the corresponding members; the body then runs as a post-action.
+When a type's `init` should just take a value for each of its public properties (the same shape the no-init auto-construct already provides), write `proc init(*)`. The single `*` parameter is sugar for one synthesized named parameter per public, writable property, in the **order they appear in the type body** — whether each one is implemented as a plain `var` or via accessor blocks is an implementation detail that doesn't reorder the params. Each synthesized parameter takes the corresponding property's declared type. At entry, the params are auto-assigned to the corresponding members; the body then runs as a post-action.
 
 **Every synthesized param has a default**, so calls can omit any/all args. The default is either:
 

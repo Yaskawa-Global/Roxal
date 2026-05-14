@@ -526,17 +526,31 @@ protected:
     bool isRemoteActorConstructorCall(const ptr<ast::Expression>& expr) const;
     void emitRemoteActorConstructorCall(const ptr<ast::Call>& callAst, const ptr<ast::Expression>& hostExpr);
 
+    // Per-member view used by `proc init(*)` synthesis. Abstracts over plain
+    // data `var` declarations and accessor-equipped declarations so the
+    // prologue iterates members in source-declaration order regardless of
+    // which AST list they came from.
+    struct StarInitMember {
+        icu::UnicodeString name;
+        std::optional<ast::VarType> declaredType;
+        std::optional<ptr<ast::Expression>> initializer;
+        // The actual property name written by the SetProp opcode. Equals
+        // `name` for plain data props; `_<name>` for accessor-equipped props
+        // (writes go directly to the synthetic backing field, bypassing the
+        // user setter).
+        icu::UnicodeString storageName;
+        bool isConst { false };
+    };
+
     // Synthesize parameters + assignment prologue for `proc init(*)`. Called
     // from visit(Function) when the function is a star-init. Declares one
-    // local per public property (data props in declaration order, then
-    // accessor-equipped props in declaration order), populates the
+    // local per public property (in source-declaration order — data and
+    // accessor-equipped props interleaved as written), populates the
     // surrounding function's FuncType params accordingly, sets up
-    // paramDefaultFunc entries for properties that carry an initializer,
-    // and emits `this.<prop> = <prop>` for each (writes go directly to the
-    // synthetic `_<name>` backing field for accessor props, bypassing user
-    // setters).
-    void emitStarInitPrologue(const std::vector<ptr<ast::VarDecl>>& publicProps,
-                              const std::vector<ptr<ast::PropertyAccessor>>& publicAccessors);
+    // paramDefaultFunc entries for every param (explicit initializer if
+    // present, otherwise the type-construction default), and emits
+    // `this.<storageName> = <param>` for each.
+    void emitStarInitPrologue(const std::vector<StarInitMember>& members);
 
     std::optional<VarTypeSpec> localVarType(const icu::UnicodeString& name);
     std::optional<VarTypeSpec> moduleVarType(const icu::UnicodeString& name);

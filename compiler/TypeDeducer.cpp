@@ -2,6 +2,8 @@
 
 #include "TypeDeducer.h"
 
+#include <algorithm>
+
 
 using namespace roxal;
 
@@ -318,27 +320,44 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
                     // Every init(*) param has a default — either the property's
                     // explicit initializer, or an implicit type-construction
                     // default (zero / nil). See RoxalCompiler::emitStarInitPrologue.
-                    // Data properties first, in declaration order.
+                    //
+                    // Merge plain data props (`ast->properties`) and accessor-
+                    // equipped props (`ast->propertyAccessors`) in source-
+                    // declaration order so callers see params in the order the
+                    // properties appear in the user's type body — regardless
+                    // of whether each is a plain `var` or accessor-implemented.
+                    // Get-only accessors are excluded — they're read-only on
+                    // the public surface.
+                    struct Entry {
+                        ast::LinePos pos;
+                        icu::UnicodeString name;
+                        const ast::VarType* declaredType;
+                    };
+                    std::vector<Entry> entries;
+                    entries.reserve(ast->properties.size()
+                                    + ast->propertyAccessors.size());
                     for (const auto& prop : ast->properties) {
                         if (prop->access != ast::Access::Public)
                             continue;
-                        pushParam(prop->name,
-                                  /*hasDefault=*/true,
-                                  prop->varType.has_value() ? &prop->varType.value() : nullptr);
+                        const ast::VarType* dt = prop->varType.has_value()
+                            ? &prop->varType.value() : nullptr;
+                        entries.push_back({prop->interval.first, prop->name, dt});
                     }
-                    // Accessor-equipped properties second, in declaration order.
-                    // Get-only accessors are excluded — they're read-only on
-                    // the public surface, so a synthesized init(*) param
-                    // would contradict that intent.
                     for (const auto& pa : ast->propertyAccessors) {
                         if (pa->access != ast::Access::Public)
                             continue;
                         if (pa->getter.has_value() && !pa->setter.has_value())
                             continue;
-                        pushParam(pa->name,
-                                  /*hasDefault=*/true,
-                                  &pa->propType);
+                        entries.push_back({pa->interval.first, pa->name, &pa->propType});
                     }
+                    std::sort(entries.begin(), entries.end(),
+                              [](const Entry& a, const Entry& b) {
+                                  if (a.pos.line != b.pos.line)
+                                      return a.pos.line < b.pos.line;
+                                  return a.pos.pos < b.pos.pos;
+                              });
+                    for (const auto& e : entries)
+                        pushParam(e.name, /*hasDefault=*/true, e.declaredType);
                 } else {
                     for (const auto& p : method->params) {
                         type::Type::FuncType::ParamType pt(p->name);
