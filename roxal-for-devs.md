@@ -859,21 +859,19 @@ b.handle(42)         // → "int 42"
 
 ### `proc init(*)` — auto-init from public properties
 
-When a type's `init` should just take a value for each of its public properties (the same shape the no-init auto-construct already provides), write `proc init(*)`. The single `*` parameter is sugar for one synthesized named parameter per public, writable property, in the **order they appear in the type body** — whether each one is implemented as a plain `var` or via accessor blocks is an implementation detail that doesn't reorder the params. Each synthesized parameter takes the corresponding property's declared type. At entry, the params are auto-assigned to the corresponding members; the body then runs as a post-action.
+When a type's `init` should just take a value for each of its public properties (the same shape the no-init auto-construct already provides), write `proc init(*)`. The single `*` parameter is sugar for one synthesized named parameter per public, writable property, in the **order they appear in the type body**. Each synthesized parameter takes the corresponding property's declared type. At entry, the params are auto-assigned to the corresponding members; the body then runs as a post-action.
 
 **Every synthesized param has a default**, so calls can omit any/all args. The default is either:
 
 * The property's explicit initializer expression (`var x :int = 5` → default `5`), or
 * When no initializer is present, the same implicit default the type-construction layer would use for an uninitialized property — `0` / `0.0` / `false` / `""` / etc. for builtin value types, **`nil`** for user-defined object/actor types and for fully untyped fields (`var x` with no type).
 
-This keeps init(*) call semantics aligned with the legacy no-init auto-construct path: declaring `proc init(*)` never converts a previously-valid `Type()` call into a missing-arg runtime error.
-
 The synthesized param set follows the type's public, settable surface:
 
 * Plain `var` (no accessor block) — included.
 * Accessor `var X :T: get: … set: …` (with at least a `set:`) — included; `init(*)` writes the value **directly to the synthetic `_<name>` backing field**, bypassing the user setter. Setters often assume the object is already fully constructed, so running them mid-prologue is a footgun. If you want setter validation during init, write the init out explicitly.
 * Accessor `var X :T: get: …` (no `set:`) — **excluded**. A get-only accessor declares "computed / read-only on the public surface"; surfacing it as an init(*) named arg would let callers write through what was meant to be immutable. Calling `Type(<getOnlyField>=…)` therefore errors as an unknown parameter. To set the backing field at construction, write the init out explicitly.
-* `const` properties — not yet supported by `init(*)`; types declaring any are rejected with a compile error.
+* `const` properties are **excluded**.
 
 ```php
 type Point object:
@@ -1165,8 +1163,6 @@ amt = w.currentAmount()  // also doesn't block (amt is a 'future real')
 print( real(amt) ) // 3
 ```
 
-(Note: the VM doesn't currently prohibit accessing/mutating any module scope vars from an actor, but in future it will prohibit mutating all module scope variables and prohibit access to non-const or reference module variable.  So, for now, only 'read' value-type module variables that are not modified elsewhere (i.e. logical 'constants'))
-
 ### Awaiting multiple things: `allof` and `anyof`
 
 `wait(for=fut)` awaits a single future. To await several at once, the `sys` module provides two combinators:
@@ -1213,7 +1209,6 @@ Edge cases:
 * `allof()` with zero awaitables resolves immediately to `[]`.
 * `anyof()` with zero awaitables raises (it would deadlock).
 * For event/signal slots, the slot's resolved value is the event instance / the signal value at the moment its predicate became true.
-* Currently, exceptions raised in actor methods do not propagate through futures — see the Exceptions section.
 
 ## Exceptions
 
