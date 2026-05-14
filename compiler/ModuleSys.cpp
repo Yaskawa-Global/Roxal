@@ -1676,6 +1676,12 @@ Value ModuleSys::help_builtin(VM& vm, ArgsView args)
         ObjModuleType* module = vm.moduleType();
         auto entries = collectModuleEntries(module);
         std::string listing = formatSymbolEntries(entries, 0, 100, "<no symbols>");
+        // When called at the REPL with no user-defined symbols yet, the
+        // bare placeholder isn't very informative. Hint at where to find
+        // help on the REPL itself.
+        if (entries.empty() && vm.replModuleType() == module) {
+            listing += "\n(use /help for REPL commands)";
+        }
         return Value::stringVal(toUnicodeString(listing));
     }
 

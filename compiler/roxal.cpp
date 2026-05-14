@@ -393,14 +393,69 @@ static int repl()
         std::string line(cline);
         linenoiseFree(cline);
 
-        if (line=="quit") {
+        if (line=="/quit") {
             quit = true;
             break;
-        } else if (line.rfind("run ", 0) == 0) {
-            std::string path = trimws(line.substr(4));
+        } else if (line=="?") {
+            std::cout
+                << "  /help   — list REPL commands\n"
+                << "  help()  — help on a Roxal symbol (e.g. help(print))\n";
+            buffer.clear();
+            indents.assign(1,0);
+            waitingIndent = false;
+            continue;
+        } else if (line=="/help") {
+            std::cout
+                << "REPL commands (chat-style /-prefix, like Slack/Discord/Notion):\n"
+                << "  /help            show this list\n"
+                << "  /run <file>      compile and execute a Roxal script file\n"
+                << "                   (`.rox` extension assumed if missing)\n"
+                << "  /reload          drop the user-module cache so the next\n"
+                << "                   `/run` (or `import`) recompiles dependency\n"
+                << "                   `.rox` files from source — picks up edits\n"
+                << "  /quit            exit the REPL (or press Ctrl-D)\n";
+            buffer.clear();
+            indents.assign(1,0);
+            waitingIndent = false;
+            continue;
+        } else if (line=="/reload") {
+            // Drop the cross-compiler user-module cache so the next import (or
+            // the next `/run`) recompiles dependency modules from source.
+            // Bindings already in the REPL module's vars are *not* cleared,
+            // but ImportModuleVars uses overwrite=true when the target is the
+            // REPL module, so re-issuing the imports rebinds to the freshly-
+            // loaded module's values. Old user-created instances still hold
+            // references to the previous types — known limitation (see
+            // implementation-notes.md "Future: in-place reload").
+            vm.clearUserModuleRegistry();
+            std::cout << "user-module cache cleared" << std::endl;
+            buffer.clear();
+            indents.assign(1,0);
+            waitingIndent = false;
+            continue;
+        } else if ((line == "quit" || line == "exit")
+                   && !(vm.replModuleType()
+                        && vm.replModuleType()->vars.exists(
+                               icu::UnicodeString::fromUTF8(line)))) {
+            // Soft hint for Python/JS-habit users who type the bareword.
+            // Only fires when `quit` / `exit` aren't bound in the REPL module
+            // (or globals) — so `var quit = 5; quit` still works as plain
+            // Roxal code.
+            std::cout << "Use /quit or Ctrl-D to exit the REPL.\n";
+            buffer.clear();
+            indents.assign(1,0);
+            waitingIndent = false;
+            continue;
+        } else if (line.rfind("/run ", 0) == 0) {
+            std::string path = trimws(line.substr(5));
             if (path.empty()) {
                 std::cerr << "Error: no file specified" << std::endl;
             } else {
+                // Convenience: append `.rox` when the argument has no
+                // extension or a different one. `/run foo` is treated as
+                // `/run foo.rox`.
+                if (std::filesystem::path(path).extension() != ".rox")
+                    path += ".rox";
                 std::ifstream script(path);
                 if (!script.is_open()) {
                     std::cerr << "Error: file not found: " << path << std::endl;
@@ -429,6 +484,19 @@ static int repl()
                 exitCode = vm.exitCode();
                 break;
             }
+            continue;
+        } else if (!line.empty() && line[0] == '/') {
+            // Any `/`-prefixed line at col 0 that didn't match a known REPL
+            // command above — surface a friendly error instead of letting the
+            // parser barf on the leading slash.
+            std::string cmd = line;
+            auto sp = cmd.find(' ');
+            if (sp != std::string::npos) cmd = cmd.substr(0, sp);
+            std::cerr << "Unknown REPL command: '" << cmd
+                      << "'. Type /help for available commands." << std::endl;
+            buffer.clear();
+            indents.assign(1,0);
+            waitingIndent = false;
             continue;
         }
 

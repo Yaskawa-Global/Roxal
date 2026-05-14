@@ -153,6 +153,17 @@ protected:
 
     std::map<ModuleInfo,Value> importedModules;
 
+public:
+    // Drop this compiler's per-instance imported-modules cache.  Used by the
+    // REPL's `reload` command together with VM::clearUserModuleRegistry() so
+    // the next `import` statement re-runs the dependency's body. Without this
+    // the long-lived REPL RoxalCompiler instance would still short-circuit on
+    // its own importedModules entry before the VM-level registry lookup
+    // happens. Other compiler state (replTypeDeducer, suffixRegistry) is
+    // preserved so previously-declared types in the REPL still type-check.
+    void clearImportedModules() { importedModules.clear(); }
+protected:
+
     // given the components of an import, such as "package.subpackage.module", return
     //  information about the module, including the file that should be executed
     ModuleInfo findImport(const std::vector<icu::UnicodeString>& components) const;

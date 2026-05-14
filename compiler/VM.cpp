@@ -93,6 +93,7 @@ std::atomic<VM::CacheMode> configuredCacheMode{VM::CacheMode::Normal};
 std::mutex configuredModulePathsMutex;
 std::vector<std::string> configuredModulePaths;
 
+
 Value resolveCanonicalRuntimeObjectType(const Value& typeVal);
 bool isCompatibleRuntimeObjectArg(const Value& slot, const Value& expectedType);
 
@@ -1410,6 +1411,10 @@ VM::~VM()
         userModuleRegistry.clear();
     }
 
+    // Same concern for the shared REPL compiler — its importedModules map
+    // holds strong Value refs. Destroy it before freeObjects().
+    replCompiler_.reset();
+
     if (dataflowEngine)
         dataflowEngine->clear();
 
@@ -1716,7 +1721,9 @@ ExecutionStatus VM::runLine(std::istream& linestream,
 
     runtimeErrorFlag = false;
 
-    static RoxalCompiler compiler {};
+    if (!replCompiler_)
+        replCompiler_ = std::make_unique<RoxalCompiler>();
+    RoxalCompiler& compiler = *replCompiler_;
     compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
     compiler.setCacheReadEnabled(cacheReadsEnabled());
     compiler.setCacheWriteEnabled(cacheWritesEnabled());
@@ -1778,8 +1785,12 @@ ExecutionStatus VM::setupLine(std::istream& linestream,
                               bool replMode,
                               const std::string& sourceNameOverride)
 {
-    // Persistent compiler (same pattern as runLine)
-    static RoxalCompiler compiler {};
+    // Shared compiler with runLine() — same persistent state (imported
+    // modules, type deducer, suffix registry) carries across both entry
+    // points.
+    if (!replCompiler_)
+        replCompiler_ = std::make_unique<RoxalCompiler>();
+    RoxalCompiler& compiler = *replCompiler_;
     compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
     compiler.setCacheReadEnabled(cacheReadsEnabled());
     compiler.setCacheWriteEnabled(cacheWritesEnabled());
@@ -8694,15 +8705,28 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     // subsequent local FuncDecl (DefineModuleOverload) replace
                     // them rather than appending to imported overloads — local
                     // declarations take precedence.
+                    // REPL-mode: when re-importing into the REPL's own
+                    // module (e.g. after `reload` + re-run), overwrite stale
+                    // bindings so the freshly-loaded module's values become
+                    // visible. For all other targets, keep prior semantics
+                    // (overwrite=false — first import wins).
+                    const bool replReimport =
+                        replModuleValue.isNonNil() &&
+                        isModuleType(replModuleValue) &&
+                        asModuleType(replModuleValue) == toModuleType;
+
                     auto storeImported = [&](int32_t hash, const icu::UnicodeString& name, const Value& v) {
                         if (v.isObj() && isOverloadSet(v)) {
                             auto cloneObj = newOverloadSetObj(name);
                             auto* src = asOverloadSet(v);
                             cloneObj->closures = src->closures;
                             cloneObj->importedFromModule = true;
-                            toModuleType->vars.store(hash, name, Value::objRef(cloneObj.release()));
+                            toModuleType->vars.store(hash, name,
+                                                     Value::objRef(cloneObj.release()),
+                                                     /*overwrite=*/replReimport);
                         } else {
-                            toModuleType->vars.store(hash, name, v);
+                            toModuleType->vars.store(hash, name, v,
+                                                     /*overwrite=*/replReimport);
                         }
                     };
 
@@ -12170,6 +12194,19 @@ void VM::registerUserModule(const icu::UnicodeString& qualifiedName, const Value
     // simply discarded by its compileImport caller (which re-reads the
     // canonical value after registration -- see RoxalCompiler.cpp).
     userModuleRegistry.emplace(qualifiedName, moduleType);
+}
+
+void VM::clearUserModuleRegistry()
+{
+    {
+        std::lock_guard<std::mutex> guard(userModuleRegistryMutex);
+        userModuleRegistry.clear();
+    }
+    // Also wipe the long-lived REPL compiler's importedModules cache so its
+    // per-instance short-circuit doesn't bypass the now-empty VM registry on
+    // the next compile.
+    if (replCompiler_)
+        replCompiler_->clearImportedModules();
 }
 
 #ifdef ROXAL_ENABLE_GRPC

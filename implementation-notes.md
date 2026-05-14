@@ -927,6 +927,43 @@ uncommenting `DEBUG_BUILTINS` in `CMakeLists.txt`'s `add_compile_definitions`
 block) to get a `[builtins] linked sys.Time.kind`–style confirmation line
 per successful `link` / `linkMethod` call.
 
+### REPL commands and `/reload` semantics
+
+The interactive REPL uses chat-style `/`-prefixed commands (mirrors
+Slack/Discord/Notion/IPython-magic conventions):
+
+- `/help` — list available REPL commands.
+- `/run <file>` — compile and execute a Roxal script file against the REPL
+  module. The script body re-runs on every `/run`; its imports are subject
+  to the user-module cache below.
+- `/reload` — drop the VM-level user-module registry and the REPL
+  `RoxalCompiler`'s `importedModules` map. The next `import` (or the next
+  `/run` that does an import) recompiles dependency modules from source —
+  picks up `.rox` file edits made between runs.
+- `/quit` — exit the REPL. Ctrl-D also works (linenoise EOF).
+
+Because the user-module registry is process-lifetime, an interactive REPL
+session caches every imported dependency after first use — a subsequent
+`/run` of an editor-tweaked script picks up edits to the *script itself*
+but **not** edits to its dependencies' `.rox` files unless `/reload` is
+issued first.
+
+To make re-imports actually rebind in the REPL, `OpCode::ImportModuleVars`
+uses `overwrite=true` *only* when the target module is the REPL module
+(`replModuleValue`). For non-REPL modules the historical "first import
+wins" behaviour is preserved.
+
+**Known limitation — Python `reload` semantics, not IPython
+`%autoreload 2`:** existing user-created instances retain their *old*
+`instanceType` pointer and old method tables after `/reload`. New calls
+through `Probe()` after `/reload` produce instances of the freshly-loaded
+type, but `var p = Probe(); /reload; p.fire()` will run the old `fire`.
+`p is Probe` returns false against the new type. Migration of live
+instances across type-identity swaps is a future task (would require
+in-place mutation of `ObjObjectType::methods` etc. while preserving the
+existing pointer — analogous to what IPython's autoreload does by patching
+`__class__` and class dicts on existing instances).
+
 
 ## Continuations
 

@@ -731,7 +731,7 @@ try:
             script_path = os.path.join(test_dir, 'repl_run_script.rox')
             rel_script = os.path.relpath(script_path, os.getcwd())
             cmd = [roxal]
-            input_data = f"run {rel_script}\nquit\n".encode()
+            input_data = f"/run {rel_script}\n/quit\n".encode()
         if test == 'invalid_option':
             cmd = [roxal, '--bogus']
         if test.startswith('grpc_'):

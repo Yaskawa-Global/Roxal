@@ -52,6 +52,7 @@ namespace roxal {
 
 struct CallFrame; // forward
 struct ActorInstance;
+class RoxalCompiler;
 
 
 typedef std::vector<CallFrame> CallFrames;
@@ -157,6 +158,16 @@ public:
     // module rather than infinitely recursing.
     std::optional<Value> lookupUserModule(const icu::UnicodeString& qualifiedName);
     void registerUserModule(const icu::UnicodeString& qualifiedName, const Value& moduleType);
+
+    // REPL-only: drop all cached user-module entries so the next `import X.*`
+    // re-runs each module's body, picking up source edits.  Does NOT reset
+    // existing bindings in the REPL module's vars — paired with the REPL's
+    // overwrite-on-re-import semantics so a subsequent `run` of a script
+    // that re-imports the same modules will rebind to the freshly-loaded
+    // versions.  Old user-created instances retain their old instanceType
+    // and old method tables (Python `reload` semantics — see future task
+    // for IPython %autoreload-2-style in-place class mutation).
+    void clearUserModuleRegistry();
 #ifdef ROXAL_ENABLE_GRPC
     Value importProtoModule(const std::string& path);
 #endif
@@ -547,6 +558,12 @@ protected:
     // identity of the underlying ObjFunction.
     Value combinatorRelayFunction {}; // ObjFunction
     Value replModuleValue { Value::nilVal() }; // ObjModuleType
+
+    // Shared compiler instance for both runLine() and setupLine(). Lazy-
+    // initialised on first use and torn down before freeObjects() in
+    // ~VM(). Held by unique_ptr so the type can stay forward-declared in
+    // this header (full definition lives in RoxalCompiler.h).
+    std::unique_ptr<RoxalCompiler> replCompiler_;
 
     // RT REPL synchronization
     std::atomic<RTState> rtState_ { RTState::Idle };
