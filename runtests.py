@@ -136,6 +136,8 @@ tests = [
     'star_init_inherited', 'star_init_empty',
     'star_init_err_outside_init', 'star_init_err_mixed_params', 'star_init_err_actor',
     'star_init_err_duplicate_sig', 'star_init_err_const_member',
+    'star_init_accessor_setter_bypass', 'star_init_accessor_getonly',
+    'star_init_accessor_with_data', 'star_init_accessor_default',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'closure_many', 'lambda1', 'lambda2',
     'conversion1', 'string_interp', 'string_case',
     'call_param_type_nonstrict', 'call_param_type_strict', 'param_assign_static_err',

@@ -528,11 +528,15 @@ protected:
 
     // Synthesize parameters + assignment prologue for `proc init(*)`. Called
     // from visit(Function) when the function is a star-init. Declares one
-    // local per public property (in declaration order), populates the
+    // local per public property (data props in declaration order, then
+    // accessor-equipped props in declaration order), populates the
     // surrounding function's FuncType params accordingly, sets up
     // paramDefaultFunc entries for properties that carry an initializer,
-    // and emits `this.<prop> = <prop>` for each.
-    void emitStarInitPrologue(const std::vector<ptr<ast::VarDecl>>& publicProps);
+    // and emits `this.<prop> = <prop>` for each (writes go directly to the
+    // synthetic `_<name>` backing field for accessor props, bypassing user
+    // setters).
+    void emitStarInitPrologue(const std::vector<ptr<ast::VarDecl>>& publicProps,
+                              const std::vector<ptr<ast::PropertyAccessor>>& publicAccessors);
 
     std::optional<VarTypeSpec> localVarType(const icu::UnicodeString& name);
     std::optional<VarTypeSpec> moduleVarType(const icu::UnicodeString& name);

@@ -859,7 +859,11 @@ b.handle(42)         // → "int 42"
 
 ### `proc init(*)` — auto-init from public properties
 
-When a type's `init` should just take a value for each of its public properties (the same shape the no-init auto-construct already provides), write `proc init(*)`. The single `*` parameter is sugar for one synthesized named parameter per public property, in declaration order, with each property's declared type and default. At entry, the params are auto-assigned to the corresponding members; the body then runs as a post-action.
+When a type's `init` should just take a value for each of its public properties (the same shape the no-init auto-construct already provides), write `proc init(*)`. The single `*` parameter is sugar for one synthesized named parameter per public property: plain data `var` declarations first (in declaration order), followed by accessor-equipped `var` declarations (also in declaration order). Each synthesized parameter takes the corresponding property's declared type and default. At entry, the params are auto-assigned to the corresponding members; the body then runs as a post-action.
+
+For accessor-equipped properties (`var X :T: get: …` / `set: …`), `init(*)` writes the value **directly to the synthetic `_<name>` backing field**, bypassing any user-defined setter. This keeps initialization predictable: setters often assume the object is already fully constructed and ordering them during the prologue is a footgun. If you want setter validation during init, write the init out explicitly.
+
+Get-only accessors (no `set:`) are still included as synthesized params, giving you an "init-only property" pattern — settable at construction, immutable from outside thereafter.
 
 ```php
 type Point object:
@@ -896,6 +900,7 @@ Dict-form construction (`Point({x:1, y:2})`) is routed by ordinary overload reso
 **Note:**
 
 * Only the type's *own* public properties become synthesized params. Inherited public properties keep their declared defaults; they are not reachable via `init(*)` named args (this may relax in a later version).
+* `const` properties (data `const` or `:const` accessors) are not yet supported by `init(*)` — types declaring any are rejected with a compile error; write the init out explicitly.
 
 **Resolution rules** (best to worst):
 

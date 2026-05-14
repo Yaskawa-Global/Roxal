@@ -203,33 +203,76 @@ inline void BuiltinModule::linkMethod(const std::string& typeName,
                                       bool noMutateSelf,
                                       uint32_t noMutateArgs)
 {
-    auto typeVal = asModuleType(moduleType())->vars.load(toUnicodeString(typeName));
-    if (typeVal.has_value() && isObjectType(typeVal.value())) {
-        ObjObjectType* type = asObjectType(typeVal.value());
-        auto it = type->methods.find(toUnicodeString(methodName).hashCode());
-        // Builtin modules register methods one-by-one — never overloaded.
-        if (it != type->methods.end() && it->second.overloads.size() == 1) {
-            Value val = it->second.overloads[0].closure;
-            if (isClosure(val)) {
-                ObjClosure* cl = asClosure(val);
-                asFunction(cl->function)->builtinInfo = make_ptr<BuiltinFuncInfo>(
-                    fn, std::move(defaults), resolveArgMask, noMutateSelf, noMutateArgs);
-#ifdef DEBUG_BUILTINS
-                std::string modName;
-                asModuleType(moduleType())->name.toUTF8String(modName);
-                std::fprintf(stderr, "[builtins] linked %s.%s.%s\n",
-                             modName.c_str(), typeName.c_str(), methodName.c_str());
-#endif
+    // Resolve `typeName` as either a flat module-level type (e.g. "Foo") or a
+    // dotted path to a nested type (e.g. "Outer.Inner.Innermost"). The first
+    // segment is looked up in the module's `vars`; each subsequent segment is
+    // looked up in the preceding type's `nestedTypes` map.
+    //
+    // Same logic shape as the runtime walker at VM.cpp (GetProp on object
+    // types), but with explicit per-segment error messages so misconfigured
+    // builtin link calls fail fast at registration time.
+    auto splitDotted = [](const std::string& s) {
+        std::vector<std::string> out;
+        size_t start = 0;
+        for (size_t i = 0; i <= s.size(); ++i) {
+            if (i == s.size() || s[i] == '.') {
+                out.emplace_back(s.substr(start, i - start));
+                start = i + 1;
             }
         }
-        else {
-            throw std::runtime_error("BuiltinModule::linkMethod: Method '" + methodName +
-                                     "' not found in type '" + typeName + "'.");
+        return out;
+    };
+
+    std::vector<std::string> segments = splitDotted(typeName);
+    if (segments.empty() || segments.front().empty()) {
+        throw std::runtime_error("BuiltinModule::linkMethod: Empty type name.");
+    }
+
+    auto firstVal = asModuleType(moduleType())->vars.load(toUnicodeString(segments[0]));
+    if (!firstVal.has_value() || !isObjectType(firstVal.value())) {
+        throw std::runtime_error("BuiltinModule::linkMethod: Type '" + segments[0] +
+                                 "' not found or not an object type.");
+    }
+    ObjObjectType* type = asObjectType(firstVal.value());
+
+    // Walk nested-type segments. After the loop, `type` is the final type that
+    // should own `methodName`. `consumedPath` accumulates the resolved path for
+    // error messages so unmatched segments cite the partial prefix.
+    std::string consumedPath = segments[0];
+    for (size_t i = 1; i < segments.size(); ++i) {
+        if (segments[i].empty()) {
+            throw std::runtime_error("BuiltinModule::linkMethod: Empty segment in dotted type name '" +
+                                     typeName + "'.");
+        }
+        int32_t segHash = toUnicodeString(segments[i]).hashCode();
+        auto nit = type->nestedTypes.find(segHash);
+        if (nit == type->nestedTypes.end() || !isObjectType(nit->second.type)) {
+            throw std::runtime_error("BuiltinModule::linkMethod: Nested type '" + segments[i] +
+                                     "' not found in '" + consumedPath + "'.");
+        }
+        type = asObjectType(nit->second.type);
+        consumedPath += "." + segments[i];
+    }
+
+    auto it = type->methods.find(toUnicodeString(methodName).hashCode());
+    // Builtin modules register methods one-by-one — never overloaded.
+    if (it != type->methods.end() && it->second.overloads.size() == 1) {
+        Value val = it->second.overloads[0].closure;
+        if (isClosure(val)) {
+            ObjClosure* cl = asClosure(val);
+            asFunction(cl->function)->builtinInfo = make_ptr<BuiltinFuncInfo>(
+                fn, std::move(defaults), resolveArgMask, noMutateSelf, noMutateArgs);
+#ifdef DEBUG_BUILTINS
+            std::string modName;
+            asModuleType(moduleType())->name.toUTF8String(modName);
+            std::fprintf(stderr, "[builtins] linked %s.%s.%s\n",
+                         modName.c_str(), typeName.c_str(), methodName.c_str());
+#endif
         }
     }
     else {
-        throw std::runtime_error("BuiltinModule::linkMethod: Type '" + typeName +
-                                 "' not found or not an object type.");
+        throw std::runtime_error("BuiltinModule::linkMethod: Method '" + methodName +
+                                 "' not found in type '" + typeName + "'.");
     }
 }
 

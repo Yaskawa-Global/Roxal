@@ -3529,15 +3529,20 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     enterLocalScope();
 
     // For `proc init(*)`, the synthesized arity is the count of public
-    // properties on the enclosing type; collect them here so arity and the
-    // synthesis loop below agree.
+    // properties (data + accessor-equipped) on the enclosing type; collect
+    // them here so arity and the synthesis loop below agree.
     std::vector<ptr<VarDecl>> starInitPublicProps;
+    std::vector<ptr<PropertyAccessor>> starInitPublicAccessors;
     if (isStarInit) {
         auto enclosingTypeDecl = asTypeScope(typeScope())->typeDecl.lock();
         if (enclosingTypeDecl) {
             for (auto& prop : enclosingTypeDecl->properties) {
                 if (prop->access == Access::Public)
                     starInitPublicProps.push_back(prop);
+            }
+            for (auto& pa : enclosingTypeDecl->propertyAccessors) {
+                if (pa->access == Access::Public)
+                    starInitPublicAccessors.push_back(pa);
             }
         }
     }
@@ -3548,14 +3553,14 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
         regularParamCount--;
     }
     if (isStarInit)
-        regularParamCount = starInitPublicProps.size();
+        regularParamCount = starInitPublicProps.size() + starInitPublicAccessors.size();
     asFunction(asFuncScope(funcScope())->function)->arity = regularParamCount;
     if (asFunction(asFuncScope(funcScope())->function)->arity > 255)
         error("Maximum of function or procedure 255 parameters exceeded.");
 
     Anys results {};
     if (isStarInit) {
-        emitStarInitPrologue(starInitPublicProps);
+        emitStarInitPrologue(starInitPublicProps, starInitPublicAccessors);
         // Body only — params are synthesized above; no AST params to visit.
         if (std::holds_alternative<ptr<Suite>>(ast->body)) {
             auto suite = std::get<ptr<Suite>>(ast->body);
@@ -3711,68 +3716,99 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
 }
 
 
-void RoxalCompiler::emitStarInitPrologue(const std::vector<ptr<ast::VarDecl>>& publicProps)
+void RoxalCompiler::emitStarInitPrologue(const std::vector<ptr<ast::VarDecl>>& publicProps,
+                                         const std::vector<ptr<ast::PropertyAccessor>>& publicAccessors)
 {
     // Caller ensures we are inside a `proc init(*)` body with the function scope already entered.
     auto funcScopePtr { asFuncScope(this->funcScope()) };
     ObjFunction* funcObj { asFunction(funcScopePtr->function) };
 
+    // Reject const properties up front — initializing const members during
+    // init(*) needs a separate const-during-init mechanism (deferred).
+    for (const auto& prop : publicProps) {
+        if (prop->isConst) {
+            error("`proc init(*)` does not yet support const properties; declare init explicitly");
+            return;
+        }
+    }
+    for (const auto& pa : publicAccessors) {
+        if (pa->isConst) {
+            error("`proc init(*)` does not yet support const properties; declare init explicitly");
+            return;
+        }
+    }
+
+    // Helper that turns an AST VarType (BuiltinType | TypeName) into a
+    // runtime type::Type used in synthesized FuncType params.
+    auto varTypeToFuncParamType = [&](const VarType& vt) -> ptr<type::Type> {
+        if (std::holds_alternative<BuiltinType>(vt)) {
+            return make_ptr<type::Type>(std::get<BuiltinType>(vt));
+        }
+        auto pt = make_ptr<type::Type>(BuiltinType::Object);
+        pt->obj = type::Type::ObjectType{};
+        pt->obj->name = joinTypeName(std::get<TypeName>(vt));
+        return pt;
+    };
+
     // 1. Populate the function's FuncType params from the public properties so
-    //    OverloadResolver sees the expanded signature.
+    //    OverloadResolver sees the expanded signature. Data props first, then
+    //    accessor props (matches the declaration-iteration order used elsewhere).
     if (funcObj->funcType.has_value() && funcObj->funcType.value()->func.has_value()) {
         auto& fts = funcObj->funcType.value()->func.value();
         fts.params.clear();
-        fts.params.reserve(publicProps.size());
+        fts.params.reserve(publicProps.size() + publicAccessors.size());
         for (const auto& prop : publicProps) {
             type::Type::FuncType::ParamType pt;
             pt.name = prop->name;
             pt.nameHashCode = prop->name.hashCode();
             pt.hasDefault = prop->initializer.has_value();
-            if (prop->varType.has_value()) {
-                if (std::holds_alternative<BuiltinType>(prop->varType.value())) {
-                    pt.type = make_ptr<type::Type>(std::get<BuiltinType>(prop->varType.value()));
-                } else {
-                    pt.type = make_ptr<type::Type>(BuiltinType::Object);
-                    pt.type.value()->obj = type::Type::ObjectType{};
-                    pt.type.value()->obj->name = joinTypeName(std::get<TypeName>(prop->varType.value()));
-                }
-            }
+            if (prop->varType.has_value())
+                pt.type = varTypeToFuncParamType(prop->varType.value());
+            fts.params.push_back(pt);
+        }
+        for (const auto& pa : publicAccessors) {
+            type::Type::FuncType::ParamType pt;
+            pt.name = pa->name;
+            pt.nameHashCode = pa->name.hashCode();
+            pt.hasDefault = pa->initializer.has_value();
+            pt.type = varTypeToFuncParamType(pa->propType);
             fts.params.push_back(pt);
         }
     }
 
     // 2. Declare each property as a local parameter so the body can read it
     //    by its bare name (matching how regular params behave).
-    for (const auto& prop : publicProps) {
-        declareVariable(prop->name);
-        uint16_t var = identifierConstant(prop->name);
+    auto declareSyntheticParam = [&](const icu::UnicodeString& name) {
+        declareVariable(name);
+        uint16_t var = identifierConstant(name);
         defineVariable(var);
-        auto localArg = resolveLocal(funcScope(), prop->name);
+        auto localArg = resolveLocal(funcScope(), name);
         if (localArg >= 0)
             asFuncScope(funcScope())->locals[localArg].isParam = true;
-    }
+    };
+    for (const auto& prop : publicProps)
+        declareSyntheticParam(prop->name);
+    for (const auto& pa : publicAccessors)
+        declareSyntheticParam(pa->name);
 
     // 3. For each property that carries an initializer expression, compile a
     //    paramDefaultFunc closure so calls that omit the corresponding arg fall
     //    back to the property's declared default. Mirrors the default-value
     //    handling in visit(Parameter).
     auto enclosingModuleScope { asModuleScope(moduleScope()) };
-    for (const auto& prop : publicProps) {
-        if (!prop->initializer.has_value())
-            continue;
-
+    auto registerDefaultFunc = [&](const icu::UnicodeString& name, ptr<ast::Expression> initializer) {
         ptr<type::Type> defFuncType = make_ptr<type::Type>(BuiltinType::Func);
         defFuncType->func = type::Type::FuncType();
 
-        enterFuncScope(enclosingModuleScope->moduleType, prop->name, FunctionType::Function, defFuncType);
+        enterFuncScope(enclosingModuleScope->moduleType, name, FunctionType::Function, defFuncType);
         #ifdef DEBUG_BUILD
-        emitByte(OpCode::Nop, "star_init_default " + toUTF8StdString(prop->name));
+        emitByte(OpCode::Nop, "star_init_default " + toUTF8StdString(name));
         #endif
         enterLocalScope();
 
         asFunction(asFuncScope(funcScope())->function)->arity = 0;
 
-        prop->initializer.value()->accept(*this);
+        initializer->accept(*this);
 
         exitLocalScope();
 
@@ -3787,13 +3823,23 @@ void RoxalCompiler::emitStarInitPrologue(const std::vector<ptr<ast::VarDecl>>& p
 
         exitFuncScope();
 
-        asFunction(asFuncScope(funcScope())->function)->paramDefaultFunc[prop->name.hashCode()] = defFunction;
+        asFunction(asFuncScope(funcScope())->function)->paramDefaultFunc[name.hashCode()] = defFunction;
+    };
+    for (const auto& prop : publicProps) {
+        if (prop->initializer.has_value())
+            registerDefaultFunc(prop->name, prop->initializer.value());
+    }
+    for (const auto& pa : publicAccessors) {
+        if (pa->initializer.has_value())
+            registerDefaultFunc(pa->name, pa->initializer.value());
     }
 
     // 4. Emit `this.<prop> = <prop>` for each public property. Compose the
     //    same bytecode that `visit(Assignment)` would produce for an explicit
     //    assignment to `this.x` (GetLocal this, GetLocal paramSlot,
-    //    [type-conversion], SetProp).
+    //    [type-conversion], SetProp). For accessor-equipped properties the
+    //    SetProp target is the synthetic `_<name>` backing field, bypassing
+    //    any user setter (`__set_<name>`).
     int16_t thisSlot = resolveLocal(funcScope(), UnicodeString("this"));
     if (thisSlot < 0) {
         error("internal: cannot resolve 'this' local for `proc init(*)` prologue");
@@ -3802,39 +3848,49 @@ void RoxalCompiler::emitStarInitPrologue(const std::vector<ptr<ast::VarDecl>>& p
 
     bool strictCtx = funcScopePtr->strict;
 
-    for (const auto& prop : publicProps) {
-        if (prop->isConst) {
-            // const member assignment inside init is the conventional
-            // initialization path, but the SetProp path would still flag
-            // visit(Assignment)-level const guards. Defer const handling to a
-            // follow-up; for v1, reject star-init with const members.
-            error("`proc init(*)` does not yet support const properties; declare init explicitly");
-            return;
+    auto emitTypeConversion = [&](const VarType& vt) {
+        if (std::holds_alternative<BuiltinType>(vt)) {
+            emitBytes(strictCtx ? OpCode::ToTypeStrict : OpCode::ToType,
+                      uint8_t(builtinToValueType(std::get<BuiltinType>(vt))));
+        } else {
+            emitTypeName(std::get<TypeName>(vt));
+            emitByte(strictCtx ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
         }
+    };
 
+    auto emitAssign = [&](const icu::UnicodeString& paramName,
+                          const icu::UnicodeString& storageName,
+                          const std::optional<VarType>& declaredType) {
         emitOpArgsBytes(OpCode::GetLocal, thisSlot, "init(*) this");
 
-        int16_t propSlot = resolveLocal(funcScope(), prop->name);
+        int16_t propSlot = resolveLocal(funcScope(), paramName);
         if (propSlot < 0) {
             error("internal: synthesized init(*) param local missing");
             return;
         }
-        emitOpArgsBytes(OpCode::GetLocal, propSlot, "init(*) param " + toUTF8StdString(prop->name));
+        emitOpArgsBytes(OpCode::GetLocal, propSlot, "init(*) param " + toUTF8StdString(paramName));
 
-        // Type conversion for typed properties (matches visit(Assignment) at SetProp path).
-        if (prop->varType.has_value()) {
-            auto& varType = prop->varType.value();
-            if (std::holds_alternative<BuiltinType>(varType)) {
-                emitBytes(strictCtx ? OpCode::ToTypeStrict : OpCode::ToType,
-                          uint8_t(builtinToValueType(std::get<BuiltinType>(varType))));
-            } else {
-                emitTypeName(std::get<TypeName>(varType));
-                emitByte(strictCtx ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
-            }
-        }
+        // Type conversion for typed properties.
+        if (declaredType.has_value())
+            emitTypeConversion(declaredType.value());
 
-        uint16_t propConst = identifierConstant(prop->name);
-        emitOpArgsBytes(OpCode::SetProp, propConst, "init(*) " + toUTF8StdString(prop->name));
+        uint16_t propConst = identifierConstant(storageName);
+        emitOpArgsBytes(OpCode::SetProp, propConst, "init(*) " + toUTF8StdString(storageName));
+    };
+
+    for (const auto& prop : publicProps) {
+        // Data property: SetProp targets the property name itself; the runtime
+        // routes through any property storage (no setter exists for plain vars).
+        emitAssign(prop->name, prop->name, prop->varType);
+    }
+    for (const auto& pa : publicAccessors) {
+        // Accessor property: write directly to the synthetic backing field
+        // `_<name>`, bypassing the user-defined `__set_<name>` setter (if any)
+        // and any const-check on the public name. The backing field is created
+        // unconditionally by the accessor-compile loop and is non-const private
+        // storage by construction.
+        icu::UnicodeString backingName = icu::UnicodeString("_") + pa->name;
+        emitAssign(pa->name, backingName, std::optional<VarType>(pa->propType));
     }
 }
 

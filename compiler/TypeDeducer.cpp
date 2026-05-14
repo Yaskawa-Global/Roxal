@@ -292,25 +292,44 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
                                   && method->params.size() == 1
                                   && method->params[0]->isStar;
                 if (isStarInit) {
-                    for (const auto& prop : ast->properties) {
-                        if (prop->access != ast::Access::Public)
-                            continue;
-                        type::Type::FuncType::ParamType pt(prop->name);
-                        pt.hasDefault = prop->initializer.has_value();
-                        if (prop->varType.has_value()) {
+                    // Helper: convert an AST VarType into a runtime
+                    // type::Type, matching RoxalCompiler::emitStarInitPrologue.
+                    auto pushParam = [&](const icu::UnicodeString& name,
+                                         bool hasDefault,
+                                         const ast::VarType* declaredType) {
+                        type::Type::FuncType::ParamType pt(name);
+                        pt.hasDefault = hasDefault;
+                        if (declaredType != nullptr) {
                             ptr<type::Type> paramT = make_ptr<type::Type>();
-                            if (std::holds_alternative<ast::BuiltinType>(prop->varType.value())) {
-                                paramT->builtin = std::get<ast::BuiltinType>(prop->varType.value());
+                            if (std::holds_alternative<ast::BuiltinType>(*declaredType)) {
+                                paramT->builtin = std::get<ast::BuiltinType>(*declaredType);
                             } else {
                                 paramT->builtin = type::BuiltinType::Object;
                                 type::Type::ObjectType ot;
-                                const auto& tn = std::get<ast::TypeName>(prop->varType.value());
+                                const auto& tn = std::get<ast::TypeName>(*declaredType);
                                 if (!tn.empty()) ot.name = tn.back();
                                 paramT->obj = ot;
                             }
                             pt.type = paramT;
                         }
                         methodType->params.push_back(pt);
+                    };
+
+                    // Data properties first, in declaration order.
+                    for (const auto& prop : ast->properties) {
+                        if (prop->access != ast::Access::Public)
+                            continue;
+                        pushParam(prop->name,
+                                  prop->initializer.has_value(),
+                                  prop->varType.has_value() ? &prop->varType.value() : nullptr);
+                    }
+                    // Accessor-equipped properties second, in declaration order.
+                    for (const auto& pa : ast->propertyAccessors) {
+                        if (pa->access != ast::Access::Public)
+                            continue;
+                        pushParam(pa->name,
+                                  pa->initializer.has_value(),
+                                  &pa->propType);
                     }
                 } else {
                     for (const auto& p : method->params) {
