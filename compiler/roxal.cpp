@@ -446,8 +446,8 @@ static int repl()
             indents.assign(1,0);
             waitingIndent = false;
             continue;
-        } else if (line.rfind("/run ", 0) == 0) {
-            std::string path = trimws(line.substr(5));
+        } else if (line == "/run" || line.rfind("/run ", 0) == 0) {
+            std::string path = line.size() > 4 ? trimws(line.substr(5)) : std::string{};
             if (path.empty()) {
                 std::cerr << "Error: no file specified" << std::endl;
             } else {

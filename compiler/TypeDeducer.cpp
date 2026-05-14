@@ -315,20 +315,28 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
                         methodType->params.push_back(pt);
                     };
 
+                    // Every init(*) param has a default — either the property's
+                    // explicit initializer, or an implicit type-construction
+                    // default (zero / nil). See RoxalCompiler::emitStarInitPrologue.
                     // Data properties first, in declaration order.
                     for (const auto& prop : ast->properties) {
                         if (prop->access != ast::Access::Public)
                             continue;
                         pushParam(prop->name,
-                                  prop->initializer.has_value(),
+                                  /*hasDefault=*/true,
                                   prop->varType.has_value() ? &prop->varType.value() : nullptr);
                     }
                     // Accessor-equipped properties second, in declaration order.
+                    // Get-only accessors are excluded — they're read-only on
+                    // the public surface, so a synthesized init(*) param
+                    // would contradict that intent.
                     for (const auto& pa : ast->propertyAccessors) {
                         if (pa->access != ast::Access::Public)
                             continue;
+                        if (pa->getter.has_value() && !pa->setter.has_value())
+                            continue;
                         pushParam(pa->name,
-                                  pa->initializer.has_value(),
+                                  /*hasDefault=*/true,
                                   &pa->propType);
                     }
                 } else {

@@ -859,11 +859,21 @@ b.handle(42)         // → "int 42"
 
 ### `proc init(*)` — auto-init from public properties
 
-When a type's `init` should just take a value for each of its public properties (the same shape the no-init auto-construct already provides), write `proc init(*)`. The single `*` parameter is sugar for one synthesized named parameter per public property: plain data `var` declarations first (in declaration order), followed by accessor-equipped `var` declarations (also in declaration order). Each synthesized parameter takes the corresponding property's declared type and default. At entry, the params are auto-assigned to the corresponding members; the body then runs as a post-action.
+When a type's `init` should just take a value for each of its public properties (the same shape the no-init auto-construct already provides), write `proc init(*)`. The single `*` parameter is sugar for one synthesized named parameter per public, writable property: plain data `var` declarations first (in declaration order), followed by accessor-equipped `var` declarations that expose a setter (also in declaration order). Each synthesized parameter takes the corresponding property's declared type. At entry, the params are auto-assigned to the corresponding members; the body then runs as a post-action.
 
-For accessor-equipped properties (`var X :T: get: …` / `set: …`), `init(*)` writes the value **directly to the synthetic `_<name>` backing field**, bypassing any user-defined setter. This keeps initialization predictable: setters often assume the object is already fully constructed and ordering them during the prologue is a footgun. If you want setter validation during init, write the init out explicitly.
+**Every synthesized param has a default**, so calls can omit any/all args. The default is either:
 
-Get-only accessors (no `set:`) are still included as synthesized params, giving you an "init-only property" pattern — settable at construction, immutable from outside thereafter.
+* The property's explicit initializer expression (`var x :int = 5` → default `5`), or
+* When no initializer is present, the same implicit default the type-construction layer would use for an uninitialized property — `0` / `0.0` / `false` / `""` / etc. for builtin value types, **`nil`** for user-defined object/actor types and for fully untyped fields (`var x` with no type).
+
+This keeps init(*) call semantics aligned with the legacy no-init auto-construct path: declaring `proc init(*)` never converts a previously-valid `Type()` call into a missing-arg runtime error.
+
+The synthesized param set follows the type's public, settable surface:
+
+* Plain `var` (no accessor block) — included.
+* Accessor `var X :T: get: … set: …` (with at least a `set:`) — included; `init(*)` writes the value **directly to the synthetic `_<name>` backing field**, bypassing the user setter. Setters often assume the object is already fully constructed, so running them mid-prologue is a footgun. If you want setter validation during init, write the init out explicitly.
+* Accessor `var X :T: get: …` (no `set:`) — **excluded**. A get-only accessor declares "computed / read-only on the public surface"; surfacing it as an init(*) named arg would let callers write through what was meant to be immutable. Calling `Type(<getOnlyField>=…)` therefore errors as an unknown parameter. To set the backing field at construction, write the init out explicitly.
+* `const` properties — not yet supported by `init(*)`; types declaring any are rejected with a compile error.
 
 ```php
 type Point object:
@@ -900,7 +910,6 @@ Dict-form construction (`Point({x:1, y:2})`) is routed by ordinary overload reso
 **Note:**
 
 * Only the type's *own* public properties become synthesized params. Inherited public properties keep their declared defaults; they are not reachable via `init(*)` named args (this may relax in a later version).
-* `const` properties (data `const` or `:const` accessors) are not yet supported by `init(*)` — types declaring any are rejected with a compile error; write the init out explicitly.
 
 **Resolution rules** (best to worst):
 

@@ -1,4 +1,6 @@
 init
-hello
+hi
+unset
 init
+world
 unset

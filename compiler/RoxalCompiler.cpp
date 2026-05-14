@@ -3541,8 +3541,15 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
                     starInitPublicProps.push_back(prop);
             }
             for (auto& pa : enclosingTypeDecl->propertyAccessors) {
-                if (pa->access == Access::Public)
-                    starInitPublicAccessors.push_back(pa);
+                if (pa->access != Access::Public)
+                    continue;
+                // Get-only accessors are read-only on the public surface
+                // (computed / externally immutable). Excluding them from
+                // init(*) preserves that contract: a synthesized param would
+                // let callers write through what was declared read-only.
+                if (pa->getter.has_value() && !pa->setter.has_value())
+                    continue;
+                starInitPublicAccessors.push_back(pa);
             }
         }
     }
@@ -3753,6 +3760,12 @@ void RoxalCompiler::emitStarInitPrologue(const std::vector<ptr<ast::VarDecl>>& p
     // 1. Populate the function's FuncType params from the public properties so
     //    OverloadResolver sees the expanded signature. Data props first, then
     //    accessor props (matches the declaration-iteration order used elsewhere).
+    //
+    // Every init(*) param is treated as having a default: either the property's
+    // explicit initializer expression, or the same implicit zero the type-
+    // construction loop would emit for an uninitialized property (`0`, `""`,
+    // `false`, ... for builtins; `nil` for user types and untyped fields).
+    // See the registerImplicitOrExplicitDefault helper below.
     if (funcObj->funcType.has_value() && funcObj->funcType.value()->func.has_value()) {
         auto& fts = funcObj->funcType.value()->func.value();
         fts.params.clear();
@@ -3761,7 +3774,7 @@ void RoxalCompiler::emitStarInitPrologue(const std::vector<ptr<ast::VarDecl>>& p
             type::Type::FuncType::ParamType pt;
             pt.name = prop->name;
             pt.nameHashCode = prop->name.hashCode();
-            pt.hasDefault = prop->initializer.has_value();
+            pt.hasDefault = true;
             if (prop->varType.has_value())
                 pt.type = varTypeToFuncParamType(prop->varType.value());
             fts.params.push_back(pt);
@@ -3770,7 +3783,7 @@ void RoxalCompiler::emitStarInitPrologue(const std::vector<ptr<ast::VarDecl>>& p
             type::Type::FuncType::ParamType pt;
             pt.name = pa->name;
             pt.nameHashCode = pa->name.hashCode();
-            pt.hasDefault = pa->initializer.has_value();
+            pt.hasDefault = true;
             pt.type = varTypeToFuncParamType(pa->propType);
             fts.params.push_back(pt);
         }
@@ -3791,12 +3804,18 @@ void RoxalCompiler::emitStarInitPrologue(const std::vector<ptr<ast::VarDecl>>& p
     for (const auto& pa : publicAccessors)
         declareSyntheticParam(pa->name);
 
-    // 3. For each property that carries an initializer expression, compile a
-    //    paramDefaultFunc closure so calls that omit the corresponding arg fall
-    //    back to the property's declared default. Mirrors the default-value
-    //    handling in visit(Parameter).
+    // 3. Compile a paramDefaultFunc closure for every synthesized param.
+    //    If the source property carries an explicit initializer expression we
+    //    compile that; otherwise we emit the same default the type-construction
+    //    loop would emit for an uninitialized property (`0`/`""`/`false`/... for
+    //    builtin types via `defaultValue`, and `nil` for user object/actor
+    //    types and untyped fields). This keeps init(*) call semantics aligned
+    //    with the legacy no-init auto-construct path — adding `proc init(*)`
+    //    doesn't make previously-permissible `Type()` calls fail.
     auto enclosingModuleScope { asModuleScope(moduleScope()) };
-    auto registerDefaultFunc = [&](const icu::UnicodeString& name, ptr<ast::Expression> initializer) {
+    auto registerDefaultFunc = [&](const icu::UnicodeString& name,
+                                   const std::optional<ptr<ast::Expression>>& initializer,
+                                   const std::optional<VarType>& declaredType) {
         ptr<type::Type> defFuncType = make_ptr<type::Type>(BuiltinType::Func);
         defFuncType->func = type::Type::FuncType();
 
@@ -3808,7 +3827,25 @@ void RoxalCompiler::emitStarInitPrologue(const std::vector<ptr<ast::VarDecl>>& p
 
         asFunction(asFuncScope(funcScope())->function)->arity = 0;
 
-        initializer->accept(*this);
+        if (initializer.has_value()) {
+            initializer.value()->accept(*this);
+        } else {
+            // No explicit initializer: mirror the type-construction default
+            // emission (RoxalCompiler.cpp's property loop). For a typed
+            // builtin we emit `defaultValue(...)`; for everything else (user
+            // object types, untyped fields), we emit nil. The legacy
+            // type-construction path already rejects non-default-constructible
+            // builtin types like signal at the declaration site, so they
+            // never reach init(*) synthesis.
+            bool isBuiltin = declaredType.has_value()
+                             && std::holds_alternative<BuiltinType>(declaredType.value());
+            if (isBuiltin) {
+                auto bt = std::get<BuiltinType>(declaredType.value());
+                emitConstant(defaultValue(builtinToValueType(bt)));
+            } else {
+                emitByte(OpCode::ConstNil);
+            }
+        }
 
         exitLocalScope();
 
@@ -3825,14 +3862,11 @@ void RoxalCompiler::emitStarInitPrologue(const std::vector<ptr<ast::VarDecl>>& p
 
         asFunction(asFuncScope(funcScope())->function)->paramDefaultFunc[name.hashCode()] = defFunction;
     };
-    for (const auto& prop : publicProps) {
-        if (prop->initializer.has_value())
-            registerDefaultFunc(prop->name, prop->initializer.value());
-    }
-    for (const auto& pa : publicAccessors) {
-        if (pa->initializer.has_value())
-            registerDefaultFunc(pa->name, pa->initializer.value());
-    }
+    for (const auto& prop : publicProps)
+        registerDefaultFunc(prop->name, prop->initializer, prop->varType);
+    for (const auto& pa : publicAccessors)
+        registerDefaultFunc(pa->name, pa->initializer,
+                            std::optional<VarType>(pa->propType));
 
     // 4. Emit `this.<prop> = <prop>` for each public property. Compose the
     //    same bytecode that `visit(Assignment)` would produce for an explicit

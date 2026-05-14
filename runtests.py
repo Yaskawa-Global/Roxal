@@ -138,6 +138,8 @@ tests = [
     'star_init_err_duplicate_sig', 'star_init_err_const_member',
     'star_init_accessor_setter_bypass', 'star_init_accessor_getonly',
     'star_init_accessor_with_data', 'star_init_accessor_default',
+    'star_init_accessor_err_getonly_unreachable',
+    'star_init_no_initializer',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'closure_many', 'lambda1', 'lambda2',
     'conversion1', 'string_interp', 'string_case',
     'call_param_type_nonstrict', 'call_param_type_strict', 'param_assign_static_err',
