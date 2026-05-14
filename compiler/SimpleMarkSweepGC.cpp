@@ -808,6 +808,18 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
         }
     });
 
+    // Cross-compiler user-module registry. In practice every Value here is
+    // also reachable via ObjModuleType::allModules above, but visit
+    // explicitly so the registry is self-sufficient as a root — if a future
+    // change ever introduces a path that registers a module without also
+    // pushing to allModules, the registry stays correct.
+    {
+        std::lock_guard<std::mutex> guard(vm.userModuleRegistryMutex);
+        for (const auto& entry : vm.userModuleRegistry) {
+            visitStrongValue(visitor, entry.second);
+        }
+    }
+
     // Note: ObjObjectType::enumTypes is NOT visited here. It holds raw pointers for
     // fast enum value -> type lookup, but enum types are already rooted through modules:
     // - User-defined enums are stored in module vars via DefineModuleVar opcode

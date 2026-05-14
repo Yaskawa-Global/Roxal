@@ -1401,6 +1401,15 @@ VM::~VM()
     replModuleValue = Value::nilVal();
     pendingRTClosure_ = Value::nilVal();
 
+    // Drop the cross-compiler user-module registry's strong Value refs before
+    // freeObjects(). Otherwise its destructor runs after VM destruction has
+    // already freed the underlying ObjModuleType objects, and ~Value() decRefs
+    // freed memory.
+    {
+        std::lock_guard<std::mutex> guard(userModuleRegistryMutex);
+        userModuleRegistry.clear();
+    }
+
     if (dataflowEngine)
         dataflowEngine->clear();
 
@@ -12142,6 +12151,25 @@ void VM::registerBuiltinModule(ptr<BuiltinModule> module)
     if (module) {
         appendModulePaths(module->additionalModulePaths());
     }
+}
+
+std::optional<Value> VM::lookupUserModule(const icu::UnicodeString& qualifiedName)
+{
+    std::lock_guard<std::mutex> guard(userModuleRegistryMutex);
+    auto it = userModuleRegistry.find(qualifiedName);
+    if (it == userModuleRegistry.end())
+        return std::nullopt;
+    return it->second;
+}
+
+void VM::registerUserModule(const icu::UnicodeString& qualifiedName, const Value& moduleType)
+{
+    std::lock_guard<std::mutex> guard(userModuleRegistryMutex);
+    // Insert-only; never overwrite.  If two compilations race past the
+    // pre-compile lookup, the loser's freshly allocated ObjModuleType is
+    // simply discarded by its compileImport caller (which re-reads the
+    // canonical value after registration -- see RoxalCompiler.cpp).
+    userModuleRegistry.emplace(qualifiedName, moduleType);
 }
 
 #ifdef ROXAL_ENABLE_GRPC

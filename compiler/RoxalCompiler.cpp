@@ -464,11 +464,47 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
             return record(builtin);
         }
 
+        // Register the chosen canonical user-module Value in the
+        // VM-wide registry.  This is what makes the cache-load path
+        // self-bootstrapping: when a builtin-module companion script
+        // (e.g. robot.rox) is loaded from cache, compileImport never
+        // runs for its transitive user modules, so no pre-compile
+        // registration happens — reconcile picks one deserialised
+        // duplicate as canonical (the "first one wins" via memo) and
+        // the registry must learn that choice so the next reconcile
+        // pass (e.g. for the user script that imports the same
+        // modules) canonicalises consistently.  Skipped for builtin
+        // modules (handled above) and for empty qualified names.
+        auto registerCanonical = [&](const Value& canonical) {
+            if (qualified.isEmpty() || !isModuleType(canonical))
+                return;
+            resolverVM->registerUserModule(qualified, canonical.strongRef());
+        };
+
+        // Cross-compiler user-module registry takes precedence over
+        // the global/allModules fallbacks: if another compilation has
+        // registered a canonical ObjModuleType for this qualified
+        // name, every reference to a same-named cache-loaded
+        // duplicate should resolve to it.  This is the deterministic
+        // counterpart to the order-dependent findExistingModule
+        // fallback below.
+        if (!qualified.isEmpty()) {
+            auto registered = resolverVM->lookupUserModule(qualified);
+            if (registered.has_value() && isModuleType(registered.value())) {
+                Value canonical = registered.value();
+                if (asModuleType(canonical) != module) {
+                    mergeModuleTypes(asModuleType(canonical), module);
+                    return record(canonical);
+                }
+            }
+        }
+
         // Prefer an existing global module with the same name
         auto globalOpt = resolverVM->loadGlobal(module->name);
         if (globalOpt.has_value() && isModuleType(globalOpt.value())) {
             Value globalMod = globalOpt.value();
             mergeModuleTypes(asModuleType(globalMod), module);
+            registerCanonical(globalMod);
             return record(globalMod);
         }
 
@@ -503,9 +539,13 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         Value existing = findExistingModule(module->name, qualified);
         if (existing.isNonNil()) {
             mergeModuleTypes(asModuleType(existing), module);
+            registerCanonical(existing);
             return record(existing);
         }
 
+        // No prior match: this deserialised module is itself canonical.
+        // Register it so the next reconcile pass canonicalises against it.
+        registerCanonical(strong);
         return record(strong);
     };
 
@@ -1013,66 +1053,130 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
                 return {};
             }
         } else {
-            // compile or load it, emit code to execute it
-            Value function { Value::nilVal() }; // ObjFunction
-            bool prevRepl = replModeFlag;
-            bool loadedFromCache = false;
-
-            try {
-                if (module.cacheValid)
-                    function = loadModuleFromCache(module);
-
-                if (function.isNonNil())
-                    loadedFromCache = true;
-
-                if (!loadedFromCache) {
-                    std::ifstream sourcestream(absoluteModuleFilePath);
-                    if (!sourcestream.is_open())
-                        throw std::runtime_error("unable to open module source: " + absoluteModuleFilePath);
-
-                    replModeFlag = false; // don't auto-print expressions when compiling imported module
-                    function = compile(sourcestream,
-                                       !absoluteModuleFilePath.empty() ?
-                                              absoluteModuleFilePath
-                                            : toUTF8StdString(module.name)
-                                      );
-                    if (function.isNil())
-                        throw std::runtime_error("compilation failed for module: " + toUTF8StdString(module.name));
-                    storeModuleCache(module, function);
-                }
-
-                replModeFlag = prevRepl;
-
-                importedModuleType = asFunction(function)->moduleType;
+            // Cross-compiler canonicalisation: if another compilation
+            // has already loaded this user module, reuse its
+            // ObjModuleType rather than producing a fresh one.  Each
+            // RoxalCompiler has its own per-compilation
+            // `importedModules` map, so without a process-wide
+            // registry two top-level compilations (e.g. a builtin
+            // module's companion .rox followed by a user script that
+            // imports the same transitive user module) would produce
+            // distinct ObjModuleType pointers for the same name.
+            // That would break `linkMethod`: the native binding
+            // lands on one ObjObjectType, but instances constructed
+            // later use the other.
+            VM& vm = VM::instance();
+            if (auto canon = vm.lookupUserModule(moduleFullName); canon.has_value()) {
+                importedModuleType = *canon;
                 if (isModuleType(importedModuleType)) {
                     ObjModuleType* imported = asModuleType(importedModuleType);
-                    imported->fullName = moduleFullName;
+                    if (imported->fullName.isEmpty())
+                        imported->fullName = moduleFullName;
+
+                    // Anchor the canonical Value in this compilation's
+                    // constant pool so GC keeps it alive while this
+                    // compilation runs.
+                    bool hasConstant = false;
+                    for (const auto& constant : currentChunk()->constants) {
+                        if (constant.is(importedModuleType, true)) {
+                            hasConstant = true;
+                            break;
+                        }
+                    }
+                    if (!hasConstant)
+                        makeConstant(importedModuleType);
                 }
-
-                // emit code to place module's main chunk on stack as closure
-                assert(asFunction(function)->upvalueCount == 0);
-                {
-                    uint16_t constIdx = makeConstant(function);
-                    emitOpArgsBytes(OpCode::Closure, constIdx);
-                }
-
-                // call it to have it executed (which will result in module vars being declared)
-                CallSpec callSpec {};
-                callSpec.allPositional = true;
-                callSpec.argCount = 0;
-                auto bytes = callSpec.toBytes();
-                assert(bytes.size()==1);
-                emitBytes(OpCode::Call, bytes[0]);
-
-                // Discard the module's return value so subsequent locals start at the expected slot
-                emitByte(OpCode::Pop);
-
                 importedModules[module] = importedModuleType;
+                // No Closure+Call emit: the canonical module's body has
+                // already run during the compilation that first loaded
+                // it.  Re-executing would re-declare its consts /
+                // procs / types and either fail or duplicate state.
+            } else {
+                // compile or load it, emit code to execute it
+                Value function { Value::nilVal() }; // ObjFunction
+                bool prevRepl = replModeFlag;
+                bool loadedFromCache = false;
 
-            } catch (std::exception& e) {
-                replModeFlag = prevRepl;
-                error(e.what());
-                return {};
+                try {
+                    if (module.cacheValid)
+                        function = loadModuleFromCache(module);
+
+                    if (function.isNonNil())
+                        loadedFromCache = true;
+
+                    if (!loadedFromCache) {
+                        std::ifstream sourcestream(absoluteModuleFilePath);
+                        if (!sourcestream.is_open())
+                            throw std::runtime_error("unable to open module source: " + absoluteModuleFilePath);
+
+                        replModeFlag = false; // don't auto-print expressions when compiling imported module
+
+                        // Pre-allocate the ObjModuleType and register
+                        // it BEFORE the body compiles so a circular
+                        // import (this module's body re-importing one
+                        // of its ancestors via the registry path)
+                        //  sees the already-registered (partially-
+                        // populated) value rather than infinitely
+                        // recursing through a fresh allocation each
+                        // time.
+                        Value preallocated = Value::objVal(newModuleTypeObj(module.name));
+                        ObjModuleType::allModules.push_back(preallocated);
+                        vm.registerUserModule(moduleFullName, preallocated);
+
+                        function = compile(sourcestream,
+                                           !absoluteModuleFilePath.empty() ?
+                                                  absoluteModuleFilePath
+                                                : toUTF8StdString(module.name),
+                                           preallocated);
+                        if (function.isNil())
+                            throw std::runtime_error("compilation failed for module: " + toUTF8StdString(module.name));
+                        storeModuleCache(module, function);
+                    }
+
+                    replModeFlag = prevRepl;
+
+                    importedModuleType = asFunction(function)->moduleType;
+                    if (isModuleType(importedModuleType)) {
+                        ObjModuleType* imported = asModuleType(importedModuleType);
+                        imported->fullName = moduleFullName;
+                    }
+
+                    // Cache-load path didn't pre-register (the
+                    // canonical ObjModuleType is materialised by
+                    // deserialisation).  Register it now so the next
+                    // compilation that imports this module will
+                    // canonicalise against it.  The fresh-compile
+                    // path already registered the pre-allocated
+                    // module above; this is a no-op for it
+                    // (registerUserModule is insert-only).
+                    if (loadedFromCache && isModuleType(importedModuleType))
+                        vm.registerUserModule(moduleFullName, importedModuleType);
+
+                    // emit code to place module's main chunk on stack as closure
+                    assert(asFunction(function)->upvalueCount == 0);
+                    {
+                        uint16_t constIdx = makeConstant(function);
+                        emitOpArgsBytes(OpCode::Closure, constIdx);
+                    }
+
+                    // call it to have it executed (which will result in module vars being declared)
+                    CallSpec callSpec {};
+                    callSpec.allPositional = true;
+                    callSpec.argCount = 0;
+                    auto bytes = callSpec.toBytes();
+                    assert(bytes.size()==1);
+                    emitBytes(OpCode::Call, bytes[0]);
+
+                    // Discard the module's return value so subsequent locals start at the expected slot
+                    emitByte(OpCode::Pop);
+
+                    importedModules[module] = importedModuleType;
+
+                } catch (std::exception& e) {
+                    replModeFlag = prevRepl;
+                    error(e.what());
+                    return {};
+                }
             }
         }
     } else { // already previously imported

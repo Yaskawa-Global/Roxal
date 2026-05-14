@@ -138,6 +138,25 @@ public:
     std::optional<Value> loadGlobal(const icu::UnicodeString& name) { return globals.load(name); }
     void storeGlobal(const icu::UnicodeString& name, const Value& value) { globals.storeGlobal(name, value); }
     void registerBuiltinModule(ptr<BuiltinModule> module);
+
+    // Cross-compiler user-module canonicalisation.  Each RoxalCompiler
+    // instance has its own per-compilation `importedModules` map; without
+    // a process-wide registry, two top-level compilations (e.g. a
+    // builtin-module's companion .rox followed by a user script that
+    // imports the same transitive user module) produce distinct
+    // ObjModuleType pointers for the same module.  That breaks
+    // `linkMethod`: the native binding lands on one ObjObjectType, but
+    // instances constructed later use the other.
+    //
+    // `lookupUserModule` returns the canonical ObjModuleType Value for
+    // a user module if it has already been registered in this VM,
+    // otherwise nullopt.  `registerUserModule` records the canonical
+    // Value for future lookups; registering happens BEFORE the module
+    // body runs, so a circular import (A's body imports B, B's body
+    // re-imports A) sees A's already-registered (partially-populated)
+    // module rather than infinitely recursing.
+    std::optional<Value> lookupUserModule(const icu::UnicodeString& qualifiedName);
+    void registerUserModule(const icu::UnicodeString& qualifiedName, const Value& moduleType);
 #ifdef ROXAL_ENABLE_GRPC
     Value importProtoModule(const std::string& path);
 #endif
@@ -499,6 +518,15 @@ protected:
     std::vector<ptr<BuiltinModule>> builtinModules;
     // lazy-loaded builtin modules (loaded on first import)
     LazyModuleRegistry lazyModuleRegistry;
+
+    // Cross-compiler user-module registry — see lookupUserModule /
+    // registerUserModule.  Holds strong Value refs for the VM lifetime
+    // (user modules are already pinned via ObjModuleType::allModules,
+    // so this is not an additional retention path in practice).  Mutex
+    // serialises concurrent registrations from multi-threaded
+    // compilation paths and from compile-vs-reconcile races.
+    std::unordered_map<icu::UnicodeString, Value> userModuleRegistry;
+    std::mutex userModuleRegistryMutex;
 #ifdef ROXAL_ENABLE_GRPC
     ModuleGrpc* grpcModule { nullptr };
 #endif
