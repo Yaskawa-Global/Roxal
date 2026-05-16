@@ -1506,6 +1506,47 @@ bool VM::cacheWritesEnabled() const
 
 
 
+ExecutionStatus VM::runWithImports(std::istream& source, const std::string& name,
+                                    const std::vector<Value>& imports)
+{
+    // Same shape as run(), but routes through the setup() overload that
+    // pre-populates the script's module type with vars from `imports`.
+    ExecutionStatus setupResult = setup(source, name, imports);
+    if (setupResult != ExecutionStatus::OK)
+        return setupResult;
+
+    auto& rtMgr = RTCallbackManager::instance();
+    if (!rtMgr.isMainThreadSet()) {
+        rtMgr.setMainThread();
+    }
+
+    ExecutionStatus result = ExecutionStatus::OK;
+    inSynchronousExecution_.store(true, std::memory_order_release);
+    try {
+        auto [execResult, value] = execute();
+        result = execResult;
+    } catch (...) {
+        inSynchronousExecution_.store(false, std::memory_order_release);
+        joinAllThreads();
+        thread.reset();
+        freeObjects();
+        throw;
+    }
+    inSynchronousExecution_.store(false, std::memory_order_release);
+
+    ExecutionStatus joinResult = joinAllThreads();
+    if (joinResult != ExecutionStatus::OK || runtimeErrorFlag.load())
+        result = ExecutionStatus::RuntimeError;
+
+    if (exitRequested.load())
+        result = ExecutionStatus::OK;
+
+    thread.reset();
+    freeObjects();
+    return result;
+}
+
+
 ExecutionStatus VM::run(std::istream& source, const std::string& name)
 {
     // Setup: compile and prepare the initial call frame
@@ -1559,9 +1600,52 @@ ExecutionStatus VM::run(std::istream& source, const std::string& name)
 
 ExecutionStatus VM::setup(std::istream& source, const std::string& name)
 {
+    return setup(source, name, /*imports=*/{});
+}
+
+ExecutionStatus VM::setup(std::istream& source, const std::string& name,
+                          const std::vector<Value>& imports)
+{
     Value function { Value::nilVal() }; // ObjFunction
 
     runtimeErrorFlag = false;
+
+    // If the caller wants imports pre-populated, create the script's
+    // ObjModuleType up front and copy each import's vars in.  This is
+    // threaded through `compiler.compile(..., existingModule=...)` so
+    // unqualified names like `movj` resolve against the pre-populated
+    // vars during compilation.  We disable file-cache lookup in this
+    // mode because cached closures embed a reference to a frozen
+    // ObjModuleType that wasn't pre-populated.
+    Value existingModule = Value::nilVal();
+    if (!imports.empty()) {
+        std::filesystem::path namePath(name);
+        icu::UnicodeString moduleName = toUnicodeString(
+            namePath.stem().filename().string());
+        auto modObj = newModuleTypeObj(moduleName);
+        ObjModuleType* modPtr = modObj.get();
+        existingModule = Value::objVal(std::move(modObj));
+
+        // Register in the global module list so the type outlives this
+        // function -- the compiled top-level closure only holds a weak
+        // ref to its module (RoxalCompiler.cpp:596).  Without this push,
+        // the strong ref count drops to 0 when existingModule goes out of
+        // scope below and execute() then segfaults loading vars on a
+        // freed module.  Modules created via enterModuleScope's normal
+        // path get pushed here too (RoxalCompiler.cpp:706).
+        ObjModuleType::allModules.push_back(existingModule);
+
+        for (const auto& imp : imports) {
+            if (!isModuleType(imp)) continue;
+            asModuleType(imp)->vars.forEach(
+                [&](const VariablesMap::NameValue& nv) {
+                    // overwrite=false: a name the script imports/declares
+                    // for itself wins (matches `import X.*` precedence).
+                    modPtr->vars.store(nv.first.hashCode(), nv.first,
+                                       nv.second, /*overwrite=*/false);
+                });
+        }
+    }
 
     try {
         RoxalCompiler compiler {};
@@ -1572,7 +1656,7 @@ ExecutionStatus VM::setup(std::istream& source, const std::string& name)
         compiler.setModuleResolverVM(this);
 
         std::filesystem::path cacheSourcePath;
-        if (!name.empty()) {
+        if (!name.empty() && existingModule.isNil()) {
             try {
                 std::filesystem::path namePath(name);
                 if (namePath.has_extension() && namePath.extension() == ".rox")
@@ -1592,7 +1676,7 @@ ExecutionStatus VM::setup(std::istream& source, const std::string& name)
         }
 
         if (!loadedFromCache) {
-            function = compiler.compile(source, name);
+            function = compiler.compile(source, name, existingModule);
             if (!function.isNil() && !cacheSourcePath.empty())
                 compiler.storeFileCache(cacheSourcePath, function);
         }

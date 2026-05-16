@@ -183,6 +183,20 @@ public:
     /// Compile and run source to completion. Suitable for simple scripts.
     ExecutionStatus run(std::istream& source, const std::string& sourceName);
 
+    /// Run `source` as if it were a top-level script, but pre-populate the
+    /// script's module vars from `imports`.  Each Value in `imports` must
+    /// be an ObjModuleType.  Names that the user wrote explicit imports for
+    /// (or declared) take precedence over the pre-import (overwrite=false).
+    ///
+    /// Intended use: embeddings that want to make their standard library
+    /// visible to a user script without forcing the user to write
+    /// `import X.*`.  Equivalent to wrapping the source with `import A.*;
+    /// import B.*;` lines, but doesn't show up in compile errors / source
+    /// lookups.
+    ExecutionStatus runWithImports(std::istream& source,
+                                    const std::string& sourceName,
+                                    const std::vector<Value>& imports);
+
     /// REPL mode: compile and execute a single line/expression.
     ExecutionStatus runLine(std::istream& linestream,
                                   bool replMode=true,
@@ -196,6 +210,12 @@ public:
     /// Returns CompileError on failure, OK on success.
     /// After setup(), call runFor() repeatedly to execute incrementally.
     ExecutionStatus setup(std::istream& source, const std::string& sourceName);
+
+    /// setup() variant that pre-populates the script's module type with
+    /// vars copied from each module in `imports` before compilation.
+    /// See runWithImports for rationale.
+    ExecutionStatus setup(std::istream& source, const std::string& sourceName,
+                          const std::vector<Value>& imports);
 
     /// Execute for up to the given duration, then yield.
     /// Returns: {OK, returnValue} if completed, {Yielded, nil} if budget exhausted or blocked,
