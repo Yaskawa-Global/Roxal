@@ -20,14 +20,14 @@ func build_chain(count: int) -> list:
     // Link each node to the next (circular at end)
     i = 0
     while i < count:
-        nodes[i].link = nodes[(i + 1) % count]
+        nodes[i].link = nodes[(i + 1) rem count]
         i = i + 1
     // Give each node some children (overlapping with neighbors = diamond aliasing)
     i = 0
     while i < count:
-        var c1 = nodes[(i + 1) % count]
-        var c2 = nodes[(i + 2) % count]
-        var c3 = nodes[(i + 3) % count]
+        var c1 = nodes[(i + 1) rem count]
+        var c2 = nodes[(i + 2) rem count]
+        var c3 = nodes[(i + 3) rem count]
         nodes[i].children = [c1, c2, c3]
         i = i + 1
     return nodes
@@ -54,7 +54,7 @@ while i < 1500:
         var got = snap1[i].value
         print("FAIL phase1 snap value i={i} got={got} expected={expected_val}")
         ok = false
-    var child_expected = ((i + 1) % 1500) * 10
+    var child_expected = ((i + 1) rem 1500) * 10
     if snap1[i].children[0].value != child_expected:
         print("FAIL phase1 snap child i={i}")
         ok = false
@@ -157,7 +157,7 @@ while i < 100:
     var kids = []
     var j = 0
     while j < 50:
-        kids.append(leaves[(i + j) % 50])
+        kids.append(leaves[(i + j) rem 50])
         j = j + 1
     hub.children = kids
     hubs.append(hub)
@@ -179,7 +179,7 @@ i = 0
 while i < 100:
     var j = 0
     while j < 50:
-        var expected = (i + j) % 50
+        var expected = (i + j) rem 50
         if snap_hubs[i].children[j].value != expected:
             var got = snap_hubs[i].children[j].value
             print("FAIL phase4 hub={i} child={j} got={got} expected={expected}")
@@ -201,10 +201,10 @@ while round < 100:
     while i < 300:
         deep[i].value = round * 100 + i
         i = i + 1
-    if round % 10 == 0:
+    if round rem 10 == 0:
         const ds = deep
         deep_snaps.append(ds)
-    if round % 25 == 0:
+    if round rem 25 == 0:
         gc()
     round = round + 1
 

@@ -1,0 +1,19 @@
+// Demo the movj-style dispatch pattern: a function takes :quantity and
+// branches on the dimension predicates. Bare real won't satisfy :quantity
+// in a strict function body, so the percent/velocity ambiguity is
+// resolved at compile time.
+
+func describe_velocity(v :quantity) -> string:
+  if v.is_dimensionless:
+    return 'fraction of max'
+  if v.is_linear_velocity:
+    return 'linear'
+  if v.is_angular_velocity:
+    return 'angular'
+  return 'unknown'
+
+print(describe_velocity(50%))
+print(describe_velocity(100mm/s))
+print(describe_velocity(2m/s))
+print(describe_velocity(90deg/s))
+print(describe_velocity(1rad/s))

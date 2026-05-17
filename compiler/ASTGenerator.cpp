@@ -149,7 +149,7 @@ UnicodeString ASTGenerator::operatorNameFromContext(RoxalParser::Operator_nameCo
     else if (sym->MINUS()) symbol = "-";
     else if (sym->STAR() || sym->MULT()) symbol = "*";
     else if (sym->DIV()) symbol = "/";
-    else if (sym->MOD()) symbol = "%";
+    else if (sym->REM()) symbol = "rem";
     else if (sym->ISEQUAL()) symbol = "==";
     else if (sym->ISNOTEQUALS()) symbol = "!=";
     else if (sym->LESS_THAN()) symbol = "<";
@@ -2560,7 +2560,7 @@ std::any ASTGenerator::visitMultdiv(RoxalParser::MultdivContext *context)
         op->op = BinaryOp::Multiply;
     else if (context->DIV())
         op->op = BinaryOp::Divide;
-    else if (context->MOD())
+    else if (context->REM())
         op->op = BinaryOp::Modulo;
     else
         throw std::runtime_error("unhandled multidiv alternative");

@@ -218,7 +218,9 @@ print( format(sep=" | ", "a", "b", "c") ) // "a | b | c"
 
 ## Operators
 
-The operators +, -, \*, / and % work how you'd expect on builtin numeric types.  Vectors and Matrices also support +, - and \*, performing matrix multiplication, vector*matrix multiplication and dot products (two vectors).
+The operators `+`, `-`, `*`, `/` work how you'd expect on builtin numeric types.  The remainder operator is the `rem` keyword (sign of the dividend — e.g. `-7 rem 3` is `-1`).  Vectors and Matrices also support `+`, `-` and `*`, performing matrix multiplication, vector*matrix multiplication and dot products (two vectors).
+
+Note: `%` is *not* a binary operator in Roxal — it is reserved for the percent literal suffix (e.g. `50%`).  Use `rem` for the remainder operation.
 
 ```php
 m = [1 2
@@ -1073,7 +1075,7 @@ Whitespace disambiguates: `10px` is a suffixed literal, while `10 * px` is multi
 - Can contain letters, digits, `/` (at most one), `·` (middle dot, for unit multiplication), superscripts (`²`, `³`, `⁻¹`), and `^`
 - Maximum 8 characters
 
-**Standalone `%`** is also accepted as a one-character suffix directly after a numeric literal (e.g. `50%`, `0.5%`).  It does not combine with other suffix characters — `5kg%` and `5%kg` are not suffixed literals.  A space disambiguates from modulo: `10%` is a percent literal, `10 % 3` is modulo (no spaces around `%` between literals is now a parse error).
+**Standalone `%`** is also accepted as a one-character suffix directly after a numeric literal (e.g. `50%`, `0.5%`).  It does not combine with other suffix characters — `5kg%` and `5%kg` are not suffixed literals, and no character (digit or otherwise) may immediately follow a percent literal (`10%3` is a parse error).  A `@suffix("...")` registration whose string contains `%` other than the standalone `"%"` is rejected at compile time.  `%` is *not* a binary operator in Roxal — use the `rem` keyword for remainder.
 
 **Braced form** `{}` allows arbitrary length and additional characters (spaces, hyphens, underscores):
 

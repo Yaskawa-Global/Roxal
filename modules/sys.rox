@@ -177,7 +177,7 @@ type Time object:
     """add TimeSpan or time quantity, return new Time"""
     if other is TimeSpan:
       var us = (_seconds * 1000000 + _micros) + (other.seconds() * 1000000 + other.microseconds())
-      return Time.from_parts(seconds=us / 1000000, micros=us % 1000000, kind=kind())
+      return Time.from_parts(seconds=us / 1000000, micros=us rem 1000000, kind=kind())
     if other is quantity:
       var span = TimeSpan(other)
       return this + span
@@ -191,7 +191,7 @@ type Time object:
       return diff(other)
     if other is TimeSpan:
       var us = (_seconds * 1000000 + _micros) - (other.seconds() * 1000000 + other.microseconds())
-      return Time.from_parts(seconds=us / 1000000, micros=us % 1000000, kind=kind())
+      return Time.from_parts(seconds=us / 1000000, micros=us rem 1000000, kind=kind())
     if other is quantity:
       var span = TimeSpan(other)
       return this - span
@@ -474,7 +474,7 @@ type quantity object:
             ae = -ae
           if ae >= 10:
             es = es + sup_digits[ae / 10]
-          es = es + sup_digits[ae % 10]
+          es = es + sup_digits[ae rem 10]
           result = result + es
       i = i + 1
     if result == '':

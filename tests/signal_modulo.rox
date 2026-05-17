@@ -1,5 +1,5 @@
 c = clock(10)
-mod = (c + 1) % 2
+mod = (c + 1) rem 2
 c.tick()
 wait(ms=150)
 print(int(mod)) // 0

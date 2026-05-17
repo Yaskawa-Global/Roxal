@@ -12,7 +12,7 @@ File
    Num 1.000000:real
    Num 2:int
  VarDecl d
-  BinaryOp %  → int
+  BinaryOp rem  → int
    Num 1:int
    Num 2.000000:real
 

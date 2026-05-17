@@ -200,7 +200,7 @@ conversion_target
  ;
 
 operator_symbol
- : PLUS | MINUS | STAR | MULT | DIV | MOD
+ : PLUS | MINUS | STAR | MULT | DIV | REM
  | ISEQUAL | ISNOTEQUALS
  | LESS_THAN | GREATER_THAN | LT_EQ | GT_EQ
  ;
@@ -393,7 +393,7 @@ factor
 multdiv
  : ( MULT | STAR ) unary
  | DIV unary
- | MOD unary
+ | REM unary
  ;
 
 
@@ -608,7 +608,7 @@ PLUS : '+';
 MINUS : '-';
 MULT: '\u00D7'; // ×
 DIV : '/';
-MOD : '%';
+REM : 'rem';
 AT: '@';
 OR: 'or';
 AND: 'and';
@@ -676,6 +676,8 @@ integer
 // Bare suffix: starts with alpha, continues with alpha/digit/·/²³¹⁻/^//
 // Braced suffix: {contents} — allows alpha, digits, ·, ², ³, ¹, ⁻, ^, /, spaces
 // Standalone '%': numeric-only carve-out for percent literals (e.g. 50%, 0.5%).
+// '%' is only a percent suffix in Roxal — there is no '%' modulo operator
+// (use the 'rem' keyword instead).
 SUFFIXED_FLOAT
  : ( POINT_FLOAT | EXPONENT_FLOAT ) ( BRACED_SUFFIX | BARE_SUFFIX | '%' )
  ;

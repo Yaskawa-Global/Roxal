@@ -1214,7 +1214,7 @@ std::string BinaryOp::opString() const
         case Subtract: return "-";
         case Multiply: return "\u00D7";
         case Divide: return "/";
-        case Modulo: return "%";
+        case Modulo: return "rem";
         case And: return "and";
         case Or: return "or";
         case BitAnd: return "&";

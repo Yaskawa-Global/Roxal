@@ -22,9 +22,9 @@ print(p.is_angle)
 print(real(50%))
 print(real(100%))
 
-// Modulo still works with whitespace
-print(10 % 3)
-print(7 % 2)
+// 'rem' is the remainder operator (was '%' before; sign of dividend)
+print(10 rem 3)
+print(7 rem 2)
 
-// Whitespace also disambiguates real modulo
-print(10.5 % 4.0)
+// Works on real operands too
+print(10.5 rem 4.0)
