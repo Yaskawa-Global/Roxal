@@ -1901,7 +1901,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                     bool isDimensioned = false;
                     for (size_t i = 0; i < listVals.size(); ++i) {
                         double siVal;
-                        if (!tryExtractQuantity(listVals[i], siVal, dims, isDimensioned))
+                        if (!tryExtractQuantity(listVals[i], siVal, dims, isDimensioned, /*requireMatchingDims=*/false))
                             throw std::runtime_error("vector from list with quantities: all elements must be quantities or zero");
                         vals[i] = siVal;
                     }

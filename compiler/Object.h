@@ -1930,7 +1930,10 @@ unique_ptr<ObjectInstance, UnreleasedObj> newObjectInstance(const Value& objectT
 /// If v is a bare zero (int or real == 0), returns true with siValue=0 and dims left unchanged
 /// (compatible with any dimension).
 /// Otherwise returns false.
-bool tryExtractQuantity(const Value& v, double& siValue, std::array<int32_t,4>& dims, bool& isDimensioned);
+/// When requireMatchingDims is true, a quantity whose dims don't match the running dims
+/// (after isDimensioned has been set by a prior call) throws std::runtime_error.
+/// When false, mixed dims are accepted and dims is updated to the latest extracted dims.
+bool tryExtractQuantity(const Value& v, double& siValue, std::array<int32_t,4>& dims, bool& isDimensioned, bool requireMatchingDims = true);
 
 
 //

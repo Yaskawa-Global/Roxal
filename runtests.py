@@ -266,6 +266,7 @@ tests = [
     'suffix_angular_accel_jerk',
     'quantity_basic', 'quantity_from_string',
     'quantity_dim_predicates', 'quantity_movj_pattern',
+    'vector_mixed_dim', 'vector_mixed_bare_err',
     'conv_explicit_default',
     'conv_constructor_auto', 'conv_constructor_explicit',
     'conv_func_param_auto',

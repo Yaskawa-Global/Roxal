@@ -8158,7 +8158,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     bool isDimensioned = false;
                     for (int i = 0; i < eltCount; i++) {
                         double siVal;
-                        if (!tryExtractQuantity(peek(eltCount - i - 1), siVal, dims, isDimensioned))
+                        if (!tryExtractQuantity(peek(eltCount - i - 1), siVal, dims, isDimensioned, /*requireMatchingDims=*/false))
                             throw std::runtime_error("vector literal with quantities: all elements must be quantities or zero");
                         vals[i] = siVal;
                     }

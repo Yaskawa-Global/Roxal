@@ -336,6 +336,14 @@ var m2 = [1 2              // can also use newlines between rows
           3 4]
 ```
 
+Quantity literals are accepted as elements and converted to their SI scalar at construction time.
+
+```php
+var pose = [10mm 20mm 30mm 0deg 45deg 90deg]   // mixed dims OK
+var rates = [1m/s 0.5rad/s]                    // also OK
+// var bad = [10mm 20]                          // error: bare non-zero with quantity
+```
+
 ### Tensor Creation
 
 Tensors are created using the `tensor()` constructor:

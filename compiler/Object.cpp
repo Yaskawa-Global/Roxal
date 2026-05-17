@@ -5676,7 +5676,7 @@ Value ObjectInstance::ensurePropertySignal(int32_t nameHash, const std::string& 
 }
 
 
-bool roxal::tryExtractQuantity(const Value& v, double& siValue, std::array<int32_t,4>& dims, bool& isDimensioned)
+bool roxal::tryExtractQuantity(const Value& v, double& siValue, std::array<int32_t,4>& dims, bool& isDimensioned, bool requireMatchingDims)
 {
     // Bare zero (int or real) is compatible with any dimension
     if (v.isNumber()) {
@@ -5720,10 +5720,12 @@ bool roxal::tryExtractQuantity(const Value& v, double& siValue, std::array<int32
         // First dimensioned element sets the reference dims
         dims = thisDims;
         isDimensioned = true;
-    } else {
-        // Subsequent elements must match
-        if (dims != thisDims)
+    } else if (dims != thisDims) {
+        // Subsequent element has different dims
+        if (requireMatchingDims)
             throw std::runtime_error("vector elements have mismatched quantity dimensions");
+        // Otherwise track the latest dims (callers that don't care will ignore this)
+        dims = thisDims;
     }
 
     return true;
