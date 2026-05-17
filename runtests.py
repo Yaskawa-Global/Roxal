@@ -263,7 +263,7 @@ tests = [
     'suffix_basic', 'suffix_braced', 'suffix_compound', 'suffix_string',
     'suffix_unknown_err', 'suffix_edge_cases',
     'suffix_pct', 'suffix_pct_modulo_err', 'suffix_pct_register_err',
-    'suffix_angular_accel_jerk',
+    'suffix_angular_accel_jerk', 'suffix_linear_jerk',
     'quantity_basic', 'quantity_from_string',
     'quantity_dim_predicates', 'quantity_movj_pattern',
     'vector_mixed_dim', 'vector_mixed_bare_err',

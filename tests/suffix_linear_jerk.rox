@@ -1,0 +1,31 @@
+// Linear jerk suffixes: m/s^3, m/s³, mm/s^3, mm/s³
+// Dimension: [1, -3, 0, 0] (Length / Time³)
+
+// Caret form
+print(1m/s^3)
+print(2mm/s^3)
+
+// Unicode-superscript form: same quantity
+print(1m/s³ == 1m/s^3)
+print(2mm/s³ == 2mm/s^3)
+
+// Unit conversion: 1 m/s³ == 1000 mm/s³
+print(1m/s^3 == 1000mm/s^3)
+print(1m/s³ == 1000mm/s³)
+
+// Predicates
+print((1m/s^3).is_linear_jerk)
+print((1mm/s^3).is_linear_jerk)
+print((1m/s^3).is_linear_acceleration)
+print((1m/s^3).is_angular_jerk)
+
+// Symmetric: existing angular-jerk predicate also works now
+print((1rad/s^3).is_angular_jerk)
+print((1deg/s^3).is_angular_jerk)
+print((1m/s^3).is_angular_jerk)
+
+// Runtime string-parse round-trips
+print(quantity('1m/s^3') == 1m/s^3)
+print(quantity('1m/s³') == 1m/s³)
+print(quantity('1mm/s^3') == 1mm/s^3)
+print(quantity('1mm/s³') == 1mm/s³)

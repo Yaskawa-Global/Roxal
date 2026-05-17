@@ -816,6 +816,10 @@ type quantity object:
     get: return _d == [1,-2,0,0]
   var is_angular_acceleration :bool:
     get: return _d == [0,-2,0,1]
+  var is_linear_jerk          :bool:
+    get: return _d == [1,-3,0,0]
+  var is_angular_jerk         :bool:
+    get: return _d == [0,-3,0,1]
   var is_force                :bool:
     get: return _d == [1,-2,1,0]
   var is_torque               :bool:
@@ -937,6 +941,23 @@ func _suf_mps2(v) -> quantity:
 @suffix("m/s\u00B2")
 func _suf_mps2u(v) -> quantity:
   return quantity(v=real(v), d=[1,-2,0,0])
+
+// Jerk (linear)
+@suffix("m/s^3")
+func _suf_mps3(v) -> quantity:
+  return quantity(v=real(v), d=[1,-3,0,0])
+
+@suffix("m/s\u00B3")
+func _suf_mps3u(v) -> quantity:
+  return quantity(v=real(v), d=[1,-3,0,0])
+
+@suffix("mm/s^3")
+func _suf_mmps3(v) -> quantity:
+  return quantity(v=real(v) * 0.001, d=[1,-3,0,0])
+
+@suffix("mm/s\u00B3")
+func _suf_mmps3u(v) -> quantity:
+  return quantity(v=real(v) * 0.001, d=[1,-3,0,0])
 
 // Force
 @suffix("N")

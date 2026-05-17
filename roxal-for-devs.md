@@ -2062,6 +2062,7 @@ A dimensional physical quantity type for type-safe unit handling.  Stores a real
 | `rad`, `deg`, `°` | radians, degrees | Angle |
 | `m/s`, `cm/s`, `mm/s` | velocity | Length/Time |
 | `m/s^2`, `m/s²` | acceleration | Length/Time² |
+| `m/s^3`, `m/s³`, `mm/s^3`, `mm/s³` | jerk | Length/Time³ |
 | `N` | Newtons | Force |
 | `Nm`, `N·m` | Newton-meters | Torque |
 | `rad/s`, `deg/s` | angular velocity | Angle/Time |
@@ -2089,6 +2090,7 @@ A dimensional physical quantity type for type-safe unit handling.  Stores a real
 `.is_dimensionless`, `.is_length`, `.is_time`, `.is_mass`, `.is_angle`,
 `.is_linear_velocity`, `.is_angular_velocity`,
 `.is_linear_acceleration`, `.is_angular_acceleration`,
+`.is_linear_jerk`, `.is_angular_jerk`,
 `.is_force`, `.is_torque`
 
 **String display:** `quantity` implicitly converts to string, choosing the most natural unit for the magnitude (e.g., `0.005m` displays as `5mm`). Angles display with the degree symbol (e.g., `90°`). Unknown dimension combinations display using SI unit symbols with Unicode superscript exponents (e.g., `1ms⁻³`).
