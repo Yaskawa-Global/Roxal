@@ -675,12 +675,13 @@ integer
 // so that ANTLR4 longest-match picks the suffixed variant when a suffix is present.
 // Bare suffix: starts with alpha, continues with alpha/digit/·/²³¹⁻/^//
 // Braced suffix: {contents} — allows alpha, digits, ·, ², ³, ¹, ⁻, ^, /, spaces
+// Standalone '%': numeric-only carve-out for percent literals (e.g. 50%, 0.5%).
 SUFFIXED_FLOAT
- : ( POINT_FLOAT | EXPONENT_FLOAT ) ( BRACED_SUFFIX | BARE_SUFFIX )
+ : ( POINT_FLOAT | EXPONENT_FLOAT ) ( BRACED_SUFFIX | BARE_SUFFIX | '%' )
  ;
 
 SUFFIXED_DECIMAL_INTEGER
- : ( NON_ZERO_DIGIT DIGIT* | '0'+ ) ( BRACED_SUFFIX | BARE_SUFFIX )
+ : ( NON_ZERO_DIGIT DIGIT* | '0'+ ) ( BRACED_SUFFIX | BARE_SUFFIX | '%' )
  ;
 
 SUFFIXED_SINGLE_STRING

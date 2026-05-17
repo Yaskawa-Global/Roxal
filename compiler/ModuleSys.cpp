@@ -4013,6 +4013,16 @@ Value ModuleSys::quantity_set_builtin(VM& vm, ArgsView args)
                 {"rad/s", 1.0,         {0,-1,0,1}},
                 {"deg/s", qtyparse::kPi/180.0, {0,-1,0,1}},
                 {"°/s",  qtyparse::kPi/180.0, {0,-1,0,1}},
+                // Angular acceleration
+                {"rad/s^2", 1.0,                 {0,-2,0,1}},
+                {"rad/s²",  1.0,                 {0,-2,0,1}},
+                {"deg/s^2", qtyparse::kPi/180.0, {0,-2,0,1}},
+                {"deg/s²",  qtyparse::kPi/180.0, {0,-2,0,1}},
+                // Angular jerk
+                {"rad/s^3", 1.0,                 {0,-3,0,1}},
+                {"rad/s³",  1.0,                 {0,-3,0,1}},
+                {"deg/s^3", qtyparse::kPi/180.0, {0,-3,0,1}},
+                {"deg/s³",  qtyparse::kPi/180.0, {0,-3,0,1}},
             };
             for (const auto& p : kCompound) {
                 if (suffix == toUnicodeString(p.text)) {

@@ -1,0 +1,3 @@
+// '10%3' without whitespace is a parse error: '10%' lexes as a percent
+// literal, leaving '3' dangling. Use '10 % 3' for modulo.
+print(10%3)

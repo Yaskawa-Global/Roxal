@@ -1073,6 +1073,8 @@ Whitespace disambiguates: `10px` is a suffixed literal, while `10 * px` is multi
 - Can contain letters, digits, `/` (at most one), `·` (middle dot, for unit multiplication), superscripts (`²`, `³`, `⁻¹`), and `^`
 - Maximum 8 characters
 
+**Standalone `%`** is also accepted as a one-character suffix directly after a numeric literal (e.g. `50%`, `0.5%`).  It does not combine with other suffix characters — `5kg%` and `5%kg` are not suffixed literals.  A space disambiguates from modulo: `10%` is a percent literal, `10 % 3` is modulo (no spaces around `%` between literals is now a parse error).
+
 **Braced form** `{}` allows arbitrary length and additional characters (spaces, hyphens, underscores):
 
 ```php
@@ -2053,6 +2055,9 @@ A dimensional physical quantity type for type-safe unit handling.  Stores a real
 | `N` | Newtons | Force |
 | `Nm`, `N·m` | Newton-meters | Torque |
 | `rad/s`, `deg/s` | angular velocity | Angle/Time |
+| `rad/s^2`, `rad/s²`, `deg/s^2`, `deg/s²` | angular acceleration | Angle/Time² |
+| `rad/s^3`, `rad/s³`, `deg/s^3`, `deg/s³` | angular jerk | Angle/Time³ |
+| `%` | dimensionless ratio (stored as 0..1; `50%` → 0.5) | — |
 
 
 **Operators:**
@@ -2068,6 +2073,13 @@ A dimensional physical quantity type for type-safe unit handling.  Stores a real
 *Mass:* `.kilograms`, `.grams`, `.milligrams`, `.pounds`, `.ounces`
 *Time:* `.seconds`, `.milliseconds`, `.microseconds`, `.minutes`, `.hours`
 *Angle:* `.radians`, `.degrees`
+
+**Dimension introspection** — read-only boolean properties for classifying a quantity at runtime:
+
+`.is_dimensionless`, `.is_length`, `.is_time`, `.is_mass`, `.is_angle`,
+`.is_linear_velocity`, `.is_angular_velocity`,
+`.is_linear_acceleration`, `.is_angular_acceleration`,
+`.is_force`, `.is_torque`
 
 **String display:** `quantity` implicitly converts to string, choosing the most natural unit for the magnitude (e.g., `0.005m` displays as `5mm`). Angles display with the degree symbol (e.g., `90°`). Unknown dimension combinations display using SI unit symbols with Unicode superscript exponents (e.g., `1ms⁻³`).
 

@@ -3289,6 +3289,7 @@ splitSuffixFromToken(const std::string& text, bool isString, char quoteChar = '\
     } else {
         // Numeric: find where the suffix starts
         // digits, '.', 'e/E' (in exponents), '+', '-' are numeric; first alpha or '{' starts suffix.
+        // A trailing standalone '%' is also recognized as a one-char suffix (percent literals).
         size_t suffixStart = text.size();
         for (size_t i = 0; i < text.size(); i++) {
             unsigned char c = text[i];
@@ -3309,6 +3310,11 @@ splitSuffixFromToken(const std::string& text, bool isString, char quoteChar = '\
                         }
                     }
                 }
+                suffixStart = i;
+                break;
+            }
+            // '%' is permitted only as a standalone trailing suffix.
+            if (c == '%') {
                 suffixStart = i;
                 break;
             }
@@ -3337,6 +3343,10 @@ static std::string validateBareSuffix(const std::string& suffix)
 {
     if (suffix.empty())
         return "suffix is empty";
+
+    // Standalone '%' is a permitted one-char numeric suffix (percent literals).
+    if (suffix == "%")
+        return "";
 
     // Count UTF-8 characters (non-continuation bytes)
     int charCount = 0;

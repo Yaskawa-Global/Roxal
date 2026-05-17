@@ -1,0 +1,7 @@
+// Empty leading line: pre-existing quirk - @annotation on line 1 doesn't attach.
+
+@suffix("a%b")
+func bad_pct(v):
+  return v
+
+print(1)

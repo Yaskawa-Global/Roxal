@@ -485,9 +485,6 @@ type quantity object:
     if _d != other._d:
       raise 'dimension mismatch in ' + op + ': ' + dim_label() + ' vs ' + other.dim_label()
 
-  private func is_dimensionless() -> bool:
-    return _d[0]==0 and _d[1]==0 and _d[2]==0 and _d[3]==0
-
   // --- arithmetic operators ---
 
   func operator-() -> quantity:
@@ -627,7 +624,7 @@ type quantity object:
   // --- conversion operators ---
 
   func operator real() -> real:
-    if not is_dimensionless():
+    if not is_dimensionless:
       raise 'cannot convert quantity with dimensions ' + dim_label() + ' to real; only dimensionless quantities can be converted'
     return _v
 
@@ -691,7 +688,7 @@ type quantity object:
     if _d == [0,-1,0,1]:
       return string(_v * 180.0 / 3.14159265358979323846) + '\u00B0/s'
     // Dimensionless [0,0,0,0]
-    if is_dimensionless():
+    if is_dimensionless:
       return string(_v)
     // Unknown dimension — show as SI units with superscript exponents
     return string(_v) + dim_label()
@@ -799,6 +796,30 @@ type quantity object:
       if _d != [0,0,0,1]:
         raise 'cannot get degrees from quantity with dimensions ' + dim_label()
       return _v * 180.0 / 3.14159265358979323846
+
+  // --- dimension introspection predicates ---
+  var is_dimensionless        :bool:
+    get: return _d == [0,0,0,0]
+  var is_length               :bool:
+    get: return _d == [1,0,0,0]
+  var is_time                 :bool:
+    get: return _d == [0,1,0,0]
+  var is_mass                 :bool:
+    get: return _d == [0,0,1,0]
+  var is_angle                :bool:
+    get: return _d == [0,0,0,1]
+  var is_linear_velocity      :bool:
+    get: return _d == [1,-1,0,0]
+  var is_angular_velocity     :bool:
+    get: return _d == [0,-1,0,1]
+  var is_linear_acceleration  :bool:
+    get: return _d == [1,-2,0,0]
+  var is_angular_acceleration :bool:
+    get: return _d == [0,-2,0,1]
+  var is_force                :bool:
+    get: return _d == [1,-2,1,0]
+  var is_torque               :bool:
+    get: return _d == [2,-2,1,0]
 
 
 // --- Suffix functions for quantity literals ---
@@ -939,3 +960,42 @@ func _suf_radps(v) -> quantity:
 @suffix("deg/s")
 func _suf_degps(v) -> quantity:
   return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,-1,0,1])
+
+// Angular acceleration
+@suffix("rad/s^2")
+func _suf_radps2(v) -> quantity:
+  return quantity(v=real(v), d=[0,-2,0,1])
+
+@suffix("rad/s²")
+func _suf_radps2u(v) -> quantity:
+  return quantity(v=real(v), d=[0,-2,0,1])
+
+@suffix("deg/s^2")
+func _suf_degps2(v) -> quantity:
+  return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,-2,0,1])
+
+@suffix("deg/s²")
+func _suf_degps2u(v) -> quantity:
+  return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,-2,0,1])
+
+// Angular jerk
+@suffix("rad/s^3")
+func _suf_radps3(v) -> quantity:
+  return quantity(v=real(v), d=[0,-3,0,1])
+
+@suffix("rad/s³")
+func _suf_radps3u(v) -> quantity:
+  return quantity(v=real(v), d=[0,-3,0,1])
+
+@suffix("deg/s^3")
+func _suf_degps3(v) -> quantity:
+  return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,-3,0,1])
+
+@suffix("deg/s³")
+func _suf_degps3u(v) -> quantity:
+  return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,-3,0,1])
+
+// Percent (dimensionless ratio, stored as 0..1)
+@suffix("%")
+func _suf_pct(v) -> quantity:
+  return quantity(v=real(v) / 100.0, d=[0,0,0,0])

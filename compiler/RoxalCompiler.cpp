@@ -2258,11 +2258,18 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
                     error("@suffix function must accept exactly one parameter");
                 else {
                     icu::UnicodeString suffixStr = s->str;
-                    icu::UnicodeString funcName = ast->func->name.value_or(toUnicodeString(""));
-                    icu::UnicodeString modName;
-                    if (inModuleScope())
-                        modName = asModuleScope(moduleScope())->name;
-                    registerSuffix(suffixStr, funcName, modName);
+                    // '%' is reserved as a standalone one-char suffix. Any other
+                    // suffix that contains '%' is rejected at registration.
+                    if (suffixStr.indexOf((UChar)'%') >= 0
+                            && suffixStr != icu::UnicodeString("%")) {
+                        error("@suffix string may not contain '%' (the '%' suffix is reserved as a standalone single-character form)");
+                    } else {
+                        icu::UnicodeString funcName = ast->func->name.value_or(toUnicodeString(""));
+                        icu::UnicodeString modName;
+                        if (inModuleScope())
+                            modName = asModuleScope(moduleScope())->name;
+                        registerSuffix(suffixStr, funcName, modName);
+                    }
                 }
             } else {
                 error("@suffix argument must be a string literal");
