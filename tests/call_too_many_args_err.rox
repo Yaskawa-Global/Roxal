@@ -1,0 +1,4 @@
+// Passing more positional arguments than the function's parameter count
+// (with no variadic to absorb them) is now a runtime error.
+// This catches accidental Python-style print() use and similar mistakes.
+print(1, 2, 3, 4, 5, 6)

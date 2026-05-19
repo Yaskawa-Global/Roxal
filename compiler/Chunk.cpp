@@ -649,6 +649,12 @@ std::vector<int8_t> CallSpec::paramPositions(ptr<type::Type> calleeType, bool th
                 bool hasVariadic = funcType.hasVariadic();
                 size_t regularParamCount = hasVariadic ? funcType.params.size() - 1 : funcType.params.size();
 
+                // Too many positional args when there is no variadic param to absorb them
+                if (!hasVariadic && argCount > regularParamCount)
+                    throw std::runtime_error("Too many arguments in call to "+calleeType->toString()
+                                             +": expected at most "+std::to_string(regularParamCount)
+                                             +", got "+std::to_string(argCount));
+
                 // Fill regular params first
                 for(size_t i=0; i<argCount && i<regularParamCount; i++)
                     argPositions.push_back(i);
@@ -762,6 +768,10 @@ std::vector<int8_t> CallSpec::paramPositions(ptr<type::Type> calleeType, bool th
                             if (!seenNamedArgInCallOrder) {
                                 if (positionalArgIndex < regularParamCount)
                                     argPositions[positionalArgIndex] = ai;
+                                else
+                                    throw std::runtime_error("Too many arguments in call to "+calleeType->toString()
+                                                             +": expected at most "+std::to_string(regularParamCount)
+                                                             +" positional");
                             }
                             else
                                 throw std::runtime_error("Can't use positional arguments after named arguments in call to "+calleeType->toString());
