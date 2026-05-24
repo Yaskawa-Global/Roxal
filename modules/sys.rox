@@ -79,6 +79,30 @@ func deserialize(bytes: const list, protocol:string='default'):
   """deserialize list of bytes using protocol"""
 
 @builtin
+func to_bytes(v, width:int=0, endian:string='little') -> list:
+  """reinterpret v as raw bytes. Source types: bool (1 byte), byte (1 byte), int (width 1/2/4/8; default 8; two's complement), real (width 4 for IEEE float32 downcast or 8 for double; default 8), string (UTF-8 bytes; width must be 0). endian is 'little' (default) or 'big'."""
+
+@builtin
+func from_bytes(bytes:list, dtype=real, endian:string='little', signed:bool=true):
+  """reinterpret a list of bytes as the requested type. dtype is a type value: int (length 1/2/4/8; result is always Roxal int), real (len 4 for float32 upcast, or 8 for double), bool (len 1), string (UTF-8 decode). dtype may also be passed as a string ('int'/'real'/'bool'/'string'). endian is 'little' (default), 'big' (alias 'network'). signed=true (default) sign-extends the input bits to int64 when reading widths < 8; signed=false zero-extends — useful for unsigned hardware registers (e.g. a 16-bit register 0xFFFF reads as -1 with signed=true, 65535 with signed=false)."""
+
+@builtin
+func bits_to_bytes(bits:list, msb_first:bool=true) -> list:
+  """pack a list of bool (or 0/1) bits into a list of byte. Length of result is ceil(len(bits)/8) with the last byte zero-padded. msb_first=true (default) places the first bit in each byte's MSB — matches the byte([8 bits]) constructor convention. msb_first=false places it in the LSB."""
+
+@builtin
+func bytes_to_bits(bytes:list, msb_first:bool=true) -> list:
+  """unpack a list of byte into a list of bool. Result length is 8 * len(bytes). msb_first=true (default) emits each byte's MSB first; msb_first=false emits the LSB first."""
+
+@builtin
+func lshift(v:int, n:int) -> int:
+  """left shift v by n bits (0 <= n < 64). Equivalent to v * 2^n modulo 2^64."""
+
+@builtin
+func rshift(v:int, n:int) -> int:
+  """arithmetic right shift v by n bits (0 <= n < 64). Sign is preserved (negative v stays negative)."""
+
+@builtin
 func to_json(value, indent:bool=true) -> string:
   """convert value to JSON string; pretty if indent is true"""
 

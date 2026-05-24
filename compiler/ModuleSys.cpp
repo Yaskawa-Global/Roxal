@@ -1392,6 +1392,69 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("gc_config", [this](VM& vm, ArgsView a){ return gc_config_builtin(vm,a); });
         addSys("serialize", [this](VM& vm, ArgsView a){ return serialize_builtin(vm,a); }, nullptr, {}, 0x1);
         addSys("deserialize", [this](VM& vm, ArgsView a){ return deserialize_builtin(vm,a); }, nullptr, {}, 0x1);
+
+        // Bit / byte conversion utilities. The explicit funcType + defaults
+        // are needed for correct positional/named-argument binding at the
+        // call site (the sys.rox @builtin declaration is the source-of-truth
+        // for the user-visible signature, but callNativeFn's marshalArgs
+        // path needs the C++-side funcType too when callers mix named and
+        // positional args with omitted defaults in between).
+        addSys("to_bytes",
+               [this](VM& vm, ArgsView a){ return to_bytes_builtin(vm,a); },
+               makeFuncType({
+                    {"v", std::nullopt},
+                    {"width", type::BuiltinType::Int},
+                    {"endian", type::BuiltinType::String}
+               }, {Value::nilVal(), Value::intVal(0), Value::stringVal(toUnicodeString("little"))}),
+               {Value::nilVal(), Value::intVal(0), Value::stringVal(toUnicodeString("little"))},
+               0x1);
+        addSys("from_bytes",
+               [this](VM& vm, ArgsView a){ return from_bytes_builtin(vm,a); },
+               makeFuncType({
+                    {"bytes", type::BuiltinType::List},
+                    {"dtype", std::nullopt},  // accepts a type value or a string
+                    {"endian", type::BuiltinType::String},
+                    {"signed", type::BuiltinType::Bool}
+               }, {Value::nilVal(),
+                   Value::typeVal(ValueType::Real),
+                   Value::stringVal(toUnicodeString("little")),
+                   Value::trueVal()}),
+               {Value::nilVal(),
+                Value::typeVal(ValueType::Real),
+                Value::stringVal(toUnicodeString("little")),
+                Value::trueVal()},
+               0x1);
+        addSys("bits_to_bytes",
+               [this](VM& vm, ArgsView a){ return bits_to_bytes_builtin(vm,a); },
+               makeFuncType({
+                    {"bits", type::BuiltinType::List},
+                    {"msb_first", type::BuiltinType::Bool}
+               }, {Value::nilVal(), Value::trueVal()}),
+               {Value::nilVal(), Value::trueVal()},
+               0x1);
+        addSys("bytes_to_bits",
+               [this](VM& vm, ArgsView a){ return bytes_to_bits_builtin(vm,a); },
+               makeFuncType({
+                    {"bytes", type::BuiltinType::List},
+                    {"msb_first", type::BuiltinType::Bool}
+               }, {Value::nilVal(), Value::trueVal()}),
+               {Value::nilVal(), Value::trueVal()},
+               0x1);
+        addSys("lshift",
+               [this](VM& vm, ArgsView a){ return lshift_builtin(vm,a); },
+               makeFuncType({
+                    {"v", type::BuiltinType::Int},
+                    {"n", type::BuiltinType::Int}
+               }),
+               {}, 0x1);
+        addSys("rshift",
+               [this](VM& vm, ArgsView a){ return rshift_builtin(vm,a); },
+               makeFuncType({
+                    {"v", type::BuiltinType::Int},
+                    {"n", type::BuiltinType::Int}
+               }),
+               {}, 0x1);
+
         addSys("to_json",
                [this](VM& vm, ArgsView a){ return to_json_builtin(vm,a); },
                makeFuncType({
@@ -3297,6 +3360,421 @@ Value ModuleSys::deserialize_builtin(VM& vm, ArgsView args)
     ss.seekg(0);
     ptr<SerializationContext> ctx = make_ptr<SerializationContext>();
     return readValue(ss, ctx);
+}
+
+// ----------------------------------------------------------------------------
+// Bit / byte conversion builtins
+//
+// to_bytes(v, width=0, endian='little')
+//   v :int|real|byte|bool|string  -> list of byte
+//   Width semantics:
+//     int  : 1/2/4/8 bytes (two's complement); default 8.
+//     real : 4 (IEEE float32 downcast) or 8 (IEEE double); default 8.
+//     bool : 1 byte (0 or 1); width must be 0 or 1.
+//     byte : 1 byte; width must be 0 or 1.
+//     string: UTF-8 byte sequence; width must be 0.
+//   Default endian='little' matches host memory on x86/ARM and most modern
+//   robotics protocols (EtherCAT, CANopen, EIP/CIP, OPC UA, ROS, DDS).
+//
+// from_bytes(bytes :list, dtype=real, endian :string='little', signed :bool=true)
+//   bytes -> int|real|bool|string  (result is always a Roxal builtin type)
+//   dtype is a type value (preferred) or a string. Accepted values:
+//     int    : integer with width = len(bytes); supports 1/2/4/8.
+//              signed=true (default) sign-extends; signed=false zero-extends.
+//              Result is always Roxal int (signed int64).
+//     real   : len 4 (IEEE float32, upcast to double) or len 8 (IEEE double)
+//     bool   : len 1; nonzero -> true
+//     string : UTF-8 decode
+//   `signed` is only meaningful when dtype=int.
+//
+// bits_to_bytes(bits :list, msb_first :bool=true) -> list of byte
+//   bits is a list of bool (or 0/1 int). Output length = ceil(len/8);
+//   final byte zero-padded. msb_first=true (default) matches the byte([8 bits])
+//   constructor convention.
+//
+// bytes_to_bits(bytes :list, msb_first :bool=true) -> list of bool
+//   Output length = 8 * len(bytes). msb_first=true emits each byte's MSB first.
+//
+// lshift(v :int, n :int) -> int       arithmetic left shift; 0 <= n < 64
+// rshift(v :int, n :int) -> int       arithmetic right shift; 0 <= n < 64
+// ----------------------------------------------------------------------------
+
+namespace {
+
+// Extract a byte value from a Value (accepts byte or int in 0..255).
+uint8_t valueAsByte(const Value& v, const char* ctx) {
+    if (v.isByte())
+        return v.asByte();
+    if (v.isInt()) {
+        int64_t iv = v.asInt();
+        if (iv < 0 || iv > 255)
+            throw std::runtime_error(std::string(ctx) + ": int out of byte range (0..255): " + std::to_string(iv));
+        return static_cast<uint8_t>(iv);
+    }
+    throw std::invalid_argument(std::string(ctx) + ": expected byte or int element");
+}
+
+// Extract a bit value from a Value (accepts bool or int 0/1).
+bool valueAsBit(const Value& v, const char* ctx) {
+    if (v.isBool())
+        return v.asBool();
+    if (v.isInt()) {
+        int64_t iv = v.asInt();
+        if (iv != 0 && iv != 1)
+            throw std::runtime_error(std::string(ctx) + ": int bit must be 0 or 1, got " + std::to_string(iv));
+        return iv != 0;
+    }
+    if (v.isByte()) {
+        uint8_t bv = v.asByte();
+        if (bv != 0 && bv != 1)
+            throw std::runtime_error(std::string(ctx) + ": byte bit must be 0 or 1");
+        return bv != 0;
+    }
+    throw std::invalid_argument(std::string(ctx) + ": expected bool or 0/1 element");
+}
+
+// Read an optional string-valued arg with a default; throw on wrong type.
+std::string optStringArg(const ArgsView& args, size_t idx, const char* name, const std::string& dflt) {
+    if (idx >= args.size())
+        return dflt;
+    if (args[idx].isNil())
+        return dflt;
+    if (!isString(args[idx]))
+        throw std::invalid_argument(std::string(name) + " must be a string");
+    return toUTF8StdString(asStringObj(args[idx])->s);
+}
+
+// Read an optional dtype arg. Accepts a type value (preferred — e.g. `real`, `int`)
+// or a string ('int'/'real'/'bool'/'string') for convenience. Returns the
+// normalized lowercase string name used internally for dispatch.
+std::string optDtypeArg(const ArgsView& args, size_t idx, const std::string& dflt) {
+    if (idx >= args.size() || args[idx].isNil())
+        return dflt;
+    const Value& v = args[idx];
+    if (v.type() == ValueType::Type) {
+        switch (v.asType()) {
+            case ValueType::Int:    return "int";
+            case ValueType::Real:   return "real";
+            case ValueType::Bool:   return "bool";
+            case ValueType::String: return "string";
+            default:
+                throw std::invalid_argument("dtype must be one of the types int, real, bool, or string");
+        }
+    }
+    if (isString(v))
+        return toUTF8StdString(asStringObj(v)->s);
+    throw std::invalid_argument("dtype must be a type value (int, real, bool, string) or a string");
+}
+
+// Read an optional int-valued arg with a default; throw on wrong type.
+int64_t optIntArg(const ArgsView& args, size_t idx, const char* name, int64_t dflt) {
+    if (idx >= args.size())
+        return dflt;
+    if (args[idx].isNil())
+        return dflt;
+    if (args[idx].isInt())
+        return args[idx].asInt();
+    if (args[idx].isByte())
+        return static_cast<int64_t>(args[idx].asByte());
+    throw std::invalid_argument(std::string(name) + " must be an int");
+}
+
+// Read an optional bool-valued arg with a default; throw on wrong type.
+bool optBoolArg(const ArgsView& args, size_t idx, const char* name, bool dflt) {
+    if (idx >= args.size())
+        return dflt;
+    if (args[idx].isNil())
+        return dflt;
+    if (args[idx].isBool())
+        return args[idx].asBool();
+    throw std::invalid_argument(std::string(name) + " must be a bool");
+}
+
+// Parse endian string. Returns true for big-endian, false for little-endian.
+// 'network' is an alias for 'big' (RFC 791 / 1700 network byte order).
+bool parseEndian(const std::string& s) {
+    if (s == "little" || s == "LE" || s == "le")
+        return false;
+    if (s == "big" || s == "BE" || s == "be" || s == "network")
+        return true;
+    throw std::invalid_argument("endian must be 'little', 'big', or 'network', got '" + s + "'");
+}
+
+// Push uint64 as `width` little-endian bytes, optionally reverse for big-endian.
+void packBytes(std::vector<Value>& out, uint64_t bits, int width, bool bigEndian) {
+    size_t startIdx = out.size();
+    for (int i = 0; i < width; ++i) {
+        out.push_back(Value::byteVal(static_cast<uint8_t>(bits & 0xFF)));
+        bits >>= 8;
+    }
+    if (bigEndian)
+        std::reverse(out.begin() + startIdx, out.end());
+}
+
+// Read `width` bytes from list starting at offset, return as uint64 (little-endian assembly).
+uint64_t unpackBytes(ObjList* lst, int offset, int width, bool bigEndian, const char* ctx) {
+    if (offset + width > lst->length())
+        throw std::runtime_error(std::string(ctx) + ": not enough bytes");
+    uint64_t bits = 0;
+    for (int i = 0; i < width; ++i) {
+        int idx = bigEndian ? (offset + width - 1 - i) : (offset + i);
+        uint8_t b = valueAsByte(lst->getElement(idx), ctx);
+        bits |= static_cast<uint64_t>(b) << (8 * i);
+    }
+    return bits;
+}
+
+} // anonymous namespace
+
+Value ModuleSys::to_bytes_builtin(VM& vm, ArgsView args)
+{
+    (void)vm;
+    if (args.size() < 1)
+        throw std::invalid_argument("to_bytes expects at least 1 argument");
+    int64_t width = optIntArg(args, 1, "width", 0);
+    bool bigEndian = parseEndian(optStringArg(args, 2, "endian", "little"));
+
+    const Value& v = args[0];
+    std::vector<Value> out;
+
+    // Use type() so heap-boxed wide ints / bools / reals are also accepted.
+    ValueType vt = v.type();
+
+    // bool -> 1 byte
+    if (vt == ValueType::Bool) {
+        if (width != 0 && width != 1)
+            throw std::runtime_error("to_bytes(bool): width must be 0 or 1");
+        out.push_back(Value::byteVal(v.asBool() ? 1 : 0));
+        return Value::listVal(out);
+    }
+
+    // byte -> 1 byte
+    if (vt == ValueType::Byte) {
+        if (width != 0 && width != 1)
+            throw std::runtime_error("to_bytes(byte): width must be 0 or 1");
+        out.push_back(Value::byteVal(v.asByte()));
+        return Value::listVal(out);
+    }
+
+    // int -> width bytes (default 8). Accepts boxed wide ints.
+    if (vt == ValueType::Int) {
+        if (width == 0) width = 8;
+        if (width != 1 && width != 2 && width != 4 && width != 8)
+            throw std::runtime_error("to_bytes(int): width must be 1, 2, 4, or 8");
+        int64_t iv = v.asInt();
+        // Range check for narrow widths (signed)
+        if (width < 8) {
+            int64_t maxV = (int64_t{1} << (8*width - 1)) - 1;
+            int64_t minV = -(int64_t{1} << (8*width - 1));
+            // also accept the equivalent unsigned range (e.g. 255 for width=1)
+            int64_t maxU = (int64_t{1} << (8*width)) - 1;
+            if (iv < minV || iv > maxU)
+                throw std::runtime_error("to_bytes(int): value " + std::to_string(iv)
+                    + " does not fit in " + std::to_string(width) + " byte(s)");
+            (void)maxV;
+        }
+        uint64_t bits = static_cast<uint64_t>(iv);
+        out.reserve(width);
+        packBytes(out, bits, static_cast<int>(width), bigEndian);
+        return Value::listVal(out);
+    }
+
+    // real -> 4 (float32) or 8 (double) bytes
+    if (vt == ValueType::Real) {
+        if (width == 0) width = 8;
+        if (width != 4 && width != 8)
+            throw std::runtime_error("to_bytes(real): width must be 4 (float32) or 8 (double)");
+        double d = v.asReal();
+        uint64_t bits = 0;
+        if (width == 8) {
+            std::memcpy(&bits, &d, 8);
+        } else {
+            float f = static_cast<float>(d);
+            uint32_t b32;
+            std::memcpy(&b32, &f, 4);
+            bits = b32;
+        }
+        out.reserve(width);
+        packBytes(out, bits, static_cast<int>(width), bigEndian);
+        return Value::listVal(out);
+    }
+
+    // string -> UTF-8 bytes
+    if (vt == ValueType::String) {
+        if (width != 0)
+            throw std::runtime_error("to_bytes(string): width must be omitted");
+        std::string utf8 = toUTF8StdString(asStringObj(v)->s);
+        out.reserve(utf8.size());
+        for (unsigned char c : utf8)
+            out.push_back(Value::byteVal(c));
+        return Value::listVal(out);
+    }
+
+    throw std::invalid_argument("to_bytes: unsupported source type (expected bool, byte, int, real, or string)");
+}
+
+Value ModuleSys::from_bytes_builtin(VM& vm, ArgsView args)
+{
+    (void)vm;
+    if (args.size() < 1 || !isList(args[0]))
+        throw std::invalid_argument("from_bytes expects a list of bytes as first argument");
+    std::string typeStr = optDtypeArg(args, 1, "real");
+    bool bigEndian = parseEndian(optStringArg(args, 2, "endian", "little"));
+    bool isSigned = optBoolArg(args, 3, "signed", true);
+
+    ObjList* lst = asList(args[0]);
+    int len = lst->length();
+
+    if (typeStr == "int") {
+        if (len != 1 && len != 2 && len != 4 && len != 8)
+            throw std::runtime_error("from_bytes(int): bytes length must be 1, 2, 4, or 8 (got " + std::to_string(len) + ")");
+        uint64_t bits = unpackBytes(lst, 0, len, bigEndian, "from_bytes(int)");
+        // Roxal int is signed int64. With signed=true (default), sign-extend
+        // from len*8 bits. With signed=false, zero-extend (the raw bit pattern
+        // is returned; for len=8 the top bit may still produce a negative
+        // Roxal int because there is no unsigned int64 representation).
+        int64_t resultVal;
+        if (len == 8 || !isSigned) {
+            // No sign-extension needed: either already 64-bit or unsigned.
+            resultVal = static_cast<int64_t>(bits);
+        } else {
+            uint64_t signMask = uint64_t{1} << (8*len - 1);
+            if (bits & signMask) {
+                uint64_t extension = ~uint64_t{0} << (8*len);
+                resultVal = static_cast<int64_t>(bits | extension);
+            } else {
+                resultVal = static_cast<int64_t>(bits);
+            }
+        }
+        return Value::intVal(resultVal);
+    }
+
+    if (typeStr == "real") {
+        if (len != 4 && len != 8)
+            throw std::runtime_error("from_bytes(real): bytes length must be 4 (float32) or 8 (double), got " + std::to_string(len));
+        uint64_t bits = unpackBytes(lst, 0, len, bigEndian, "from_bytes(real)");
+        double d;
+        if (len == 8) {
+            std::memcpy(&d, &bits, 8);
+        } else {
+            uint32_t b32 = static_cast<uint32_t>(bits);
+            float f;
+            std::memcpy(&f, &b32, 4);
+            d = static_cast<double>(f);
+        }
+        return Value::realVal(d);
+    }
+
+    if (typeStr == "bool") {
+        if (len != 1)
+            throw std::runtime_error("from_bytes(bool): expects exactly 1 byte, got " + std::to_string(len));
+        uint8_t b = valueAsByte(lst->getElement(0), "from_bytes(bool)");
+        return Value::boolVal(b != 0);
+    }
+
+    if (typeStr == "string") {
+        std::string s;
+        s.reserve(len);
+        for (int i = 0; i < len; ++i)
+            s.push_back(static_cast<char>(valueAsByte(lst->getElement(i), "from_bytes(string)")));
+        return Value::stringVal(toUnicodeString(s));
+    }
+
+    throw std::invalid_argument("from_bytes: unknown dtype '" + typeStr + "' (expected 'int', 'real', 'bool', or 'string')");
+}
+
+Value ModuleSys::bits_to_bytes_builtin(VM& vm, ArgsView args)
+{
+    (void)vm;
+    if (args.size() < 1 || !isList(args[0]))
+        throw std::invalid_argument("bits_to_bytes expects a list of bool/0/1 as first argument");
+    bool msbFirst = optBoolArg(args, 1, "msb_first", true);
+
+    ObjList* lst = asList(args[0]);
+    int n = lst->length();
+    int byteCount = (n + 7) / 8;
+    std::vector<Value> out;
+    out.reserve(byteCount);
+
+    for (int byteIdx = 0; byteIdx < byteCount; ++byteIdx) {
+        uint8_t b = 0;
+        for (int j = 0; j < 8; ++j) {
+            int bitIdx = byteIdx * 8 + j;
+            if (bitIdx >= n) break;
+            bool bit = valueAsBit(lst->getElement(bitIdx), "bits_to_bytes");
+            if (bit) {
+                int shift = msbFirst ? (7 - j) : j;
+                b |= static_cast<uint8_t>(1u << shift);
+            }
+        }
+        out.push_back(Value::byteVal(b));
+    }
+    return Value::listVal(out);
+}
+
+Value ModuleSys::bytes_to_bits_builtin(VM& vm, ArgsView args)
+{
+    (void)vm;
+    if (args.size() < 1 || !isList(args[0]))
+        throw std::invalid_argument("bytes_to_bits expects a list of bytes as first argument");
+    bool msbFirst = optBoolArg(args, 1, "msb_first", true);
+
+    ObjList* lst = asList(args[0]);
+    int n = lst->length();
+    std::vector<Value> out;
+    out.reserve(n * 8);
+
+    for (int i = 0; i < n; ++i) {
+        uint8_t b = valueAsByte(lst->getElement(i), "bytes_to_bits");
+        for (int j = 0; j < 8; ++j) {
+            int shift = msbFirst ? (7 - j) : j;
+            bool bit = ((b >> shift) & 1u) != 0;
+            out.push_back(Value::boolVal(bit));
+        }
+    }
+    return Value::listVal(out);
+}
+
+Value ModuleSys::lshift_builtin(VM& vm, ArgsView args)
+{
+    (void)vm;
+    if (args.size() != 2)
+        throw std::invalid_argument("lshift expects exactly 2 arguments (v, n)");
+    // Use type() (not isInt() / isByte()) so heap-boxed wide ints are accepted.
+    ValueType vt = args[0].type();
+    ValueType nt = args[1].type();
+    if (vt != ValueType::Int && vt != ValueType::Byte)
+        throw std::invalid_argument("lshift: v must be int or byte");
+    if (nt != ValueType::Int && nt != ValueType::Byte)
+        throw std::invalid_argument("lshift: n must be int");
+    int64_t v = args[0].asInt();
+    int64_t n = args[1].asInt();
+    if (n < 0 || n >= 64)
+        throw std::runtime_error("lshift: shift amount must be in 0..63, got " + std::to_string(n));
+    // Shift via unsigned to avoid UB on signed left-shift overflow
+    uint64_t r = static_cast<uint64_t>(v) << n;
+    // Value::intVal() auto-boxes to a heap int when the result doesn't fit in int32.
+    return Value::intVal(static_cast<int64_t>(r));
+}
+
+Value ModuleSys::rshift_builtin(VM& vm, ArgsView args)
+{
+    (void)vm;
+    if (args.size() != 2)
+        throw std::invalid_argument("rshift expects exactly 2 arguments (v, n)");
+    ValueType vt = args[0].type();
+    ValueType nt = args[1].type();
+    if (vt != ValueType::Int && vt != ValueType::Byte)
+        throw std::invalid_argument("rshift: v must be int or byte");
+    if (nt != ValueType::Int && nt != ValueType::Byte)
+        throw std::invalid_argument("rshift: n must be int");
+    int64_t v = args[0].asInt();
+    int64_t n = args[1].asInt();
+    if (n < 0 || n >= 64)
+        throw std::runtime_error("rshift: shift amount must be in 0..63, got " + std::to_string(n));
+    // Arithmetic right shift on signed: implementation-defined in C++ but
+    // universally arithmetic on modern compilers. Use it directly.
+    return Value::intVal(v >> n);
 }
 
 // Direct writer that walks Roxal Value without going through json11::Json,
