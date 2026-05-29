@@ -3922,6 +3922,13 @@ void RoxalCompiler::emitStarInitPrologue(const std::vector<StarInitMember>& memb
 
         uint16_t propConst = identifierConstant(m.storageName);
         emitOpArgsBytes(OpCode::SetProp, propConst, "init(*) " + toUTF8StdString(m.storageName));
+
+        // SetProp is an assignment expression: it pops (instance, value) and
+        // pushes the assigned value back. Like a normal assignment statement,
+        // discard that leftover — otherwise each synthesized assignment leaves
+        // a phantom value on the stack, shifting every subsequent body local
+        // slot and corrupting later reads/calls in the init(*) body.
+        emitByte(OpCode::Pop);
     }
 }
 

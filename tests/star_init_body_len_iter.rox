@@ -1,0 +1,27 @@
+// Regression: calling builtins (len) and iterating fields inside a
+// `proc init(*)` body must operate on the actual arguments. The synthesized
+// auto-assignment prologue must not leave leftover values on the stack, which
+// previously shifted every subsequent body local slot and corrupted calls /
+// reads in the body (len returned its argument, literals returned a prior
+// field's length, for-in summed the wrong list, etc.).
+
+type IHas interface:
+  var tag :string
+  var items :list
+
+type Thing object implements IHas:
+  var tag :string = "x"
+  var items :list = []
+  proc init(*):
+    print(len(items))          // length of the real items arg
+    print(len([5, 5, 5]))      // a literal's own length, not a field's
+    var total = 0
+    for v in items:
+      total = total + v
+    print(total)
+    print(tag)
+
+print("-- no-arg --")
+var a = Thing()
+print("-- with-arg --")
+var b = Thing("hi", [1, 2, 3, 4])
