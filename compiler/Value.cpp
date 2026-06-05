@@ -2328,25 +2328,22 @@ Value roxal::add(Value l, Value r)
                               l, r);
     }
     else if (isList(l) && isList(r)) {
-        // List + List → concatenation (clone LHS, then concatenate RHS)
+        // List + List → concatenation. New top-level list; element refs are
+        // shared (shallow) from BOTH operands (Python-style). LHS is never mutated.
         ObjList* lv = asList(l);
         const ObjList* rv = asList(r);
 
-        ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
-        auto result = lv->clone(cloneCtx);  // Clone LHS for by-value semantics
-        static_cast<ObjList*>(result.get())->concatenate(rv);          // Concatenate RHS in-place
+        auto result = lv->shallowClone();  // share LHS element refs (COW)
+        static_cast<ObjList*>(result.get())->concatenate(rv);  // ensureUnique COW-copies the vector, then shares RHS refs
 
         return Value::objVal(std::move(result));
     }
     else if (isList(l)) {
-        // List + anything → append (clone LHS, then append RHS)
-        ObjList* lv = asList(l);
-
-        ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
-        auto result = lv->clone(cloneCtx);  // Clone LHS for by-value semantics
-        static_cast<ObjList*>(result.get())->append(r);                // Append RHS in-place
-
-        return Value::objVal(std::move(result));
+        // List + non-list is not allowed: `+` is list-only concatenation, matching
+        // vector/dict operand rules. To add a single element use list.append(x); to
+        // concatenate a one-element list use list + [x].
+        throw std::invalid_argument("Cannot add " + r.typeName() + " to a list "
+                                    "(use list.append(x) to add a single element, or list + [x] to concatenate)");
     }
     throw std::invalid_argument("unsupported operand types to add() - "+l.typeName()+" and "+r.typeName());
 }

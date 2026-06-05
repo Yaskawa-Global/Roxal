@@ -1,0 +1,3 @@
+// pop raises on an empty list
+l = []
+l.pop()

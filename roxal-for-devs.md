@@ -231,7 +231,7 @@ print(m*v) // [5 11]
 
 In addition, + can also be used for:
   * string concatenation (when the left-hand-side is a string) - "hello "+"world".  This also directly converts most types into strings: "hello "+5 → "hello 5"
-  * list concatenation: [1,2,3]+[4,5,6] → [1,2,3,4,5,6]
+  * list concatenation: [1,2,3]+[4,5,6] → [1,2,3,4,5,6].  Both sides must be lists (like vector and dict operators); `list + non-list` is an error.  To add a single element, use `list.append(x)` (or `list + [x]` for a non-mutating concatenation).
 
 Boolean operators `and`, `or` and `not` work on the bool type.  `(true and true and not false)` → `true`
 
@@ -2036,6 +2036,11 @@ The functions in the sys module are always globally available (- as if `import s
   * `mode='compact'` returns element dicts with `tag`, optional `attrs`, optional `text`, and child tags as keys
   * `mode='raw'` returns `{tag, attrs, children}` where `children` preserves ordered child elements and text nodes
   * compact XML reserves the keys `tag`, `attrs`, and `text`; use raw mode if those names appear as child elements
+* `list.append(value)` - add `value` to the end as a single element (a list argument is added as one nested element). Mutates in place.
+* `list.extend(other)` - append each element of the list `other` (the in-place counterpart of `list + other`). Mutates in place. `other` must be a list.
+* `list.insert(index, value)` - insert `value` before `index`. Negative indices count from the end; out-of-range indices clamp to the start/end. Mutates in place.
+* `list.remove(value)` - remove the first element equal to `value`. Raises an error if not present (guard with `list.remove(x) if x in list`). Mutates in place.
+* `list.pop(index=-1)` - remove and return the element at `index` (default: the last). Raises an error if the index is out of range. Mutates in place.
 * `filter(items, predicate)` - return a new list containing elements for which `predicate(element)` returns true; predicate can optionally take `(element, index)`. Also a list method: `list.filter(predicate)`
 * `map(items, transform)` - return a new list with `transform(element)` applied to each element; transform can optionally take `(element, index)`. Also a list method: `list.map(transform)`
 * `reduce(items, reducer, initial)` - reduce list to a single value by calling `reducer(accumulator, element)` for each element; reducer can optionally take `(accumulator, element, index)`. Also a list method: `list.reduce(reducer, initial)`

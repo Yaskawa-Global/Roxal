@@ -1465,6 +1465,53 @@ void ObjList::append(const Value& value)
     if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
+void ObjList::insertAt(int64_t index, const Value& value)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    int64_t n = static_cast<int64_t>(elts_->size());
+    // Python-style: negative counts from the end; out-of-range clamps to [0, n].
+    if (index < 0) { index += n; if (index < 0) index = 0; }
+    if (index > n) index = n;
+    elts_->insert(elts_->begin() + index, value);
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+Value ObjList::removeAt(int64_t index)
+{
+    ensureMutable();
+    int64_t n = static_cast<int64_t>(elts_->size());
+    int64_t i = index < 0 ? index + n : index;  // negative counts from the end
+    if (i < 0 || i >= n)
+        throw std::out_of_range("list index out of range");
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    Value removed = (*elts_)[i];
+    elts_->erase(elts_->begin() + i);
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return removed;
+}
+
+bool ObjList::removeValue(const Value& value, bool strict)
+{
+    ensureMutable();
+    int64_t n = static_cast<int64_t>(elts_->size());
+    int64_t found = -1;
+    for (int64_t i = 0; i < n; i++)
+        if ((*elts_)[i].equals(value, strict)) { found = i; break; }
+    if (found < 0)
+        return false;
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    elts_->erase(elts_->begin() + found);
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return true;
+}
+
 void ObjList::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint32_t len = length();

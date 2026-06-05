@@ -106,7 +106,7 @@ tests = [
     'nil_to_ref_types', 'nil_to_value_type_err', 'nil_to_range_err', 'nil_to_typed_prop_err', 'range_content_eq',
     'arith', 'factorial', 'defaultvalues', 'construct_defaults', 'typeof_test',
     'dict', 'dict2', 'dict_keyerror', 'dict_dot', 'dict_dot_keyerror', 'dict_self_reference', 'list', 'list2', 'list_negative_index', 'list_self_reference', 'copyinto_list', 'copyinto_list_unicode', 'copyinto_sublist', 'copyinto_signal',
-    'list_add_test', 'list_dict_equal', 'test_filter_map_reduce', 'list_method_exception', 'test_paren_continuation', 'range', 'range2', 'enum1', 'enum2', 'enum3', 'upvalue_leak',
+    'list_add_test', 'list_concat_shallow', 'list_methods', 'list_add_nonlist_err', 'list_remove_notfound_err', 'list_pop_empty_err', 'list_dict_equal', 'test_filter_map_reduce', 'list_method_exception', 'test_paren_continuation', 'range', 'range2', 'enum1', 'enum2', 'enum3', 'upvalue_leak',
     'unicode', 'backtick_identifier', 'signal_clock', 'signal_add', 'signal_subtract', 'signal_multiply', 'signal_divide', 'signal_modulo',
     'signal_greater', 'signal_less', 'signal_equal', 'signal_history', 'signal_cycle', 'signal_cleanup',
     'signal_and', 'signal_or', 'signal_not', 'signal_band', 'signal_bor', 'signal_bxor', 'signal_bnot',

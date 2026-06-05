@@ -575,8 +575,11 @@ struct ObjList : public Obj
     void reserve(size_t n) { ensureUnique(); elts_->reserve(n); }
 
     // List operations (in-place)
-    void concatenate(const ObjList* other);  // Concatenate other list to this list
-    void append(const Value& value);         // Append value to this list
+    void concatenate(const ObjList* other);  // Concatenate other list to this list (extend)
+    void append(const Value& value);         // Append value as a single element
+    void insertAt(int64_t index, const Value& value);  // Insert value before index (Python-style; clamps out-of-range)
+    Value removeAt(int64_t index);           // Remove and return element at index (pop); throws if out of range
+    bool removeValue(const Value& value, bool strict = false);  // Remove first element equal to value; returns whether found
     void set(const ObjList* other);          // Shallow copy from other list
 
     bool equals(const ObjList* other) const;  // Deep equality comparison

@@ -10626,8 +10626,16 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Orient, "euler", std::mem_fn(&VM::orient_euler_builtin),
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
 
-    // list.append mutates self; list.filter/map/reduce are registered from ModuleSys.
+    // list.append/extend/insert/remove/pop mutate self; list.filter/map/reduce are registered from ModuleSys.
     defineBuiltinMethod(ValueType::List, "append", std::mem_fn(&VM::list_append_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::List, "extend", std::mem_fn(&VM::list_extend_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::List, "insert", std::mem_fn(&VM::list_insert_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x3);
+    defineBuiltinMethod(ValueType::List, "remove", std::mem_fn(&VM::list_remove_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::List, "pop", std::mem_fn(&VM::list_pop_builtin),
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
 
     // String case-conversion methods — read-only on self (return new string)
@@ -11434,6 +11442,49 @@ Value VM::list_append_builtin(ArgsView args)
     ObjList* list = asList(args[0]);
     list->append(args[1]);
     return Value::nilVal();
+}
+
+Value VM::list_extend_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isList(args[0]))
+        throw std::invalid_argument("list.extend expects a single list argument");
+    if (!isList(args[1]))
+        throw std::invalid_argument("list.extend expects a list argument (got " + args[1].typeName()
+                                    + "); use list.append(x) to add a single element");
+    asList(args[0])->concatenate(asList(args[1]));
+    return Value::nilVal();
+}
+
+Value VM::list_insert_builtin(ArgsView args)
+{
+    if (args.size() != 3 || !isList(args[0]))
+        throw std::invalid_argument("list.insert expects an index and a value");
+    if (!args[1].isInt())
+        throw std::invalid_argument("list.insert index must be an integer");
+    asList(args[0])->insertAt(args[1].asInt(), args[2]);
+    return Value::nilVal();
+}
+
+Value VM::list_remove_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isList(args[0]))
+        throw std::invalid_argument("list.remove expects a single value argument");
+    if (!asList(args[0])->removeValue(args[1], false))
+        throw std::invalid_argument("list.remove: value not found in list");
+    return Value::nilVal();
+}
+
+Value VM::list_pop_builtin(ArgsView args)
+{
+    if (args.empty() || !isList(args[0]) || args.size() > 2)
+        throw std::invalid_argument("list.pop expects an optional index argument");
+    int64_t index = -1;  // default: last element
+    if (args.size() == 2) {
+        if (!args[1].isInt())
+            throw std::invalid_argument("list.pop index must be an integer");
+        index = args[1].asInt();
+    }
+    return asList(args[0])->removeAt(index);  // throws std::out_of_range if empty/out-of-range
 }
 
 Value VM::string_upper_builtin(ArgsView args)
