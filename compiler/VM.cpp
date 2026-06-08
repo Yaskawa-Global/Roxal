@@ -1931,6 +1931,62 @@ ObjModuleType* VM::replModuleType() const
     return asModuleType(replModuleValue);
 }
 
+ObjModuleType* VM::ensureReplModule()
+{
+    if (replModuleValue.isNil()) {
+        // The compiler normally creates the REPL module on the first
+        // runLine()/setupLine() compile (see VM.cpp:1828-1829, 1897-1898).
+        // For embedding flows that need to pre-populate REPL globals
+        // before the user types anything, mint a fresh "cli" module up
+        // front and adopt it.  Subsequent compiles see replModuleValue
+        // already non-nil and reuse it.
+        auto modUP = newModuleTypeObj(toUnicodeString("cli"));
+        replModuleValue = Value::objVal(std::move(modUP));
+    }
+    return asModuleType(replModuleValue);
+}
+
+void VM::importModuleVarsInto(ObjModuleType* target,
+                              const std::vector<Value>& sources)
+{
+    if (target == nullptr)
+        throw std::runtime_error("VM::importModuleVarsInto: target is null");
+
+    // Match OpCode::ImportModuleVars wildcard branch semantics.  Overwrite
+    // when target is the REPL module (so re-imports refresh stale bindings)
+    // and clone OverloadSets so a later local FuncDecl can replace them.
+    const bool replReimport =
+        replModuleValue.isNonNil() &&
+        isModuleType(replModuleValue) &&
+        asModuleType(replModuleValue) == target;
+
+    auto storeImported = [&](int32_t hash, const icu::UnicodeString& name,
+                             const Value& v) {
+        if (v.isObj() && isOverloadSet(v)) {
+            auto cloneObj = newOverloadSetObj(name);
+            auto* src = asOverloadSet(v);
+            cloneObj->closures = src->closures;
+            cloneObj->importedFromModule = true;
+            target->vars.store(hash, name,
+                               Value::objRef(cloneObj.release()),
+                               /*overwrite=*/replReimport);
+        } else {
+            target->vars.store(hash, name, v, /*overwrite=*/replReimport);
+        }
+    };
+
+    for (const Value& srcVal : sources) {
+        if (!isModuleType(srcVal))
+            throw std::runtime_error(
+                "VM::importModuleVarsInto: source is not a module type");
+        auto* srcModule = asModuleType(srcVal);
+        srcModule->vars.forEach(
+            [&](const VariablesMap::NameValue& nv) {
+                storeImported(nv.first.hashCode(), nv.first, nv.second);
+            });
+    }
+}
+
 thread_local ptr<Thread> VM::thread;
 
 bool VM::call(ObjClosure* closure, const CallSpec& callSpec)

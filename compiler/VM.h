@@ -621,6 +621,23 @@ public:
     Value getCombinatorRelayFunction() const { return combinatorRelayFunction; } // ObjFunction
     ObjModuleType* replModuleType() const;
 
+    /// Like `replModuleType()`, but lazily creates the REPL module if
+    /// none exists yet (rather than returning nullptr).  Lets callers
+    /// pre-populate the REPL's globals before the user types anything.
+    /// Safe to call multiple times; returns the same module each time.
+    ObjModuleType* ensureReplModule();
+
+    /// Copy all exported vars from each `source` ObjModuleType into `target`.
+    /// Equivalent to executing `import S0.*; import S1.*; ...` against
+    /// `target`, but pure C++ -- no opcode dispatch, no source-code
+    /// generation, no RT-loop involvement.  Source modules must have
+    /// been fully evaluated (their top-level statements run) before
+    /// calling.  Replicates the wildcard branch of OpCode::ImportModuleVars
+    /// including OverloadSet cloning + REPL-reimport overwrite semantics.
+    /// Throws if `target` or any element of `sources` is not a module type.
+    void importModuleVarsInto(ObjModuleType* target,
+                              const std::vector<Value>& sources);
+
 
     Value initString; // ObjString "init"
 
